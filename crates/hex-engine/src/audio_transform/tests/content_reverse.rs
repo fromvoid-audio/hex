@@ -1020,6 +1020,7 @@ fn plain_reverse_crop_of_long_stream_reads_only_bounded_pages() {
             fade_out: 0,
         })
         .unwrap();
+    let mut full = Editor::new(editor.project().clone(), 8).unwrap();
     editor
         .execute(Command::TrimClipEdge {
             clip,
@@ -1061,5 +1062,24 @@ fn plain_reverse_crop_of_long_stream_reads_only_bounded_pages() {
     for (offset, frame) in output.iter().enumerate() {
         let value = ((19_999_999 - offset as u64) % 1_024) as f32;
         assert_eq!(*frame, [value, -value]);
+    }
+    let (_, compiled) = full
+        .execute_prepared(Command::ReverseClips(vec![clip]), |candidate| {
+            crate::compile::project_with_prepared_audio_sources(candidate, &sources, 3)
+        })
+        .unwrap();
+    assert!(compiled.contains_streamed_sources());
+    for start in [0, 8_170, 19_999_000] {
+        let mut renderer = crate::Renderer::new(&compiled);
+        renderer.seek(start);
+        renderer.play();
+        let mut output = [[0.0; 2]; 512];
+        for chunk in output.chunks_mut(127) {
+            renderer.render_with_pages(chunk, &mut pages).unwrap();
+        }
+        for (offset, frame) in output.iter().enumerate() {
+            let value = ((19_999_999 - start - offset as u64) % 1_024) as f32;
+            assert_eq!(*frame, [value, -value]);
+        }
     }
 }

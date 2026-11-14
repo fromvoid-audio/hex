@@ -87,6 +87,23 @@ pub(crate) struct MutableNoteOnset {
     pub(crate) pitch: u8,
     pub(crate) channel: u8,
     pub(crate) velocity: u8,
+    /// An explicitly admitted source-bound onset requiring a 5 ms fade-in.
+    pub(crate) contributor_fade_in: bool,
+}
+
+/// A bounded 5 ms fade for a source-owned onset, derived from its project rate.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ContributorFadeIn(std::num::NonZeroU16);
+impl ContributorFadeIn {
+    pub(crate) fn new(sample_rate: u32) -> Option<Self> {
+        if !(8_000..=192_000).contains(&sample_rate) {
+            return None;
+        }
+        std::num::NonZeroU16::new(u16::try_from(sample_rate.div_ceil(200)).ok()?).map(Self)
+    }
+    fn frames(self) -> u64 {
+        u64::from(self.0.get())
+    }
 }
 
 /// Owned proof that this exact authored occurrence was dispatched by a
@@ -187,6 +204,7 @@ impl ContributorFade {
 pub(crate) struct MutableOnsetBuffer {
     spans: [Option<MutableNoteOnset>; MAX_MUTABLE_SPANS_PER_QUERY],
     len: usize,
+    has_contributor_fade_in: bool,
 }
 
 impl Default for MutableOnsetBuffer {
@@ -194,17 +212,23 @@ impl Default for MutableOnsetBuffer {
         Self {
             spans: [None; MAX_MUTABLE_SPANS_PER_QUERY],
             len: 0,
+            has_contributor_fade_in: false,
         }
     }
 }
 
 impl MutableOnsetBuffer {
     pub(crate) fn candidate_storage_empty(&self) -> bool {
-        let Self { spans, len } = self;
-        *len == 0 && spans.iter().all(Option::is_none)
+        let Self {
+            spans,
+            len,
+            has_contributor_fade_in,
+        } = self;
+        *len == 0 && !has_contributor_fade_in && spans.iter().all(Option::is_none)
     }
     pub(crate) fn clear(&mut self) {
         self.len = 0;
+        self.has_contributor_fade_in = false;
     }
 
     pub(crate) fn push(&mut self, onset: MutableNoteOnset) -> Result<(), ()> {
@@ -213,6 +237,7 @@ impl MutableOnsetBuffer {
         };
         *slot = Some(onset);
         self.len += 1;
+        self.has_contributor_fade_in |= onset.contributor_fade_in;
         Ok(())
     }
 
@@ -259,6 +284,7 @@ impl MutableOccurrenceKey {
 /// buffers are reserved during control-side construction.
 pub(crate) struct MutableInstrumentTrackRuntime {
     pair: NativeInstrumentRuntimePair,
+    sample_rate: u32,
     frozen_parameters: frozen_parameters::FrozenParameters,
     modulation: Option<Box<hex_lattice::ModulationRuntime>>,
     output_trim: Option<output_trim::OutputTrim>,
@@ -327,6 +353,7 @@ impl MutableInstrumentTrackRuntime {
     ) -> Result<(), crate::AudioStorageError> {
         let Self {
             pair,
+            sample_rate: _,
             frozen_parameters,
             modulation,
             output_trim,
@@ -439,6 +466,7 @@ impl MutableInstrumentTrackRuntime {
         }
         Ok(Self {
             pair,
+            sample_rate,
             frozen_parameters,
             modulation: None,
             output_trim: None,
@@ -819,6 +847,26 @@ impl MutableInstrumentTrackRuntime {
         });
     }
 
+    pub(crate) fn can_admit_contributor_chase(&self) -> bool {
+        self.can_admit_contributor_chases(1)
+    }
+
+    pub(crate) fn can_admit_contributor_chases(&self, additional: usize) -> bool {
+        self.is_source_owner()
+            && self.pair.supports_occurrence_gain()
+            && self
+                .primary
+                .len()
+                .checked_add(self.transition_live_count(false))
+                .and_then(|used| used.checked_add(additional))
+                .is_some_and(|needed| {
+                    needed
+                        <= self
+                            .max_active_occurrences()
+                            .min(MAX_MUTABLE_OCCURRENCE_PROOFS)
+                })
+    }
+
     pub(crate) fn max_active_occurrences(&self) -> usize {
         self.pair.max_active_occurrences()
     }
@@ -1002,6 +1050,7 @@ impl MutableInstrumentTrackRuntime {
             .scratch
             .iter()
             .any(|proof| proof.contributor_fade.is_some())
+            || onsets.has_contributor_fade_in
             || self.live.as_ref().is_some_and(|live| {
                 live.scratch
                     .iter()
@@ -1057,6 +1106,7 @@ impl MutableInstrumentTrackRuntime {
             .scratch
             .iter()
             .any(|proof| proof.contributor_fade.is_some())
+            || onsets.has_contributor_fade_in
             || self.live.as_ref().is_some_and(|live| {
                 live.scratch
                     .iter()
@@ -1133,6 +1183,10 @@ impl MutableInstrumentTrackRuntime {
             source_start,
             width,
             source_age,
+            contributor_fade_rate: self
+                .pair
+                .supports_occurrence_gain()
+                .then_some(self.sample_rate),
             tail_frames: self.max_release_tail_frames(),
             max_active: self.max_active_occurrences(),
             steals_releasing: self.steals_releasing_voices(),

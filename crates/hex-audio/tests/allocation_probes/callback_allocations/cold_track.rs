@@ -235,3 +235,83 @@ fn earlier_unused_return_remove_and_undo_preserve_pcm_without_callback_allocatio
     control.reclaim();
     Ok(())
 }
+
+#[test]
+fn silent_track_latency_addition_preserves_other_reverb_without_callback_allocations()
+-> Result<(), Box<dyn Error>> {
+    let mut editor = Editor::new(Project::new(RATE)?, 16)?;
+    let mut media = BTreeMap::new();
+    let mut tracks = Vec::new();
+    for name in ["muted", "reverb"] {
+        let Created::Imported { track, asset, .. } = editor.execute(Command::ImportAudioTrack {
+            name: name.into(),
+            path: "memory/source.wav".into(),
+            sample_rate: RATE,
+            frames: 12_000,
+        })?
+        else {
+            return Err("expected source".into());
+        };
+        let mut samples = vec![[0.0; 2]; 12_000];
+        samples[..512].fill([0.25, -0.125]);
+        media.insert(asset, Audio::new(RATE, samples)?);
+        tracks.push(track);
+    }
+    editor.execute(Command::Mute {
+        track: tracks[0],
+        muted: true,
+    })?;
+    editor.execute(Command::InsertDevice {
+        track: tracks[1],
+        before: None,
+        state: hex_engine::default_native_device_state(DeviceTypeId::from_static("hex.limiter"))?,
+    })?;
+    let reverb = hex_engine::patch_native_device_parameter(
+        &hex_engine::default_native_device_state(DeviceTypeId::from_static("hex.reverb"))?,
+        ParameterId::from_static(2),
+        ParameterValue::Float(100.0),
+    )?;
+    editor.execute(Command::InsertDevice {
+        track: tracks[1],
+        before: None,
+        state: reverb,
+    })?;
+    let table = Arc::new(SineTable::new());
+    let prepare = |project: &Project| {
+        PreparedRevision::prepare(project, &media, Arc::clone(&table), None).map(Arc::new)
+    };
+    let first = prepare(editor.project())?;
+    let mut oracle = Playback::try_from_prepared_with_session(Arc::clone(&first))?;
+    oracle.apply(PlaybackCommand::Play);
+    let (mut control, mut callback) = prepared::channel(RATE)?;
+    control
+        .publish(Playback::try_from_prepared_with_session(first)?)
+        .map_err(|_| "initial publication")?;
+    control.command(PlaybackCommand::Play).map_err(|_| "play")?;
+    let mut actual = [[0.0; 2]; 512];
+    let mut expected = actual;
+    for _ in 0..12 {
+        measured_block(&mut callback, &mut actual);
+        oracle.render(&mut expected)?;
+        assert_eq!(actual, expected);
+    }
+    editor.execute(Command::InsertDevice {
+        track: tracks[0],
+        before: None,
+        state: hex_engine::default_native_device_state(DeviceTypeId::from_static("hex.limiter"))?,
+    })?;
+    control
+        .publish(Playback::try_from_prepared_with_session(prepare(
+            editor.project(),
+        )?)?)
+        .map_err(|_| "updated publication")?;
+    measured_block(&mut callback, &mut actual);
+    oracle.render(&mut expected)?;
+    assert!(control.status.rejected_revision().is_none());
+    assert!(expected.iter().flatten().any(|sample| *sample != 0.0));
+    assert_eq!(actual, expected);
+    control.request_shutdown();
+    measured_shutdown(&mut callback, &mut actual);
+    control.reclaim();
+    Ok(())
+}

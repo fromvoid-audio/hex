@@ -93,10 +93,11 @@ pub use audio_sink::{
     PluginParameterCapture, PluginParameterDelivery, PluginParameterGestureError,
     PluginParameterGestureInput, PluginParameterGestureResult, PluginParameterObservation,
     PluginParameterOverride, ResidentEffectPreparation, ResidentFileInput, ResidentFileMetadata,
-    ResidentFilePublication, ResidentFileSeekPreparer, ResidentFileSeekRequest, ResidentFileSet,
-    ResidentFreshRuntimeFence, ResidentPublicationAcceptance, ResidentPublicationFailure,
-    ResidentPublicationMetadata, ResidentPublicationPolicy, ResidentPublicationReadiness,
-    ResidentPublicationRefusal, ResidentRuntimeLoop, ResidentSourceOrigin, WorkerAudioSink,
+    ResidentFilePitch, ResidentFilePublication, ResidentFileSeekPreparer, ResidentFileSeekRequest,
+    ResidentFileSet, ResidentFreshRuntimeFence, ResidentPublicationAcceptance,
+    ResidentPublicationFailure, ResidentPublicationMetadata, ResidentPublicationPolicy,
+    ResidentPublicationReadiness, ResidentPublicationRefusal, ResidentRuntimeLoop,
+    ResidentSourceOrigin, WorkerAudioSink,
 };
 pub use comparison_audio::ComparisonAudioBinding;
 use export_lane::ExportLane;
@@ -3022,6 +3023,10 @@ fn run_worker(
     let mut recording_barrier = recording_barrier::State::default();
     let mut pending_recovery_outcome: Option<(DeferredRecoveryKind, audio_sink::PendingOutcome)> =
         None;
+    // At most one seek may pass a held locator checkpoint. Its ordinary
+    // terminal remains behind the locator terminal, even if its separate seek
+    // result is ready earlier.
+    let mut pending_locator_seek_outcome: Option<audio_sink::PendingOutcome> = None;
     // Both ordinary and recovery-delayed terminals use the same bounded
     // backpressure/control polling path.
     macro_rules! deliver_outcome {
@@ -3109,6 +3114,12 @@ fn run_worker(
             if let Some((kind, mut outcome)) = pending_recovery_outcome.take() {
                 let (elapsed, result) = recovery_tracker.finish_async(&mut journal);
                 outcome.finish_recovery(kind.metric(), elapsed, result, recovery_tracker.failure());
+                if !deliver_outcome!(outcome) {
+                    return;
+                }
+            }
+            if let Some(mut outcome) = pending_locator_seek_outcome.take() {
+                outcome.event.recovery_failure = recovery_tracker.failure();
                 if !deliver_outcome!(outcome) {
                     return;
                 }
@@ -3273,9 +3284,18 @@ fn run_worker(
         },
     ) {
         // One later edit of the same kind may commit while a checkpoint owns
-        // the journal. Other requests fence it first, including mixed edit kinds.
+        // the journal. One resident seek may also overlap a locator checkpoint;
+        // all other requests fence it first, including mixed edit kinds.
+        let seek_during_locator_recovery = pending_locator_seek_outcome.is_none()
+            && matches!(
+                pending_recovery_outcome.as_ref(),
+                Some((DeferredRecoveryKind::LocatorAdd, _))
+            )
+            && matches!(&queued.request, Request::ResidentArrangementSeek(_));
         if let Some((kind, _)) = pending_recovery_outcome.as_ref()
-            && deferred_recovery_kind(&queued.request) != Some(*kind)
+            && (pending_locator_seek_outcome.is_some()
+                || (!seek_during_locator_recovery
+                    && deferred_recovery_kind(&queued.request) != Some(*kind)))
         {
             finish_pending_recovery!();
         }
@@ -10000,10 +10020,14 @@ fn run_worker(
                 .as_ref()
                 .is_some_and(|(pending, _)| pending == kind)
         });
-        if pending_recovery_outcome.is_some() && stage_recovery.is_none() {
+        if pending_recovery_outcome.is_some()
+            && stage_recovery.is_none()
+            && !seek_during_locator_recovery
+        {
             finish_pending_recovery!();
         }
         if stage_recovery.is_none()
+            && !seek_during_locator_recovery
             && let Some(untitled_path) = recovery.as_deref()
         {
             let journal_result = if let Some(kind) = eligible {
@@ -10392,7 +10416,9 @@ fn run_worker(
             active_tuning_gesture: tuning_gesture.snapshot(),
             tuning_library,
         });
-        if let Some(kind) = stage_recovery {
+        if seek_during_locator_recovery {
+            pending_locator_seek_outcome = Some(outcome);
+        } else if let Some(kind) = stage_recovery {
             // Acknowledge this committed source before waiting for the older
             // checkpoint, while retaining both ordered terminals on control.
             let previous = pending_recovery_outcome

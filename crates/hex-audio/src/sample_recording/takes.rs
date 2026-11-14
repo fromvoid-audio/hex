@@ -84,7 +84,11 @@ pub fn write_takes(mut reader: Reader, directory: &Path) -> io::Result<Takes> {
                     bytes[..4].copy_from_slice(&frame[0].to_le_bytes());
                     bytes[4..].copy_from_slice(&frame[1].to_le_bytes());
                 }
-                if let Err(error) = file.write_all(&encoded[..frames * 8]) {
+                #[cfg(all(test, target_os = "macos", target_arch = "aarch64"))]
+                let result = write_fault::packet(file, layer, written, &encoded[..frames * 8]);
+                #[cfg(not(all(test, target_os = "macos", target_arch = "aarch64")))]
+                let result = file.write_all(&encoded[..frames * 8]);
+                if let Err(error) = result {
                     write_error = Some(error);
                     return;
                 }
@@ -133,6 +137,37 @@ pub fn write_takes(mut reader: Reader, directory: &Path) -> io::Result<Takes> {
         end,
         write_error,
     })
+}
+
+// The fault is armed on the recording worker, never on the audio callback.
+#[cfg(all(test, target_os = "macos", target_arch = "aarch64"))]
+pub(super) mod write_fault {
+    use std::{
+        cell::Cell,
+        fs::File,
+        io::{self, Write},
+    };
+
+    thread_local! { static ARMED: Cell<bool> = const { Cell::new(false) }; }
+
+    pub(in crate::sample_recording) fn arm() {
+        ARMED.with(|armed| armed.set(true));
+    }
+
+    pub(super) fn packet(
+        file: &mut File,
+        layer: usize,
+        written: u64,
+        bytes: &[u8],
+    ) -> io::Result<()> {
+        if layer == 1 && written == 64 && ARMED.with(|armed| armed.replace(false)) {
+            file.write_all(&bytes[..bytes.len() / 2])?;
+            return Err(io::Error::from_raw_os_error(
+                rustix::io::Errno::NOSPC.raw_os_error(),
+            ));
+        }
+        file.write_all(bytes)
+    }
 }
 
 fn write_header(file: &mut File, rate: u32, frames: u64) -> io::Result<()> {

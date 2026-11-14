@@ -593,6 +593,8 @@ fn write_wav(
     renderer: &mut impl BlockRenderer,
     encoding: ExportFormat,
 ) -> Result<u64, ExportError> {
+    #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+    let file = write_fault::Writer::new(file);
     let mut writer = BufWriter::with_capacity(IO_BUFFER_BYTES, file);
     write_header_encoded(&mut writer, sample_rate, data_bytes, byte_rate, encoding)?;
     let mut clipped = 0_u64;
@@ -631,6 +633,66 @@ fn write_wav(
             source,
         })?;
     Ok(clipped)
+}
+
+// Simulate an underlying staged-file write failure, including a partial write,
+// without filling a real user volume. Production always uses the File directly.
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+mod write_fault {
+    use std::{
+        cell::Cell,
+        fs::File,
+        io::{self, Write},
+    };
+
+    thread_local! { static LIMIT: Cell<Option<usize>> = const { Cell::new(None) }; }
+
+    pub(super) struct Guard;
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            LIMIT.with(|limit| limit.set(None));
+        }
+    }
+    pub(super) fn after(bytes: usize) -> Guard {
+        LIMIT.with(|limit| limit.set(Some(bytes)));
+        Guard
+    }
+    pub(super) struct Writer {
+        file: File,
+        remaining: Option<usize>,
+    }
+    impl Writer {
+        pub(super) fn new(file: File) -> Self {
+            Self {
+                file,
+                remaining: LIMIT.with(Cell::get),
+            }
+        }
+        pub(super) fn sync_all(&self) -> io::Result<()> {
+            self.file.sync_all()
+        }
+    }
+    impl Write for Writer {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            let count = match self.remaining {
+                Some(0) => {
+                    return Err(io::Error::from_raw_os_error(
+                        rustix::io::Errno::NOSPC.raw_os_error(),
+                    ));
+                }
+                Some(remaining) => bytes.len().min(remaining),
+                None => bytes.len(),
+            };
+            let written = self.file.write(&bytes[..count])?;
+            if let Some(remaining) = &mut self.remaining {
+                *remaining -= written;
+            }
+            Ok(written)
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            self.file.flush()
+        }
+    }
 }
 
 fn write_all(
@@ -1073,6 +1135,50 @@ mod tests {
         ));
         assert!(!path.exists());
         assert_eq!(fs::read_dir(&dir.0).expect("list directory").count(), 0);
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn full_disk_during_staged_wav_write_preserves_existing_files() {
+        struct Constant;
+        impl BlockRenderer for Constant {
+            fn render_block(&mut self, frames: &mut [Frame]) -> Result<(), ExportError> {
+                frames.fill([0.5, -0.5]);
+                Ok(())
+            }
+        }
+        for replace in [false, true] {
+            for (frames, limit, operation) in [
+                (2, 0, "flush the temporary wav"),
+                (5_000, 3_000, "write samples"),
+            ] {
+                let dir = TestDir::new();
+                let path = dir.0.join("output.wav");
+                let project_path = dir.0.join("project.hex");
+                fs::write(&project_path, b"original project").unwrap();
+                if replace {
+                    fs::write(&path, b"original wav").unwrap();
+                }
+                let consent = Publication::confirmed_save(&path).unwrap();
+                let _fault = write_fault::after(limit);
+                let error =
+                    publish(&path, 48_000, 0, frames, &consent, || Ok(Constant)).unwrap_err();
+                assert!(
+                    matches!(error, ExportError::Io { operation: actual, source }
+                    if actual == operation && source.raw_os_error() == Some(rustix::io::Errno::NOSPC.raw_os_error()))
+                );
+                assert_eq!(fs::read(project_path).unwrap(), b"original project");
+                if replace {
+                    assert_eq!(fs::read(&path).unwrap(), b"original wav");
+                } else {
+                    assert!(!path.exists());
+                }
+                assert_eq!(
+                    fs::read_dir(&dir.0).unwrap().count(),
+                    1 + usize::from(replace)
+                );
+            }
+        }
     }
 
     #[test]
