@@ -6,6 +6,13 @@
 use super::*;
 use crate::compensation::{OriginWindow, TransportStamp};
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum ResidentRoute {
+    Scalar,
+    Passthrough,
+    Unity,
+}
+
 #[derive(Clone, Copy)]
 pub(super) struct BatchedSources<'a> {
     pub(super) index: usize,
@@ -13,7 +20,7 @@ pub(super) struct BatchedSources<'a> {
     pub(super) analytic: &'a [bool; MAX_TRACKS],
     pub(super) stamps: Option<&'a [Option<TransportStamp>]>,
     pub(super) aligned: &'a [bool; MAX_TRACKS],
-    pub(super) passthrough: &'a [bool; MAX_TRACKS],
+    pub(super) passthrough: &'a [ResidentRoute; MAX_TRACKS],
 }
 
 impl SessionPlayback {
@@ -22,9 +29,9 @@ impl SessionPlayback {
     pub(super) fn classify_resident_return_tracks(
         &self,
         eligible: &[bool; MAX_TRACKS],
-        passthrough: &mut [bool; MAX_TRACKS],
+        passthrough: &mut [ResidentRoute; MAX_TRACKS],
     ) {
-        passthrough.fill(false);
+        passthrough.fill(ResidentRoute::Scalar);
         if !self.release_scratch.is_empty() {
             return;
         }
@@ -53,7 +60,66 @@ impl SessionPlayback {
             {
                 continue;
             }
-            *done = true;
+            *done = ResidentRoute::Passthrough;
+        }
+    }
+    /// Batch only a stationary unity fader whose post-fader samples retain
+    /// each tap's magnitude. Publishing both taps still happens per frame.
+    pub(super) fn prepare_unity_faders(
+        &mut self,
+        frames: usize,
+        passthrough: &mut [ResidentRoute; MAX_TRACKS],
+        aligned: &[bool; MAX_TRACKS],
+    ) {
+        for index in 0..self.route_scratch.len() {
+            if passthrough[index] != ResidentRoute::Passthrough || aligned[index] {
+                continue;
+            }
+            let fader = self.track_fader_scratch[index];
+            if fader.active() || fader.current() != [1.0; 2] {
+                continue;
+            }
+            let track = &self.revision.arrangement().tracks()[index];
+            if track.instrument_input_gain != 1.0
+                || track.instrument_output_gain != 1.0
+                || track.mix().with_channel_gain(fader.current())
+                    != crate::PreparedTrackMix::identity()
+            {
+                continue;
+            }
+            let start = self.render_work.track(index);
+            // Validate both taps before rewriting any sample. This protects
+            // against unusual floating-point modes that change subnormals.
+            let equivalent = |a: f32, b: f32| {
+                if a.is_finite() && b.is_finite() {
+                    a.abs().to_bits() == b.abs().to_bits()
+                } else {
+                    !a.is_finite() && !b.is_finite()
+                }
+            };
+            if !self.resident_source_scratch[index][..frames]
+                .iter()
+                .flatten()
+                .all(|sample| {
+                    let first = *sample + 0.0;
+                    let second = first + 0.0;
+                    let mixed = second * 1.0;
+                    equivalent(second, mixed) && equivalent(first * 1.0, mixed * 1.0)
+                })
+            {
+                self.render_work.finish(start);
+                continue;
+            }
+            for frame in &mut self.resident_source_scratch[index][..frames] {
+                frame[0] += 0.0;
+                frame[1] += 0.0;
+                frame[0] += 0.0;
+                frame[1] += 0.0;
+                frame[0] *= 1.0;
+                frame[1] *= 1.0;
+            }
+            self.render_work.finish(start);
+            passthrough[index] = ResidentRoute::Unity;
         }
     }
     /// Prepare resident audio and eligible analytic MIDI. A shared receiver uses
@@ -660,29 +726,37 @@ impl SessionPlayback {
                         continue;
                     }
                     let work_start = self.render_work.track(index);
-                    let mixed = if let Some(batch) =
-                        resident_source.filter(|batch| batch.passthrough[index])
+                    let mixed = if let Some(batch) = resident_source
+                        .filter(|batch| batch.passthrough[index] != ResidentRoute::Scalar)
                     {
                         let mut frame = self.resident_source_scratch[index][batch.index];
-                        frame[0] += 0.0;
-                        frame[1] += 0.0;
-                        track.apply_instrument_input_gain(std::slice::from_mut(&mut frame));
-                        if self.device_metering {
-                            track.instrument_meter.observe_input(&[frame]);
+                        if batch.passthrough[index] == ResidentRoute::Unity {
+                            if self.device_metering {
+                                track.instrument_meter.observe_input(&[frame]);
+                                track.instrument_meter.observe_output(&[frame]);
+                            }
+                            frame
+                        } else {
+                            frame[0] += 0.0;
+                            frame[1] += 0.0;
+                            track.apply_instrument_input_gain(std::slice::from_mut(&mut frame));
+                            if self.device_metering {
+                                track.instrument_meter.observe_input(&[frame]);
+                            }
+                            frame[0] += 0.0;
+                            frame[1] += 0.0;
+                            track.apply_instrument_output_gain(std::slice::from_mut(&mut frame));
+                            if self.device_metering {
+                                track.instrument_meter.observe_output(&[frame]);
+                            }
+                            // The current stamp was just pushed. Admission proves
+                            // zero fader arrival, no gain automation and no group
+                            // mute, so its mix is exactly the static track mix.
+                            track
+                                .mix()
+                                .with_channel_gain(self.track_fader_scratch[index].next())
+                                .apply_frame(frame)
                         }
-                        frame[0] += 0.0;
-                        frame[1] += 0.0;
-                        track.apply_instrument_output_gain(std::slice::from_mut(&mut frame));
-                        if self.device_metering {
-                            track.instrument_meter.observe_output(&[frame]);
-                        }
-                        // The current stamp was just pushed. Admission proves
-                        // zero fader arrival, no gain automation and no group
-                        // mute, so its mix is exactly the static track mix.
-                        track
-                            .mix()
-                            .with_channel_gain(self.track_fader_scratch[index].next())
-                            .apply_frame(frame)
                     } else {
                         let mut audio = [[0.0; 2]];
                         let mut generator = [[0.0; 2]];
@@ -1222,6 +1296,173 @@ impl SessionPlayback {
 mod tests {
     use super::*;
     use crate::signal_graph::tests::fixture;
+
+    #[test]
+    fn unity_batch_preserves_each_meter_tap_and_refuses_active_faders() {
+        let f = fixture(&[&[]], 8);
+        let revision = Arc::new(
+            PreparedRevision::prepare(
+                f.editor.project(),
+                &f.media,
+                Arc::new(crate::SineTable::new()),
+                None,
+            )
+            .unwrap(),
+        );
+        let mut runtime = SessionPlayback::new(revision).unwrap();
+        runtime.resident_source_scratch = vec![[[0.0; 2]; 256]];
+        runtime.track_fader_scratch[0] =
+            crate::session_playback::track_fader::TrackFader::new([1.0; 2]);
+        let input = [
+            [-0.0, 0.0],
+            [f32::from_bits(1), -f32::from_bits(1)],
+            [0.75, -0.25],
+            [f32::INFINITY, f32::NAN],
+        ];
+        runtime.resident_source_scratch[0][..input.len()].copy_from_slice(&input);
+        let mut routes = [ResidentRoute::Scalar; MAX_TRACKS];
+        routes[0] = ResidentRoute::Passthrough;
+        let aligned = [false; MAX_TRACKS];
+        runtime.prepare_unity_faders(input.len(), &mut routes, &aligned);
+        assert!(routes[0] == ResidentRoute::Unity);
+        let actual = hex_lattice::DeviceMeter::default();
+        let expected = hex_lattice::DeviceMeter::default();
+        for (original, batched) in input.into_iter().zip(runtime.resident_source_scratch[0]) {
+            let first = original.map(|sample| sample + 0.0);
+            let second = first.map(|sample| sample + 0.0);
+            expected.observe_input(&[first]);
+            actual.observe_input(&[batched]);
+            // The display can drain between the input and output publications.
+            assert_eq!(actual.take_peaks(), expected.take_peaks());
+            expected.observe_output(&[second]);
+            actual.observe_output(&[batched]);
+            assert_eq!(actual.take_peaks(), expected.take_peaks());
+        }
+        runtime.track_fader_scratch[0].retarget([0.5; 2], 48_000);
+        runtime.resident_source_scratch[0][0] = [-0.25, 0.5];
+        routes[0] = ResidentRoute::Passthrough;
+        runtime.prepare_unity_faders(1, &mut routes, &aligned);
+        assert!(routes[0] == ResidentRoute::Passthrough);
+        assert_eq!(runtime.resident_source_scratch[0][0], [-0.25, 0.5]);
+    }
+
+    #[test]
+    fn unity_return_capture_and_refusal_preserve_pcm_and_transaction() {
+        use crate::session_playback::capture::{OutputCapture, OutputCaptureId};
+        use hex_lattice_contract::NativeDeviceMetadata;
+        use hex_project::{Command, Created};
+
+        struct RefuseAfter(TrackId, bool);
+        impl CaptureSink for RefuseAfter {
+            fn selects(&self, id: OutputCaptureId) -> bool {
+                id == OutputCaptureId::Track(self.0)
+            }
+            fn add(
+                &mut self,
+                id: OutputCaptureId,
+                offset: usize,
+                _: &[Frame],
+            ) -> Result<(), SessionPlaybackError> {
+                if self.selects(id) && offset == 13 {
+                    Err(SessionPlaybackError::DeviceRuntime)
+                } else {
+                    Ok(())
+                }
+            }
+            fn invalidate(&mut self) {
+                self.1 = true;
+            }
+        }
+
+        let mut f = fixture(&[&[]], 1024);
+        let track = f.tracks[0];
+        let Created::ReturnTrack(bus) = f
+            .editor
+            .execute(Command::AddReturnTrack {
+                name: "return".into(),
+            })
+            .unwrap()
+        else {
+            panic!("return fixture")
+        };
+        f.editor
+            .execute(Command::InsertReturnDevice {
+                return_track: bus,
+                before: None,
+                state: hex_devices::limiter::DEFINITION.default_state().unwrap(),
+            })
+            .unwrap();
+        f.editor
+            .execute(Command::SetReturnSend {
+                track,
+                return_track: bus,
+                gain: 0.5,
+            })
+            .unwrap();
+        let revision = Arc::new(
+            PreparedRevision::prepare(
+                f.editor.project(),
+                &f.media,
+                Arc::new(crate::SineTable::new()),
+                None,
+            )
+            .unwrap(),
+        );
+        let mut actual =
+            SessionPlayback::new_linear_arrangement_export(Arc::clone(&revision)).unwrap();
+        let mut scalar = SessionPlayback::new_linear_arrangement_export(revision).unwrap();
+        scalar.resident_source_scratch.clear();
+        for runtime in [&mut actual, &mut scalar] {
+            runtime.set_device_metering(true);
+            runtime.apply(SessionPlaybackCommand::Play).unwrap();
+        }
+        let ids = [OutputCaptureId::Track(track), OutputCaptureId::Return(bus)];
+        let actual_plan = actual.output_capture_plan(&ids, 256).unwrap();
+        let scalar_plan = scalar.output_capture_plan(&ids, 256).unwrap();
+        let capture =
+            |runtime: &mut SessionPlayback,
+             plan: &crate::session_playback::capture::OutputCapturePlan| {
+                let mut main = [[0.0; 2]; 256];
+                let mut track_frames = [[0.0; 2]; 256];
+                let mut return_frames = [[0.0; 2]; 256];
+                let mut buffers = [&mut track_frames[..], &mut return_frames[..]];
+                let mut captured = OutputCapture::new(plan, &mut buffers);
+                runtime
+                    .render_with_capture(&mut main, &mut captured)
+                    .unwrap();
+                assert_eq!(captured.valid_frames(), 256);
+                (main, track_frames, return_frames)
+            };
+        let expected = capture(&mut scalar, &scalar_plan);
+        let captured = capture(&mut actual, &actual_plan);
+        assert_eq!(captured, expected);
+        assert!(captured.1.iter().flatten().any(|sample| *sample != 0.0));
+        assert!(captured.2.iter().flatten().any(|sample| *sample != 0.0));
+
+        let position = (actual.performance_frame(), actual.arrangement_frame());
+        let mut refused_output = [[9.0; 2]; 256];
+        let mut refusal = RefuseAfter(track, false);
+        assert_eq!(
+            actual.render_internal::<dyn MediaPages>(
+                &mut refused_output,
+                None,
+                None,
+                Some(&mut refusal),
+                None
+            ),
+            Err(SessionPlaybackError::DeviceRuntime),
+        );
+        assert!(refusal.1);
+        assert_eq!(refused_output, [[0.0; 2]; 256]);
+        assert_eq!(
+            (actual.performance_frame(), actual.arrangement_frame()),
+            position
+        );
+        assert_eq!(
+            capture(&mut actual, &actual_plan),
+            capture(&mut scalar, &scalar_plan)
+        );
+    }
 
     #[test]
     fn compensated_clock_keeps_meter_and_cycle_across_the_actual_loop_wrap() {

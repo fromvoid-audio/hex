@@ -815,7 +815,7 @@ impl SessionPlayback {
         let mut resident_source_eligible = [false; MAX_TRACKS];
         let mut resident_analytic_eligible = [false; MAX_TRACKS];
         let mut aligned = [false; MAX_TRACKS];
-        let mut passthrough = [false; MAX_TRACKS];
+        let mut passthrough = [compensated::ResidentRoute::Scalar; MAX_TRACKS];
         let mut stamps = [None; 256];
         let mut projected_history = None;
 
@@ -914,7 +914,7 @@ impl SessionPlayback {
                     projected_history.map(|frames| (&stamps[..count], frames)),
                     &mut aligned,
                 )?;
-                passthrough.fill(false);
+                passthrough.fill(compensated::ResidentRoute::Scalar);
                 if observer.is_none()
                     && scalar.is_none()
                     && self
@@ -934,6 +934,7 @@ impl SessionPlayback {
                         &mut passthrough,
                     );
                 }
+                self.prepare_unity_faders(count, &mut passthrough, &aligned);
                 resident_source_index = 0;
                 resident_source_end = count;
             }
