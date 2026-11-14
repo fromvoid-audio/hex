@@ -4911,18 +4911,42 @@ impl SessionPlayback {
                 }
                 _ => false,
             };
+        // A flat, zero-arrival pre-Main graph gives a retained Return tail
+        // the same clock as the Main input. The old tail is mixed directly
+        // into Main, so it must not have any downstream Return or track feeds.
+        let return_tails_aligned = || {
+            !timing_changed
+                && old_loop == new_loop
+                && previous
+                    .compensation
+                    .as_ref()
+                    .is_some_and(|runtime| runtime.delays.history_ready())
+                && self.revision.arrangement().main_latency_frames()
+                    == previous.revision.arrangement().main_latency_frames()
+                && old_graph.zip(new_graph).is_some_and(|(old, new)| {
+                    [old, new].into_iter().all(|graph| {
+                        graph.main_input_arrival() == 0
+                            && !graph.needs_upstream_frame_routing()
+                            && graph
+                                .returns
+                                .iter()
+                                .all(|bus| bus.feeds.is_empty() && bus.audio_feeds.is_empty())
+                    })
+                })
+        };
         if (self.revision.arrangement().main_latency_frames() > 0
             || previous.revision.arrangement().main_latency_frames() > 0)
-            && (return_tail_plan.captures_bus()
-                || old_track_mutable_tail_slots.iter().any(Option::is_some)
+            && (old_track_mutable_tail_slots.iter().any(Option::is_some)
                 || !detached_tails_aligned
                 || (needs_prior_tail_proof && !proven_prior_tails)
-                || previous
-                    .return_effect_tails
-                    .slots()
-                    .iter()
-                    .flatten()
-                    .any(|tail| tail.output_active && tail.return_id().is_some()))
+                || ((return_tail_plan.captures_bus()
+                    || previous
+                        .return_effect_tails
+                        .slots()
+                        .iter()
+                        .flatten()
+                        .any(|tail| tail.output_active && tail.return_id().is_some()))
+                    && !return_tails_aligned()))
         {
             return Err(SessionPlaybackError::Arrangement(COMPENSATED_TAILS_CHANGED));
         }
