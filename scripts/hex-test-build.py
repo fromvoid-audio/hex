@@ -102,8 +102,10 @@ def require_delivery_source(root: Path) -> None:
         raise DeliveryError("delivery source mismatch: executed delivery differs from candidate source")
 
 
-def run(argv: list[str], root: Path = ROOT) -> str:
+def run(argv: list[str], root: Path = ROOT, *, env: dict[str, str] | None = None) -> str:
     bounded = {"timeout": 30} if __name__ == "hex_update_runtime" else {}
+    if env is not None:
+        bounded["env"] = env
     return subprocess.run(argv, cwd=root, check=True, capture_output=True, text=True, **bounded).stdout.strip()
 
 
@@ -1014,7 +1016,8 @@ def validate_ci(report: Path, runner, candidate: str, *, allow_dev_profile: bool
         if (plan.get("profile") not in {"merge", "full", "release"}
                 or not plan.get("qualifies_merge") or plan.get("source") != candidate):
             raise DeliveryError("invalid scoped verification plan")
-        metadata = json.loads(run(["cargo", "metadata", "--no-deps", "--format-version", "1", "--locked"], runner.root))
+        metadata = json.loads(run(["cargo", "metadata", "--no-deps", "--format-version", "1", "--locked"],
+                                  runner.root, env=runner.env))
         _require_delivery_sources(runner)
         resolved = ci.ci_plan.resolve(runner.root, profile=plan["profile"], base=plan["base"], source=candidate,
                                       metadata=metadata, allow_same_tree_merge=True)
@@ -1190,7 +1193,8 @@ def build(args) -> dict:
                                 expected_owner_sha256=getattr(args, "expected_release_owner_sha256", None),
                                 verification_check=revalidate,
                                 **recovery) as (binary, release_ownership):
-            metadata = json.loads(run(["cargo", "metadata", "--no-deps", "--format-version", "1", "--locked"]))
+            metadata = json.loads(run(["cargo", "metadata", "--no-deps", "--format-version", "1", "--locked"],
+                                      runner.root, env=runner.env))
             version = next(package["version"] for package in metadata["packages"] if package["name"] == "hex-desktop")
             argv = release_ownership["build_argv"]
             revalidate()
