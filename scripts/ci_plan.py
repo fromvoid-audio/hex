@@ -114,7 +114,10 @@ def cargo_inventory(metadata: dict, root: Path) -> list[dict]:
         targets = []
         for target in package["targets"]:
             entry = {key: target[key] for key in ("name", "kind", "required-features") if key in target}
-            if package["name"] == "hex-ui" and target.get("kind") == ["test"] and target.get("src_path"):
+            reviewed_test_path = (package["name"] == "hex-ui" or
+                                  (package["name"] == "hex-session" and
+                                   target.get("name") == "automation_take_density"))
+            if reviewed_test_path and target.get("kind") == ["test"] and target.get("src_path"):
                 source = Path(target["src_path"]).resolve()
                 if source.is_relative_to(manifest_path.parent):
                     entry["src_path"] = source.relative_to(manifest_path.parent).as_posix()
