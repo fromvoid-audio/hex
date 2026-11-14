@@ -1060,7 +1060,7 @@ impl SessionPlayback {
                             None
                         };
                         let mix = compensation.fader_mix(track, index, live_gain);
-                        let mixed = if let Some(mix) = mix {
+                        if let Some(mix) = mix {
                             let fader = &mut self.track_fader_scratch[index];
                             let mix = if track.has_gain_automation() || override_gain.is_some() {
                                 fader.follow(mix.channel_gain());
@@ -1071,8 +1071,7 @@ impl SessionPlayback {
                             mix.apply_frame(processed)
                         } else {
                             [0.0; 2]
-                        };
-                        mixed
+                        }
                     };
                     let compensation = self
                         .compensation

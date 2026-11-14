@@ -918,10 +918,10 @@ impl SessionPlayback {
                 if observer.is_none()
                     && capture.is_none()
                     && scalar.is_none()
-                    && !self
+                    && self
                         .native_parameter_state
                         .as_deref()
-                        .is_some_and(|state| state.processing.is_some())
+                        .is_none_or(|state| state.processing.is_none())
                     && !self.tail_output_scratch.iter().any(|active| *active)
                     && !self
                         .return_effect_tails
