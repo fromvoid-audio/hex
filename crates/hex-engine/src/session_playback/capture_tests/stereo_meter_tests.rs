@@ -12,6 +12,29 @@ fn resident_return_mix_matches_observer_fallback_across_loop_and_partitions() {
         )
         .unwrap();
         let mut editor = Editor::new(Project::from_snapshot(snapshot).unwrap(), 4).unwrap();
+        let track = editor.project().tracks()[0].id();
+        let asset = editor.project().assets().next().unwrap().id();
+        let Created::Scene(scene) = editor
+            .execute(Command::AddScene {
+                name: "scene".into(),
+            })
+            .unwrap()
+        else {
+            panic!("scene expected");
+        };
+        let Created::SessionClip(clip) = editor
+            .execute(Command::CreateSessionAudioClip {
+                track,
+                scene,
+                name: "session".into(),
+                asset,
+                source_start: 0,
+                source_end: 32,
+            })
+            .unwrap()
+        else {
+            panic!("session clip expected");
+        };
         editor
             .execute(Command::SetLoopRegion {
                 start: 0,
@@ -27,12 +50,28 @@ fn resident_return_mix_matches_observer_fallback_across_loop_and_partitions() {
             actual.apply(SessionPlaybackCommand::Play).unwrap();
             reference.apply(SessionPlaybackCommand::Play).unwrap();
             let mut expected = [[0.0; 2]; 512];
-            reference
-                .render_with_post_node_observer(&mut expected, Some(&mut |_, _, _| {}))
-                .unwrap();
             let mut output = [[0.0; 2]; 512];
-            for chunk in output.chunks_mut(partition) {
-                actual.render(chunk).unwrap();
+            for (index, (actual_block, expected_block)) in output
+                .chunks_mut(256)
+                .zip(expected.chunks_mut(256))
+                .enumerate()
+            {
+                if index == 1 {
+                    for runtime in [&mut actual, &mut reference] {
+                        runtime
+                            .apply(SessionPlaybackCommand::LaunchClip {
+                                clip,
+                                quantization: LaunchQuantization::Immediate,
+                            })
+                            .unwrap();
+                    }
+                }
+                reference
+                    .render_with_post_node_observer(expected_block, Some(&mut |_, _, _| {}))
+                    .unwrap();
+                for chunk in actual_block.chunks_mut(partition) {
+                    actual.render(chunk).unwrap();
+                }
             }
             assert_eq!(output, expected, "muted={muted}, partition={partition}");
             assert_eq!(
