@@ -24,7 +24,20 @@ impl AudioCandidateReservationQuote {
         sources: usize,
     ) -> Result<Self, AudioStorageError> {
         crate::audio_preparation::validate_constructor_project(project)?;
-        Self::for_project_counts(project, sources, false)
+        Self::for_project_counts(project, sources, false, &[])
+    }
+    /// Quote an explicitly streamed candidate using matching raw and pitched
+    /// metadata. The constructor independently validates the actual source bank.
+    pub fn for_project_with_pitched_streams(
+        project: &hex_project::Project,
+        sources: usize,
+        streams: &[crate::StreamedSourceMetadata],
+    ) -> Result<Self, AudioStorageError> {
+        crate::audio_preparation::validate_constructor_project(project)?;
+        if streams.len() > sources {
+            return Err(AudioStorageError::Capacity);
+        }
+        Self::for_project_counts(project, sources, false, streams)
     }
     /// Caller sizing for the explicitly selected closed foreign-effect class.
     /// A registry or this quote never admits a native source or callback.
@@ -37,14 +50,22 @@ impl AudioCandidateReservationQuote {
             project,
             Some(effects),
         )?;
-        Self::for_project_counts(project, sources, true)
+        Self::for_project_counts(project, sources, true, &[])
     }
     fn for_project_counts(
         project: &hex_project::Project,
         sources: usize,
         effect_payloads: bool,
+        streams: &[crate::StreamedSourceMetadata],
     ) -> Result<Self, AudioStorageError> {
-        if sources > hex_project::MAX_ASSETS {
+        let max_sources = if streams.is_empty() {
+            hex_project::MAX_ASSETS
+        } else {
+            hex_project::MAX_ASSETS
+                .checked_add(hex_project::MAX_CLIPS)
+                .ok_or(AudioStorageError::Overflow)?
+        };
+        if sources > max_sources {
             return Err(AudioStorageError::Capacity);
         }
         let mut counts = Counts::default();
@@ -103,13 +124,38 @@ impl AudioCandidateReservationQuote {
             project.return_tracks().len(),
             sources,
         )?;
-        quote.prepared_pcm_frames =
-            crate::audio_preparation::transformed::prepared_pcm_frames(project)?;
+        let streamed_pitch = |clip: &hex_project::Clip| {
+            streams
+                .iter()
+                .find(|raw| raw.key().asset() == clip.asset() && raw.key().pitch().is_none())
+                .is_some_and(|raw| {
+                    streams.iter().any(|pitch| {
+                        crate::audio_preparation::transformed::matching_streamed_pitch(
+                            project, clip, raw, pitch,
+                        )
+                    })
+                })
+        };
+        quote.prepared_pcm_frames = if streams.is_empty() {
+            crate::audio_preparation::transformed::prepared_pcm_frames(project)?
+        } else {
+            crate::audio_preparation::transformed::prepared_pcm_frames_for(
+                project,
+                &streamed_pitch,
+            )?
+        };
         let pcm_bytes = usize::try_from(quote.prepared_pcm_frames)
             .ok()
             .and_then(|frames| frames.checked_mul(std::mem::size_of::<crate::Frame>()))
             .ok_or(AudioStorageError::Overflow)?;
-        let (retained, workspace) = crate::audio_preparation::transformed_audio_quote(project)?;
+        let (retained, workspace) = if streams.is_empty() {
+            crate::audio_preparation::transformed_audio_quote(project)?
+        } else {
+            crate::audio_preparation::transformed::transformed_audio_quote_for(
+                project,
+                &streamed_pitch,
+            )?
+        };
         quote.metadata_data_bytes = quote
             .metadata_data_bytes
             .checked_add(
