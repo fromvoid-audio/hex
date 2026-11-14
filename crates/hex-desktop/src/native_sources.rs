@@ -311,6 +311,31 @@ impl DomainSources {
             .find(|member| member.metadata.key() == key)
             .map(|member| &member.metadata)
     }
+
+    /// Add only pitches required by this snapshot from the associated domain.
+    pub(super) fn add_required_pitches(
+        &self,
+        snapshot: &CanonicalAudioSourceSnapshot,
+        candidate: &mut hex_engine::AudioCandidatePreparation,
+    ) -> Result<(), hex_engine::AudioStorageError> {
+        use hex_engine::AudioStorageError;
+        let mut seen = std::collections::BTreeSet::new();
+        for (asset, file, cents, law) in snapshot.required_plain_pitch_sources() {
+            let expected = file
+                .source_metadata(asset, self.catalog_generation)
+                .and_then(|raw| raw.with_plain_pitch(cents, law))
+                .map_err(|_| AudioStorageError::SourceMismatch)?;
+            if !seen.insert(expected.key()) {
+                continue;
+            }
+            let metadata = self
+                .metadata_for(expected.key())
+                .filter(|actual| *actual == &expected)
+                .ok_or(AudioStorageError::SourceMismatch)?;
+            candidate.add_pitched_streamed_source_on_control(metadata.clone())?;
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -390,6 +415,98 @@ mod tests {
                 max_manifest_bytes: 4 * 1024 * 1024,
             }),
         }
+    }
+    #[test]
+    fn verified_candidate_collects_only_matching_distinct_pitch_sources() {
+        if !hex_engine::audio_storage_constructor_layout_supported() {
+            return;
+        }
+        let files = Files::new();
+        let service = Service::new(48000, 16, 0).unwrap();
+        let _ = next(&service);
+        run(&service, mode());
+        let imported = run(&service, Request::Import(files.wav("pitch.wav", 1000)));
+        let clip = imported.state.project.tracks()[0].clips()[0].id();
+        run(
+            &service,
+            Request::Edit(hex_project::Command::SetClipFades {
+                clip,
+                fade_in: 0,
+                fade_out: 0,
+            }),
+        );
+        let duplicate = run(
+            &service,
+            Request::Edit(hex_project::Command::DuplicateClip(clip)),
+        );
+        let other = duplicate.state.project.tracks()[0]
+            .clips()
+            .iter()
+            .find(|other| other.id() != clip)
+            .unwrap()
+            .id();
+        run(
+            &service,
+            Request::Edit(hex_project::Command::SetAudioClipPitch {
+                clip: other,
+                cents: 700,
+            }),
+        );
+        let edited = run(
+            &service,
+            Request::Edit(hex_project::Command::SetAudioClipPitch { clip, cents: 700 }),
+        );
+        let snapshot = edited.state.canonical_audio_source.as_ref().unwrap();
+        assert_eq!(snapshot.required_plain_pitch_sources().count(), 2);
+        let domain = DomainSources::capture(snapshot, 11).unwrap();
+        let quote = snapshot.candidate_reservation_quote().unwrap();
+        assert_eq!(quote.source_capacity, 2);
+        let mut incomplete = DomainSources::capture(snapshot, 11).unwrap();
+        incomplete
+            .members
+            .retain(|member| member.metadata.key().pitch().is_none());
+        let mut refused = hex_engine::AudioCandidatePreparation::try_new_on_control(
+            quote.source_capacity,
+            quote.storage_reservation(0).unwrap(),
+        )
+        .unwrap();
+        for (asset, _) in snapshot.required_sources() {
+            refused
+                .add_streamed_source_on_control(
+                    incomplete
+                        .metadata_for(hex_engine::StreamSourceKey::new(11, asset))
+                        .unwrap()
+                        .clone(),
+                )
+                .unwrap();
+        }
+        assert_eq!(
+            incomplete.add_required_pitches(snapshot, &mut refused),
+            Err(hex_engine::AudioStorageError::SourceMismatch)
+        );
+        refused.cleanup_on_control().unwrap();
+        let mut candidate = hex_engine::AudioCandidatePreparation::try_new_on_control(
+            quote.source_capacity,
+            quote.storage_reservation(0).unwrap(),
+        )
+        .unwrap();
+        for (asset, _) in snapshot.required_sources() {
+            candidate
+                .add_streamed_source_on_control(
+                    domain
+                        .metadata_for(hex_engine::StreamSourceKey::new(11, asset))
+                        .unwrap()
+                        .clone(),
+                )
+                .unwrap();
+        }
+        domain
+            .add_required_pitches(snapshot, &mut candidate)
+            .unwrap();
+        snapshot
+            .prepare_candidate_on_control(11, &mut candidate)
+            .unwrap();
+        candidate.cleanup_on_control().unwrap();
     }
     #[test]
     fn actual_worker_projection_reuses_undo_subset_but_never_relabels_new_generation_or_changed_bytes()
