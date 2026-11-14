@@ -18,6 +18,7 @@ pub struct StreamConfig {
     pub max_sources: usize,
     pub max_catalog_path_bytes: usize,
     pub max_manifest_bytes: usize,
+    /// Shared bound for conversion/filter tables and retained Re-Pitch maps.
     pub max_kernel_table_bytes: usize,
     pub max_reader_scratch_bytes: usize,
     pub source_scratch_frames: usize,
@@ -110,6 +111,11 @@ pub struct SourceDefinition {
     /// instead of re-hashing the file. When absent, or when the identity changed,
     /// it hashes the whole file and the fingerprint must still match.
     pub verified_manifest: Option<VerifiedWavManifest>,
+    pub(crate) repitch: Option<(
+        StreamedSourceMetadata,
+        hex_warp::TimeMap,
+        hex_warp::Resampler,
+    )>,
 }
 
 impl SourceDefinition {
@@ -124,7 +130,21 @@ impl SourceDefinition {
             metadata,
             reader_limits,
             verified_manifest: None,
+            repitch: None,
         }
+    }
+
+    /// Build a derived source from raw verified facts and its complete time map.
+    pub fn with_repitch(
+        mut self,
+        map: hex_warp::TimeMap,
+        law: hex_warp::Resampler,
+    ) -> Result<Self, hex_engine::Invalid> {
+        let raw = self.metadata.clone();
+        self.metadata = raw.with_repitch(&map, law)?;
+        self.key = self.metadata.key();
+        self.repitch = Some((raw, map, law));
+        Ok(self)
     }
 
     /// Reuse a manifest already captured, and accounted, by the caller's
@@ -253,11 +273,12 @@ pub struct CatalogFootprint {
     pub sources: usize,
     pub catalog_path_bytes: usize,
     pub manifest_bytes: usize,
+    /// Retained conversion/filter tables and Re-Pitch map allocations.
     pub kernel_table_bytes: usize,
     pub kernel_peak_bound_bytes: usize,
     pub verified_reader_scratch_bytes: usize,
     pub source_scratch_bytes: usize,
-    /// Worker-only intermediate project-rate PCM for pitched pages.
+    /// Worker-only intermediate project-rate PCM for pitch and Re-Pitch pages.
     pub pitch_scratch_bytes: usize,
 }
 

@@ -244,6 +244,12 @@ impl TimeMap {
         }
         Ok(())
     }
+    /// Retained allocation for worker memory accounting.
+    pub fn backing_bytes(&self) -> Option<usize> {
+        self.segments
+            .capacity()
+            .checked_mul(std::mem::size_of::<MapSegment>())
+    }
     pub fn segments(&self) -> &[MapSegment] {
         &self.segments
     }
