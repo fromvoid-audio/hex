@@ -122,6 +122,7 @@ constexpr int authored_instrument_variant=145, held_instrument_variant=146;
 // integration. It permits live-worker zero-frame flushes while transport is idle.
 constexpr int touched_automation_variant=147;
 constexpr int stopped_editor_echo_variant=150;
+constexpr int stopped_bus_refusal_effect=151, stopped_bus_refusal_instrument=152;
 static bool held_parameter_input(int variant) {
     return variant==144 || variant==held_instrument_variant || grouped_editor(variant);
 }
@@ -524,7 +525,8 @@ class ProcessingProcessor final : public Processor,public IAudioPresentationLate
     const bool multiple_outputs=fault>=128 && fault<=130;
     const bool silent_input=fault==120 || fault==136;
     const bool midi_instrument=fault==115 || silent_input || fault==127 || multiple_outputs ||
-        fault==authored_instrument_variant || fault==held_instrument_variant || fault==grouped_instrument_variant;
+        fault==authored_instrument_variant || fault==held_instrument_variant || fault==grouped_instrument_variant ||
+        fault==stopped_bus_refusal_instrument;
     const bool live_preset=fault==127 && std::getenv("HEX_ORIGINAL_INSTRUMENT_LIVE_PRESET");
     const int mode=midi_instrument?1:next_mode;
     bool initialized=false, arranged=false, setup=false, active=false;
@@ -809,6 +811,7 @@ public:
             return kResultOk;
         }
         if (!control() || !setup || active || processing || index || !getBusCount(media,direction)) return kResultFalse;
+        if (!enabled && (fault==stopped_bus_refusal_effect || fault==stopped_bus_refusal_instrument)) return kResultFalse;
         if (media==kEvent) { event_active=enabled;return kResultOk; }
         ++observed.activations;
         if (enabled && fault==7) return kResultFalse;
@@ -1177,7 +1180,7 @@ extern "C" __attribute__((visibility("default"))) bool bundleEntry(CFBundleRef) 
     if (selected) {
         const auto length=std::strlen(selected);if (!length || length>3) return false;
         int value=0;for (size_t n=0;n<length;++n) { if (selected[n]<'0' || selected[n]>'9') return false;value=value*10+selected[n]-'0'; }
-        if (value>stopped_editor_echo_variant) return false;next_fault=value;
+        if (value>stopped_bus_refusal_instrument) return false;next_fault=value;
     }
     if(!module_event('E')) return false;
     trace(1,0);
