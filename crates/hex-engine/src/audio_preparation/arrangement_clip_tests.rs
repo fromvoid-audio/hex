@@ -54,6 +54,187 @@ fn begin(
 }
 
 #[test]
+fn repitch_owner_binds_trimmed_arrangement_without_resident_pcm() {
+    if !super::session_source_tests::supported("arrangement_repitch_bank") {
+        return;
+    }
+    use hex_project::{Command, Created, Editor, Project, WarpMode, default_audio_warp};
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+    let Created::Imported { clip, asset, .. } = editor
+        .execute(Command::ImportAudioTrack {
+            name: "warp".into(),
+            path: "warp.wav".into(),
+            sample_rate: 48_000,
+            frames: 8_000,
+        })
+        .unwrap()
+    else {
+        panic!("fixture")
+    };
+    editor
+        .execute(Command::SetClipFades {
+            clip,
+            fade_in: 0,
+            fade_out: 0,
+        })
+        .unwrap();
+    let warp = default_audio_warp(
+        editor.project().clip(clip).unwrap(),
+        editor.project().tempo_map(),
+        WarpMode::RePitch,
+    )
+    .unwrap();
+    editor
+        .execute(Command::SetAudioClipWarp {
+            clip,
+            settings: Some(warp),
+        })
+        .unwrap();
+    editor
+        .execute(Command::TrimClipEdge {
+            clip,
+            edge: hex_project::TrimEdge::Left,
+            frame: 1_000,
+        })
+        .unwrap();
+    let project = editor.project();
+    let edit = project.clip(clip).unwrap().audio_edit().unwrap();
+    let (_, _, view_start, view_end) = edit.projected_domain(project.tempo_map()).unwrap();
+    let raw = crate::StreamedSourceMetadata::new(
+        crate::StreamSourceKey::new(11, asset),
+        48_000,
+        48_000,
+        8_000,
+        8_000,
+        hex_project::IDENTITY_CONVERSION,
+        [7; 32],
+    )
+    .unwrap();
+    let (map, law) = crate::audio_transform::streamed_repitch_map(
+        edit,
+        project.tempo_map(),
+        8_000,
+        &std::sync::atomic::AtomicBool::new(false),
+    )
+    .unwrap();
+    let derived = raw.with_repitch(&map, law).unwrap();
+    let quote = crate::AudioCandidateReservationQuote::for_project_with_pitched_streams(
+        project,
+        2,
+        &[raw.clone(), derived.clone()],
+    )
+    .unwrap();
+    assert_eq!(quote.prepared_pcm_frames, 0);
+    assert!(
+        quote.compiler_workspace_bytes
+            >= crate::audio_transform::native_metadata_workspace_bytes().unwrap()
+    );
+    let mut candidate = crate::AudioCandidatePreparation::try_new_on_control(
+        2,
+        quote.storage_reservation(4096).unwrap(),
+    )
+    .unwrap();
+    candidate
+        .add_streamed_source_on_control(raw.clone())
+        .unwrap();
+    candidate
+        .add_repitch_streamed_source_on_control(derived.clone())
+        .unwrap();
+    candidate
+        .prepare_on_control(
+            project,
+            11,
+            AudioSourceContext {
+                project_generation: 2,
+                editor_revision: 8,
+            },
+        )
+        .unwrap();
+    assert_eq!(candidate.resident_pcm_capacity_frames().unwrap(), 0);
+    candidate.cleanup_on_control().unwrap();
+    let wrong_map = hex_warp::TimeMap::new(
+        vec![
+            hex_warp::MapSegment {
+                output_start: 0,
+                output_end: 4_000,
+                source_start_q32: 0,
+                source_end_q32: 3_000_i128 << 32,
+            },
+            hex_warp::MapSegment {
+                output_start: 4_000,
+                output_end: 8_000,
+                source_start_q32: 3_000_i128 << 32,
+                source_end_q32: 8_000_i128 << 32,
+            },
+        ],
+        8_000,
+    )
+    .unwrap();
+    let wrong = raw.with_repitch(&wrong_map, law).unwrap();
+    let wrong_quote = crate::AudioCandidateReservationQuote::for_project_with_pitched_streams(
+        project,
+        2,
+        &[raw.clone(), wrong.clone()],
+    )
+    .unwrap();
+    assert!(wrong_quote.prepared_pcm_frames > 0);
+    let wrong_bank = OwnedAudioInputs::try_new_with_derived(
+        vec![
+            (
+                asset,
+                OwnedAudioSource::try_streamed(raw.clone()).ok().unwrap(),
+            ),
+            (
+                asset,
+                OwnedAudioSource::try_repitch_streamed(wrong).ok().unwrap(),
+            ),
+        ],
+        wrong_quote.storage_reservation(4096).unwrap(),
+    )
+    .ok()
+    .unwrap();
+    let mut wrong_custody = AudioPreparationCustody::try_new_on_control().unwrap();
+    assert!(begin(&mut wrong_custody, project, wrong_bank).is_err());
+    let reservation = quote.storage_reservation(4096).unwrap();
+    let bank = OwnedAudioInputs::try_new_with_derived(
+        vec![
+            (
+                asset,
+                OwnedAudioSource::try_streamed(raw.clone()).ok().unwrap(),
+            ),
+            (
+                asset,
+                OwnedAudioSource::try_repitch_streamed(derived.clone())
+                    .ok()
+                    .unwrap(),
+            ),
+        ],
+        reservation,
+    )
+    .ok()
+    .unwrap();
+    let mut custody = AudioPreparationCustody::try_new_on_control().unwrap();
+    let token = begin(&mut custody, project, bank).ok().unwrap();
+    let compiled = custody.arrangement_clips.clips().next().unwrap();
+    assert_eq!(
+        compiled
+            .metadata
+            .as_ref()
+            .unwrap()
+            .streamed
+            .as_deref()
+            .unwrap(),
+        &derived
+    );
+    assert_eq!(compiled.source_offset as u64, view_start);
+    assert_eq!(compiled.source_length as u64, view_end - view_start);
+    assert_eq!(custody.resident_pcm_capacity_frames().unwrap(), 0);
+    assert!(custody.cancel(&token));
+    custody.cleanup_on_control();
+    assert!(custody.recover_on_control(&token).is_some());
+}
+
+#[test]
 fn long_plain_pitch_uses_its_verified_stream_and_keeps_raw_clip() {
     if !super::session_source_tests::supported("arrangement_long_pitch") {
         return;
