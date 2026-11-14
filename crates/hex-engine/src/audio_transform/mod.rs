@@ -117,23 +117,7 @@ pub fn streamed_repitch_map(
     cancel: &AtomicBool,
 ) -> Result<(hex_warp::TimeMap, hex_warp::Resampler), Invalid> {
     let domain = &edit.domain;
-    if source_frames == 0
-        || domain.source_offset != 0
-        || domain.source_length != source_frames
-        || domain.source_phase != 0
-        || domain.looping
-        || !domain.fade.is_neutral()
-        || domain.pitch_cents != 0
-        || !domain.source_gain.is_empty()
-        || domain.events.is_some()
-        || !domain.warp_enabled
-        || !domain
-            .warp
-            .as_ref()
-            .is_some_and(|warp| matches!(warp.mode, WarpMode::RePitch))
-        || edit.content_view.is_some()
-        || edit.placement.is_some()
-    {
+    if !edit.is_streamed_repitch_root() || domain.source_length != source_frames {
         return Err(Invalid(
             "streamed repitch requires an unlooped neutral full-source warp root",
         ));

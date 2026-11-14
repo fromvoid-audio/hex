@@ -958,6 +958,29 @@ impl AudioClipEdit {
             && self.domain.source_gain.is_empty()
     }
 
+    /// The full-source Re-Pitch root supported by bounded verified streaming.
+    /// This is a shape check only: callers must validate complete asset extent,
+    /// the projected map and actual file/page ownership independently.
+    pub fn is_streamed_repitch_root(&self) -> bool {
+        let domain = &self.domain;
+        domain.source_offset == 0
+            && domain.source_length > 0
+            && domain.source_length <= MAX_SPARSE_AUDIO_TIMELINE_FRAMES
+            && domain.source_phase == 0
+            && !domain.looping
+            && domain.fade.is_neutral()
+            && domain.pitch_cents == 0
+            && domain.source_gain.is_empty()
+            && domain.events.is_none()
+            && domain.warp_enabled
+            && domain
+                .warp
+                .as_ref()
+                .is_some_and(|warp| matches!(warp.mode, WarpMode::RePitch))
+            && self.content_view.is_none()
+            && self.placement.is_none()
+    }
+
     pub(crate) fn accepts_projected_extent(&self, length: u64, clip: &Clip) -> bool {
         if length <= MAX_AUDIO_DOMAIN_FRAMES {
             return true;
@@ -965,6 +988,7 @@ impl AudioClipEdit {
         length <= MAX_SPARSE_AUDIO_TIMELINE_FRAMES
             && (self.is_plain_reversed_capture(clip)
                 || self.is_plain_pitch_capture(clip)
+                || self.is_streamed_repitch_root()
                 || (self.plain_frame_event_root()
                     && self.domain.events.as_ref().is_some_and(|events| {
                         events
@@ -1139,6 +1163,12 @@ impl AudioClipEdit {
             && clip.source_length != asset_frames
         {
             return Err(Invalid("long pitch requires the complete audio source"));
+        }
+        if length > MAX_AUDIO_DOMAIN_FRAMES
+            && self.is_streamed_repitch_root()
+            && clip.source_length != asset_frames
+        {
+            return Err(Invalid("long repitch requires the complete audio source"));
         }
         if length == 0 || view_start >= view_end {
             return Err(EMPTY_DOMAIN_CROP);
