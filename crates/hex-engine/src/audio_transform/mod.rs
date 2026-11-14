@@ -131,6 +131,71 @@ pub fn streamed_repitch_map(
     Ok((map, render_resampler(domain)))
 }
 
+/// Immutable control-side file facts and canonical map for one streamed
+/// Re-Pitch source. This is not a worker, page lease or publication authority.
+#[derive(Clone)]
+pub struct StreamedRepitchRequirement {
+    inner: Arc<StreamedRepitchRequirementInner>,
+}
+struct StreamedRepitchRequirementInner {
+    raw: crate::StreamedSourceMetadata,
+    map: hex_warp::TimeMap,
+    law: hex_warp::Resampler,
+}
+impl StreamedRepitchRequirement {
+    pub fn new(
+        raw: &crate::StreamedSourceMetadata,
+        edit: &AudioClipEdit,
+        tempo: &hex_project::TempoMap,
+        cancel: &AtomicBool,
+    ) -> Result<Self, Invalid> {
+        if !raw.key().is_raw() || raw.project_rate() != tempo.sample_rate() {
+            return Err(Invalid(
+                "repitch requirement needs a raw source at the project rate",
+            ));
+        }
+        let (map, law) = streamed_repitch_map(edit, tempo, raw.playback_frames(), cancel)?;
+        Ok(Self {
+            inner: Arc::new(StreamedRepitchRequirementInner {
+                raw: raw.clone(),
+                map,
+                law,
+            }),
+        })
+    }
+    /// Derive a catalog-specific key only for the same verified file facts.
+    pub fn metadata_for(
+        &self,
+        raw: &crate::StreamedSourceMetadata,
+    ) -> Result<crate::StreamedSourceMetadata, Invalid> {
+        let expected = &self.inner.raw;
+        if !raw.key().is_raw()
+            || raw.key().asset() != expected.key().asset()
+            || raw.source_rate() != expected.source_rate()
+            || raw.project_rate() != expected.project_rate()
+            || raw.source_frames() != expected.source_frames()
+            || raw.playback_frames() != expected.playback_frames()
+            || raw.conversion_version() != expected.conversion_version()
+            || raw.fingerprint() != expected.fingerprint()
+        {
+            return Err(Invalid("repitch requirement source facts differ"));
+        }
+        raw.with_repitch(&self.inner.map, self.inner.law)
+    }
+    pub fn map(&self) -> &hex_warp::TimeMap {
+        &self.inner.map
+    }
+    pub fn law(&self) -> hex_warp::Resampler {
+        self.inner.law
+    }
+    /// Bytes retained by the shared map owner, excluding the caller's handle/vector.
+    pub fn retained_bytes(&self) -> Option<usize> {
+        std::mem::size_of::<StreamedRepitchRequirementInner>()
+            .checked_add(2 * std::mem::size_of::<usize>())?
+            .checked_add(self.inner.map.backing_bytes()?)
+    }
+}
+
 pub const MAX_CACHED_DERIVED_BYTES: usize = 256 * 1024 * 1024;
 pub const MAX_CACHED_TRANSFORMS: usize = 256;
 /// Maximum unique source PCM capacity retained by committed and pending cache entries.
