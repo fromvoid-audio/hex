@@ -2,6 +2,120 @@
 use super::*;
 
 #[test]
+fn metered_resident_return_matches_scalar_pcm_and_meters_through_launch_and_loop() {
+    for muted in [false, true] {
+        let mut snapshot = audio_fixture_project(true, false, false).snapshot();
+        snapshot.tracks[0].muted = muted;
+        snapshot.return_tracks[0].devices[0].state = crate::default_native_device_state_for_class(
+            crate::NativeDeviceClass::Effect,
+            hex_lattice_contract::DeviceTypeId::from_static("hex.limiter"),
+        )
+        .unwrap();
+        let mut editor = Editor::new(Project::from_snapshot(snapshot).unwrap(), 4).unwrap();
+        let track = editor.project().tracks()[0].id();
+        let asset = editor.project().assets().next().unwrap().id();
+        let Created::Scene(scene) = editor
+            .execute(Command::AddScene {
+                name: "scene".into(),
+            })
+            .unwrap()
+        else {
+            panic!("scene expected");
+        };
+        let Created::SessionClip(clip) = editor
+            .execute(Command::CreateSessionAudioClip {
+                track,
+                scene,
+                name: "session".into(),
+                asset,
+                source_start: 0,
+                source_end: 32,
+            })
+            .unwrap()
+        else {
+            panic!("session clip expected");
+        };
+        editor
+            .execute(Command::SetLoopRegion {
+                start: 0,
+                end: 32,
+                enabled: true,
+            })
+            .unwrap();
+        let project = editor.project();
+        for partition in [1, 17, 256] {
+            let actual_revision = prepare_audio(project);
+            let reference_revision = prepare_audio(project);
+            let actual_observation =
+                crate::PreparedPlaybackObservation::prepare_on_control(&actual_revision).unwrap();
+            let reference_observation =
+                crate::PreparedPlaybackObservation::prepare_on_control(&reference_revision)
+                    .unwrap();
+            let mut actual = SessionPlayback::new(actual_revision).unwrap();
+            let mut reference = SessionPlayback::new(reference_revision).unwrap();
+            actual.set_device_metering(true);
+            reference.set_device_metering(true);
+            actual.track_faders[0].retarget([0.0; 2], 48_000);
+            reference.track_faders[0].retarget([0.0; 2], 48_000);
+            actual.apply(SessionPlaybackCommand::Play).unwrap();
+            reference.apply(SessionPlaybackCommand::Play).unwrap();
+            let mut expected = [[0.0; 2]; 512];
+            let mut output = [[0.0; 2]; 512];
+            for (index, (actual_block, expected_block)) in output
+                .chunks_mut(256)
+                .zip(expected.chunks_mut(256))
+                .enumerate()
+            {
+                if index == 1 {
+                    for runtime in [&mut actual, &mut reference] {
+                        runtime
+                            .apply(SessionPlaybackCommand::LaunchClip {
+                                clip,
+                                quantization: LaunchQuantization::Immediate,
+                            })
+                            .unwrap();
+                    }
+                }
+                reference
+                    .render_with_post_node_observer(expected_block, Some(&mut |_, _, _| {}))
+                    .unwrap();
+                for chunk in actual_block.chunks_mut(partition) {
+                    actual.render(chunk).unwrap();
+                }
+                for track in project.tracks() {
+                    let actual_meter = actual_observation.track_output_meter(track.id()).unwrap();
+                    let reference_meter = reference_observation
+                        .track_output_meter(track.id())
+                        .unwrap();
+                    assert_eq!(actual_meter.take_peaks(), reference_meter.take_peaks());
+                    assert_eq!(
+                        actual_meter.take_track_output_stereo(),
+                        reference_meter.take_track_output_stereo()
+                    );
+                }
+                let bus = project.return_tracks()[0].id();
+                assert_eq!(
+                    actual_observation
+                        .return_output_meter(bus)
+                        .unwrap()
+                        .take_track_output_stereo(),
+                    reference_observation
+                        .return_output_meter(bus)
+                        .unwrap()
+                        .take_track_output_stereo()
+                );
+            }
+            assert_eq!(output, expected, "muted={muted}, partition={partition}");
+            assert_eq!(
+                (actual.performance_frame(), actual.arrangement_frame()),
+                (reference.performance_frame(), reference.arrangement_frame())
+            );
+            assert!(expected.iter().flatten().any(|sample| *sample != 0.0));
+        }
+    }
+}
+
+#[test]
 fn final_main_observer_reads_both_channels_after_main_device_and_fader() {
     for gain in [0.0, 0.25, 1.0, 2.0] {
         let mut snapshot = audio_fixture_project(false, false, false).snapshot();
