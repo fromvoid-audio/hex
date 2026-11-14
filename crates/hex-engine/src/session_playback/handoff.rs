@@ -1073,7 +1073,8 @@ impl SessionPlayback {
         }
         // 0: existing fresh/no-delay path; 1: copy into the larger fresh
         // history; 2: carry the actual larger donor plan/rings, explicitly bound
-        // to the candidate's immutable typed pre-Main map.
+        // to the candidate's immutable typed pre-Main map; 3: copy only stamps
+        // after removing one proven zero-delay send.
         let same_base_timing = self
             .revision
             .session()
@@ -1229,7 +1230,28 @@ impl SessionPlayback {
                 })
                 .filter(|_| !candidate.can_copy_from(old, None))
         });
+        let removed_send_clock = !force_restart
+            && previous.playing
+            && mapped_main_clock
+            && previous.periodic_tempo() == self.periodic_tempo_at(previous.arrangement_frame)
+            && donor_epoch_matches
+            && self.revision.arrangement().main_latency_frames()
+                == previous.revision.arrangement().main_latency_frames()
+            && compensation_pair.is_some_and(|(candidate, old)| {
+                old.delays.history_ready()
+                    && direct_return_tail_graph(&candidate.graph)
+                    && direct_return_tail_graph(&old.graph)
+                    && candidate.removed_send_clock_from(old).is_some_and(|bus| {
+                        previous
+                            .return_effect_tails
+                            .slots()
+                            .iter()
+                            .flatten()
+                            .any(|tail| tail.output_active && tail.return_id() == Some(bus))
+                    })
+            });
         let planned_transfer = match (&self.compensation, &previous.compensation) {
+            (Some(_), Some(_)) if removed_send_clock => Some(3_u8),
             (Some(candidate), Some(old))
                 if (candidate.graph.compatible(&old.graph) || mapped_main_clock)
                     && donor_epoch_matches
@@ -5550,7 +5572,13 @@ impl SessionPlayback {
         } else {
             previous.route_state_generation
         };
-        if clock_transfer == 1 {
+        if clock_transfer == 3 {
+            if let (Some(candidate), Some(old)) = (&mut self.compensation, &previous.compensation) {
+                candidate
+                    .copy_removed_send_clock_from(old)
+                    .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
+            }
+        } else if clock_transfer == 1 {
             if let (Some(candidate), Some(old)) = (&mut self.compensation, &previous.compensation) {
                 candidate
                     .copy_from(old, fresh_history)

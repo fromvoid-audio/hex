@@ -1854,6 +1854,200 @@ fn real_main_limiter_reverb_fixture() -> (
 }
 
 #[test]
+fn disconnect_send_preserves_detached_real_return_tail() {
+    use hex_project::{Command, Created, Project};
+    let (mut editor, track, bus, device, media, table) = real_main_limiter_reverb_fixture();
+    let Created::ReturnTrack(other_bus) = editor
+        .execute(Command::AddReturnTrack {
+            name: "other".into(),
+        })
+        .unwrap()
+    else {
+        panic!("return")
+    };
+    editor
+        .execute(Command::SetReturnSend {
+            track,
+            return_track: other_bus,
+            gain: 0.25,
+        })
+        .unwrap();
+    let prepare = |project: &Project| {
+        Arc::new(PreparedRevision::prepare(project, &media, Arc::clone(&table), None).unwrap())
+    };
+    let initial = prepare(editor.project());
+    let mut original = SessionPlayback::new(Arc::clone(&initial)).unwrap();
+    let mut reference = SessionPlayback::new(initial).unwrap();
+    for playback in [&mut original, &mut reference] {
+        playback.apply(SessionPlaybackCommand::Play).unwrap();
+        playback.render(&mut vec![[0.0; 2]; 6000]).unwrap();
+    }
+    editor.execute(Command::RemoveDevice(device)).unwrap();
+    let mut detached = SessionPlayback::new(prepare(editor.project())).unwrap();
+    assert!(
+        !detached
+            .try_inherit_state_live_from(&mut original)
+            .unwrap()
+            .running_audio_restart
+    );
+    editor
+        .execute(Command::SetReturnSend {
+            track,
+            return_track: bus,
+            gain: 0.0,
+        })
+        .unwrap();
+    let mut stale = SessionPlayback::new(prepare(editor.project())).unwrap();
+    detached.performance_frame += 1;
+    assert!(matches!(
+        stale.try_inherit_state_live_from(&mut detached),
+        Err(SessionPlaybackError::LatencyLayoutChanged)
+    ));
+    detached.performance_frame -= 1;
+    editor
+        .execute(Command::SetReturnSend {
+            track,
+            return_track: other_bus,
+            gain: 0.5,
+        })
+        .unwrap();
+    let mut changed_route = SessionPlayback::new(prepare(editor.project())).unwrap();
+    assert!(matches!(
+        changed_route.try_inherit_state_live_from(&mut detached),
+        Err(SessionPlaybackError::LatencyLayoutChanged)
+    ));
+    editor
+        .execute(Command::SetReturnSend {
+            track,
+            return_track: other_bus,
+            gain: 0.25,
+        })
+        .unwrap();
+    let mut forced = SessionPlayback::new(prepare(editor.project())).unwrap();
+    forced.request_live_restart();
+    assert!(matches!(
+        forced.try_inherit_state_live_from(&mut detached),
+        Err(SessionPlaybackError::LatencyLayoutChanged)
+    ));
+    let mut disconnected = SessionPlayback::new(prepare(editor.project())).unwrap();
+    assert!(
+        !disconnected
+            .try_inherit_state_live_from(&mut detached)
+            .unwrap()
+            .running_audio_restart
+    );
+    let active = |playback: &SessionPlayback| {
+        playback
+            .return_effect_tails
+            .slots()
+            .iter()
+            .flatten()
+            .filter(|tail| tail.output_active)
+            .count()
+    };
+    assert_eq!(active(&detached), 0);
+    assert_eq!(active(&disconnected), 1);
+    let id = OutputCaptureId::Return(bus);
+    let actual_plan = disconnected.output_capture_plan(&[id], 257).unwrap();
+    let expected_plan = reference.output_capture_plan(&[id], 257).unwrap();
+    for count in [1, 257, 254] {
+        let mut actual = vec![[0.0; 2]; count];
+        let mut expected = actual.clone();
+        let mut actual_return = actual.clone();
+        let mut expected_return = actual.clone();
+        let mut actual_buffers = [&mut actual_return[..]];
+        let mut expected_buffers = [&mut expected_return[..]];
+        let mut actual_capture = OutputCapture::new(&actual_plan, &mut actual_buffers);
+        let mut expected_capture = OutputCapture::new(&expected_plan, &mut expected_buffers);
+        disconnected
+            .render_with_capture(&mut actual, &mut actual_capture)
+            .unwrap();
+        reference
+            .render_with_capture(&mut expected, &mut expected_capture)
+            .unwrap();
+        assert_eq!(actual, expected);
+        assert_eq!(actual_capture.output(0), expected_capture.output(0));
+        assert!(actual.iter().flatten().any(|sample| *sample != 0.0));
+    }
+    // The inverse edit is not the zero-delay removal this handoff proves.
+    editor
+        .execute(Command::SetReturnSend {
+            track,
+            return_track: bus,
+            gain: 1.0,
+        })
+        .unwrap();
+    let mut reconnected = SessionPlayback::new(prepare(editor.project())).unwrap();
+    assert!(matches!(
+        reconnected.try_inherit_state_live_from(&mut disconnected),
+        Err(SessionPlaybackError::LatencyLayoutChanged)
+    ));
+    assert_eq!(active(&disconnected), 1);
+}
+
+#[test]
+fn disconnect_send_stops_live_input_without_cutting_the_tail() {
+    use hex_project::{Command, Project};
+    let (mut editor, track, bus, device, mut media, table) = real_main_limiter_reverb_fixture();
+    let silent_media = media.clone();
+    let asset = *media.keys().next().unwrap();
+    let mut samples = vec![[0.0; 2]; 12_000];
+    samples[..512].fill([0.25, -0.125]);
+    samples[6000..].fill([0.125, 0.0625]);
+    media.insert(asset, crate::Audio::new(48_000, samples).unwrap());
+    let prepare = |project: &Project, input| {
+        Arc::new(PreparedRevision::prepare(project, input, Arc::clone(&table), None).unwrap())
+    };
+    let mut original = SessionPlayback::new(prepare(editor.project(), &media)).unwrap();
+    let mut reference = SessionPlayback::new(prepare(editor.project(), &silent_media)).unwrap();
+    for playback in [&mut original, &mut reference] {
+        playback.apply(SessionPlaybackCommand::Play).unwrap();
+        playback.render(&mut vec![[0.0; 2]; 6000]).unwrap();
+    }
+    editor.execute(Command::RemoveDevice(device)).unwrap();
+    let mut detached = SessionPlayback::new(prepare(editor.project(), &media)).unwrap();
+    detached.try_inherit_state_live_from(&mut original).unwrap();
+    editor
+        .execute(Command::SetReturnSend {
+            track,
+            return_track: bus,
+            gain: 0.0,
+        })
+        .unwrap();
+    let mut disconnected = SessionPlayback::new(prepare(editor.project(), &media)).unwrap();
+    disconnected
+        .try_inherit_state_live_from(&mut detached)
+        .unwrap();
+    let id = OutputCaptureId::Return(bus);
+    let actual_plan = disconnected.output_capture_plan(&[id], 257).unwrap();
+    let expected_plan = reference.output_capture_plan(&[id], 257).unwrap();
+    let mut actual = [[0.0; 2]; 257];
+    let mut expected = actual;
+    let mut actual_return = actual;
+    let mut expected_return = actual;
+    let mut actual_buffers = [&mut actual_return[..]];
+    let mut expected_buffers = [&mut expected_return[..]];
+    let mut actual_capture = OutputCapture::new(&actual_plan, &mut actual_buffers);
+    let mut expected_capture = OutputCapture::new(&expected_plan, &mut expected_buffers);
+    disconnected
+        .render_with_capture(&mut actual, &mut actual_capture)
+        .unwrap();
+    reference
+        .render_with_capture(&mut expected, &mut expected_capture)
+        .unwrap();
+    assert_eq!(actual_capture.output(0), expected_capture.output(0));
+    assert!(
+        actual_capture
+            .output(0)
+            .unwrap()
+            .iter()
+            .flatten()
+            .any(|sample| *sample != 0.0)
+    );
+    assert_ne!(actual, expected);
+}
+
+#[test]
 fn main_only_latency_preserves_real_return_reverb_and_captures() {
     use hex_project::{Command, Editor, Project};
     let (mut editor, track, bus, device, media, table) = real_main_limiter_reverb_fixture();

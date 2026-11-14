@@ -994,6 +994,69 @@ impl SignalGraph {
             && !other.needs_upstream_frame_routing()
             && self.same_routing(other)
     }
+    /// Identify exactly one removed send in an otherwise unchanged flat graph.
+    /// Both graphs have zero-delay upstream edges, so the removed edge has no
+    /// queued samples; its future input is deliberately disconnected.
+    fn removed_flat_send_from(&self, old: &Self) -> Option<ReturnId> {
+        if self.needs_upstream_frame_routing()
+            || old.needs_upstream_frame_routing()
+            || self.typed != old.typed
+            || self.key_stages != old.key_stages
+            || self.tracks.len() != old.tracks.len()
+            || self.returns.len() != old.returns.len()
+            || self
+                .returns
+                .iter()
+                .zip(&old.returns)
+                .any(|(a, b)| a.id != b.id || !a.feeds.is_empty() || !b.feeds.is_empty())
+        {
+            return None;
+        }
+        let mut removed = None;
+        for (new, old_track) in self.tracks.iter().zip(&old.tracks) {
+            if new.id != old_track.id
+                || !matches!(new.output, TrackOutput::Main { .. })
+                || !matches!(old_track.output, TrackOutput::Main { .. })
+            {
+                return None;
+            }
+            let mut old_sends = old_track.sends.iter();
+            for send in &new.sends {
+                let mut prior = old_sends.next()?;
+                if prior.target != send.target {
+                    if removed.replace((prior.target, prior.edge)).is_some() {
+                        return None;
+                    }
+                    prior = old_sends.next()?;
+                }
+                if prior.target != send.target || prior.gain != send.gain {
+                    return None;
+                }
+            }
+            for prior in old_sends {
+                if removed.replace((prior.target, prior.edge)).is_some() {
+                    return None;
+                }
+            }
+        }
+        let (target, removed_edge) = removed?;
+        if old.pre_main_edges.len() != self.pre_main_edges.len().checked_add(1)?
+            || !self
+                .pre_main_edges
+                .iter()
+                .enumerate()
+                .map(|(i, _)| self.pre_main_endpoints(i))
+                .eq(old
+                    .pre_main_edges
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| *i != removed_edge)
+                    .map(|(i, _)| old.pre_main_endpoints(i)))
+        {
+            return None;
+        }
+        old.returns.get(target).map(|bus| bus.id)
+    }
     /// A first compensated epoch may start with empty rings only when the old
     /// graph owns no delay history and semantic routes have not changed. DSP
     /// quiescence and source/clock continuity are independently checked by Session.
@@ -1842,6 +1905,27 @@ impl SignalRuntime {
                     );
                     mapped && copyable
                 })
+    }
+    /// A fresh candidate can retain only the transport stamps when one
+    /// zero-delay send disappears. No donor delay storage is rebound.
+    pub(crate) fn removed_send_clock_from(&self, other: &Self) -> Option<ReturnId> {
+        if !Arc::ptr_eq(&self.graph, &self.delay_graph)
+            || !self.delays.is_closed()
+            || !other.delays.is_closed()
+            || !other.delay_graph.clock_only_compatible(&other.graph)
+            || self.horizon() < other.horizon()
+        {
+            return None;
+        }
+        self.graph.removed_flat_send_from(&other.graph)
+    }
+    pub(crate) fn copy_removed_send_clock_from(&mut self, other: &Self) -> Result<(), Invalid> {
+        if self.removed_send_clock_from(other).is_none() {
+            return Err(Invalid("removed send clock is incompatible"));
+        }
+        self.delays
+            .copy_stamp_history_from(&other.delays)
+            .map_err(error)
     }
     pub(crate) fn copy_from(
         &mut self,
