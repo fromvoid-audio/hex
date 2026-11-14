@@ -35,6 +35,10 @@ pub(super) struct BrowserAudition {
 }
 
 impl BrowserAudition {
+    pub(super) fn is_idle(&self) -> bool {
+        self.pending.is_none() && self.voices.is_empty()
+    }
+
     pub(super) fn retained_bytes(&self) -> Option<usize> {
         self.pending
             .as_ref()

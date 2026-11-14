@@ -26,6 +26,33 @@ pub(super) struct Snapshot {
     pub(super) inputs: RuntimeInputs,
     pub(super) file_sources: Option<ResidentFileSet>,
 }
+impl Snapshot {
+    pub(super) fn include_file_sources<'a>(
+        &'a self,
+        view: DeviceResourceAdmission<'a>,
+    ) -> DeviceResourceAdmission<'a> {
+        match self.file_sources.as_ref() {
+            Some(files) if !files.repitches().requirements().is_empty() => {
+                view.with_repitch_requirements(files.repitches())
+            }
+            _ => view,
+        }
+    }
+    fn repitch_requirements(
+        &self,
+    ) -> Option<&hex_engine::audio_transform::StreamedRepitchRequirements> {
+        self.file_sources
+            .as_ref()
+            .map(ResidentFileSet::repitches)
+            .filter(|set| !set.requirements().is_empty())
+    }
+    pub(super) fn admission(&self) -> DeviceResourceAdmission<'_> {
+        self.include_file_sources(DeviceResourceAdmission::prepared_on_control(
+            &self.resources,
+            &self.prepared,
+        ))
+    }
+}
 fn canonical_metadata(
     snapshot: &Snapshot,
     context: hex_engine::AudioSourceContext,
@@ -67,15 +94,35 @@ impl Inputs<'_> {
         runtime_bytes: usize,
         construction_bytes: usize,
     ) -> Result<(), SessionError> {
+        self.admit_with_repitch(
+            resources,
+            prepared,
+            native,
+            runtime_bytes,
+            construction_bytes,
+            None,
+        )
+    }
+    fn admit_with_repitch<'a>(
+        &'a self,
+        resources: &'a PreparedDeviceResources,
+        prepared: Option<&'a PreparedRevision>,
+        native: &[DeviceResourceAdmission<'a>],
+        runtime_bytes: usize,
+        construction_bytes: usize,
+        repitches: Option<&'a hex_engine::audio_transform::StreamedRepitchRequirements>,
+    ) -> Result<(), SessionError> {
         let candidate_sets = [resources];
         let candidate_revisions = prepared.map(|prepared| [prepared]);
         let candidate = DeviceResourceAdmission::new(&candidate_sets, &[])
             .with_prepared_revisions(candidate_revisions.as_ref().map_or(&[], |r| r.as_slice()));
-        let current_sets = self.current.map(|s| [&s.resources]);
-        let current_revisions = self.current.map(|s| [s.prepared.as_ref()]);
-        let current =
-            DeviceResourceAdmission::new(current_sets.as_ref().map_or(&[], |s| s.as_slice()), &[])
-                .with_prepared_revisions(current_revisions.as_ref().map_or(&[], |r| r.as_slice()));
+        let candidate = match repitches {
+            Some(repitches) => candidate.with_repitch_requirements(repitches),
+            None => candidate,
+        };
+        let current = self
+            .current
+            .map_or(DeviceResourceAdmission::default(), Snapshot::admission);
         let external = self.admission.registered_views();
         let mut registered = Vec::new();
         registered
@@ -239,6 +286,123 @@ impl Inputs<'_> {
         )?;
         let work = resources.compiler_scan_work_on_control(project)?;
         let file_refs = media.required_verified_sources(project);
+        let pitches = media.required_verified_pitches(project)?;
+        let repitch_count = project
+            .tracks()
+            .iter()
+            .flat_map(|track| track.clips())
+            .filter(|clip| {
+                clip.audio_edit()
+                    .is_some_and(|edit| edit.is_streamed_repitch_root())
+                    && file_refs.iter().any(|(asset, _)| *asset == clip.asset())
+            })
+            .count();
+        let mut handles = Vec::new();
+        let mut repitch_keys = Vec::new();
+        if repitch_count != 0 {
+            let reserve = repitch_count
+                .checked_mul(
+                    std::mem::size_of::<hex_engine::audio_transform::StreamedRepitchRequirement>()
+                        + std::mem::size_of::<hex_engine::StreamSourceKey>(),
+                )
+                .and_then(|bytes| {
+                    bytes.checked_add(std::mem::size_of::<
+                        hex_engine::audio_transform::StreamedRepitchRequirements,
+                    >())
+                })
+                .ok_or(SessionError::Invalid("repitch handle allowance overflow"))?;
+            self.admit(
+                &resources,
+                None,
+                &sink.resident_admission(),
+                held.construction_bytes,
+                reserve,
+            )?;
+            handles
+                .try_reserve_exact(repitch_count)
+                .map_err(|_| SessionError::Invalid("repitch handle reservation failed"))?;
+            repitch_keys
+                .try_reserve_exact(repitch_count)
+                .map_err(|_| SessionError::Invalid("repitch key reservation failed"))?;
+        }
+        let mut repitches = hex_engine::audio_transform::StreamedRepitchRequirements::new(handles)?;
+        for clip in project.tracks().iter().flat_map(|track| track.clips()) {
+            if self.shutdown.load(Ordering::Acquire)
+                || self
+                    .cancel
+                    .is_some_and(|cancel| cancel.load(Ordering::Acquire))
+            {
+                return Err(SessionError::Invalid("resident preparation cancelled"));
+            }
+            let Some(edit) = clip
+                .audio_edit()
+                .filter(|edit| edit.is_streamed_repitch_root())
+            else {
+                continue;
+            };
+            let Some((_, file)) = file_refs.iter().find(|(asset, _)| *asset == clip.asset()) else {
+                continue;
+            };
+            let raw = file.source_metadata(clip.asset(), media.epoch)?;
+            // Reserve the bounded map workspace and next handle allocation before constructing it.
+            let workspace = hex_engine::audio_transform::native_metadata_workspace_bytes()
+                .and_then(|bytes| {
+                    bytes.checked_add(
+                        repitch_keys
+                            .capacity()
+                            .checked_mul(std::mem::size_of::<hex_engine::StreamSourceKey>())?,
+                    )
+                })
+                .ok_or(SessionError::Invalid(
+                    "repitch construction allowance overflow",
+                ))?;
+            self.admit_with_repitch(
+                &resources,
+                None,
+                &sink.resident_admission(),
+                held.construction_bytes,
+                workspace,
+                Some(&repitches),
+            )?;
+            let requirement = hex_engine::audio_transform::StreamedRepitchRequirement::new(
+                &raw,
+                edit,
+                project.tempo_map(),
+                self.shutdown,
+            )?;
+            let key = requirement.metadata_for(&raw)?.key();
+            if let Err(index) = repitch_keys.binary_search(&key) {
+                repitches.try_push(requirement)?;
+                repitch_keys.insert(index, key);
+            }
+        }
+        drop(repitch_keys);
+        if !repitches.requirements().is_empty() {
+            let clone_allowance = repitches
+                .handle_capacity_bytes()
+                .and_then(|bytes| {
+                    bytes.checked_add(std::mem::size_of::<
+                        hex_engine::audio_transform::StreamedRepitchRequirements,
+                    >())
+                })
+                .and_then(|bytes| {
+                    bytes.checked_add(
+                        repitches
+                            .requirements()
+                            .len()
+                            .checked_mul(std::mem::size_of::<hex_engine::StreamSourceKey>())?,
+                    )
+                })
+                .ok_or(SessionError::Invalid("repitch capture allowance overflow"))?;
+            self.admit_with_repitch(
+                &resources,
+                None,
+                &sink.resident_admission(),
+                held.construction_bytes,
+                clone_allowance,
+                Some(&repitches),
+            )?;
+        }
         let file_sources = if file_refs.is_empty() {
             None
         } else {
@@ -246,12 +410,16 @@ impl Inputs<'_> {
                 context,
                 semantic_source_epoch: media.epoch,
                 files: &file_refs,
+                pitches: &pitches,
+                repitches: repitches.requirements(),
             };
             let metadata = sink
                 .prepare_resident_file_metadata(ResidentFileInput {
                     context,
                     semantic_source_epoch: media.epoch,
                     files: &file_refs,
+                    pitches: &pitches,
+                    repitches: repitches.requirements(),
                 })
                 .map_err(SessionError::NativeAudio)?
                 .ok_or(SessionError::Invalid(
@@ -259,6 +427,32 @@ impl Inputs<'_> {
                 ))?;
             Some(ResidentFileSet::capture(input, metadata)?)
         };
+
+        drop(repitches);
+        if let Some(files) = file_sources
+            .as_ref()
+            .filter(|files| !files.repitches().requirements().is_empty())
+        {
+            let compiler_allowance = resources
+                .compiler_construction_allowance_bytes()?
+                .checked_add(
+                    PreparedRevision::device_handoff_metadata_construction_bytes_with_input(
+                        project,
+                        self.native_parameter_input,
+                    )?,
+                )
+                .ok_or(SessionError::Invalid(
+                    "resident metadata allowance overflow",
+                ))?;
+            self.admit_with_repitch(
+                &resources,
+                None,
+                &sink.resident_admission(),
+                held.construction_bytes,
+                compiler_allowance,
+                Some(files.repitches()),
+            )?;
+        }
 
         let prepare = |effects: Option<&hex_engine::AudioCandidateEffects<'_, '_>>| {
             crate::prepare_with_waveforms_using(project, media, transforms, waveforms, || {
@@ -270,12 +464,7 @@ impl Inputs<'_> {
                     &resources,
                     work,
                     self.shutdown,
-                    file_sources.as_ref().map(|sources| {
-                        (
-                            sources.metadata().catalog_generation(),
-                            sources.metadata().sources(),
-                        )
-                    }),
+                    file_sources.as_ref().map(|sources| sources.metadata()),
                     effects,
                     self.native_parameter_input,
                 )
@@ -362,7 +551,7 @@ impl Inputs<'_> {
             },
         };
         let runtime = runtime_allowance(&snapshot.prepared, snapshot.inputs.allowance()?)?;
-        self.admit(
+        self.admit_with_repitch(
             &snapshot.resources,
             Some(&snapshot.prepared),
             &sink.resident_admission(),
@@ -370,6 +559,7 @@ impl Inputs<'_> {
                 .checked_add(runtime)
                 .ok_or(SessionError::Invalid("resident runtime allowance overflow"))?,
             0,
+            snapshot.repitch_requirements(),
         )?;
         Ok(snapshot)
     }
@@ -628,12 +818,13 @@ impl Inputs<'_> {
         let observation_quote = playback
             .observation_storage_quote_on_control()
             .map_err(SessionError::Engine)?;
-        self.admit(
+        self.admit_with_repitch(
             &snapshot.resources,
             Some(&snapshot.prepared),
             &sink.resident_admission(),
             runtime,
             observation_quote,
+            snapshot.repitch_requirements(),
         )?;
         let observation = Arc::new(
             playback
@@ -650,12 +841,13 @@ impl Inputs<'_> {
         // The offline sink may capture configuration handles before final admission. Reserve
         // their bounded metadata overlap before that allocation; actual capacities are visited
         // again together with the old pending owner before acceptance.
-        self.admit(
+        self.admit_with_repitch(
             &snapshot.resources,
             Some(&snapshot.prepared),
             &sink.resident_admission(),
             runtime,
             snapshot.resources.metadata_bytes()?,
+            snapshot.repitch_requirements(),
         )?;
         // Derive the report from the actual prepared snapshot, not from the
         // caller's optional preview identifiers. A rebased context is unknown.
@@ -676,12 +868,13 @@ impl Inputs<'_> {
             policy,
             self.limits.storage.max_retained_bytes,
             &mut |native| {
-                self.admit(
+                self.admit_with_repitch(
                     &snapshot.resources,
                     Some(&snapshot.prepared),
                     native,
                     runtime,
                     0,
+                    snapshot.repitch_requirements(),
                 )
                 .map_err(|error| error.to_string())?;
                 // The hook returns immediately to enqueue/fixed offline custody. A late cancel
@@ -945,15 +1138,7 @@ pub(super) fn prepare_document_replacement(
         return prepare(admission);
     };
     let native = sink.resident_admission();
-    let sets = current.map(|snapshot| [&snapshot.resources]);
-    let revisions = current.map(|snapshot| [snapshot.prepared.as_ref()]);
-    let current =
-        DeviceResourceAdmission::new(sets.as_ref().map_or(&[], |sets| sets.as_slice()), &[])
-            .with_prepared_revisions(
-                revisions
-                    .as_ref()
-                    .map_or(&[], |revisions| revisions.as_slice()),
-            );
+    let current = current.map_or(DeviceResourceAdmission::default(), Snapshot::admission);
     let mut registered = admission.registered.to_vec();
     registered.push(current);
     registered.extend(native);
@@ -1010,17 +1195,7 @@ pub(super) fn prepare_document_media<T>(
         return open(admission);
     };
     let native = sink.resident_admission();
-    let current_sets = current.map(|snapshot| [&snapshot.resources]);
-    let revisions = current.map(|snapshot| [snapshot.prepared.as_ref()]);
-    let current = DeviceResourceAdmission::new(
-        current_sets.as_ref().map_or(&[], |sets| sets.as_slice()),
-        &[],
-    )
-    .with_prepared_revisions(
-        revisions
-            .as_ref()
-            .map_or(&[], |revisions| revisions.as_slice()),
-    );
+    let current = current.map_or(DeviceResourceAdmission::default(), Snapshot::admission);
     let mut registered = admission.registered.to_vec();
     registered.push(current);
     registered.extend(native);
@@ -1179,17 +1354,7 @@ pub(super) fn import_frame_allowance(
         // Plan before decoding against the same actual native/current/export
         // owners used by final admission, including original sampler banks.
         let native = sink.resident_admission();
-        let current_sets = current.map(|snapshot| [&snapshot.resources]);
-        let current_revisions = current.map(|snapshot| [snapshot.prepared.as_ref()]);
-        let current_view = DeviceResourceAdmission::new(
-            current_sets.as_ref().map_or(&[], |sets| sets.as_slice()),
-            &[],
-        )
-        .with_prepared_revisions(
-            current_revisions
-                .as_ref()
-                .map_or(&[], |revisions| revisions.as_slice()),
-        );
+        let current_view = current.map_or(DeviceResourceAdmission::default(), Snapshot::admission);
         let mut registered = admission.registered.to_vec();
         registered.push(current_view);
         registered.extend(native);
@@ -1431,15 +1596,7 @@ impl Session {
             .flat_map(|media| [&media.source_audio, &media.audio])
             .chain(std::iter::once(decoded.audio()))
             .collect::<Vec<_>>();
-        let sets = current.map(|snapshot| [&snapshot.resources]);
-        let revisions = current.map(|snapshot| [snapshot.prepared.as_ref()]);
-        let current_view =
-            DeviceResourceAdmission::new(sets.as_ref().map_or(&[], |sets| sets.as_slice()), &[])
-                .with_prepared_revisions(
-                    revisions
-                        .as_ref()
-                        .map_or(&[], |revisions| revisions.as_slice()),
-                );
+        let current_view = current.map_or(DeviceResourceAdmission::default(), Snapshot::admission);
         let views = sink.resident_admission();
         let registered = [current_view, views[0], views[1], views[2]];
         sampler_export::Admission {

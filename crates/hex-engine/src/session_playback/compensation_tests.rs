@@ -1296,5 +1296,125 @@ fn gain_recording_delivery_delay_includes_the_complete_serial_main_chain() {
     }
 }
 
+#[test]
+fn compensated_mutable_source_applies_live_input_with_and_without_shared_contributors() {
+    use hex_lattice::{NativeTransientOperation, NativeTransientValue};
+    use hex_lattice_contract::{
+        DeviceAutomationTarget, NativeDeviceMetadata, ParameterId, ParameterValue,
+    };
+    use hex_project::{BeatTime, Command, Created, Editor, Project, TrackDeviceSlot};
+    use std::collections::BTreeMap;
+
+    for shared in [false, true] {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+        let Created::Track(receiver) = editor
+            .execute(Command::InsertTrackWithDevice {
+                name: "instrument".into(),
+                before_track: None,
+                slot: TrackDeviceSlot::Instrument,
+                state: hex_devices::fm4::device::FM4_DEFINITION
+                    .default_state()
+                    .unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("instrument track")
+        };
+        let track = editor.project().track(receiver).unwrap();
+        let device = track.instrument().unwrap().id();
+        let source = track.source_id().unwrap();
+        let note_track = if shared {
+            let Created::Track(contributor) = editor
+                .execute(Command::AddMidiTrack {
+                    name: "contributor".into(),
+                })
+                .unwrap()
+            else {
+                panic!("contributor")
+            };
+            editor
+                .execute(Command::BindTrackSource {
+                    track: contributor,
+                    source: Some(source),
+                })
+                .unwrap();
+            contributor
+        } else {
+            receiver
+        };
+        let Created::Clip(clip) = editor
+            .execute(Command::PlaceMidiClip {
+                track: note_track,
+                start: BeatTime::ZERO,
+                length: BeatTime::from_quarters(4).unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("clip")
+        };
+        editor
+            .execute(Command::AddMidiNote {
+                clip,
+                start: BeatTime::ZERO,
+                duration: BeatTime::from_quarters(2).unwrap(),
+                pitch: 60,
+                channel: 0,
+                velocity: 100,
+            })
+            .unwrap();
+        editor
+            .execute(Command::InsertDevice {
+                track: receiver,
+                before: None,
+                state: hex_devices::limiter::DEFINITION.default_state().unwrap(),
+            })
+            .unwrap();
+        let parameter = ParameterId::from_static(29);
+        let target = DeviceAutomationTarget::Parameter(parameter);
+        let revision = PreparedRevision::prepare_for_native_parameter_input(
+            editor.project(),
+            &BTreeMap::new(),
+            Arc::new(SineTable::new()),
+            None,
+            device,
+            target,
+        )
+        .unwrap();
+        assert!(revision.arrangement().main_latency_frames() > 0);
+        assert_eq!(revision.source_routing().has_shared_sources(), shared);
+        let mut runtime = SessionPlayback::new(Arc::new(revision)).unwrap();
+        assert!(
+            runtime
+                .compensation
+                .as_ref()
+                .unwrap()
+                .graph
+                .needs_upstream_frame_routing()
+        );
+        runtime.apply(SessionPlaybackCommand::Play).unwrap();
+        let operation = NativeTransientOperation::Set(NativeTransientValue::Parameter {
+            id: parameter,
+            value: ParameterValue::Float(0.5),
+        });
+        runtime.set_native_parameter_input(operation).unwrap();
+        let mut heard = false;
+        let mut applied = None;
+        for _ in 0..8 {
+            let mut output = [[0.0; 2]; 256];
+            runtime.render(&mut output).unwrap();
+            heard |= output.iter().flatten().any(|value| value.abs() > 1e-8);
+            applied = applied.or_else(|| runtime.take_native_parameter_application());
+        }
+        assert!(
+            heard,
+            "mutable instrument must remain audible, shared={shared}"
+        );
+        assert_eq!(
+            applied.expect("live input must be applied").operation,
+            operation
+        );
+    }
+}
+
 #[path = "compensation_tests/paused_layout.rs"]
 mod paused_layout;

@@ -32,6 +32,7 @@ pub(super) fn render_source_live_input(
     timing: &crate::prepared_tempo::SessionTimingView<'_>,
     playing: bool,
     parameter_values: Option<&dyn hex_lattice::NativeParameterAutomation>,
+    pending: Option<super::super::PendingSharedLive>,
 ) -> Result<(), SessionPlaybackError> {
     if source.is_some() && output.len() > 256 {
         return Err(SessionPlaybackError::InvalidCommand);
@@ -64,15 +65,29 @@ pub(super) fn render_source_live_input(
         }
         if enabled {
             source
-                .stage_live_events(input, keyboard.source_input_events())
+                .stage_live_events(input, keyboard.source_input_events(), None)
                 .map_err(|error| error.render_error())?;
+            if let Some(pending) =
+                pending.filter(|pending| pending.input == input && pending.frame == performance)
+                && let Some(event) = keyboard.muted_source_onset_event(pending.token)
+            {
+                source
+                    .stage_live_events(input, std::slice::from_ref(&event), Some(pending.token))
+                    .map_err(|error| error.render_error())?;
+                keyboard.clear_muted_source_onset(pending.token);
+            } else if !playing {
+                // Stopped monitoring keeps its existing no-chase policy.
+                keyboard.clear_muted_source_onsets();
+            }
         } else {
-            for event in keyboard.source_input_events() {
-                if matches!(event, hex_lattice::NativeInstrumentEvent::NoteOn { .. }) {
+            for index in 0..keyboard.source_input_events().len() {
+                let event = keyboard.source_input_events()[index];
+                if let hex_lattice::NativeInstrumentEvent::NoteOn { occurrence_id, .. } = event {
+                    keyboard.mark_muted_source_onset(occurrence_id);
                     continue;
                 }
                 source
-                    .stage_live_events(input, std::slice::from_ref(event))
+                    .stage_live_events(input, std::slice::from_ref(&event), None)
                     .map_err(|error| error.render_error())?;
             }
         }

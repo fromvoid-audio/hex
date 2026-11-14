@@ -37,6 +37,8 @@ impl NodeId {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum FreshHistory {
     Track(TrackId),
+    /// A muted, isolated existing track whose old and new local rings are silent.
+    ChangedTrack(TrackId, u64),
     Return(ReturnId),
 }
 
@@ -44,6 +46,9 @@ impl FreshHistory {
     fn contains(self, node: NodeId) -> bool {
         match self {
             Self::Track(id) => node.belongs_to_track(id),
+            Self::ChangedTrack(id, device) => {
+                node.belongs_to_track(id) || node == NodeId::Device(device)
+            }
             Self::Return(id) => {
                 matches!(node, NodeId::ReturnInput(value) | NodeId::ReturnOutput(value) if value == id.value())
             }
@@ -149,6 +154,10 @@ impl Builder {
     }
 }
 impl SignalGraph {
+    /// Cheap prefilter for the single locally inserted processor case.
+    pub(crate) fn has_one_more_node_than(&self, old: &Self) -> bool {
+        old.typed.len().checked_add(1) == Some(self.typed.len())
+    }
     #[cfg(test)]
     pub(crate) fn test_printed_branch(
         project: &Project,
@@ -1218,6 +1227,25 @@ impl SignalGraph {
             }
         })
     }
+
+    /// A changed track may own local device nodes, but no edge may feed
+    /// another owner except its fader's direct Main contribution.
+    fn is_isolated_changed_track(&self, id: TrackId, device: u64) -> bool {
+        let owner = FreshHistory::ChangedTrack(id, device);
+        self.tracks
+            .iter()
+            .any(|track| track.id == Some(id) && matches!(track.output, TrackOutput::Main { .. }))
+            && self.pre_main_edges.iter().enumerate().all(|(index, _)| {
+                let Some((from, to)) = self.pre_main_endpoints(index) else {
+                    return false;
+                };
+                match (owner.contains(from), owner.contains(to)) {
+                    (true, false) => from == NodeId::Fader(id.value()) && to == NodeId::Main,
+                    (false, true) => false,
+                    _ => true,
+                }
+            })
+    }
     /// One new empty Return may begin with silent history only when retained
     /// Returns keep their order and no edge feeds it or routes it beyond Main.
     pub(crate) fn added_isolated_return_from(&self, other: &Self) -> Option<ReturnId> {
@@ -1274,6 +1302,9 @@ impl SignalGraph {
     fn pre_main_history_maps_from(&self, other: &Self) -> bool {
         self.retained_pre_main_history_maps_from(other, None)
     }
+    /// A changed muted track is excluded only after the handoff owner proves
+    /// its narrow source contract. Its isolated local edges still require
+    /// silent history in both runtimes before copying any retained edges.
     fn retained_pre_main_history_maps_from(
         &self,
         other: &Self,
@@ -1288,7 +1319,9 @@ impl SignalGraph {
             fresh
                 .is_none_or(|owner| {
                     key != Some(match owner {
-                        FreshHistory::Track(id) => (false, id.value()),
+                        FreshHistory::Track(id) | FreshHistory::ChangedTrack(id, _) => {
+                            (false, id.value())
+                        }
                         FreshHistory::Return(id) => (true, id.value()),
                     })
                 })
@@ -1296,7 +1329,9 @@ impl SignalGraph {
         };
         if self.key_stages != other.key_stages
             || match fresh {
-                Some(FreshHistory::Track(_)) | None => self.returns.len() != other.returns.len(),
+                Some(FreshHistory::Track(_) | FreshHistory::ChangedTrack(_, _)) | None => {
+                    self.returns.len() != other.returns.len()
+                }
                 Some(FreshHistory::Return(id)) => {
                     self.added_isolated_return_from(other) != Some(id)
                         && other.added_isolated_return_from(self) != Some(id)
@@ -1308,6 +1343,21 @@ impl SignalGraph {
                         FreshHistory::Track(track) => {
                             !self.is_isolated_main_track(track)
                                 || !other.is_isolated_main_track(track)
+                        }
+                        FreshHistory::ChangedTrack(track, device) => {
+                            self.tracks.len() != other.tracks.len()
+                                || !self.independent_main_routes()
+                                || !other.independent_main_routes()
+                                || self
+                                    .tracks
+                                    .iter()
+                                    .any(|track| track.printed_merge.is_some())
+                                || other
+                                    .tracks
+                                    .iter()
+                                    .any(|track| track.printed_merge.is_some())
+                                || !self.is_isolated_changed_track(track, device)
+                                || !other.is_isolated_changed_track(track, device)
                         }
                         FreshHistory::Return(_) => self.tracks.len() != other.tracks.len(),
                     }
@@ -1352,7 +1402,7 @@ impl SignalGraph {
             ) => ta == tb && same_edge(a, b),
             _ => false,
         };
-        let retained = |track: &&TrackPlan| !matches!(fresh, Some(FreshHistory::Track(id)) if track.id == Some(id));
+        let retained = |track: &&TrackPlan| !matches!(fresh, Some(FreshHistory::Track(id) | FreshHistory::ChangedTrack(id, _)) if track.id == Some(id));
         let retained_return =
             |bus: &&ReturnPlan| !matches!(fresh, Some(FreshHistory::Return(id)) if bus.id == id);
         if !self
@@ -1619,6 +1669,44 @@ pub(crate) struct SignalRuntime {
     key_taps: Vec<Frame>,
 }
 impl SignalRuntime {
+    /// With no graph-fed input or delay at this track, its resident source can
+    /// pass straight to the fader. Main and sends still advance in graph order.
+    pub(crate) fn resident_return_track_is_passthrough(&self, index: usize) -> bool {
+        if self.graph.returns.is_empty()
+            || self.graph.has_group_outputs
+            || !self.graph.key_stages.is_empty()
+            || self
+                .graph
+                .tracks
+                .iter()
+                .any(|track| !track.audio_feeds.is_empty())
+            || self
+                .graph
+                .returns
+                .iter()
+                .any(|bus| !bus.audio_feeds.is_empty())
+        {
+            return false;
+        }
+        let Some(track) = self.graph.tracks.get(index) else {
+            return false;
+        };
+        let zero_edge = |edge: usize| {
+            self.delay_graph
+                .pre_main_edges
+                .get(edge)
+                .and_then(|&mapped| self.delay_graph.plan.edges().get(mapped))
+                .is_some_and(|edge| edge.delay_frames == 0)
+        };
+        matches!(track.output, TrackOutput::Main { .. })
+            && track.devices.is_empty()
+            && track.generator.is_none()
+            && track.printed_merge.is_none()
+            && track.group_output_mutes.is_empty()
+            && self.graph.plan.nodes()[track.fader].output_arrival_frames == 0
+            && zero_edge(track.source_input)
+            && zero_edge(track.audio_merge)
+    }
     pub(crate) fn new(graph: Arc<SignalGraph>) -> Result<Self, Invalid> {
         let scratch_bytes = graph
             .tracks

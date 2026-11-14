@@ -423,6 +423,25 @@ impl NativeWorker {
             .ordinal
             .checked_add(1)
             .ok_or("native parameter input ordinal exhausted")?;
+        // A stopped idle flush retains the quiescent source after revocation;
+        // its revoked endpoint cannot take part in a callback handoff.
+        let admission = if intent == Intent::Idle && !self.transport_is_live_on_control() {
+            None
+        } else {
+            let ordinal_key = std::num::NonZeroU64::new(ordinal)
+                .ok_or("native parameter input ordinal exhausted")?;
+            Some(
+                self.reaper
+                    .control
+                    .reserve_parameter_input_on_control(ordinal_key)
+                    .map_err(|fault| match fault {
+                        Fault::Saturated => "native parameter mailbox is busy",
+                        Fault::Revoked => "native parameter source is not live",
+                        Fault::Exhausted => "native parameter input ordinal exhausted",
+                        _ => "native parameter input generation differs",
+                    })?,
+            )
+        };
         let request = NativeWorkerParameterChange {
             source: Arc::downgrade(&self.reaper.completed),
             binding: self.binding,
@@ -445,6 +464,9 @@ impl NativeWorker {
         slot.require_arrangement_origin = require_arrangement_origin;
         slot.phase = Phase::Queued;
         slot.result = None;
+        if let Some(admission) = admission {
+            admission.publish();
+        }
         self.reaper
             .completed
             .parameter_change_requested

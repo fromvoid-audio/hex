@@ -1370,6 +1370,8 @@ mod tests {
                 },
                 semantic_source_epoch: 1,
                 files: &[],
+                pitches: &[],
+                repitches: &[],
             },
             ResidentFileMetadata::new(1, std::collections::BTreeMap::new()).unwrap(),
         )

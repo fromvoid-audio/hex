@@ -147,6 +147,70 @@ class PlannerSourceLoaderTests(unittest.TestCase):
 
 
 class ScopeTests(unittest.TestCase):
+    def test_session_density_inventory_retains_target_path(self):
+        root = SCRIPTS.parent
+        package_dir = root / "crates/hex-session"
+        metadata = {"workspace_members": ["session"], "packages": [{
+            "id": "session", "name": "hex-session",
+            "manifest_path": str(package_dir / "Cargo.toml"), "features": {}, "dependencies": [],
+            "targets": [{"name": "automation_take_density", "kind": ["test"],
+                         "src_path": str(package_dir / "tests/automation_take_density.rs")}],
+        }]}
+        inventory = plan.cargo_inventory(metadata, root)
+        self.assertEqual(inventory[0]["targets"][0]["src_path"],
+                         "tests/automation_take_density.rs")
+
+    def test_session_adoption_selects_density_integration_only_when_needed(self):
+        owner = "hex-session"
+        target = {"name": "automation_take_density", "kind": ["test"],
+                  "src_path": "tests/automation_take_density.rs", "required-features": []}
+        for filters, targets, expected in (
+            (["service::automation_take::adoption::"], [target], True),
+            (["service::automation_take::"], [target], True),
+            (["service::automation_take::adoption::tests::"], [target], True),
+            (["service::recovery::"], [target], False),
+            (["service::automation_take::adoption::"], [], False),
+            ([], [target], False),
+        ):
+            with self.subTest(filters=filters, targets=targets):
+                inventory = [{"name": owner, "manifest": "crates/hex-session/Cargo.toml",
+                              "features": {}, "dependencies": [],
+                              "targets": [{"name": "hex_session", "kind": ["lib"]}, *targets]}]
+                boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
+                            "lint_packages": [owner], "single_run": {},
+                            "module_filters": {owner: filters} if filters else {}}
+                steps = {step.step_id: step for step in ci.boundary_steps({
+                    "affected_packages": [owner], "boundary": boundary,
+                    "cargo_inventory": inventory, "paths": []})}
+                step = steps.get("session-automation-take-density")
+                self.assertEqual(step is not None, expected)
+                if step:
+                    self.assertEqual(step.argv, ("cargo", "test", "-p", owner, "--test",
+                                                  "automation_take_density", "--locked"))
+                    self.assertTrue(step.requires_tests)
+                if not filters:
+                    self.assertIn("affected-tests", steps)
+
+    def test_session_adoption_rejects_malformed_density_target(self):
+        owner = "hex-session"
+        for target in (
+            {"name": "automation_take_density", "kind": ["test"], "src_path": "tests/wrong.rs"},
+            {"name": "automation_take_density", "kind": ["example"],
+             "src_path": "tests/automation_take_density.rs"},
+            {"name": "automation_take_density", "kind": ["test"],
+             "src_path": "tests/automation_take_density.rs", "required-features": ["hidden"]},
+        ):
+            with self.subTest(target=target):
+                inventory = [{"name": owner, "manifest": "crates/hex-session/Cargo.toml",
+                              "features": {}, "dependencies": [],
+                              "targets": [{"name": "hex_session", "kind": ["lib"]}, target]}]
+                boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
+                            "lint_packages": [owner], "single_run": {},
+                            "module_filters": {owner: ["service::automation_take::adoption::"]}}
+                with self.assertRaisesRegex(ValueError, "integration target is malformed"):
+                    ci.boundary_steps({"affected_packages": [owner], "boundary": boundary,
+                                       "cargo_inventory": inventory, "paths": []})
+
     def test_session_resident_audio_source_and_nested_tests_share_module_boundary(self):
         root = SCRIPTS.parent
         owner = "hex-session"

@@ -24,6 +24,7 @@ pub struct StreamedBounceRequest<'a> {
     pub(crate) prepared: &'a Arc<PreparedRevision>,
     pub(crate) resources: Option<&'a PreparedDeviceResources>,
     pub(crate) files: &'a BTreeMap<AssetId, VerifiedAudioFile>,
+    pub(crate) repitches: &'a [hex_engine::audio_transform::StreamedRepitchRequirement],
     pub(crate) path: &'a Path,
     pub(crate) start: u64,
     pub(crate) frames: u64,
@@ -42,6 +43,10 @@ impl StreamedBounceRequest<'_> {
     /// Verified file facts captured with the document's source bindings.
     pub fn file(&self, asset: AssetId) -> Option<&VerifiedAudioFile> {
         self.files.get(&asset)
+    }
+    /// Exact file-backed Re-Pitch maps captured with the isolated revision.
+    pub fn repitches(&self) -> &[hex_engine::audio_transform::StreamedRepitchRequirement] {
+        self.repitches
     }
     pub fn path(&self) -> &Path {
         self.path
@@ -65,6 +70,7 @@ impl StreamedBounceRequest<'_> {
 pub(crate) struct BounceRevision {
     pub(crate) prepared: Arc<PreparedRevision>,
     pub(crate) files: BTreeMap<AssetId, VerifiedAudioFile>,
+    pub(crate) file_sources: Option<crate::service::ResidentFileSet>,
 }
 impl BounceRevision {
     pub(crate) fn capture(
@@ -76,7 +82,11 @@ impl BounceRevision {
         } else {
             BTreeMap::new()
         };
-        Self { prepared, files }
+        Self {
+            prepared,
+            files,
+            file_sources: None,
+        }
     }
 }
 
@@ -105,6 +115,10 @@ pub(crate) fn render(
                 prepared: &revision.prepared,
                 resources,
                 files: &revision.files,
+                repitches: revision
+                    .file_sources
+                    .as_ref()
+                    .map_or(&[], |files| files.repitches().requirements()),
                 path,
                 start,
                 frames,

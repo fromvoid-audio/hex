@@ -284,6 +284,32 @@ impl ResamplePlan {
         )
     }
 
+    /// Render from a tracked verified reader, preserving complete-page coverage
+    /// for the caller's later `VerifiedWavCoverage::finish`.
+    pub fn render_verified_coverage_window(
+        &self,
+        reader: &mut crate::VerifiedWavCoverage<'_>,
+        global_output_start: u64,
+        output: &mut [[f32; 2]],
+        source_scratch: &mut [[f32; 2]],
+    ) -> Result<(), ImportError> {
+        let (sample_rate, source_frames, max_window_frames) = reader.reader_metadata();
+        self.render_reader_window(
+            ReaderMetadata {
+                sample_rate,
+                source_frames,
+                max_window_frames,
+            },
+            global_output_start,
+            output,
+            source_scratch,
+            |source_start, scratch| {
+                reader.read_frames_into_with_cancel(source_start, scratch, || false)?;
+                Ok(())
+            },
+        )
+    }
+
     fn render_reader_window(
         &self,
         reader: ReaderMetadata,

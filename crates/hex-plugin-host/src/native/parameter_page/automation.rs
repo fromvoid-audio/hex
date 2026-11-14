@@ -111,7 +111,9 @@ impl Prepared {
                     ParameterPageProgress::Changed { .. } => {
                         return Err(Error::Protocol("authored parameter metadata changed"));
                     }
-                    ParameterPageProgress::Conversion(_) | ParameterPageProgress::Editor(_) => {
+                    ParameterPageProgress::Conversion(_)
+                    | ParameterPageProgress::Editor(_)
+                    | ParameterPageProgress::EditorSeal(_) => {
                         return Err(Error::Protocol("expected authored parameter metadata page"));
                     }
                 }
