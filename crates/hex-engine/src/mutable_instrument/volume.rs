@@ -373,6 +373,22 @@ impl MutableInstrumentTrackRuntime {
         mut lookup: Option<&mut VolumeLookup<'_>>,
         automation: Option<&dyn hex_lattice::NativeParameterAutomation>,
     ) -> Result<(), MutableInstrumentRuntimeError> {
+        let source_end = source_start
+            .checked_add(
+                u64::try_from(frames.len())
+                    .map_err(|_| MutableInstrumentRuntimeError::Arithmetic)?,
+            )
+            .ok_or(MutableInstrumentRuntimeError::Arithmetic)?;
+        if onsets.has_contributor_fade_in
+            && onsets.iter().any(|onset| {
+                onset.contributor_fade_in
+                    && track.is_none_or(|track| onset.key.track == track)
+                    && onset.source_start > source_start
+                    && onset.source_start < source_end
+            })
+        {
+            return Err(MutableInstrumentRuntimeError::InvalidSourceSpan);
+        }
         let mut offset = 0;
         while offset < frames.len() {
             let performance = performance_start
@@ -418,15 +434,25 @@ impl MutableInstrumentTrackRuntime {
                 let delta = onset.source_start - source;
                 if delta > 0 {
                     count = count.min(usize::try_from(delta).unwrap_or(usize::MAX));
-                } else if let Some(lookup) = lookup.as_mut()
-                    && let Some(slice) = lookup(
-                        MutableOccurrenceSignature::new(onset),
-                        performance,
-                        count,
-                        false,
-                    )?
-                {
-                    count = count.min(slice.remaining(count)?);
+                } else {
+                    if onset.contributor_fade_in {
+                        let fade = ContributorFadeIn::new(self.sample_rate)
+                            .ok_or(MutableInstrumentRuntimeError::InvalidSourceSpan)?;
+                        count = count.min(
+                            usize::try_from(fade.frames())
+                                .map_err(|_| MutableInstrumentRuntimeError::Arithmetic)?,
+                        );
+                    }
+                    if let Some(lookup) = lookup.as_mut()
+                        && let Some(slice) = lookup(
+                            MutableOccurrenceSignature::new(onset),
+                            performance,
+                            count,
+                            false,
+                        )?
+                    {
+                        count = count.min(slice.remaining(count)?);
+                    }
                 }
             }
             for proof in &self.scratch {
