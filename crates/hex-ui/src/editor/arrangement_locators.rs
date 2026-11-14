@@ -231,7 +231,6 @@ impl EditorView {
         if self.mode != EditorMode::Arrangement
             || !(self.focus.is_focused(window) || self.locators.focus.is_focused(window))
             || self.track_header_focused(window)
-            || !self.locator_edit_available()
         {
             return;
         }
@@ -239,12 +238,25 @@ impl EditorView {
             self.audio_status()
                 .is_some_and(|status| status.playing.load(Acquire)),
         );
+        let available = if playing {
+            self.locator_edit_available()
+        } else {
+            self.locator_committed_action_available()
+        };
+        if !available {
+            return;
+        }
         let reference = if playing {
             self.cursor_position()
         } else {
             self.playback_start_frame()
         };
-        let Some(state) = self.state.as_ref() else {
+        let state = if playing {
+            self.state.as_ref()
+        } else {
+            self.locator_state()
+        };
+        let Some(state) = state else {
             return;
         };
         let locators = state.project.arrangement_locators();
@@ -446,7 +458,9 @@ impl EditorView {
         !self.edit_pending() && self.locator_controls_available()
     }
 
-    fn locator_naming_available(&self) -> bool {
+    // Naming and stopped navigation may use the committed view only when it
+    // contains every admitted locator add and no other work is pending.
+    fn locator_committed_action_available(&self) -> bool {
         self.locator_edit_available()
             || (self.locator_add_available()
                 && self.pending_requests.is_empty()
@@ -526,7 +540,7 @@ impl EditorView {
     }
 
     fn begin_locator_name(&mut self, source: Source, window: &mut Window, cx: &mut Context<Self>) {
-        if !source.current(self) || !self.locator_naming_available() {
+        if !source.current(self) || !self.locator_committed_action_available() {
             return;
         }
         let Some(locator) = self
@@ -967,6 +981,96 @@ mod tests {
             assert!(std::time::Instant::now() < deadline, "locator terminal");
             std::thread::yield_now();
         }
+    }
+
+    #[gpui::test]
+    fn stopped_navigation_uses_only_complete_committed_locator_views(cx: &mut TestAppContext) {
+        use crate::editor::drag::group_drag_ui_test::fixture;
+
+        let (_files, window, editor, _) = fixture(cx);
+        let mut visual = VisualTestContext::from_window(window, cx);
+        for frame in [48_000, 72_000] {
+            editor.update(&mut visual, |view, _| view.place_locator_play_start(frame));
+            visual.simulate_keystrokes("i");
+        }
+        visual.run_until_parked();
+        let deadline = crate::test_wait::hang_deadline();
+        let mut observations = Vec::new();
+        let mut terminals = Vec::new();
+        while observations.len() < 2 || terminals.len() < 2 {
+            editor.read_with(&visual, |view, _| {
+                if observations.len() < 2
+                    && let Ok(observation) = view.service.try_arrangement_edit_view()
+                {
+                    observations.push(observation);
+                }
+                if terminals.len() < 2
+                    && let Ok(event) = view.service.try_event()
+                {
+                    assert!(event.request_complete && event.error.is_none());
+                    terminals.push(event);
+                }
+            });
+            assert!(
+                std::time::Instant::now() < deadline,
+                "locator observations and terminals"
+            );
+            std::thread::yield_now();
+        }
+        editor.update(&mut visual, |view, _| view.place_locator_play_start(0));
+        visual.simulate_keystrokes("cmd-alt-right");
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(view.playback_start_frame(), 0)
+        });
+        let mut observations = observations.into_iter();
+        editor.update(&mut visual, |view, _| {
+            assert!(view.observe_locator_add_view(observations.next().unwrap()));
+        });
+        visual.simulate_keystrokes("cmd-alt-right");
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(view.playback_start_frame(), 0)
+        });
+        editor.update(&mut visual, |view, _| {
+            assert!(view.observe_locator_add_view(observations.next().unwrap()));
+            view.pending_requests.push_back(Request::Undo);
+        });
+        visual.simulate_keystrokes("cmd-alt-right");
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(view.playback_start_frame(), 0)
+        });
+        editor.update(&mut visual, |view, _| {
+            assert!(matches!(
+                view.pending_requests.pop_back(),
+                Some(Request::Undo)
+            ));
+            let token = view.play_intent.reserve_token().unwrap();
+            view.play_intent.admit(token, true);
+        });
+        visual.simulate_keystrokes("cmd-alt-right");
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(view.playback_start_frame(), 0);
+            assert!(view.pending_seek_ticket.is_none());
+        });
+        editor.update(&mut visual, |view, _| view.play_intent = Default::default());
+        visual.simulate_keystrokes("cmd-alt-right");
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(view.playback_start_frame(), 48_000)
+        });
+        visual.simulate_keystrokes("cmd-alt-right");
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(view.playback_start_frame(), 72_000)
+        });
+        visual.simulate_keystrokes("cmd-alt-left");
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(view.playback_start_frame(), 48_000)
+        });
+        editor.update(&mut visual, |view, _| view.place_locator_play_start(90_000));
+        for terminal in terminals {
+            editor.update(&mut visual, |view, _| view.receive(terminal));
+        }
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(view.playback_start_frame(), 90_000)
+        });
     }
 
     #[gpui::test]
