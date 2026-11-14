@@ -1073,3 +1073,32 @@ fn cross_rate_retarget_and_active_to_legacy_history_are_refused() {
             .unwrap()
     );
 }
+
+#[test]
+fn sparse_history_copy_matches_full_copy_after_voice_reuse() {
+    for global in [false, true] {
+        let mut settings = settings();
+        settings.global.active = global;
+        let mut source = runtime(settings);
+        process(&mut source, &[on(1, 60), on(2, 64)], 80);
+        process(&mut source, &[off(2)], 8);
+        // A released slot can leave a hole before a retained voice.
+        source.voices.swap(1, 3);
+        let mut actual = runtime(settings);
+        let mut twin = runtime(settings);
+        let mut full_copy = runtime(settings);
+        for target in [&mut actual, &mut twin, &mut full_copy] {
+            process(target, &[on(10, 48), on(11, 50), on(12, 52)], 24);
+            target.copy_history_from(&source);
+        }
+        // Independent reference copies every slot, including empty ones.
+        full_copy.voices.copy_from_slice(&source.voices);
+        assert_eq!(active(&actual), active(&full_copy));
+        assert_eq!(active(&twin), active(&full_copy));
+        for events in [&[on(3, 67)][..], &[off(1)][..], &[][..]] {
+            let expected = process(&mut full_copy, events, 128);
+            assert_eq!(process(&mut actual, events, 128), expected);
+            assert_eq!(process(&mut twin, events, 128), expected);
+        }
+    }
+}
