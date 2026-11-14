@@ -223,6 +223,64 @@ impl ComputerKeyboardRuntime {
             voice.muted_source_onset = true;
         }
     }
+    /// One held physical input suppressed by mute; more than one is not
+    /// admitted by the bounded shared-source continuation.
+    pub(crate) fn single_muted_source_onset(&self) -> Result<Option<u64>, ()> {
+        let mut held = self.primary.iter().flatten().filter(|voice| {
+            voice.muted_source_onset
+                && voice.gate.is_none()
+                && voice.source == VoiceSource::Physical
+        });
+        let first = held.next().map(|voice| voice.id);
+        if held.next().is_some() {
+            Err(())
+        } else {
+            Ok(first)
+        }
+    }
+    pub(crate) fn has_muted_source_onset(&self) -> bool {
+        self.primary.iter().flatten().any(|voice| {
+            voice.muted_source_onset
+                && voice.gate.is_none()
+                && voice.source == VoiceSource::Physical
+        })
+    }
+
+    pub(crate) fn muted_source_onset_event(&self, id: u64) -> Option<NativeInstrumentEvent> {
+        let voice = self.scratch.iter().flatten().find(|voice| {
+            voice.id == id
+                && voice.muted_source_onset
+                && voice.gate.is_none()
+                && voice.source == VoiceSource::Physical
+        })?;
+        Some(NativeInstrumentEvent::NoteOn {
+            frame_offset: 0,
+            occurrence_id: id,
+            pitch: ((voice.token & 255) as u8).saturating_sub(1),
+            velocity: ((voice.token >> 8) & 255) as u8,
+        })
+    }
+
+    pub(crate) fn clear_muted_source_onset(&mut self, id: u64) {
+        if let Some(voice) = self
+            .scratch
+            .iter_mut()
+            .flatten()
+            .find(|voice| voice.id == id)
+        {
+            voice.muted_source_onset = false;
+        }
+    }
+    pub(crate) fn clear_muted_source_onsets(&mut self) {
+        for voice in self.scratch.iter_mut().flatten() {
+            voice.muted_source_onset = false;
+        }
+    }
+    pub(crate) fn clear_committed_muted_source_onsets(&mut self) {
+        for voice in self.primary.iter_mut().chain(&mut self.scratch).flatten() {
+            voice.muted_source_onset = false;
+        }
+    }
     #[cfg(test)]
     pub(crate) fn muted_source_held_count(&self) -> usize {
         self.primary

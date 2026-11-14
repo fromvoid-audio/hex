@@ -34,6 +34,7 @@ impl SessionPlayback {
             anchor: _,
             interactive_start_frame: _,
             pending_shared_chase: _, // inline and charged by size_of::<Self>()
+            pending_shared_live: _,
             historical_floor: _,
             route_historical_floors: _,
             source_voice_envelopes: _,

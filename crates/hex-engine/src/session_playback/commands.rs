@@ -69,7 +69,18 @@ impl SessionPlayback {
         command: SessionPlaybackCommand,
     ) -> Result<(), SessionPlaybackError> {
         match command {
-            SessionPlaybackCommand::Play => self.playing = true,
+            SessionPlaybackCommand::Play => {
+                if !self.playing
+                    && let Some(keyboard) = &mut self.computer_keyboard
+                    && self.revision.arrangement().tracks().iter().any(|track| {
+                        track.canonical_track_id() == Some(keyboard.track())
+                            && track.source_input_enabled()
+                    })
+                {
+                    keyboard.clear_committed_muted_source_onsets();
+                }
+                self.playing = true;
+            }
             SessionPlaybackCommand::Pause => {
                 self.invalidate_native_parameter_input();
                 if self.playing {
@@ -82,6 +93,7 @@ impl SessionPlayback {
                     // offline export lacks one, and it refuses Pause.
                     self.pause_analytic_sources()?;
                     self.pending_shared_chase = None;
+                    self.pending_shared_live = None;
                     self.foreign_arrangement.cut();
                     // A removed receiver may already own a detached release.
                     // Only explicit discontinuities reset admitted monitoring.
@@ -175,6 +187,7 @@ impl SessionPlayback {
         self.anchor = None;
         self.interactive_start_frame = None;
         self.pending_shared_chase = None;
+        self.pending_shared_live = None;
         self.historical_floor = None;
         self.route_historical_floors.fill(None);
         self.analytic_continuations.fill(None);
@@ -326,6 +339,7 @@ impl SessionPlayback {
         self.anchor = None;
         self.interactive_start_frame = None;
         self.pending_shared_chase = None;
+        self.pending_shared_live = None;
         self.historical_floor = None;
         self.route_historical_floors.fill(None);
         self.restart_audio_history();

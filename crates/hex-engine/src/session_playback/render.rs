@@ -1217,6 +1217,7 @@ impl SessionPlayback {
         self.arrangement_loop_pass = arrangement_loop_pass;
         self.interactive_start_frame = None;
         self.pending_shared_chase = None;
+        self.pending_shared_live = None;
         if route_changed {
             self.advance_route_state_generation();
         }
@@ -1629,6 +1630,7 @@ impl SessionPlayback {
                             &timing,
                             true,
                             None,
+                            self.pending_shared_live,
                         )?;
                     }
                     render_mutable_instrument_chunk(
