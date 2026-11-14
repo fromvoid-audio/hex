@@ -2252,10 +2252,68 @@ fn streamed_repitch_projects_canonical_map_and_refuses_other_processing() {
     let (streamed, law) = streamed_repitch_map(&edit, tempo, 8_000, &cancel).unwrap();
     assert_eq!(streamed, resident);
     assert_eq!(law, render_resampler(&edit.domain));
+    let asset = editor.project().clip(clip).unwrap().asset();
+    let raw = crate::StreamedSourceMetadata::new(
+        crate::StreamSourceKey::new(1, asset),
+        16_000,
+        16_000,
+        8_000,
+        8_000,
+        hex_project::IDENTITY_CONVERSION,
+        [3; 32],
+    )
+    .unwrap();
+    let requirement = StreamedRepitchRequirement::new(&raw, &edit, tempo, &cancel).unwrap();
+    assert_eq!(requirement.map(), &streamed);
+    assert_eq!(requirement.law(), law);
+    assert_eq!(
+        requirement.metadata_for(&raw).unwrap(),
+        raw.with_repitch(&streamed, law).unwrap()
+    );
+    assert!(requirement.retained_bytes().unwrap() >= streamed.backing_bytes().unwrap());
+    assert_eq!(
+        requirement.clone().metadata_for(&raw).unwrap(),
+        requirement.metadata_for(&raw).unwrap()
+    );
+    let foreign = crate::StreamedSourceMetadata::new(
+        crate::StreamSourceKey::new(1, asset),
+        16_000,
+        16_000,
+        8_000,
+        8_000,
+        hex_project::IDENTITY_CONVERSION,
+        [4; 32],
+    )
+    .unwrap();
+    assert!(requirement.metadata_for(&foreign).is_err());
+    let next_generation = crate::StreamedSourceMetadata::new(
+        crate::StreamSourceKey::new(2, asset),
+        16_000,
+        16_000,
+        8_000,
+        8_000,
+        hex_project::IDENTITY_CONVERSION,
+        [3; 32],
+    )
+    .unwrap();
+    assert_eq!(
+        requirement.metadata_for(&next_generation).unwrap(),
+        next_generation.with_repitch(&streamed, law).unwrap()
+    );
     assert!(streamed_repitch_map(&edit, tempo, 7_999, &cancel).is_err());
     let mut invalid = edit.clone();
     Arc::make_mut(&mut invalid.domain).pitch_cents = 100;
     assert!(streamed_repitch_map(&invalid, tempo, 8_000, &cancel).is_err());
+    assert!(StreamedRepitchRequirement::new(&raw, &invalid, tempo, &cancel).is_err());
+    assert!(
+        StreamedRepitchRequirement::new(
+            &raw.with_repitch(&streamed, law).unwrap(),
+            &edit,
+            tempo,
+            &cancel
+        )
+        .is_err()
+    );
     Arc::make_mut(&mut invalid.domain).pitch_cents = 0;
     Arc::make_mut(&mut invalid.domain).looping = true;
     assert!(streamed_repitch_map(&invalid, tempo, 8_000, &cancel).is_err());
