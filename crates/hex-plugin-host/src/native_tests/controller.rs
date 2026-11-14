@@ -82,7 +82,9 @@ fn held_controller_query_keeps_pcm_running_and_cancels_without_sdk_teardown() {
                     }
                     ParameterPageProgress::Pending => {}
                     ParameterPageProgress::Changed { .. } => panic!("unversioned first query"),
-                    ParameterPageProgress::Conversion(_) | ParameterPageProgress::Editor(_) => {
+                    ParameterPageProgress::Conversion(_)
+                    | ParameterPageProgress::Editor(_)
+                    | ParameterPageProgress::EditorSeal(_) => {
                         panic!("expected metadata page")
                     }
                 }
@@ -310,7 +312,9 @@ fn page(instance: &mut Prepared, query: ParameterPageQuery) -> Box<ParameterPage
             ParameterPageProgress::Page(page) => return page,
             ParameterPageProgress::Pending => {}
             ParameterPageProgress::Changed { .. } => panic!("unchanged fixture metadata"),
-            ParameterPageProgress::Conversion(_) | ParameterPageProgress::Editor(_) => {
+            ParameterPageProgress::Conversion(_)
+            | ParameterPageProgress::Editor(_)
+            | ParameterPageProgress::EditorSeal(_) => {
                 panic!("expected metadata page")
             }
         }
@@ -506,7 +510,8 @@ fn actual_controller_pages_use_sdk_conversions_without_processing_or_replacing_s
                 }
                 ParameterPageProgress::Page(_)
                 | ParameterPageProgress::Conversion(_)
-                | ParameterPageProgress::Editor(_) => {
+                | ParameterPageProgress::Editor(_)
+                | ParameterPageProgress::EditorSeal(_) => {
                     panic!("stale metadata must invalidate enumeration")
                 }
             }
@@ -521,7 +526,9 @@ fn actual_controller_pages_use_sdk_conversions_without_processing_or_replacing_s
                 ParameterPageProgress::Page(page) => break page,
                 ParameterPageProgress::Pending => {}
                 ParameterPageProgress::Changed { .. } => panic!("same stopped metadata"),
-                ParameterPageProgress::Conversion(_) | ParameterPageProgress::Editor(_) => {
+                ParameterPageProgress::Conversion(_)
+                | ParameterPageProgress::Editor(_)
+                | ParameterPageProgress::EditorSeal(_) => {
                     panic!("expected stopped metadata page")
                 }
             }
@@ -924,4 +931,105 @@ fn replacement_editor_commands_report_closed_and_unavailable_without_opening_win
             .status
             .success()
     );
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn editor_seal_preserves_burst_and_refuses_an_active_sdk_gesture() {
+    use crate::protocol::{ControllerRequest, EditorSealState, ParameterEditKind};
+
+    fn seal(instance: &mut Prepared) -> EditorSealState {
+        instance
+            .begin_controller_request_on_worker(ControllerRequest::SealEditorEdits)
+            .unwrap();
+        let until = Instant::now() + Duration::from_millis(750);
+        loop {
+            match instance.poll_parameter_page_on_worker().unwrap() {
+                ParameterPageProgress::EditorSeal(result) => return result,
+                ParameterPageProgress::Pending => {}
+                other => panic!("unexpected editor seal terminal: {other:?}"),
+            }
+            assert!(
+                Instant::now() < until,
+                "original helper did not answer the seal"
+            );
+            thread::yield_now();
+        }
+    }
+    for (variant, count) in [(116, 14), (147, 3)] {
+        let case = Case::new();
+        let setup = case.setup_restore(variant);
+        let end = case.root.join("end");
+        let end_gate = end.clone();
+        let mut instance = Prepared::prepare(
+            &build(),
+            source(),
+            options(),
+            PreparationCancellation::new_on_control().unwrap(),
+            move |command| {
+                setup(command);
+                if variant == 147 {
+                    command.env("HEX_ORIGINAL_EDITOR_END_RELEASE", end_gate);
+                }
+            },
+        )
+        .unwrap();
+        let child = instance.child_id_on_control();
+        fs::write(case.release(), b"emit actual SDK editor callbacks").unwrap();
+        let until = Instant::now() + Duration::from_millis(750);
+        while case.observation().is_none_or(|trace| trace[0] != 25) {
+            assert!(
+                Instant::now() < until,
+                "actual editor callbacks must arrive"
+            );
+            thread::yield_now();
+        }
+        if variant == 147 {
+            assert_eq!(seal(&mut instance), EditorSealState::NotSealed);
+            fs::write(end, b"finish actual SDK gesture").unwrap();
+            while seal(&mut instance) != EditorSealState::Sealed {
+                assert!(
+                    Instant::now() < until,
+                    "completed SDK gesture must permit sealing"
+                );
+                thread::yield_now();
+            }
+        } else {
+            assert_eq!(seal(&mut instance), EditorSealState::Sealed);
+        }
+        let mut edits = Vec::new();
+        while edits.len() < count {
+            let batch = instance.service_idle_editor_edits_on_worker().unwrap();
+            edits.extend_from_slice(batch.edits.as_slice());
+            assert!(
+                Instant::now() < until,
+                "sealed source must drain accepted callbacks"
+            );
+            thread::yield_now();
+        }
+        assert_eq!(edits.len(), count);
+        for (index, edit) in edits.iter().enumerate() {
+            assert_eq!(
+                (edit.sequence, edit.gesture, edit.id),
+                (index as u64 + 1, 1, 7)
+            );
+            let kind = if index == 0 {
+                ParameterEditKind::Begin
+            } else if index + 1 == count {
+                ParameterEditKind::End
+            } else {
+                ParameterEditKind::Perform
+            };
+            assert_eq!(edit.kind, kind);
+        }
+        assert_eq!(instance.child_id_on_control(), child);
+        assert_eq!(instance.completed_blocks_on_control(), 0);
+        assert!(
+            instance
+                .stop_and_reap_on_control()
+                .unwrap()
+                .status
+                .success()
+        );
+    }
 }

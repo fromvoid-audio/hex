@@ -165,6 +165,9 @@ class Host final : public IHostApplication, public IComponentHandler, public ICo
     size_t cohort_value_count=0;
     size_t end_reservations() const { return active_count+(cohort?1:0); }
     std::atomic<bool> accepting{true};
+    // Main-lane editor admission can close while accepted work continues to
+    // dispatch and the worker drains the exact ordered receipt prefix.
+    bool editor_edits_sealed=false;
     std::atomic<pthread_t> processing_thread{nullptr};
     bool dispatching=false, recursive=false, applying_feedback=false, applying_saved_state=false;
     ParameterSnapshot metadata{};
@@ -224,6 +227,15 @@ public:
     const HostMessageDiagnostics& message_diagnostics() const { return message_trace; }
     uint32 reference_count() const { return references.load(); }
     uint32 refusal_flags() const { return refusals.load(); }
+    // Do not invent an End or split an atomic group. The caller retains the
+    // original source if closing the editor leaves an open gesture/cohort.
+    // Normal dispatch, feedback and latency observations stay live.
+    bool seal_editor_edits_on_control() {
+        if(![NSThread isMainThread] || !accepting || dispatching || applying_saved_state ||
+            active_count || cohort) return false;
+        editor_edits_sealed=true;
+        return true;
+    }
     void bind_processing_thread() { processing_thread.store(pthread_self(),std::memory_order_release); }
     // A synchronous SDK state setter may echo parameter edits. The saved
     // bytes already define the processor state and the controller inventory
@@ -306,6 +318,7 @@ public:
         if(!advertises_editor_groups) return kNotImplemented;
         if(![NSThread isMainThread]) {refuse(WrongThread);return kResultFalse;}
         if(!accepting) {refuse(Retiring);return kResultFalse;}
+        if(editor_edits_sealed && !applying_saved_state) return kResultFalse;
         if(dispatching) {recursive=true;refuse(RecursiveRestart);return kResultFalse;}
         if(applying_saved_state) return kResultOk;
         if(cohort) {poison_cohort();return kResultFalse;}
@@ -321,6 +334,7 @@ public:
         if(!advertises_editor_groups) return kNotImplemented;
         if(![NSThread isMainThread]) {refuse(WrongThread);return kResultFalse;}
         if(!accepting) {refuse(Retiring);return kResultFalse;}
+        if(editor_edits_sealed && !applying_saved_state) return kResultFalse;
         if(dispatching) {recursive=true;refuse(RecursiveRestart);return kResultFalse;}
         if(applying_saved_state) return kResultOk;
         if(!cohort) {refuse(InvalidEdit);return kResultFalse;}
@@ -480,9 +494,11 @@ private:
     tresult admit_edit(ParamID id,uint32 kind,ParamValue value) {
         if(![NSThread isMainThread]) {refuse(WrongThread);return kResultFalse;}
         if(!accepting) {refuse(Retiring);return kResultFalse;}
+        if(editor_edits_sealed && !applying_saved_state) return kResultFalse;
         if(dispatching) {recursive=true;refuse(RecursiveRestart);return kResultFalse;}
         const bool valid_value=kind!=Perform || (std::isfinite(value) && value>=0 && value<=1);
         if(applying_saved_state && id<=0x7FFFFFFFu && valid_value) return kResultOk;
+        if(editor_edits_sealed) return kResultFalse;
         ParameterSnapshot::Parameter* info=nullptr;
         for(uint32 n=0;n<metadata.count;++n) if(metadata.parameters[n].info.id==id) info=&metadata.parameters[n];
         if(!info) {refuse_editor_edit(InvalidEdit|UnknownEditParameter);return kInvalidArgument;}

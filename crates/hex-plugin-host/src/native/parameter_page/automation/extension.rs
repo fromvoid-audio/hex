@@ -209,9 +209,11 @@ impl Prepared {
                     steps: target.steps,
                 })
             }
-            ParameterPageProgress::Conversion(_) | ParameterPageProgress::Editor(_) => Ok(
-                Progress::Refused("expected authored parameter metadata page"),
-            ),
+            ParameterPageProgress::Conversion(_)
+            | ParameterPageProgress::Editor(_)
+            | ParameterPageProgress::EditorSeal(_) => Ok(Progress::Refused(
+                "expected authored parameter metadata page",
+            )),
         }
     }
 }

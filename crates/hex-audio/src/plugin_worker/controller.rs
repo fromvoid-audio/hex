@@ -5,8 +5,8 @@ use super::*;
 use hex_plugin_host::{
     Error,
     protocol::{
-        ControllerRequest, ParameterConversionResult, ParameterPage, ParameterPageProgress,
-        PluginEditorState,
+        ControllerRequest, EditorSealState, ParameterConversionResult, ParameterPage,
+        ParameterPageProgress, PluginEditorState,
     },
 };
 use std::{
@@ -24,6 +24,7 @@ struct Reply {
     changed: bool,
     conversion: Option<ParameterConversionResult>,
     editor: Option<PluginEditorState>,
+    editor_seal: Option<EditorSealState>,
     extension: Option<NativeWorkerAuthoredParameterProgress>,
 }
 
@@ -82,6 +83,7 @@ impl NativeWorkerControllerQuery {
 pub enum NativeWorkerControllerProgress {
     Pending,
     Editor(PluginEditorState),
+    EditorSeal(EditorSealState),
     Page(Box<ParameterPage>),
     Conversion(Box<ParameterConversionResult>),
     Changed { revision: u64, total: u16 },
@@ -117,6 +119,13 @@ impl NativeWorker {
             return Err("native controller source is not live");
         }
         let stopped = !self.transport_is_live_on_control();
+        if matches!(
+            query,
+            Operation::Observe(ControllerRequest::SealEditorEdits)
+        ) && !stopped
+        {
+            return Err("native editor seal requires a stopped source");
+        }
         if stopped {
             self.service_stopped_controller()?;
         }
@@ -175,6 +184,8 @@ impl NativeWorker {
         };
         Ok(if let Some(editor) = reply.editor {
             NativeWorkerControllerProgress::Editor(editor)
+        } else if let Some(seal) = reply.editor_seal {
+            NativeWorkerControllerProgress::EditorSeal(seal)
         } else if let Some(conversion) = reply.conversion {
             NativeWorkerControllerProgress::Conversion(Box::new(conversion))
         } else if reply.changed {
@@ -344,11 +355,16 @@ impl State {
                         editor: Some(editor),
                         ..Reply::default()
                     }),
+                    ParameterPageProgress::EditorSeal(seal) => Some(Reply {
+                        editor_seal: Some(seal),
+                        ..Reply::default()
+                    }),
                     ParameterPageProgress::Page(page) => Some(Reply {
                         page: *page,
                         changed: false,
                         conversion: None,
                         editor: None,
+                        editor_seal: None,
                         extension: None,
                     }),
                     ParameterPageProgress::Conversion(conversion) => Some(Reply {
@@ -364,6 +380,7 @@ impl State {
                             changed: true,
                             conversion: None,
                             editor: None,
+                            editor_seal: None,
                             extension: None,
                         })
                     }
