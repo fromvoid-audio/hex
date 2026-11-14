@@ -14,15 +14,36 @@ pub struct ResidentFileInput<'a> {
 pub struct ResidentFileMetadata {
     catalog_generation: u64,
     sources: BTreeMap<hex_project::AssetId, Arc<hex_engine::StreamedSourceMetadata>>,
+    pitched: BTreeMap<hex_engine::StreamSourceKey, Arc<hex_engine::StreamedSourceMetadata>>,
 }
 impl ResidentFileMetadata {
     pub fn new(
         catalog_generation: u64,
         sources: BTreeMap<hex_project::AssetId, Arc<hex_engine::StreamedSourceMetadata>>,
     ) -> Result<Self, String> {
+        Self::new_with_pitched(catalog_generation, sources, BTreeMap::new())
+    }
+    /// Pitch entries must be exact derivations of a raw entry in this same
+    /// catalog. They are facts only and do not establish worker custody.
+    pub fn new_with_pitched(
+        catalog_generation: u64,
+        sources: BTreeMap<hex_project::AssetId, Arc<hex_engine::StreamedSourceMetadata>>,
+        pitched: BTreeMap<hex_engine::StreamSourceKey, Arc<hex_engine::StreamedSourceMetadata>>,
+    ) -> Result<Self, String> {
         if catalog_generation == 0
+            || pitched.len() > hex_project::MAX_CLIPS
             || sources.iter().any(|(id, metadata)| {
                 metadata.key() != hex_engine::StreamSourceKey::new(catalog_generation, *id)
+            })
+            || pitched.iter().any(|(key, metadata)| {
+                let Some((cents, law)) = key.pitch().filter(|(cents, _)| *cents != 0) else {
+                    return true;
+                };
+                metadata.key() != *key
+                    || sources.get(&key.asset()).is_none_or(|raw| {
+                        !raw.with_plain_pitch(cents, law)
+                            .is_ok_and(|expected| expected == **metadata)
+                    })
             })
         {
             return Err("ordinary file catalog metadata differs".into());
@@ -30,6 +51,7 @@ impl ResidentFileMetadata {
         Ok(Self {
             catalog_generation,
             sources,
+            pitched,
         })
     }
     pub fn catalog_generation(&self) -> u64 {
@@ -39,6 +61,11 @@ impl ResidentFileMetadata {
         &self,
     ) -> &BTreeMap<hex_project::AssetId, Arc<hex_engine::StreamedSourceMetadata>> {
         &self.sources
+    }
+    pub fn pitched_sources(
+        &self,
+    ) -> &BTreeMap<hex_engine::StreamSourceKey, Arc<hex_engine::StreamedSourceMetadata>> {
+        &self.pitched
     }
     /// Compare complete captured facts, not just a matching ID/generation.
     /// No file is opened and no authority is minted by this check.

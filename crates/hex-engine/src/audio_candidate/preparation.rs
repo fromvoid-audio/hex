@@ -91,6 +91,28 @@ impl<'a, 'definitions> AudioCandidateEffects<'a, 'definitions> {
             scan_frames, cancel, self.registry, native_input,
         )
     }
+    /// Same resource/effect preparation with exact separately verified pitch
+    /// metadata. Page and native source custody remain with the host.
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_registered_pitch_source_revision(
+        &self,
+        project: &Project,
+        sources: &BTreeMap<AssetId, crate::compile::PreparedAudioSource>,
+        pitched: &BTreeMap<crate::StreamSourceKey, Arc<crate::StreamedSourceMetadata>>,
+        generation: u64,
+        table: Arc<crate::SineTable>,
+        previous: Option<&crate::PreparedSessionInventory>,
+        transforms: &crate::audio_transform::AudioTransformPreparation,
+        resources: &crate::native_device_resources::PreparedDeviceResources,
+        scan_frames: u64,
+        cancel: &std::sync::atomic::AtomicBool,
+        native_input: Option<crate::NativeParameterInputTarget>,
+    ) -> Result<crate::PreparedRevision, crate::Invalid> {
+        crate::PreparedRevision::prepare_with_prepared_pitch_sources_device_resources_and_effect_registry(
+            project, sources, pitched, generation, table, previous, transforms, resources,
+            scan_frames, cancel, self.registry, native_input,
+        )
+    }
     pub fn quote(
         &self,
         project: &Project,
