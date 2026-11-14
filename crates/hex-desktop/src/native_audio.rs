@@ -794,7 +794,7 @@ impl NativeAudioSink {
             let domains = domain.into_iter().collect();
             match control.reserve_audio_candidate_preparation(
                 hex_audio::AudioCandidatePreparationReservation {
-                    source_capacity: snapshot.canonical().required_sources().count(),
+                    source_capacity: quote.source_capacity,
                     storage,
                     member_rows: quote.member_rows,
                     transfer_rows: quote.transfer_rows,
@@ -969,6 +969,19 @@ impl NativeAudioSink {
                             cell.add_streamed_source_on_control(metadata.clone())?;
                         }
                     }
+                }
+                if let Some(domain) = record {
+                    domain
+                        .sources
+                        .add_required_pitches(pending.snapshot.canonical(), cell)?;
+                } else if pending
+                    .snapshot
+                    .canonical()
+                    .required_plain_pitch_sources()
+                    .next()
+                    .is_some()
+                {
+                    return Err(hex_engine::AudioStorageError::SourceMismatch);
                 }
                 pending
                     .snapshot
