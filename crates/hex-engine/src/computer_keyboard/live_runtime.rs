@@ -219,6 +219,7 @@ impl ComputerKeyboardRuntime {
             age: 0,
             gate: None,
             id: next,
+            muted_source_onset: false,
         });
         self.scratch_next_id = next;
         events[*len] = NativeInstrumentEvent::NoteOn {
@@ -346,6 +347,7 @@ impl ComputerKeyboardRuntime {
             age: 0,
             gate: None,
             id: self.scratch_next_id,
+            muted_source_onset: false,
         });
         events[*len] = NativeInstrumentEvent::NoteOn {
             frame_offset: 0,
