@@ -209,6 +209,21 @@ impl StreamedSourceMetadata {
         Ok(derived)
     }
 
+    /// Match a Re-Pitch value to its original source facts; this grants no page lease.
+    pub(crate) fn is_repitch_of(&self, raw: &Self) -> bool {
+        raw.key.is_raw()
+            && self
+                .key
+                .repitch_identity()
+                .is_some_and(|identity| identity.raw_key() == raw.key)
+            && self.source_rate == raw.source_rate
+            && self.project_rate == raw.project_rate
+            && self.source_frames == raw.source_frames
+            && self.source_playback_frames == raw.playback_frames
+            && self.conversion_version == raw.conversion_version
+            && self.fingerprint == raw.fingerprint
+    }
+
     /// Declare full-source plain pitch derived from these verified source facts.
     /// A catalog lease still has to establish that its worker can produce it.
     pub fn with_plain_pitch(&self, cents: i16, law: WarpResampler) -> Result<Self, Invalid> {
