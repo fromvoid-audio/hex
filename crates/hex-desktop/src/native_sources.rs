@@ -435,17 +435,59 @@ mod tests {
                 fade_out: 0,
             }),
         );
+        let duplicate = run(
+            &service,
+            Request::Edit(hex_project::Command::DuplicateClip(clip)),
+        );
+        let other = duplicate.state.project.tracks()[0]
+            .clips()
+            .iter()
+            .find(|other| other.id() != clip)
+            .unwrap()
+            .id();
+        run(
+            &service,
+            Request::Edit(hex_project::Command::SetAudioClipPitch {
+                clip: other,
+                cents: 700,
+            }),
+        );
         let edited = run(
             &service,
             Request::Edit(hex_project::Command::SetAudioClipPitch { clip, cents: 700 }),
         );
         let snapshot = edited.state.canonical_audio_source.as_ref().unwrap();
+        assert_eq!(snapshot.required_plain_pitch_sources().count(), 2);
         let domain = DomainSources::capture(snapshot, 11).unwrap();
         let quote = snapshot.candidate_reservation_quote().unwrap();
         assert_eq!(quote.source_capacity, 2);
+        let mut incomplete = DomainSources::capture(snapshot, 11).unwrap();
+        incomplete
+            .members
+            .retain(|member| member.metadata.key().pitch().is_none());
+        let mut refused = hex_engine::AudioCandidatePreparation::try_new_on_control(
+            quote.source_capacity,
+            quote.storage_reservation(0).unwrap(),
+        )
+        .unwrap();
+        for (asset, _) in snapshot.required_sources() {
+            refused
+                .add_streamed_source_on_control(
+                    incomplete
+                        .metadata_for(hex_engine::StreamSourceKey::new(11, asset))
+                        .unwrap()
+                        .clone(),
+                )
+                .unwrap();
+        }
+        assert_eq!(
+            incomplete.add_required_pitches(snapshot, &mut refused),
+            Err(hex_engine::AudioStorageError::SourceMismatch)
+        );
+        refused.cleanup_on_control().unwrap();
         let mut candidate = hex_engine::AudioCandidatePreparation::try_new_on_control(
             quote.source_capacity,
-            quote.storage_reservation(4096).unwrap(),
+            quote.storage_reservation(0).unwrap(),
         )
         .unwrap();
         for (asset, _) in snapshot.required_sources() {
