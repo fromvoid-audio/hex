@@ -478,6 +478,13 @@ mod tests {
             assert_eq!(message.as_ref(), "sample take writer · no space left · check /Users/Example/Project/Sample-Takes/Take-ABC for recoverable take files");
         });
         let (sender, receiver) = mpsc::sync_channel(1);
+        sender.send(Err("sample take storage is unavailable".into())).unwrap();
+        editor.update(&mut visual, |view, _| {
+            view.sample_recorder.job = Some(Job { result: receiver, names: Vec::new(), output: 0 });
+            assert!(view.tick_sample_recorder());
+            assert_eq!(view.sample_recorder.error.as_deref(), Some("sample take writer · sample take storage is unavailable"));
+        });
+        let (sender, receiver) = mpsc::sync_channel(1);
         drop(sender);
         editor.update(&mut visual, |view, _| {
             view.sample_recorder.job = Some(Job {
