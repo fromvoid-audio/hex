@@ -454,9 +454,11 @@ fn publish_encoded<R: BlockRenderer>(
             }
         }
     }
-    let stale_temporaries = stale_temporary::sweep(path);
+    // A matching name and an available advisory lock do not establish file
+    // ownership. Retain unclaimed files, including possible recovery copies.
+    let stale_temporaries = StaleTemporaries::default();
     let (file, temporary_path) = create_temporary(path)?;
-    // Held until this function returns, so a concurrent sweep keeps the file.
+    // When available, keep this lock until return for older cooperating sweeps.
     let _ownership = stale_temporary::hold(&file);
     let write_result = prepare_renderer().and_then(|mut renderer| {
         let clipped = write_wav(
@@ -841,23 +843,33 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn export_sweeps_an_abandoned_temporary_and_reports_it() {
+    fn export_preserves_unowned_matching_temporary() {
         let dir = TestDir::new();
         let abandoned = dir
             .0
             .join(stale_temporary::name(std::process::id().wrapping_add(1), 9));
         fs::write(&abandoned, b"interrupted render").unwrap();
+        let recovery = dir.0.join(stale_temporary::name(
+            std::process::id().wrapping_add(2),
+            10,
+        ));
+        fs::write(&recovery, b"displaced recovery data").unwrap();
         let path = dir.0.join("swept.wav");
         let report = render_new(&path, &project(vec![[0.5, -0.5]; 2], 1.0), 0, 2).unwrap();
         assert_eq!(
             report.stale_temporaries,
             StaleTemporaries {
-                removed: 1,
+                removed: 0,
                 failed: 0
             }
         );
-        assert!(!abandoned.exists());
+        assert_eq!(fs::read(&abandoned).unwrap(), b"interrupted render");
+        assert_eq!(fs::read(&recovery).unwrap(), b"displaced recovery data");
         assert!(path.exists());
+        let later = dir.0.join("later.wav");
+        render_new(&later, &project(vec![[0.25, -0.25]; 2], 1.0), 0, 2).unwrap();
+        assert_eq!(fs::read(&abandoned).unwrap(), b"interrupted render");
+        assert_eq!(fs::read(&recovery).unwrap(), b"displaced recovery data");
         let leftovers = fs::read_dir(&dir.0)
             .unwrap()
             .filter(|entry| {
@@ -869,7 +881,7 @@ mod tests {
                     .starts_with(".hex-export-")
             })
             .count();
-        assert_eq!(leftovers, 0, "the export removes its own temporary too");
+        assert_eq!(leftovers, 2, "each export removes only its own temporary");
     }
 
     #[test]
