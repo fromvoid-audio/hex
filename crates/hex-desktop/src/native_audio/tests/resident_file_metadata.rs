@@ -240,6 +240,7 @@ fn native_control_binds_actual_verified_file_to_ordinary_catalog_metadata() {
             semantic_source_epoch: 1,
             files: &rows,
             pitches: &[],
+            repitches: &[],
         })
         .unwrap()
         .unwrap();
@@ -259,12 +260,14 @@ fn native_control_binds_actual_verified_file_to_ordinary_catalog_metadata() {
         semantic_source_epoch: 1,
         files: &rows,
         pitches: &[],
+        repitches: &[],
     };
     let pitch_input = ResidentFileInput {
         context: source.context(),
         semantic_source_epoch: 1,
         files: &rows,
         pitches: &pitches,
+        repitches: &[],
     };
     let raw_domain = crate::native_sources::DomainSources::capture_files(&raw_input, 19).unwrap();
     assert!(!raw_domain.matches_files(&pitch_input));
@@ -287,6 +290,46 @@ fn native_control_binds_actual_verified_file_to_ordinary_catalog_metadata() {
         &expected
     );
     assert!(metadata.matches_source(&expected));
+    let clip = event.state.project.tracks()[0].clips()[0].id();
+    let mut editor = hex_project::Editor::new(event.state.project.as_ref().clone(), 8).unwrap();
+    editor
+        .execute(hex_project::Command::SetClipFades {
+            clip,
+            fade_in: 0,
+            fade_out: 0,
+        })
+        .unwrap();
+    let warp = hex_project::default_audio_warp(
+        editor.project().clip(clip).unwrap(),
+        editor.project().tempo_map(),
+        hex_project::WarpMode::RePitch,
+    )
+    .unwrap();
+    editor
+        .execute(hex_project::Command::SetAudioClipWarp {
+            clip,
+            settings: Some(warp),
+        })
+        .unwrap();
+    let raw = file.source_metadata(asset, 19).unwrap();
+    let requirement = hex_engine::audio_transform::StreamedRepitchRequirement::new(
+        &raw,
+        editor.project().clip(clip).unwrap().audio_edit().unwrap(),
+        editor.project().tempo_map(),
+        &std::sync::atomic::AtomicBool::new(false),
+    )
+    .unwrap();
+    let repitches = [requirement];
+    let repitch_input = ResidentFileInput {
+        context: source.context(),
+        semantic_source_epoch: 1,
+        files: &rows,
+        pitches: &[],
+        repitches: &repitches,
+    };
+    assert!(!pitch_domain.matches_files(&repitch_input));
+    assert!(crate::native_sources::DomainSources::capture_files(&repitch_input, 19).is_err());
+    assert!(sink.prepare_resident_file_metadata(repitch_input).is_err());
     assert_eq!(
         source.context(),
         event

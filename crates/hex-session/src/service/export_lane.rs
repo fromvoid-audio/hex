@@ -326,10 +326,7 @@ impl ExportLane {
             .checked_mul(2)
             .and_then(|bytes| bytes.checked_add(base))
             .ok_or("export capture allowance overflow")?;
-        let mut registered = vec![DeviceResourceAdmission::prepared_on_control(
-            &snapshot.resources,
-            &snapshot.prepared,
-        )];
+        let mut registered = vec![snapshot.admission()];
         registered.extend(sink.resident_admission());
         if let Some(seeks) = seeks {
             registered.extend(seeks.views());

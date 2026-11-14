@@ -182,6 +182,9 @@ impl StreamedRepitchRequirement {
         }
         raw.with_repitch(&self.inner.map, self.inner.law)
     }
+    pub fn asset(&self) -> hex_project::AssetId {
+        self.inner.raw.key().asset()
+    }
     pub fn map(&self) -> &hex_warp::TimeMap {
         &self.inner.map
     }
@@ -198,7 +201,7 @@ impl StreamedRepitchRequirement {
 
 /// Immutable control-owned handles to Re-Pitch source requirements.
 /// The set is factual metadata, not a worker, page lease or publication owner.
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct StreamedRepitchRequirements {
     requirements: Vec<StreamedRepitchRequirement>,
 }
@@ -210,6 +213,24 @@ impl StreamedRepitchRequirements {
             return Err(Invalid("repitch requirement count exceeded"));
         }
         Ok(Self { requirements })
+    }
+    pub fn try_push(&mut self, requirement: StreamedRepitchRequirement) -> Result<(), Invalid> {
+        if self.requirements.len() >= hex_project::MAX_CLIPS {
+            return Err(Invalid("repitch requirement count exceeded"));
+        }
+        self.requirements
+            .try_reserve_exact(1)
+            .map_err(|_| Invalid("repitch requirement reservation failed"))?;
+        if self.requirements.capacity() > hex_project::MAX_CLIPS {
+            return Err(Invalid("repitch requirement capacity exceeded"));
+        }
+        self.requirements.push(requirement);
+        Ok(())
+    }
+    pub fn handle_capacity_bytes(&self) -> Option<usize> {
+        self.requirements
+            .capacity()
+            .checked_mul(std::mem::size_of::<StreamedRepitchRequirement>())
     }
     pub fn requirements(&self) -> &[StreamedRepitchRequirement] {
         &self.requirements
@@ -1124,7 +1145,7 @@ mod tests;
 /// Bounded growable map boundaries, two maps, attack/gain points, group bindings
 /// and identities, tempo/projection copies and fixed wrappers are independent of
 /// PCM and of the warp library's separate scratch ceiling.
-pub(crate) fn native_metadata_workspace_bytes() -> Option<usize> {
+pub fn native_metadata_workspace_bytes() -> Option<usize> {
     use std::mem::size_of;
     let maps = hex_warp::MAX_MAP_SEGMENTS.checked_mul(
         4usize

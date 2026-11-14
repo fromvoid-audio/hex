@@ -15,6 +15,7 @@ pub struct ResidentFileInput<'a> {
     pub semantic_source_epoch: u64,
     pub files: &'a [(hex_project::AssetId, &'a crate::VerifiedAudioFile)],
     pub pitches: &'a [ResidentFilePitch],
+    pub repitches: &'a [hex_engine::audio_transform::StreamedRepitchRequirement],
 }
 /// Immutable compiler metadata returned by the native host. Final publication
 /// must independently match its actual retained catalog and exact page loan.
@@ -102,7 +103,14 @@ impl ResidentFileMetadata {
     /// No file is opened and no authority is minted by this check.
     pub(crate) fn validate_for(&self, input: &ResidentFileInput<'_>) -> Result<(), SessionError> {
         if self.sources.len() != input.files.len()
-            || self.derived.len() != input.pitches.len()
+            || self.derived.len()
+                != input
+                    .pitches
+                    .len()
+                    .checked_add(input.repitches.len())
+                    .ok_or(SessionError::Invalid(
+                        "ordinary derived source count overflow",
+                    ))?
             || input.semantic_source_epoch == 0
             || input.pitches.len() > hex_project::MAX_CLIPS
         {
@@ -138,6 +146,33 @@ impl ResidentFileMetadata {
                 ));
             }
         }
+        let mut repitch_keys = Vec::new();
+        repitch_keys
+            .try_reserve_exact(input.repitches.len())
+            .map_err(|_| SessionError::Invalid("repitch validation reservation failed"))?;
+        for requirement in input.repitches {
+            let file = input
+                .files
+                .iter()
+                .find(|(asset, _)| *asset == requirement.asset())
+                .map(|(_, file)| *file)
+                .ok_or(SessionError::Invalid("ordinary repitch file missing"))?;
+            let raw = file.source_metadata(requirement.asset(), self.catalog_generation)?;
+            let expected = requirement.metadata_for(&raw)?;
+            match repitch_keys.binary_search(&expected.key()) {
+                Ok(_) => return Err(SessionError::Invalid("duplicate ordinary repitch source")),
+                Err(index) => repitch_keys.insert(index, expected.key()),
+            }
+            if self
+                .derived
+                .get(&expected.key())
+                .is_none_or(|actual| actual.as_ref() != &expected)
+            {
+                return Err(SessionError::Invalid(
+                    "ordinary repitch source metadata differs",
+                ));
+            }
+        }
         Ok(())
     }
 }
@@ -157,6 +192,7 @@ struct FileSetFacts {
     semantic_source_epoch: u64,
     files: Vec<(hex_project::AssetId, crate::VerifiedAudioFile)>,
     pitches: Vec<ResidentFilePitch>,
+    repitches: hex_engine::audio_transform::StreamedRepitchRequirements,
     metadata: ResidentFileMetadata,
 }
 impl ResidentFileSet {
@@ -178,12 +214,19 @@ impl ResidentFileSet {
             .try_reserve_exact(input.pitches.len())
             .map_err(|_| SessionError::Invalid("ordinary pitch reservation failed"))?;
         pitches.extend_from_slice(input.pitches);
+        let mut repitches = Vec::new();
+        repitches
+            .try_reserve_exact(input.repitches.len())
+            .map_err(|_| SessionError::Invalid("ordinary repitch reservation failed"))?;
+        repitches.extend_from_slice(input.repitches);
+        let repitches = hex_engine::audio_transform::StreamedRepitchRequirements::new(repitches)?;
         Ok(Self {
             inner: Arc::new(FileSetFacts {
                 context: input.context,
                 semantic_source_epoch: input.semantic_source_epoch,
                 files,
                 pitches,
+                repitches,
                 metadata,
             }),
         })
@@ -199,6 +242,9 @@ impl ResidentFileSet {
     }
     pub fn metadata(&self) -> &ResidentFileMetadata {
         &self.inner.metadata
+    }
+    pub fn repitches(&self) -> &hex_engine::audio_transform::StreamedRepitchRequirements {
+        &self.inner.repitches
     }
     pub fn pitches(&self) -> &[ResidentFilePitch] {
         &self.inner.pitches
