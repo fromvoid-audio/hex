@@ -1000,6 +1000,10 @@ saved in the project. check the range and output choice before
 exporting, then audition the resulting files. offline rendering can be available
 even when live audio output is unavailable.
 
+when you confirm replacing an existing wav, hex keeps the previous file and
+shows its location after export. inspect it and remove it yourself when you no
+longer need it; retained files use disk space.
+
 file-backed audio in ordinary and verified streaming projects uses offline
 media verification during export. keep original media available until export completes. hex verifies those files
 before reading and again before publishing; missing or changed media, unavailable
