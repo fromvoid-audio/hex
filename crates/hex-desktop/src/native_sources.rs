@@ -47,8 +47,8 @@ impl DomainSources {
                 .map_err(|e| e.to_string())?;
             Self::add_derived_member(&mut members, file, metadata)?;
         }
-        for (asset, file, edit, tempo) in snapshot.required_repitch_sources() {
-            let metadata = Self::repitch_metadata(asset, file, edit, tempo, catalog_generation)?;
+        for requirement in snapshot.required_repitch_metadata(catalog_generation) {
+            let (file, metadata) = requirement.map_err(|error| error.to_string())?;
             Self::add_derived_member(&mut members, file, metadata)?;
         }
         Ok(Self {
@@ -56,26 +56,6 @@ impl DomainSources {
             catalog_generation,
             members,
         })
-    }
-    fn repitch_metadata(
-        asset: hex_project::AssetId,
-        file: &VerifiedAudioFile,
-        edit: &hex_project::AudioClipEdit,
-        tempo: &hex_project::TempoMap,
-        generation: u64,
-    ) -> Result<hex_engine::StreamedSourceMetadata, String> {
-        let raw = file
-            .source_metadata(asset, generation)
-            .map_err(|error| error.to_string())?;
-        let (map, law) = hex_engine::audio_transform::streamed_repitch_map(
-            edit,
-            tempo,
-            raw.playback_frames(),
-            &std::sync::atomic::AtomicBool::new(false),
-        )
-        .map_err(|error| error.to_string())?;
-        raw.with_repitch(&map, law)
-            .map_err(|error| error.to_string())
     }
     fn add_derived_member(
         members: &mut Vec<Member>,
@@ -354,10 +334,9 @@ impl DomainSources {
                         .is_ok_and(|expected| self.contains_member(file, &expected))
                 })
             && snapshot
-                .required_repitch_sources()
-                .all(|(asset, file, edit, tempo)| {
-                    Self::repitch_metadata(asset, file, edit, tempo, self.catalog_generation)
-                        .is_ok_and(|expected| self.contains_member(file, &expected))
+                .required_repitch_metadata(self.catalog_generation)
+                .all(|requirement| {
+                    requirement.is_ok_and(|(file, expected)| self.contains_member(file, &expected))
                 })
     }
     fn contains_member(
@@ -403,15 +382,14 @@ impl DomainSources {
                         })
                 })
             && snapshot
-                .required_repitch_sources()
-                .all(|(asset, file, edit, tempo)| {
-                    Self::repitch_metadata(asset, file, edit, tempo, self.catalog_generation)
-                        .is_ok_and(|expected| {
-                            self.metadata_for(expected.key()).is_some_and(|metadata| {
-                                metadata == &expected
-                                    && control.audio_candidate_domain_covers_source(token, metadata)
-                            })
+                .required_repitch_metadata(self.catalog_generation)
+                .all(|requirement| {
+                    requirement.is_ok_and(|(_, expected)| {
+                        self.metadata_for(expected.key()).is_some_and(|metadata| {
+                            metadata == &expected
+                                && control.audio_candidate_domain_covers_source(token, metadata)
                         })
+                    })
                 })
     }
     pub(super) fn metadata_for(
@@ -446,10 +424,8 @@ impl DomainSources {
                 .ok_or(AudioStorageError::SourceMismatch)?;
             candidate.add_pitched_streamed_source_on_control(metadata.clone())?;
         }
-        for (asset, file, edit, tempo) in snapshot.required_repitch_sources() {
-            let expected =
-                Self::repitch_metadata(asset, file, edit, tempo, self.catalog_generation)
-                    .map_err(|_| AudioStorageError::SourceMismatch)?;
+        for requirement in snapshot.required_repitch_metadata(self.catalog_generation) {
+            let (_, expected) = requirement.map_err(|_| AudioStorageError::SourceMismatch)?;
             if !seen.insert(expected.key()) {
                 continue;
             }

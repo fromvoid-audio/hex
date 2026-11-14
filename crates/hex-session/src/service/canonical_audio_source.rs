@@ -147,6 +147,31 @@ impl CanonicalAudioSourceSnapshot {
                 Some((clip.asset(), file, edit, self.project.tempo_map()))
             })
     }
+    /// Validated derived facts for each Re-Pitch root. These are not worker leases.
+    pub fn required_repitch_metadata(
+        &self,
+        generation: u64,
+    ) -> impl Iterator<
+        Item = Result<
+            (
+                &crate::VerifiedAudioFile,
+                hex_engine::StreamedSourceMetadata,
+            ),
+            hex_engine::Invalid,
+        >,
+    > {
+        self.required_repitch_sources()
+            .map(move |(asset, file, edit, tempo)| {
+                let raw = file.source_metadata(asset, generation)?;
+                let (map, law) = hex_engine::audio_transform::streamed_repitch_map(
+                    edit,
+                    tempo,
+                    raw.playback_frames(),
+                    &std::sync::atomic::AtomicBool::new(false),
+                )?;
+                Ok((file, raw.with_repitch(&map, law)?))
+            })
+    }
     pub fn sample_rate(&self) -> u32 {
         self.project.sample_rate()
     }
