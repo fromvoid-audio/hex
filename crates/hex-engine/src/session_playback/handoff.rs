@@ -4917,6 +4917,10 @@ impl SessionPlayback {
         let return_tails_aligned = || {
             !timing_changed
                 && old_loop == new_loop
+                && previous
+                    .compensation
+                    .as_ref()
+                    .is_some_and(|runtime| runtime.delays.history_ready())
                 && self.revision.arrangement().main_latency_frames()
                     == previous.revision.arrangement().main_latency_frames()
                 && old_graph.zip(new_graph).is_some_and(|(old, new)| {

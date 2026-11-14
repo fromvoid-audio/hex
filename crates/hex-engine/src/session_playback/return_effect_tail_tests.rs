@@ -2084,3 +2084,79 @@ fn restart_refuses_incompatible_return_history_with_matching_configuration() {
         Err(SessionPlaybackError::LatencyLayoutChanged)
     ));
 }
+
+#[test]
+fn main_only_latency_refuses_a_new_return_feed_without_losing_the_tail() {
+    use hex_project::{Command, Created, Project};
+    let (mut editor, _, bus, device, media, table) = real_main_limiter_reverb_fixture();
+    let Created::ReturnTrack(downstream) = editor
+        .execute(Command::AddReturnTrack {
+            name: "downstream".into(),
+        })
+        .unwrap()
+    else {
+        panic!("return")
+    };
+    let prepare = |project: &Project| {
+        Arc::new(PreparedRevision::prepare(project, &media, Arc::clone(&table), None).unwrap())
+    };
+    let initial = prepare(editor.project());
+    let mut previous = SessionPlayback::new(Arc::clone(&initial)).unwrap();
+    let mut oracle = SessionPlayback::new(initial).unwrap();
+    for runtime in [&mut previous, &mut oracle] {
+        runtime.apply(SessionPlaybackCommand::Play).unwrap();
+        runtime.render(&mut vec![[0.0; 2]; 6000]).unwrap();
+    }
+    editor
+        .execute(Command::SetReturnFeed {
+            source: bus,
+            destination: downstream,
+            gain: 0.5,
+        })
+        .unwrap();
+    editor.execute(Command::RemoveDevice(device)).unwrap();
+    let mut candidate = SessionPlayback::new(prepare(editor.project())).unwrap();
+    assert!(matches!(
+        candidate.try_inherit_state_live_from(&mut previous),
+        Err(SessionPlaybackError::LatencyLayoutChanged)
+    ));
+    let mut actual = [[0.0; 2]; 257];
+    let mut expected = actual;
+    previous.render(&mut actual).unwrap();
+    oracle.render(&mut expected).unwrap();
+    assert_eq!(actual, expected);
+    assert!(actual.iter().flatten().any(|sample| *sample != 0.0));
+}
+
+#[test]
+fn main_only_latency_rejects_missing_return_tail_clock_history() {
+    use hex_project::{Command, Project};
+    let (mut editor, _, _, device, media, table) = real_main_limiter_reverb_fixture();
+    let prepare = |project: &Project| {
+        Arc::new(PreparedRevision::prepare(project, &media, Arc::clone(&table), None).unwrap())
+    };
+    let initial = prepare(editor.project());
+    let mut previous = SessionPlayback::new(Arc::clone(&initial)).unwrap();
+    let mut oracle = SessionPlayback::new(initial).unwrap();
+    for runtime in [&mut previous, &mut oracle] {
+        runtime.apply(SessionPlaybackCommand::Play).unwrap();
+        runtime.render(&mut vec![[0.0; 2]; 6000]).unwrap();
+    }
+    editor.execute(Command::RemoveDevice(device)).unwrap();
+    let mut candidate = SessionPlayback::new(prepare(editor.project())).unwrap();
+    previous.compensation.as_mut().unwrap().delays.reset_epoch();
+    oracle.compensation.as_mut().unwrap().delays.reset_epoch();
+    let stale_frame = previous.performance_frame;
+    let result = candidate.try_inherit_state_live_from(&mut previous);
+    assert!(
+        matches!(result, Err(SessionPlaybackError::LatencyLayoutChanged)),
+        "{result:?}"
+    );
+    assert_eq!(previous.performance_frame, stale_frame);
+    let mut actual = [[0.0; 2]; 257];
+    let mut expected = actual;
+    previous.render(&mut actual).unwrap();
+    oracle.render(&mut expected).unwrap();
+    assert_eq!(actual, expected);
+    assert!(actual.iter().flatten().any(|sample| *sample != 0.0));
+}
