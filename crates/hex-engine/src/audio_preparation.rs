@@ -1569,7 +1569,10 @@ impl AudioPreparationCustody {
                     .ok_or(AudioStorageError::Overflow)?;
             }
         }
-        let (derived_retained, derived_workspace) = transformed_audio_quote(project)?;
+        let (derived_retained, derived_workspace) =
+            transformed::transformed_audio_quote_for(project, &|clip| {
+                transformed::pitched_source_index(project, inputs, clip).is_some()
+            })?;
         capacity.declared_source_bytes = capacity
             .declared_source_bytes
             .checked_add(derived_retained)
@@ -1671,8 +1674,12 @@ impl AudioPreparationCustody {
                 {
                     return Err(AudioStorageError::SourceMismatch);
                 }
-                let transformed = clip.audio_edit().is_some();
-                transformed::validate_sources(project, inputs, clip)?;
+                let pitch_source = transformed::pitched_source_index(project, inputs, clip);
+                let transformed = clip.audio_edit().is_some() && pitch_source.is_none();
+                if pitch_source.is_none() {
+                    transformed::validate_sources(project, inputs, clip)?;
+                }
+                let source = pitch_source.unwrap_or(source);
                 let end = clip
                     .start()
                     .checked_add(clip.duration())

@@ -54,6 +54,173 @@ fn begin(
 }
 
 #[test]
+fn long_plain_pitch_uses_its_verified_stream_and_keeps_raw_clip() {
+    if !super::session_source_tests::supported("arrangement_long_pitch") {
+        return;
+    }
+    use hex_project::{Command, Created, Editor, Project, WarpResampler};
+    const FRAMES: u64 = 20_000_000;
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+    let Created::Imported { clip, asset, .. } = editor
+        .execute(Command::ImportAudioTrack {
+            name: "long".into(),
+            path: "long.wav".into(),
+            sample_rate: 48_000,
+            frames: FRAMES,
+        })
+        .unwrap()
+    else {
+        panic!("fixture")
+    };
+    editor
+        .execute(Command::SetClipFades {
+            clip,
+            fade_in: 0,
+            fade_out: 0,
+        })
+        .unwrap();
+    let Created::Clip(pitched_clip) = editor.execute(Command::DuplicateClip(clip)).unwrap() else {
+        panic!("duplicate")
+    };
+    editor
+        .execute(Command::SetAudioClipPitch {
+            clip: pitched_clip,
+            cents: 700,
+        })
+        .unwrap();
+    let project = editor.project();
+    let raw = crate::StreamedSourceMetadata::new(
+        crate::StreamSourceKey::new(11, asset),
+        48_000,
+        48_000,
+        FRAMES,
+        FRAMES,
+        hex_project::IDENTITY_CONVERSION,
+        [7; 32],
+    )
+    .unwrap();
+    let pitched = raw.with_plain_pitch(700, WarpResampler::V2).unwrap();
+    assert!(crate::AudioCandidateReservationQuote::for_project(project, 2).is_err());
+    assert!(
+        crate::AudioCandidateReservationQuote::for_project_with_pitched_streams(
+            project,
+            2,
+            std::slice::from_ref(&raw)
+        )
+        .is_err()
+    );
+    let foreign = crate::StreamedSourceMetadata::new(
+        raw.key(),
+        48_000,
+        48_000,
+        FRAMES,
+        FRAMES,
+        hex_project::IDENTITY_CONVERSION,
+        [8; 32],
+    )
+    .unwrap()
+    .with_plain_pitch(700, WarpResampler::V2)
+    .unwrap();
+    assert!(
+        crate::AudioCandidateReservationQuote::for_project_with_pitched_streams(
+            project,
+            2,
+            &[raw.clone(), foreign]
+        )
+        .is_err()
+    );
+    let quote = crate::AudioCandidateReservationQuote::for_project_with_pitched_streams(
+        project,
+        2,
+        &[raw.clone(), pitched.clone()],
+    )
+    .unwrap();
+    assert_eq!(quote.prepared_pcm_frames, 0);
+    let limits = quote.storage_reservation(4096).unwrap();
+    let mut candidate = crate::AudioCandidatePreparation::try_new_on_control(2, limits).unwrap();
+    candidate
+        .add_streamed_source_on_control(raw.clone())
+        .unwrap();
+    candidate
+        .add_pitched_streamed_source_on_control(pitched.clone())
+        .unwrap();
+    candidate
+        .prepare_on_control(
+            project,
+            11,
+            AudioSourceContext {
+                project_generation: 2,
+                editor_revision: 8,
+            },
+        )
+        .unwrap();
+    assert_eq!(candidate.resident_pcm_capacity_frames().unwrap(), 0);
+    candidate.cleanup_on_control().unwrap();
+    let (_, original, _) = fixture(false, false, 1);
+    let reservation = original.reservation;
+    let resident = OwnedAudioInputs::try_new(
+        vec![(
+            asset,
+            OwnedAudioSource::try_resident(48_000, vec![[0.0; 2]; 8])
+                .ok()
+                .unwrap(),
+        )],
+        reservation,
+    )
+    .ok()
+    .unwrap();
+    let mut resident_custody = AudioPreparationCustody::try_new_on_control().unwrap();
+    assert!(begin(&mut resident_custody, project, resident).is_err());
+    let missing = OwnedAudioInputs::try_new(
+        vec![(
+            asset,
+            OwnedAudioSource::try_streamed(raw.clone()).ok().unwrap(),
+        )],
+        reservation,
+    )
+    .ok()
+    .unwrap();
+    let mut custody = AudioPreparationCustody::try_new_on_control().unwrap();
+    assert!(begin(&mut custody, project, missing).is_err());
+    let bank = OwnedAudioInputs::try_new_with_pitched(
+        vec![
+            (
+                asset,
+                OwnedAudioSource::try_streamed(raw.clone()).ok().unwrap(),
+            ),
+            (
+                asset,
+                OwnedAudioSource::try_pitched_streamed(pitched.clone())
+                    .ok()
+                    .unwrap(),
+            ),
+        ],
+        reservation,
+    )
+    .ok()
+    .unwrap();
+    let mut custody = AudioPreparationCustody::try_new_on_control().unwrap();
+    let token = begin(&mut custody, project, bank).ok().unwrap();
+    let streams: Vec<_> = custody
+        .arrangement_clips
+        .clips()
+        .map(|clip| {
+            clip.metadata
+                .as_ref()
+                .unwrap()
+                .streamed
+                .as_deref()
+                .unwrap()
+                .key()
+        })
+        .collect();
+    assert_eq!(streams, vec![raw.key(), pitched.key()]);
+    assert!(custody.cancel(&token));
+    custody.cleanup_on_control();
+    assert!(custody.recover_on_control(&token).is_some());
+}
+
+#[test]
 fn raw_clip_keeps_raw_source_when_pitch_owner_shares_its_asset() {
     if !super::session_source_tests::supported("arrangement_pitch_bank") {
         return;
