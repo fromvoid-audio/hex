@@ -464,7 +464,7 @@ mod tests {
         let mut incomplete = DomainSources::capture(snapshot, 11).unwrap();
         incomplete
             .members
-            .retain(|member| member.metadata.key().pitch().is_none());
+            .retain(|member| member.metadata.key().is_raw());
         let mut refused = hex_engine::AudioCandidatePreparation::try_new_on_control(
             quote.source_capacity,
             quote.storage_reservation(0).unwrap(),

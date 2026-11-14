@@ -78,8 +78,10 @@ impl ResidentFileMetadata {
     pub fn matches_source(&self, source: &hex_engine::StreamedSourceMetadata) -> bool {
         let found = if source.key().pitch().is_some() {
             self.pitched.get(&source.key())
-        } else {
+        } else if source.key().is_raw() {
             self.sources.get(&source.key().asset())
+        } else {
+            None
         };
         found.is_some_and(|actual| actual.as_ref() == source)
     }

@@ -419,7 +419,7 @@ impl AudioCandidatePreparation {
                     return None;
                 }
                 match &source.kind {
-                    SourceKind::Streamed(raw) if raw.key().pitch().is_none() => Some(raw),
+                    SourceKind::Streamed(raw) if raw.key().is_raw() => Some(raw),
                     _ => None,
                 }
             })
