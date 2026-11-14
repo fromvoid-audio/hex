@@ -79,7 +79,7 @@ fn pitch_revision_keeps_session_source_raw_and_refuses_mismatched_pages() {
     let effects = hex_devices::native_registry().unwrap();
     let transforms = crate::audio_transform::AudioTransformPreparation::default();
     let prepare = |pitched: &BTreeMap<_, _>| {
-        PreparedRevision::prepare_with_prepared_pitch_sources_and_device_resources(
+        PreparedRevision::prepare_with_prepared_pitch_sources_device_resources_and_effect_registry(
             editor.project(),
             &sources,
             pitched,

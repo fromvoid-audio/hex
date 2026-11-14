@@ -210,11 +210,16 @@ impl VerifiedPages {
                     ));
                 }
             }
-            if file
+            let original = file
                 .source_metadata(metadata.key().asset(), metadata.key().generation())
-                .map_err(ExportError::Render)?
-                != *metadata
-            {
+                .map_err(ExportError::Render)?;
+            let expected = match metadata.key().pitch() {
+                Some((cents, law)) => original
+                    .with_plain_pitch(cents, law)
+                    .map_err(ExportError::Render)?,
+                None => original,
+            };
+            if expected != *metadata {
                 return Err(ExportError::Invalid(
                     "verified export file facts differ from compiled source",
                 ));
