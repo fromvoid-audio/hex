@@ -607,6 +607,10 @@ PY
 Use one persistent Cargo target per executor, with no concurrent raw Cargo writer.
 Repository tools acquire an advisory target lock. Unknown/foreign/pending cache
 ownership refuses before normal checks. Read the diagnostic before recovery.
+The lock file is opened without following a final symlink and its existing bytes
+are left unchanged. Contention reports that the target is in use without reading
+or displaying the untrusted lock-file contents as a holder identity. Older
+runner versions may still display stale holder information from that file.
 `--adopt-target` explicitly invalidates supported workspace development outputs
 and establishes the checkout's development owner; it is not permission to remove
 another executor's active cache, release artifacts or user data.
