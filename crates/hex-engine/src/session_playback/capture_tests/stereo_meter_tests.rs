@@ -3,9 +3,25 @@ use super::*;
 
 #[test]
 fn metered_resident_return_matches_scalar_pcm_and_meters_through_launch_and_loop() {
-    for muted in [false, true] {
+    for (muted, automated) in [(false, false), (true, false), (false, true)] {
         let mut snapshot = audio_fixture_project(true, false, false).snapshot();
         snapshot.tracks[0].muted = muted;
+        if automated {
+            snapshot.tracks[0].gain_envelope = vec![
+                hex_project::GainPoint {
+                    incoming_gain: None,
+                    beat: hex_project::BeatTime::ZERO,
+                    gain: 0.25,
+                    outgoing: hex_project::GainInterpolation::Linear,
+                },
+                hex_project::GainPoint {
+                    incoming_gain: None,
+                    beat: hex_project::BeatTime::ONE,
+                    gain: 1.25,
+                    outgoing: hex_project::GainInterpolation::Step,
+                },
+            ];
+        }
         snapshot.return_tracks[0].devices[0].state = crate::default_native_device_state_for_class(
             crate::NativeDeviceClass::Effect,
             hex_lattice_contract::DeviceTypeId::from_static("hex.limiter"),
@@ -105,7 +121,10 @@ fn metered_resident_return_matches_scalar_pcm_and_meters_through_launch_and_loop
                         .take_track_output_stereo()
                 );
             }
-            assert_eq!(output, expected, "muted={muted}, partition={partition}");
+            assert_eq!(
+                output, expected,
+                "muted={muted}, automated={automated}, partition={partition}"
+            );
             assert_eq!(
                 (actual.performance_frame(), actual.arrangement_frame()),
                 (reference.performance_frame(), reference.arrangement_frame())
