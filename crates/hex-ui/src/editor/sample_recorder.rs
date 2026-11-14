@@ -478,30 +478,48 @@ mod tests {
             assert_eq!(message.as_ref(), "sample take writer · no space left · check /Users/Example/Project/Sample-Takes/Take-ABC for recoverable take files");
         });
         let (sender, receiver) = mpsc::sync_channel(1);
-        sender.send(Err("sample take storage is unavailable".into())).unwrap();
+        sender
+            .send(Err("sample take storage is unavailable".into()))
+            .unwrap();
         editor.update(&mut visual, |view, _| {
-            view.sample_recorder.job = Some(Job { result: receiver, names: Vec::new(), output: 0 });
+            view.sample_recorder.job = Some(Job {
+                result: receiver,
+                names: Vec::new(),
+                output: 0,
+            });
             assert!(view.tick_sample_recorder());
-            assert_eq!(view.sample_recorder.error.as_deref(), Some("sample take writer · sample take storage is unavailable"));
+            assert_eq!(
+                view.sample_recorder.error.as_deref(),
+                Some("sample take writer · sample take storage is unavailable")
+            );
         });
         let (sender, receiver) = mpsc::sync_channel(1);
-        sender.send(Ok(sample_recording::Takes {
-            takes: vec![Take {
-                source: Source::Main,
-                path: directory.join("main.wav"),
-                frames: 64,
-                sample_rate: 48_000,
-                timing: std::sync::Arc::from([]),
-            }],
-            end: End::Stopped,
-            write_error: None,
-        })).unwrap();
+        sender
+            .send(Ok(sample_recording::Takes {
+                takes: vec![Take {
+                    source: Source::Main,
+                    path: directory.join("main.wav"),
+                    frames: 64,
+                    sample_rate: 48_000,
+                    timing: std::sync::Arc::from([]),
+                }],
+                end: End::Stopped,
+                write_error: None,
+            }))
+            .unwrap();
         editor.update(&mut visual, |view, _| {
-            view.sample_recorder.job = Some(Job { result: receiver, names: vec![(Source::Main, "main".into())], output: 0 });
+            view.sample_recorder.job = Some(Job {
+                result: receiver,
+                names: vec![(Source::Main, "main".into())],
+                output: 0,
+            });
             assert!(view.tick_sample_recorder());
             assert!(view.sample_recorder.error.is_none());
             assert_eq!(view.sample_recorder.recent.len(), 1);
-            assert_eq!(view.sample_recorder.recent[0].take.path, directory.join("main.wav"));
+            assert_eq!(
+                view.sample_recorder.recent[0].take.path,
+                directory.join("main.wav")
+            );
         });
         let (sender, receiver) = mpsc::sync_channel(1);
         drop(sender);
