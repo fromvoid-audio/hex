@@ -631,12 +631,12 @@ impl MutableInstrumentTrackRuntime {
             || self.primary.capacity() < previous.primary.len()
             || self.scratch.capacity() < previous.primary.len()
             || (previous.live.is_some() && self.live.is_none())
-            || !self.pair.can_inherit_from(&previous.pair)
         {
             return Err(MutableInstrumentRuntimeError::Runtime(
                 NativeInstrumentRuntimeError::IncompatibleHistory,
             ));
         }
+        // The pair validates both twins before it copies either history.
         self.pair
             .inherit_from(&previous.pair)
             .map_err(map_runtime_error)?;
