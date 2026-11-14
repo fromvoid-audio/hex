@@ -781,6 +781,32 @@ impl AudioTransformPreparation {
             return direct_clip(clip, source).map(Some);
         };
         edit.validate(clip, tempo_map, asset.playback_frames())?;
+        if let PreparedAudioSourceRef::StreamedWithPitch(raw, pitched) = source
+            && edit.is_plain_pitch_capture(clip)
+            && clip.source_length() == asset.playback_frames()
+        {
+            let expected =
+                raw.with_plain_pitch(edit.domain.pitch_cents, edit.domain.warp_resampler)?;
+            let derived = pitched
+                .get(&expected.key())
+                .filter(|candidate| candidate.as_ref() == &expected)
+                .ok_or(Invalid("matching pitched stream is unavailable"))?;
+            return Clip::streamed_region(
+                Arc::clone(derived),
+                clip.start(),
+                clip.duration(),
+                0,
+                clip.duration(),
+                false,
+            )
+            .map(|prepared| Some(prepared.with_gain(clip.gain())));
+        }
+        let source = match source {
+            PreparedAudioSourceRef::StreamedWithPitch(raw, _) => {
+                PreparedAudioSourceRef::Streamed(raw)
+            }
+            source => source,
+        };
         if edit.content_view.is_some() {
             if let PreparedAudioSourceRef::Streamed(source) = source
                 && let Some((offset, length)) = edit.plain_reversed_source(clip)
@@ -837,7 +863,8 @@ impl AudioTransformPreparation {
                     length,
                     domain.looping,
                 )?,
-                PreparedAudioSourceRef::Streamed(source) => Clip::streamed_region(
+                PreparedAudioSourceRef::Streamed(source)
+                | PreparedAudioSourceRef::StreamedWithPitch(source, _) => Clip::streamed_region(
                     Arc::clone(source),
                     clip.start(),
                     clip.duration(),
@@ -913,7 +940,8 @@ fn direct_clip(
             clip.looping(),
             clip.fade(),
         )?,
-        PreparedAudioSourceRef::Streamed(source) => Clip::streamed_region_with_fade(
+        PreparedAudioSourceRef::Streamed(source)
+        | PreparedAudioSourceRef::StreamedWithPitch(source, _) => Clip::streamed_region_with_fade(
             Arc::clone(source),
             clip.start(),
             clip.duration(),

@@ -318,6 +318,41 @@ pub fn project_with_prepared_audio_sources(
     .map(|(project, _)| project)
 }
 
+/// Compile Arrangement with separately admitted full-source pitch streams.
+/// The caller supplies metadata from its verified worker catalog; this does not
+/// itself admit pages or establish their lifetime. Raw asset bindings remain
+/// separate and are used by unpitched clips.
+pub fn project_with_prepared_pitch_sources(
+    snapshot: &hex_project::Project,
+    sources: &BTreeMap<AssetId, PreparedAudioSource>,
+    pitched: &BTreeMap<crate::StreamSourceKey, Arc<StreamedSourceMetadata>>,
+    generation: u64,
+) -> Result<Project, Invalid> {
+    if generation == 0 {
+        return Err(Invalid("stream source generation must be positive"));
+    }
+    let registry = hex_devices::native_registry()
+        .map_err(|_| Invalid("invalid built-in native device registry"))?;
+    let instruments = hex_devices::native_instrument_registry()
+        .map_err(|_| Invalid("invalid built-in native instrument registry"))?;
+    compile_project(
+        snapshot,
+        |asset, rate| match resolve_prepared(asset, rate, sources, generation)? {
+            PreparedAudioSourceRef::Streamed(raw) => {
+                Ok(PreparedAudioSourceRef::StreamedWithPitch(raw, pitched))
+            }
+            resident => Ok(resident),
+        },
+        None,
+        None,
+        &registry,
+        &instruments,
+        None,
+        None,
+    )
+    .map(|(project, _)| project)
+}
+
 /// Compile Arrangement playback and MIDI preview from one mixed source map,
 /// retaining the caller's immutable instrument table when supplied.
 pub fn project_with_prepared_audio_sources_and_midi_preview_and_table(
@@ -1460,6 +1495,10 @@ fn compile_effect_devices(
 pub(crate) enum PreparedAudioSourceRef<'a> {
     Resident(&'a Audio),
     Streamed(&'a Arc<StreamedSourceMetadata>),
+    StreamedWithPitch(
+        &'a Arc<StreamedSourceMetadata>,
+        &'a BTreeMap<crate::StreamSourceKey, Arc<StreamedSourceMetadata>>,
+    ),
 }
 
 pub(crate) fn resolve_resident<'a>(
@@ -1544,6 +1583,119 @@ pub(crate) fn project_with_source_bank<'a>(
 mod tests {
     use super::*;
     use hex_project::{Command, Created, Editor, Project as CanonicalProject, WarpResampler};
+
+    #[test]
+    fn long_pitch_uses_its_own_pages_without_changing_the_raw_clip() {
+        const FRAMES: u64 = 20_000_000;
+        let mut editor = Editor::new(CanonicalProject::new(48_000).unwrap(), 8).unwrap();
+        let Created::Imported { clip, asset, .. } = editor
+            .execute(Command::ImportAudioTrack {
+                name: "long".into(),
+                path: "long.wav".into(),
+                sample_rate: 48_000,
+                frames: FRAMES,
+            })
+            .unwrap()
+        else {
+            panic!("audio fixture")
+        };
+        editor
+            .execute(Command::SetClipFades {
+                clip,
+                fade_in: 0,
+                fade_out: 0,
+            })
+            .unwrap();
+        let Created::Clip(pitched_clip) = editor.execute(Command::DuplicateClip(clip)).unwrap()
+        else {
+            panic!("duplicate fixture")
+        };
+        editor
+            .execute(Command::SetAudioClipPitch {
+                clip: pitched_clip,
+                cents: 700,
+            })
+            .unwrap();
+        let raw = Arc::new(
+            StreamedSourceMetadata::new(
+                crate::StreamSourceKey::new(7, asset),
+                48_000,
+                48_000,
+                FRAMES,
+                FRAMES,
+                hex_project::IDENTITY_CONVERSION,
+                [7; 32],
+            )
+            .unwrap(),
+        );
+        let derived = Arc::new(raw.with_plain_pitch(700, WarpResampler::V2).unwrap());
+        let sources = BTreeMap::from([(asset, PreparedAudioSource::Streamed(Arc::clone(&raw)))]);
+        assert!(project_with_prepared_audio_sources(editor.project(), &sources, 7).is_err());
+        assert!(
+            project_with_prepared_pitch_sources(editor.project(), &sources, &BTreeMap::new(), 7)
+                .is_err()
+        );
+        let other = StreamedSourceMetadata::new(
+            raw.key(),
+            48_000,
+            48_000,
+            FRAMES,
+            FRAMES,
+            hex_project::IDENTITY_CONVERSION,
+            [8; 32],
+        )
+        .unwrap()
+        .with_plain_pitch(700, WarpResampler::V2)
+        .unwrap();
+        let wrong = BTreeMap::from([(derived.key(), Arc::new(other))]);
+        assert!(
+            project_with_prepared_pitch_sources(editor.project(), &sources, &wrong, 7).is_err()
+        );
+        let catalog = BTreeMap::from([(derived.key(), Arc::clone(&derived))]);
+        let project =
+            project_with_prepared_pitch_sources(editor.project(), &sources, &catalog, 7).unwrap();
+        struct Pages {
+            raw: crate::StreamSourceKey,
+            pitched: crate::StreamSourceKey,
+            frames: [[f32; 2]; crate::STREAM_PAGE_FRAMES],
+        }
+        impl crate::MediaPages for Pages {
+            fn page(
+                &mut self,
+                key: crate::StreamSourceKey,
+                page_index: u64,
+            ) -> Option<crate::BorrowedMediaPage<'_>> {
+                let value = if key == self.raw {
+                    0.25
+                } else if key == self.pitched {
+                    0.75
+                } else {
+                    return None;
+                };
+                self.frames.fill([value; 2]);
+                Some(crate::BorrowedMediaPage {
+                    page_index,
+                    frames: &self.frames,
+                })
+            }
+            fn request_page(&mut self, _: crate::StreamSourceKey, _: u64) {
+                panic!("pages are available")
+            }
+        }
+        let mut pages = Pages {
+            raw: raw.key(),
+            pitched: derived.key(),
+            frames: [[0.0; 2]; crate::STREAM_PAGE_FRAMES],
+        };
+        let mut renderer = crate::Renderer::new(&project);
+        renderer.play();
+        let mut output = [[0.0; 2]; 128];
+        renderer.render_with_pages(&mut output, &mut pages).unwrap();
+        assert!(output.iter().all(|frame| *frame == [0.25; 2]));
+        renderer.seek(FRAMES);
+        renderer.render_with_pages(&mut output, &mut pages).unwrap();
+        assert!(output.iter().all(|frame| *frame == [0.75; 2]));
+    }
 
     #[test]
     fn raw_asset_compilation_refuses_derived_pitch_pages() {
