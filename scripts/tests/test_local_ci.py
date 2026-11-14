@@ -93,6 +93,70 @@ def bounded_checkpoint_case(function):
     return function
 
 
+class CargoTargetLockTests(unittest.TestCase):
+    def test_existing_lock_contents_survive_acquisition_contention_and_release(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "target.lock"
+            original = b"unowned private bytes\n"
+            path.write_bytes(original)
+            first = local_ci.CargoTargetLock(path, {"run_id": "first"})
+            second = local_ci.CargoTargetLock(path, {"run_id": "second"})
+            child_code = ("import fcntl,sys\n"
+                          "with open(sys.argv[1], 'rb') as lock:\n"
+                          " try: fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)\n"
+                          " except BlockingIOError: sys.exit(42)\n")
+            try:
+                first.acquire()
+                self.assertEqual(path.read_bytes(), original)
+                self.assertEqual(subprocess.run([sys.executable, "-c", child_code, str(path)],
+                                                check=False).returncode, 42)
+                with self.assertRaisesRegex(local_ci.TargetCacheError, "already in use") as error:
+                    second.acquire()
+                self.assertNotIn(original.decode().strip(), str(error.exception))
+                self.assertEqual(path.read_bytes(), original)
+            finally:
+                self.assertIsNone(first.release())
+                self.assertIsNone(second.release())
+            self.assertEqual(path.read_bytes(), original)
+            self.assertEqual(subprocess.run([sys.executable, "-c", child_code, str(path)],
+                                            check=False).returncode, 0)
+
+    def test_symlink_substitution_is_refused_at_open(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "target.lock"
+            victim = Path(directory) / "user-file"
+            victim.write_bytes(b"preserve")
+            path.symlink_to(victim)
+            lock = local_ci.CargoTargetLock(path, {"run_id": "test"})
+            self.addCleanup(lock.release)
+            original_open = Path.open
+            def replace_after_open(selected, *args, **kwargs):
+                stream = original_open(selected, *args, **kwargs)
+                if selected == path:
+                    path.unlink()
+                    os.link(victim, path)
+                return stream
+            # A same-inode hard link defeats a post-open stat after following
+            # the symlink; the open itself must refuse it.
+            with patch.object(Path, "is_symlink", return_value=False), \
+                    patch.object(Path, "open", replace_after_open):
+                with self.assertRaises(local_ci.TargetCacheError):
+                    lock.acquire()
+            self.assertIsNone(lock.file)
+            self.assertEqual(victim.read_bytes(), b"preserve")
+
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "requires FIFO support")
+    def test_nonregular_lock_is_refused_without_blocking_or_replacement(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "target.lock"
+            os.mkfifo(path)
+            lock = local_ci.CargoTargetLock(path, {"run_id": "test"})
+            with self.assertRaises(local_ci.TargetCacheError):
+                lock.acquire()
+            self.assertIsNone(lock.file)
+            self.assertTrue(path.exists())
+
+
 class FreshTargetReservationTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -3379,36 +3443,31 @@ runpy.run_path(sys.argv[1], run_name='__main__')
                 denied.acquire()
         self.assertIsNone(denied.file)
 
-        failed_holder = local_ci.CargoTargetLock(path, {"run_id": "write-failed"})
-        with patch.object(failed_holder, "_write", side_effect=OSError("holder write denied")):
-            with self.assertRaisesRegex(local_ci.TargetCacheError, "holder write denied"):
-                failed_holder.acquire()
-        self.assertIsNone(failed_holder.file)
+        original_flock = local_ci.fcntl.flock
+        def failed_unlock(descriptor, operation):
+            if operation == local_ci.fcntl.LOCK_UN:
+                raise OSError("unlock denied")
+            return original_flock(descriptor, operation)
 
-        with patch.object(local_ci.CargoTargetLock, "_write", side_effect=OSError("runner holder write denied")):
-            self.assertEqual(self.runner("runner-lock-write-failed").run(), 1)
-        failed_summary = self.summary("runner-lock-write-failed")
-        self.assertIn("runner holder write denied", failed_summary["target_cache_error"])
-
-        holder = local_ci.CargoTargetLock(path, {"run_id": "release-write-failed"})
+        holder = local_ci.CargoTargetLock(path, {"run_id": "release-unlock-failed"})
         holder.acquire()
-        with patch.object(holder, "_write", side_effect=OSError("release write denied")):
+        with patch.object(local_ci.fcntl, "flock", side_effect=failed_unlock):
             release_error = holder.release()
-        self.assertIn("release write denied", release_error or "")
+        self.assertIn("unlock denied", release_error or "")
         next_holder = local_ci.CargoTargetLock(path, {"run_id": "after-release-failure"})
         next_holder.acquire()
         next_holder.release()
 
         original_release = local_ci.CargoTargetLock.release
 
-        def release_with_unwritable_status(lock: local_ci.CargoTargetLock) -> str | None:
-            with patch.object(lock, "_write", side_effect=OSError("runner release write denied")):
+        def release_with_unlock_failure(lock: local_ci.CargoTargetLock) -> str | None:
+            with patch.object(local_ci.fcntl, "flock", side_effect=failed_unlock):
                 return original_release(lock)
 
-        with patch.object(local_ci.CargoTargetLock, "release", release_with_unwritable_status):
+        with patch.object(local_ci.CargoTargetLock, "release", release_with_unlock_failure):
             self.assertEqual(self.runner("runner-lock-release-failed").run(), 0)
         release_summary = self.summary("runner-lock-release-failed")
-        self.assertIn("runner release write denied", release_summary["target_lock_release_error"])
+        self.assertIn("unlock denied", release_summary["target_lock_release_error"])
 
     def test_malformed_owner_marker_fails_closed_without_adoption(self) -> None:
         target = Path(self.env["FAKE_METADATA_TARGET"]).resolve()

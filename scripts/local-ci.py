@@ -765,7 +765,11 @@ def target_admission_pending_path(lock_path: Path) -> Path:
 
 
 class CargoTargetLock:
-    """Nonblocking cooperative lock; direct Cargo commands do not participate."""
+    """Nonblocking cooperative lock; its existing file contents are never changed.
+
+    Direct Cargo commands do not participate. Lock-file bytes are untrusted and
+    are neither rewritten nor disclosed as holder information.
+    """
 
     def __init__(self, path: Path, holder: dict[str, object]) -> None:
         self.path = path
@@ -775,28 +779,25 @@ class CargoTargetLock:
     def acquire(self) -> None:
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
-            if self.path.is_symlink():
-                raise TargetCacheError(f"Cargo target lock path is a symlink: {self.path}")
-            self.file = self.path.open("a+", encoding="utf-8")
+            descriptor = os.open(self.path, os.O_RDONLY | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+            try:
+                if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+                    raise TargetCacheError("Cargo target lock is not a regular file")
+                self.file = os.fdopen(descriptor, "r", encoding="utf-8")
+            except BaseException:
+                os.close(descriptor)
+                raise
             fcntl.flock(self.file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as error:
-            previous = ""
             detail = ""
             if self.file is not None:
                 try:
-                    self.file.seek(0)
-                    previous = self.file.read().strip()
-                except OSError as read_error:
-                    detail = f"; could not read current holder: {read_error}"
-                finally:
-                    try:
-                        self.file.close()
-                    except OSError as close_error:
-                        detail = f"{detail}; closing lock file failed: {close_error}"
-                    self.file = None
-            holder_detail = f"; current holder: {previous}" if previous else ""
+                    self.file.close()
+                except OSError as close_error:
+                    detail = f"; closing lock file failed: {close_error}"
+                self.file = None
             raise TargetCacheError(
-                f"Cargo target is already in use by another local CI run{holder_detail}{detail}"
+                f"Cargo target is already in use by another local CI run{detail}"
             ) from error
         except OSError as error:
             detail = str(error)
@@ -844,7 +845,6 @@ class CargoTargetLock:
                 verify_lock_identity()
             finally:
                 os.close(directory)
-            self._write({"active_holder": self.holder})
         except BaseException as error:
             detail = str(error)
             if self.file is not None:
@@ -862,24 +862,11 @@ class CargoTargetLock:
                 raise
             raise TargetCacheError(f"could not admit Cargo target lock: {detail}") from error
 
-    def _write(self, value: dict[str, object]) -> None:
-        if self.file is None:
-            return
-        self.file.seek(0)
-        self.file.truncate()
-        json.dump(value, self.file, sort_keys=True)
-        self.file.write("\n")
-        self.file.flush()
-
     def release(self) -> str | None:
         if self.file is None:
             return None
         failure = None
         try:
-            try:
-                self._write({"last_holder": self.holder, "released_at": utc_now()})
-            except OSError as error:
-                failure = f"could not record Cargo target lock release: {error}"
             try:
                 fcntl.flock(self.file.fileno(), fcntl.LOCK_UN)
             except OSError as error:
