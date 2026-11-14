@@ -99,6 +99,144 @@ fn verified_repitch_semantic_revision_keeps_raw_session_source() {
         panic!("session source")
     };
     assert_eq!(session_source.as_ref(), &raw);
+    let catalog = ResidentFileMetadata::new_with_derived(
+        7,
+        BTreeMap::from([(asset, Arc::new(raw.clone()))]),
+        BTreeMap::from([(expected.key(), Arc::new(expected.clone()))]),
+    )
+    .unwrap();
+    let cancel = AtomicBool::new(false);
+    let resources =
+        hex_engine::native_device_resources::PreparedDeviceResources::prepare_on_control(
+            &hex_engine::native_device_resources::ResidentDeviceAssets::default(),
+            editor.project(),
+            1 << 20,
+            &cancel,
+        )
+        .unwrap();
+    let ordinary = media
+        .prepare_with_device_resources_and_catalog(
+            editor.project(),
+            Arc::new(hex_engine::SineTable::new()),
+            None,
+            &hex_engine::audio_transform::AudioTransformPreparation::default(),
+            &resources,
+            0,
+            &cancel,
+            Some(&catalog),
+            None,
+            None,
+        )
+        .unwrap();
+    assert_eq!(
+        ordinary.arrangement_stream_sources().next().unwrap(),
+        &expected
+    );
+    assert!(catalog.matches_source(&expected));
+    let raw_sources = BTreeMap::from([(asset, Arc::new(raw.clone()))]);
+    assert!(
+        ResidentFileMetadata::new_with_pitched(
+            7,
+            raw_sources.clone(),
+            BTreeMap::from([(expected.key(), Arc::new(expected.clone()))]),
+        )
+        .is_err()
+    );
+    let missing = ResidentFileMetadata::new(7, raw_sources.clone()).unwrap();
+    assert!(
+        media
+            .prepare_with_device_resources_and_catalog(
+                editor.project(),
+                Arc::new(hex_engine::SineTable::new()),
+                None,
+                &hex_engine::audio_transform::AudioTransformPreparation::default(),
+                &resources,
+                0,
+                &cancel,
+                Some(&missing),
+                None,
+                None,
+            )
+            .is_err()
+    );
+    let other_path = files.wav("other-repitch.wav", 16_000, 8_000, 2048);
+    let other =
+        crate::VerifiedAudioFile::inspect(other_path, 16_000, file_reservation(2).reader, || false)
+            .unwrap();
+    let foreign = other
+        .source_metadata(asset, 7)
+        .unwrap()
+        .with_repitch(&map, law)
+        .unwrap();
+    assert!(
+        ResidentFileMetadata::new_with_derived(
+            7,
+            raw_sources.clone(),
+            BTreeMap::from([(foreign.key(), Arc::new(foreign))]),
+        )
+        .is_err()
+    );
+    let mut alternate = Editor::new(editor.project().clone(), 8).unwrap();
+    alternate
+        .execute(Command::SetProjectTempo {
+            tempo: hex_project::Tempo::new(180_000_000).unwrap(),
+        })
+        .unwrap();
+    let (other_map, other_law) = hex_engine::audio_transform::streamed_repitch_map(
+        alternate
+            .project()
+            .clip(clip)
+            .unwrap()
+            .audio_edit()
+            .unwrap(),
+        alternate.project().tempo_map(),
+        raw.playback_frames(),
+        &cancel,
+    )
+    .unwrap();
+    let wrong_map = raw.with_repitch(&other_map, other_law).unwrap();
+    assert_ne!(wrong_map.key(), expected.key());
+    let mismatched = ResidentFileMetadata::new_with_derived(
+        7,
+        raw_sources,
+        BTreeMap::from([(wrong_map.key(), Arc::new(wrong_map))]),
+    )
+    .unwrap();
+    assert!(
+        media
+            .prepare_with_device_resources_and_catalog(
+                editor.project(),
+                Arc::new(hex_engine::SineTable::new()),
+                None,
+                &hex_engine::audio_transform::AudioTransformPreparation::default(),
+                &resources,
+                0,
+                &cancel,
+                Some(&mismatched),
+                None,
+                None,
+            )
+            .is_err()
+    );
+    let hosted = hex_engine::AudioCandidateEffects::with_host_definitions(&[], |effects| {
+        media.prepare_with_device_resources_and_catalog(
+            editor.project(),
+            Arc::new(hex_engine::SineTable::new()),
+            None,
+            &hex_engine::audio_transform::AudioTransformPreparation::default(),
+            &resources,
+            0,
+            &cancel,
+            Some(&catalog),
+            Some(effects),
+            None,
+        )
+    })
+    .unwrap();
+    assert_eq!(
+        hosted.arrangement_stream_sources().next().unwrap(),
+        &expected
+    );
     editor
         .execute(Command::SetAudioClipPitch { clip, cents: 100 })
         .unwrap();

@@ -502,7 +502,7 @@ impl MediaBank {
             (self.epoch, self.prepared_sources()?)
         };
         if let Some(pitched) = catalog
-            .map(|catalog| catalog.pitched_sources())
+            .map(|catalog| catalog.derived_sources())
             .filter(|map| !map.is_empty())
         {
             if let Some(effects) = effects {
