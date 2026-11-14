@@ -3303,6 +3303,11 @@ fn run_worker(
             continue;
         }
         let mut queued = queued;
+        if !plugin_recording.close_safe() && queued.request.is_project_open() {
+            queued.recording_barrier = Some(recording_barrier::Completion::Failed(
+                "finish or recover the vst3 automation take before replacing the project",
+            ));
+        }
         if plugin_recording.editor_active()
             && matches!(
                 &queued.request,
@@ -3481,7 +3486,8 @@ fn run_worker(
                 | Request::Open(_)
                 | Request::OpenWith { .. }
                 | Request::OpenWithAudioMode { .. }
-        ) && let Some(gain) = pending_sampler_parameter.take()
+        ) && recording_barrier::failure(recording_barrier_completion).is_none()
+            && let Some(gain) = pending_sampler_parameter.take()
         {
             gain.cancel().store(true, Ordering::Release);
             sampler_edit_complete = Some(gain.request_id());
