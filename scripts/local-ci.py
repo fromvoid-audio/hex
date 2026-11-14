@@ -1224,13 +1224,15 @@ class LocalCiRunner:
     def _step_sequence_error(self) -> str | None:
         """Reject incomplete qualifying execution before any target is prepared.
 
-        This binds execution to the submitted plan, not the plan to source;
-        independent plan authentication is a separate requirement.
+        This binds mode and execution to the submitted plan, not the plan to
+        source; independent plan authentication is a separate requirement.
         """
         if self.mode not in {"full", "merge", "release"} or self.plan is not None and self.plan.get("qualifies_merge") is False:
             return None
         if self.plan is not None and self.plan.get("qualifies_merge") is not True:
             return "plan must explicitly declare its qualification status"
+        if self.plan is not None and self.plan.get("profile") != self.mode:
+            return "qualifying plan profile does not match runner mode"
         try:
             expected = planned_steps(self.plan if self.plan is not None else {"scope": "full"})
         except (KeyError, TypeError, ValueError) as error:

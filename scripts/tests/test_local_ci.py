@@ -421,9 +421,44 @@ class LocalCiRunnerTests(unittest.TestCase):
                 identity.assert_not_called()
                 execute.assert_not_called()
 
+    def test_qualifying_plan_profile_must_match_runner_before_target_access(self):
+        self.step_sequence_patch.stop()
+        profiles = ("full", "merge", "release", None, [], 1)
+        for mode in ("full", "merge", "release"):
+            for profile in profiles:
+                if profile == mode:
+                    continue
+                with self.subTest(mode=mode, profile=profile):
+                    plan = {"scope": "metadata", "base": "base", "source": "source",
+                            "qualifies_merge": True}
+                    if profile is not None:
+                        plan["profile"] = profile
+                    runner = local_ci.LocalCiRunner(
+                        self.repo, mode=mode, run_id=f"profile-{mode}-{profiles.index(profile)}",
+                        env=self.env, plan=plan, steps=local_ci.planned_steps(plan),
+                        min_free_bytes=0, target_state_dir=self.target_state_dir)
+                    with patch.object(runner, "_resolve_cargo_identity") as identity, \
+                            patch.object(runner, "_run_step") as execute, \
+                            patch.object(runner, "_capture_repository_state", return_value=False) as capture:
+                        self.assertEqual(runner.run(), 2)
+                    self.assertIn("step_sequence_error", runner.summary)
+                    identity.assert_not_called()
+                    execute.assert_not_called()
+                    capture.assert_not_called()
+                    self.assertFalse(Path(self.env["FAKE_METADATA_TARGET"]).exists())
+        for mode in ("full", "merge", "release"):
+            plan = {"scope": "metadata", "profile": mode, "base": "base", "source": "source",
+                    "qualifies_merge": True}
+            runner = local_ci.LocalCiRunner(self.repo, mode=mode, env=self.env, plan=plan)
+            self.assertIsNone(runner._step_sequence_error())
+        self.assertIsNone(local_ci.LocalCiRunner(self.repo, mode="full", env=self.env)._step_sequence_error())
+        partial = {"scope": "metadata", "profile": "edit", "qualifies_merge": False}
+        self.assertIsNone(local_ci.LocalCiRunner(self.repo, mode="merge", env=self.env,
+                                               plan=partial, steps=())._step_sequence_error())
+
     def test_scoped_step_binding_and_nonqualifying_custom_execution(self):
         self.step_sequence_patch.stop()
-        plan = {"scope": "metadata", "base": "base", "source": "source", "qualifies_merge": True}
+        plan = {"scope": "metadata", "profile": "merge", "base": "base", "source": "source", "qualifies_merge": True}
         expected = local_ci.planned_steps(plan)
         matching = local_ci.LocalCiRunner(self.repo, mode="merge", env=self.env, plan=plan, steps=expected)
         self.assertIsNone(matching._step_sequence_error())
