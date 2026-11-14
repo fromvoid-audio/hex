@@ -196,6 +196,48 @@ impl StreamedRepitchRequirement {
     }
 }
 
+/// Immutable control-owned handles to Re-Pitch source requirements.
+/// The set is factual metadata, not a worker, page lease or publication owner.
+#[derive(Clone)]
+pub struct StreamedRepitchRequirements {
+    requirements: Vec<StreamedRepitchRequirement>,
+}
+impl StreamedRepitchRequirements {
+    pub fn new(requirements: Vec<StreamedRepitchRequirement>) -> Result<Self, Invalid> {
+        if requirements.len() > hex_project::MAX_CLIPS
+            || requirements.capacity() > hex_project::MAX_CLIPS
+        {
+            return Err(Invalid("repitch requirement count exceeded"));
+        }
+        Ok(Self { requirements })
+    }
+    pub fn requirements(&self) -> &[StreamedRepitchRequirement] {
+        &self.requirements
+    }
+    pub(crate) fn visit<'a>(
+        &'a self,
+        ledger: &mut crate::AudioRootStorageLedger<'a>,
+    ) -> Result<(), crate::AudioStorageError> {
+        use crate::audio_storage::{Location, Owner};
+        ledger.bytes(
+            Owner::exclusive(self),
+            Location("repitch-requirement-set", 0),
+            std::mem::size_of::<Self>(),
+        )?;
+        ledger.vec(&self.requirements)?;
+        for requirement in &self.requirements {
+            ledger.bytes(
+                Owner::shared(&requirement.inner),
+                Location("repitch-requirement-map", 0),
+                requirement
+                    .retained_bytes()
+                    .ok_or(crate::AudioStorageError::Overflow)?,
+            )?;
+        }
+        Ok(())
+    }
+}
+
 pub const MAX_CACHED_DERIVED_BYTES: usize = 256 * 1024 * 1024;
 pub const MAX_CACHED_TRANSFORMS: usize = 256;
 /// Maximum unique source PCM capacity retained by committed and pending cache entries.

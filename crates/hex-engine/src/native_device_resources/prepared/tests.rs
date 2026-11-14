@@ -1394,3 +1394,157 @@ fn ordinary_sampler_gain_on_control(host_output: bool) {
         std::array::from_fn(|index| expected_frame(index, true))
     );
 }
+
+#[test]
+fn repitch_requirement_owner_is_counted_in_native_admission() {
+    use crate::audio_transform::StreamedRepitchRequirement;
+    use hex_project::{WarpMode, default_audio_warp};
+
+    let mut editor = Editor::new(Project::new(16_000).unwrap(), 8).unwrap();
+    let Created::Imported { clip, asset, .. } = editor
+        .execute(Command::ImportAudioTrack {
+            name: "clip".into(),
+            path: "clip.wav".into(),
+            sample_rate: 16_000,
+            frames: 8_000,
+        })
+        .unwrap()
+    else {
+        panic!("fixture")
+    };
+    editor
+        .execute(Command::SetClipFades {
+            clip,
+            fade_in: 0,
+            fade_out: 0,
+        })
+        .unwrap();
+    let warp = default_audio_warp(
+        editor.project().clip(clip).unwrap(),
+        editor.project().tempo_map(),
+        WarpMode::RePitch,
+    )
+    .unwrap();
+    editor
+        .execute(Command::SetAudioClipWarp {
+            clip,
+            settings: Some(warp),
+        })
+        .unwrap();
+    let raw = crate::StreamedSourceMetadata::new(
+        crate::StreamSourceKey::new(1, asset),
+        16_000,
+        16_000,
+        8_000,
+        8_000,
+        hex_project::IDENTITY_CONVERSION,
+        [1; 32],
+    )
+    .unwrap();
+    let requirement = StreamedRepitchRequirement::new(
+        &raw,
+        editor.project().clip(clip).unwrap().audio_edit().unwrap(),
+        editor.project().tempo_map(),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let requirements =
+        crate::audio_transform::StreamedRepitchRequirements::new(vec![requirement.clone()])
+            .unwrap();
+    let registered = [DeviceResourceAdmission::default().with_repitch_requirements(&requirements)];
+    let phase = DeviceResourcePhase {
+        stores: &[],
+        registered: &registered,
+        selections: &[],
+        outbound: &[],
+        legacy: &[],
+        checked_runtime_bytes: 0,
+        construction_bytes: 0,
+    };
+    let empty = DeviceResourcePhase {
+        registered: &[],
+        ..phase
+    };
+    let baseline = inspect_device_resource_union(&empty, &empty, pcm_limits()).unwrap();
+    let actual = inspect_device_resource_union(&phase, &phase, pcm_limits()).unwrap();
+    let one = actual.retained.retained_bytes;
+    let empty_bytes = baseline.retained.retained_bytes;
+    let map_bytes = requirement.retained_bytes().unwrap();
+    assert!(one > empty_bytes + map_bytes);
+
+    // Repeating the same actual owner does not create another allocation.
+    let repeated = [
+        DeviceResourceAdmission::default().with_repitch_requirements(&requirements),
+        DeviceResourceAdmission::default().with_repitch_requirements(&requirements),
+    ];
+    let repeated_phase = DeviceResourcePhase {
+        registered: &repeated,
+        ..empty
+    };
+    assert_eq!(
+        inspect_device_resource_union(&repeated_phase, &repeated_phase, pcm_limits())
+            .unwrap()
+            .retained
+            .retained_bytes,
+        one
+    );
+
+    // A second vector has its own backing, but its cloned handle shares the map.
+    let shared = requirements.clone();
+    let shared_views = [
+        DeviceResourceAdmission::default().with_repitch_requirements(&requirements),
+        DeviceResourceAdmission::default().with_repitch_requirements(&shared),
+    ];
+    let shared_phase = DeviceResourcePhase {
+        registered: &shared_views,
+        ..empty
+    };
+    let shared_bytes = inspect_device_resource_union(&shared_phase, &shared_phase, pcm_limits())
+        .unwrap()
+        .retained
+        .retained_bytes;
+    assert_eq!(shared_bytes, one + (one - empty_bytes - map_bytes));
+
+    // Equal geometry rebuilt as another map is a separate actual owner.
+    let separate_requirement = StreamedRepitchRequirement::new(
+        &raw,
+        editor.project().clip(clip).unwrap().audio_edit().unwrap(),
+        editor.project().tempo_map(),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let separate_map_bytes = separate_requirement.retained_bytes().unwrap();
+    let separate =
+        crate::audio_transform::StreamedRepitchRequirements::new(vec![separate_requirement])
+            .unwrap();
+    let separate_views = [
+        DeviceResourceAdmission::default().with_repitch_requirements(&requirements),
+        DeviceResourceAdmission::default().with_repitch_requirements(&separate),
+    ];
+    let separate_phase = DeviceResourcePhase {
+        registered: &separate_views,
+        ..empty
+    };
+    assert_eq!(
+        inspect_device_resource_union(&separate_phase, &separate_phase, pcm_limits())
+            .unwrap()
+            .retained
+            .retained_bytes,
+        shared_bytes + separate_map_bytes
+    );
+
+    let mut too_small = pcm_limits();
+    too_small.max_retained_bytes = one - 1;
+    assert!(inspect_device_resource_union(&phase, &phase, too_small).is_err());
+    let construction = DeviceResourcePhase {
+        construction_bytes: 128,
+        ..phase
+    };
+    let peak = inspect_device_resource_union(&phase, &construction, pcm_limits())
+        .unwrap()
+        .construction
+        .construction_peak_bytes;
+    let mut insufficient_peak = pcm_limits();
+    insufficient_peak.max_construction_peak_bytes = peak - 1;
+    assert!(inspect_device_resource_union(&phase, &construction, insufficient_peak).is_err());
+}
