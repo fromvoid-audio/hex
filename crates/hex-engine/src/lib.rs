@@ -188,7 +188,8 @@ pub use stream_demand::{
 };
 mod streamed;
 pub use streamed::{
-    BorrowedMediaPage, MediaPages, STREAM_PAGE_FRAMES, StreamSourceKey, StreamedSourceMetadata,
+    BorrowedMediaPage, MediaPages, RepitchStreamIdentity, STREAM_PAGE_FRAMES, StreamSourceKey,
+    StreamedSourceMetadata,
 };
 
 pub type Frame = [f32; 2];
