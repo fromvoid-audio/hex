@@ -1418,3 +1418,64 @@ fn compensated_mutable_source_applies_live_input_with_and_without_shared_contrib
 
 #[path = "compensation_tests/paused_layout.rs"]
 mod paused_layout;
+
+#[test]
+fn removing_isolated_return_refuses_active_detached_main_tail() {
+    use crate::signal_graph::tests::state;
+    use hex_project::{Command, Created};
+    let mut f = fixture(&[&[]], 64);
+    let Created::ReturnTrack(bus) = f
+        .editor
+        .execute(Command::AddReturnTrack {
+            name: "unused".into(),
+        })
+        .unwrap()
+    else {
+        panic!("return")
+    };
+    let Created::Device(main) = f
+        .editor
+        .execute(Command::InsertMainDevice {
+            before: None,
+            state: state(3).unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("main")
+    };
+    f.editor
+        .execute(Command::InsertMainDevice {
+            before: None,
+            state: state(3).unwrap(),
+        })
+        .unwrap();
+    let original = prepare(&f).unwrap();
+    let mut donor = SessionPlayback::new(Arc::clone(&original)).unwrap();
+    let mut oracle = SessionPlayback::new(original).unwrap();
+    for runtime in [&mut donor, &mut oracle] {
+        runtime.apply(SessionPlaybackCommand::Play).unwrap();
+        runtime.render(&mut [[0.0; 2]; 5]).unwrap();
+    }
+    f.editor.execute(Command::RemoveDevice(main)).unwrap();
+    let mut detached = SessionPlayback::new(prepare(&f).unwrap()).unwrap();
+    detached.try_inherit_state_live_from(&mut donor).unwrap();
+    assert!(
+        detached
+            .return_effect_tails
+            .slots()
+            .iter()
+            .flatten()
+            .any(|tail| tail.output_active && tail.return_id().is_none())
+    );
+    f.editor.execute(Command::RemoveReturnTrack(bus)).unwrap();
+    let mut candidate = SessionPlayback::new(prepare(&f).unwrap()).unwrap();
+    assert!(matches!(
+        candidate.try_inherit_state_live_from(&mut detached),
+        Err(SessionPlaybackError::LatencyLayoutChanged)
+    ));
+    let mut actual = [[0.0; 2]; 8];
+    let mut expected = actual;
+    detached.render(&mut actual).unwrap();
+    oracle.render(&mut expected).unwrap();
+    assert_eq!(actual, expected);
+}

@@ -286,6 +286,41 @@ fn removing_unrelated_return_keeps_real_tail_without_callback_allocations()
     assert!(control.status.rejected_revision().is_none());
     assert_eq!(actual, expected);
     assert!(actual.iter().flatten().any(|sample| *sample != 0.0));
+    control.reclaim();
+    editor.execute(Command::SetReturnSend {
+        track,
+        return_track: bus,
+        gain: 0.0,
+    })?;
+    let disconnected_revision = control
+        .publish(Playback::try_from_prepared_with_session(prepare(
+            editor.project(),
+        )?)?)
+        .map_err(|_| "send removal publication")?;
+    measured_block(&mut callback, &mut actual);
+    oracle.render(&mut expected)?;
+    assert_eq!(
+        control.status.applied_revision.load(Ordering::Acquire),
+        disconnected_revision
+    );
+    assert!(control.status.rejected_revision().is_none());
+    assert_eq!(actual, expected);
+    control.reclaim();
+    editor.execute(Command::RemoveReturnTrack(bus))?;
+    let owner_removed_revision = control
+        .publish(Playback::try_from_prepared_with_session(prepare(
+            editor.project(),
+        )?)?)
+        .map_err(|_| "owning return removal publication")?;
+    measured_block(&mut callback, &mut actual);
+    oracle.render(&mut expected)?;
+    assert_eq!(
+        control.status.applied_revision.load(Ordering::Acquire),
+        owner_removed_revision
+    );
+    assert!(control.status.rejected_revision().is_none());
+    assert_eq!(actual, expected);
+    assert!(actual.iter().flatten().any(|sample| *sample != 0.0));
     control.request_shutdown();
     measured_shutdown(&mut callback, &mut actual);
     let mut reclaimed = 0;

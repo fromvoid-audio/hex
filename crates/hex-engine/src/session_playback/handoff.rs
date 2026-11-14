@@ -1167,9 +1167,10 @@ impl SessionPlayback {
             .zip(previous.compensation.as_ref());
         let removed_return = compensation_pair
             .and_then(|(candidate, old)| old.graph.added_isolated_return_from(&candidate.graph));
-        // A retained Return tail still owns audible output outside the current
-        // graph. An isolated removal may proceed only on the same proven flat
-        // clock as a direct-to-Main Return tail; reset remains forbidden.
+        // A retained Return tail owns audible output outside the current graph,
+        // including when its original Return is removed. The tail retains that
+        // Return's capture identity and routes directly to Main. Removal requires
+        // the same proven flat clock and silent isolated graph; reset is forbidden.
         if removed_return.is_some()
             && previous
                 .return_effect_tails
@@ -1196,10 +1197,7 @@ impl SessionPlayback {
                     .iter()
                     .flatten()
                     .filter(|tail| tail.output_active)
-                    .all(|tail| {
-                        tail.return_id()
-                            .is_some_and(|id| Some(id) != removed_return)
-                    })
+                    .all(|tail| tail.return_id().is_some())
                 && compensation_pair.is_some_and(|(candidate, old)| {
                     direct_return_tail_graph(&candidate.graph)
                         && direct_return_tail_graph(&old.graph)
