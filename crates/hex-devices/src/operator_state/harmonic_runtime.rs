@@ -1015,6 +1015,7 @@ impl MutableInstrumentRuntime for Runtime {
             .any(|voice| voice.id != 0 && voice.gate.is_some());
         let companion = self.factory.settings.companion;
         let needs_companion_beat = companion.needs_clock();
+        let has_modulation = self.factory.configuration.has_modulation();
         let needs_companion_transport = companion.needs_running();
         for (offset, frame) in frames.iter_mut().enumerate() {
             let beat = if needs_companion_beat {
@@ -1177,6 +1178,7 @@ impl MutableInstrumentRuntime for Runtime {
                             }),
                             std::array::from_fn(|i| parameters[4 + i]),
                             std::array::from_fn(|i| parameters[8 + i]),
+                            has_modulation,
                             (if quality {
                                 voice
                                     .modulated_filter
