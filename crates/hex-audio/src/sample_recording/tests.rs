@@ -277,3 +277,71 @@ fn confirmed_timing_splits_at_tempo_changes_loop_wraps_and_stops() {
     assert_eq!(timing[0].frame_at_beat(0), Some(64));
     assert_eq!(timing[1].frame_at_beat(1 << 24), Some(158));
 }
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[test]
+fn full_disk_mid_packet_preserves_the_common_recorded_prefix() {
+    let parent = Directory(std::env::temp_dir().join(format!(
+        "hex-sample-full-disk-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos(),
+    )));
+    std::fs::create_dir(&parent.0).unwrap();
+    let project_path = parent.0.join("project.hex");
+    let media_path = parent.0.join("original.wav");
+    std::fs::write(&project_path, b"original project").unwrap();
+    std::fs::write(&media_path, b"original media").unwrap();
+    let (_, outputs) = two_tracks();
+    let (mut control, mut callback) = channel(48_000);
+    let reader = control.start(1, &outputs, false).unwrap();
+    let state = reader.state.clone();
+    let destination = parent.0.join("new-takes");
+    let (result_tx, result_rx) = std::sync::mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        takes::write_fault::arm();
+        let _ = result_tx.send(write_takes(reader, &destination));
+    });
+    let deadline = Instant::now() + Duration::from_millis(500);
+    while state.load(Acquire) == PENDING {
+        assert!(Instant::now() < deadline, "take writer did not prepare");
+        std::thread::yield_now();
+    }
+    for _ in 0..2 {
+        callback.begin(64);
+        let (layout, stage) = callback.observation().unwrap();
+        for (output, value) in outputs.iter().zip([[0.25, 0.0], [0.0, -0.5]]) {
+            let OutputCaptureId::Track(id) = output else {
+                panic!("expected track")
+            };
+            stage.observe(layout, ProjectSignal::Track(id.value()), 0, &[value; 64]);
+        }
+        stage.observe(layout, ProjectSignal::Master, 0, &[[0.0; 2]; 64]);
+        callback.finish(true);
+    }
+    let result = match result_rx.recv_timeout(Duration::from_millis(500)) {
+        Ok(result) => result,
+        Err(error) => {
+            control.stop();
+            callback.begin(0);
+            worker.join().unwrap();
+            panic!("recording worker did not report the write failure: {error}");
+        }
+    };
+    worker.join().unwrap();
+    let batch = result.unwrap();
+    assert_eq!(batch.end, End::StorageFailed);
+    assert_eq!(
+        batch.write_error.unwrap().raw_os_error(),
+        Some(rustix::io::Errno::NOSPC.raw_os_error())
+    );
+    assert_eq!(batch.takes.len(), 2);
+    for (take, value) in batch.takes.iter().zip([[0.25, 0.0], [0.0, -0.5]]) {
+        assert_eq!(take.frames, 64);
+        let wav =
+            hex_media::decode_wav_file(&take.path, hex_media::Limits::new(8192, 512)).unwrap();
+        assert_eq!(wav.audio().frames(), &[value; 64]);
+        assert_eq!(std::fs::metadata(&take.path).unwrap().len(), 44 + 64 * 8);
+    }
+    assert_eq!(std::fs::read(project_path).unwrap(), b"original project");
+    assert_eq!(std::fs::read(media_path).unwrap(), b"original media");
+}
