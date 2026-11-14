@@ -1,4 +1,84 @@
 use super::*;
+
+#[test]
+fn retarget_accepts_live_legacy_feedback_and_lfo_history() {
+    for lfo in [false, true] {
+        let mut settings = crate::operator_state::tests::legacy_settings();
+        settings.feedback[0] = 0.2;
+        if lfo {
+            settings.lfo.0[0] = 1;
+            settings.lfo.0[5] = 0.2f32.to_bits();
+        }
+        let configuration = settings.prepare_configuration(48_000).unwrap();
+        let table = crate::shared_sine_table();
+        let mut source = if lfo {
+            super::super::lfo_runtime::prepare_factory(
+                &settings,
+                configuration.clone(),
+                48_000,
+                table,
+            )
+            .unwrap()
+            .unwrap()
+            .create_runtime()
+        } else {
+            super::super::feedback_runtime::prepare_factory(
+                &settings,
+                configuration.clone(),
+                48_000,
+                table,
+            )
+            .unwrap()
+            .unwrap()
+            .create_runtime()
+        };
+        let target = Factory::new(settings, configuration, table, 48_000).unwrap();
+        let mut next = target.create_runtime();
+        let proof = Target(target.configuration.configuration_id());
+        assert!(next.can_retarget_history_from(source.as_ref(), &proof));
+        source.process_block(
+            &[
+                NativeInstrumentEvent::NoteOn {
+                    frame_offset: 0,
+                    occurrence_id: 42,
+                    pitch: 60,
+                    velocity: 100,
+                },
+                NativeInstrumentEvent::NoteOn {
+                    frame_offset: 0,
+                    occurrence_id: 43,
+                    pitch: 64,
+                    velocity: 80,
+                },
+                NativeInstrumentEvent::NoteOff {
+                    frame_offset: 40,
+                    occurrence_id: 43,
+                },
+            ],
+            &mut [[0.0; 2]; 80],
+            &hex_lattice::EMPTY_DEVICE_RESOURCES,
+        );
+        assert!(!next.can_retarget_history_from(
+            source.as_ref(),
+            &Target(target.configuration.configuration_id() ^ 1)
+        ));
+        assert!(next.can_retarget_history_from(source.as_ref(), &proof));
+        let expected: Vec<_> = Legacy::read(source.as_ref())
+            .unwrap()
+            .voices()
+            .filter(|v| v.id != 0)
+            .collect();
+        next.retarget_history_from(source.as_ref(), &proof);
+        let actual = next.as_any().downcast_ref::<Runtime>().unwrap();
+        for (a, b) in expected.iter().zip(actual.voices.iter()) {
+            assert_eq!(
+                (a.id, a.age, a.gate, a.phases, a.previous),
+                (b.id, b.age, b.gate, b.phases, b.previous)
+            );
+        }
+        assert_eq!(expected.len(), 2);
+    }
+}
 #[test]
 fn production_series_matches_independent_sum_and_strict_nyquist() {
     let mut settings =
