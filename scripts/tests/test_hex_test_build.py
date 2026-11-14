@@ -16,7 +16,7 @@ import signal
 import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
-from contextlib import contextmanager, redirect_stderr
+from contextlib import contextmanager, nullcontext, redirect_stderr
 from test_ci_target_storage import reuse_fixed_scratch_observations
 import test_local_ci
 from test_local_ci import install_delivery_source_fixture, load_delivery_source_fixture
@@ -28,6 +28,44 @@ SIGNED = {"identifier": delivery.IDENTITY, "team_identifier": SIGNING["team_iden
 
 
 class DeliveryTests(unittest.TestCase):
+    def test_delivery_switches_validation_when_fresh_owner_is_admitted(self):
+        (self.root / "scripts/hex-test-build.json").write_text(json.dumps({"app_path": "hex.app", "signing": SIGNING}))
+        included = self.root / "included.json"
+        included.write_text(json.dumps([{"pr": "https://github.com/PORTALSURFER/hex/pull/1", "head": "a" * 40}]))
+        checklist = self.root / "checklist"
+        checklist.write_text("review")
+        args = SimpleNamespace(candidate="a" * 40, ci_report=self.root / "report", included=included,
+                               checklist=checklist, build_only=False, prepare_only=False)
+        runner = Mock(root=self.root, output_dir=self.root / "output")
+        runner._resolve_cargo_identity.return_value = True
+        runner._check_disk_headroom.return_value = True
+        reservation = object()
+        owner = {"state": "pending"}
+        class Finished(Exception):
+            pass
+        def guard(_runner, **kwargs):
+            self.assertIs(kwargs["reservation"], reservation)
+            kwargs["verification_check"]()
+            kwargs["on_admission"](owner)
+            kwargs["verification_check"]()
+            raise Finished
+        with patch.object(delivery, "ROOT", self.root), patch.object(delivery.sys, "platform", "darwin"), \
+                patch.dict(os.environ, {"HEX_DEV_APP_PATH": str(self.app)}), \
+                patch.object(delivery.ci, "LocalCiRunner", return_value=runner), \
+                patch.object(delivery, "activation_lock", return_value=nullcontext()), \
+                patch.object(delivery, "recover"), patch.object(delivery, "assert_inactive"), \
+                patch.object(delivery, "changelog_payload", return_value=(None, {})), \
+                patch.object(delivery, "prepare_discovery_input", return_value=None), \
+                patch.object(delivery, "optimized_artifact", side_effect=guard), \
+                patch.object(delivery, "validate_ci") as validate:
+            with self.assertRaises(Finished):
+                delivery._build(args, reservation=reservation)
+        self.assertEqual(len(validate.call_args_list), 4)
+        self.assertTrue(all(call.kwargs.get("reservation") is reservation for call in validate.call_args_list[:3]))
+        self.assertNotIn("reservation", validate.call_args_list[3].kwargs)
+        runner._resolve_cargo_identity.assert_called_once_with(reservation)
+        runner.validate_release_inputs.assert_called_once_with(owner)
+
     def test_fresh_delivery_reserves_before_build_and_rejects_recovery(self):
         target = self.root / "fresh-target"
         target.mkdir()
