@@ -10664,10 +10664,12 @@ fn run_export_worker(
         }; // All renderer/runtime/job source handles have dropped before terminal.
         let terminal_delivered = finished.try_send(id).is_ok();
         if !terminal_delivered {
-            event.result = Err(
-                "export finished but control custody notification failed; export worker stopped"
-                    .into(),
-            );
+            let notification =
+                "export finished but control custody notification failed; export worker stopped";
+            event.result = Err(match event.result {
+                Ok(_) => notification.into(),
+                Err(error) => format!("{error}; {notification}"),
+            });
         }
         loop {
             if shutdown.load(Ordering::Acquire) {

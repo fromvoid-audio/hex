@@ -481,6 +481,51 @@ mod tests {
     use std::time::{Duration, Instant};
 
     #[test]
+    fn failed_control_notification_preserves_export_failure_and_recovery_path() {
+        let files = Files::new(false);
+        let (_, snapshot) = direct_sampler(&files);
+        let (work_tx, work_rx) = mpsc::sync_channel(1);
+        let (finished_tx, _finished_rx) = mpsc::sync_channel(1);
+        finished_tx.try_send(99).unwrap();
+        let (events_tx, events_rx) = mpsc::sync_channel(1);
+        let hook: ExportTestHook = Arc::new(std::sync::Mutex::new(None));
+        let worker = thread::spawn(move || {
+            run_export_worker(
+                work_rx,
+                events_tx,
+                Arc::new(|_, _, _, _, _, _, _, _| {
+                    Err(export_error_text(
+                        &hex_export::ExportError::StagingRetained {
+                            path: PathBuf::from("/MixedCase/Stage.wav"),
+                            cause: Box::new(hex_export::ExportError::Invalid("render failed")),
+                        },
+                    ))
+                }),
+                finished_tx,
+                Arc::new(AtomicBool::new(false)),
+                hook,
+            )
+        });
+        work_tx
+            .send(ExportWork::Render(job(
+                &snapshot,
+                files.output().to_path_buf(),
+            )))
+            .unwrap();
+        let error = events_rx
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap()
+            .result
+            .unwrap_err();
+        let displayed =
+            hex_storage::text::plain(&hex_storage::text::lowercase_outside_verbatim(&error));
+        assert!(displayed.contains("render failed"), "{displayed}");
+        assert!(displayed.contains("/MixedCase/Stage.wav"), "{displayed}");
+        assert!(displayed.contains("notification failed"), "{displayed}");
+        worker.join().unwrap();
+    }
+
+    #[test]
     fn stale_and_pending_terminals_cannot_release_job_and_missing_terminal_requires_join() {
         let files = Files::new(false);
         let (session, snapshot) = direct_sampler(&files);
