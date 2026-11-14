@@ -864,7 +864,7 @@ impl NativeAudioSink {
                     DomainSources::capture(pending.snapshot.canonical(), pending.catalog).and_then(
                         |sources| {
                             sources
-                                .definitions()
+                                .definitions_for_snapshot(pending.snapshot.canonical())
                                 .map(|definitions| (sources, definitions))
                         },
                     );
@@ -973,13 +973,19 @@ impl NativeAudioSink {
                 if let Some(domain) = record {
                     domain
                         .sources
-                        .add_required_pitches(pending.snapshot.canonical(), cell)?;
+                        .add_required_derived(pending.snapshot.canonical(), cell)?;
                 } else if pending
                     .snapshot
                     .canonical()
                     .required_plain_pitch_sources()
                     .next()
                     .is_some()
+                    || pending
+                        .snapshot
+                        .canonical()
+                        .required_repitch_sources()
+                        .next()
+                        .is_some()
                 {
                     return Err(hex_engine::AudioStorageError::SourceMismatch);
                 }

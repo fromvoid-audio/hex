@@ -112,6 +112,41 @@ impl CanonicalAudioSourceSnapshot {
                 Some((pitch.asset, file, pitch.cents, pitch.law))
             })
     }
+    /// Verified-file Re-Pitch roots in this exact snapshot. The caller must
+    /// validate and project each root before treating it as a worker source.
+    pub fn required_repitch_sources(
+        &self,
+    ) -> impl Iterator<
+        Item = (
+            hex_project::AssetId,
+            &crate::VerifiedAudioFile,
+            &hex_project::AudioClipEdit,
+            &hex_project::TempoMap,
+        ),
+    > {
+        self.project
+            .tracks()
+            .iter()
+            .flat_map(|track| track.clips())
+            .filter_map(move |clip| {
+                let edit = clip.audio_edit()?;
+                if !edit.domain.warp_enabled
+                    || !edit
+                        .domain
+                        .warp
+                        .as_ref()
+                        .is_some_and(|warp| matches!(warp.mode, hex_project::WarpMode::RePitch))
+                {
+                    return None;
+                }
+                let crate::AudioSourceBinding::VerifiedFile(file) =
+                    self.sources.get(&clip.asset())?
+                else {
+                    return None;
+                };
+                Some((clip.asset(), file, edit, self.project.tempo_map()))
+            })
+    }
     pub fn sample_rate(&self) -> u32 {
         self.project.sample_rate()
     }
