@@ -270,12 +270,7 @@ impl Inputs<'_> {
                     &resources,
                     work,
                     self.shutdown,
-                    file_sources.as_ref().map(|sources| {
-                        (
-                            sources.metadata().catalog_generation(),
-                            sources.metadata().sources(),
-                        )
-                    }),
+                    file_sources.as_ref().map(|sources| sources.metadata()),
                     effects,
                     self.native_parameter_input,
                 )
