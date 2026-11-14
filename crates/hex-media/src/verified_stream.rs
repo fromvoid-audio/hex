@@ -106,6 +106,14 @@ pub struct VerifiedWavReader {
     scratch: [u8; PAGE_BYTES],
 }
 
+/// A control-side verification pass borrowing its reader. Dropping this value
+/// does not certify coverage; `finish` must verify every remaining page.
+pub struct VerifiedWavCoverage<'a> {
+    reader: &'a mut VerifiedWavReader,
+    covered: Vec<u8>,
+    failed: bool,
+}
+
 impl VerifiedWavReader {
     pub fn open(
         path: impl AsRef<Path>,
@@ -251,7 +259,10 @@ impl VerifiedWavReader {
                 captured_len,
                 captured_modified,
                 &mut cancelled,
-                &mut raw_page_reads,
+                PageReadAccounting {
+                    reads: &mut raw_page_reads,
+                    coverage: None,
+                },
                 #[cfg(feature = "test-support")]
                 &mut page_read_failure_after,
             );
@@ -291,6 +302,32 @@ impl VerifiedWavReader {
     /// the one-page cache are not counted.
     pub fn raw_page_reads(&self) -> u64 {
         self.raw_page_reads
+    }
+
+    /// Begin an opt-in complete-file pass. The caller admits at most
+    /// `max_coverage_bytes` of tracker storage; the tracker borrows rather than
+    /// extending the reader's retained heap ownership.
+    pub fn track_complete_verification(
+        &mut self,
+        max_coverage_bytes: usize,
+    ) -> Result<VerifiedWavCoverage<'_>, ImportError> {
+        let count = self.manifest.page_digests().len();
+        if count > max_coverage_bytes {
+            return Err(ImportError::LimitExceeded("verified page coverage bytes"));
+        }
+        let mut covered = Vec::new();
+        covered
+            .try_reserve_exact(count)
+            .map_err(|_| ImportError::AllocationFailed)?;
+        if covered.capacity() > max_coverage_bytes {
+            return Err(ImportError::LimitExceeded("verified page coverage bytes"));
+        }
+        covered.resize(count, 0);
+        Ok(VerifiedWavCoverage {
+            reader: self,
+            covered,
+            failed: false,
+        })
     }
 
     /// Inject one generic I/O error before the page read following this many
@@ -378,7 +415,7 @@ impl VerifiedWavReader {
         mut cancelled: impl FnMut() -> bool,
     ) -> Result<usize, ImportError> {
         output.fill([0.0; 2]);
-        let result = self.read_frames_inner(start_frame, output, &mut cancelled);
+        let result = self.read_frames_inner(start_frame, output, &mut cancelled, None);
         if result.is_err() {
             output.fill([0.0; 2]);
         }
@@ -407,6 +444,7 @@ impl VerifiedWavReader {
         start_frame: u64,
         output: &mut [Frame],
         cancelled: &mut dyn FnMut() -> bool,
+        coverage: Option<&mut [u8]>,
     ) -> Result<usize, ImportError> {
         if output.len() > self.max_window_frames {
             return Err(ImportError::LimitExceeded("decoded window frames"));
@@ -433,7 +471,10 @@ impl VerifiedWavReader {
                 captured_len,
                 captured_modified,
                 cancelled,
-                &mut self.raw_page_reads,
+                PageReadAccounting {
+                    reads: &mut self.raw_page_reads,
+                    coverage,
+                },
                 #[cfg(feature = "test-support")]
                 &mut self.page_read_failure_after,
             );
@@ -493,6 +534,85 @@ impl VerifiedWavReader {
     }
 }
 
+impl VerifiedWavCoverage<'_> {
+    /// Decode under the captured manifest, recording only pages whose digest
+    /// matched. On failure the entire caller buffer is cleared, as for ordinary reads.
+    pub fn read_frames_into_with_cancel(
+        &mut self,
+        start_frame: u64,
+        output: &mut [Frame],
+        mut cancelled: impl FnMut() -> bool,
+    ) -> Result<usize, ImportError> {
+        output.fill([0.0; 2]);
+        if self.failed {
+            return Err(ImportError::Invalid("complete verification pass failed"));
+        }
+        let result = self.reader.read_frames_inner(
+            start_frame,
+            output,
+            &mut cancelled,
+            Some(&mut self.covered),
+        );
+        if result.is_err() {
+            output.fill([0.0; 2]);
+            self.failed = true;
+        }
+        result
+    }
+
+    /// Verify every page not already read in this pass, including non-audio
+    /// pages. Success establishes coverage over time, not an atomic snapshot.
+    /// Failure consumes the pass; callers must start again for complete proof.
+    pub fn finish(mut self, mut cancelled: impl FnMut() -> bool) -> Result<(), ImportError> {
+        if self.failed {
+            return Err(ImportError::Invalid("complete verification pass failed"));
+        }
+        if cancelled() {
+            return Err(ImportError::Cancelled);
+        }
+        let reader = &mut self.reader;
+        let (len, modified) = (reader.manifest.file_len(), reader.manifest.modified());
+        check_metadata(&reader.file, len, modified)?;
+        {
+            let mut verified = VerifiedPageReader::new(
+                &mut reader.file,
+                reader.manifest.page_digests(),
+                &mut reader.scratch,
+                len,
+                modified,
+                &mut cancelled,
+                PageReadAccounting {
+                    reads: &mut reader.raw_page_reads,
+                    coverage: Some(&mut self.covered),
+                },
+                #[cfg(feature = "test-support")]
+                &mut reader.page_read_failure_after,
+            );
+            for page in 0..verified.digests.len() {
+                if verified
+                    .accounting
+                    .coverage
+                    .as_ref()
+                    .and_then(|seen| seen.get(page))
+                    .copied()
+                    != Some(1)
+                {
+                    verified.load_page(page).map_err(map_io_error)?;
+                }
+            }
+        }
+        if cancelled() {
+            return Err(ImportError::Cancelled);
+        }
+        check_metadata(&reader.file, len, modified)
+    }
+}
+
+struct PageReadAccounting<'a> {
+    reads: &'a mut u64,
+    coverage: Option<&'a mut [u8]>,
+}
+
 struct VerifiedPageReader<'a> {
     file: &'a mut File,
     digests: &'a [[u8; DIGEST_BYTES]],
@@ -502,7 +622,7 @@ struct VerifiedPageReader<'a> {
     position: u64,
     cached_page: Option<usize>,
     cancelled: &'a mut dyn FnMut() -> bool,
-    raw_page_reads: &'a mut u64,
+    accounting: PageReadAccounting<'a>,
     #[cfg(feature = "test-support")]
     page_read_failure_after: &'a mut Option<u32>,
 }
@@ -517,7 +637,7 @@ impl<'a> VerifiedPageReader<'a> {
         captured_len: u64,
         captured_modified: SystemTime,
         cancelled: &'a mut dyn FnMut() -> bool,
-        raw_page_reads: &'a mut u64,
+        accounting: PageReadAccounting<'a>,
         #[cfg(feature = "test-support")] page_read_failure_after: &'a mut Option<u32>,
     ) -> Self {
         Self {
@@ -529,7 +649,7 @@ impl<'a> VerifiedPageReader<'a> {
             position: 0,
             cached_page: None,
             cancelled,
-            raw_page_reads,
+            accounting,
             #[cfg(feature = "test-support")]
             page_read_failure_after,
         }
@@ -570,12 +690,15 @@ impl<'a> VerifiedPageReader<'a> {
             // Zero was consumed above; only a successful raw read advances it.
             *remaining -= 1;
         }
-        *self.raw_page_reads += 1;
+        *self.accounting.reads += 1;
         check_metadata(self.file, self.captured_len, self.captured_modified)
             .map_err(import_to_io)?;
         let actual: [u8; DIGEST_BYTES] = Sha256::digest(&self.scratch[..length]).into();
         if actual != *expected {
             return Err(source_changed_io());
+        }
+        if let Some(coverage) = self.accounting.coverage.as_deref_mut() {
+            *coverage.get_mut(page).ok_or_else(source_changed_io)? = 1;
         }
         self.cached_page = Some(page);
         Ok(())
