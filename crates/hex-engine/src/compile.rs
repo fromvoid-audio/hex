@@ -382,6 +382,26 @@ pub(crate) fn project_with_prepared_audio_sources_and_midi_preview_and_contexts(
     shared_contexts: Option<Arc<crate::shared_analytic::SharedAnalyticContextTable>>,
     transforms: Option<&crate::audio_transform::AudioTransformPreparation>,
 ) -> Result<(Project, crate::MidiArrangementPreview), Invalid> {
+    project_with_pitch_sources_and_midi_preview_and_contexts(
+        snapshot,
+        sources,
+        &BTreeMap::new(),
+        generation,
+        sine_table,
+        shared_contexts,
+        transforms,
+    )
+}
+
+pub(crate) fn project_with_pitch_sources_and_midi_preview_and_contexts(
+    snapshot: &hex_project::Project,
+    sources: &BTreeMap<AssetId, PreparedAudioSource>,
+    pitched: &BTreeMap<crate::StreamSourceKey, Arc<StreamedSourceMetadata>>,
+    generation: u64,
+    sine_table: Option<Arc<hex_devices::SineTable>>,
+    shared_contexts: Option<Arc<crate::shared_analytic::SharedAnalyticContextTable>>,
+    transforms: Option<&crate::audio_transform::AudioTransformPreparation>,
+) -> Result<(Project, crate::MidiArrangementPreview), Invalid> {
     if generation == 0 {
         return Err(Invalid("stream source generation must be positive"));
     }
@@ -391,7 +411,14 @@ pub(crate) fn project_with_prepared_audio_sources_and_midi_preview_and_contexts(
         .map_err(|_| Invalid("invalid built-in native instrument registry"))?;
     compile_with_midi_preview(
         snapshot,
-        |asset, project_rate| resolve_prepared(asset, project_rate, sources, generation),
+        |asset, project_rate| {
+            if pitched.is_empty() {
+                resolve_prepared(asset, project_rate, sources, generation)
+            } else {
+                SourceBank::MixedWithPitch(sources, pitched, generation)
+                    .resolve(asset, project_rate)
+            }
+        },
         sine_table,
         &registry,
         &instruments,
