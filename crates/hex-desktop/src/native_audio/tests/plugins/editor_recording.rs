@@ -358,6 +358,17 @@ fn verify_session_recording(
         safety.device_automation_take_complete.unwrap().progress,
         Progress::CloseBlocked
     );
+    let perform_gate = PathBuf::from(std::env::var_os("HEX_ORIGINAL_INSTANCE_RELEASE").unwrap());
+    let end_gate = PathBuf::from(std::env::var_os("HEX_ORIGINAL_EDITOR_END_RELEASE").unwrap());
+    std::fs::write(&perform_gate, b"perform").unwrap();
+    let until = Instant::now() + Duration::from_secs(3);
+    while SESSION_RECORDING_OBSERVATIONS.lock().unwrap().is_empty() {
+        instruments::render_completed_block(h);
+        assert!(
+            Instant::now() < until,
+            "actual editor value did not reach the writer"
+        );
+    }
     let replacement_case = std::env::var_os("HEX_TEST_EDITOR_REPLACEMENT").is_some();
     if replacement_case {
         let path = directory.join("replacement.hex");
@@ -396,17 +407,6 @@ fn verify_session_recording(
             );
             assert_eq!(std::fs::read(&path).unwrap(), bytes);
         }
-    }
-    let perform_gate = PathBuf::from(std::env::var_os("HEX_ORIGINAL_INSTANCE_RELEASE").unwrap());
-    let end_gate = PathBuf::from(std::env::var_os("HEX_ORIGINAL_EDITOR_END_RELEASE").unwrap());
-    std::fs::write(&perform_gate, b"perform").unwrap();
-    let until = Instant::now() + Duration::from_secs(3);
-    while SESSION_RECORDING_OBSERVATIONS.lock().unwrap().is_empty() {
-        instruments::render_completed_block(h);
-        assert!(
-            Instant::now() < until,
-            "actual editor value did not reach the writer"
-        );
     }
     std::fs::write(&end_gate, b"end").unwrap();
     let committed = loop {
