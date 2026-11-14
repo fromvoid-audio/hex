@@ -487,3 +487,81 @@ fn fifo_new_track_gain_applies_to_verified_file_imports() {
     assert!(redo.error.is_none(), "{:?}", redo.error);
     assert_eq!(redo.state.project.tracks()[0].gain(), 0.25);
 }
+
+#[test]
+fn long_repitch_edit_survives_history_and_reopen_without_resident_pcm() {
+    let files = Files::new();
+    let path = files.long_wav("long-repitch.wav", 20_000_000);
+    let service = service_in(DocumentAudioMode::VerifiedStreaming);
+    service.submit(Request::Import(path)).unwrap();
+    let imported = next(&service);
+    assert!(imported.error.is_none(), "{:?}", imported.error);
+    let clip = imported.state.project.tracks()[0].clips()[0].id();
+    service
+        .submit(Request::Edit(hex_project::Command::SetClipFades {
+            clip,
+            fade_in: 0,
+            fade_out: 0,
+        }))
+        .unwrap();
+    let neutral = next(&service);
+    assert!(neutral.error.is_none(), "{:?}", neutral.error);
+    let warp = hex_project::default_audio_warp(
+        neutral.state.project.clip(clip).unwrap(),
+        neutral.state.project.tempo_map(),
+        hex_project::WarpMode::RePitch,
+    )
+    .unwrap();
+    service
+        .submit(Request::Edit(hex_project::Command::SetAudioClipWarp {
+            clip,
+            settings: Some(warp),
+        }))
+        .unwrap();
+    let warped = next(&service);
+    assert!(warped.error.is_none(), "{:?}", warped.error);
+    let expected = warped.state.project.snapshot();
+    assert_eq!(streamed_frames(&warped), 20_000_000);
+    service
+        .submit(Request::Edit(hex_project::Command::SetAudioClipPitch {
+            clip,
+            cents: 100,
+        }))
+        .unwrap();
+    let refused = next(&service);
+    assert!(refused.error.is_some());
+    assert_eq!(refused.state.project.snapshot(), expected);
+    let beats = hex_project::default_audio_warp(
+        warped.state.project.clip(clip).unwrap(),
+        warped.state.project.tempo_map(),
+        hex_project::WarpMode::Beats {
+            preserve: hex_project::BeatsPreserve::Transients,
+            tail: hex_project::BeatsTail::Forward,
+            decay: 100,
+        },
+    )
+    .unwrap();
+    service
+        .submit(Request::Edit(hex_project::Command::SetAudioClipWarp {
+            clip,
+            settings: Some(beats),
+        }))
+        .unwrap();
+    let refused = next(&service);
+    assert!(refused.error.is_some());
+    assert_eq!(refused.state.project.snapshot(), expected);
+    service.submit(Request::Undo).unwrap();
+    let undo = next(&service);
+    assert!(undo.error.is_none(), "{:?}", undo.error);
+    assert_eq!(
+        undo.state.project.snapshot(),
+        neutral.state.project.snapshot()
+    );
+    service.submit(Request::Redo).unwrap();
+    let redo = next(&service);
+    assert!(redo.error.is_none(), "{:?}", redo.error);
+    assert_eq!(redo.state.project.snapshot(), expected);
+    let reopened = save_and_reopen(&service, files.0.join("long-repitch.hex"));
+    assert_eq!(reopened.state.project.snapshot(), expected);
+    assert_eq!(streamed_frames(&reopened), 20_000_000);
+}
