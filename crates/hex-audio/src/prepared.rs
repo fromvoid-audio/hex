@@ -9884,7 +9884,23 @@ mod tests {
             })
         );
         let ticket = client.seek_from_source_with_ticket(29, source).unwrap();
-        data.owner_mut().unwrap().run(|c, _| c.begin_block());
+        let mut output = [[0.0; 2]; 129];
+        // Running transport seeks complete after the 128-frame declick fade.
+        let measured = allocation_counter::measure(|| {
+            data.owner_mut().unwrap().run(|c, _| {
+                c.begin_block();
+                c.render(&mut output).unwrap();
+            })
+        });
+        assert_eq!(
+            (
+                measured.count_total,
+                measured.bytes_total,
+                measured.count_current,
+                measured.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
         assert_eq!(
             reader.try_take(),
             Some(ActionOutcomeReceipt {
@@ -9893,10 +9909,6 @@ mod tests {
             })
         );
         assert!(client.status().unwrap().playing.load(Acquire));
-        // Running transport seeks complete after the 128-frame declick fade.
-        data.owner_mut()
-            .unwrap()
-            .run(|c, _| c.render(&mut [[0.0; 2]; 129]).unwrap());
         assert_eq!(client.status().unwrap().position.load(Acquire), 30);
         client.stop();
         data.owner_mut().unwrap().run(|c, _| c.begin_block());
