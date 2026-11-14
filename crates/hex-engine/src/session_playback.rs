@@ -489,6 +489,12 @@ thread_local! {
 /// Routes and release storage are allocated at construction. Rendering uses
 /// copied route state and commits clocks/routes/releases only after the entire
 /// requested block succeeds. The existing native `Playback` remains unchanged.
+#[derive(Clone, Copy)]
+struct PendingSharedChase {
+    signature: crate::mutable_instrument::MutableOccurrenceSignature,
+    frame: u64,
+}
+
 pub struct SessionPlayback {
     pub(crate) live_expression: Option<Arc<crate::live_expression::LiveExpressionInput>>,
     pub(crate) computer_keyboard: Option<Box<crate::computer_keyboard::ComputerKeyboardRuntime>>,
@@ -516,6 +522,8 @@ pub struct SessionPlayback {
     anchor: Option<SessionClockAnchor>,
     /// Reset-and-chase frontier, retained until a successful nonempty render.
     interactive_start_frame: Option<u64>,
+    // One exact muted-onset chase, retained until a successful render.
+    pending_shared_chase: Option<PendingSharedChase>,
     historical_floor: Option<BeatTime>,
     route_historical_floors: [Option<BeatTime>; MAX_TRACKS],
     source_voice_envelopes: [u16; MAX_TRACKS],
@@ -956,6 +964,7 @@ impl SessionPlayback {
             periodic_tempo: _,
             anchor: _,
             interactive_start_frame: _,
+            pending_shared_chase: _,
             historical_floor: _,
             route_historical_floors: _,
             stream_miss_fades: _,
@@ -2183,6 +2192,7 @@ impl SessionPlayback {
             periodic_tempo,
             anchor: None,
             interactive_start_frame: None,
+            pending_shared_chase: None,
             historical_floor: None,
             route_historical_floors: [None; MAX_TRACKS],
             source_voice_envelopes,

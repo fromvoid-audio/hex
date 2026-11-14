@@ -847,6 +847,20 @@ impl MutableInstrumentTrackRuntime {
         });
     }
 
+    pub(crate) fn can_admit_contributor_chase(&self) -> bool {
+        self.is_source_owner()
+            && self.pair.supports_occurrence_gain()
+            && self
+                .primary
+                .len()
+                .checked_add(self.transition_live_count(false))
+                .is_some_and(|used| {
+                    used < self
+                        .max_active_occurrences()
+                        .min(MAX_MUTABLE_OCCURRENCE_PROOFS)
+                })
+    }
+
     pub(crate) fn max_active_occurrences(&self) -> usize {
         self.pair.max_active_occurrences()
     }
