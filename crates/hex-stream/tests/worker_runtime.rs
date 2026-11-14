@@ -1659,6 +1659,7 @@ fn pitched_worker_pages_match_resident_for_raw_and_converted_sources() {
 
 #[test]
 fn pitched_worker_keeps_twenty_million_frame_source_bounded() {
+    use hex_warp::{Input, MapSegment, Mode, Request, Resampler, TimeMap, render_with_resampler};
     const FRAMES: u64 = 20_000_000;
     let stamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1689,6 +1690,17 @@ fn pitched_worker_keeps_twenty_million_frame_source_bounded() {
     file.write_all(b"data").unwrap();
     file.write_all(&bytes.to_le_bytes()).unwrap();
     file.set_len(44 + u64::from(bytes)).unwrap();
+    let mut prefix = Vec::with_capacity(8192);
+    let mut encoded = Vec::with_capacity(8192 * 4);
+    for index in 0..8192_i32 {
+        let left = ((index % 101) - 50) as i16 * 400;
+        let right = (50 - index % 97) as i16 * 300;
+        encoded.extend_from_slice(&left.to_le_bytes());
+        encoded.extend_from_slice(&right.to_le_bytes());
+        prefix.push([f32::from(left) / 32768.0, f32::from(right) / 32768.0]);
+    }
+    file.seek(SeekFrom::Start(44)).unwrap();
+    file.write_all(&encoded).unwrap();
     let index = (FRAMES - 1) / 4096;
     let step_q32 = (2.0_f64.powf(-700.0 / 1_200.0) * (1_u64 << 32) as f64).round() as u64;
     let impulse_frame = ((u128::from(index * 4096) * u128::from(step_q32)) >> 32) as u64;
@@ -1725,6 +1737,60 @@ fn pitched_worker_keeps_twenty_million_frame_source_bounded() {
         66_048 * std::mem::size_of::<[f32; 2]>()
     );
     assert!(footprint.kernel_table_bytes <= footprint.kernel_peak_bound_bytes);
+    let map = TimeMap::new(
+        vec![MapSegment {
+            output_start: 0,
+            output_end: prefix.len() as u64,
+            source_start_q32: 0,
+            source_end_q32: (prefix.len() as i128) << 32,
+        }],
+        prefix.len(),
+    )
+    .unwrap();
+    let resident = render_with_resampler(
+        &Request {
+            attacks: &[],
+            input: Input {
+                frames: &prefix,
+                sample_rate: 48_000,
+                region_start: 0,
+                region_length: prefix.len() as u64,
+                phase: 0,
+                looping: false,
+                envelope: &[],
+            },
+            map: &map,
+            output_frames: prefix.len(),
+            pitch_cents: -700,
+            mode: Mode::Resample,
+        },
+        Resampler::V2,
+        &mut || false,
+    )
+    .unwrap()
+    .frames;
+    let first_key = PageKey {
+        source: key,
+        page_index: 0,
+    };
+    runtime.request_page(key, 0);
+    assert!(wait_for_pages(
+        &mut runtime,
+        &[first_key],
+        Duration::from_secs(3)
+    ));
+    let first = runtime.page(key, 0).unwrap();
+    assert_eq!(first.frames.len(), 4096);
+    assert!(
+        resident[..first.frames.len()]
+            .iter()
+            .any(|frame| *frame != [0.0; 2])
+    );
+    assert_eq!(
+        first.frames,
+        &resident[..first.frames.len()],
+        "20M-frame stream must match resident prefix exactly"
+    );
     runtime.request_page(key, index);
     assert!(wait_for_pages(
         &mut runtime,
