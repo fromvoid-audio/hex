@@ -676,17 +676,13 @@ impl SessionPlayback {
                         if self.device_metering {
                             track.instrument_meter.observe_output(&[frame]);
                         }
-                        let mix = self
-                            .compensation
-                            .as_ref()
-                            .ok_or(SessionPlaybackError::DeviceRuntime)?
-                            .fader_mix(track, index, None);
-                        if let Some(mix) = mix {
-                            mix.with_channel_gain(self.track_fader_scratch[index].next())
-                                .apply_frame(frame)
-                        } else {
-                            [0.0; 2]
-                        }
+                        // The current stamp was just pushed. Admission proves
+                        // zero fader arrival, no gain automation and no group
+                        // mute, so its mix is exactly the static track mix.
+                        track
+                            .mix()
+                            .with_channel_gain(self.track_fader_scratch[index].next())
+                            .apply_frame(frame)
                     } else {
                         let mut audio = [[0.0; 2]];
                         let mut generator = [[0.0; 2]];
