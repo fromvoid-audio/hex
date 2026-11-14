@@ -99,8 +99,7 @@ fn active_return_tail_survives_refused_restart_without_callback_allocations()
 }
 
 #[test]
-fn active_return_removal_refuses_reset_without_callback_allocations() -> Result<(), Box<dyn Error>>
-{
+fn active_return_removal_keeps_tail_without_callback_allocations() -> Result<(), Box<dyn Error>> {
     let mut editor = Editor::new(Project::new(RATE)?, 16)?;
     let Created::Imported { track, asset, .. } = editor.execute(Command::ImportAudioTrack {
         name: "source".into(),
@@ -169,10 +168,7 @@ fn active_return_removal_refuses_reset_without_callback_allocations() -> Result<
         .map_err(|_| "removed return publication")?;
     measured_block(&mut callback, &mut actual);
     oracle.render(&mut expected)?;
-    assert_eq!(
-        control.status.rejected_revision().map(|(_, reason)| reason),
-        Some(hex_engine::playback::PlaybackHandoffRejection::LatencyLayoutChanged),
-    );
+    assert!(control.status.rejected_revision().is_none());
     assert_eq!(actual, expected);
     assert!(actual.iter().flatten().any(|sample| *sample != 0.0));
     control.request_shutdown();
