@@ -1,8 +1,8 @@
 use super::*;
 
 #[test]
-fn retarget_accepts_live_legacy_feedback_and_lfo_history() {
-    for lfo in [false, true] {
+fn retarget_accepts_live_native_and_legacy_feedback_and_lfo_history() {
+    for (lfo, native) in [(false, false), (true, false), (false, true), (true, true)] {
         let mut settings = crate::operator_state::tests::legacy_settings();
         settings.feedback[0] = 0.2;
         if lfo {
@@ -11,7 +11,11 @@ fn retarget_accepts_live_legacy_feedback_and_lfo_history() {
         }
         let configuration = settings.prepare_configuration(48_000).unwrap();
         let table = crate::shared_sine_table();
-        let mut source = if lfo {
+        let mut source = if native {
+            Factory::new(settings, configuration.clone(), table, 48_000)
+                .unwrap()
+                .create_runtime()
+        } else if lfo {
             super::super::lfo_runtime::prepare_factory(
                 &settings,
                 configuration.clone(),
@@ -77,6 +81,11 @@ fn retarget_accepts_live_legacy_feedback_and_lfo_history() {
             );
         }
         assert_eq!(expected.len(), 2);
+        let mut source_audio = [[0.0; 2]; 64];
+        let mut target_audio = [[0.0; 2]; 64];
+        source.process_block(&[], &mut source_audio, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+        next.process_block(&[], &mut target_audio, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+        assert_eq!(source_audio, target_audio);
     }
 }
 #[test]
