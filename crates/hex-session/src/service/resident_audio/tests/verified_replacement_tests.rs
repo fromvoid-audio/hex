@@ -5,6 +5,115 @@ use crate::service::verified_source_tests::{
 };
 
 #[test]
+fn verified_repitch_semantic_revision_keeps_raw_session_source() {
+    use hex_project::{Command, Created, Editor, Project, WarpMode, default_audio_warp};
+    let files = VerifiedFiles::new();
+    let path = files.wav("repitch.wav", 16_000, 8_000, 1024);
+    let file =
+        crate::VerifiedAudioFile::inspect(path.clone(), 16_000, file_reservation(2).reader, || {
+            false
+        })
+        .unwrap();
+    let mut editor = Editor::new(Project::new(16_000).unwrap(), 8).unwrap();
+    let Created::Imported { track, clip, asset } = editor
+        .execute(Command::ImportAudioTrack {
+            name: "file".into(),
+            path,
+            sample_rate: 16_000,
+            frames: 8_000,
+        })
+        .unwrap()
+    else {
+        panic!("fixture")
+    };
+    editor
+        .execute(Command::SetClipFades {
+            clip,
+            fade_in: 0,
+            fade_out: 0,
+        })
+        .unwrap();
+    let warp = default_audio_warp(
+        editor.project().clip(clip).unwrap(),
+        editor.project().tempo_map(),
+        WarpMode::RePitch,
+    )
+    .unwrap();
+    editor
+        .execute(Command::SetAudioClipWarp {
+            clip,
+            settings: Some(warp),
+        })
+        .unwrap();
+    assert!(matches!(
+        editor.execute(Command::DuplicateClip(clip)).unwrap(),
+        Created::Clip(_)
+    ));
+    let Created::Scene(scene) = editor
+        .execute(Command::AddScene { name: "raw".into() })
+        .unwrap()
+    else {
+        panic!("scene")
+    };
+    editor
+        .execute(Command::CreateSessionAudioClip {
+            track,
+            scene,
+            name: "raw".into(),
+            asset,
+            source_start: 0,
+            source_end: 4_096,
+        })
+        .unwrap();
+    let media = crate::audio_sources::MediaBank {
+        epoch: 7,
+        device_only: Default::default(),
+        resident: BTreeMap::new(),
+        verified: BTreeMap::from([(asset, file.clone())]),
+    };
+    let raw = file.source_metadata(asset, 7).unwrap();
+    let edit = editor.project().clip(clip).unwrap().audio_edit().unwrap();
+    let (map, law) = hex_engine::audio_transform::streamed_repitch_map(
+        edit,
+        editor.project().tempo_map(),
+        raw.playback_frames(),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let expected = raw.with_repitch(&map, law).unwrap();
+    let revision = media
+        .prepare(
+            editor.project(),
+            Arc::new(hex_engine::SineTable::new()),
+            None,
+        )
+        .unwrap();
+    let keys: Vec<_> = revision
+        .arrangement_stream_sources()
+        .map(|source| source.key())
+        .collect();
+    assert_eq!(keys, vec![expected.key(), expected.key()]);
+    let hex_engine::compile::PreparedAudioSource::Streamed(session_source) =
+        revision.session().audio_clips()[0].source()
+    else {
+        panic!("session source")
+    };
+    assert_eq!(session_source.as_ref(), &raw);
+    editor
+        .execute(Command::SetAudioClipPitch { clip, cents: 100 })
+        .unwrap();
+    assert!(
+        media
+            .prepare(
+                editor.project(),
+                Arc::new(hex_engine::SineTable::new()),
+                None
+            )
+            .is_err()
+    );
+}
+
+#[test]
 fn ordinary_file_pitch_prepares_only_with_exact_host_metadata() {
     use hex_engine::native_device_resources::{PreparedDeviceResources, ResidentDeviceAssets};
     use hex_project::{Command, Created, Editor, Project, WarpResampler};

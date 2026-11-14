@@ -1276,3 +1276,60 @@ fn plain_reverse_file_backed_clip_commits_and_reopens_without_resident_pcm() {
     ));
     assert_eq!(fs::read(media).unwrap(), media_bytes);
 }
+
+#[test]
+fn verified_repitch_edit_commits_and_survives_undo_redo_without_resident_pcm() {
+    let files = Files::new();
+    let source = files.wav("repitch.wav", 16_000, 8_000, 1024);
+    let service = Service::new(16_000, 16, 0).unwrap();
+    next(&service);
+    run(
+        &service,
+        Request::NewWithAudioMode {
+            mode: DocumentAudioMode::VerifiedStreaming,
+            reservation: Some(reservation(2)),
+        },
+    );
+    let imported = run(&service, Request::Import(source));
+    let clip = imported.state.project.tracks()[0].clips()[0].id();
+    let neutral = run(
+        &service,
+        Request::Edit(Command::SetClipFades {
+            clip,
+            fade_in: 0,
+            fade_out: 0,
+        }),
+    );
+    let warp = hex_project::default_audio_warp(
+        neutral.state.project.clip(clip).unwrap(),
+        neutral.state.project.tempo_map(),
+        hex_project::WarpMode::RePitch,
+    )
+    .unwrap();
+    let warped = run(
+        &service,
+        Request::Edit(Command::SetAudioClipWarp {
+            clip,
+            settings: Some(warp),
+        }),
+    );
+    let expected = warped.state.project.snapshot();
+    let asset = warped.state.project.clip(clip).unwrap().asset();
+    assert!(matches!(
+        warped
+            .state
+            .canonical_audio_source
+            .as_ref()
+            .unwrap()
+            .sources()
+            .get(&asset),
+        Some(AudioSourceBinding::VerifiedFile(_))
+    ));
+    let undo = run(&service, Request::Undo);
+    assert_eq!(
+        undo.state.project.snapshot(),
+        neutral.state.project.snapshot()
+    );
+    let redo = run(&service, Request::Redo);
+    assert_eq!(redo.state.project.snapshot(), expected);
+}

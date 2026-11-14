@@ -347,6 +347,31 @@ impl MediaBank {
                 .with_plain_pitch(pitch.cents, pitch.law)?;
             pitched.insert(metadata.key(), Arc::new(metadata));
         }
+        // Each exact map is a separate worker output. Duplicate clips with
+        // identical maps share the same immutable metadata, never raw PCM.
+        for clip in project.tracks().iter().flat_map(|track| track.clips()) {
+            let (Some(file), Some(edit)) = (self.verified.get(&clip.asset()), clip.audio_edit())
+            else {
+                continue;
+            };
+            let raw = file.source_metadata(clip.asset(), self.epoch)?;
+            let Ok((map, law)) = hex_engine::audio_transform::streamed_repitch_map(
+                edit,
+                project.tempo_map(),
+                raw.playback_frames(),
+                &std::sync::atomic::AtomicBool::new(false),
+            ) else {
+                continue;
+            };
+            let derived = raw.with_repitch(&map, law)?;
+            if let Some(existing) = pitched.get(&derived.key()) {
+                if existing.as_ref() != &derived {
+                    return Err(hex_engine::Invalid("conflicting repitch source metadata"));
+                }
+            } else {
+                pitched.insert(derived.key(), Arc::new(derived));
+            }
+        }
         PreparedRevision::prepare_with_prepared_pitch_sources(
             project, &sources, &pitched, self.epoch, table, previous,
         )
