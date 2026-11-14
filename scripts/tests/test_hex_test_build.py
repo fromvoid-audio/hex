@@ -721,6 +721,9 @@ if os.environ.get("HEX_FIXTURE_CHANGE_DELIVERY") == "1":
     def test_production_build_assembles_and_replaces_stable_app(self):
         self.assert_production_build(build_only=False)
 
+    def test_production_build_version_metadata_uses_runner_environment(self):
+        self.assert_production_build(build_only=True, metadata_env_check=True)
+
     def test_default_build_stages_discovery_in_the_installed_app(self):
         self.assert_production_build(build_only=False, discovery=True)
 
@@ -922,7 +925,7 @@ if os.environ.get("HEX_FIXTURE_CHANGE_DELIVERY") == "1":
 
     def assert_production_build(self, *, build_only, drift=False, finder_metadata=False, rmdir_member=None,
                                 prepare_only=False, followup_failure=False, validate_ci_receipt=False,
-                                discovery=False):
+                                discovery=False, metadata_env_check=False):
         # Exercise real assembly/receipt/activation with native external tools
         # substituted. A missing Contents parent failed actual post-merge delivery.
         self.bundle(self.app, b"old")
@@ -953,6 +956,23 @@ if os.environ.get("HEX_FIXTURE_CHANGE_DELIVERY") == "1":
         checklist = self.root / "USER-TEST.md"
         checklist.write_text("1. launch stable app\n2. inspect source identity\n")
         runner = delivery.ci.LocalCiRunner(source)
+        metadata_environment = {}
+        real_subprocess_run = subprocess.run
+        if metadata_env_check:
+            tools = self.root / "fake-cargo-bin"
+            tools.mkdir()
+            cargo = tools / "cargo"
+            cargo.write_text(f"#!{sys.executable}\n" +
+                "import json, os\n"
+                "version = '0.2.7' if os.environ.get('CARGO_CACHE_RUSTC_INFO') == '0' and "
+                "os.environ.get('CARGO_TARGET_DIR') == os.environ.get('EXPECTED_TARGET') else '9.9.9'\n"
+                "print(json.dumps({'packages': [{'name': 'hex-desktop', 'version': version}]}))\n")
+            cargo.chmod(0o755)
+            metadata_environment = {"PATH": str(tools) + os.pathsep + os.environ["PATH"],
+                                    "CARGO_TARGET_DIR": str(self.root / "ambient-target"),
+                                    "CARGO_CACHE_RUSTC_INFO": "1"}
+            runner.env.update(PATH=metadata_environment["PATH"], CARGO_TARGET_DIR=str(target.parent.parent),
+                              EXPECTED_TARGET=str(target.parent.parent), CARGO_CACHE_RUSTC_INFO="0")
         runner.summary["start_tree"] = {"commit":candidate, "dirty":False, "dirty_files":[],
                                         "content_sha256":"d" * 64}
         dependency_inputs = {"fixture": "guarded input identity"}
@@ -984,10 +1004,13 @@ if os.environ.get("HEX_FIXTURE_CHANGE_DELIVERY") == "1":
         owner = dev_owner.with_name(dev_owner.name.replace(".owner.json", ".release-owner.json"))
         event = {"reason":"compiler-artifact", "executable":str(executable),
                  "target":{"name":"hex-desktop"}, "profile":{"opt_level":"3"}}
-        def tool(argv, root=source):
+        def tool(argv, root=source, *, env=None):
             if argv[:2] == ["git", "rev-parse"]:
                 return str(source / ".git")
             if argv[:2] == ["cargo", "metadata"]:
+                if metadata_env_check:
+                    return real_subprocess_run(argv, cwd=root, env=env, check=True,
+                                               capture_output=True, text=True).stdout.strip()
                 return json.dumps({"packages":[{"name":"hex-desktop", "version":"0.1.0"}]})
             if prepare_only and argv[0] == "ps":
                 return f"123 {self.app}/Contents/MacOS/hex"
@@ -1037,7 +1060,7 @@ if os.environ.get("HEX_FIXTURE_CHANGE_DELIVERY") == "1":
                                  side_effect=AssertionError("CI required for build-only") if build_only else None))
         with patch.object(delivery, "ROOT", source), \
                 patch.object(delivery.sys, "platform", "darwin"), \
-                patch.dict(os.environ, {"HEX_DEV_APP_PATH":str(self.app)}), \
+                patch.dict(os.environ, {"HEX_DEV_APP_PATH":str(self.app), **metadata_environment}), \
                 patch.object(delivery.ci, "LocalCiRunner", return_value=runner), \
                 ci_check as checked_ci, \
                 patch.object(runner, "run", side_effect=AssertionError("tests during packaging")), \
@@ -1272,6 +1295,8 @@ if os.environ.get("HEX_FIXTURE_CHANGE_DELIVERY") == "1":
                 delivery.verify(self.app)
             delivery.write_json(self.app / "Contents/Resources/test-build.json", verified)
         self.assertEqual(verified["source"], candidate)
+        if metadata_env_check:
+            self.assertEqual(receipt["version"], "0.2.7")
         self.assertEqual(verified["profile"], "release")
         if discovery:
             self.assertEqual(verified["vst3_discovery"], discovery_evidence)
@@ -1345,6 +1370,42 @@ if os.environ.get("HEX_FIXTURE_CHANGE_DELIVERY") == "1":
             runner.summary["start_tree"] = {**tree, "content_sha256": "changed"}
             with self.assertRaises(delivery.DeliveryError):
                 delivery.validate_ci(report, runner, tree["commit"])
+
+    def test_scoped_ci_metadata_uses_runner_environment(self):
+        tools = self.root / "metadata-tools"
+        tools.mkdir()
+        cargo = tools / "cargo"
+        cargo.write_text(f"#!{sys.executable}\n" +
+            "import json, os\n"
+            "print(json.dumps({'target_directory': os.environ.get('CARGO_TARGET_DIR'), "
+            "'cache': os.environ.get('CARGO_CACHE_RUSTC_INFO')}))\n")
+        cargo.chmod(0o755)
+        path = str(tools) + os.pathsep + os.environ["PATH"]
+        runner_target = str(self.root / "runner-target")
+        env = {**os.environ, "PATH": path, "CARGO_TARGET_DIR": runner_target,
+               "CARGO_CACHE_RUSTC_INFO": "0"}
+        runner = delivery.ci.LocalCiRunner(self.root, env=env)
+        tree = {"commit": "a" * 40, "dirty": False, "content_sha256": "fixture"}
+        runner.summary["start_tree"] = tree
+        plan = {"scope": "tooling", "profile": "merge", "qualifies_merge": True,
+                "source": tree["commit"], "base": "b" * 40}
+        required = delivery.ci.planned_steps(plan)
+        evidence = {"schema_version": 2, "mode": "merge", "status": "passed", "stale": False,
+                    "exit_code": 0, "commit": tree["commit"], "dirty": False,
+                    "start_tree": tree, "end_tree": tree, "plan": plan,
+                    "steps": [{"step_id": step.step_id, "argv": list(step.argv), "status": "passed",
+                               "test_results": {"python_executions": [1]}} for step in required]}
+        report = self.root / "scoped-env.json"
+        delivery.write_json(report, evidence)
+        def resolve(_root, **kwargs):
+            self.assertEqual(kwargs["metadata"], {"target_directory": runner_target, "cache": "0"})
+            return plan
+        with patch.dict(os.environ, {"PATH": path, "CARGO_TARGET_DIR": str(self.root / "ambient-target"),
+                                    "CARGO_CACHE_RUSTC_INFO": "1"}), \
+                patch.object(runner, "_capture_repository_state", return_value=True), \
+                patch.object(delivery, "run", self.mock.temp_original), \
+                patch.object(delivery.ci.ci_plan, "resolve", side_effect=resolve):
+            delivery.validate_ci(report, runner, tree["commit"], allow_dev_profile=True)
 
     def test_scoped_ci_requires_explicit_dev_and_recomputed_plan_with_positive_tests(self):
         # Fabricated report data tests consumer refusal, not product execution.
