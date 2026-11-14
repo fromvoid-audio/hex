@@ -848,16 +848,22 @@ impl MutableInstrumentTrackRuntime {
     }
 
     pub(crate) fn can_admit_contributor_chase(&self) -> bool {
+        self.can_admit_contributor_chases(1)
+    }
+
+    pub(crate) fn can_admit_contributor_chases(&self, additional: usize) -> bool {
         self.is_source_owner()
             && self.pair.supports_occurrence_gain()
             && self
                 .primary
                 .len()
                 .checked_add(self.transition_live_count(false))
-                .is_some_and(|used| {
-                    used < self
-                        .max_active_occurrences()
-                        .min(MAX_MUTABLE_OCCURRENCE_PROOFS)
+                .and_then(|used| used.checked_add(additional))
+                .is_some_and(|needed| {
+                    needed
+                        <= self
+                            .max_active_occurrences()
+                            .min(MAX_MUTABLE_OCCURRENCE_PROOFS)
                 })
     }
 
