@@ -81,6 +81,7 @@ impl SessionPlayback {
                     // cut below and rendered while paused. Only sampler-only
                     // offline export lacks one, and it refuses Pause.
                     self.pause_analytic_sources()?;
+                    self.pending_shared_chase = None;
                     self.foreign_arrangement.cut();
                     // A removed receiver may already own a detached release.
                     // Only explicit discontinuities reset admitted monitoring.
@@ -173,6 +174,7 @@ impl SessionPlayback {
         self.arrangement_loop_pass = 0;
         self.anchor = None;
         self.interactive_start_frame = None;
+        self.pending_shared_chase = None;
         self.historical_floor = None;
         self.route_historical_floors.fill(None);
         self.analytic_continuations.fill(None);
@@ -323,6 +325,7 @@ impl SessionPlayback {
         self.arrangement_loop_pass = 0;
         self.anchor = None;
         self.interactive_start_frame = None;
+        self.pending_shared_chase = None;
         self.historical_floor = None;
         self.route_historical_floors.fill(None);
         self.restart_audio_history();

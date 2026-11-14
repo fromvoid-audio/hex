@@ -4198,6 +4198,246 @@ mod tests {
     }
 
     #[test]
+    fn shared_authored_note_started_muted_resumes_when_unmuted() {
+        on_control(|| {
+            let mut f = fixture();
+            f.editor
+                .execute(Command::Mute {
+                    track: f.contributor,
+                    muted: true,
+                })
+                .unwrap();
+            let mut old = playback(&f);
+            old.apply(SessionPlaybackCommand::Play).unwrap();
+            check_pcm(&mut old, 0, 7, 0.25);
+            f.editor
+                .execute(Command::Mute {
+                    track: f.contributor,
+                    muted: false,
+                })
+                .unwrap();
+            let mut next = playback(&f);
+            next.try_inherit_state_from(&mut old).unwrap();
+            let mut frames = [[0.0; 2]; 160];
+            for chunk in frames.chunks_mut(7) {
+                next.render(chunk).unwrap();
+            }
+            for (i, frame) in frames.iter().enumerate() {
+                let fade = i.min(40) as f32 / 40.0;
+                for channel in 0..2 {
+                    let expected = 0.25 * (PCM[(7 + i) % 4][channel] + PCM[i % 4][channel] * fade);
+                    assert!(
+                        (frame[channel] - expected).abs() < 0.000_002,
+                        "frame {i} channel {channel}: got {} expected {expected}",
+                        frame[channel]
+                    );
+                }
+            }
+            let mut tail = [[0.0; 2]; 4096];
+            for chunk in tail.chunks_mut(97) {
+                next.render(chunk).unwrap();
+            }
+            assert!(tail[4020..].iter().all(|frame| *frame == [0.0; 2]));
+        });
+    }
+
+    #[test]
+    fn pending_shared_unmute_survives_empty_render_and_refuses_another_handoff() {
+        on_control(|| {
+            let mut f = fixture();
+            f.editor
+                .execute(Command::Mute {
+                    track: f.contributor,
+                    muted: true,
+                })
+                .unwrap();
+            let mut old = playback(&f);
+            old.apply(SessionPlaybackCommand::Play).unwrap();
+            check_pcm(&mut old, 0, 7, 0.25);
+            f.editor
+                .execute(Command::Mute {
+                    track: f.contributor,
+                    muted: false,
+                })
+                .unwrap();
+            let mut next = playback(&f);
+            next.try_inherit_state_from(&mut old).unwrap();
+            next.render(&mut []).unwrap();
+            let mut another = playback(&f);
+            assert!(matches!(
+                another.try_inherit_state_from(&mut next),
+                Err(SessionPlaybackError::MutableInstrumentChase)
+            ));
+            let mut frames = [[0.0; 2]; 41];
+            next.render(&mut frames).unwrap();
+            for (i, frame) in frames.iter().enumerate() {
+                let fade = i as f32 / 40.0;
+                for channel in 0..2 {
+                    let expected = 0.25 * (PCM[(7 + i) % 4][channel] + PCM[i % 4][channel] * fade);
+                    assert!((frame[channel] - expected).abs() < 0.000_002);
+                }
+            }
+            another.try_inherit_state_from(&mut next).unwrap();
+        });
+    }
+
+    #[test]
+    fn pending_shared_unmute_clears_on_stop_and_seek() {
+        on_control(|| {
+            for seek in [false, true] {
+                let mut f = fixture();
+                f.editor
+                    .execute(Command::Mute {
+                        track: f.contributor,
+                        muted: true,
+                    })
+                    .unwrap();
+                let mut old = playback(&f);
+                old.apply(SessionPlaybackCommand::Play).unwrap();
+                check_pcm(&mut old, 0, 7, 0.25);
+                f.editor
+                    .execute(Command::Mute {
+                        track: f.contributor,
+                        muted: false,
+                    })
+                    .unwrap();
+                let mut next = playback(&f);
+                next.try_inherit_state_from(&mut old).unwrap();
+                if seek {
+                    assert!(matches!(
+                        next.apply(SessionPlaybackCommand::Seek(0)),
+                        Err(SessionPlaybackError::MutableInstrumentActive)
+                    ));
+                    assert!(next.pending_shared_chase.is_some());
+                    next.apply(SessionPlaybackCommand::Stop).unwrap();
+                    next.apply(SessionPlaybackCommand::Seek(0)).unwrap();
+                    next.apply(SessionPlaybackCommand::Play).unwrap();
+                    check_pcm(&mut next, 0, 8, 0.5);
+                } else {
+                    next.apply(SessionPlaybackCommand::Stop).unwrap();
+                    next.render(&mut [[0.0; 2]; 64]).unwrap();
+                    let mut silent = [[1.0; 2]; 8];
+                    next.render(&mut silent).unwrap();
+                    assert_eq!(silent, [[0.0; 2]; 8]);
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn shared_unmute_refuses_multiple_missing_notes_and_active_loop() {
+        on_control(|| {
+            for looped in [false, true] {
+                let mut f = fixture();
+                if looped {
+                    f.editor
+                        .execute(Command::SetLoopRegion {
+                            start: 0,
+                            end: 512,
+                            enabled: true,
+                        })
+                        .unwrap();
+                } else {
+                    let clip = f
+                        .editor
+                        .project()
+                        .track(f.contributor)
+                        .unwrap()
+                        .midi_clips()[0]
+                        .id();
+                    f.editor
+                        .execute(Command::AddMidiNote {
+                            clip,
+                            start: BeatTime::ZERO,
+                            duration: BeatTime::ONE,
+                            pitch: 62,
+                            channel: 0,
+                            velocity: 127,
+                        })
+                        .unwrap();
+                }
+                f.editor
+                    .execute(Command::Mute {
+                        track: f.contributor,
+                        muted: true,
+                    })
+                    .unwrap();
+                let mut old = playback(&f);
+                old.apply(SessionPlaybackCommand::Play).unwrap();
+                check_pcm(&mut old, 0, 7, 0.25);
+                f.editor
+                    .execute(Command::Mute {
+                        track: f.contributor,
+                        muted: false,
+                    })
+                    .unwrap();
+                let mut next = playback(&f);
+                assert!(matches!(
+                    next.try_inherit_state_from(&mut old),
+                    Err(SessionPlaybackError::MutableInstrumentChase)
+                ));
+                check_pcm(&mut old, 7, 8, 0.25);
+            }
+        });
+    }
+
+    #[test]
+    fn failed_shared_unmute_render_retries_the_same_fade() {
+        on_control(|| {
+            let mut f = fixture();
+            f.editor
+                .execute(Command::Mute {
+                    track: f.contributor,
+                    muted: true,
+                })
+                .unwrap();
+            let mut old = playback(&f);
+            let mut reference_old = playback(&f);
+            for playback in [&mut old, &mut reference_old] {
+                playback.apply(SessionPlaybackCommand::Play).unwrap();
+                check_pcm(playback, 0, 7, 0.25);
+            }
+            f.editor
+                .execute(Command::Mute {
+                    track: f.contributor,
+                    muted: false,
+                })
+                .unwrap();
+            let mut failed = playback(&f);
+            let mut reference = playback(&f);
+            failed.try_inherit_state_from(&mut old).unwrap();
+            reference
+                .try_inherit_state_from(&mut reference_old)
+                .unwrap();
+            let route = failed
+                .routes
+                .iter()
+                .position(|route| route.id == f.contributor)
+                .unwrap();
+            failed.routes[route].current_incarnation = u64::MAX;
+            failed.routes[route].pending = Some(crate::session_playback::PendingRoute {
+                frame: 39,
+                beat: BeatTime::ZERO,
+                target: crate::session_playback::RouteTarget::Silence,
+                current_reservation: None,
+            });
+            let mut rejected = [[1.0; 2]; 64];
+            assert_eq!(
+                failed.render(&mut rejected),
+                Err(SessionPlaybackError::ArithmeticOverflow)
+            );
+            assert_eq!(rejected, [[0.0; 2]; 64]);
+            failed.routes[route].pending = None;
+            failed.routes[route].current_incarnation = reference.routes[route].current_incarnation;
+            let mut retried = [[0.0; 2]; 64];
+            let mut expected = [[0.0; 2]; 64];
+            failed.render(&mut retried).unwrap();
+            reference.render(&mut expected).unwrap();
+            assert_eq!(retried, expected);
+        });
+    }
+
+    #[test]
     fn shared_contributor_mute_settles_independently_of_authored_release() {
         on_control(|| {
             let mut f = fixture();
