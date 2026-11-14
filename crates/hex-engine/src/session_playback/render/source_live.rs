@@ -64,7 +64,7 @@ pub(super) fn render_source_live_input(
         }
         if enabled {
             source
-                .stage_live_events(input, keyboard.source_input_events())
+                .stage_live_events(input, keyboard.source_input_events(), None)
                 .map_err(|error| error.render_error())?;
         } else {
             for event in keyboard.source_input_events() {
@@ -72,7 +72,7 @@ pub(super) fn render_source_live_input(
                     continue;
                 }
                 source
-                    .stage_live_events(input, std::slice::from_ref(event))
+                    .stage_live_events(input, std::slice::from_ref(event), None)
                     .map_err(|error| error.render_error())?;
             }
         }
