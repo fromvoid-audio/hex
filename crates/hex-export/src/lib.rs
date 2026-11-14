@@ -1316,13 +1316,13 @@ mod tests {
         let moved = dir.0.join("incomplete-output.wav");
         let moved_for_hook = moved.clone();
         let _volume = publication::simulate::volume(publication::simulate::Volume::NoAtomicCreate);
-        let _fault = publication::simulate::fail_copy();
+        let _fault = publication::simulate::fail_copy(publication::simulate::CopyFailure::Write);
         let _hook = after_exchange_hook::install(move |destination| {
             fs::rename(destination, &moved_for_hook).unwrap();
             fs::write(destination, b"unrelated user data").unwrap();
         });
         let result = publish_new(&target, 48_000, 0, 1, || Ok(Constant([0.0; 2])));
-        assert_incomplete_copy(result, &target);
+        assert_incomplete_copy(result, &target, "injected copy failure");
         assert_eq!(fs::read(moved).unwrap(), b"partial");
         assert_eq!(fs::read(&target).unwrap(), b"unrelated user data");
     }
@@ -1333,14 +1333,37 @@ mod tests {
         let dir = TestDir::new();
         let target = dir.0.join("PartialOutput.wav");
         let _volume = publication::simulate::volume(publication::simulate::Volume::NoAtomicCreate);
-        let _fault = publication::simulate::fail_copy();
+        let _fault = publication::simulate::fail_copy(publication::simulate::CopyFailure::Write);
         let result = publish_new(&target, 48_000, 0, 1, || Ok(Constant([0.0; 2])));
-        assert_incomplete_copy(result, &target);
+        assert_incomplete_copy(result, &target, "injected copy failure");
         assert_eq!(fs::read(target).unwrap(), b"partial");
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
-    fn assert_incomplete_copy(result: Result<ExportReport, ExportError>, target: &Path) {
+    #[test]
+    fn failed_copy_sync_preserves_a_substituted_destination() {
+        let dir = TestDir::new();
+        let target = dir.0.join("output.wav");
+        let moved = dir.0.join("completed-copy.wav");
+        let moved_for_hook = moved.clone();
+        let _volume = publication::simulate::volume(publication::simulate::Volume::NoAtomicCreate);
+        let _fault = publication::simulate::fail_copy(publication::simulate::CopyFailure::Sync);
+        let _hook = after_exchange_hook::install(move |destination| {
+            fs::rename(destination, &moved_for_hook).unwrap();
+            fs::write(destination, b"unrelated user data").unwrap();
+        });
+        let result = publish_new(&target, 48_000, 0, 1, || Ok(Constant([0.0; 2])));
+        assert_incomplete_copy(result, &target, "injected sync failure");
+        assert_eq!(&fs::read(moved).unwrap()[..4], b"RIFF");
+        assert_eq!(fs::read(&target).unwrap(), b"unrelated user data");
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn assert_incomplete_copy(
+        result: Result<ExportReport, ExportError>,
+        target: &Path,
+        message: &str,
+    ) {
         let Err(ExportError::StagingRetained { path, cause }) = result else {
             panic!("failed copy must report a retained stage");
         };
@@ -1350,7 +1373,7 @@ mod tests {
         };
         assert_eq!(path, target);
         assert_eq!(source.kind(), io::ErrorKind::Other);
-        assert_eq!(source.to_string(), "injected copy failure");
+        assert_eq!(source.to_string(), message);
     }
 
     #[test]
