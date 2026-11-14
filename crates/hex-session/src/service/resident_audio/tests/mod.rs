@@ -1813,3 +1813,161 @@ fn wait_for_seek(service: &Service) -> ResidentArrangementSeekResult {
         thread::sleep(Duration::from_millis(1));
     }
 }
+
+#[test]
+fn locator_checkpoint_keeps_seek_preparation_and_terminals_ordered() {
+    for (stale, cancelled, conflict, shutdown) in [
+        (false, false, false, false),
+        (true, false, false, false),
+        (false, true, false, false),
+        (false, false, true, false),
+        (false, false, false, true),
+    ] {
+        check_locator_checkpoint_seek(stale, cancelled, conflict, shutdown);
+    }
+}
+
+fn check_locator_checkpoint_seek(stale: bool, cancelled: bool, conflict: bool, shutdown: bool) {
+    let files = sampler_export::tests::Files::new(false);
+    let journal = files
+        .source()
+        .parent()
+        .unwrap()
+        .join("locator-seek.hex-journal");
+    let observed = Arc::new(Observed::default());
+    let retained = hex_engine::MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES * 2;
+    let mut service = Service::with_audio_sink_and_native_reservation(
+        16,
+        8_000_000,
+        Some(journal.clone()),
+        Box::new(OfflineSink {
+            observed: Arc::clone(&observed),
+            pending: None,
+        }),
+        crate::ResidentNativeReservation {
+            storage: hex_engine::AudioStorageLedgerReservation {
+                data_rows: 512,
+                handle_rows: 64,
+                root_rows: 64,
+                max_retained_bytes: retained,
+                max_construction_peak_bytes: retained
+                    + hex_engine::MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES,
+            },
+            max_scan_frames: 8_000_000,
+        },
+    )
+    .unwrap();
+    let next = || {
+        service
+            .events
+            .recv_timeout(crate::test_wait::HANG_BOUND)
+            .unwrap()
+    };
+    next();
+    service
+        .submit(Request::Edit(Command::AddTrack {
+            name: "source".into(),
+        }))
+        .unwrap();
+    assert!(next().error.is_none());
+    let (entered_tx, entered) = mpsc::sync_channel(1);
+    let (release, release_rx) = mpsc::sync_channel(1);
+    super::super::recovery::install_checkpoint_gate(journal.clone(), entered_tx, release_rx);
+    service
+        .submit(Request::Edit(Command::AddArrangementLocator { frame: 129 }))
+        .unwrap();
+    entered.recv_timeout(Duration::from_millis(500)).unwrap();
+    let view = service.try_arrangement_edit_view().unwrap();
+    let state = view.state.upgrade().unwrap();
+    let locator = state.project.arrangement_locators().first().unwrap();
+    assert_eq!(locator.frame(), 129);
+    if conflict {
+        std::fs::write(&journal, b"another writer's journal").unwrap();
+    }
+    service
+        .submit_resident_arrangement_seek(ResidentArrangementSeekIntent {
+            history: ResidentSeekHistory::Fresh,
+            request_id: 1,
+            project_generation: view.project_generation,
+            project_revision: state.revision + u64::from(stale),
+            destination_frame: locator.frame(),
+            start_playing: true,
+            section: None,
+            locator_quantization: None,
+            fence: ResidentFreshRuntimeFence {
+                output_identity: 1,
+                active_audio_revision: 1,
+                route_generation: 0,
+                admitted_command_ticket: 0,
+                output_fault_epoch: 0,
+            },
+            device_preview: None,
+            tuning_preview: None,
+            cancelled: Arc::new(AtomicBool::new(cancelled)),
+        })
+        .unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_millis(250);
+    let result = loop {
+        if let Some(result) = service.try_resident_arrangement_seek_result() {
+            break Some(result);
+        }
+        if std::time::Instant::now() >= deadline {
+            break None;
+        }
+        thread::yield_now();
+    };
+    if !stale && !cancelled && !conflict && !shutdown {
+        service
+            .submit(Request::NewWithAudioMode {
+                mode: DocumentAudioMode::Resident,
+                reservation: None,
+            })
+            .unwrap();
+    }
+    let early_terminal = service.try_event().ok();
+    if shutdown {
+        assert!(service.shutdown(Duration::from_millis(20)).is_err());
+        release.send(()).unwrap();
+        service.shutdown(crate::test_wait::HANG_BOUND).unwrap();
+        assert_eq!(hex_storage::load_journal(&journal).unwrap(), *state.project);
+        assert!(early_terminal.is_none());
+        assert!(result.is_some(), "seek result must precede shutdown");
+        return;
+    }
+    release.send(()).unwrap();
+    let result = result.expect("seek should finish preparation while checkpoint is held");
+    assert_eq!(result.request_id, 1);
+    assert_eq!(result.project_generation, view.project_generation);
+    assert_eq!(result.project_revision, state.revision + u64::from(stale));
+    let error = result.result.unwrap_err();
+    if stale || cancelled {
+        assert!(error.contains("target changed or was cancelled"), "{error}");
+        assert_eq!(observed.seek_attempts.load(Ordering::Acquire), 0);
+    } else {
+        assert!(error.contains("fixture has no fresh output"), "{error}");
+        assert_eq!(observed.seek_attempts.load(Ordering::Acquire), 1);
+    }
+    assert!(
+        early_terminal.is_none(),
+        "the locator terminal must remain ordered"
+    );
+    let first = next();
+    let second = next();
+    assert!(matches!(first.created, Some(Created::ArrangementLocator(id)) if id == locator.id()));
+    assert_eq!(first.state.revision, state.revision);
+    assert_eq!(second.state.revision, state.revision);
+    assert!(second.created.is_none());
+    assert_eq!(second.error.is_some(), stale || cancelled);
+    if conflict {
+        assert!(first.recovery_failure.is_some());
+        assert!(second.recovery_failure.is_some());
+        assert_eq!(
+            std::fs::read(&journal).unwrap(),
+            b"another writer's journal"
+        );
+    } else if !stale && !cancelled {
+        let replacement = next();
+        assert!(replacement.project_replaced);
+        assert!(replacement.state.project.arrangement_locators().is_empty());
+    }
+}
