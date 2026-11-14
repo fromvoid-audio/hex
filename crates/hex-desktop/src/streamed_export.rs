@@ -29,7 +29,8 @@ const PREPARATION_TIMEOUT: Duration = Duration::from_secs(60);
 const POLL: Duration = Duration::from_millis(5);
 
 pub(super) fn render(request: &StreamedExportRequest<'_>) -> Result<ExportReport, String> {
-    render_with_config(request, StreamConfig::initial()).map_err(|error| error.to_string())
+    render_with_config(request, StreamConfig::initial())
+        .map_err(|error| hex_session::service::export_error_text(&error))
 }
 
 pub(crate) fn render_with_config(
@@ -60,7 +61,8 @@ pub(super) fn bounce(
     request: &hex_session::StreamedBounceRequest<'_>,
     foreign: Option<&mut dyn ForeignBounceRenderer>,
 ) -> Result<ExportReport, String> {
-    bounce_with_config(request, StreamConfig::initial(), foreign).map_err(|error| error.to_string())
+    bounce_with_config(request, StreamConfig::initial(), foreign)
+        .map_err(|error| hex_session::service::export_error_text(&error))
 }
 
 pub(crate) fn bounce_with_config(

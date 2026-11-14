@@ -53,6 +53,7 @@ mod comparison_transition;
 mod device_comparison;
 pub mod device_gesture;
 mod device_snapshot;
+mod export_error;
 pub mod import_batch;
 pub mod import_batch_decode;
 mod import_reuse;
