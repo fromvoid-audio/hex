@@ -73,6 +73,15 @@ fn parameter_input_reservation_serializes_admission_and_callback() {
         control.reserve_parameter_input_on_control(ordinal(u64::MAX)),
         Err(Fault::Exhausted)
     ));
+    assert!(matches!(
+        control.reserve_parameter_input_on_control(ordinal(1_u64 << 62)),
+        Err(Fault::Exhausted)
+    ));
+    drop(
+        control
+            .reserve_parameter_input_on_control(ordinal((1_u64 << 62) - 1))
+            .unwrap(),
+    );
     control
         .reserve_parameter_input_on_control(ordinal(2))
         .unwrap()

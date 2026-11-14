@@ -130,6 +130,8 @@ impl Control {
 
     /// Reserve the next monotonically increasing input without waiting. A busy
     /// callback returns Saturated before the caller admits or publishes input.
+    /// Ordinals above `2^62 - 1` return Exhausted; they cannot share the
+    /// reserved and revocation bits in the encoded generation.
     pub fn reserve_parameter_input_on_control(
         &self,
         ordinal: NonZeroU64,
