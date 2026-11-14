@@ -4796,6 +4796,7 @@ fn mutable_coincident_release_and_attack_keep_order_across_segment_boundaries() 
                     pitch: 60,
                     channel: 0,
                     velocity,
+                    contributor_fade_in: false,
                 })
                 .unwrap();
         }
@@ -4900,6 +4901,7 @@ fn mutable_event_order_is_canonical_for_same_frame_notes_and_partitions() {
                 pitch,
                 channel: 0,
                 velocity,
+                contributor_fade_in: false,
             })
             .unwrap();
     }
@@ -5004,6 +5006,7 @@ fn mutable_occurrence_proof_survives_gateoff_and_suppression_matches_full_signat
         pitch: 60,
         channel: 4,
         velocity: 91,
+        contributor_fade_in: false,
     };
 
     let mut old =
@@ -5110,6 +5113,7 @@ fn mutable_zero_tail_emits_exclusive_boundary_noteoff_once_across_partitions() {
         pitch: 60,
         channel: 0,
         velocity: 100,
+        contributor_fade_in: false,
     };
     let mut onsets = crate::mutable_instrument::MutableOnsetBuffer::default();
     onsets.push(onset).unwrap();
@@ -5216,6 +5220,7 @@ fn mutable_query_accepts_full_bounded_sequential_onset_and_edge_budget() {
                 pitch: 60,
                 channel: 0,
                 velocity: 100,
+                contributor_fade_in: false,
             })
             .unwrap();
     }
