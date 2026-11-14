@@ -76,7 +76,7 @@ pub(crate) fn bounce_with_config(
                 "verified bounce source binding is missing",
             ))
         },
-        &[],
+        request.repitches(),
         Some(request.path()),
         config,
         request.control(),
