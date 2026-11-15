@@ -79,6 +79,40 @@ fn fixture(
         .unwrap();
     (files, handle, editor, track, clip)
 }
+
+#[gpui::test]
+fn completed_overrange_query_repaints_the_editor(cx: &mut TestAppContext) {
+    let (_files, handle, editor, _track, _clip) = fixture(cx, false);
+    let visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let before = editor.read_with(&visual, |view, _| {
+        view.waveform_geometry_cache
+            .borrow()
+            .painted_waveforms()
+            .len()
+    });
+    let deadline = std::time::Instant::now() + Duration::from_millis(700);
+    loop {
+        visual.executor().advance_clock(Duration::from_millis(16));
+        visual.run_until_parked();
+        let (ready, paints, busy) = editor.read_with(&visual, |view, _| {
+            let cache = view.waveform_geometry_cache.borrow();
+            (
+                cache.overrange_ready_count(),
+                cache.painted_waveforms().len(),
+                cache.overrange_busy(),
+            )
+        });
+        if ready > 0 && paints > before {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "overrange completion did not repaint: ready={ready}, paints={paints}, before={before}, busy={busy}"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
 fn assert_body(visual: &mut VisualTestContext, editor: &Entity<EditorView>, clip: ClipId) {
     let selector = Box::leak(format!("clip-name-{}", clip.value()).into_boxed_str());
     let header = visual
