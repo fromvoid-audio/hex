@@ -14,7 +14,7 @@
 
 namespace hex_instance {
 using namespace Steinberg;
-enum class EditorState : uint8_t { Closed, Open, Unavailable };
+enum class EditorState : uint8_t { Closed, Open, Unavailable, GestureActive=4 };
 
 class EditorFrame final : public IPlugFrame {
     std::atomic<uint32> references{1};

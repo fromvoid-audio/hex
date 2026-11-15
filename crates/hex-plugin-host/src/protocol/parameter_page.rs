@@ -208,6 +208,9 @@ pub enum ControllerRequest {
     SealEditorEdits,
     /// Detach the predecessor and capture the latest AppKit placement.
     DetachEditor,
+    /// Detach on the original live source only when no editor gesture is active.
+    /// `Open` means the editor was detached without a usable saved position.
+    DetachEditorWhenIdle,
     /// Reopen on the successor without activating its helper application.
     ReopenEditor(Option<PluginEditorPosition>),
 }
@@ -235,6 +238,7 @@ impl ControllerRequest {
             | Self::CloseEditor
             | Self::SealEditorEdits
             | Self::DetachEditor
+            | Self::DetachEditorWhenIdle
             | Self::ReopenEditor(_) => Ok(()),
         }
     }
@@ -271,6 +275,7 @@ pub enum PluginEditorState {
     Open,
     Unavailable,
     Detached(PluginEditorPosition),
+    GestureActive,
 }
 
 pub fn parameter_page_request(
@@ -299,6 +304,7 @@ pub fn parameter_page_request(
         // New kinds prevent a pre-placement helper from closing the old
         // window and returning a positionless legacy acknowledgement.
         ControllerRequest::DetachEditor => out[82] = 11,
+        ControllerRequest::DetachEditorWhenIdle => out[82] = 14,
         ControllerRequest::ReopenEditor(position) => {
             out[82] = 12;
             if let Some(position) = position {
@@ -365,6 +371,7 @@ pub fn parameter_page(
         | ControllerRequest::CloseEditor
         | ControllerRequest::SealEditorEdits
         | ControllerRequest::DetachEditor
+        | ControllerRequest::DetachEditorWhenIdle
         | ControllerRequest::ReopenEditor(_) => None,
     };
     let Some(query) = query else {
@@ -375,18 +382,26 @@ pub fn parameter_page(
             0 => PluginEditorState::Closed,
             1 => PluginEditorState::Open,
             2 => PluginEditorState::Unavailable,
-            3 if request == ControllerRequest::DetachEditor => {
+            3 if matches!(
+                request,
+                ControllerRequest::DetachEditor | ControllerRequest::DetachEditorWhenIdle
+            ) =>
+            {
                 let x = f64::from_le_bytes(reader.array()?);
                 let y = f64::from_le_bytes(reader.array()?);
                 let position = PluginEditorPosition::new(x, y)
                     .ok_or(Error::Protocol("invalid native editor placement"))?;
                 PluginEditorState::Detached(position)
             }
+            4 if request == ControllerRequest::DetachEditorWhenIdle => {
+                PluginEditorState::GestureActive
+            }
             _ => return Err(Error::Protocol("invalid native editor state")),
         };
         let valid = match request {
             ControllerRequest::CloseEditor => state == PluginEditorState::Closed,
             ControllerRequest::DetachEditor => state != PluginEditorState::Unavailable,
+            ControllerRequest::DetachEditorWhenIdle => state != PluginEditorState::Unavailable,
             ControllerRequest::ReopenEditor(_) => state != PluginEditorState::Closed,
             _ => true,
         };

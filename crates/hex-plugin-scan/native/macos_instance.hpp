@@ -527,6 +527,13 @@ public:
     bool seal_editor_edits_on_control() {
         return opened && host && !quarantined.load() && host->seal_editor_edits_on_control();
     }
+    EditorDetachAdmission begin_editor_detach_on_control() {
+        if(!opened || !host || quarantined.load()) return EditorDetachAdmission::Refused;
+        return host->begin_editor_detach_on_control();
+    }
+    void end_editor_detach_on_control() {
+        if(host) host->end_editor_detach_on_control();
+    }
     bool editor_edits_sealed_on_control() const {
         return host && host->editor_edits_sealed_on_control();
     }

@@ -72,6 +72,28 @@ int main() { @autoreleasepool {
     assert(controller.value==0.875);
     assert(host.endEdit(7)==kResultOk);
 
+    // A live tail may keep processing while its editor moves to a successor.
+    // Do not detach mid-gesture; fence reentrant callbacks only during detach.
+    Host detaching;
+    assert(detaching.refresh_on_control(&controller).disposition==HostDisposition::Refreshed);
+    assert(detaching.beginEdit(7)==kResultOk);
+    assert(detaching.performEdit(7,0.5)==kResultOk);
+    assert(detaching.begin_editor_detach_on_control()==EditorDetachAdmission::GestureActive);
+    assert(detaching.endEdit(7)==kResultOk);
+    const auto retained=detaching.pending_parameter_edits();
+    assert(detaching.begin_editor_detach_on_control()==EditorDetachAdmission::Granted);
+    assert(detaching.begin_editor_detach_on_control()==EditorDetachAdmission::Refused);
+    assert(!detaching.seal_editor_edits_on_control());
+    assert(detaching.beginEdit(7)==kResultFalse);
+    assert(detaching.performEdit(7,0.75)==kResultFalse);
+    assert(detaching.endEdit(7)==kResultFalse);
+    assert(detaching.refusal_flags()==0 && detaching.pending_parameter_edits()==retained);
+    detaching.end_editor_detach_on_control();
+    assert(detaching.beginEdit(7)==kResultOk);
+    assert(detaching.performEdit(7,0.75)==kResultOk);
+    assert(detaching.endEdit(7)==kResultOk);
+    assert(detaching.pending_parameter_edits()==retained+3);
+
     // A closed input boundary must keep already accepted work in both main
     // and worker queues and refuse later SDK calls without faulting the host.
     Host retiring;
@@ -90,6 +112,7 @@ int main() { @autoreleasepool {
     const auto revision=retiring.callback_revision_on_control();
     assert(retiring.pending_parameter_edits()==12 && retiring.ready_parameter_edits()==8);
     assert(retiring.seal_editor_edits_on_control());
+    assert(retiring.begin_editor_detach_on_control()==EditorDetachAdmission::Refused);
     assert(retiring.seal_editor_edits_on_control()); // Idempotent for the same owner.
     assert(retiring.apply_saved_state([&] {
         assert(retiring.beginEdit(7)==kResultOk);
@@ -133,8 +156,14 @@ int main() { @autoreleasepool {
     assert(grouped.refresh_on_control(&controller).disposition==HostDisposition::Refreshed);
     assert(grouped.startGroupEdit()==kResultOk);
     assert(grouped.beginEdit(7)==kResultOk && grouped.performEdit(7,0.5)==kResultOk);
+    assert(grouped.begin_editor_detach_on_control()==EditorDetachAdmission::GestureActive);
     assert(!grouped.seal_editor_edits_on_control()); // An unfinished cohort is not discarded.
     assert(grouped.endEdit(7)==kResultOk && grouped.finishGroupEdit()==kResultOk);
+    assert(grouped.begin_editor_detach_on_control()==EditorDetachAdmission::Granted);
+    assert(grouped.startGroupEdit()==kResultFalse);
+    assert(grouped.finishGroupEdit()==kResultFalse);
+    grouped.end_editor_detach_on_control();
+    assert(grouped.refusal_flags()==0 && grouped.pending_parameter_edits()==5);
     assert(grouped.seal_editor_edits_on_control());
     assert(grouped.apply_saved_state([&] {
         assert(grouped.startGroupEdit()==kResultOk);
