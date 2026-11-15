@@ -452,6 +452,7 @@ impl ReturnEffectTailPlan {
             reserve_chain(
                 &tail.chain,
                 tail.active_start(),
+                tail.return_id().is_none(),
                 sample_rate,
                 processor_count,
                 runtime_bytes,
@@ -510,6 +511,7 @@ impl ReturnEffectTailPlan {
             reserve_chain(
                 old_chain,
                 0,
+                false,
                 sample_rate,
                 processor_count,
                 runtime_bytes,
@@ -578,6 +580,7 @@ impl ReturnEffectTailPlan {
         reserve_chain(
             old,
             start,
+            true,
             sample_rate,
             processor_count,
             runtime_bytes,
@@ -773,13 +776,14 @@ impl ReturnEffectTailPlan {
 fn reserve_chain(
     chain: &NativeRuntimeChain,
     active_start: usize,
+    allow_unbounded_foreign: bool,
     sample_rate: u32,
     processor_count: &mut usize,
     runtime_bytes: &mut usize,
     entry_count: &mut usize,
 ) -> Result<(), SessionPlaybackError> {
     let active = active_start..chain.len();
-    if chain.range_has_unbounded_foreign_tail(active.clone()) {
+    if !allow_unbounded_foreign && chain.range_has_unbounded_foreign_tail(active.clone()) {
         return Err(SessionPlaybackError::DeviceRuntime);
     }
     match chain
@@ -796,6 +800,8 @@ fn reserve_chain(
                 return Err(SessionPlaybackError::ReleaseBankFull);
             }
         }
+        // The fixed tail bank retains this owner until Stop/seek or a proven
+        // drain. A full bank refuses a later handoff without discarding it.
         OutputTail::Unbounded => {}
     }
     *processor_count = processor_count

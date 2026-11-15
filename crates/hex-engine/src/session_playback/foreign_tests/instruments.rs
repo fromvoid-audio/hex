@@ -1422,6 +1422,7 @@ fn moving_a_wrapped_loop_keeps_foreign_gates_through_live_effect_edits() {
         };
         let effect = BorrowedDefinition {
             binding_epoch: Some(1),
+            unbounded_tail: false,
             instances: vec![(
                 ProcessorInstanceIdentity::new(owner, device.value()).unwrap(),
                 3,

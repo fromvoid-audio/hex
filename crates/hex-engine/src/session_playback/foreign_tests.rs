@@ -16,6 +16,7 @@ use hex_project::{Command, Created};
 struct BorrowedDefinition {
     binding_epoch: Option<u64>,
     instances: Vec<(ProcessorInstanceIdentity, u32)>,
+    unbounded_tail: bool,
 }
 impl NativeDeviceMetadata for BorrowedDefinition {
     fn type_id(&self) -> DeviceTypeId {
@@ -87,8 +88,12 @@ impl NativeDeviceDefinition for BorrowedDefinition {
         let prepared = PreparedForeignProcessor::new(8, latency, 16)?;
         let prepared = if let Some(epoch) = self.binding_epoch {
             prepared
-                .with_output_tail(hex_lattice::OutputTail::Finite {
-                    max_tail_frames: u64::from(latency) + 16,
+                .with_output_tail(if self.unbounded_tail {
+                    hex_lattice::OutputTail::Unbounded
+                } else {
+                    hex_lattice::OutputTail::Finite {
+                        max_tail_frames: u64::from(latency) + 16,
+                    }
                 })
                 .with_binding(hex_lattice_contract::ForeignProcessorBinding {
                     root: 1,
@@ -190,6 +195,16 @@ fn prepared_with_latency(
     bypassed: bool,
     latency: u32,
     binding_epoch: Option<u64>,
+) -> (Arc<PreparedRevision>, Borrowed, Vec<Frame>) {
+    prepared_with_tail(location, bypassed, latency, binding_epoch, false)
+}
+
+fn prepared_with_tail(
+    location: usize,
+    bypassed: bool,
+    latency: u32,
+    binding_epoch: Option<u64>,
+    unbounded_tail: bool,
 ) -> (Arc<PreparedRevision>, Borrowed, Vec<Frame>) {
     let mut f = fixture(&[&[]], 64);
     let (command, owner) = match location {
@@ -379,6 +394,7 @@ fn prepared_with_latency(
         .unwrap();
     let definition = BorrowedDefinition {
         binding_epoch,
+        unbounded_tail,
         instances: vec![(
             ProcessorInstanceIdentity::new(owner, device.value()).unwrap(),
             latency,
@@ -646,6 +662,7 @@ fn foreign_preparation_distinguishes_equal_states_by_actual_device_and_owner() {
     assert!(
         prepare(&BorrowedDefinition {
             binding_epoch: None,
+            unbounded_tail: false,
             instances: vec![(identities[0], 3)]
         })
         .is_err()
@@ -653,6 +670,7 @@ fn foreign_preparation_distinguishes_equal_states_by_actual_device_and_owner() {
     assert!(
         prepare(&BorrowedDefinition {
             binding_epoch: None,
+            unbounded_tail: false,
             instances: vec![
                 (identities[0], 3),
                 (
@@ -669,6 +687,7 @@ fn foreign_preparation_distinguishes_equal_states_by_actual_device_and_owner() {
     );
     let project = prepare(&BorrowedDefinition {
         binding_epoch: None,
+        unbounded_tail: false,
         instances: vec![(identities[0], 3), (identities[1], 7)],
     })
     .unwrap();
@@ -808,6 +827,15 @@ struct QuietTrackEffect;
 
 #[test]
 fn overlapping_foreign_tail_capacity_preserves_the_playing_owner() {
+    foreign_tail_capacity_preserves_the_playing_owner(false);
+}
+
+#[test]
+fn overlapping_unbounded_foreign_tails_refuse_at_capacity_and_stop_reopens_it() {
+    foreign_tail_capacity_preserves_the_playing_owner(true);
+}
+
+fn foreign_tail_capacity_preserves_the_playing_owner(unbounded: bool) {
     struct NonQuiet {
         frames: [usize; SESSION_TAIL_GROUP_CAPACITY + 1],
     }
@@ -830,7 +858,7 @@ fn overlapping_foreign_tail_capacity_preserves_the_playing_owner() {
         fn reject_callback(&mut self) {}
     }
     let mut current =
-        SessionPlayback::new(prepared_with_latency(10, false, 512, Some(1)).0).unwrap();
+        SessionPlayback::new(prepared_with_tail(10, false, 512, Some(1), unbounded).0).unwrap();
     let mut probe = NonQuiet {
         frames: [0; SESSION_TAIL_GROUP_CAPACITY + 1],
     };
@@ -840,7 +868,8 @@ fn overlapping_foreign_tail_capacity_preserves_the_playing_owner() {
         .unwrap();
     for epoch in 2..=(SESSION_TAIL_GROUP_CAPACITY as u64 + 2) {
         let mut next =
-            SessionPlayback::new(prepared_with_latency(10, false, 512, Some(epoch)).0).unwrap();
+            SessionPlayback::new(prepared_with_tail(10, false, 512, Some(epoch), unbounded).0)
+                .unwrap();
         let previous_position = current.performance_frame;
         let previous_tails = current.tail_groups.iter().flatten().count();
         let before = if epoch == SESSION_TAIL_GROUP_CAPACITY as u64 + 2 {
@@ -1369,6 +1398,7 @@ fn completed_foreign_track_does_not_discard_native_suffix_history() {
             .unwrap();
         let foreign = BorrowedDefinition {
             binding_epoch: Some(epoch),
+            unbounded_tail: false,
             instances: vec![(
                 ProcessorInstanceIdentity::new(
                     ProcessorChainOwner::Track(track.value()),
@@ -1417,3 +1447,156 @@ fn completed_foreign_track_does_not_discard_native_suffix_history() {
 mod shared_source_release;
 
 mod instruments;
+
+#[test]
+fn unbounded_foreign_tail_keeps_playing_with_its_original_endpoint_until_stop() {
+    struct Probe {
+        frames: [usize; 2],
+        old_level: f32,
+    }
+    impl ForeignProcessors for Probe {
+        fn process_segment(
+            &mut self,
+            node: ForeignProcessorNode<'_>,
+            _: usize,
+            frames: &mut [Frame],
+            _: Option<&dyn hex_lattice::NativeInstrumentClock>,
+        ) -> Result<(), DeviceContractError> {
+            let epoch = node.prepared.binding().unwrap().epoch;
+            self.frames[(epoch - 1) as usize] += frames.len();
+            frames.fill(if epoch == 1 {
+                [self.old_level; 2]
+            } else {
+                [0.4, 0.4]
+            });
+            Ok(())
+        }
+        fn committed_tail_is_drained(&self, _: ForeignProcessorNode<'_>) -> bool {
+            false
+        }
+        fn reject_callback(&mut self) {}
+    }
+    let (revision, endpoint, _) = prepared_with_latency(10, false, 512, Some(1));
+    let (next_revision, _, _) = prepared_with_latency(10, false, 512, Some(2));
+    let ProcessorChainOwner::Track(track) = endpoint.owner else {
+        panic!("track effect fixture");
+    };
+    let track_index = revision
+        .arrangement()
+        .tracks()
+        .iter()
+        .position(|row| {
+            row.canonical_track_id()
+                .is_some_and(|id| id.value() == track)
+        })
+        .unwrap();
+    let chain = |epoch| {
+        let binding = hex_lattice_contract::ForeignProcessorBinding {
+            root: 1,
+            instance: endpoint.device,
+            graph: 1,
+            epoch,
+        };
+        hex_lattice::NativeRuntimeChain::new_prepared(vec![hex_lattice::PreparedRuntimeInstance {
+            meter: Default::default(),
+            owner: endpoint.owner,
+            device_id: endpoint.device,
+            device_type: Definition.type_id(),
+            matrix: StereoMatrix::identity(),
+            bypassed: false,
+            sample_rate: 48_000,
+            configuration: Some(Arc::new(state(19 + epoch as u32).unwrap())),
+            modulation: None,
+            automation: Default::default(),
+            definition: Some(PreparedProcessorFactory::Foreign(
+                PreparedForeignProcessor::new(8, 512, 16)
+                    .unwrap()
+                    .with_binding(binding)
+                    .unwrap(),
+            )),
+        }])
+        .unwrap()
+    };
+    let mut old = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+    let mut reference_old = SessionPlayback::new(revision).unwrap();
+    let mut next = SessionPlayback::new(Arc::clone(&next_revision)).unwrap();
+    let mut reference_next = SessionPlayback::new(next_revision).unwrap();
+    old.device_chains[track_index] = chain(1);
+    reference_old.device_chains[track_index] = chain(1);
+    next.device_chains[track_index] = chain(2);
+    reference_next.device_chains[track_index] = chain(2);
+    old.apply(SessionPlaybackCommand::Play).unwrap();
+    reference_old.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut probe = Probe {
+        frames: [0; 2],
+        old_level: 0.2,
+    };
+    let mut reference = Probe {
+        frames: [0; 2],
+        old_level: 0.0,
+    };
+    old.render_with_foreign_processors(&mut [[0.0; 2]; 8], None, None, None, &mut probe)
+        .unwrap();
+    reference_old
+        .render_with_foreign_processors(&mut [[0.0; 2]; 8], None, None, None, &mut reference)
+        .unwrap();
+    next.try_inherit_state_from(&mut old).unwrap();
+    reference_next
+        .try_inherit_state_from(&mut reference_old)
+        .unwrap();
+    let mut output = [[0.0; 2]; 8];
+    let mut reference_output = output;
+    let mut audible_difference = false;
+    for _ in 0..80 {
+        next.render_with_foreign_processors(&mut output, None, None, None, &mut probe)
+            .unwrap();
+        reference_next
+            .render_with_foreign_processors(&mut reference_output, None, None, None, &mut reference)
+            .unwrap();
+        audible_difference |= output
+            .iter()
+            .zip(reference_output)
+            .any(|(actual, reference)| (actual[0] - reference[0]).abs() > 1.0e-6);
+    }
+    assert!(probe.frames[0] > 8 && probe.frames[1] > 0);
+    assert!(
+        audible_difference,
+        "original unbounded endpoint must contribute to output"
+    );
+    let active_old_endpoints: usize = next
+        .tail_groups
+        .iter()
+        .enumerate()
+        .filter_map(|(slot, chain)| {
+            let chain = chain.as_ref()?;
+            next.tail_output_active[slot].then_some((slot, chain))
+        })
+        .map(|(slot, chain)| {
+            chain
+                .storage_view()
+                .entries()
+                .skip(next.tail_suffix_starts[slot])
+                .filter(|entry| {
+                    entry
+                        .foreign_processor()
+                        .and_then(|prepared| prepared.binding())
+                        .is_some_and(|binding| {
+                            binding.epoch == 1 && binding.instance == endpoint.device
+                        })
+                })
+                .count()
+        })
+        .sum();
+    assert_eq!(active_old_endpoints, 1);
+    reference_next
+        .apply(SessionPlaybackCommand::Seek(0))
+        .unwrap();
+    assert!(
+        !reference_next
+            .tail_output_active
+            .iter()
+            .any(|active| *active)
+    );
+    next.apply(SessionPlaybackCommand::Stop).unwrap();
+    assert!(!next.tail_output_active.iter().any(|active| *active));
+}
