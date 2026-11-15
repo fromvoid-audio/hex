@@ -42,8 +42,20 @@ impl ExportFailure {
         report: hex_export::ExportReport,
         message: &str,
     ) -> Self {
+        let mut displayed = format!(
+            "export publication completed; inspect the destination path at {}",
+            hex_storage::text::verbatim(report.path.display())
+        );
+        if let Some(recovery) = &report.recovery_path {
+            displayed.push_str(&format!(
+                "; inspect the previous-file recovery path at {} before removing anything",
+                hex_storage::text::verbatim(recovery.display())
+            ));
+        }
+        displayed.push_str("; ");
+        displayed.push_str(message);
         Self {
-            message: message.to_owned(),
+            message: displayed,
             origin: ExportFailureOrigin::Published(Box::new(report)),
         }
     }
