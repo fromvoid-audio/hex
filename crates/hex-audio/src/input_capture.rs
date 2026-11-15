@@ -10,6 +10,7 @@
 //! started callback can finish its bounded block. Input capture times are not
 //! Arrangement clock mappings.
 use crate::input_devices::InputDeviceId;
+mod take;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use rtrb::{Consumer, Producer, RingBuffer};
 use std::{
@@ -26,6 +27,7 @@ use std::{
     thread::{self, JoinHandle},
     time::Duration,
 };
+pub use take::{InputTake, InputTakeEnd, InputTiming, write_input_take};
 
 const FRAMES: usize = 256;
 const PACKETS: usize = 32;

@@ -18,7 +18,7 @@ use std::sync::{
 pub use hex_engine::OutputCaptureId;
 use hex_engine::OutputCaptureId::{Return, Track};
 
-mod takes;
+pub(crate) mod takes;
 mod timing;
 pub use takes::{Take, Takes, write_takes};
 pub use timing::TimingSpan;
