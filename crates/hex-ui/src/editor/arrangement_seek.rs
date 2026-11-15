@@ -58,7 +58,10 @@ impl SeekAudioControl for Client {
 #[derive(Clone, Copy)]
 pub(super) enum SeekKind {
     Fresh,
-    CommittedLocator(hex_audio::prepared::AppliedAudioSource),
+    CommittedLocator {
+        source: hex_audio::prepared::AppliedAudioSource,
+        quantization: Option<hex_engine::LaunchQuantization>,
+    },
     History,
     Section(hex_session::arrangement_seek::SectionLaunch),
     Locator(hex_engine::LaunchQuantization),
@@ -75,6 +78,7 @@ impl SeekKind {
         match self {
             Self::Section(section) => Some(section.quantization),
             Self::Locator(quantization) => Some(quantization),
+            Self::CommittedLocator { quantization, .. } => quantization,
             _ => None,
         }
     }
@@ -82,14 +86,18 @@ impl SeekKind {
     fn preparation_status(self) -> &'static str {
         match self {
             Self::Section(_) => "preparing section launch",
-            Self::Locator(_) => "preparing locator launch",
+            Self::Locator(_)
+            | Self::CommittedLocator {
+                quantization: Some(_),
+                ..
+            } => "preparing locator launch",
             _ => "preparing arrangement seek",
         }
     }
 
     pub(super) fn mode(self) -> ArrangementSeekMode {
         match self {
-            Self::Fresh | Self::CommittedLocator(_) | Self::Locator(_) => {
+            Self::Fresh | Self::CommittedLocator { .. } | Self::Locator(_) => {
                 ArrangementSeekMode::Interactive
             }
             Self::History => ArrangementSeekMode::HistoryPreservingInteractive,
@@ -425,7 +433,7 @@ impl EditorView {
 
     pub(super) fn pending_seek_source_is_current(&self, pending: &PendingSeek) -> bool {
         match pending.kind {
-            SeekKind::CommittedLocator(source) => {
+            SeekKind::CommittedLocator { source, .. } => {
                 // A fast callback may install the candidate before the worker's
                 // result reports its audio revision. Keep only the pending scalar
                 // correlation in that interval; the callback fence still decides
@@ -488,7 +496,7 @@ impl EditorView {
             || pending.native_output_identity != audio.control.output_identity()
             || pending.project_generation != self.project_generation
             || match pending.kind {
-                SeekKind::CommittedLocator(source) => self
+                SeekKind::CommittedLocator { source, .. } => self
                     .committed_locator_seek_ack_view(source)
                     .is_none_or(|state| state.revision != pending.project_revision),
                 _ => self.state.as_ref()?.revision != pending.project_revision,
@@ -573,6 +581,7 @@ impl EditorView {
         &mut self,
         destination_frame: u64,
         source: hex_audio::prepared::AppliedAudioSource,
+        quantization: Option<hex_engine::LaunchQuantization>,
     ) {
         let Some(state) = self.committed_locator_seek_view(source) else {
             return;
@@ -586,7 +595,10 @@ impl EditorView {
             return;
         }
         let intent = SeekIntent {
-            kind: SeekKind::CommittedLocator(source),
+            kind: SeekKind::CommittedLocator {
+                source,
+                quantization,
+            },
             recovery_generation: None,
             destination_frame,
             start_playing: true,
@@ -780,7 +792,7 @@ impl EditorView {
         mut intent: super::arrangement_seek::SeekIntent,
         mut audio_revision: u64,
     ) {
-        if let SeekKind::CommittedLocator(source) = intent.kind {
+        if let SeekKind::CommittedLocator { source, .. } = intent.kind {
             let fence = self
                 .committed_locator_seek_source_is_current(source)
                 .then(|| {
@@ -908,6 +920,7 @@ impl EditorView {
             section: intent.kind.section(),
             locator_quantization: match intent.kind {
                 SeekKind::Locator(quantization) => Some(quantization),
+                SeekKind::CommittedLocator { quantization, .. } => quantization,
                 _ => None,
             },
             fence: hex_session::service::ResidentFreshRuntimeFence {
@@ -966,7 +979,11 @@ impl EditorView {
                 pending.stage = SeekStage::Published { audio_revision };
                 match pending.kind {
                     SeekKind::Section(_) => self.status = "section launch queued".into(),
-                    SeekKind::Locator(_) => self.status = "locator launch queued".into(),
+                    SeekKind::Locator(_)
+                    | SeekKind::CommittedLocator {
+                        quantization: Some(_),
+                        ..
+                    } => self.status = "locator launch queued".into(),
                     _ => {}
                 }
                 self.recovery
@@ -1498,7 +1515,11 @@ pub(super) fn resolve_prepared_seek_terminal(
     } else if !cancelled {
         *status = match kind {
             SeekKind::Section(_) => "section launch applied",
-            SeekKind::Locator(_) => "locator launch applied",
+            SeekKind::Locator(_)
+            | SeekKind::CommittedLocator {
+                quantization: Some(_),
+                ..
+            } => "locator launch applied",
             _ => "cursor ready",
         }
         .into();
