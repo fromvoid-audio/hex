@@ -15,6 +15,12 @@ const MAX_TEXT_BYTES: usize = 4096;
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct InputDeviceId(cpal::DeviceId);
 
+impl InputDeviceId {
+    pub(crate) fn cpal_id(&self) -> &cpal::DeviceId {
+        &self.0
+    }
+}
+
 impl fmt::Display for InputDeviceId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.fmt(f)
@@ -38,9 +44,8 @@ impl FromStr for InputDeviceId {
     }
 }
 
-/// One format range reported by the backend, not an open or a capability
-/// claim for Hex's future input-stream implementation. A backend may report
-/// bounds that need revalidation when opening the requested configuration.
+/// One format range reported by the backend, not proof that a stream can be
+/// opened. The input owner revalidates it when opening the requested configuration.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InputFormat {
     pub channels: u16,

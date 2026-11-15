@@ -1,5 +1,5 @@
 //! # Purpose
-//! Own native input discovery, output lifecycle, bounded prepared-graph publication, callback
+//! Own native input discovery and capture, output lifecycle, bounded prepared-graph publication, callback
 //! command delivery and off-callback reclamation. Owns copied isolated-processor endpoints and their
 //! joining control worker; plugin ABI loading and native instance admission remain outside this crate.
 //!
@@ -20,6 +20,7 @@
 pub mod audio_diagnostics;
 pub mod cpu_meter;
 mod device;
+pub mod input_capture;
 pub mod input_devices;
 mod open_outcome;
 mod output_route;
