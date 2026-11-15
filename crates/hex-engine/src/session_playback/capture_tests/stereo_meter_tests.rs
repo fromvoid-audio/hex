@@ -348,3 +348,160 @@ fn return_channels_report_the_compensated_send_mix_after_its_fader() {
         }
     }
 }
+
+#[test]
+fn session_independent_alignment_matches_scalar_audio_and_visible_meters() {
+    let mut snapshot = audio_fixture_project(false, false, false).snapshot();
+    for (track_id, clip_id) in [(22, 24), (23, 25)] {
+        let mut track = snapshot.tracks[0].clone();
+        track.id = track_id;
+        if let hex_project::TrackContentSnapshot::Hybrid { audio_clips, .. } = &mut track.content {
+            audio_clips[0].id = clip_id;
+        } else {
+            panic!("audio fixture expected");
+        }
+        snapshot.tracks.push(track);
+    }
+    let mut editor = Editor::new(Project::from_snapshot(snapshot).unwrap(), 8).unwrap();
+    let tracks: Vec<_> = editor.project().tracks().iter().map(|t| t.id()).collect();
+    let limiter = hex_lattice_contract::DeviceTypeId::from_static("hex.limiter");
+    let utility = hex_lattice_contract::DeviceTypeId::from_static("hex.utility");
+    for (track, kind) in [(tracks[0], limiter), (tracks[1], utility)] {
+        editor
+            .execute(Command::InsertDevice {
+                track,
+                before: None,
+                state: crate::default_native_device_state_for_class(
+                    crate::NativeDeviceClass::Effect,
+                    kind,
+                )
+                .unwrap(),
+            })
+            .unwrap();
+    }
+    let device = editor.project().track(tracks[1]).unwrap().devices()[0].id();
+    let asset = editor.project().assets().next().unwrap().id();
+    let Created::Scene(scene) = editor
+        .execute(Command::AddScene {
+            name: "scene".into(),
+        })
+        .unwrap()
+    else {
+        panic!("scene expected")
+    };
+    let mut clips = Vec::new();
+    for track in &tracks {
+        let Created::SessionClip(clip) = editor
+            .execute(Command::CreateSessionAudioClip {
+                track: *track,
+                scene,
+                name: "session".into(),
+                asset,
+                source_start: 0,
+                source_end: 32,
+            })
+            .unwrap()
+        else {
+            panic!("clip expected")
+        };
+        editor
+            .execute(Command::SetSessionAudioClipLoop {
+                clip,
+                loop_range: Some(hex_project::SessionAudioLoop::new(0, 32).unwrap()),
+            })
+            .unwrap();
+        clips.push(clip);
+    }
+    let project = editor.project();
+    for partition in [1, 17, 256] {
+        let a = prepare_audio(project);
+        let b = prepare_audio(project);
+        let a_obs = crate::PreparedPlaybackObservation::prepare_on_control(&a).unwrap();
+        let b_obs = crate::PreparedPlaybackObservation::prepare_on_control(&b).unwrap();
+        let mut actual = SessionPlayback::new(a).unwrap();
+        let mut scalar = SessionPlayback::new(b).unwrap();
+        scalar.resident_source_scratch.clear();
+        for runtime in [&mut actual, &mut scalar] {
+            runtime.set_device_metering(true);
+            runtime
+                .apply(SessionPlaybackCommand::LaunchScene {
+                    scene,
+                    quantization: LaunchQuantization::Immediate,
+                })
+                .unwrap();
+            runtime.apply(SessionPlaybackCommand::Play).unwrap();
+        }
+        for block in 0..4 {
+            if block == 2 {
+                for runtime in [&mut actual, &mut scalar] {
+                    runtime
+                        .apply(SessionPlaybackCommand::LaunchClip {
+                            clip: clips[0],
+                            quantization: LaunchQuantization::Immediate,
+                        })
+                        .unwrap();
+                }
+            }
+            let mut output = [[0.0; 2]; 256];
+            let mut expected = output;
+            for (out, reference) in output
+                .chunks_mut(partition)
+                .zip(expected.chunks_mut(partition))
+            {
+                let capture = |runtime: &mut SessionPlayback, output: &mut [Frame]| {
+                    let mut captured = [[0.0; 2]; 256];
+                    let mut observer = |signal, offset: usize, frames: &[Frame]| {
+                        if matches!(signal, crate::ProjectSignal::Track(_)) {
+                            for (target, source) in captured[offset..].iter_mut().zip(frames) {
+                                *target = *source;
+                            }
+                        }
+                    };
+                    let ids = [tracks[1].value()];
+                    let mut tap =
+                        crate::ProjectOutputTap::with_returns(&ids, &[], &mut observer).unwrap();
+                    runtime
+                        .render_with_signal_observers(output, None, Some(&mut tap))
+                        .unwrap();
+                    captured
+                };
+                let actual_track = capture(&mut actual, out);
+                let scalar_track = capture(&mut scalar, reference);
+                assert_eq!(actual_track, scalar_track);
+                if partition == 256 && block == 1 {
+                    assert!(actual_track.iter().flatten().any(|sample| *sample != 0.0));
+                }
+                for track in &tracks {
+                    assert_eq!(
+                        a_obs
+                            .track_output_meter(*track)
+                            .unwrap()
+                            .take_track_output_stereo(),
+                        b_obs
+                            .track_output_meter(*track)
+                            .unwrap()
+                            .take_track_output_stereo()
+                    );
+                }
+                assert_eq!(
+                    a_obs.meter(device.value(), utility).unwrap().take_peaks(),
+                    b_obs.meter(device.value(), utility).unwrap().take_peaks()
+                );
+            }
+            assert_eq!(output, expected, "partition={partition} block={block}");
+            if partition == 256 && block == 1 {
+                assert_ne!(
+                    actual.resident_source_scratch[2][255],
+                    [0.4, -0.2],
+                    "eligible track must advance through its aligned window"
+                );
+                assert_eq!(
+                    actual.resident_source_scratch[1][255],
+                    [0.4, -0.2],
+                    "metered device chain must retain frame-wise publication"
+                );
+            }
+            assert!(expected.iter().flatten().any(|sample| *sample != 0.0));
+        }
+    }
+}

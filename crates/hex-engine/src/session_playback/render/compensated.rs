@@ -483,6 +483,12 @@ impl SessionPlayback {
         arrangement_frame
             .checked_add(frames as u64)
             .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
+        let session_alignment_blocked = !self.release_scratch.is_empty()
+            || self.tail_output_scratch.iter().any(|active| *active)
+            || self
+                .native_parameter_state
+                .as_deref()
+                .is_some_and(|state| state.processing.is_some());
         for (index, ((route, scratch), aligned)) in self
             .route_scratch
             .iter()
@@ -491,12 +497,32 @@ impl SessionPlayback {
             .enumerate()
         {
             if !eligible[index]
-                || !matches!(route.owner, RouteOwner::Arrangement)
+                || !matches!(
+                    route.owner,
+                    RouteOwner::Arrangement | RouteOwner::SessionAudio { .. }
+                )
                 || self.revision.gain_recording_track() == Some(route.id)
             {
                 continue;
             }
             let track = &self.revision.arrangement().tracks()[index];
+            if matches!(route.owner, RouteOwner::SessionAudio { .. })
+                && (track.instrument.is_some()
+                    || track.foreign_instrument.is_some()
+                    || track.midi_source_index.is_some()
+                    || self.revision.source_routing().is_shared(index)
+                    || self.revision.source_routing().contributes(index)
+                    || self
+                        .mutable_instruments
+                        .get(index)
+                        .is_some_and(Option::is_some)
+                    || self.source_effects.has_chain(index)
+                    // Device taps must publish as each frame is rendered.
+                    || (self.device_metering && !self.device_chains[index].is_empty())
+                    || session_alignment_blocked)
+            {
+                continue;
+            }
             let Some((edge, arrival)) = compensation.graph.resident_main_alignment(index) else {
                 continue;
             };
