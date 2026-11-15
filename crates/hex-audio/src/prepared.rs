@@ -86,7 +86,7 @@ mod native_sources;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub use hex_lattice::ProcessorInstanceIdentity as NativeProcessorIdentity;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-pub use native_sources::{NativeParameterContinuationRequest, NativeParameterInputFence};
+pub use native_sources::NativeParameterContinuationRequest;
 mod resident_forwarding;
 pub use endpoints::{Client, WorkerControl};
 pub(crate) use endpoints::{ClientEndpoints, EndpointTerminals};
@@ -1494,8 +1494,6 @@ pub struct Callback {
     test_eligible_transfer_allowance: Option<usize>,
     #[cfg(test)]
     test_after_fresh_fence_validation: Option<std::sync::Arc<std::sync::Barrier>>,
-    #[cfg(all(test, target_os = "macos", target_arch = "aarch64"))]
-    test_after_native_continuation_reservation: Option<std::sync::Arc<std::sync::Barrier>>,
     #[cfg(test)]
     test_before_fresh_runtime_apply: Option<std::sync::Arc<std::sync::Barrier>>,
     #[cfg(test)]
@@ -1666,8 +1664,6 @@ pub(crate) fn channel_with_interface(
             test_eligible_transfer_allowance: None,
             #[cfg(test)]
             test_after_fresh_fence_validation: None,
-            #[cfg(all(test, target_os = "macos", target_arch = "aarch64"))]
-            test_after_native_continuation_reservation: None,
             #[cfg(test)]
             test_before_fresh_runtime_apply: None,
             #[cfg(test)]
@@ -4237,14 +4233,6 @@ impl Callback {
                             )
                         })
                 });
-                #[cfg(all(test, target_os = "macos", target_arch = "aarch64"))]
-                if foreign_continuation
-                    && guard.is_some()
-                    && let Some(barrier) = self.test_after_native_continuation_reservation.take()
-                {
-                    barrier.wait();
-                    barrier.wait();
-                }
                 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
                 let refused = foreign_continuation
                     && guard.as_mut().is_none_or(|guard| {

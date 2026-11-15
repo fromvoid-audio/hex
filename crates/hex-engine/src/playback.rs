@@ -2240,7 +2240,7 @@ impl Playback {
         &mut self,
         previous: &mut Self,
     ) -> Result<(), PlaybackHandoffError> {
-        self.try_inherit_runtime_impl(previous, false, false, None, false, None)
+        self.try_inherit_runtime_impl(previous, false, false, false, None)
     }
 
     /// Ordinary publication may rebind a fresh monitor to the same physical input client in
@@ -2257,27 +2257,9 @@ impl Playback {
             previous,
             generation.is_some() && generation == previous_generation,
             false,
-            None,
             false,
             None,
         )
-    }
-
-    /// Compare one exact foreign continuation while inheriting the runtime.
-    /// The audio publication owner must independently authenticate the exact
-    /// source, predecessor, candidate, transport and custody at commit. The
-    /// borrowed matcher is not such authority and must not outlive its states.
-    pub fn try_inherit_runtime_with_foreign_continuation_in_control_context(
-        &mut self,
-        previous: &mut Self,
-        generation: Option<u64>,
-        previous_generation: Option<u64>,
-        continuation: &hex_lattice::ForeignConfigurationContinuation<'_>,
-    ) -> Result<(), PlaybackHandoffError> {
-        if generation.is_none() || generation != previous_generation {
-            return Err(PlaybackHandoffError::RuntimeFenceChanged);
-        }
-        self.try_inherit_runtime_impl(previous, true, false, Some(continuation), false, None)
     }
 
     /// Use the graph-owned comparison data; the publication owner must validate
@@ -2292,7 +2274,7 @@ impl Playback {
         if generation.is_none() || generation != previous_generation {
             return Err(PlaybackHandoffError::RuntimeFenceChanged);
         }
-        self.try_inherit_runtime_impl(previous, true, false, None, true, None)
+        self.try_inherit_runtime_impl(previous, true, false, true, None)
     }
 
     /// Borrow a control-prepared tempo anchor through the ordinary Playback
@@ -2313,7 +2295,7 @@ impl Playback {
         {
             return Err(PlaybackHandoffError::RuntimeFenceChanged);
         }
-        self.try_inherit_runtime_impl(previous, true, false, None, false, Some(anchor))
+        self.try_inherit_runtime_impl(previous, true, false, false, Some(anchor))
     }
 
     /// Reset an explicitly prepared bounce successor at a verified live
@@ -2332,7 +2314,7 @@ impl Playback {
         {
             return Err(PlaybackHandoffError::RuntimeFenceChanged);
         }
-        self.try_inherit_runtime_impl(previous, true, true, None, false, None)
+        self.try_inherit_runtime_impl(previous, true, true, false, None)
     }
 
     fn try_inherit_runtime_impl(
@@ -2340,14 +2322,13 @@ impl Playback {
         previous: &mut Self,
         same_control_context: bool,
         fenced_restart: bool,
-        continuation: Option<&hex_lattice::ForeignConfigurationContinuation<'_>>,
         use_stored_continuation: bool,
         tempo_anchor: Option<&crate::session_playback::PreparedTempoAnchor>,
     ) -> Result<(), PlaybackHandoffError> {
         if use_stored_continuation && !self.has_foreign_continuation_states() {
             return Err(PlaybackHandoffError::RuntimeFenceChanged);
         }
-        if (continuation.is_some() || use_stored_continuation)
+        if use_stored_continuation
             && (fenced_restart
                 || tempo_anchor.is_some()
                 || self.session_runtime.is_none()
@@ -2444,8 +2425,6 @@ impl Playback {
                 };
                 next.foreign_continuation = Some(states);
                 result
-            } else if let Some(continuation) = continuation {
-                next.try_inherit_state_live_with_foreign_continuation_from(old, continuation)
             } else if let Some(anchor) = tempo_anchor {
                 next.try_inherit_state_with_tempo_anchor(old, anchor)
             } else {

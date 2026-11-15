@@ -281,7 +281,8 @@ impl StreamPlayback<'_> {
     /// The host must separately authenticate the actual endpoint, source,
     /// predecessor, candidate, transport and custody at preview and commit.
     /// This projection does not admit a graph or transfer any resource.
-    pub fn preview_ordinary_with_foreign_continuation(
+    #[cfg(test)]
+    pub(crate) fn preview_ordinary_with_foreign_continuation(
         &mut self,
         previous: &mut StreamPlayback<'_>,
         maximum_frames: usize,
