@@ -100,6 +100,23 @@ enum Poll {
 }
 
 impl NativeWorker {
+    pub(super) fn editor_seal_query_pending_on_control(&self) -> Result<bool, &'static str> {
+        let slot = self
+            .reaper
+            .completed
+            .capture
+            .try_lock()
+            .map_err(|error| match error {
+                TryLockError::WouldBlock => "native controller mailbox is busy",
+                TryLockError::Poisoned(_) => "native controller mailbox failed",
+            })?;
+        Ok(slot.controller.requested
+            && matches!(
+                slot.controller.query,
+                Operation::Observe(ControllerRequest::SealEditorEdits)
+            ))
+    }
+
     /// Admit one bounded query without SDK/socket work on a live worker.
     /// Full/contended admission preserves its existing query. Stopped mode
     /// first joins the healthy original transport; it never revives playback.
