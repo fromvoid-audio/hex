@@ -10672,13 +10672,15 @@ fn run_export_worker(
             });
         }
         loop {
-            if shutdown.load(Ordering::Acquire) {
-                return;
-            }
             match events.try_send(event) {
                 Ok(()) => break,
                 Err(TrySendError::Disconnected(_)) => return,
-                Err(TrySendError::Full(returned)) => event = returned,
+                Err(TrySendError::Full(returned)) => {
+                    if shutdown.load(Ordering::Acquire) {
+                        return;
+                    }
+                    event = returned;
+                }
             }
             thread::sleep(std::time::Duration::from_millis(5));
         }
