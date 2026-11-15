@@ -98,6 +98,32 @@ pub fn export_error_text(error: &hex_export::ExportError) -> String {
             export_error_text(cause),
             hex_storage::text::verbatim(path.display())
         ),
+        hex_export::ExportError::PublicationConflict {
+            path,
+            recovery_path,
+        } => format!(
+            "export publication raced at {}; inspect the retained file at {}",
+            hex_storage::text::verbatim(path.display()),
+            hex_storage::text::verbatim(recovery_path.display())
+        ),
+        hex_export::ExportError::PublishedButNotDurable {
+            path,
+            recovery_path,
+            operation,
+            source,
+        } => {
+            let mut message = format!(
+                "wav was published at {} but could not {operation}: {source}",
+                hex_storage::text::verbatim(path.display())
+            );
+            if let Some(recovery_path) = recovery_path {
+                message.push_str(&format!(
+                    "; previous file is at {}",
+                    hex_storage::text::verbatim(recovery_path.display())
+                ));
+            }
+            message
+        }
         hex_export::ExportError::IncompleteDestination { path, source } => format!(
             "could not complete the wav copy: {source}; the destination path at {} may contain a partial export or another file; inspect it before removing anything",
             hex_storage::text::verbatim(path.display())
@@ -110,6 +136,51 @@ pub fn export_error_text(error: &hex_export::ExportError) -> String {
 mod tests {
     use super::*;
     use std::{io, path::PathBuf};
+
+    fn visible(error: &hex_export::ExportError) -> String {
+        hex_storage::text::plain(&hex_storage::text::lowercase_outside_verbatim(
+            &export_error_text(error),
+        ))
+    }
+
+    #[test]
+    fn publication_conflict_keeps_destination_and_recovery_case() {
+        let error = hex_export::ExportError::PublicationConflict {
+            path: PathBuf::from("/Mixed\u{2069}Case/Output.WAV"),
+            recovery_path: PathBuf::from("/Mixed\u{2063}Case/Previous.WAV"),
+        };
+        assert_eq!(
+            visible(&error),
+            "export publication raced at /Mixed\u{2069}Case/Output.WAV; inspect the retained file at /Mixed\u{2063}Case/Previous.WAV"
+        );
+    }
+
+    #[test]
+    fn durability_errors_keep_all_paths_and_cause_in_nested_stage() {
+        for has_recovery in [false, true] {
+            let error = hex_export::ExportError::StagingRetained {
+                path: PathBuf::from("/Mixed\u{2068}Case/Stage.WAV"),
+                cause: Box::new(hex_export::ExportError::PublishedButNotDurable {
+                    path: PathBuf::from("/Mixed\u{2069}Case/Output.WAV"),
+                    recovery_path: has_recovery
+                        .then(|| PathBuf::from("/Mixed\u{2063}Case/Previous.WAV")),
+                    operation: "synchronize the destination directory",
+                    source: io::Error::other("sync failed"),
+                }),
+            };
+            let expected_recovery = if has_recovery {
+                "; previous file is at /Mixed\u{2063}Case/Previous.WAV"
+            } else {
+                ""
+            };
+            assert_eq!(
+                visible(&error),
+                format!(
+                    "wav was published at /Mixed\u{2069}Case/Output.WAV but could not synchronize the destination directory: sync failed{expected_recovery}; inspect the staging path at /Mixed\u{2068}Case/Stage.WAV before removing anything"
+                )
+            );
+        }
+    }
 
     #[test]
     fn incomplete_export_copy_preserves_both_path_cases_and_cause() {
