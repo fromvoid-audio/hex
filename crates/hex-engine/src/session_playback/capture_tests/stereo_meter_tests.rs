@@ -3,16 +3,31 @@ use super::*;
 
 #[test]
 fn metered_resident_return_matches_scalar_pcm_and_meters_through_launch_and_loop() {
-    for (muted, automated, unity, graph_feed, return_feed, stationary) in [
-        (false, false, false, false, false, false),
-        (true, false, false, false, false, false),
-        (false, true, false, false, false, false),
-        (false, false, true, false, false, true),
-        (false, false, true, true, false, true),
-        (false, false, true, false, true, true),
-        (false, false, false, false, false, true),
+    for (muted, automated, unity, graph_feed, return_feed, stationary, session) in [
+        (false, false, false, false, false, false, false),
+        (true, false, false, false, false, false, false),
+        (false, true, false, false, false, false, false),
+        (false, false, true, false, false, true, false),
+        (false, false, true, true, false, true, false),
+        (false, false, true, false, true, true, false),
+        (false, false, false, false, false, true, false),
+        (false, false, false, false, false, true, true),
     ] {
         let mut snapshot = audio_fixture_project(true, false, false).snapshot();
+        if session {
+            for (track_id, clip_id) in [(22, 24), (23, 25)] {
+                let mut track = snapshot.tracks[0].clone();
+                track.id = track_id;
+                if let hex_project::TrackContentSnapshot::Hybrid { audio_clips, .. } =
+                    &mut track.content
+                {
+                    audio_clips[0].id = clip_id;
+                } else {
+                    panic!("audio fixture expected");
+                }
+                snapshot.tracks.push(track);
+            }
+        }
         if unity {
             for track in &mut snapshot.tracks {
                 track.gain = 1.0;
@@ -80,19 +95,38 @@ fn metered_resident_return_matches_scalar_pcm_and_meters_through_launch_and_loop
         else {
             panic!("scene expected");
         };
-        let Created::SessionClip(clip) = editor
-            .execute(Command::CreateSessionAudioClip {
-                track,
-                scene,
-                name: "session".into(),
-                asset,
-                source_start: 0,
-                source_end: 32,
-            })
-            .unwrap()
-        else {
-            panic!("session clip expected");
-        };
+        let track_ids: Vec<_> = editor
+            .project()
+            .tracks()
+            .iter()
+            .map(|track| track.id())
+            .collect();
+        let mut clips = Vec::new();
+        for id in track_ids {
+            let Created::SessionClip(clip) = editor
+                .execute(Command::CreateSessionAudioClip {
+                    track: id,
+                    scene,
+                    name: "session".into(),
+                    asset,
+                    source_start: 0,
+                    source_end: 32,
+                })
+                .unwrap()
+            else {
+                panic!("session clip expected")
+            };
+            if session {
+                editor
+                    .execute(Command::SetSessionAudioClipLoop {
+                        clip,
+                        loop_range: Some(hex_project::SessionAudioLoop::new(0, 32).unwrap()),
+                    })
+                    .unwrap();
+            }
+            clips.push(clip);
+        }
+        let clip = clips[0];
         editor
             .execute(Command::SetLoopRegion {
                 start: 0,
@@ -116,6 +150,16 @@ fn metered_resident_return_matches_scalar_pcm_and_meters_through_launch_and_loop
             if !stationary {
                 actual.track_faders[0].retarget([0.0; 2], 48_000);
                 reference.track_faders[0].retarget([0.0; 2], 48_000);
+            }
+            if session {
+                for runtime in [&mut actual, &mut reference] {
+                    runtime
+                        .apply(SessionPlaybackCommand::LaunchScene {
+                            scene,
+                            quantization: LaunchQuantization::Immediate,
+                        })
+                        .unwrap();
+                }
             }
             actual.apply(SessionPlaybackCommand::Play).unwrap();
             reference.apply(SessionPlaybackCommand::Play).unwrap();
@@ -175,7 +219,7 @@ fn metered_resident_return_matches_scalar_pcm_and_meters_through_launch_and_loop
             }
             assert_eq!(
                 output, expected,
-                "muted={muted}, automated={automated}, unity={unity}, graph_feed={graph_feed}, return_feed={return_feed}, stationary={stationary}, partition={partition}"
+                "muted={muted}, automated={automated}, unity={unity}, graph_feed={graph_feed}, return_feed={return_feed}, stationary={stationary}, session={session}, partition={partition}"
             );
             assert_eq!(
                 (actual.performance_frame(), actual.arrangement_frame()),
