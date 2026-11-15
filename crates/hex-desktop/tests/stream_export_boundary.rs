@@ -172,7 +172,14 @@ fn verified_stem_page_miss_removes_the_entire_unpublished_batch() {
         },
     );
     let error = exported(&service).result.unwrap_err();
-    assert!(error.contains("unexpected media page miss"), "{error}");
+    assert!(
+        error.message().contains("unexpected media page miss"),
+        "{error}"
+    );
+    assert!(
+        error.source_error().is_some(),
+        "streamed publisher error remains structured"
+    );
     assert!(!output.exists());
     let after: std::collections::BTreeSet<_> = fs::read_dir(&files.0)
         .unwrap()

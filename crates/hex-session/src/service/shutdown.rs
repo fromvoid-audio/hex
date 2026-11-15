@@ -119,7 +119,7 @@ mod tests {
         assert_eq!(stages.len(), 1);
         let event = service.try_export_event().expect("shutdown export result");
         let error = event.result.expect_err("shutdown cancels the export");
-        let rendered = text::plain(&text::lowercase_outside_verbatim(&error));
+        let rendered = text::plain(&text::lowercase_outside_verbatim(error.message()));
         assert!(rendered.contains("export cancelled"), "{rendered}");
         assert!(
             rendered.contains(&stages[0].display().to_string()),
@@ -176,8 +176,8 @@ mod tests {
         let error = event.result.unwrap_err();
         let stages = temporary_files(&mixed_case);
         assert_eq!(stages.len(), 1);
-        assert!(error.contains("export cancelled"));
-        let rendered = text::plain(&text::lowercase_outside_verbatim(&error));
+        assert!(error.message().contains("export cancelled"));
+        let rendered = text::plain(&text::lowercase_outside_verbatim(error.message()));
         assert!(rendered.contains(&stages[0].display().to_string()));
         assert!(!output.exists());
     }

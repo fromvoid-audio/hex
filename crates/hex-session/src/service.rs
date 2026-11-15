@@ -3,7 +3,7 @@ use crate::arrangement_seek::{
     ArrangementSeekResult, ArrangementSeekSpec, ArrangementSeekSubmitError, ArrangementSeekWorker,
 };
 use crate::device_gesture::{GestureAck, GestureMachine, GestureRequest, GestureSnapshot};
-pub use crate::export_error::export_error_text;
+pub use crate::export_error::{ExportFailure, export_error_text};
 use crate::import_batch::AudioBatchDestination;
 use crate::import_batch_decode::{AudioBatchContext, AudioBatchControl, AudioBatchImport};
 use crate::resident_import::{IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT, decode_resident_import};
@@ -479,7 +479,10 @@ pub struct TuningPreview {
 pub struct ExportEvent {
     pub revision: u64,
     pub path: PathBuf,
-    pub result: Result<ExportReport, String>,
+    /// A failure retains publisher paths and any completed publication report.
+    /// Delivery remains bounded and is not durable across a full/disconnected
+    /// channel or application exit.
+    pub result: Result<ExportReport, ExportFailure>,
 }
 
 /// Stable captured identities; instrument expectation is explicit, never an effect ID.
@@ -1484,7 +1487,7 @@ type Exporter = Arc<
             hex_export::ExportFormat,
             &hex_export::ExportControl,
             &hex_export::Publication,
-        ) -> Result<ExportReport, String>
+        ) -> Result<ExportReport, ExportFailure>
         + Send
         + Sync,
 >;
@@ -1502,7 +1505,7 @@ fn canonical_exporter() -> Exporter {
                 control,
                 publication,
             )
-            .map_err(|error| export_error_text(&error))
+            .map_err(ExportFailure::from)
         },
     )
 }
@@ -5370,7 +5373,7 @@ fn run_worker(
                 export_completion = Some(ExportEvent {
                     revision,
                     path: path.clone(),
-                    result: Err(reason.clone()),
+                    result: Err(reason.clone().into()),
                 });
             }
             error = Some(reason);
@@ -9039,7 +9042,7 @@ fn run_worker(
                                 export_completion = Some(ExportEvent {
                                     revision,
                                     path,
-                                    result: Err(reason),
+                                    result: Err(reason.into()),
                                 })
                             }
                         }
@@ -10248,7 +10251,7 @@ fn run_worker(
                     export_completion = Some(ExportEvent {
                         revision: job.revision,
                         path: job.path.clone(),
-                        result: Err(reason),
+                        result: Err(reason.into()),
                     });
                 }
             }
@@ -10579,7 +10582,7 @@ fn run_export_worker(
                             control: &controlled.control,
                             publication: &publication,
                         }),
-                        Err(error) => Err(export_error_text(&error)),
+                        Err(error) => Err(error.into()),
                     }
                 }
             } else if job.sources.is_some() && job.resources.is_some() {
@@ -10601,7 +10604,7 @@ fn run_export_worker(
                                 &policy,
                             )
                         })
-                        .map_err(|error| export_error_text(&error))
+                        .map_err(ExportFailure::from)
                 } else {
                     hex_export::render_prepared_new_with_device_resources(
                         &job.path,
@@ -10610,7 +10613,7 @@ fn run_export_worker(
                         0,
                         job.frames,
                     )
-                    .map_err(|error| export_error_text(&error))
+                    .map_err(ExportFailure::from)
                 }
             } else if let Some(sources) = job.sources.take() {
                 let controlled = job
@@ -10632,14 +10635,14 @@ fn run_export_worker(
                             &policy,
                         )
                     })
-                    .map_err(|error| export_error_text(&error))
+                    .map_err(ExportFailure::from)
             } else {
                 // Every service request carries controlled parts; a bare job
                 // renders as the automatic whole-project Main export.
                 let controlled = job.controlled.unwrap_or_else(ControlledExport::whole_main);
                 controlled
                     .publication(&job.path)
-                    .map_err(|e| e.to_string())
+                    .map_err(ExportFailure::from)
                     .and_then(|policy| {
                         exporter(
                             &job.path,
@@ -10667,8 +10670,11 @@ fn run_export_worker(
             let notification =
                 "export finished but control custody notification failed; export worker stopped";
             event.result = Err(match event.result {
-                Ok(_) => notification.into(),
-                Err(error) => format!("{error}; {notification}"),
+                Ok(report) => ExportFailure::notification_after_publication(report, notification),
+                Err(mut error) => {
+                    error.append_context(notification);
+                    error
+                }
             });
         }
         loop {
@@ -13320,7 +13326,7 @@ mod service_tests {
             ParameterValue::Float(4.0)
         );
         assert_eq!(
-            next_export_event(&service).result.unwrap_err(),
+            next_export_event(&service).result.unwrap_err().message(),
             "invalid wav export: invalid export range"
         );
         let replace_key = GestureKey {
@@ -14661,9 +14667,7 @@ mod service_tests {
                         control,
                         publication,
                     )
-                    .map_err(|error| {
-                        hex_storage::text::lowercase_outside_verbatim(&error.to_string())
-                    })
+                    .map_err(ExportFailure::from)
                 },
             )
         };
@@ -14738,7 +14742,7 @@ mod service_tests {
             .unwrap();
         next_event(&service);
         let refused = next_export_event(&service);
-        assert_eq!(refused.result.unwrap_err(), "export cancelled");
+        assert_eq!(refused.result.unwrap_err().message(), "export cancelled");
         assert!(!output.exists());
         let control = ExportControl::default();
         service
@@ -14845,7 +14849,7 @@ mod service_tests {
         assert_eq!(result.revision, 0);
         assert_eq!(result.path, path);
         assert_eq!(
-            result.result.expect_err("empty project refusal"),
+            result.result.expect_err("empty project refusal").message(),
             "invalid wav export: invalid export range"
         );
         assert!(!result.path.exists());

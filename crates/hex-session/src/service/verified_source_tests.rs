@@ -459,6 +459,7 @@ fn canonical_verified_bindings_survive_save_as_and_changed_bytes_require_explici
         completion
             .result
             .unwrap_err()
+            .message()
             .contains("unavailable for verified streaming")
     );
     assert!(!files.0.join("must-not-render.wav").exists());
