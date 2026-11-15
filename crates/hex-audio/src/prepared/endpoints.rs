@@ -387,6 +387,40 @@ impl Client {
             .sample_preview
             .request()
     }
+    /// Start one ordered, output-rate window sequence for a current request.
+    /// The existing preview owner bounds its input and retirement queues.
+    pub fn preview_begin_windows(
+        &mut self,
+        generation: u64,
+        start: usize,
+        total: usize,
+    ) -> Result<(), Invalid> {
+        self.endpoints
+            .owner_mut()
+            .ok_or(Invalid("audio client is closed"))?
+            .sample_preview
+            .begin_windows(generation, start, total)
+    }
+
+    /// Submit the next contiguous window; refusal returns its PCM to control.
+    /// Call [`Self::reclaim_preview`] on control as playback advances so retired
+    /// windows can release their bounded callback return slots.
+    pub fn preview_publish_window(
+        &mut self,
+        generation: u64,
+        start: usize,
+        audio: hex_engine::Audio,
+    ) -> Result<(), crate::sample_preview::WindowRefusal> {
+        let Some(endpoints) = self.endpoints.owner_mut() else {
+            return Err(crate::sample_preview::WindowRefusal {
+                reason: crate::sample_preview::WindowRefusalReason::Invalid,
+                audio,
+            });
+        };
+        endpoints
+            .sample_preview
+            .publish_window(generation, start, audio)
+    }
     pub fn preview_publish(
         &mut self,
         generation: u64,
