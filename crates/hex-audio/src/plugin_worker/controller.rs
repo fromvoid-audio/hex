@@ -185,6 +185,9 @@ impl NativeWorker {
         Ok(if let Some(editor) = reply.editor {
             NativeWorkerControllerProgress::Editor(editor)
         } else if let Some(seal) = reply.editor_seal {
+            if request.stopped && seal == EditorSealState::Sealed {
+                self.editor_edits_sealed = true;
+            }
             NativeWorkerControllerProgress::EditorSeal(seal)
         } else if let Some(conversion) = reply.conversion {
             NativeWorkerControllerProgress::Conversion(Box::new(conversion))

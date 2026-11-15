@@ -258,3 +258,172 @@ fn editor_seal_requires_stopped_original_worker_and_exact_completion() {
     other.revoke_on_control();
     assert!(other.retire_on_control().unwrap().native.status.success());
 }
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn sealed_stopped_worker_drains_original_editor_burst_in_order() {
+    use hex_plugin_host::protocol::{ControllerRequest, EditorSealState, ParameterEditKind};
+    const NAME: &str = "plugin_worker::capture::tests::controller::sealed_stopped_worker_drains_original_editor_burst_in_order";
+    if fixture_child(116, NAME) {
+        return;
+    }
+    let (mut owner, _callback) = NativeWorker::start_on_control(original_instance()).unwrap();
+    assert!(owner.poll_sealed_edits_on_control().is_err());
+    let (mut other, _other_callback) = NativeWorker::start_on_control(original_instance()).unwrap();
+    other.revoke_on_control();
+    assert!(other.poll_sealed_edits_on_control().is_err());
+    fs::write(
+        std::env::var_os("HEX_ORIGINAL_INSTANCE_RELEASE").unwrap(),
+        b"emit",
+    )
+    .unwrap();
+    let until = Instant::now() + Duration::from_secs(2);
+    while fs::read(trace_path())
+        .ok()
+        .is_none_or(|trace| trace.get(..4) != Some(&25_i32.to_le_bytes()))
+    {
+        assert!(Instant::now() < until, "SDK burst did not finish");
+        thread::yield_now();
+    }
+    owner.revoke_on_control();
+    assert!(owner.poll_sealed_edits_on_control().is_err());
+    let request = loop {
+        match owner.begin_controller_query_on_control(ControllerRequest::SealEditorEdits) {
+            Ok(request) => break request,
+            Err("native preparation is busy" | "native controller mailbox is busy") => {}
+            Err(reason) => panic!("seal admission: {reason}"),
+        }
+        assert!(Instant::now() < until);
+        thread::yield_now();
+    };
+    loop {
+        match owner.poll_controller_query_on_control(&request).unwrap() {
+            NativeWorkerControllerProgress::Pending => {}
+            NativeWorkerControllerProgress::EditorSeal(EditorSealState::Sealed) => break,
+            other => panic!("seal terminal: {other:?}"),
+        }
+        assert!(Instant::now() < until);
+        thread::yield_now();
+    }
+    let controller = query(&mut owner);
+    assert!(matches!(
+        owner.poll_sealed_edits_on_control(),
+        Err("native stopped control operation is busy")
+    ));
+    let _ = page(&mut owner, &controller);
+    let mut edits = Vec::new();
+    while edits.len() < 14 {
+        let batch = owner.poll_sealed_edits_on_control().unwrap();
+        edits.extend_from_slice(batch.edits.as_slice());
+        assert!(Instant::now() < until, "sealed burst did not drain");
+    }
+    assert_eq!(edits.len(), 14);
+    for (index, edit) in edits.iter().enumerate() {
+        assert_eq!(
+            (edit.sequence, edit.gesture, edit.id),
+            (index as u64 + 1, 1, 7)
+        );
+    }
+    assert_eq!(edits.first().unwrap().kind, ParameterEditKind::Begin);
+    assert_eq!(edits.last().unwrap().kind, ParameterEditKind::End);
+    assert!(
+        owner
+            .poll_sealed_edits_on_control()
+            .unwrap()
+            .edits
+            .as_slice()
+            .is_empty()
+    );
+    assert_eq!(owner.published_blocks_on_control(), 0);
+    assert!(owner.retire_on_control().unwrap().failure.is_none());
+    assert!(other.retire_on_control().unwrap().failure.is_none());
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn sealed_worker_delivers_admitted_read_before_fresh_batches() {
+    use crate::plugin_worker::StoppedEditProgress;
+    use hex_plugin_host::protocol::{ControllerRequest, EditorSealState};
+    const NAME: &str = "plugin_worker::capture::tests::controller::sealed_worker_delivers_admitted_read_before_fresh_batches";
+    if fixture_child(116, NAME) {
+        return;
+    }
+    let (mut owner, _callback) = NativeWorker::start_on_control(original_instance()).unwrap();
+    fs::write(
+        std::env::var_os("HEX_ORIGINAL_INSTANCE_RELEASE").unwrap(),
+        b"emit",
+    )
+    .unwrap();
+    let until = Instant::now() + Duration::from_secs(2);
+    while fs::read(trace_path())
+        .ok()
+        .is_none_or(|trace| trace.get(..4) != Some(&25_i32.to_le_bytes()))
+    {
+        assert!(Instant::now() < until);
+        thread::yield_now();
+    }
+    assert!(
+        owner
+            .poll_recovery_edits_on_control(true)
+            .unwrap()
+            .is_none()
+    );
+    owner.revoke_on_control();
+    let request = loop {
+        match owner.begin_controller_query_on_control(ControllerRequest::SealEditorEdits) {
+            Ok(request) => break request,
+            Err("native preparation is busy" | "native controller mailbox is busy") => {}
+            Err(reason) => panic!("seal admission: {reason}"),
+        }
+        assert!(Instant::now() < until);
+        thread::yield_now();
+    };
+    loop {
+        match owner.poll_controller_query_on_control(&request).unwrap() {
+            NativeWorkerControllerProgress::Pending => {}
+            NativeWorkerControllerProgress::EditorSeal(EditorSealState::Sealed) => break,
+            other => panic!("seal terminal: {other:?}"),
+        }
+        assert!(Instant::now() < until);
+        thread::yield_now();
+    }
+    assert!(matches!(
+        owner.poll_sealed_edits_on_control(),
+        Err("native prior edit read remains")
+    ));
+    let first = loop {
+        match owner.poll_stopped_edits_on_control(true) {
+            Ok(StoppedEditProgress::Completed(batch)) => break batch,
+            Ok(StoppedEditProgress::Pending) | Err("native edit observation is busy") => {}
+            Err(reason) => panic!("prior read: {reason}"),
+        }
+        assert!(Instant::now() < until);
+        thread::yield_now();
+    };
+    let mut edits = first.edits.as_slice().to_vec();
+    while edits.len() < 14 {
+        edits.extend_from_slice(
+            owner
+                .poll_sealed_edits_on_control()
+                .unwrap()
+                .edits
+                .as_slice(),
+        );
+        assert!(Instant::now() < until);
+    }
+    assert_eq!(edits.len(), 14);
+    assert!(
+        edits
+            .iter()
+            .enumerate()
+            .all(|(index, edit)| edit.sequence == index as u64 + 1)
+    );
+    owner.reaper.worker.as_mut().unwrap().native_error = Some(hex_plugin_host::Error::Protocol(
+        "injected failure before sealed drain",
+    ));
+    assert!(matches!(
+        owner.poll_sealed_edits_on_control(),
+        Err("native stopped edit source failed")
+    ));
+    assert!(owner.retire_on_control().unwrap().failure.is_some());
+}

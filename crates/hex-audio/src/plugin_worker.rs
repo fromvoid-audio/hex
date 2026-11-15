@@ -774,6 +774,7 @@ pub struct NativeWorker {
     binding: Binding,
     quantum: u16,
     retirement_requested: bool,
+    editor_edits_sealed: bool,
     grouped_editor_callbacks: bool,
     source_storage: Option<hex_plugin_host::native::PreparedStorage>,
 }
