@@ -267,7 +267,6 @@ impl AudioTransformPreparation {
             source_rate: asset.source_sample_rate(),
             prepared: audio.clone(),
             bytes,
-            source_bytes: std::mem::size_of_val(source.frames()),
         })?;
         placed_clip(audio, clip)
     }

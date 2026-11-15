@@ -24,7 +24,7 @@ mod streaming;
 use resources::RootResourceWitness;
 pub(super) use resources::remaining_handle_reservation;
 pub(in crate::candidate_custody) use streaming::OrdinaryReservation;
-pub(crate) use streaming::{ActiveView, OrdinaryStreams};
+pub(crate) use streaming::{ActiveView, OrdinaryStreams, QuantumFailure, QuantumPins};
 pub(crate) use streaming::{StageAction, StreamInstall, StreamOutcome, StreamProgress};
 mod preparation;
 use preparation::PreparationExecution;
@@ -836,15 +836,14 @@ impl super::Custody {
                 .position(|slot| slot.phase == Phase::Vacant)
                 .ok_or("constructor runtime cells are full")?
         };
-        if let Some(pending) = bank.publication.slots[index].preparation_reservation {
-            if summary.member_rows > pending.member_rows
+        if let Some(pending) = bank.publication.slots[index].preparation_reservation
+            && (summary.member_rows > pending.member_rows
                 || summary.transfer_rows > pending.transfer_rows
                 || summary.shared_resource_handles > pending.handle_rows
                 || retained > bank.publication.slots[index].retained
-                || peak > bank.publication.slots[index].peak
-            {
-                return Err("candidate exceeded its construction reservation");
-            }
+                || peak > bank.publication.slots[index].peak)
+        {
+            return Err("candidate exceeded its construction reservation");
         }
         let runtime_storage = bank.publication.slots[index]
             .streaming

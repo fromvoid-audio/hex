@@ -9,12 +9,18 @@ pub struct AudioCandidateRuntimeStatus {
     pub position: u64,
     pub performance_frame: u64,
     pub playing: bool,
+    /// Session Arrangement loop pass and active region, if supported.
+    pub arrangement_loop_state: Option<crate::session_playback::ArrangementLoopState>,
     pub metronome_enabled: bool,
     pub session_capability: crate::SessionCapabilityStatus,
     /// True only for a successfully admitted, installed private CURRENT runtime.
     pub sampler_console: bool,
     pub route_state_generation: u64,
     pub route_count: usize,
+    /// Frames by which Main output trails `position`.
+    pub main_output_latency_frames: u32,
+    /// Content-clock loop law that wraps `position`.
+    pub content_loop: Option<hex_project::LoopRegion>,
 }
 impl ClaimedAudioCandidateRuntime {
     fn current_playback(&self) -> Option<&Playback> {
@@ -27,7 +33,7 @@ impl ClaimedAudioCandidateRuntime {
             .then_some(())
             .and_then(|()| self.inner.runtime.as_mut().map(|r| &mut r.playback))
     }
-    fn current_runtime_mut(&mut self) -> Option<&mut RuntimeOwner> {
+    pub(super) fn current_runtime_mut(&mut self) -> Option<&mut RuntimeOwner> {
         if self.inner.phase != ClaimedPhase::Current {
             return None;
         }
@@ -39,6 +45,7 @@ impl ClaimedAudioCandidateRuntime {
             position: playback.position(),
             performance_frame: playback.performance_frame(),
             playing: playback.playing(),
+            arrangement_loop_state: playback.arrangement_loop_state(),
             metronome_enabled: playback.metronome_enabled(),
             session_capability: playback.session_capability_status(),
             sampler_console: self
@@ -48,6 +55,8 @@ impl ClaimedAudioCandidateRuntime {
                 .is_some_and(|r| r.sampler_console_available()),
             route_state_generation: playback.session_route_state_generation(),
             route_count: playback.session_route_count(),
+            main_output_latency_frames: playback.main_output_latency_frames(),
+            content_loop: playback.automation_capture_loop(),
         })
     }
     /// Scalar effective clock metadata from the current admitted runtime only.
@@ -113,6 +122,14 @@ impl ClaimedAudioCandidateRuntime {
     pub fn project_output_supported(&self, tracks: &[u64]) -> bool {
         self.current_playback()
             .is_some_and(|p| p.project_output_supported(tracks))
+    }
+    pub fn project_sample_sources_supported(
+        &self,
+        tracks: &[u64],
+        returns: &[crate::ReturnId],
+    ) -> bool {
+        self.current_playback()
+            .is_some_and(|p| p.project_sample_sources_supported(tracks, returns))
     }
     pub fn render_with_pages_and_post_node_observer<P: crate::MediaPages + ?Sized>(
         &mut self,
@@ -291,6 +308,11 @@ impl ClaimedAudioCandidateRuntime {
             playback.invalidate_native_parameter_input();
         }
     }
+    pub fn finish_native_parameter_input(&mut self) {
+        if let Some(playback) = self.current_playback_mut() {
+            playback.finish_native_parameter_input();
+        }
+    }
     pub fn take_native_parameter_application(
         &mut self,
     ) -> Option<crate::NativeParameterApplication> {
@@ -321,6 +343,13 @@ impl ClaimedAudioCandidateRuntime {
             return false;
         };
         playback.clear_gain_recording_override();
+        true
+    }
+    pub fn release_gain_recording_override(&mut self) -> bool {
+        let Some(playback) = self.current_playback_mut() else {
+            return false;
+        };
+        playback.release_gain_recording_override();
         true
     }
     pub fn gain_recording_clock(&self, track: u64) -> Option<(u64, u64, u64)> {

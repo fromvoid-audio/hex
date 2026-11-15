@@ -199,15 +199,20 @@ fn reverb_host_loop_continues_tank_while_seek_and_stop_reset_it() {
             .unwrap()
             .unwrap();
         let mut provider = prepared.create_runtime();
+        // Loop starts keep their full transient. The input is silent at
+        // each loop end, so the end envelope cannot change these impulses.
+        // One uninterrupted provider runtime independently checks that the
+        // host preserves the reverb tank across all three passes.
+        let impulse = |_i: usize| [0.25, -0.5];
         let mut expected = vec![[0.0; 2]; 12_000];
         for i in [0, 5000, 10000] {
-            expected[i] = [0.25, -0.5];
+            expected[i] = impulse(i);
         }
         provider.process_block(&mut expected, &EMPTY_DEVICE_RESOURCES);
         if on_return {
             for i in [0, 5000, 10000] {
-                expected[i][0] += 0.25;
-                expected[i][1] -= 0.5;
+                expected[i][0] += impulse(i)[0];
+                expected[i][1] += impulse(i)[1];
             }
         }
         assert_eq!(actual, expected);

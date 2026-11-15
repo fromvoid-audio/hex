@@ -86,11 +86,11 @@ pub(super) fn selector(
     row
 }
 
-fn diagram(index: usize, selected: bool) -> impl IntoElement {
+pub(super) fn diagram(index: usize, selected: bool) -> impl IntoElement {
     let topology = hex_engine::native_operator_algorithms[index];
     let positions = POSITIONS[index];
     let colors = std::array::from_fn::<_, 4, _>(|operator| {
-        theme::device_identity_style(operator, true, false).accent
+        theme::device_identity_style(operator, true, false).surface
     });
     canvas(
         |_, _, _| (),
@@ -102,28 +102,60 @@ fn diagram(index: usize, selected: bool) -> impl IntoElement {
                         + (bounds.size.width - px(6.0)) * positions[operator][0],
                     bounds.top()
                         + px(2.0)
-                        + (bounds.size.height - px(4.0)) * positions[operator][1],
+                        + (bounds.size.height - px(10.0)) * positions[operator][1],
                 )
             };
             let mut edges = PathBuilder::stroke(px(0.75));
             for &(source, target) in topology.edges {
-                edges.move_to(position(source));
-                edges.line_to(position(target));
+                let start = position(source);
+                let end = position(target);
+                edges.move_to(start);
+                edges.line_to(end);
+                let delta = end - start;
+                let length = (f32::from(delta.x).powi(2) + f32::from(delta.y).powi(2)).sqrt();
+                if length > 7.0 {
+                    let direction = delta / length;
+                    let middle = start + delta * 0.55;
+                    let side = point(-direction.y, direction.x) * 1.2;
+                    edges.move_to(middle - direction * 1.5 + side);
+                    edges.line_to(middle);
+                    edges.line_to(middle - direction * 1.5 - side);
+                }
             }
+            let output_y = bounds.bottom() - px(3.0);
+            let mut left = bounds.right();
+            let mut right = bounds.left();
+            for &carrier in topology.carriers {
+                let node = position(carrier);
+                edges.move_to(node);
+                edges.line_to(point(node.x, output_y));
+                left = left.min(node.x);
+                right = right.max(node.x);
+            }
+            edges.move_to(point(left, output_y));
+            edges.line_to(point(right, output_y));
+            let output_x = (left + right) / 2.0;
+            edges.move_to(point(output_x, output_y));
+            edges.line_to(point(output_x, bounds.bottom() - px(0.5)));
             if let Ok(path) = edges.build() {
-                window.paint_path(path, rgb(theme::color(theme::PaletteRole::Muted)));
+                window.paint_path(
+                    path,
+                    rgb(theme::color(if selected {
+                        theme::PaletteRole::Text
+                    } else {
+                        theme::PaletteRole::Muted
+                    })),
+                );
             }
             for (operator, color) in colors.into_iter().enumerate() {
                 let center = position(operator);
-                let mut node = PathBuilder::stroke(px(if selected { 2.0 } else { 1.0 }));
-                node.move_to(center + point(px(-1.8), px(-1.8)));
-                node.line_to(center + point(px(1.8), px(-1.8)));
-                node.line_to(center + point(px(1.8), px(1.8)));
-                node.line_to(center + point(px(-1.8), px(1.8)));
-                node.line_to(center + point(px(-1.8), px(-1.8)));
-                if let Ok(path) = node.build() {
-                    window.paint_path(path, rgb(color));
-                }
+                window.paint_quad(gpui::fill(
+                    gpui::Bounds::new(
+                        center - point(px(1.8), px(1.8)),
+                        gpui::size(px(3.6), px(3.6)),
+                    ),
+                    rgb(color),
+                ));
             }
         },
     )

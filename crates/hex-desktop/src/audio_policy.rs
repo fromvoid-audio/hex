@@ -22,13 +22,21 @@ pub(super) struct AudioPolicy {
 /// Actual Root construction validates this reserved pool before client exposure.
 #[derive(Clone, Copy)]
 pub(super) struct PluginPolicy {
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     pub capacity: usize,
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     pub source: hex_audio::NativeSourceDataReservation,
     pub retained: usize,
     pub peak: usize,
 }
-pub(super) const PLUGIN_CONTROL_DATA_BYTES: usize = 128 * 1024;
+const PLUGIN_CONTROL_METADATA_BYTES: usize = 128 * 1024;
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub(super) const PLUGIN_CONTROL_DATA_BYTES: usize =
+    PLUGIN_CONTROL_METADATA_BYTES + hex_audio::plugin_effects::Hosting::CAPTURE_RESPONSE_DATA_BYTES;
+#[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+pub(super) const PLUGIN_CONTROL_DATA_BYTES: usize = PLUGIN_CONTROL_METADATA_BYTES;
 impl PluginPolicy {
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     fn new() -> Result<Self, String> {
         let capacity = 16;
         let source = hex_audio::plugin_effects::Hosting::source_data_reservation()?;
@@ -40,6 +48,15 @@ impl PluginPolicy {
             source,
             retained,
             peak,
+        })
+    }
+    #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+    fn new() -> Result<Self, String> {
+        // No native source bank exists on this target. Ordinary graph/source
+        // reservations retain their existing owners and limits.
+        Ok(Self {
+            retained: 0,
+            peak: 0,
         })
     }
     pub fn domains(
@@ -71,9 +88,11 @@ impl AudioPolicy {
         let stream = hex_stream::StreamConfig::initial();
         SourcePlanReservation {
             reader: hex_media::VerifiedWavReaderLimits::new(
+                // Streamed originals are not resident PCM: their bound is the
+                // session's streaming contract, not the 64 MiB / 8M resident cap.
                 hex_media::WavReaderLimits::new(
-                    64 * 1024 * 1024,
-                    MAX_SOURCE_FRAMES,
+                    hex_session::MAX_STREAMED_FILE_BYTES,
+                    hex_session::MAX_STREAMED_SOURCE_FRAMES,
                     32,
                     // Output pages are not source windows: downsampling also
                     // needs the resampler halo. The worker already reserves
@@ -96,11 +115,11 @@ impl AudioPolicy {
                 .checked_sub(1)
                 .ok_or("invalid page capacity")?,
         };
-        // Two extent lists plus conservative private workspace backing. The
+        // Demand and quantum extent lists for two domains plus conservative private backing. The
         // host boundary checks actual capacities against this before admission.
         let ordinary_stream_metadata_bytes = readiness
             .extents_per_role
-            .checked_mul(2)
+            .checked_mul(4)
             .and_then(|n| n.checked_mul(std::mem::size_of::<hex_stream::StreamResourceExtent>()))
             .and_then(|n| n.checked_add(4096))
             .ok_or("ordinary stream metadata overflow")?;
@@ -243,6 +262,8 @@ impl AudioPolicy {
         // per-owner limit, including the independent exporter. PCM uses the bounded
         // source-plus-publication-role envelope above; source read/scan limits stay8M.
         let immutable_roles = RUNTIME_CELLS.checked_mul(2).ok_or("native role overflow")?;
+        let source_programs =
+            hex_engine::PreparedSessionInventory::instrument_automation_reservation();
         let runtime_roles = RUNTIME_CELLS.checked_add(1).ok_or("native role overflow")?;
         let native_retained = input
             .checked_add(
@@ -262,18 +283,27 @@ impl AudioPolicy {
                     hex_engine::MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES.checked_mul(runtime_roles)?,
                 )
             })
+            .and_then(|n| {
+                n.checked_add(
+                    source_programs
+                        .max_retained_bytes
+                        .checked_mul(immutable_roles)?,
+                )
+            })
             .and_then(|n| n.checked_add(control_backing_quote.checked_mul(RUNTIME_CELLS)?))
             .ok_or("native retained reservation overflow")?;
         let native_peak = native_retained
             .checked_add(native_quote.compiler_workspace_bytes)
             .and_then(|n| n.checked_add(native_quote.metadata_data_bytes))
+            .and_then(|n| n.checked_add(source_programs.max_construction_peak_bytes))
             .ok_or("native construction reservation overflow")?;
         let resident_native = hex_session::ResidentNativeReservation {
             max_scan_frames: MAX_SOURCE_FRAMES,
             storage: hex_engine::AudioStorageLedgerReservation {
                 data_rows: native_quote
                     .data_rows
-                    .checked_mul(immutable_roles)
+                    .checked_add(source_programs.data_rows)
+                    .and_then(|rows| rows.checked_mul(immutable_roles))
                     .ok_or("native DATA rows overflow")?,
                 handle_rows: native_quote
                     .handle_rows
@@ -281,7 +311,8 @@ impl AudioPolicy {
                     .ok_or("native handle rows overflow")?,
                 root_rows: native_quote
                     .source_capacity
-                    .checked_mul(immutable_roles)
+                    .checked_add(source_programs.root_rows)
+                    .and_then(|rows| rows.checked_mul(immutable_roles))
                     .and_then(|n| n.checked_add(RUNTIME_CELLS))
                     .ok_or("native root rows overflow")?,
                 max_retained_bytes: native_retained
@@ -306,6 +337,7 @@ impl AudioPolicy {
             ordinary_graph_metadata_bytes: native_quote
                 .metadata_data_bytes
                 .checked_add(ordinary_stream_metadata_bytes)
+                .and_then(|bytes| bytes.checked_add(source_programs.max_retained_bytes))
                 .ok_or("ordinary metadata overflow")?,
             ordinary_stream_metadata_bytes,
             ordinary_domains: hex_audio::AudioCandidateDomainReservation {
@@ -327,5 +359,57 @@ impl AudioPolicy {
         control.configure_audio_candidate_publication(self.publication)?;
         control.configure_audio_candidate_streaming(self.readiness.extents_per_role)?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn verified_source_reservation_accepts_long_wav_without_raising_resident_budget() {
+        let reservation = AudioPolicy::source_reservation().validate().unwrap();
+        assert!(reservation.reader.reader.max_source_frames > 8_000_000);
+        assert!(reservation.reader.reader.max_file_bytes > 64 * 1024 * 1024);
+        assert_eq!(
+            reservation.reader.reader.max_source_frames,
+            hex_session::MAX_STREAMED_SOURCE_FRAMES
+        );
+        assert_eq!(
+            reservation.reader.reader.max_file_bytes,
+            hex_session::MAX_STREAMED_FILE_BYTES
+        );
+        assert_eq!(MAX_SOURCE_FRAMES, 8_000_000);
+    }
+    #[test]
+    fn ordinary_program_allowance_covers_all_immutable_roles_without_widening_closed_publication() {
+        let policy = AudioPolicy::new().unwrap();
+        let programs = hex_engine::PreparedSessionInventory::instrument_automation_reservation();
+        let roles = RUNTIME_CELLS * 2;
+        let native =
+            hex_engine::AudioCandidateReservationQuote::for_supported_resident_limits().unwrap();
+        assert_eq!(
+            policy.resident_native.storage.data_rows,
+            (native.data_rows + programs.data_rows) * roles
+        );
+        assert_eq!(
+            policy.resident_native.storage.root_rows,
+            (native.source_capacity + programs.root_rows) * roles + RUNTIME_CELLS
+        );
+        assert_eq!(
+            policy.resident_native.storage.handle_rows,
+            native.handle_rows * roles
+        );
+        assert!(
+            policy.resident_native.storage.max_retained_bytes
+                >= programs.max_retained_bytes * roles
+        );
+        assert!(
+            policy.resident_native.storage.max_construction_peak_bytes
+                >= programs.max_retained_bytes * roles + programs.max_construction_peak_bytes
+        );
+        assert!(policy.ordinary_graph_metadata_bytes >= programs.max_retained_bytes);
+        // Closed constructors keep their own source-only reservation.
+        assert_eq!(policy.resident_publication.data_rows, native.data_rows);
     }
 }

@@ -19,7 +19,7 @@ pub use native_sources::{
 };
 pub(crate) use pages::DomainEnvelope;
 pub(super) use publication::OrdinaryReservation;
-pub(crate) use publication::{ActiveView, OrdinaryStreams};
+pub(crate) use publication::{ActiveView, OrdinaryStreams, QuantumFailure, QuantumPins};
 pub use publication::{
     AudioCandidateCancellationResult, AudioCandidateEligibleStageRefusal,
     AudioCandidatePreparationProgress, AudioCandidatePreparationRefusal,
@@ -664,6 +664,11 @@ impl Custody {
         slot.preparation_bound = None;
         slot.preparation_failure = None;
         Some(report)
+    }
+    #[cfg(test)]
+    pub(super) fn with_bank_held<R>(&self, f: impl FnOnce() -> R) -> R {
+        let _bank = lock(&self.bank);
+        f()
     }
     pub(super) fn usage(&self) -> Option<AudioCandidateDomainUsage> {
         let guard = self.bank.try_lock().ok()?;

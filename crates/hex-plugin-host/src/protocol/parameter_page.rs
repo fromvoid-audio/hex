@@ -7,9 +7,15 @@ mod conversion;
 pub use conversion::{ParameterConversion, ParameterConversionResult, ParameterConversionStatus};
 
 pub const PARAMETER_PAGE_SIZE: usize = 4;
-pub const MAX_CONTROLLER_PARAMETERS: u16 = 128;
+/// Inventory bound shared with the isolated native controller host. A single
+/// page and the processing edit/feedback queues keep their own fixed limits.
+pub const MAX_CONTROLLER_PARAMETERS: u16 = 2_624;
 const TEXT_UNITS: usize = 128;
 const PARAMETER_FLAGS: u32 = 0x0001_801f;
+const CAN_AUTOMATE: u32 = 1;
+const IS_READ_ONLY: u32 = 1 << 1;
+const IS_HIDDEN: u32 = 1 << 4;
+const IS_PROGRAM_CHANGE: u32 = 1 << 15;
 
 /// Valid, terminated SDK UTF-16, copied without SDK pointers or unbounded text.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -106,13 +112,22 @@ pub struct ControllerParameter {
     pub units: ParameterText,
     pub display: Option<ParameterText>,
     pub default_display: Option<ParameterText>,
+    /// Last native Perform admitted for this parameter when the main lane
+    /// read the value and formatted text. Zero means no observed Perform.
+    pub editor_sequence: u64,
 }
 impl ControllerParameter {
     /// Display capability only, never authorization to edit a later source.
     /// Preserve unknown flags in observations, but do not expose a writer for
     /// semantics this host does not understand.
     pub fn is_editable(&self) -> bool {
-        self.flags & (!PARAMETER_FLAGS | 2 | 16) == 0
+        self.flags & (!PARAMETER_FLAGS | IS_READ_ONLY | IS_HIDDEN) == 0
+    }
+
+    /// Eligibility for authored envelopes. Program selection can change other
+    /// parameter definitions and has no authored playback contract here.
+    pub fn supports_authored_automation(&self) -> bool {
+        self.is_editable() && self.flags & (CAN_AUTOMATE | IS_PROGRAM_CHANGE) == CAN_AUTOMATE
     }
 }
 
@@ -145,6 +160,10 @@ pub struct ParameterPage {
     pub revision: u64,
     pub total: u16,
     pub first: u16,
+    /// Stable SHA-256 of the complete validated descriptor inventory and order.
+    /// Excludes live values and observation revisions. Display-cache invalidation
+    /// only: this digest grants no parameter edit or source admission authority.
+    pub descriptor_signature: [u8; 32],
     values: [ControllerParameter; PARAMETER_PAGE_SIZE],
     len: u8,
 }
@@ -157,6 +176,10 @@ impl ParameterPage {
 #[derive(Clone, Debug, PartialEq)]
 pub enum ParameterPageProgress {
     Pending,
+    Editor(PluginEditorState),
+    /// The exact original controller sealed editor admission, or did not
+    /// seal and remains responsible for its input. Neither result drains receipts.
+    EditorSeal(EditorSealState),
     /// One bounded control-side allocation; never decoded on the callback.
     Page(Box<ParameterPage>),
     Conversion(Box<ParameterConversionResult>),
@@ -167,21 +190,127 @@ pub enum ParameterPageProgress {
     },
 }
 
+/// A single request on the original instance's serialized controller lane.
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[allow(clippy::large_enum_variant)] // Reuse the fixed controller mailbox without allocating its UTF-16 query.
+pub enum ControllerRequest {
+    Parameters(ParameterPageQuery),
+    /// One fresh page, independent of intervening value feedback revisions.
+    /// Only a selected target's actual row may establish its eligibility;
+    /// this observation grants no canonical base or publication authority.
+    SelectedParameters {
+        first: u16,
+    },
+    ToggleEditor,
+    CloseEditor,
+    /// Seal editor callback admission on the stopped original worker. Accepted
+    /// callbacks and their receipts remain owned until separately drained.
+    SealEditorEdits,
+    /// Detach the predecessor and capture the latest AppKit placement.
+    DetachEditor,
+    /// Reopen on the successor without activating its helper application.
+    ReopenEditor(Option<PluginEditorPosition>),
+}
+impl Default for ControllerRequest {
+    fn default() -> Self {
+        Self::Parameters(ParameterPageQuery::default())
+    }
+}
+impl From<ParameterPageQuery> for ControllerRequest {
+    fn from(query: ParameterPageQuery) -> Self {
+        Self::Parameters(query)
+    }
+}
+impl ControllerRequest {
+    pub fn validate(self) -> Result<()> {
+        match self {
+            Self::Parameters(query) => query.validate(),
+            Self::SelectedParameters { first } => {
+                if first > MAX_CONTROLLER_PARAMETERS {
+                    return Err(Error::Protocol("invalid selected controller page"));
+                }
+                Ok(())
+            }
+            Self::ToggleEditor
+            | Self::CloseEditor
+            | Self::SealEditorEdits
+            | Self::DetachEditor
+            | Self::ReopenEditor(_) => Ok(()),
+        }
+    }
+}
+
+/// Top-left of the live AppKit frame in global screen points. This transient
+/// snapshot owns no window or SDK object and is scoped to a single handoff.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PluginEditorPosition {
+    x: u64,
+    y: u64,
+}
+
+impl PluginEditorPosition {
+    pub fn new(x: f64, y: f64) -> Option<Self> {
+        // Wide enough for any supported desktop, while bounding foreign input.
+        const LIMIT: f64 = 1_000_000.0;
+        (x.abs() <= LIMIT && y.abs() <= LIMIT).then_some(Self {
+            x: x.to_bits(),
+            y: y.to_bits(),
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EditorSealState {
+    Sealed,
+    NotSealed,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PluginEditorState {
+    Closed,
+    Open,
+    Unavailable,
+    Detached(PluginEditorPosition),
+}
+
 pub fn parameter_page_request(
     config: &Configuration,
     sequence: u64,
     operation: u64,
-    query: ParameterPageQuery,
+    request: impl Into<ControllerRequest>,
     poll: bool,
 ) -> Result<[u8; 351]> {
-    query.validate()?;
+    let request = request.into();
+    request.validate()?;
     let mut out = [0; 351];
     out[..72].copy_from_slice(&capture_request(config, sequence, operation)?);
     out[..4].copy_from_slice(if poll { b"HXVN" } else { b"HXVM" });
-    out[72..74].copy_from_slice(&query.first.to_le_bytes());
-    out[74..82].copy_from_slice(&query.revision.to_le_bytes());
-    if let Some(conversion) = query.conversion {
-        conversion.write(&mut out[82..]);
+    match request {
+        ControllerRequest::Parameters(query) => {
+            out[72..74].copy_from_slice(&query.first.to_le_bytes());
+            out[74..82].copy_from_slice(&query.revision.to_le_bytes());
+            if let Some(conversion) = query.conversion {
+                conversion.write(&mut out[82..]);
+            }
+        }
+        ControllerRequest::ToggleEditor => out[82] = 6,
+        ControllerRequest::CloseEditor => out[82] = 7,
+        ControllerRequest::SealEditorEdits => out[82] = 13,
+        // New kinds prevent a pre-placement helper from closing the old
+        // window and returning a positionless legacy acknowledgement.
+        ControllerRequest::DetachEditor => out[82] = 11,
+        ControllerRequest::ReopenEditor(position) => {
+            out[82] = 12;
+            if let Some(position) = position {
+                out[74..82].copy_from_slice(&position.x.to_le_bytes());
+                out[83..87].copy_from_slice(&1_u32.to_le_bytes());
+                out[87..95].copy_from_slice(&position.y.to_le_bytes());
+            }
+        }
+        ControllerRequest::SelectedParameters { first } => {
+            out[72..74].copy_from_slice(&first.to_le_bytes());
+            out[82] = 8;
+        }
     }
     Ok(out)
 }
@@ -191,10 +320,11 @@ pub fn parameter_page(
     config: &Configuration,
     sequence: u64,
     operation: u64,
-    query: ParameterPageQuery,
+    request: impl Into<ControllerRequest>,
 ) -> Result<ParameterPageProgress> {
     config.validate()?;
-    query.validate()?;
+    let request = request.into();
+    request.validate()?;
     let frames = sequence
         .checked_mul(u64::from(config.quantum))
         .ok_or(Error::Protocol("controller page position exhausted"))?;
@@ -212,6 +342,62 @@ pub fn parameter_page(
         reader.end()?;
         return Ok(ParameterPageProgress::Pending);
     }
+    if request == ControllerRequest::SealEditorEdits {
+        if status != 5 {
+            return Err(Error::Protocol("missing editor seal acknowledgement"));
+        }
+        let result = match reader.byte()? {
+            0 => EditorSealState::NotSealed,
+            1 => EditorSealState::Sealed,
+            _ => return Err(Error::Protocol("invalid editor seal acknowledgement")),
+        };
+        reader.end()?;
+        return Ok(ParameterPageProgress::EditorSeal(result));
+    }
+    let query = match request {
+        ControllerRequest::Parameters(query) => Some(query),
+        ControllerRequest::SelectedParameters { first } => Some(ParameterPageQuery {
+            first,
+            revision: 0,
+            conversion: None,
+        }),
+        ControllerRequest::ToggleEditor
+        | ControllerRequest::CloseEditor
+        | ControllerRequest::SealEditorEdits
+        | ControllerRequest::DetachEditor
+        | ControllerRequest::ReopenEditor(_) => None,
+    };
+    let Some(query) = query else {
+        if status != 4 {
+            return Err(Error::Protocol("missing native editor acknowledgement"));
+        }
+        let state = match reader.byte()? {
+            0 => PluginEditorState::Closed,
+            1 => PluginEditorState::Open,
+            2 => PluginEditorState::Unavailable,
+            3 if request == ControllerRequest::DetachEditor => {
+                let x = f64::from_le_bytes(reader.array()?);
+                let y = f64::from_le_bytes(reader.array()?);
+                let position = PluginEditorPosition::new(x, y)
+                    .ok_or(Error::Protocol("invalid native editor placement"))?;
+                PluginEditorState::Detached(position)
+            }
+            _ => return Err(Error::Protocol("invalid native editor state")),
+        };
+        let valid = match request {
+            ControllerRequest::CloseEditor => state == PluginEditorState::Closed,
+            ControllerRequest::DetachEditor => state != PluginEditorState::Unavailable,
+            ControllerRequest::ReopenEditor(_) => state != PluginEditorState::Closed,
+            _ => true,
+        };
+        if !valid {
+            return Err(Error::Protocol(
+                "native editor operation reported an invalid state",
+            ));
+        }
+        reader.end()?;
+        return Ok(ParameterPageProgress::Editor(state));
+    };
     let revision = u64::from_le_bytes(reader.array()?);
     let total = u16::from_le_bytes(reader.array()?);
     if total > MAX_CONTROLLER_PARAMETERS || (total != 0 && revision == 0) {
@@ -279,6 +465,7 @@ pub fn parameter_page(
         let format_flags = reader.byte()?;
         let display = ParameterText::read(&mut reader)?;
         let default_display = ParameterText::read(&mut reader)?;
+        let editor_sequence = u64::from_le_bytes(reader.array()?);
         if format_flags & !3 != 0
             || (format_flags & 1 == 0 && !display.as_utf16().is_empty())
             || (format_flags & 2 == 0 && !default_display.as_utf16().is_empty())
@@ -299,8 +486,10 @@ pub fn parameter_page(
             units,
             display: (format_flags & 1 != 0).then_some(display),
             default_display: (format_flags & 2 != 0).then_some(default_display),
+            editor_sequence,
         };
     }
+    page.descriptor_signature = reader.array()?;
     reader.end()?;
     Ok(ParameterPageProgress::Page(Box::new(page)))
 }

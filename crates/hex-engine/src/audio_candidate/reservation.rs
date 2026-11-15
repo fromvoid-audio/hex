@@ -24,7 +24,20 @@ impl AudioCandidateReservationQuote {
         sources: usize,
     ) -> Result<Self, AudioStorageError> {
         crate::audio_preparation::validate_constructor_project(project)?;
-        Self::for_project_counts(project, sources, false)
+        Self::for_project_counts(project, sources, false, &[])
+    }
+    /// Quote a streamed candidate using matching raw and derived source metadata.
+    /// The constructor independently validates the actual source bank.
+    pub fn for_project_with_pitched_streams(
+        project: &hex_project::Project,
+        sources: usize,
+        streams: &[crate::StreamedSourceMetadata],
+    ) -> Result<Self, AudioStorageError> {
+        crate::audio_preparation::validate_constructor_project(project)?;
+        if streams.len() > sources {
+            return Err(AudioStorageError::Capacity);
+        }
+        Self::for_project_counts(project, sources, false, streams)
     }
     /// Caller sizing for the explicitly selected closed foreign-effect class.
     /// A registry or this quote never admits a native source or callback.
@@ -37,14 +50,22 @@ impl AudioCandidateReservationQuote {
             project,
             Some(effects),
         )?;
-        Self::for_project_counts(project, sources, true)
+        Self::for_project_counts(project, sources, true, &[])
     }
     fn for_project_counts(
         project: &hex_project::Project,
         sources: usize,
         effect_payloads: bool,
+        streams: &[crate::StreamedSourceMetadata],
     ) -> Result<Self, AudioStorageError> {
-        if sources > hex_project::MAX_ASSETS {
+        let max_sources = if streams.is_empty() {
+            hex_project::MAX_ASSETS
+        } else {
+            hex_project::MAX_ASSETS
+                .checked_add(hex_project::MAX_CLIPS)
+                .ok_or(AudioStorageError::Overflow)?
+        };
+        if sources > max_sources {
             return Err(AudioStorageError::Capacity);
         }
         let mut counts = Counts::default();
@@ -103,13 +124,40 @@ impl AudioCandidateReservationQuote {
             project.return_tracks().len(),
             sources,
         )?;
-        quote.prepared_pcm_frames =
-            crate::audio_preparation::transformed::prepared_pcm_frames(project)?;
+        let streamed_derived = |clip: &hex_project::Clip| {
+            streams
+                .iter()
+                .find(|raw| raw.key().asset() == clip.asset() && raw.key().is_raw())
+                .is_some_and(|raw| {
+                    streams.iter().any(|pitch| {
+                        crate::audio_preparation::transformed::matching_streamed_pitch(
+                            project, clip, raw, pitch,
+                        ) || crate::audio_preparation::transformed::matching_streamed_repitch(
+                            project, clip, raw, pitch,
+                        )
+                    })
+                })
+        };
+        quote.prepared_pcm_frames = if streams.is_empty() {
+            crate::audio_preparation::transformed::prepared_pcm_frames(project)?
+        } else {
+            crate::audio_preparation::transformed::prepared_pcm_frames_for(
+                project,
+                &streamed_derived,
+            )?
+        };
         let pcm_bytes = usize::try_from(quote.prepared_pcm_frames)
             .ok()
             .and_then(|frames| frames.checked_mul(std::mem::size_of::<crate::Frame>()))
             .ok_or(AudioStorageError::Overflow)?;
-        let (retained, workspace) = crate::audio_preparation::transformed_audio_quote(project)?;
+        let (retained, workspace) = if streams.is_empty() {
+            crate::audio_preparation::transformed_audio_quote(project)?
+        } else {
+            crate::audio_preparation::transformed::transformed_audio_quote_for(
+                project,
+                &streamed_derived,
+            )?
+        };
         quote.metadata_data_bytes = quote
             .metadata_data_bytes
             .checked_add(
@@ -156,7 +204,48 @@ impl AudioCandidateReservationQuote {
                 .checked_add(largest)
                 .ok_or(AudioStorageError::Overflow)?;
         }
-        // Cardinalities cannot describe spare capacity retained by canonical
+        let mut modulation_workspace = 0usize;
+        for device in project
+            .tracks()
+            .iter()
+            .flat_map(|track| track.devices())
+            .chain(
+                project
+                    .return_tracks()
+                    .iter()
+                    .flat_map(|track| track.devices()),
+            )
+            .chain(project.main_devices())
+        {
+            let (retained, overlap) = crate::device_modulation::EffectModulation::quote(device)
+                .ok_or(AudioStorageError::Overflow)?;
+            quote.metadata_data_bytes = quote
+                .metadata_data_bytes
+                .checked_add(retained)
+                .ok_or(AudioStorageError::Overflow)?;
+            modulation_workspace = modulation_workspace
+                .checked_add(overlap)
+                .ok_or(AudioStorageError::Overflow)?;
+        }
+        quote.compiler_workspace_bytes = quote
+            .compiler_workspace_bytes
+            .checked_add(modulation_workspace)
+            .ok_or(AudioStorageError::Overflow)?;
+        if effect_payloads {
+            let (bytes, rows) = crate::foreign_automation::candidate::quote(project)?;
+            quote.metadata_data_bytes = quote
+                .metadata_data_bytes
+                .checked_add(bytes)
+                .ok_or(AudioStorageError::Overflow)?;
+            quote.data_rows = quote
+                .data_rows
+                .checked_add(rows)
+                .ok_or(AudioStorageError::Overflow)?;
+            quote.handle_rows = quote
+                .handle_rows
+                .checked_add(rows.checked_mul(2).ok_or(AudioStorageError::Overflow)?)
+                .ok_or(AudioStorageError::Overflow)?;
+        } // Cardinalities cannot describe spare capacity retained by canonical
         // sources. Quote the actual two owning identity tokens per Console clip.
         let canonical_bytes =
             crate::session_inventory::audio_assembly::current_midi::canonical_source_metadata_bytes(
@@ -229,6 +318,20 @@ impl AudioCandidateReservationQuote {
         quote.metadata_data_bytes = quote
             .metadata_data_bytes
             .checked_add(crate::compensation::MAX_COMPENSATION_BYTES)
+            .ok_or(AudioStorageError::Overflow)?;
+        let (retained, overlap) = crate::device_modulation::EffectModulation::quote_counts(
+            hex_project::MAX_PROJECT_MODULATORS,
+            hex_project::MAX_PROJECT_MODULATION_ROUTES,
+            hex_project::MAX_PROJECT_MODULATORS,
+        )
+        .ok_or(AudioStorageError::Overflow)?;
+        quote.metadata_data_bytes = quote
+            .metadata_data_bytes
+            .checked_add(retained)
+            .ok_or(AudioStorageError::Overflow)?;
+        quote.compiler_workspace_bytes = quote
+            .compiler_workspace_bytes
+            .checked_add(overlap)
             .ok_or(AudioStorageError::Overflow)?;
         Ok(quote)
     }
@@ -304,7 +407,7 @@ impl AudioCandidateReservationQuote {
 // not user DSP or arbitrary providers. Zero-capacity visitors consume rows too.
 // Fixed: custody/root/tempo/shared/runtime buffers. Track: staging/compiled/mix/
 // gain/meter/chain. Device: original payload, fresh config, definition, meter and
-// concrete runtime twins. Clip/Cell: pair + metadata + source handles. Changes
+// concrete runtime twins, including prepared and runtime modulation. Clip/Cell: pair + metadata + source handles. Changes
 // still face the actual ledger; exceeding a quote is an explicit refusal.
 #[derive(Clone, Copy)]
 enum Kind {
@@ -357,7 +460,7 @@ impl Counts {
             Kind::Return => (32, 16),
             Kind::Point => (4, 2),
             Kind::Track => (64, 32),
-            Kind::Device => (32, 32),
+            Kind::Device => (34, 32),
             Kind::ReverbRings => (2 * hex_devices::reverb::RUNTIME_HEAP_ALLOCATIONS, 0),
             Kind::Sampler => (32, 8),
             Kind::MidiNote => (0, 0),
@@ -500,6 +603,8 @@ mod tests {
             let mut snapshot = editor.project().snapshot();
             for track in &mut snapshot.tracks {
                 track.devices.push(hex_project::DeviceSnapshot {
+                    modulation: Default::default(),
+                    parent: None,
                     automation: Vec::new(),
                     comparison: None,
                     id: snapshot.next_id,

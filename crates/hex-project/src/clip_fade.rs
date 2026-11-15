@@ -1,5 +1,12 @@
 use crate::Invalid;
 
+/// Baseline used before the existing horizontal and vertical curve controls.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FadeCurveLaw {
+    Linear,
+    SmoothStep,
+}
+
 /// Bounded discrete-coordinate fade geometry and gain law, independent of source
 /// looping. Arrangement gains use sample frames. AudioEventFade uses this shape
 /// to validate source-clock distances, then projects to sample frames before gain.
@@ -22,9 +29,13 @@ pub struct ClipFade {
     out_curve: i16,
     in_position: u16,
     out_position: u16,
+    laws: [FadeCurveLaw; 2],
 }
 
 impl ClipFade {
+    /// Symmetric cubic S curve. Mirrored ramps over the same span sum to unity.
+    pub const DEFAULT_S_CURVE: FadeCurveLaw = FadeCurveLaw::SmoothStep;
+
     pub fn new(span: u64, offset: u64, fade_in: u64, fade_out: u64) -> Result<Self, Invalid> {
         if span == 0 {
             return Err(Invalid("fade span must be positive"));
@@ -49,6 +60,7 @@ impl ClipFade {
             out_curve: 0,
             in_position: 500,
             out_position: 500,
+            laws: [FadeCurveLaw::Linear; 2],
         })
     }
 
@@ -134,6 +146,56 @@ impl ClipFade {
         self.out_position
     }
 
+    /// Laws in fade-in, fade-out order. The baseline preserves half progress,
+    /// so the existing bend and position retain their control meaning.
+    pub fn curve_laws(self) -> [FadeCurveLaw; 2] {
+        self.laws
+    }
+
+    #[must_use]
+    pub fn with_curve_laws(self, laws: [FadeCurveLaw; 2]) -> Self {
+        Self { laws, ..self }
+    }
+
+    /// Activate default S curves only on newly drawn ramps. Length changes
+    /// to already-authored ramps keep the caller's existing coordinates.
+    #[must_use]
+    pub fn with_new_ramp_defaults(mut self, previous: Self) -> Self {
+        for (out, before, after) in [
+            (false, previous.fade_in, self.fade_in),
+            (true, previous.fade_out, self.fade_out),
+        ] {
+            if before == 0 && after > 0 {
+                self = self.straighten_ramp(out);
+                self.laws[usize::from(out)] = Self::DEFAULT_S_CURVE;
+            }
+        }
+        self
+    }
+
+    /// Straighten one ramp without changing its lengths or silent endpoints.
+    #[must_use]
+    pub fn straighten_ramp(mut self, out: bool) -> Self {
+        self.laws[usize::from(out)] = FadeCurveLaw::Linear;
+        if out {
+            self.out_curve = 0;
+            self.out_position = 500;
+        } else {
+            self.in_curve = 0;
+            self.in_position = 500;
+        }
+        self
+    }
+
+    pub fn ramp_is_curved(self, out: bool) -> bool {
+        self.laws[usize::from(out)] != FadeCurveLaw::Linear
+            || if out {
+                self.out_curve != 0 || self.out_position != 500
+            } else {
+                self.in_curve != 0 || self.in_position != 500
+            }
+    }
+
     /// Gain at mapped half progress of the selected individual ramp. This
     /// ordinate is independent of horizontal position and the opposite ramp.
     pub fn curve_midpoint_gain(self, out: bool) -> f64 {
@@ -155,6 +217,10 @@ impl ClipFade {
         // require no iterative work, even when sampled for the waveform.
         let c = f64::from(curve);
         let target = target * (1001.0 + c) / (1001.0 - c + 2.0 * c * target);
+        let target = match self.laws[usize::from(out)] {
+            FadeCurveLaw::Linear => target,
+            FadeCurveLaw::SmoothStep => inverse_smoothstep(target),
+        };
         if position == 500 {
             return Some(if out { 1.0 - target } else { target });
         }
@@ -213,10 +279,8 @@ impl ClipFade {
     pub fn has_shape(self) -> bool {
         self.in_start != 0
             || self.out_end_offset != 0
-            || self.in_curve != 0
-            || self.out_curve != 0
-            || self.in_position != 500
-            || self.out_position != 500
+            || self.ramp_is_curved(false)
+            || self.ramp_is_curved(true)
     }
     pub fn is_neutral(self) -> bool {
         self.fade_in == 0 && self.fade_out == 0 && self.in_start == 0 && self.out_end_offset == 0
@@ -225,14 +289,15 @@ impl ClipFade {
     pub fn reanchor(self, duration: u64) -> Result<Self, Invalid> {
         let in_start = self.in_start.min(duration.saturating_sub(1));
         let out_end = self.out_end_offset.min(duration.saturating_sub(1));
-        Self::new(
+        Ok(Self::new(
             duration,
             0,
             self.fade_in.min(duration - in_start),
             self.fade_out.min(duration - out_end),
         )?
         .with_shape(in_start, out_end, self.in_curve, self.out_curve)?
-        .with_curve_positions(self.in_position, self.out_position)
+        .with_curve_positions(self.in_position, self.out_position)?
+        .with_curve_laws(self.laws))
     }
     /// Domain knots, including both sides of silent endpoint steps.
     pub fn breakpoints(self) -> [Option<u64>; 8] {
@@ -265,6 +330,7 @@ impl ClipFade {
                 in_age as f64 / (self.fade_in - 1) as f64,
                 self.in_curve,
                 self.in_position,
+                self.laws[0],
             );
         }
         if self.fade_out > 0 && position >= out_end - self.fade_out {
@@ -275,6 +341,7 @@ impl ClipFade {
                     (out_end - 1 - position) as f64 / (self.fade_out - 1) as f64,
                     self.out_curve,
                     1000 - self.out_position,
+                    self.laws[1],
                 )
             };
         }
@@ -294,11 +361,28 @@ fn bend(t: f64, curve: i16) -> f64 {
 // slope 0.5 / min(p, 1-p), concentrating the transition near an edge rather
 // than stretching a shallow tail across the remaining fade. Center bypasses
 // retain the original law exactly. No transcendental playback operations.
-fn shaped(t: f64, curve: i16, position: u16) -> f64 {
-    if position == 500 {
-        return bend(t, curve);
+fn shaped(t: f64, curve: i16, position: u16, law: FadeCurveLaw) -> f64 {
+    let t = if position == 500 {
+        t
+    } else {
+        map_time(t, position)
+    };
+    bend(
+        match law {
+            FadeCurveLaw::Linear => t,
+            FadeCurveLaw::SmoothStep => t * t * (3.0 - 2.0 * t),
+        },
+        curve,
+    )
+}
+
+fn inverse_smoothstep(gain: f64) -> f64 {
+    // Analytic inverse, used only on the drawing/control side. Preserve the
+    // endpoints and the handle's half-progress knot exactly.
+    if gain == 0.0 || gain == 0.5 || gain == 1.0 {
+        return gain;
     }
-    bend(map_time(t, position), curve)
+    0.5 - ((1.0 - 2.0 * gain).asin() / 3.0).sin()
 }
 // Both callers bypass this mapping for centered positions.
 fn map_time(t: f64, position: u16) -> f64 {

@@ -122,7 +122,10 @@ fn proposal_preserves_actual_legacy_prefix_signed_zero_and_inactive_bank_bits() 
         original.state_version(),
         hex_devices::operator_state::OPERATOR_STATE_VERSION
     );
-    assert_eq!(original.payload().len(), 1728);
+    // Fine-Hz and pitch-keytracking each add four f32 values after the
+    // historical 1,728-byte payload; the proposal below is not a codec.
+    assert_eq!(original.payload().len(), 1760);
+    let original_bytes = original.payload().to_vec();
     assert_eq!(&original.payload()[288..292], &(-0.0f32).to_le_bytes());
     let mut proposal = payload::Payload {
         prefix: original.payload()[..380].try_into().unwrap(),
@@ -145,6 +148,7 @@ fn proposal_preserves_actual_legacy_prefix_signed_zero_and_inactive_bank_bits() 
         }
     }
     assert_eq!(copied.mode_history, proposal.mode_history);
+    assert_eq!(original.payload(), original_bytes);
     assert_eq!(
         original.state_version(),
         hex_devices::operator_state::OPERATOR_STATE_VERSION
@@ -153,6 +157,11 @@ fn proposal_preserves_actual_legacy_prefix_signed_zero_and_inactive_bank_bits() 
 
 #[test]
 fn independent_byte_count_and_overflow_boundaries_are_not_hidden() {
+    assert!(
+        size_of::<payload::HostOwner>()
+            >= size_of::<crate::mutable_instrument::MutableInstrumentTrackRuntime>(),
+        "the proposed owner must charge at least the complete actual owner header"
+    );
     let pool = payload::PoolCapacity::allocated();
     let mut input = empty(pool);
     input.base = 32 * 1024 * 1024 - pool.bytes().unwrap();
@@ -174,6 +183,8 @@ fn independent_byte_count_and_overflow_boundaries_are_not_hidden() {
         header: size_of::<payload::HostOwner>(),
         payload: 8192,
         ledgers: 128 * size_of::<crate::mutable_instrument::MutableOccurrence>(),
+        frozen: 0,
+        modulation: 0,
     };
     let owners = [owner];
     input = empty(pool);
@@ -191,6 +202,19 @@ fn independent_byte_count_and_overflow_boundaries_are_not_hidden() {
     input.active_effect_bytes = 1;
     assert_eq!(planner::plan(&input), Err(Refusal::Pair));
     input.active_effect_bytes = 0;
+    let modulation_one = [OwnerCharge {
+        modulation: 1,
+        ..owner
+    }];
+    input.active = &modulation_one;
+    assert!(planner::plan(&input).is_ok());
+    let modulation_over = [OwnerCharge {
+        modulation: 1,
+        ..owner
+    }; 256];
+    input.active = &modulation_over;
+    assert_eq!(planner::plan(&input), Err(Refusal::Pair));
+    input.active = &maximal;
     input.active_effects = 1;
     assert_eq!(planner::plan(&input), Err(Refusal::Processors));
     // The retained bank has its own declaration/count limit, independent of active.
@@ -228,6 +252,12 @@ fn independent_byte_count_and_overflow_boundaries_are_not_hidden() {
     input = empty(pool);
     input.active = &overflow_owner;
     assert_eq!(planner::plan(&input), Err(Refusal::Overflow));
+    let overflow_frozen = [OwnerCharge {
+        frozen: usize::MAX,
+        ..owner
+    }];
+    input.active = &overflow_frozen;
+    assert_eq!(planner::plan(&input), Err(Refusal::Overflow));
 }
 
 #[test]
@@ -235,7 +265,9 @@ fn actual_recipe_charge_and_owner_generation_boundary_identity_govern_admission(
     let pool = payload::PoolCapacity::allocated();
     let charge = size_of::<payload::Slot>() + payload::context_bytes();
     let limit = 2 * 1024 * 1024 / charge;
-    assert_eq!(limit, 425); // W10 authored asset metadata; unchanged 2MiB cap.
+    assert_eq!(limit, 423); // Current proposed context; unchanged 2 MiB cap.
+    assert!(limit * charge <= 2 * 1024 * 1024);
+    assert!((limit + 1) * charge > 2 * 1024 * 1024);
     let recipes: Vec<_> = (1..=limit as u64).map(recipe).collect();
     let mut input = empty(pool);
     input.recipes = &recipes;
@@ -291,137 +323,229 @@ fn actual_recipe_charge_and_owner_generation_boundary_identity_govern_admission(
     assert_eq!(planner::plan(&input), Err(Refusal::Recipes));
 }
 
-#[test]
-fn admitted_registered_inventory_and_post_handoff_ownership_are_recomposed_exactly() {
+fn check_admitted_inventory_and_handoff_ownership(shape: Shape) {
     let pool = payload::PoolCapacity::allocated();
-    let mut shapes = Vec::new();
-    for effect in [
-        "hex.utility",
-        "hex.eq8",
-        "hex.saturator",
-        "hex.compressor",
-        "hex.gate",
-        "hex.auto-pan",
-        "hex.overdrive",
-    ] {
-        shapes.push(Shape {
-            tracks: TRACKS,
-            effect,
-            effect_tracks: TRACKS,
-            returns: 0,
-            mutable: None,
-            instrument: Instrument::Analytic,
-        });
-    }
-    for kind in [
-        Instrument::Lfo,
-        Instrument::Feedback,
-        Instrument::Sine,
-        Instrument::Fm4,
-    ] {
-        shapes.push(Shape {
-            tracks: TRACKS,
-            effect: "hex.eq8",
-            effect_tracks: 0,
-            returns: 0,
-            mutable: None,
-            instrument: kind,
-        });
-    }
-    shapes.push(Shape {
-        tracks: TRACKS,
-        effect: "hex.eq8",
-        effect_tracks: TRACKS,
-        returns: 0,
-        mutable: Some((TRACKS, Instrument::Lfo)),
-        instrument: Instrument::Analytic,
-    });
-    shapes.push(Shape {
-        tracks: TRACKS,
-        effect: "hex.eq8",
-        effect_tracks: TRACKS,
-        returns: 16,
-        mutable: Some((24, Instrument::Feedback)),
-        instrument: Instrument::Analytic,
-    });
-    shapes.push(Shape {
-        tracks: TRACKS,
-        effect: "hex.eq8",
-        effect_tracks: 32,
-        returns: 16,
-        mutable: Some((16, Instrument::Feedback)),
-        instrument: Instrument::Analytic,
-    });
-    for shape in shapes {
-        let runtime = inventory::handoff(&shape).unwrap();
-        if shape.returns != 0 {
-            assert_eq!(
-                runtime.return_effect_tails.slots().iter().flatten().count(),
-                shape.returns
-            );
-        }
-        let actual = runtime.accounted_runtime_storage_bytes().unwrap();
-        let legacy = inventory::ownership(&runtime, false);
-        let recomposed = legacy.base
-            + legacy
-                .active
-                .iter()
-                .chain(&legacy.retained)
-                .map(|owner| owner.bytes().unwrap())
-                .sum::<usize>();
+    let runtime = inventory::handoff(&shape).unwrap();
+    if shape.returns != 0 {
         assert_eq!(
-            recomposed, actual,
-            "lost owned bytes for {:?}",
-            shape.instrument
+            runtime.return_effect_tails.slots().iter().flatten().count(),
+            shape.returns
         );
-        let projected = inventory::ownership(&runtime, true);
-        let recipes: Vec<_> = (1..=projected.retained_contexts.len() as u64)
-            .map(recipe)
-            .collect();
-        let input = projected.input(&recipes, pool);
-        let before = (
-            actual,
-            runtime.performance_frame(),
-            runtime.arrangement_frame(),
-            runtime.release_voice_count(),
-        );
-        let result = planner::plan(&input);
+    }
+    let actual = runtime.accounted_runtime_storage_bytes().unwrap();
+    let legacy = inventory::ownership(&runtime, false);
+    let recomposed = legacy.base
+        + legacy
+            .active
+            .iter()
+            .chain(&legacy.retained)
+            .map(|owner| owner.bytes().unwrap())
+            .sum::<usize>();
+    assert_eq!(
+        recomposed, actual,
+        "lost owned bytes for {:?}",
+        shape.instrument
+    );
+    let projected = inventory::ownership(&runtime, true);
+    let recipes: Vec<_> = (1..=projected.retained_contexts.len() as u64)
+        .map(recipe)
+        .collect();
+    let input = projected.input(&recipes, pool);
+    let before = (
+        actual,
+        runtime.performance_frame(),
+        runtime.arrangement_frame(),
+        runtime.release_voice_count(),
+    );
+    let result = planner::plan(&input);
+    let active_declared = input.active_effect_bytes
+        + input
+            .active
+            .iter()
+            .map(|owner| owner.payload + owner.modulation)
+            .sum::<usize>();
+    let retained_declared = input.retained_effect_bytes
+        + input
+            .retained
+            .iter()
+            .map(|owner| owner.payload + owner.modulation)
+            .sum::<usize>();
+    let largest_owner = input
+        .active
+        .iter()
+        .chain(input.retained)
+        .map(|owner| owner.payload)
+        .max()
+        .unwrap_or(0);
+    if active_declared > 2 * 1024 * 1024 || retained_declared > 2 * 1024 * 1024 {
+        assert!(largest_owner <= 8192);
+        assert_eq!(result, Err(Refusal::Pair));
+    } else {
         assert!(
             result.is_ok() || result == Err(Refusal::Playback),
-            "unexpected proof refusal: {result:?}"
+            "unexpected proof refusal: {result:?}; active={active_declared} retained={retained_declared} largest_owner={largest_owner}"
         );
-        assert_eq!(
-            before,
-            (
-                runtime.accounted_runtime_storage_bytes().unwrap(),
-                runtime.performance_frame(),
-                runtime.arrangement_frame(),
-                runtime.release_voice_count()
-            )
-        );
-        eprintln!(
-            "reachable proof: effect={} tracks={} returns={} instrument={:?} mutable={:?} actual={} active_pairs={} retained_pairs={} active_effects={} retained_effects={} suffixes={} contexts={} retained_contexts={} projected={result:?}",
-            shape.effect,
-            shape.effect_tracks,
-            shape.returns,
-            shape.instrument,
-            shape.mutable,
-            actual,
-            projected.active.len(),
-            projected.retained.len(),
-            projected.active_effects,
-            projected.retained_effects,
-            projected.suffixes,
-            projected.contexts.len(),
-            projected.retained_contexts.len()
-        );
-        // Force a planner refusal on a real owner; no predecessor/source mutation.
-        let mut refused = input;
-        refused.base = usize::MAX;
-        assert_eq!(planner::plan(&refused), Err(Refusal::Overflow));
-        assert_eq!(runtime.accounted_runtime_storage_bytes().unwrap(), actual);
     }
+    assert_eq!(
+        before,
+        (
+            runtime.accounted_runtime_storage_bytes().unwrap(),
+            runtime.performance_frame(),
+            runtime.arrangement_frame(),
+            runtime.release_voice_count()
+        )
+    );
+    eprintln!(
+        "reachable proof: effect={} tracks={} returns={} instrument={:?} mutable={:?} actual={} active_pairs={} retained_pairs={} active_effects={} retained_effects={} suffixes={} contexts={} retained_contexts={} projected={result:?}",
+        shape.effect,
+        shape.effect_tracks,
+        shape.returns,
+        shape.instrument,
+        shape.mutable,
+        actual,
+        projected.active.len(),
+        projected.retained.len(),
+        projected.active_effects,
+        projected.retained_effects,
+        projected.suffixes,
+        projected.contexts.len(),
+        projected.retained_contexts.len()
+    );
+    // Force a planner refusal on a real owner; no predecessor/source mutation.
+    let mut refused = input;
+    refused.base = usize::MAX;
+    assert_eq!(planner::plan(&refused), Err(Refusal::Overflow));
+    assert_eq!(runtime.accounted_runtime_storage_bytes().unwrap(), actual);
 }
+
+macro_rules! ownership_shape_case {
+    ($name:ident, $effect:expr, $effect_tracks:expr, $returns:expr, $mutable:expr, $instrument:expr) => {
+        #[test]
+        fn $name() {
+            check_admitted_inventory_and_handoff_ownership(Shape {
+                tracks: TRACKS,
+                effect: $effect,
+                effect_tracks: $effect_tracks,
+                returns: $returns,
+                mutable: $mutable,
+                instrument: $instrument,
+            });
+        }
+    };
+}
+
+ownership_shape_case!(
+    ownership_effect_utility,
+    "hex.utility",
+    TRACKS,
+    0,
+    None,
+    Instrument::Analytic
+);
+ownership_shape_case!(
+    ownership_effect_eq8,
+    "hex.eq8",
+    TRACKS,
+    0,
+    None,
+    Instrument::Analytic
+);
+ownership_shape_case!(
+    ownership_effect_saturator,
+    "hex.saturator",
+    TRACKS,
+    0,
+    None,
+    Instrument::Analytic
+);
+ownership_shape_case!(
+    ownership_effect_compressor,
+    "hex.compressor",
+    TRACKS,
+    0,
+    None,
+    Instrument::Analytic
+);
+ownership_shape_case!(
+    ownership_effect_gate,
+    "hex.gate",
+    TRACKS,
+    0,
+    None,
+    Instrument::Analytic
+);
+ownership_shape_case!(
+    ownership_effect_auto_pan,
+    "hex.auto-pan",
+    TRACKS,
+    0,
+    None,
+    Instrument::Analytic
+);
+ownership_shape_case!(
+    ownership_effect_overdrive,
+    "hex.overdrive",
+    TRACKS,
+    0,
+    None,
+    Instrument::Analytic
+);
+ownership_shape_case!(
+    ownership_instrument_lfo,
+    "hex.eq8",
+    0,
+    0,
+    None,
+    Instrument::Lfo
+);
+ownership_shape_case!(
+    ownership_instrument_feedback,
+    "hex.eq8",
+    0,
+    0,
+    None,
+    Instrument::Feedback
+);
+ownership_shape_case!(
+    ownership_instrument_sine,
+    "hex.eq8",
+    0,
+    0,
+    None,
+    Instrument::Sine
+);
+ownership_shape_case!(
+    ownership_instrument_fm4,
+    "hex.eq8",
+    0,
+    0,
+    None,
+    Instrument::Fm4
+);
+ownership_shape_case!(
+    ownership_mutable_lfo,
+    "hex.eq8",
+    TRACKS,
+    0,
+    Some((TRACKS, Instrument::Lfo)),
+    Instrument::Analytic
+);
+ownership_shape_case!(
+    ownership_returns_mutable_24,
+    "hex.eq8",
+    TRACKS,
+    16,
+    Some((24, Instrument::Feedback)),
+    Instrument::Analytic
+);
+ownership_shape_case!(
+    ownership_returns_mutable_16,
+    "hex.eq8",
+    32,
+    16,
+    Some((16, Instrument::Feedback)),
+    Instrument::Analytic
+);
 
 #[test]
 fn namespace_generation_ledger_and_retained_slot_refusals_are_independent() {
@@ -442,6 +566,8 @@ fn namespace_generation_ledger_and_retained_slot_refusals_are_independent() {
         header: size_of::<payload::HostOwner>(),
         payload: size_of::<payload::Pair>(),
         ledgers: 0,
+        frozen: 0,
+        modulation: 0,
     }];
     input = empty(pool);
     input.active = &owner;
@@ -479,8 +605,20 @@ fn refusal_on_real_admitted_track_return_and_mutable_owners_preserves_next_pcm()
         mutable: Some((16, Instrument::Feedback)),
         instrument: Instrument::Analytic,
     };
-    let mut actual = inventory::handoff(&shape).unwrap();
-    let mut twin = inventory::handoff(&shape).unwrap();
+    // Independent playback owners may share immutable revision inputs.
+    let (previous, candidate) = std::thread::scope(|scope| {
+        let candidate = scope.spawn(|| inventory::revision(&shape, false, 100));
+        let previous = inventory::revision(&shape, true, 100_000);
+        (previous, candidate.join().unwrap())
+    });
+    let (mut actual, mut twin) = std::thread::scope(|scope| {
+        let twin = scope.spawn(|| {
+            inventory::handoff_prepared(&shape, previous.clone(), candidate.clone()).unwrap()
+        });
+        let actual =
+            inventory::handoff_prepared(&shape, previous.clone(), candidate.clone()).unwrap();
+        (actual, twin.join().unwrap())
+    });
     let projected = inventory::ownership(&actual, true);
     let mut input = projected.input(&[], payload::PoolCapacity::allocated());
     input.base = usize::MAX;

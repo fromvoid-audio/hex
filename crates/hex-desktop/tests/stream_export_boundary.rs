@@ -167,11 +167,19 @@ fn verified_stem_page_miss_removes_the_entire_unpublished_batch() {
             frames: Some(1024),
             signal: ExportSignal::Stems(stems),
             control: ExportControl::default(),
+            format: hex_export::ExportFormat::Pcm16,
             overwrite: false,
         },
     );
     let error = exported(&service).result.unwrap_err();
-    assert!(error.contains("unexpected media page miss"), "{error}");
+    assert!(
+        error.message().contains("unexpected media page miss"),
+        "{error}"
+    );
+    assert!(
+        error.source_error().is_some(),
+        "streamed publisher error remains structured"
+    );
     assert!(!output.exists());
     let after: std::collections::BTreeSet<_> = fs::read_dir(&files.0)
         .unwrap()
@@ -400,6 +408,7 @@ fn assert_verified_export_matches_resident(rate: u32, grouped: bool, signal_inde
                     frames: Some(18000),
                     signal: signal.clone(),
                     control: control.clone(),
+                    format: hex_export::ExportFormat::Pcm16,
                     overwrite: false,
                 },
             );

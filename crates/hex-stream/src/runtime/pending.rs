@@ -166,7 +166,7 @@ impl PendingStreamDomain {
             {
                 reservation
                     .extents_per_role
-                    .checked_mul(6)
+                    .checked_mul(7)
                     .and_then(|n| n.checked_mul(std::mem::size_of::<crate::StreamResourceExtent>()))
                     .ok_or(StreamRuntimeError::AllocationFailed)?
             }

@@ -305,7 +305,8 @@ fn split_client_stream_case(case: StreamCase) {
                 outcome: ActionOutcome::Applied
             })
         );
-        assert!(!client.status().unwrap().playing.load(Acquire));
+        // A streamed Pause is Applied at once but plays through its fade (#4151).
+        assert!(client.status().unwrap().playing.load(Acquire));
         assert_eq!(
             client.status().unwrap().consumed_command.load(Acquire),
             pause
@@ -1220,7 +1221,12 @@ fn real_immediate_scene_waits_before_route_and_play_then_restarts_actual_clip() 
             c.render(&mut output).unwrap();
         })
     }));
-    assert_eq!(output, [[0.5; 2]; 8]);
+    // The restarted clip starts at full level while its previous instance
+    // fades out over the shared 128-frame declick.
+    let restarted: Vec<_> = (0..8)
+        .map(|frame| [0.5 + 0.5 * (128 - frame) as f32 / 128.0; 2])
+        .collect();
+    assert_eq!(output.as_slice(), restarted.as_slice());
     assert_eq!(
         control.status.stream_applied_command_prefix.load(Acquire),
         restart
@@ -1259,6 +1265,15 @@ fn real_immediate_scene_waits_before_route_and_play_then_restarts_actual_clip() 
 
 #[test]
 fn original_quantized_due_survives_pause_cancel_and_revocable_prewarm_pool_pressure() {
+    prewarm_pool_pressure(false);
+}
+
+#[test]
+fn abandoned_publication_restores_pending_launch_prewarm() {
+    prewarm_pool_pressure(true);
+}
+
+fn prewarm_pool_pressure(abandon: bool) {
     let _serial = serial();
     if !hex_engine::audio_storage_constructor_layout_supported() {
         return;
@@ -1405,7 +1420,8 @@ fn original_quantized_due_survives_pause_cancel_and_revocable_prewarm_pool_press
             c.render(&mut output[..8]).unwrap();
         })
     }));
-    assert_eq!(control.status.performance_frame.load(Acquire), 4008);
+    // The streamed Pause keeps the clock running through its fade (#4151).
+    assert_eq!(control.status.performance_frame.load(Acquire), 4016);
     data.owner_mut().unwrap().run(|c, _| {
         assert_eq!(
             c.active
@@ -1483,6 +1499,37 @@ fn original_quantized_due_survives_pause_cancel_and_revocable_prewarm_pool_press
         }
         assert!(std::time::Instant::now() < deadline);
         std::thread::yield_now();
+    }
+    if abandon {
+        zero(allocation_counter::measure(|| {
+            data.owner_mut().unwrap().run(|c, _| {
+                if let Some(ActivePublication::Eligible(active)) = c.active.as_mut() {
+                    active.publication_replaces_prewarm(&mut c.domain_pages);
+                    active.publication_abandoned();
+                }
+            })
+        }));
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            let mut pinned = false;
+            zero(allocation_counter::measure(|| {
+                data.owner_mut().unwrap().run(|c, _| {
+                    c.begin_block();
+                    if let Some(ActivePublication::Eligible(active)) = c.active.as_mut() {
+                        pinned = active
+                            .test_launch_prewarm_protected(&mut c.domain_pages, c.stream_prefix);
+                    }
+                })
+            }));
+            if pinned {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < until,
+                "abandoned publication stranded the pending launch prewarm"
+            );
+            std::thread::yield_now();
+        }
     }
     assert!(control.status.performance_frame.load(Acquire) < 4096);
     let mut crossed = false;

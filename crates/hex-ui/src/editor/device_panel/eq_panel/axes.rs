@@ -62,7 +62,7 @@ pub(super) fn frequency_axes(rate: u32) -> ResponseGraphAxes {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "ui-unit-tier"))]
 mod tests {
     use super::*;
     #[test]

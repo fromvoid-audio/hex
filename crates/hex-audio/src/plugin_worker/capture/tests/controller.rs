@@ -5,6 +5,8 @@ use hex_plugin_host::protocol::{
     ParameterConversion, ParameterPageQuery, ParameterPlainValue, ParameterText,
 };
 
+mod extension;
+
 fn query(owner: &mut NativeWorker) -> NativeWorkerControllerQuery {
     let until = Instant::now() + Duration::from_secs(3);
     loop {
@@ -214,4 +216,45 @@ fn retirement_cancels_held_controller_getter_without_normal_stop() {
         retired.failure,
         Some(hex_plugin_host::Error::Cancelled)
     ));
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn editor_seal_requires_stopped_original_worker_and_exact_completion() {
+    use hex_plugin_host::protocol::{ControllerRequest, EditorSealState};
+    const NAME: &str = "plugin_worker::capture::tests::controller::editor_seal_requires_stopped_original_worker_and_exact_completion";
+    if fixture_child(92, NAME) {
+        return;
+    }
+    let (mut owner, _callback) = NativeWorker::start_on_control(original_instance()).unwrap();
+    let (mut other, _other_callback) = NativeWorker::start_on_control(original_instance()).unwrap();
+    assert!(matches!(
+        owner.begin_controller_query_on_control(ControllerRequest::SealEditorEdits),
+        Err("native editor seal requires a stopped source")
+    ));
+    owner.revoke_on_control();
+    let until = Instant::now() + Duration::from_millis(750);
+    let request = loop {
+        match owner.begin_controller_query_on_control(ControllerRequest::SealEditorEdits) {
+            Ok(request) => break request,
+            Err("native preparation is busy" | "native controller mailbox is busy") => {}
+            Err(reason) => panic!("stopped seal admission: {reason}"),
+        }
+        assert!(Instant::now() < until);
+        thread::yield_now();
+    };
+    assert!(other.poll_controller_query_on_control(&request).is_err());
+    loop {
+        match owner.poll_controller_query_on_control(&request).unwrap() {
+            NativeWorkerControllerProgress::Pending => {}
+            NativeWorkerControllerProgress::EditorSeal(EditorSealState::Sealed) => break,
+            other => panic!("stopped seal terminal: {other:?}"),
+        }
+        assert!(Instant::now() < until);
+        thread::yield_now();
+    }
+    assert!(owner.poll_controller_query_on_control(&request).is_err());
+    assert!(owner.retire_on_control().unwrap().native.status.success());
+    other.revoke_on_control();
+    assert!(other.retire_on_control().unwrap().native.status.success());
 }

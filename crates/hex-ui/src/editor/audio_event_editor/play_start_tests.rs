@@ -6,6 +6,12 @@ fn marker_fraction(visual: &mut VisualTestContext) -> f32 {
     let marker = visual.debug_bounds("audio-play-start-marker").unwrap();
     f32::from(marker.left() - body.left()) / f32::from(body.size.width)
 }
+/// Live's unlooped region begins at its start marker: a later marker moves
+/// the Arrangement clip start later while its end keeps its project time.
+fn assert_region_starts_later(span: (u64, u64), source: &hex_project::Clip) {
+    assert_eq!(source.start() + source.duration(), span.0 + span.1);
+    assert!(source.start() > span.0, "{span:?} -> {}", source.start());
+}
 fn terminal(
     visual: &mut VisualTestContext,
     editor: &Entity<EditorView>,
@@ -25,6 +31,70 @@ fn terminal(
         std::thread::yield_now();
     }
 }
+#[gpui::test]
+fn audio_start_drag_submits_held_marker_and_escape_cancels(cx: &mut TestAppContext) {
+    use crate::editor::device_panel::tests::eq_ui_tests::graph_layout_tests::{
+        headless_status_output, status_fixture_guard,
+    };
+    use hex_session::service::PlayStartEdit;
+    use std::sync::atomic::Ordering::Release;
+
+    let _output_guard = status_fixture_guard();
+    let (_files, mut visual, editor, clip) = open(cx);
+    let (mut output, _callback) = headless_status_output();
+    let control = output.take_client().unwrap();
+    control.status().unwrap().playing.store(true, Release);
+    editor.update(&mut visual, |v, cx| {
+        v.audio = Some(crate::editor_backend::EditorAudio {
+            control,
+            sample_rate: 48_000,
+            label: "play-start audition fixture".into(),
+            spectrum_error: None,
+            mode: hex_session::DocumentAudioMode::Resident,
+        });
+        v.audio_event_editor.grid = super::super::SnapGrid::Off;
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let body = visual.debug_bounds("audio-events-waveform").unwrap();
+    let down = visual
+        .debug_bounds("audio-play-start-handle")
+        .unwrap()
+        .center();
+    let moved = point(down.x + body.size.width * 0.25, down.y);
+    let original = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().revision);
+    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(moved, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(&visual, |v, _| {
+        let target = v
+            .service
+            .held_arrangement_play_start_audition_for_test()
+            .unwrap();
+        assert_eq!(target.context.editor_revision, original);
+        assert_eq!(
+            target.edit,
+            PlayStartEdit::Audio {
+                clip,
+                position: v.audio_play_start_position().unwrap(),
+            }
+        );
+        assert_eq!(v.state.as_ref().unwrap().revision, original);
+    });
+    visual.simulate_keystrokes("escape");
+    visual.simulate_mouse_up(moved, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(&visual, |v, _| {
+        assert!(
+            v.service
+                .held_arrangement_play_start_audition_for_test()
+                .is_none()
+        );
+        assert_eq!(v.state.as_ref().unwrap().revision, original);
+    });
+    assert!(marker_fraction(&mut visual).abs() < 0.002);
+}
+
 #[gpui::test]
 fn audio_saved_start_hover_drag_delayed_ack_history_and_reopen(cx: &mut TestAppContext) {
     for scenario in ["plain", "crop", "frozen"] {
@@ -66,6 +136,10 @@ fn audio_saved_start_hover_drag_delayed_ack_history_and_reopen(cx: &mut TestAppC
             }
         }
         let before_pcm = editor.read_with(&visual, |v, _| render_accepted_event(v, clip));
+        let span = editor.read_with(&visual, |v, _| {
+            let source = v.state.as_ref().unwrap().project.clip(clip).unwrap();
+            (source.start(), source.duration())
+        });
         let (before, first, last, cursor, expected) = editor.update(&mut visual, |v, cx| {
             let (_, root, _) = v.event_context().unwrap();
             v.audio_event_editor.grid = super::super::SnapGrid::Off;
@@ -158,16 +232,12 @@ fn audio_saved_start_hover_drag_delayed_ack_history_and_reopen(cx: &mut TestAppC
                 .root_frame_at(position, state.project.tempo_map())
                 .unwrap();
             let skip = usize::try_from(root_start - root_first).unwrap();
+            assert_region_starts_later(span, source);
             let pcm = render_accepted_event(v, clip);
-            let remaining = before_pcm.len() - skip;
             assert_eq!(
-                &pcm[..remaining],
+                &pcm[..],
                 &before_pcm[skip..],
-                "prepared worker audio starts at the displayed source point: {scenario}"
-            );
-            assert!(
-                pcm[remaining..].iter().all(|frame| *frame == [0.0; 2]),
-                "once tail is silent: {scenario}"
+                "prepared audio starts at the marker and keeps its project time: {scenario}"
             );
             assert!(matches!(
                 v.last_enqueued_edit,
@@ -419,7 +489,7 @@ fn frozen_start_outside_release_retains_a_readable_last_source_frame(cx: &mut Te
         assert!(v.error.is_none(), "{:?}", v.error);
         let state = v.state.as_ref().unwrap();
         let source = state.project.clip(clip).unwrap();
-        assert_eq!((source.start(), source.duration()), span);
+        assert_region_starts_later(span, source);
         let root = source.audio_event_root();
         let end = root
             .root_frame_at(root.view_end, state.project.tempo_map())
@@ -507,7 +577,7 @@ fn live_musical_start_keeps_grabbed_marker_visible_through_ack_and_history(
     let after = editor.read_with(&visual, |v, _| {
         let state = v.state.as_ref().unwrap();
         let source = state.project.clip(clip).unwrap();
-        assert_eq!((source.start(), source.duration()), span);
+        assert_region_starts_later(span, source);
         state.project.snapshot()
     });
     editor.update(&mut visual, |v, _| assert!(v.enqueue(Request::Undo)));
@@ -585,7 +655,7 @@ fn live_musical_outside_start_release_keeps_a_readable_source_quantum(cx: &mut T
         assert!(v.error.is_none(), "{:?}", v.error);
         let state = v.state.as_ref().unwrap();
         let source = state.project.clip(clip).unwrap();
-        assert_eq!((source.start(), source.duration()), span);
+        assert_region_starts_later(span, source);
         let projection = AudioViewProjection::new(source, state.project.tempo_map()).unwrap();
         assert_eq!(projection.play_start_position().unwrap(), Some(held));
         assert!(!projection.has_subframe_intro());
@@ -597,11 +667,10 @@ fn live_musical_outside_start_release_keeps_a_readable_source_quantum(cx: &mut T
             "the first placed sample must remain readable"
         );
         let first_end = projection.occurrence(0).unwrap().destination_end;
-        assert_eq!(first_end - source.start(), 1);
-        let pcm = render_accepted_event(v, clip);
-        assert!(
-            pcm[1..].iter().all(|frame| *frame == [0.0; 2]),
-            "prepared once tail must remain silent"
+        assert_eq!(
+            first_end,
+            source.start() + source.duration(),
+            "the moved region reads through to its fixed end"
         );
         state.project.snapshot()
     });

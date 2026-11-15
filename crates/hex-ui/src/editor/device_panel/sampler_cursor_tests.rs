@@ -1,7 +1,10 @@
 use super::*;
+#[cfg(feature = "ui-test-support")]
 use gpui::{Modifiers, TestAppContext, VisualTestContext, point, size};
+#[cfg(feature = "ui-test-support")]
 use hex_project::{Command, Created, Editor, Project};
 
+#[cfg(feature = "ui-test-support")]
 pub(super) fn fixture(
     cx: &mut TestAppContext,
     frames: u64,
@@ -71,6 +74,7 @@ pub(super) fn fixture(
     (handle, editor, track, device)
 }
 
+#[cfg(all(test, not(feature = "ui-test-support")))]
 #[test]
 fn sampler_cursor_original_frame_mapping_bounds_and_time() {
     for width in [1.0, 113.5, 1200.0] {
@@ -96,6 +100,7 @@ fn sampler_cursor_original_frame_mapping_bounds_and_time() {
     );
 }
 
+#[cfg(all(test, feature = "ui-test-support"))]
 #[gpui::test]
 fn sampler_cursor_clicks_original_frames_without_project_or_audio_edits(cx: &mut TestAppContext) {
     let (handle, editor, _, _) = fixture(cx, 44_100, true);
@@ -164,6 +169,7 @@ fn sampler_cursor_clicks_original_frames_without_project_or_audio_edits(cx: &mut
     });
 }
 
+#[cfg(all(test, feature = "ui-test-support"))]
 #[gpui::test]
 fn sampler_cursor_is_retired_on_source_owner_and_generation_changes(cx: &mut TestAppContext) {
     let (handle, editor, track, _device) = fixture(cx, 1, false);
@@ -235,6 +241,7 @@ fn sampler_cursor_is_retired_on_source_owner_and_generation_changes(cx: &mut Tes
     }
 }
 
+#[cfg(feature = "ui-test-support")]
 pub(super) fn copy_fixture_state(state: &ViewState) -> ViewState {
     ViewState {
         canonical_audio_source: None,
@@ -254,6 +261,7 @@ pub(super) fn copy_fixture_state(state: &ViewState) -> ViewState {
     }
 }
 
+#[cfg(all(test, feature = "ui-test-support"))]
 #[gpui::test]
 fn sampler_cursor_source_replacement_undo_and_stale_click(cx: &mut TestAppContext) {
     let (handle, editor, _, device) = fixture(cx, 441, false);

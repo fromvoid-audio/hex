@@ -1,4 +1,93 @@
 use super::*;
+
+#[test]
+fn retarget_accepts_live_native_and_legacy_feedback_and_lfo_history() {
+    for (lfo, native) in [(false, false), (true, false), (false, true), (true, true)] {
+        let mut settings = crate::operator_state::tests::legacy_settings();
+        settings.feedback[0] = 0.2;
+        if lfo {
+            settings.lfo.0[0] = 1;
+            settings.lfo.0[5] = 0.2f32.to_bits();
+        }
+        let configuration = settings.prepare_configuration(48_000).unwrap();
+        let table = crate::shared_sine_table();
+        let mut source = if native {
+            Factory::new(settings, configuration.clone(), table, 48_000)
+                .unwrap()
+                .create_runtime()
+        } else if lfo {
+            super::super::lfo_runtime::prepare_factory(
+                &settings,
+                configuration.clone(),
+                48_000,
+                table,
+            )
+            .unwrap()
+            .unwrap()
+            .create_runtime()
+        } else {
+            super::super::feedback_runtime::prepare_factory(
+                &settings,
+                configuration.clone(),
+                48_000,
+                table,
+            )
+            .unwrap()
+            .unwrap()
+            .create_runtime()
+        };
+        let target = Factory::new(settings, configuration, table, 48_000).unwrap();
+        let mut next = target.create_runtime();
+        let proof = Target(target.configuration.configuration_id());
+        assert!(next.can_retarget_history_from(source.as_ref(), &proof));
+        source.process_block(
+            &[
+                NativeInstrumentEvent::NoteOn {
+                    frame_offset: 0,
+                    occurrence_id: 42,
+                    pitch: 60,
+                    velocity: 100,
+                },
+                NativeInstrumentEvent::NoteOn {
+                    frame_offset: 0,
+                    occurrence_id: 43,
+                    pitch: 64,
+                    velocity: 80,
+                },
+                NativeInstrumentEvent::NoteOff {
+                    frame_offset: 40,
+                    occurrence_id: 43,
+                },
+            ],
+            &mut [[0.0; 2]; 80],
+            &hex_lattice::EMPTY_DEVICE_RESOURCES,
+        );
+        assert!(!next.can_retarget_history_from(
+            source.as_ref(),
+            &Target(target.configuration.configuration_id() ^ 1)
+        ));
+        assert!(next.can_retarget_history_from(source.as_ref(), &proof));
+        let expected: Vec<_> = Legacy::read(source.as_ref())
+            .unwrap()
+            .voices()
+            .filter(|v| v.id != 0)
+            .collect();
+        next.retarget_history_from(source.as_ref(), &proof);
+        let actual = next.as_any().downcast_ref::<Runtime>().unwrap();
+        for (a, b) in expected.iter().zip(actual.voices.iter()) {
+            assert_eq!(
+                (a.id, a.age, a.gate, a.phases, a.previous),
+                (b.id, b.age, b.gate, b.phases, b.previous)
+            );
+        }
+        assert_eq!(expected.len(), 2);
+        let mut source_audio = [[0.0; 2]; 64];
+        let mut target_audio = [[0.0; 2]; 64];
+        source.process_block(&[], &mut source_audio, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+        next.process_block(&[], &mut target_audio, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+        assert_eq!(source_audio, target_audio);
+    }
+}
 #[test]
 fn production_series_matches_independent_sum_and_strict_nyquist() {
     let mut settings =
@@ -369,6 +458,7 @@ fn tuning_retargets_held_and_released_voice_steps_without_resetting_phase_or_fee
             .tuning
             .patch(ParameterId::from_static(66), ParameterValue::Float(170.0))
             .unwrap();
+        settings.pitch_keytrack = keytrack::Settings::from_fixed(settings.tuning.fixed_flags());
         if lfo {
             settings.lfo.0[0] = 1;
             settings.lfo.0[5] = 0.2f32.to_bits();
@@ -405,6 +495,8 @@ fn tuning_retargets_held_and_released_voice_steps_without_resetting_phase_or_fee
         let proof = Target(target.configuration.configuration_id());
         let mut next = target.create_runtime();
         assert!(!next.can_copy_history_from(old.as_ref()));
+        let wrong_proof = Target(target.configuration.configuration_id() ^ 1);
+        assert!(!next.can_retarget_history_from(old.as_ref(), &wrong_proof));
         assert!(next.can_retarget_history_from(old.as_ref(), &proof));
         next.retarget_history_from(old.as_ref(), &proof);
         let a = old.as_any().downcast_ref::<Runtime>().unwrap();
@@ -455,10 +547,11 @@ fn tuning_retargets_held_and_released_voice_steps_without_resetting_phase_or_fee
                 (c.id, c.age, c.gate, c.phases, c.previous)
             );
         }
-        let invalid = make(settings, 30000.0);
-        let refused = invalid.create_runtime();
-        let proof = Target(invalid.configuration.configuration_id());
-        assert!(!refused.can_retarget_history_from(next.as_ref(), &proof));
+        // Oscillators above nyquist are silenced, not refused.
+        let silenced = make(settings, 30000.0);
+        let admitted = silenced.create_runtime();
+        let proof = Target(silenced.configuration.configuration_id());
+        assert!(admitted.can_retarget_history_from(next.as_ref(), &proof));
         let mut before = [[0.0; 2]; 137];
         let mut expected = before;
         let mut exact = last.create_runtime();
@@ -533,4 +626,52 @@ fn builtin_and_custom_spectra_transition_matches_independent_weighted_output() {
             }
         }
     }
+}
+
+#[test]
+fn quality_phase_advance_preserves_odd_steps_and_wrap_across_partitions() {
+    let mut settings = super::super::tests::legacy_settings();
+    settings.global = global::Settings::default();
+    let configuration = settings.prepare_configuration(48_000).unwrap();
+    let factory =
+        Factory::new(settings, configuration, crate::shared_sine_table(), 48_000).unwrap();
+    let mut runtime = Runtime {
+        factory: factory.clone(),
+        voices: [Voice::default(); VOICES],
+        source: factory.target,
+        elapsed: 0,
+        frames: 1,
+        parameters: None,
+        filter: factory.filter,
+        phase: (0.0, 0),
+        local_frame: 0,
+        ledger: Ledger::default(),
+        expression: [0.0; 3],
+    };
+    let note = NativeInstrumentEvent::NoteOn {
+        frame_offset: 0,
+        occurrence_id: 1,
+        pitch: 60,
+        velocity: 127,
+    };
+    runtime.process_block(
+        &[note],
+        &mut [[0.0; 2]; 1],
+        &hex_lattice::EMPTY_DEVICE_RESOURCES,
+    );
+    let steps = [1, 2, 13, u64::MAX - 1];
+    let initial = [u64::MAX, u64::MAX - 2, 5, u64::MAX - 5];
+    runtime.voices[0].pitch_steps = steps;
+    runtime.voices[0].phases = initial;
+    for count in [1, 17, 111] {
+        runtime.process_block(
+            &[],
+            &mut vec![[0.0; 2]; count],
+            &hex_lattice::EMPTY_DEVICE_RESOURCES,
+        );
+    }
+    assert_eq!(
+        runtime.voices[0].phases,
+        std::array::from_fn(|i| { initial[i].wrapping_add(steps[i].wrapping_mul(129)) })
+    );
 }

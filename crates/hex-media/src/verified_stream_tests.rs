@@ -288,6 +288,17 @@ fn verified_reader_handles_page_crossing_frames_and_resample_halos() {
     )
     .expect("direct conversion oracle");
     assert_eq!(converted, direct);
+    let mut tracked = reader.track_complete_verification(1024).unwrap();
+    converted.fill([0.0; 2]);
+    plan.render_verified_coverage_window(
+        &mut tracked,
+        output_start,
+        &mut converted,
+        &mut source_scratch,
+    )
+    .unwrap();
+    assert_eq!(converted, direct);
+    tracked.finish(|| false).unwrap();
 }
 
 #[test]
@@ -591,4 +602,307 @@ fn sha256_backend_preserves_legacy_bytes_and_hex_across_padding_and_page_boundar
             assert_eq!(current, expected, "current length {length}, chunk {width}");
         }
     }
+}
+
+/// Ten raw pages of 16-bit stereo PCM, header in the first page.
+fn ten_page_fixture() -> (TempFile, Vec<[i16; 2]>) {
+    let frames: Vec<[i16; 2]> = (0..(10 * PAGE_BYTES / 4 - 16))
+        .map(|index| [index as i16, (index as i16).wrapping_neg()])
+        .collect();
+    (TempFile::create(&pcm16_wav(&frames, false)), frames)
+}
+
+fn reopen(
+    path: &Path,
+    limits: VerifiedWavReaderLimits,
+    manifest: &crate::VerifiedWavManifest,
+    cancelled: bool,
+) -> Result<VerifiedWavReader, ImportError> {
+    VerifiedWavReader::open_verified_with_cancel(path, limits, manifest.clone(), || cancelled)
+}
+
+#[test]
+fn complete_coverage_checks_only_remaining_pages() {
+    let (fixture, _) = ten_page_fixture();
+    let mut reader = VerifiedWavReader::open(fixture.path(), limits(64)).unwrap();
+    let before = reader.raw_page_reads();
+    assert!(matches!(
+        reader.track_complete_verification(9),
+        Err(ImportError::LimitExceeded("verified page coverage bytes"))
+    ));
+    assert_eq!(reader.raw_page_reads(), before);
+    let mut coverage = reader.track_complete_verification(1024).unwrap();
+    let mut output = [[0.0; 2]; 4];
+    assert_eq!(
+        coverage
+            .read_frames_into_with_cancel(0, &mut output, || false)
+            .unwrap(),
+        4
+    );
+    assert_eq!(
+        coverage
+            .read_frames_into_with_cancel((2 * PAGE_BYTES / 4) as u64, &mut output, || false)
+            .unwrap(),
+        4
+    );
+    coverage.finish(|| false).unwrap();
+    // Header is reread on the second request; the two distinct checked pages
+    // need not be reread during completion, while the other eight do.
+    assert_eq!(reader.raw_page_reads() - before, 11);
+}
+
+#[test]
+fn complete_coverage_refuses_unread_non_audio_page_with_restored_mtime() {
+    let mut bytes = pcm16_wav(&[[123, -456]; 64], false);
+    push_chunk(&mut bytes, b"JUNK", &vec![0x5a; 2 * PAGE_BYTES]);
+    let riff_len = u32::try_from(bytes.len() - 8).unwrap();
+    bytes[4..8].copy_from_slice(&riff_len.to_le_bytes());
+    let fixture = TempFile::create(&bytes);
+    let mut reader = VerifiedWavReader::open(fixture.path(), limits(64)).unwrap();
+    let mut coverage = reader.track_complete_verification(1024).unwrap();
+    let mut output = [[0.0; 2]; 4];
+    coverage
+        .read_frames_into_with_cancel(0, &mut output, || false)
+        .unwrap();
+    let mut file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(fixture.path())
+        .unwrap();
+    let modified = file.metadata().unwrap().modified().unwrap();
+    file.seek(SeekFrom::Start(PAGE_BYTES as u64 + 16)).unwrap();
+    file.write_all(&[0x99]).unwrap();
+    set_modified(&file, modified);
+    assert!(matches!(
+        coverage.finish(|| false),
+        Err(ImportError::SourceChanged)
+    ));
+}
+
+#[test]
+fn complete_coverage_cancellation_and_metadata_changes_refuse() {
+    let (fixture, _) = ten_page_fixture();
+    let mut reader = VerifiedWavReader::open(fixture.path(), limits(64)).unwrap();
+    let mut failed = reader.track_complete_verification(1024).unwrap();
+    let mut output = [[9.0; 2]; 4];
+    assert!(matches!(
+        failed.read_frames_into_with_cancel(0, &mut output, || true),
+        Err(ImportError::Cancelled)
+    ));
+    assert_eq!(output, [[0.0; 2]; 4]);
+    assert!(matches!(
+        failed.finish(|| false),
+        Err(ImportError::Invalid("complete verification pass failed"))
+    ));
+    assert!(matches!(
+        reader
+            .track_complete_verification(1024)
+            .unwrap()
+            .finish(|| true),
+        Err(ImportError::Cancelled)
+    ));
+    let polls = std::cell::Cell::new(0);
+    assert!(matches!(
+        reader
+            .track_complete_verification(1024)
+            .unwrap()
+            .finish(|| {
+                let next = polls.get() + 1;
+                polls.set(next);
+                next >= 4
+            }),
+        Err(ImportError::Cancelled)
+    ));
+    assert!(polls.get() >= 4);
+    let coverage = reader.track_complete_verification(1024).unwrap();
+    let file = OpenOptions::new().write(true).open(fixture.path()).unwrap();
+    file.set_len(file.metadata().unwrap().len() - 1).unwrap();
+    assert!(matches!(
+        coverage.finish(|| false),
+        Err(ImportError::SourceChanged)
+    ));
+}
+
+#[cfg(feature = "test-support")]
+#[test]
+fn complete_coverage_io_failure_requires_a_new_pass() {
+    let (fixture, _) = ten_page_fixture();
+    let mut reader = VerifiedWavReader::open(fixture.path(), limits(64)).unwrap();
+    reader.fail_page_read_after(0);
+    let coverage = reader.track_complete_verification(1024).unwrap();
+    assert!(matches!(coverage.finish(|| false), Err(ImportError::Io(_))));
+    reader.fail_page_read_after(0);
+    let mut coverage = reader.track_complete_verification(1024).unwrap();
+    let mut output = [[9.0; 2]; 4];
+    assert!(matches!(
+        coverage.read_frames_into_with_cancel(0, &mut output, || false),
+        Err(ImportError::Io(_))
+    ));
+    assert_eq!(output, [[0.0; 2]; 4]);
+    assert!(matches!(
+        coverage.finish(|| false),
+        Err(ImportError::Invalid("complete verification pass failed"))
+    ));
+    reader
+        .track_complete_verification(1024)
+        .unwrap()
+        .finish(|| false)
+        .unwrap();
+}
+
+#[test]
+fn reopening_under_a_captured_manifest_reads_only_header_pages() {
+    let (fixture, frames) = ten_page_fixture();
+    let full = VerifiedWavReader::open(fixture.path(), limits(64)).expect("full open");
+    assert_eq!(full.manifest().page_digests().len(), 10);
+    assert!(full.raw_page_reads() >= 10, "a full open hashes every page");
+    let mut reused =
+        reopen(fixture.path(), limits(64), full.manifest(), false).expect("reuse open");
+    assert_eq!(
+        reused.raw_page_reads(),
+        1,
+        "only the header page is read and verified"
+    );
+    assert_eq!(reused.fingerprint(), full.fingerprint());
+    assert_eq!(reused.source_frames(), full.source_frames());
+    assert_eq!(reused.manifest(), full.manifest());
+    // Data pages are still verified lazily: a far window reads its own page.
+    let tail = &frames[frames.len() - 4..];
+    let mut output = [[0.0; 2]; 4];
+    let start = frames.len() as u64 - 4;
+    assert_eq!(reused.read_frames_into(start, &mut output).unwrap(), 4);
+    for (decoded, [left, right]) in output.iter().zip(tail) {
+        assert_eq!(
+            *decoded,
+            [f32::from(*left) / 32_768.0, f32::from(*right) / 32_768.0]
+        );
+    }
+    assert_eq!(
+        reused.raw_page_reads(),
+        3,
+        "header page plus the window page"
+    );
+}
+
+#[test]
+fn a_changed_file_refuses_a_captured_manifest() {
+    let (fixture, _) = ten_page_fixture();
+    let full = VerifiedWavReader::open(fixture.path(), limits(64)).expect("full open");
+    let manifest = full.manifest().clone();
+    drop(full);
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(fixture.path())
+        .expect("open for mutation");
+    let original = file.metadata().unwrap().modified().unwrap();
+    // A later modification time alone refuses reuse.
+    set_modified(&file, original + std::time::Duration::from_secs(5));
+    assert!(matches!(
+        reopen(fixture.path(), limits(64), &manifest, false),
+        Err(ImportError::SourceChanged)
+    ));
+    // A changed length refuses reuse even with the captured time restored.
+    file.set_len(manifest.file_len() - 4).unwrap();
+    set_modified(&file, original);
+    assert!(matches!(
+        reopen(fixture.path(), limits(64), &manifest, false),
+        Err(ImportError::SourceChanged)
+    ));
+}
+
+#[test]
+fn identity_preserving_edit_passes_reuse_open_but_fails_its_page_read() {
+    let (fixture, frames) = ten_page_fixture();
+    let manifest = VerifiedWavReader::open(fixture.path(), limits(64))
+        .expect("full open")
+        .manifest()
+        .clone();
+    let mut file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(fixture.path())
+        .expect("open for mutation");
+    let original = file.metadata().unwrap().modified().unwrap();
+    // Edit one sample in the last page, keeping length and modification time.
+    file.seek(SeekFrom::Start(9 * PAGE_BYTES as u64 + 8))
+        .unwrap();
+    file.write_all(&[0x55, 0x55]).unwrap();
+    set_modified(&file, original);
+    // Documented residual risk: identical length and mtime pass the open...
+    let mut reader = reopen(fixture.path(), limits(64), &manifest, false)
+        .expect("an identity-preserving edit is not visible at open");
+    // ...unchanged pages still serve, and the edited page is refused on read.
+    let mut early = [[0.0; 2]; 4];
+    assert_eq!(reader.read_frames_into(0, &mut early).unwrap(), 4);
+    let mut late = [[9.0; 2]; 4];
+    assert!(matches!(
+        reader.read_frames_into(frames.len() as u64 - 4, &mut late),
+        Err(ImportError::SourceChanged)
+    ));
+    assert_eq!(late, [[0.0; 2]; 4]);
+}
+
+#[test]
+fn reuse_open_keeps_manifest_limits_and_cancellation() {
+    let (fixture, _) = ten_page_fixture();
+    let manifest = VerifiedWavReader::open(fixture.path(), limits(64))
+        .expect("full open")
+        .manifest()
+        .clone();
+    let tight = VerifiedWavReaderLimits::new(limits(64).reader, manifest.manifest_bytes() - 1);
+    assert!(matches!(
+        reopen(fixture.path(), tight, &manifest, false),
+        Err(ImportError::LimitExceeded("verified page manifest bytes"))
+    ));
+    assert!(matches!(
+        reopen(fixture.path(), limits(64), &manifest, true),
+        Err(ImportError::Cancelled)
+    ));
+}
+
+#[cfg(feature = "test-support")]
+#[test]
+fn generic_read_failure_clears_decoded_prefix_and_allows_verified_retry() {
+    let frames = (0_i16..20_000)
+        .map(|sample| [sample, -sample])
+        .collect::<Vec<_>>();
+    let file = TempFile::create(&pcm16_wav(&frames, false));
+    let mut reader = VerifiedWavReader::open(file.path(), limits(8192)).unwrap();
+    let expected = frames[10_000..18_192]
+        .iter()
+        .map(|frame| frame.map(|sample| f32::from(sample) / 32768.0))
+        .collect::<Vec<_>>();
+    let mut output = vec![[42.0; 2]; expected.len()];
+    assert_eq!(
+        reader.read_frames_into(10_000, &mut output).unwrap(),
+        expected.len()
+    );
+    assert_eq!(output, expected);
+    // Header and the first three decoded batches fit in the first verified
+    // page; the next actual page read fails after a nonzero decoded prefix.
+    reader.fail_page_read_after(1);
+    output.fill([42.0; 2]);
+    let before = reader.raw_page_reads();
+    assert!(
+        matches!(reader.read_frames_into(10_000, &mut output), Err(ImportError::Io(error)) if error.kind() == std::io::ErrorKind::Other)
+    );
+    assert_eq!(reader.raw_page_reads() - before, 1);
+    assert!(output.iter().all(|frame| *frame == [0.0; 2]));
+    assert_eq!(
+        reader.read_frames_into(10_000, &mut output).unwrap(),
+        expected.len()
+    );
+    assert_eq!(
+        output, expected,
+        "the one-shot error leaves verified retry intact"
+    );
+    reader.fail_page_read_after(0);
+    reader.clear_page_read_failure();
+    output.fill([42.0; 2]);
+    assert_eq!(
+        reader.read_frames_into(10_000, &mut output).unwrap(),
+        expected.len()
+    );
+    assert_eq!(output, expected, "a cleared plan leaves the reader intact");
 }

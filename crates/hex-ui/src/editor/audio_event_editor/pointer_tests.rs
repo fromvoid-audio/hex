@@ -103,7 +103,7 @@ fn fixture(cx: &mut TestAppContext, kind: &str) -> Fixture {
                 .debug_bounds("audio-event-fade-out-top-1")
                 .unwrap()
                 .center(),
-            CursorStyle::ResizeLeftRight,
+            CursorStyle::Arrow,
         ),
         _ => unreachable!(),
     };
@@ -141,7 +141,14 @@ fn held_event_gestures_isolate_other_input_and_finish_outside(cx: &mut TestAppCo
             outside,
             cursor,
         } = fixture(cx, kind);
-        visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_down(
+            down,
+            MouseButton::Left,
+            Modifiers {
+                alt: kind == "gain",
+                ..Modifiers::default()
+            },
+        );
         editor.read_with(&visual, |v, _| {
             let gesture = v
                 .audio_event_editor
@@ -153,8 +160,8 @@ fn held_event_gestures_isolate_other_input_and_finish_outside(cx: &mut TestAppCo
                     (kind, gesture.kind),
                     ("start", Kind::PlayStart { .. })
                         | ("select", Kind::Select)
-                        | ("move", Kind::Move(_))
-                        | ("range", Kind::RangeMove { .. })
+                        | ("move", Kind::Move(_) | Kind::FreeMove { .. })
+                        | ("range", Kind::RangeMove { .. } | Kind::FreeRangeMove { .. })
                         | ("leading", Kind::Leading(_))
                         | ("trailing", Kind::Trailing(_))
                         | ("fade", Kind::Fade(_))

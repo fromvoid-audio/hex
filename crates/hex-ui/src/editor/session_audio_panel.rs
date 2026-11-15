@@ -1,11 +1,15 @@
 //! Compact source-window and cycle controls for the selected Console audio cell.
 //! The waveform also shows the accepted Session playback position of that cell.
+#[path = "session_audio_panel/playhead.rs"]
+mod playhead;
+
 use super::EditorView;
 use crate::theme;
 use gpui::{Context, Div, ElementId, Stateful, div, prelude::*, px, relative, rgb};
 use hex_audio::prepared::SessionRouteOwner;
 use hex_project::{AssetId, ClipId, Command, SessionAudioClip, SessionCellContent, TrackId};
 use hex_session::CachedWaveform;
+use playhead::playhead_fraction;
 use std::ops::Range;
 
 const WAVEFORM_COLUMNS: usize = 48;
@@ -245,27 +249,6 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> Optio
         row = row.child(bars);
     }
     Some(row)
-}
-
-/// Fraction of the displayed `source_start..source_end` window heard at
-/// `performance_frame` for a cell launched at `launch_frame`, both on the
-/// performance clock in project frames. None before the launch, after a
-/// one-shot ends, or where a loop cycle starts before the displayed window.
-fn playhead_fraction(
-    clip: &SessionAudioClip,
-    launch_frame: u64,
-    performance_frame: u64,
-) -> Option<f32> {
-    let elapsed = performance_frame.checked_sub(launch_frame)?;
-    let frame = clip.source_frame_at(elapsed)?;
-    let span = clip
-        .source_end()
-        .checked_sub(clip.source_start())
-        .filter(|span| *span > 0)?;
-    let offset = frame
-        .checked_sub(clip.source_start())
-        .filter(|offset| *offset < span)?;
-    Some((offset as f64 / span as f64) as f32)
 }
 
 impl EditorView {
@@ -611,7 +594,7 @@ fn adjusted_source_range(
 }
 
 fn waveform_bars(waveform: &CachedWaveform, start: u64, end: u64) -> Vec<f32> {
-    let source_frames = waveform.source_frames;
+    let source_frames = waveform.source_frames();
     let start = usize::try_from(start)
         .unwrap_or(usize::MAX)
         .min(source_frames);
@@ -619,7 +602,7 @@ fn waveform_bars(waveform: &CachedWaveform, start: u64, end: u64) -> Vec<f32> {
         .unwrap_or(usize::MAX)
         .min(source_frames)
         .max(start);
-    if start == end || source_frames == 0 || waveform.bins.is_empty() {
+    if start == end || source_frames == 0 || waveform.bins().is_empty() {
         return vec![0.0; WAVEFORM_COLUMNS];
     }
     (0..WAVEFORM_COLUMNS)
@@ -633,7 +616,7 @@ fn waveform_bars(waveform: &CachedWaveform, start: u64, end: u64) -> Vec<f32> {
                 .min(end);
             let bins = bin_range(waveform, left, right);
             waveform
-                .bins
+                .bins()
                 .get(bins)
                 .unwrap_or(&[])
                 .iter()
@@ -650,14 +633,14 @@ fn fraction(length: usize, numerator: usize, denominator: usize) -> usize {
 }
 
 fn bin_range(waveform: &CachedWaveform, start: usize, end: usize) -> Range<usize> {
-    let start = start.min(waveform.source_frames);
-    let end = end.min(waveform.source_frames).max(start);
-    let count = waveform.bins.len();
-    if start == end || count == 0 || waveform.source_frames == 0 {
+    let start = start.min(waveform.source_frames());
+    let end = end.min(waveform.source_frames()).max(start);
+    let count = waveform.bins().len();
+    if start == end || count == 0 || waveform.source_frames() == 0 {
         return 0..0;
     }
-    let width = waveform.source_frames / count;
-    let extra = waveform.source_frames % count;
+    let width = waveform.source_frames() / count;
+    let extra = waveform.source_frames() % count;
     let wide_frames = (width + 1).saturating_mul(extra);
     let at = |frame: usize| {
         if frame < wide_frames {
@@ -669,262 +652,12 @@ fn bin_range(waveform: &CachedWaveform, start: usize, end: usize) -> Range<usize
     at(start).min(count)..(at(end - 1) + 1).min(count)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "ui-test-support"))]
 mod tests {
-    use super::{
-        SourceEdge, SourceWindow, WAVEFORM_COLUMNS, adjusted_source_range, bin_range,
-        playhead_fraction, source_step, source_window_is_current, waveform_bars,
-    };
-    #[cfg(feature = "ui-test-support")]
     use gpui::{AnyWindowHandle, AppContext, Empty, TestAppContext, VisualTestContext, px};
-    use hex_project::{Command, Created, Editor, Project, SessionCellContent};
-    use hex_session::{CachedPeak, CachedWaveform};
-    #[cfg(feature = "ui-test-support")]
+    use hex_project::{Command, Editor, Project, SessionCellContent};
     use std::sync::Arc;
 
-    #[test]
-    fn source_waveform_is_cropped_to_the_half_open_one_shot_window() {
-        let waveform = CachedWaveform::from_peaks(
-            9,
-            (0..9)
-                .map(|index| {
-                    let value = if (3..7).contains(&index) { 0.75 } else { 0.0 };
-                    [
-                        CachedPeak {
-                            min: -value,
-                            max: value,
-                        },
-                        CachedPeak { min: 0.0, max: 0.0 },
-                    ]
-                })
-                .collect(),
-        )
-        .expect("valid waveform fixture");
-        let bars = waveform_bars(&waveform, 3, 7);
-        assert_eq!(bars.len(), WAVEFORM_COLUMNS);
-        assert!(bars.iter().all(|value| *value == 0.75));
-        assert_eq!(bin_range(&waveform, 3, 7), 3..7);
-        assert!(
-            waveform_bars(&waveform, 7, 7)
-                .iter()
-                .all(|value| *value == 0.0)
-        );
-    }
-
-    #[test]
-    fn source_nudges_keep_the_half_open_window_inside_the_asset() {
-        assert_eq!(
-            adjusted_source_range(1, 10, 10, SourceEdge::StartEarlier, 1),
-            (0, 10)
-        );
-        assert_eq!(
-            adjusted_source_range(1, 10, 10, SourceEdge::StartLater, 1),
-            (2, 10)
-        );
-        assert_eq!(
-            adjusted_source_range(1, 10, 10, SourceEdge::EndEarlier, 1),
-            (1, 9)
-        );
-        assert_eq!(
-            adjusted_source_range(1, 10, 10, SourceEdge::EndLater, 1),
-            (1, 10)
-        );
-        assert_eq!(source_step(48_000, false), 48);
-        assert_eq!(source_step(44_100, false), 44);
-        assert_eq!(source_step(192_000, true), 1);
-        assert_eq!(source_step(1, false), 1);
-        assert_eq!(
-            adjusted_source_range(10, 20, 100, SourceEdge::StartLater, 48),
-            (19, 20)
-        );
-        assert_eq!(
-            adjusted_source_range(10, 20, 100, SourceEdge::EndEarlier, 48),
-            (10, 11)
-        );
-        assert_eq!(
-            adjusted_source_range(10, 20, 100, SourceEdge::EndLater, u64::MAX),
-            (10, 100)
-        );
-    }
-
-    #[test]
-    fn source_controls_reject_stale_generation_revision_or_selection() {
-        let mut editor = Editor::new(Project::new(48_000).expect("project"), 8).expect("editor");
-        let track = match editor
-            .execute(Command::AddTrack {
-                name: "audio".into(),
-            })
-            .expect("audio track")
-        {
-            Created::Track(id) => id,
-            _ => panic!("track"),
-        };
-        let scene = match editor
-            .execute(Command::AddScene {
-                name: "scene".into(),
-            })
-            .expect("scene")
-        {
-            Created::Scene(id) => id,
-            _ => panic!("scene"),
-        };
-        let asset = match editor
-            .execute(Command::AddAsset {
-                path: "source.wav".into(),
-                sample_rate: 48_000,
-                frames: 32,
-            })
-            .expect("asset")
-        {
-            Created::Asset(id) => id,
-            _ => panic!("asset"),
-        };
-        let clip = match editor
-            .execute(Command::CreateSessionAudioClip {
-                track,
-                scene,
-                name: "audio".into(),
-                asset,
-                source_start: 4,
-                source_end: 20,
-            })
-            .expect("Session audio clip")
-        {
-            Created::SessionClip(id) => id,
-            _ => panic!("Session clip"),
-        };
-        let window = SourceWindow {
-            clip,
-            asset,
-            track,
-            scene,
-            start: 4,
-            end: 20,
-            asset_frames: 32,
-            revision: 7,
-            project_generation: 3,
-        };
-        let project = editor.project();
-        assert!(source_window_is_current(
-            window,
-            3,
-            Some((track, scene)),
-            7,
-            project
-        ));
-        assert!(!source_window_is_current(
-            window,
-            4,
-            Some((track, scene)),
-            7,
-            project
-        ));
-        assert!(!source_window_is_current(
-            window,
-            3,
-            Some((track, scene)),
-            8,
-            project
-        ));
-        assert!(!source_window_is_current(window, 3, None, 7, project));
-        assert!(matches!(
-            project.session_cell(track, scene),
-            Some(SessionCellContent::Audio(item)) if item.id() == clip
-        ));
-    }
-
-    fn session_audio_cell(source_start: u64, source_end: u64) -> (Editor, hex_project::ClipId) {
-        let mut editor = Editor::new(Project::new(48_000).expect("project"), 8).expect("editor");
-        let Ok(Created::Track(track)) = editor.execute(Command::AddTrack {
-            name: "audio".into(),
-        }) else {
-            panic!("track")
-        };
-        let Ok(Created::Scene(scene)) = editor.execute(Command::AddScene {
-            name: "scene".into(),
-        }) else {
-            panic!("scene")
-        };
-        let Ok(Created::Asset(asset)) = editor.execute(Command::AddAsset {
-            path: "source.wav".into(),
-            sample_rate: 48_000,
-            frames: 1_000,
-        }) else {
-            panic!("asset")
-        };
-        let Ok(Created::SessionClip(clip)) = editor.execute(Command::CreateSessionAudioClip {
-            track,
-            scene,
-            name: "audio".into(),
-            asset,
-            source_start,
-            source_end,
-        }) else {
-            panic!("Session clip")
-        };
-        (editor, clip)
-    }
-
-    fn cell(editor: &Editor, clip: hex_project::ClipId) -> &hex_project::SessionAudioClip {
-        editor
-            .project()
-            .session_audio_clip(clip)
-            .expect("Session audio cell")
-    }
-
-    #[test]
-    fn playhead_follows_source_offset_from_the_accepted_launch() {
-        let (editor, clip) = session_audio_cell(100, 300);
-        let clip = cell(&editor, clip);
-        // Launched at performance frame 5_000: elapsed 0 is the offset start.
-        assert_eq!(playhead_fraction(clip, 5_000, 5_000), Some(0.0));
-        assert_eq!(playhead_fraction(clip, 5_000, 5_050), Some(0.25));
-        assert_eq!(
-            playhead_fraction(clip, 5_000, 5_199),
-            Some((199.0_f64 / 200.0) as f32)
-        );
-    }
-
-    #[test]
-    fn playhead_hides_before_launch_and_after_a_one_shot_ends() {
-        let (editor, clip) = session_audio_cell(100, 300);
-        let clip = cell(&editor, clip);
-        assert_eq!(playhead_fraction(clip, 5_000, 4_999), None);
-        assert_eq!(playhead_fraction(clip, 5_000, 5_200), None);
-        assert_eq!(playhead_fraction(clip, 5_000, u64::MAX), None);
-    }
-
-    #[test]
-    fn looped_playhead_wraps_inside_the_cycle_and_hides_outside_the_window() {
-        let (mut editor, id) = session_audio_cell(100, 300);
-        editor
-            .execute(Command::SetSessionAudioClipLoop {
-                clip: id,
-                loop_range: Some(hex_project::SessionAudioLoop::new(150, 250).expect("loop")),
-            })
-            .expect("loop");
-        let clip = cell(&editor, id);
-        // Intro 100..250 (150 frames), then the 150..250 cycle repeats.
-        assert_eq!(playhead_fraction(clip, 0, 100), Some(0.5));
-        assert_eq!(playhead_fraction(clip, 0, 150), Some(0.25));
-        assert_eq!(playhead_fraction(clip, 0, 250), Some(0.25));
-        assert_eq!(
-            playhead_fraction(clip, 0, 1_000_075),
-            playhead_fraction(clip, 0, 175)
-        );
-        // A cycle that starts before the displayed source start has no line there.
-        editor
-            .execute(Command::SetSessionAudioClipLoop {
-                clip: id,
-                loop_range: Some(hex_project::SessionAudioLoop::new(50, 250).expect("loop")),
-            })
-            .expect("loop");
-        let clip = cell(&editor, id);
-        assert_eq!(playhead_fraction(clip, 0, 150), None);
-        assert_eq!(playhead_fraction(clip, 0, 200), Some(0.0));
-    }
-
-    #[cfg(feature = "ui-test-support")]
     #[gpui::test]
     fn source_panel_keeps_its_compact_row_while_an_edit_is_pending(cx: &mut TestAppContext) {
         use super::super::{EditorMode, EditorView, install_close_guard};
@@ -1021,7 +754,6 @@ mod tests {
             .expect("source bounds remain visible while editing");
         assert!(readout.size.width > px(0.0));
     }
-    #[cfg(feature = "ui-test-support")]
     #[gpui::test]
     fn console_audio_loop_controls_edit_real_cell_history_and_saved_state(cx: &mut TestAppContext) {
         use super::super::{EditorMode, clip_drag_ui_test, midi_ruler};
@@ -1131,3 +863,6 @@ mod tests {
         });
     }
 }
+#[cfg(all(test, not(feature = "ui-test-support")))]
+#[path = "session_audio_panel/unit_tests.rs"]
+mod unit_tests;

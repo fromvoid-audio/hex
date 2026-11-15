@@ -5,6 +5,91 @@ use std::time::{Duration, Instant};
 
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn admitted_parameter_hold_survives_close_during_admission() {
+    parameter_close_admission(true);
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn admitted_parameter_point_survives_close_during_admission() {
+    parameter_close_admission(false);
+}
+
+fn parameter_close_admission(hold: bool) {
+    if std::env::var_os("HEX_HOLD_CLOSE_ADMISSION_DRIVER").is_none() {
+        let name = std::thread::current().name().unwrap().to_owned();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", &name, "--ignored", "--test-threads=1"])
+            .env("HEX_HOLD_CLOSE_ADMISSION_DRIVER", "1")
+            .env(
+                "HEX_ORIGINAL_INSTANCE_VARIANT",
+                if hold { "144" } else { "92" },
+            )
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+        return;
+    }
+    let root = root();
+    root.configure_native_sources(1, source_reservation())
+        .unwrap();
+    let binding = start(&root);
+    root.complete_native_source(
+        binding,
+        Some(hex_plugin_host::protocol::PresentationLatency {
+            input_frames: 77,
+            output_frames: 91,
+        }),
+    )
+    .unwrap();
+    root.start_native_effect(binding).unwrap();
+    let until = Instant::now() + Duration::from_secs(3);
+    let token = loop {
+        let result = if hold {
+            root.parameter_hold_admission(
+                binding,
+                NativeParameterHold::Begin {
+                    id: 7,
+                    normalized: 0.75,
+                },
+                || root.close(),
+            )
+        } else {
+            root.parameter_change_admission(binding, 0, 0.75, false, || root.close())
+        };
+        match result {
+            Ok(token) => break token,
+            Err("native preparation is busy" | "native parameter mailbox is busy") => {}
+            Err(reason) => panic!("admitted parameter token was lost: {reason}"),
+        }
+        assert!(Instant::now() < until);
+        std::thread::yield_now();
+    };
+    let (source, operation, parameter) = token.delivery_identity().unwrap();
+    assert_eq!(source, binding);
+    assert_ne!(operation, 0);
+    assert_eq!(parameter, if hold { 7 } else { 0 });
+    assert!(!token.original_worker_released_on_control());
+    assert!(
+        root.begin_native_parameter_change(binding, parameter, 0.25, false)
+            .is_err()
+    );
+    assert!(root.poll_native_parameter_change(binding, &token).is_err());
+    dispose(&root, binding);
+    let returned = root.recover_native_source(binding).unwrap();
+    assert!(returned.cleanup_error.is_none());
+    assert!(matches!(returned.disposal, PreparationDisposal::Reaped(_)));
+    assert!(token.original_worker_released_on_control());
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn admitted_controller_query_survives_close_during_admission() {
     use hex_plugin_host::protocol::ParameterPageQuery;
     if std::env::var_os("HEX_CLOSE_ADMISSION_DRIVER").is_none() {
@@ -296,4 +381,184 @@ fn actual_root_live_capture_sdk_refusal_retains_confirmed_state_and_disposal() {
     assert!(
         matches!(returned.disposal, PreparationDisposal::Reaped(retired) if !retired.status.success() && retired.terminal.is_none())
     );
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn live_recovery_receipt_survives_close_after_consumption() {
+    use hex_plugin_host::protocol::ParameterEditKind;
+    use std::cell::Cell;
+    if std::env::var_os("HEX_LIVE_RECOVERY_CLOSE_DRIVER").is_none() {
+        let path =
+            std::env::temp_dir().join(format!("hex-live-recovery-close-{}", std::process::id()));
+        std::fs::create_dir_all(&path).unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                std::thread::current().name().unwrap(),
+                "--ignored",
+                "--nocapture",
+            ])
+            .env("HEX_LIVE_RECOVERY_CLOSE_DRIVER", "1")
+            .env("HEX_ORIGINAL_INSTANCE_VARIANT", "116")
+            .env("HEX_ORIGINAL_INSTANCE_RELEASE", path.join("release"))
+            .env("HEX_ORIGINAL_INSTANCE_TRACE", path.join("trace"))
+            .output()
+            .unwrap();
+        let _ = std::fs::remove_dir_all(path);
+        assert!(
+            output.status.success() && String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    let root = root();
+    root.configure_native_sources(1, source_reservation())
+        .unwrap();
+    let binding = start(&root);
+    root.complete_native_source(
+        binding,
+        Some(hex_plugin_host::protocol::PresentationLatency {
+            input_frames: 77,
+            output_frames: 91,
+        }),
+    )
+    .unwrap();
+    root.start_native_effect(binding).unwrap();
+    std::fs::write(
+        std::env::var_os("HEX_ORIGINAL_INSTANCE_RELEASE").unwrap(),
+        b"emit",
+    )
+    .unwrap();
+    let until = Instant::now() + Duration::from_secs(2);
+    let mut receipts = Vec::new();
+    loop {
+        let closed = Cell::new(false);
+        let result = root.recovery_edits_admission(binding, true, |batch| {
+            if batch.as_ref().is_some_and(|batch| {
+                batch
+                    .edits
+                    .as_slice()
+                    .iter()
+                    .any(|edit| edit.kind == ParameterEditKind::End)
+            }) {
+                closed.set(true);
+                root.close();
+            }
+        });
+        match result {
+            Ok(Some(batch)) => {
+                if closed.get() {
+                    assert!(!batch.edits.as_slice().is_empty());
+                }
+                receipts.extend_from_slice(batch.edits.as_slice());
+                if closed.get() {
+                    break;
+                }
+            }
+            Ok(None) | Err("native preparation is busy" | "native edit observation is busy") => {}
+            Err(reason) => panic!("live recovery receipt was lost: {reason}"),
+        }
+        assert!(Instant::now() < until, "original edit receipts must arrive");
+        std::thread::yield_now();
+    }
+    assert_eq!(receipts.len(), 14);
+    for (index, edit) in receipts.iter().enumerate() {
+        let expected = match index {
+            0 => (ParameterEditKind::Begin, 0.0),
+            13 => (ParameterEditKind::End, 0.0),
+            _ => (ParameterEditKind::Perform, 0.75),
+        };
+        assert_eq!(
+            (edit.sequence, edit.gesture, edit.id),
+            (index as u64 + 1, 1, 7)
+        );
+        assert_eq!((edit.kind, edit.normalized), expected);
+    }
+    dispose(&root, binding);
+    let retired = root.recover_native_source(binding).unwrap();
+    assert!(retired.cleanup_error.is_none());
+    assert!(matches!(retired.disposal, PreparationDisposal::Reaped(_)));
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn live_parameter_receipt_survives_close_after_consumption() {
+    use hex_plugin_host::protocol::ParameterEditKind;
+    use std::cell::Cell;
+    if std::env::var_os("HEX_LIVE_PARAMETER_CLOSE_DRIVER").is_none() {
+        let path =
+            std::env::temp_dir().join(format!("hex-live-parameter-close-{}", std::process::id()));
+        std::fs::create_dir_all(&path).unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                std::thread::current().name().unwrap(),
+                "--ignored",
+                "--nocapture",
+            ])
+            .env("HEX_LIVE_PARAMETER_CLOSE_DRIVER", "1")
+            .env("HEX_ORIGINAL_INSTANCE_VARIANT", "116")
+            .env("HEX_ORIGINAL_INSTANCE_RELEASE", path.join("release"))
+            .env("HEX_ORIGINAL_INSTANCE_TRACE", path.join("trace"))
+            .output()
+            .unwrap();
+        let _ = std::fs::remove_dir_all(path);
+        assert!(
+            output.status.success() && String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    let root = root();
+    root.configure_native_sources(1, source_reservation())
+        .unwrap();
+    let binding = start(&root);
+    root.complete_native_source(
+        binding,
+        Some(hex_plugin_host::protocol::PresentationLatency {
+            input_frames: 77,
+            output_frames: 91,
+        }),
+    )
+    .unwrap();
+    root.start_native_effect(binding).unwrap();
+    std::fs::write(
+        std::env::var_os("HEX_ORIGINAL_INSTANCE_RELEASE").unwrap(),
+        b"emit",
+    )
+    .unwrap();
+    let until = Instant::now() + Duration::from_secs(2);
+    let batch = loop {
+        let closed = Cell::new(false);
+        let result = root.parameter_edits_admission(binding, |batch| {
+            if batch
+                .as_ref()
+                .is_some_and(|batch| !batch.as_slice().is_empty())
+            {
+                closed.set(true);
+                root.close();
+            }
+        });
+        match result {
+            Ok(Some(batch)) if closed.get() => break batch,
+            Ok(_) | Err("native preparation is busy" | "native edit observation is busy") => {}
+            Err(reason) => panic!("live parameter receipt was lost: {reason}"),
+        }
+        assert!(Instant::now() < until, "original edit receipt must arrive");
+        std::thread::yield_now();
+    };
+    let first = &batch.as_slice()[0];
+    assert_eq!(
+        (first.sequence, first.gesture, first.id, first.kind),
+        (1, 1, 7, ParameterEditKind::Begin)
+    );
+    dispose(&root, binding);
+    let retired = root.recover_native_source(binding).unwrap();
+    assert!(retired.cleanup_error.is_none());
+    assert!(matches!(retired.disposal, PreparationDisposal::Reaped(_)));
 }

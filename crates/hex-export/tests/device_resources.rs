@@ -325,11 +325,18 @@ fn pcm16(path: &Path) -> Vec<[i16; 2]> {
         })
         .collect()
 }
-fn quantize(frames: &[[f32; 2]]) -> Vec<[i16; 2]> {
-    frames
-        .iter()
-        .map(|frame| frame.map(|sample| (sample.clamp(-1.0, 1.0) * 32767.0).round() as i16))
-        .collect()
+/// PCM16 export applies ±1 LSB TPDF dither: compare within one LSB of rounding.
+fn assert_near(actual: Vec<[i16; 2]>, expected: &[[f32; 2]]) {
+    assert_eq!(actual.len(), expected.len());
+    for (frame, (actual, expected)) in actual.iter().zip(expected).enumerate() {
+        for (actual, expected) in actual.iter().zip(expected) {
+            let rounded = (expected.clamp(-1.0, 1.0) * 32767.0).round() as i32;
+            assert!(
+                (i32::from(*actual) - rounded).abs() <= 1,
+                "frame {frame}: {actual} not within one lsb of {rounded}"
+            );
+        }
+    }
 }
 
 #[test]
@@ -353,7 +360,7 @@ fn registered_resources_export_mix_range_captures_stems_and_float_bounce() {
                 &control,
             )
             .unwrap();
-            assert_eq!(pcm16(&full), quantize(&expected));
+            assert_near(pcm16(&full), &expected);
             let range = directory.0.join("range.wav");
             let control = ExportControl::default();
             hex_export::render_prepared_controlled_with_device_resources(
@@ -403,7 +410,7 @@ fn registered_resources_export_mix_range_captures_stems_and_float_bounce() {
                 .zip(&returned)
                 .map(|(a, b)| [a[0] + b[0], a[1] + b[1]])
                 .collect();
-            assert_eq!(pcm16(&capture), quantize(&captured));
+            assert_near(pcm16(&capture), &captured);
             let capture_range = directory.0.join("capture-range.wav");
             let report = hex_export::render_prepared_controlled_with_device_resources(
                 &capture_range,
@@ -419,7 +426,7 @@ fn registered_resources_export_mix_range_captures_stems_and_float_bounce() {
             )
             .unwrap();
             assert_eq!(report.frames, 320);
-            assert_eq!(pcm16(&capture_range), quantize(&captured[129..449]));
+            assert_near(pcm16(&capture_range), &captured[129..449]);
             let stems = directory.0.join("stems");
             hex_export::render_stems_new_with_device_resources(
                 &stems,
@@ -440,13 +447,13 @@ fn registered_resources_export_mix_range_captures_stems_and_float_bounce() {
                 &ExportControl::default(),
             )
             .unwrap();
-            assert_eq!(
+            assert_near(
                 pcm16(&stems.join(format!("track-{}-sampler.wav", f.sampler.value()))),
-                quantize(&sampled)
+                &sampled,
             );
-            assert_eq!(
+            assert_near(
                 pcm16(&stems.join(format!("return-{}-bus.wav", f.bus.value()))),
-                quantize(&returned)
+                &returned,
             );
             let bounce = directory.0.join("bounce.wav");
             hex_export::render_bounce_new_with_device_resources(
@@ -460,7 +467,7 @@ fn registered_resources_export_mix_range_captures_stems_and_float_bounce() {
             .unwrap();
             let bytes = fs::read(bounce).unwrap();
             assert_eq!(u16::from_le_bytes([bytes[20], bytes[21]]), 3);
-            let actual: Vec<_> = bytes[44..]
+            let actual: Vec<_> = bytes[hex_export::FLOAT32_WAV_HEADER_BYTES as usize..]
                 .chunks_exact(4)
                 .map(|bytes| f32::from_le_bytes(bytes.try_into().unwrap()))
                 .collect();
@@ -492,22 +499,53 @@ fn resource_scope_cancel_range_and_preroll_refusals_leave_no_output() {
                 .is_err()
             );
             let path = directory.0.join("refused.wav");
-            for (start, frames, resources, control) in [
-                (0, 1, &foreign.resources, ExportControl::default()),
-                (u64::MAX, 2, &f.resources, ExportControl::default()),
+            let mut retained = std::collections::BTreeSet::new();
+            let mut assert_refused = |result: Result<
+                hex_export::ExportReport,
+                hex_export::ExportError,
+            >,
+                                      expect_stage: bool| {
+                match result {
+                    Err(hex_export::ExportError::StagingRetained { path, .. }) if expect_stage => {
+                        assert!(path.is_file(), "reported stage must exist");
+                        assert!(retained.insert(path), "each stage has a distinct location");
+                    }
+                    Err(hex_export::ExportError::StagingRetained { .. }) => {
+                        panic!("unexpected retained stage");
+                    }
+                    Err(_) if !expect_stage => {}
+                    other => panic!("unexpected export result: {other:?}"),
+                }
+                assert!(!path.exists(), "refused export must not publish output");
+                let actual: std::collections::BTreeSet<_> = fs::read_dir(&directory.0)
+                    .unwrap()
+                    .map(|entry| entry.unwrap().path())
+                    .collect();
+                assert_eq!(actual, retained, "every retained file must be reported");
+            };
+            for (start, frames, resources, control, expect_stage) in [
+                (0, 1, &foreign.resources, ExportControl::default(), true),
+                (u64::MAX, 2, &f.resources, ExportControl::default(), false),
                 (
                     hex_engine::MAX_ARRANGEMENT_PREROLL_FRAMES + 1,
                     1,
                     &f.resources,
                     ExportControl::default(),
+                    true,
                 ),
-                (0, 1, &f.resources, {
-                    let control = ExportControl::default();
-                    control.cancel();
-                    control
-                }),
+                (
+                    0,
+                    1,
+                    &f.resources,
+                    {
+                        let control = ExportControl::default();
+                        control.cancel();
+                        control
+                    },
+                    false,
+                ),
             ] {
-                assert!(
+                assert_refused(
                     hex_export::render_prepared_controlled_with_device_resources(
                         &path,
                         Arc::clone(&f.revision),
@@ -515,27 +553,28 @@ fn resource_scope_cancel_range_and_preroll_refusals_leave_no_output() {
                         start,
                         frames,
                         ExportSignal::Main,
-                        &control
-                    )
-                    .is_err()
+                        &control,
+                    ),
+                    expect_stage,
                 );
-                assert!(!path.exists());
-                assert_eq!(fs::read_dir(&directory.0).unwrap().count(), 0);
             }
-            assert!(hex_export::render_prepared_new(&path, Arc::clone(&f.revision), 0, 1).is_err());
-            assert!(
+            assert_refused(
+                hex_export::render_prepared_new(&path, Arc::clone(&f.revision), 0, 1),
+                true,
+            );
+            assert_refused(
                 hex_export::render_bounce_new_with_device_resources(
                     &path,
                     Arc::clone(&f.revision),
                     &f.resources,
                     0,
                     1,
-                    f32::NAN
-                )
-                .is_err()
+                    f32::NAN,
+                ),
+                false,
             );
             let looped = fixture(true);
-            assert!(
+            assert_refused(
                 hex_export::render_prepared_controlled_with_device_resources(
                     &path,
                     looped.revision,
@@ -543,11 +582,10 @@ fn resource_scope_cancel_range_and_preroll_refusals_leave_no_output() {
                     129,
                     1,
                     ExportSignal::Main,
-                    &ExportControl::default()
-                )
-                .is_err()
+                    &ExportControl::default(),
+                ),
+                true,
             );
-            assert_eq!(fs::read_dir(&directory.0).unwrap().count(), 0);
         })
         .unwrap()
         .join()

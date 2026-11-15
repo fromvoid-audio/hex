@@ -189,6 +189,13 @@ impl ArrangementClips {
         effects: Option<&hex_lattice::NativeDeviceRegistry<'_>>,
         native_input: Option<crate::device_automation::NativeParameterInputTarget>,
     ) -> Result<(), AudioStorageError> {
+        if project
+            .tracks()
+            .iter()
+            .any(hex_project::Track::retained_source_path)
+        {
+            return Err(AudioStorageError::UnsupportedGraph);
+        }
         let Stages {
             assemble_tracks: tracks,
             assemble_returns: returns,
@@ -213,6 +220,7 @@ impl ArrangementClips {
                 .ok_or(AudioStorageError::SourceMismatch)?;
             if s.owner.is_some()
                 || s.prepared_origin.is_some()
+                || s.sparse.is_some()
                 || s.disposal != Disposal::Unstarted
                 || s.handle == 0
                 || s.end <= s.start
@@ -270,6 +278,7 @@ impl ArrangementClips {
             let target = &mut self.rows[index];
             let fade = (!s.fade.is_neutral()).then_some(s.fade);
             if s.gain != 1.0
+                || s.sparse_frames.is_some()
                 || fade.is_some()
                 || s.phase != 0
                 || matches!(&inputs.sources[s.source].1.kind, SourceKind::Streamed(_))
@@ -279,8 +288,10 @@ impl ArrangementClips {
                 target.metadata = Some(Box::new(ClipMetadata {
                     gain: s.gain,
                     source_phase: s.phase,
+                    reversed: false,
                     fade,
                     streamed: None,
+                    sparse: None,
                 }));
             }
         }
@@ -313,14 +324,14 @@ impl ArrangementClips {
             }
         }
         #[cfg(test)]
-        if self.mismatch {
-            if let Some(r) = self.rows.first_mut() {
-                r.binding.handle = r
-                    .binding
-                    .handle
-                    .checked_add(1)
-                    .ok_or(AudioStorageError::Overflow)?;
-            }
+        if self.mismatch
+            && let Some(r) = self.rows.first_mut()
+        {
+            r.binding.handle = r
+                .binding
+                .handle
+                .checked_add(1)
+                .ok_or(AudioStorageError::Overflow)?;
         }
         Ok(())
     }
@@ -366,6 +377,7 @@ impl ArrangementClips {
             let source = s.source_owner(inputs)?;
             let owner = s.owner.as_ref().ok_or(AudioStorageError::SourceMismatch)?;
             let required = s.gain != 1.0
+                || s.sparse_frames.is_some()
                 || matches!(&owner.kind, SourceKind::Streamed(_))
                 || s.phase != 0
                 || !s.fade.is_neutral();
@@ -384,10 +396,18 @@ impl ArrangementClips {
                 || r.declaration.is_some()
                 || r.stream.is_some()
                 || r.metadata.is_some() != required
+                || s.sparse.as_ref().map(|map| map.packed_len()) != s.sparse_frames
+                || s.sparse.as_ref().is_some_and(|map| {
+                    s.looping || s.phase != 0 || !s.fade.is_neutral()
+                        || !matches!(&owner.kind, SourceKind::Resident(audio) if audio.frames().len() == map.packed_len())
+                        || s.source_offset.checked_add(s.source_length).is_none_or(|end| end > map.extent())
+                })
                 || r.metadata.as_ref().is_some_and(|m| {
                     m.streamed.is_some()
+                        || m.sparse.is_some()
                         || m.gain != s.gain
                         || m.source_phase != s.phase
+                        || m.reversed
                         || m.fade != (!s.fade.is_neutral()).then_some(s.fade)
                 })
                 || s.disposal != Disposal::Unstarted
@@ -405,6 +425,9 @@ impl ArrangementClips {
             if let Some(OwnedAudioSource { kind, handle }) = s.owner.take() {
                 match kind {
                     SourceKind::Resident(audio) => {
+                        if let Some(target) = r.metadata.as_mut() {
+                            target.sparse = s.sparse.take();
+                        }
                         r.clip = Some(Clip {
                             active: s.active,
                             audio: Some(audio),

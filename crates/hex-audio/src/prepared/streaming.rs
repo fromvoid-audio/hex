@@ -7,6 +7,25 @@ pub(super) struct RecordedStreamOutcome {
     pub(super) rejected_action: Option<(u64, PlaybackActionRejection)>,
     pub(super) fault: Option<Invalid>,
 }
+/// Count an audible stream starvation: this chunk held silence for pages
+/// while `playing` (published after the previous callback) was already true
+/// and no Play or stream action pre-roll was waiting. One relaxed RMW; no
+/// allocation or waiting. Install/replacement holds outside an active stream
+/// view are not counted.
+pub(super) fn count_starvation(
+    status: &Status,
+    play_pending: bool,
+    action_pending: bool,
+    outcome: &crate::candidate_custody::StreamOutcome,
+) {
+    let buffering = matches!(
+        outcome.progress,
+        crate::candidate_custody::StreamProgress::Buffering { .. }
+    );
+    if buffering && !play_pending && !action_pending && status.playing.load(Relaxed) {
+        status.stream_starved_callbacks.fetch_add(1, Relaxed);
+    }
+}
 pub(super) fn record_outcome(
     status: &Status,
     pending_play: &mut Option<u64>,
@@ -30,6 +49,9 @@ pub(super) fn record_outcome(
     if outcome.source_changed {
         status.stream_source_changed.store(true, Release);
     }
+    if outcome.read_failed {
+        status.stream_read_failed.store(true, Release);
+    }
     status
         .stream_readiness_refused
         .store(outcome.readiness_refused, Release);
@@ -49,7 +71,49 @@ pub(super) fn record_outcome(
         fault: outcome.fault,
     }
 }
+impl Status {
+    /// Take the current-demand audio read-error notification on control/UI.
+    /// Exactly one notification observer may consume it. Repeated failures
+    /// coalesce until taken; a later failure remains observable. No readiness,
+    /// identity change, persistent fault or successful recovery is implied.
+    pub fn take_stream_read_failure(&self) -> bool {
+        self.stream_read_failed
+            .swap(false, std::sync::atomic::Ordering::AcqRel)
+    }
+}
 impl Callback {
+    /// Held only during one render invocation, after candidate validation and
+    /// until either the actual graph swap or completion of the old output.
+    pub(super) fn reserve_current_stream_window(
+        &mut self,
+        frames: usize,
+    ) -> Result<
+        Option<crate::candidate_custody::QuantumPins>,
+        crate::candidate_custody::QuantumFailure,
+    > {
+        if self.current_quantum_pins.is_some() {
+            return Err(crate::candidate_custody::QuantumFailure::PendingAction);
+        }
+        let Some(mut active) = self
+            .active
+            .as_mut()
+            .and_then(ActivePublication::stream_view)
+        else {
+            return Ok(None);
+        };
+        active
+            .reserve_current_quantum(
+                &mut self.domain_pages,
+                frames,
+                self.stream_pending_play.is_some(),
+            )
+            .map(Some)
+    }
+    pub(super) fn release_current_quantum_pins(&mut self) {
+        if let Some(pins) = self.current_quantum_pins.take() {
+            pins.release(&mut self.domain_pages);
+        }
+    }
     pub(super) fn resolve_recovery_seek(
         &mut self,
         action_pending: bool,
@@ -88,6 +152,35 @@ impl Callback {
             self.yield_stream_successor_once = true;
         }
         yielded
+    }
+    pub(super) fn retry_pending_eligible_capacity(&mut self) -> bool {
+        self.deferred_eligible
+            .as_mut()
+            .is_some_and(|next| next.retry_stream_capacity_conflict())
+    }
+    pub(super) fn reject_pending_eligible_successor(&mut self, reason: PlaybackHandoffRejection) {
+        if self
+            .deferred_eligible
+            .as_ref()
+            .is_some_and(|next| next.streaming_enabled())
+            && let Some(mut next) = self.deferred_eligible.take()
+        {
+            next.cancel_stream_readiness(&mut self.domain_pages);
+            self.reject_publication(next.revision(), reason);
+            self.return_publication(ReturnedPublication::Eligible(next.reject_before_install()));
+            self.status.publication_pending.store(false, Release);
+            if let Some(ticket) = self.stream_pending_play.take() {
+                self.status
+                    .publish_rejected_action(ticket, PlaybackActionRejection::SessionNotPrepared);
+                self.stage_stream_outcome(
+                    ticket,
+                    action_outcomes::Outcome::Rejected(PlaybackActionRejection::SessionNotPrepared),
+                );
+                self.status
+                    .stream_applied_command_prefix
+                    .store(self.stream_prefix, Release);
+            }
+        }
     }
     pub(super) fn stream_action_pending(&self) -> bool {
         self.active
@@ -178,6 +271,12 @@ impl Callback {
             || self.publications.peek().is_ok_and(|next| matches!(next, QueuedPublication::Eligible(next) if next.streaming_enabled()))
     }
     fn invalidate_stream_readiness(&mut self) {
+        self.invalidate_stream_readiness_keeping_active_pages();
+        self.clear_active_stream_roles();
+    }
+    /// Cancel staged and future stream readiness while the active pages stay
+    /// requested, as a declicked Pause/Stop still renders its fade from them.
+    fn invalidate_stream_readiness_keeping_active_pages(&mut self) {
         if let Some(streams) = self
             .deferred
             .as_mut()
@@ -194,6 +293,14 @@ impl Callback {
             .and_then(ActivePublication::stream_view)
         {
             active.revoke_launch_prewarm(&mut self.domain_pages);
+        }
+    }
+    pub(super) fn clear_active_stream_roles(&mut self) {
+        if let Some(mut active) = self
+            .active
+            .as_mut()
+            .and_then(ActivePublication::stream_view)
+        {
             active.clear_stream_roles(&mut self.domain_pages);
         }
     }
@@ -223,10 +330,14 @@ impl Callback {
         else {
             return;
         };
-        match active
-            .playback
-            .try_apply_action(PlaybackAction::Transport(PlaybackCommand::Play))
-        {
+        // A resume from a paused position ramps in, as on the resident path.
+        let play = PlaybackAction::Transport(PlaybackCommand::Play);
+        let applied = if self.status.closing.load(Acquire) {
+            active.playback.try_apply_action(play)
+        } else {
+            active.playback.try_apply_declicked_action(play)
+        };
+        match applied {
             Ok(()) => {
                 self.stream_pending_play = None;
                 self.stage_stream_outcome(ticket, action_outcomes::Outcome::Applied);
@@ -245,21 +356,34 @@ impl Callback {
             .stream_applied_command_prefix
             .store(self.stream_prefix, Release);
     }
+    /// Apply a zero-page action. A queued `transport_change` Pause/Stop
+    /// while playing is Applied now and declicked unless closing or
+    /// buffering; its keyboard, output and active page effects follow its
+    /// fade. Otherwise they apply at once, as before.
     fn apply_stream_zero_page_action(
         &mut self,
         action: PlaybackAction,
         ticket: u64,
+        transport_change: bool,
     ) -> action_outcomes::Outcome {
-        if matches!(action, PlaybackAction::Transport(PlaybackCommand::Stop)) {
-            self.revoke_current_sampler_keyboard();
-        }
-        if let Some(mut active) = self
+        let stop = matches!(action, PlaybackAction::Transport(PlaybackCommand::Stop));
+        let closing = self.status.closing.load(Acquire);
+        // A buffering stream already outputs silence and cannot advance a fade.
+        let declick = transport_change && !closing && !self.status.stream_buffering.load(Acquire);
+        let mut fading = false;
+        let result = if let Some(mut active) = self
             .active
             .as_mut()
             .and_then(ActivePublication::current_mut)
         {
-            match active.playback.try_apply_action(action) {
-                Ok(()) if recovery_cursor_action(action) && !self.status.closing.load(Acquire) => {
+            let applied = if declick {
+                active.playback.try_apply_declicked_action(action)
+            } else {
+                active.playback.try_apply_action(action)
+            };
+            fading = applied.is_ok() && active.playback.pending_transport_fade() == Some(action);
+            let outcome = match applied {
+                Ok(()) if recovery_cursor_action(action) && !closing => {
                     self.recovery_position_frozen = false;
                     action_outcomes::Outcome::Applied
                 }
@@ -269,7 +393,11 @@ impl Callback {
                     self.status.publish_rejected_action(ticket, reason);
                     action_outcomes::Outcome::Rejected(reason)
                 }
+            };
+            if fading {
+                self.begin_transport_fade(ticket, action, true);
             }
+            outcome
         } else if !matches!(
             action,
             PlaybackAction::Transport(PlaybackCommand::Pause | PlaybackCommand::Stop)
@@ -281,7 +409,16 @@ impl Callback {
             action_outcomes::Outcome::Rejected(PlaybackActionRejection::SessionNotPrepared)
         } else {
             action_outcomes::Outcome::Applied
+        };
+        if !fading {
+            if stop {
+                self.revoke_current_sampler_keyboard();
+            }
+            if transport_change {
+                self.clear_active_stream_roles();
+            }
         }
+        result
     }
     fn refresh_stream_schedule(&mut self) {
         if let Some(mut active) = self
@@ -296,13 +433,17 @@ impl Callback {
         }
     }
     pub(super) fn consume_stream_commands(&mut self) {
-        let cut = command_cut(
-            self.status.admitted_ticket.load(Acquire),
-            self.take_stop_marker(),
-        );
+        let entry = self.status.admitted_ticket.load(Acquire);
+        let marker = self.take_stop_marker();
+        let cut = command_cut(entry, marker);
         self.consume_stream_commands_through(cut, false);
+        self.finish_stop_marker(marker);
     }
     pub(super) fn consume_stream_commands_through(&mut self, cut: CommandCut, fault: bool) {
+        if cut.stop_through.is_some() {
+            // The immediate priority Stop follows an interrupted fade's effects.
+            self.settle_transport_fade();
+        }
         if let Some(stop) = cut.stop_through {
             if !fault && !self.status.closing.load(Acquire) {
                 self.recovery_position_frozen = false;
@@ -351,6 +492,7 @@ impl Callback {
                     let _ = self.apply_stream_zero_page_action(
                         PlaybackAction::Transport(PlaybackCommand::Stop),
                         stop,
+                        false,
                     );
                 }
                 self.invalidate_gain_recording(
@@ -377,6 +519,8 @@ impl Callback {
             if !fault {
                 self.trace_command_dequeued(queued, cut);
             }
+            // Each command follows the audible end of an earlier fade.
+            self.settle_transport_fade();
             if fault && sampler_edit::is_stop(queued.action) {
                 self.status.recovery_position.store(0, Release);
                 self.stage_stream_outcome(queued.ticket, action_outcomes::Outcome::Applied);
@@ -466,15 +610,20 @@ impl Callback {
                             ),
                         );
                     }
-                    self.invalidate_stream_readiness();
+                    self.invalidate_stream_readiness_keeping_active_pages();
                     self.invalidate_midi_recording(
                         crate::midi_recording::AbortReason::TransportChanged,
                     );
-                    let outcome = self.apply_stream_zero_page_action(queued.action, queued.ticket);
+                    let outcome =
+                        self.apply_stream_zero_page_action(queued.action, queued.ticket, true);
                     self.stage_stream_outcome(queued.ticket, outcome);
-                    self.invalidate_gain_recording(
-                        crate::gain_recording::AbortReason::TransportChanged,
-                    );
+                    if self.transport_fade.is_some() {
+                        self.abort_transport_inputs(
+                            crate::gain_recording::AbortReason::TransportChanged,
+                        );
+                    } else {
+                        self.invalidate_for_transport_change(queued.action);
+                    }
                 }
                 PlaybackAction::Session(SessionPlaybackCommand::CancelPending { track }) => {
                     if let Some(mut active) = self
@@ -532,7 +681,8 @@ impl Callback {
                     }
                 }
                 PlaybackAction::SetMetronome(_) => {
-                    let outcome = self.apply_stream_zero_page_action(queued.action, queued.ticket);
+                    let outcome =
+                        self.apply_stream_zero_page_action(queued.action, queued.ticket, false);
                     self.stage_stream_outcome(queued.ticket, outcome);
                 }
                 _ => self.stage_stream_action(queued.action, queued.ticket),
@@ -549,5 +699,74 @@ impl Callback {
                 .stream_applied_command_prefix
                 .store(self.stream_prefix, Release);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Relaxed, Status, count_starvation, record_outcome};
+    use crate::candidate_custody::{StreamOutcome, StreamProgress};
+
+    fn outcome(progress: StreamProgress) -> StreamOutcome {
+        StreamOutcome {
+            progress,
+            play_applied: false,
+            readiness_refused: false,
+            source_changed: false,
+            read_failed: false,
+            fault: None,
+            action_rejection: None,
+            action_applied: None,
+            activated: None,
+        }
+    }
+
+    #[test]
+    fn only_holds_during_established_playback_count_as_starvation() {
+        let status = Status::default();
+        let held = outcome(StreamProgress::Buffering {
+            committed_frames: 64,
+        });
+        let complete = outcome(StreamProgress::Complete);
+        // Stopped, Play pre-roll and action pre-roll holds are expected waits.
+        count_starvation(&status, false, false, &held);
+        status.playing.store(true, Relaxed);
+        count_starvation(&status, true, false, &held);
+        count_starvation(&status, false, true, &held);
+        count_starvation(&status, false, false, &complete);
+        assert_eq!(status.stream_starved_callbacks.load(Relaxed), 0);
+        count_starvation(&status, false, false, &held);
+        count_starvation(
+            &status,
+            false,
+            false,
+            &outcome(StreamProgress::Buffering {
+                committed_frames: 0,
+            }),
+        );
+        assert_eq!(status.stream_starved_callbacks.load(Relaxed), 2);
+    }
+
+    #[test]
+    fn read_failure_notifications_coalesce_until_taken_and_allow_later_faults() {
+        let status = Status::default();
+        let mut pending = None;
+        assert!(!status.take_stream_read_failure());
+        for read_failed in [true, true, false] {
+            let mut result = outcome(StreamProgress::Complete);
+            result.read_failed = read_failed;
+            record_outcome(&status, &mut pending, 0, false, result);
+        }
+        assert!(status.take_stream_read_failure());
+        assert!(!status.take_stream_read_failure());
+        let mut result = outcome(StreamProgress::Buffering {
+            committed_frames: 0,
+        });
+        result.read_failed = true;
+        record_outcome(&status, &mut pending, 0, false, result);
+        assert!(status.take_stream_read_failure());
+        assert!(!status.take_stream_read_failure());
+        assert!(!status.stream_source_changed.load(Relaxed));
+        assert!(!status.render_fault.load(Relaxed));
     }
 }

@@ -20,22 +20,44 @@ pub(super) fn prepare_map(
     tempo: &hex_project::TempoMap,
     cancel: &AtomicBool,
 ) -> Result<(hex_warp::TimeMap, Vec<u64>), Invalid> {
+    prepare_map_with_extent(edit, tempo, cancel, false)
+}
+
+pub(super) fn prepare_streamed_map(
+    edit: &AudioClipEdit,
+    tempo: &hex_project::TempoMap,
+    cancel: &AtomicBool,
+) -> Result<(hex_warp::TimeMap, Vec<u64>), Invalid> {
+    prepare_map_with_extent(edit, tempo, cancel, true)
+}
+
+fn prepare_map_with_extent(
+    edit: &AudioClipEdit,
+    tempo: &hex_project::TempoMap,
+    cancel: &AtomicBool,
+    streamed: bool,
+) -> Result<(hex_warp::TimeMap, Vec<u64>), Invalid> {
     let tempo = edit.processing_tempo(tempo);
     let (first, length, _, _) = edit.projected_domain(tempo)?;
-    let length_usize = usize::try_from(length)
-        .map_err(|_| Invalid("audio domain length exceeds addressable range"))?;
+    let make_map = |segments| {
+        if streamed {
+            hex_warp::TimeMap::new_streamed(segments, length)
+        } else {
+            let length = usize::try_from(length).map_err(|_| {
+                hex_warp::Error::Invalid("audio domain length exceeds addressable range")
+            })?;
+            hex_warp::TimeMap::new(segments, length)
+        }
+    };
     let domain = &edit.domain;
     if !domain.warp_enabled {
         return Ok((
-            hex_warp::TimeMap::new(
-                vec![hex_warp::MapSegment {
-                    output_start: 0,
-                    output_end: length,
-                    source_start_q32: 0,
-                    source_end_q32: i128::from(length) * Q32,
-                }],
-                length_usize,
-            )
+            make_map(vec![hex_warp::MapSegment {
+                output_start: 0,
+                output_end: length,
+                source_start_q32: 0,
+                source_end_q32: i128::from(length) * Q32,
+            }])
             .map_err(warp_error)?,
             Vec::new(),
         ));
@@ -125,22 +147,22 @@ pub(super) fn prepare_map(
         let frame =
             u64::try_from(audio_projection_frame(tempo, origin + i128::from(local))? - first)
                 .map_err(|_| Invalid("warp output projection overflow"))?;
-        if let Some((previous_local, previous_frame)) = previous_boundary {
-            if frame == previous_frame {
-                // Every tempo point is a boundary, so this open interval has
-                // one tempo. Signed invisible context uses tempo at zero.
-                let beat = (origin + i128::from(previous_local)).max(0);
-                let beat = hex_project::BeatTime::from_raw(
-                    u64::try_from(beat).map_err(|_| Invalid("warp beat projection overflow"))?,
-                );
-                let delta = source(local)? - source(previous_local)?;
-                let ratio =
-                    (local - previous_local) as f64 * f64::from(tempo.sample_rate()) * 60_000_000.0
-                        / f64::from(tempo.tempo_at(beat).micro_bpm())
-                        / delta as f64;
-                hex_warp::validate_stretch_ratio(ratio, render_mode(domain)?, domain.pitch_cents)
-                    .map_err(warp_error)?;
-            }
+        if let Some((previous_local, previous_frame)) = previous_boundary
+            && frame == previous_frame
+        {
+            // Every tempo point is a boundary, so this open interval has
+            // one tempo. Signed invisible context uses tempo at zero.
+            let beat = (origin + i128::from(previous_local)).max(0);
+            let beat = hex_project::BeatTime::from_raw(
+                u64::try_from(beat).map_err(|_| Invalid("warp beat projection overflow"))?,
+            );
+            let delta = source(local)? - source(previous_local)?;
+            let ratio =
+                (local - previous_local) as f64 * f64::from(tempo.sample_rate()) * 60_000_000.0
+                    / f64::from(tempo.tempo_at(beat).micro_bpm())
+                    / delta as f64;
+            hex_warp::validate_stretch_ratio(ratio, render_mode(domain)?, domain.pitch_cents)
+                .map_err(warp_error)?;
         }
         previous_boundary = Some((local, frame));
         if let Some((previous_local, previous_frame)) = projected.last_mut()
@@ -197,13 +219,11 @@ pub(super) fn prepare_map(
                 .ok_or(Invalid("beat division overflow"))?;
         }
     }
-    Ok((
-        hex_warp::TimeMap::new(segments, length_usize).map_err(warp_error)?,
-        attacks,
-    ))
+    Ok((make_map(segments).map_err(warp_error)?, attacks))
 }
 pub(super) fn apply_fade(
     frames: &mut [crate::Frame],
+    first_root_frame: u64,
     edit: &AudioClipEdit,
     tempo: &hex_project::TempoMap,
     cancel: &AtomicBool,
@@ -217,7 +237,7 @@ pub(super) fn apply_fade(
         if index % 1_024 == 0 && cancel.load(Ordering::Acquire) {
             return Err(Invalid("audio preparation cancelled"));
         }
-        let gain = projected.gain_at(index as u64)?;
+        let gain = projected.gain_at(first_root_frame + index as u64)?;
         frame[0] *= gain;
         frame[1] *= gain;
     }

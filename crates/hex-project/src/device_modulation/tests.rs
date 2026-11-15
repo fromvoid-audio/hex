@@ -1,0 +1,533 @@
+use super::*;
+use crate::{Command, Editor};
+
+fn source(id: u64) -> Modulator {
+    Modulator {
+        color: Default::default(),
+        id: ModulationSourceId::new(id).unwrap(),
+        enabled: true,
+        state: NativeDeviceState::new(
+            DeviceTypeId::from_static("test.modulator"),
+            2,
+            vec![0, 255, 1],
+        )
+        .unwrap(),
+    }
+}
+fn route(id: u64, from: u64, destination: ModulationDestination) -> DeviceModulationRoute {
+    DeviceModulationRoute {
+        id: ModulationRouteId::new(id).unwrap(),
+        source: ModulationSourceId::new(from).unwrap(),
+        output: ModulationOutputId::MAIN,
+        destination,
+        amount: ModulationAmount::new(-0.25).unwrap(),
+        range: ModulationRange {
+            start: ModulationAmount::new(0.0).unwrap(),
+            end: ModulationAmount::new(1.0).unwrap(),
+        },
+        enabled: true,
+    }
+}
+fn fixture() -> (Editor, DeviceId) {
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+    let Created::Device(id) = editor
+        .execute(Command::InsertMainDevice {
+            before: None,
+            state: crate::default_instrument_state().unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("device")
+    };
+    (editor, id)
+}
+fn bank_at(first: u64) -> DeviceModulation {
+    let destination = ModulationDestination::Device {
+        device_type: crate::DEFAULT_INSTRUMENT_TYPE_ID,
+        target: DeviceAutomationTarget::HostOutputGain,
+        vst3_class: None,
+    };
+    DeviceModulation::new(
+        vec![source(first + 1), source(first)],
+        vec![
+            route(first + 2, first, destination),
+            route(first + 3, first + 1, destination),
+        ],
+    )
+    .unwrap()
+}
+
+fn bank() -> DeviceModulation {
+    bank_at(2)
+}
+
+#[test]
+fn authored_banks_survive_history_snapshots_recoloring_and_reordering_without_retargeting() {
+    let (mut editor, id) = fixture();
+    let mut empty = editor.project().snapshot();
+    let expected = bank();
+    editor
+        .execute(Command::ReplaceDeviceModulation {
+            device: id,
+            modulation: expected.clone(),
+        })
+        .unwrap();
+    let saved = editor.project().snapshot();
+    empty.next_id = saved.next_id;
+    assert_eq!(
+        Project::from_snapshot(saved.clone())
+            .unwrap()
+            .device(id)
+            .unwrap()
+            .modulation(),
+        &expected
+    );
+    let mut order = expected.sources().to_vec();
+    let colored_slot = order[0].id;
+    order[0].color = ElementColor::Violet;
+    order.reverse();
+    let reordered = DeviceModulation::new(order, expected.routes().to_vec()).unwrap();
+    editor
+        .execute(Command::ReplaceDeviceModulation {
+            device: id,
+            modulation: reordered.clone(),
+        })
+        .unwrap();
+    assert_eq!(
+        editor.project().device(id).unwrap().modulation(),
+        &reordered
+    );
+    assert_eq!(reordered.routes(), expected.routes());
+    assert_eq!(reordered.sources()[1].id, colored_slot);
+    assert_eq!(reordered.sources()[1].color, ElementColor::Violet);
+    assert!(editor.undo());
+    assert_eq!(editor.project().snapshot(), saved);
+    assert!(editor.undo());
+    assert_eq!(editor.project().snapshot(), empty);
+    assert!(editor.redo());
+    assert_eq!(editor.project().snapshot(), saved);
+    assert!(editor.redo());
+    assert_eq!(
+        editor.project().device(id).unwrap().modulation(),
+        &reordered
+    );
+    editor.execute(Command::RemoveDevice(id)).unwrap();
+    assert!(editor.project().device(id).is_none());
+    assert!(editor.undo());
+    assert_eq!(
+        editor.project().device(id).unwrap().modulation(),
+        &reordered
+    );
+}
+
+#[test]
+fn reusing_a_slot_id_with_a_new_provider_cannot_retarget_its_existing_routes() {
+    let (mut editor, device) = fixture();
+    let original = bank();
+    editor
+        .execute(Command::ReplaceDeviceModulation {
+            device,
+            modulation: original.clone(),
+        })
+        .unwrap();
+    let saved = editor.project().snapshot();
+    let mut slots = original.sources().to_vec();
+    slots[0].state =
+        NativeDeviceState::new(DeviceTypeId::from_static("test.other"), 1, vec![]).unwrap();
+    let replacement = DeviceModulation::new(slots, original.routes().to_vec()).unwrap();
+    assert!(
+        editor
+            .execute(Command::ReplaceDeviceModulation {
+                device,
+                modulation: replacement
+            })
+            .is_err()
+    );
+    assert_eq!(editor.project().snapshot(), saved);
+}
+
+#[test]
+fn source_ancestors_include_transitive_feeds_but_exclude_disabled_routes() {
+    let destination = |id| ModulationDestination::Modulator {
+        source: ModulationSourceId::new(id).unwrap(),
+        module_type: DeviceTypeId::from_static("test.modulator"),
+        parameter: ParameterId::from_static(1),
+    };
+    let mut disabled = route(8, 4, destination(1));
+    disabled.enabled = false;
+    let bank = DeviceModulation::new(
+        (1..=4).map(source).collect(),
+        vec![
+            route(5, 1, destination(2)),
+            route(6, 2, destination(3)),
+            disabled,
+        ],
+    )
+    .unwrap();
+    let ids = bank
+        .source_route_ancestors(ModulationSourceId::new(3).unwrap())
+        .map(ModulationSourceId::value)
+        .collect::<Vec<_>>();
+    assert_eq!(ids, [3, 2, 1]);
+    assert!(
+        bank.source_route_ancestors(ModulationSourceId::new(5).unwrap())
+            .next()
+            .is_none()
+    );
+}
+
+#[test]
+fn cycles_missing_sources_stale_providers_and_invalid_values_refuse_atomically() {
+    let target = |id| ModulationDestination::Modulator {
+        source: ModulationSourceId::new(id).unwrap(),
+        module_type: DeviceTypeId::from_static("test.modulator"),
+        parameter: ParameterId::from_static(1),
+    };
+    assert!(DeviceModulation::new(vec![source(1)], vec![route(1, 1, target(1))]).is_err());
+    assert!(
+        DeviceModulation::new(
+            vec![source(1), source(2)],
+            vec![route(1, 1, target(2)), route(2, 2, target(1))]
+        )
+        .is_err()
+    );
+    assert!(DeviceModulation::new(vec![source(1)], vec![route(1, 1, target(2))]).is_err());
+    let mut disabled = route(2, 2, target(1));
+    disabled.enabled = false;
+    assert!(
+        DeviceModulation::new(
+            vec![source(1), source(2)],
+            vec![route(1, 1, target(2)), disabled]
+        )
+        .is_ok()
+    );
+    for value in [f32::NAN, f32::INFINITY, -1.01, 1.01] {
+        assert!(ModulationAmount::new(value).is_err());
+    }
+    let (mut editor, id) = fixture();
+    let original = bank();
+    let mut routes = original.routes().to_vec();
+    routes[0].destination = ModulationDestination::Device {
+        device_type: crate::DEFAULT_INSTRUMENT_TYPE_ID,
+        target: DeviceAutomationTarget::Parameter(ParameterId::from_static(1)),
+        vst3_class: None,
+    };
+    editor
+        .execute(Command::ReplaceDeviceModulation {
+            device: id,
+            modulation: DeviceModulation::new(original.sources().to_vec(), routes).unwrap(),
+        })
+        .unwrap();
+    let before = editor.project().snapshot();
+    assert!(
+        editor
+            .execute(Command::ReplaceDeviceState {
+                device: id,
+                state: NativeDeviceState::new(
+                    DeviceTypeId::from_static("test.replacement"),
+                    1,
+                    vec![]
+                )
+                .unwrap()
+            })
+            .is_err()
+    );
+    assert_eq!(editor.project().snapshot(), before);
+    assert!(
+        editor
+            .execute(Command::ReplaceDeviceModulation {
+                device: DeviceId(u64::MAX),
+                modulation: bank()
+            })
+            .is_err()
+    );
+    assert_eq!(editor.project().snapshot(), before);
+}
+
+#[test]
+fn retained_instrument_has_one_canonical_modulation_bank_and_borrowed_bindings() {
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+    let Created::Track(track) = editor
+        .execute(Command::AddMidiTrack {
+            name: "source".into(),
+        })
+        .unwrap()
+    else {
+        panic!("track")
+    };
+    let Created::Device(id) = editor
+        .execute(Command::InsertInstrument {
+            track,
+            state: crate::default_instrument_state().unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("instrument")
+    };
+    let expected = bank_at(editor.project().snapshot().next_id);
+    editor
+        .execute(Command::ReplaceDeviceModulation {
+            device: id,
+            modulation: expected.clone(),
+        })
+        .unwrap();
+    let snapshot = editor.project().snapshot();
+    assert!(
+        snapshot.tracks[0]
+            .instrument
+            .as_ref()
+            .unwrap()
+            .modulation
+            .is_empty()
+    );
+    assert_eq!(snapshot.native_sources[0].devices[0].modulation, expected);
+    let restored = Project::from_snapshot(snapshot).unwrap();
+    assert_eq!(
+        restored
+            .track(track)
+            .unwrap()
+            .instrument()
+            .unwrap()
+            .modulation(),
+        &expected
+    );
+    let mut invalid = restored.snapshot();
+    invalid.tracks[0].instrument.as_mut().unwrap().modulation = expected;
+    assert!(Project::from_snapshot(invalid).is_err());
+}
+
+#[test]
+fn device_copy_and_move_preserve_local_mapping_identity_and_host_targets() {
+    let (mut editor, id) = fixture();
+    editor
+        .execute(Command::ReplaceDeviceModulation {
+            device: id,
+            modulation: bank(),
+        })
+        .unwrap();
+    let clipboard = std::sync::Arc::new(
+        editor
+            .project()
+            .capture_devices(
+                crate::DeviceChainOwner::Main,
+                &crate::DeviceSelectionIds::new(&[id]).unwrap(),
+            )
+            .unwrap(),
+    );
+    editor
+        .execute(Command::PasteDevices {
+            clipboard,
+            owner: crate::DeviceChainOwner::Main,
+            before: None,
+        })
+        .unwrap();
+    let copied = editor.project().main_devices()[1].id();
+    assert_ne!(copied, id);
+    assert_eq!(
+        editor.project().device(copied).unwrap().modulation(),
+        &bank()
+    );
+    editor
+        .execute(Command::MoveMainDevice {
+            device: copied,
+            before: Some(id),
+        })
+        .unwrap();
+    assert_eq!(editor.project().main_devices()[0].id(), copied);
+    assert_eq!(
+        editor.project().device(copied).unwrap().modulation(),
+        &bank()
+    );
+    // Intrinsic host trim targets remain meaningful across provider changes.
+    editor
+        .execute(Command::ReplaceDeviceState {
+            device: copied,
+            state: NativeDeviceState::new(DeviceTypeId::from_static("test.replacement"), 1, vec![])
+                .unwrap(),
+        })
+        .unwrap();
+    assert_eq!(
+        editor.project().device(copied).unwrap().modulation(),
+        &bank()
+    );
+    assert_eq!(
+        editor.project().device(id).unwrap().state().type_id(),
+        crate::DEFAULT_INSTRUMENT_TYPE_ID
+    );
+}
+
+#[test]
+fn per_device_and_project_capacity_refusals_preserve_the_last_valid_project() {
+    assert!(
+        DeviceModulation::new(Vec::with_capacity(MAX_MODULATORS_PER_DEVICE + 1), vec![]).is_err()
+    );
+    assert!(
+        DeviceModulation::new(
+            vec![],
+            Vec::with_capacity(MAX_MODULATION_ROUTES_PER_DEVICE + 1)
+        )
+        .is_err()
+    );
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 2).unwrap();
+    let mut devices = Vec::new();
+    for _ in 0..=MAX_PROJECT_MODULATORS / MAX_MODULATORS_PER_DEVICE {
+        let Created::Device(id) = editor
+            .execute(Command::InsertMainDevice {
+                before: None,
+                state: crate::default_instrument_state().unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("device")
+        };
+        devices.push(id);
+    }
+    let full = |first| {
+        DeviceModulation::new(
+            (first..first + MAX_MODULATORS_PER_DEVICE as u64)
+                .map(source)
+                .collect(),
+            vec![],
+        )
+        .unwrap()
+    };
+    for &device in &devices[..devices.len() - 1] {
+        let modulation = full(editor.project().snapshot().next_id);
+        editor
+            .execute(Command::ReplaceDeviceModulation { device, modulation })
+            .unwrap();
+    }
+    let before = editor.project().snapshot();
+    assert!(
+        editor
+            .execute(Command::ReplaceDeviceModulation {
+                device: *devices.last().unwrap(),
+                modulation: full(editor.project().snapshot().next_id)
+            })
+            .is_err()
+    );
+    assert_eq!(editor.project().snapshot(), before);
+}
+
+#[test]
+fn removed_source_and_route_ids_cannot_be_reused_after_edits_or_history_branching() {
+    let (mut editor, device) = fixture();
+    let old = bank();
+    editor
+        .execute(Command::ReplaceDeviceModulation {
+            device,
+            modulation: old.clone(),
+        })
+        .unwrap();
+    editor
+        .execute(Command::ReplaceDeviceModulation {
+            device,
+            modulation: DeviceModulation::default(),
+        })
+        .unwrap();
+    let removed = editor.project().snapshot();
+    assert!(
+        editor
+            .execute(Command::ReplaceDeviceModulation {
+                device,
+                modulation: old
+            })
+            .is_err()
+    );
+    assert_eq!(editor.project().snapshot(), removed);
+    let fresh = bank_at(removed.next_id);
+    editor
+        .execute(Command::ReplaceDeviceModulation {
+            device,
+            modulation: fresh.clone(),
+        })
+        .unwrap();
+    let next = editor.project().snapshot().next_id;
+    assert!(editor.undo());
+    assert_eq!(editor.project().snapshot().next_id, next);
+    assert!(
+        editor
+            .execute(Command::ReplaceDeviceModulation {
+                device,
+                modulation: fresh.clone()
+            })
+            .is_err()
+    );
+    assert!(editor.redo());
+    assert_eq!(
+        editor.project().device(device).unwrap().modulation(),
+        &fresh
+    );
+    let mut invalid = editor.project().snapshot();
+    invalid.next_id = fresh.sources()[0].id.value();
+    assert!(Project::from_snapshot(invalid).is_err());
+}
+
+#[test]
+fn duplicating_a_slot_reserves_new_ids_and_copies_only_its_assignments() {
+    let (mut editor, device) = fixture();
+    let first = editor.project().next_identity();
+    let original = bank_at(first);
+    let id = original.sources()[1].id;
+    let inbound = ModulationDestination::Modulator {
+        source: id,
+        module_type: original.sources()[1].state.type_id(),
+        parameter: ParameterId::from_static(1),
+    };
+    let mut routes = original.routes().to_vec();
+    routes.push(route(first + 4, first + 1, inbound));
+    let original = DeviceModulation::new(original.sources().to_vec(), routes).unwrap();
+    let replace = |modulation| Command::ReplaceDeviceModulation { device, modulation };
+    editor.execute(replace(original.clone())).unwrap();
+    let next = editor.project().next_identity();
+    let copy = original.duplicate_source(id, next).unwrap();
+    let new_source = copy.sources()[2].id;
+    assert_eq!(new_source.value(), next);
+    assert_eq!(copy.sources()[..2], *original.sources());
+    assert!(!copy.sources()[2].enabled);
+    assert_eq!(copy.sources()[2].state, original.sources()[1].state);
+    assert_eq!(copy.routes()[..3], *original.routes());
+    assert_eq!(
+        copy.routes()[3],
+        DeviceModulationRoute {
+            id: ModulationRouteId::new(next + 1).unwrap(),
+            source: new_source,
+            ..original.routes()[0]
+        }
+    );
+    assert_eq!(
+        copy.routes()[4],
+        DeviceModulationRoute {
+            id: ModulationRouteId::new(next + 2).unwrap(),
+            destination: ModulationDestination::Modulator {
+                source: new_source,
+                module_type: original.sources()[1].state.type_id(),
+                parameter: ParameterId::from_static(1),
+            },
+            ..original.routes()[2]
+        }
+    );
+
+    editor.execute(replace(copy.clone())).unwrap();
+    let restored = |editor: &Editor| {
+        editor
+            .project()
+            .device(device)
+            .unwrap()
+            .modulation()
+            .clone()
+    };
+    assert_eq!(restored(&editor), copy);
+    assert!(editor.undo());
+    assert_eq!(restored(&editor), original);
+    assert!(editor.redo());
+    assert_eq!(restored(&editor), copy);
+    assert!(original.duplicate_source(new_source, next).is_err());
+    assert!(original.duplicate_source(id, u64::MAX).is_err());
+    let full = DeviceModulation::new(
+        (1..=MAX_MODULATORS_PER_DEVICE as u64).map(source).collect(),
+        vec![],
+    )
+    .unwrap();
+    assert!(full.duplicate_source(full.sources()[0].id, 100).is_err());
+}

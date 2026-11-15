@@ -42,7 +42,10 @@ struct Context {
     revision: u64,
     clip: ClipId,
     values: SourceValues,
-    start: u64,
+    // A forward one-shot Arrangement region begins at its start marker, so
+    // the marker stays inside song time and before the region end.
+    play_start_region: bool,
+    start: i128,
     span: u64,
     grid: MidiGrid,
     bounds: CanvasBounds,
@@ -58,15 +61,16 @@ impl Context {
     fn valid(self) -> bool {
         self.bounds.is_valid()
             && self.span > 0
-            && self.start.checked_add(self.span).is_some()
+            && self.start == super::midi_scene::clamp_start(self.start, self.span)
+            && self.start.checked_add(i128::from(self.span)).is_some()
             && self.values.source_length > 0
             && self.values.loop_start < self.values.loop_end
             && self.values.loop_end <= self.values.source_length
             && self.values.source_start < self.exclusive_end()
     }
     fn x(self, beat: u64) -> Option<f32> {
-        let offset = beat.checked_sub(self.start)?;
-        (offset <= self.span)
+        let offset = i128::from(beat).checked_sub(self.start)?;
+        (offset >= 0 && offset <= i128::from(self.span))
             .then(|| self.bounds.x + (offset as f64 / self.span as f64) as f32 * self.bounds.width)
     }
 }
@@ -128,9 +132,21 @@ impl Gesture {
             };
             match self.handle {
                 Handle::Start => {
-                    let last = self.context.exclusive_end() - 1;
+                    let mut first = 0;
+                    let mut last = self.context.exclusive_end() - 1;
+                    if self.context.play_start_region {
+                        first = original
+                            .source_start
+                            .saturating_sub(original.arrangement_start);
+                        last = last.min(
+                            original
+                                .source_start
+                                .saturating_add(original.arrangement_length)
+                                .saturating_sub(1),
+                        );
+                    }
                     let last = grid.step_raw().map_or(last, |step| last / step * step);
-                    next.source_start = moved(original.source_start).min(last);
+                    next.source_start = moved(original.source_start).min(last).max(first);
                 }
                 Handle::LoopStart => {
                     next.loop_start =
@@ -199,7 +215,9 @@ impl EditorView {
                     clip.arrangement_length().raw()
                 }),
             ),
-            start: self.piano_beat_start.raw(),
+            play_start_region: arrangement
+                .is_some_and(|clip| !clip.looping() && clip.content_view().is_none()),
+            start: self.piano_beat_start,
             span: self.piano_beat_span.raw(),
             grid: self.midi_snap_grid,
             bounds,
@@ -293,6 +311,9 @@ impl EditorView {
                         }
                     };
                     if changed {
+                        if view.midi_ruler.gesture.is_none() {
+                            view.sync_held_play_start_audition();
+                        }
                         cx.notify();
                     }
                 });
@@ -301,6 +322,7 @@ impl EditorView {
                 let _ = cancelled.update(cx, |view, cx| {
                     if view.owns_midi_ruler_capture(context, handle) {
                         view.midi_ruler.cancel();
+                        view.sync_held_play_start_audition();
                         cx.notify();
                     }
                 });
@@ -346,34 +368,89 @@ impl EditorView {
             window.renew_pointer_capture(owner, gesture.handle.held_cursor());
         }
     }
+    pub(super) fn held_midi_play_start_audition(
+        &self,
+    ) -> Option<hex_session::service::ArrangementPlayStartAudition> {
+        use hex_session::service::{ArrangementPlayStartAudition, PlayStartEdit};
+        let gesture = self.midi_ruler.gesture?;
+        if gesture.handle != Handle::Start
+            || gesture.preview == gesture.context.values
+            || self.midi_ruler_context(gesture.context.bounds) != Some(gesture.context)
+        {
+            return None;
+        }
+        let command = midi_source_controls::edit_command(
+            &self.state.as_ref()?.project,
+            gesture.context.clip,
+            gesture.preview,
+        )?;
+        Some(ArrangementPlayStartAudition {
+            context: hex_engine::AudioSourceContext {
+                project_generation: gesture.context.generation,
+                editor_revision: gesture.context.revision,
+            },
+            edit: PlayStartEdit::from_midi_command(&command)?,
+        })
+    }
+
     fn update_midi_ruler(&mut self, bounds: CanvasBounds, x: f32, invert_snap: bool) -> bool {
         let Some(gesture) = self.midi_ruler.gesture else {
             return false;
         };
-        if !x.is_finite() || self.midi_ruler_context(bounds) != Some(gesture.context) {
-            return self.midi_ruler.cancel();
+        let changed = if !x.is_finite() || self.midi_ruler_context(bounds) != Some(gesture.context)
+        {
+            self.midi_ruler.cancel()
+        } else {
+            self.midi_ruler
+                .gesture
+                .as_mut()
+                .is_some_and(|gesture| gesture.update(x, invert_snap))
+        };
+        if changed && gesture.handle == Handle::Start {
+            self.sync_held_play_start_audition();
         }
-        self.midi_ruler
-            .gesture
-            .as_mut()
-            .is_some_and(|gesture| gesture.update(x, invert_snap))
+        changed
     }
     fn finish_midi_ruler(&mut self, bounds: CanvasBounds, x: f32, invert_snap: bool) {
         let Some(mut gesture) = self.midi_ruler.gesture.take() else {
             return;
         };
         if !x.is_finite() || self.midi_ruler_context(bounds) != Some(gesture.context) {
+            self.sync_held_play_start_audition();
             return;
         }
         gesture.update(x, invert_snap);
         if gesture.preview == gesture.context.values {
+            self.sync_held_play_start_audition();
             return;
         }
-        let changed = gesture.preview;
-        self.commit_midi_clip_loop(gesture.context.clip, changed);
+        let play_start = gesture.handle == Handle::Start;
+        if play_start {
+            self.finish_held_play_start_audition();
+        }
+        self.commit_midi_clip_loop(gesture.context.clip, gesture.preview);
+        if play_start {
+            self.settle_released_play_start_audition(gesture.context.clip);
+        }
+    }
+    pub(super) fn midi_header_loop_values(
+        &self,
+        clip: ClipId,
+        revision: u64,
+    ) -> Option<SourceValues> {
+        self.midi_ruler
+            .gesture
+            .filter(|g| {
+                g.context.clip == clip
+                    && g.context.generation == self.project_generation
+                    && g.context.revision == revision
+                    && g.preview != g.context.values
+            })
+            .map(|g| g.preview)
+            .or_else(|| self.pending_clip_loop_midi(clip))
     }
     pub(super) fn midi_source_ruler(&mut self, cx: &mut ViewContext<Self>) -> Div {
-        let start = self.piano_beat_start.raw();
+        let start = self.piano_beat_start;
         let span = self.piano_beat_span.raw().max(1);
         let marker = self
             .midi_ruler
@@ -414,23 +491,25 @@ impl EditorView {
                 })
                 .into()
             });
-        let mut step = self
-            .midi_snap_grid
-            .step_raw()
-            .unwrap_or(hex_project::BeatTime::ONE.raw())
-            .max(1);
-        while span / step > 8 {
-            step = step.saturating_mul(2);
-        }
-        let first = start.div_ceil(step);
-        for index in 0..=8_u64 {
+        let step = super::midi_viewport_grid::ruler_step(
+            span,
+            self.midi_snap_grid
+                .step_raw()
+                .unwrap_or(hex_project::BeatTime::ONE.raw()),
+        );
+        let step = i128::from(step);
+        let first = -(-start).div_euclid(step);
+        for index in 0..=8_i128 {
             let Some(raw) = first
                 .checked_add(index)
                 .and_then(|value| value.checked_mul(step))
             else {
                 break;
             };
-            let Some(offset) = raw.checked_sub(start).filter(|offset| *offset <= span) else {
+            let Some(offset) = raw
+                .checked_sub(start)
+                .filter(|offset| *offset >= 0 && *offset <= i128::from(span))
+            else {
                 break;
             };
             let fraction = (offset as f64 / span as f64) as f32;
@@ -440,7 +519,7 @@ impl EditorView {
                     "{:.2}b",
                     raw as f64 / hex_project::BeatTime::ONE.raw() as f64
                 ),
-                raw % (hex_project::BeatTime::ONE.raw() * 4) == 0,
+                raw % i128::from(super::midi_viewport_grid::ACCENT_PERIOD) == 0,
                 false,
                 false,
             ));
@@ -454,9 +533,9 @@ impl EditorView {
                         return;
                     }
                     if let Some((first, last)) = time_selection {
-                        let end = start.saturating_add(span);
-                        let first = first.max(start);
-                        let last = last.min(end);
+                        let end = start.saturating_add(i128::from(span));
+                        let first = i128::from(first).max(start);
+                        let last = i128::from(last).min(end);
                         if first < last {
                             let left =
                                 b.x + ((first - start) as f64 / span as f64) as f32 * b.width;
@@ -467,14 +546,14 @@ impl EditorView {
                                     point(px(left), bounds.origin.y),
                                     size(px(right - left), px(b.height)),
                                 ),
-                                gpui::Hsla::from(rgb(theme::color(theme::PaletteRole::Secondary)))
+                                gpui::Hsla::from(rgb(theme::time_selection_fill()))
                                     .opacity(theme::TIME_SELECTION_OPACITY),
                             ));
                         }
                     }
                     if let Some(marker) = marker
-                        .and_then(|marker| marker.checked_sub(start))
-                        .filter(|offset| *offset <= span)
+                        .and_then(|marker| i128::from(marker).checked_sub(start))
+                        .filter(|offset| *offset >= 0 && *offset <= i128::from(span))
                     {
                         let x =
                             bounds.origin.x + px((marker as f64 / span as f64) as f32 * b.width);
@@ -514,8 +593,8 @@ impl EditorView {
                         let hovered = !window.is_pointer_dragging()
                             && bounds.contains(&event.position)
                             && marker
-                                .and_then(|at| at.checked_sub(start))
-                                .filter(|at| *at <= span)
+                                .and_then(|at| i128::from(at).checked_sub(start))
+                                .filter(|at| *at >= 0 && *at <= i128::from(span))
                                 .is_some_and(|at| {
                                     let x = bounds.left()
                                         + bounds.size.width * (at as f64 / span as f64) as f32;
@@ -609,7 +688,7 @@ mod tests;
 #[cfg(all(test, feature = "ui-test-support"))]
 pub(in crate::editor) use tests::roundtrip;
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "ui-test-support")))]
 mod geometry_tests {
     use super::*;
     use hex_project::{BeatTime, Command, Created, Editor, Project};
@@ -642,6 +721,7 @@ mod geometry_tests {
                 0,
                 4 * BeatTime::ONE.raw(),
             ),
+            play_start_region: false,
             start: 0,
             span: 4 * BeatTime::ONE.raw(),
             grid: MidiGrid::Sixteenth,
@@ -707,7 +787,7 @@ mod geometry_tests {
         for invalid in [
             Context { span: 0, ..c },
             Context {
-                start: u64::MAX,
+                start: i128::from(u64::MAX),
                 span: 1,
                 ..c
             },
