@@ -95,20 +95,24 @@ fn completed_overrange_query_repaints_the_editor(cx: &mut TestAppContext) {
     loop {
         visual.executor().advance_clock(Duration::from_millis(16));
         visual.run_until_parked();
-        let (ready, paints, busy) = editor.read_with(&visual, |view, _| {
+        let (ready, paints, busy, painted_ready) = editor.read_with(&visual, |view, _| {
             let cache = view.waveform_geometry_cache.borrow();
             (
                 cache.overrange_ready_count(),
                 cache.painted_waveforms().len(),
                 cache.overrange_busy(),
+                cache
+                    .painted_waveforms()
+                    .iter()
+                    .any(|sample| sample.overrange_ready),
             )
         });
-        if ready > 0 && paints > before {
+        if ready > 0 && paints > before && painted_ready {
             break;
         }
         assert!(
             std::time::Instant::now() < deadline,
-            "overrange completion did not repaint: ready={ready}, paints={paints}, before={before}, busy={busy}"
+            "overrange completion did not repaint: ready={ready}, paints={paints}, before={before}, busy={busy}, painted_ready={painted_ready}"
         );
         std::thread::sleep(Duration::from_millis(1));
     }
