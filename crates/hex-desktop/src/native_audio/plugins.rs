@@ -118,6 +118,8 @@ pub(super) struct PreparationObservation {
     pub(super) attempts: u64,
     pub(super) restore_refused: bool,
     pub(super) observed_latency_receipt: bool,
+    pub(super) editor_receipts: [Option<hex_audio::plugin_worker::ParameterEdit>; 8],
+    pub(super) editor_receipt_count: usize,
 }
 #[cfg(all(test, feature = "allocation-probe"))]
 impl std::fmt::Debug for PreparationObservation {
@@ -736,6 +738,8 @@ impl Plugins {
             {
                 let source = self.sources.first();
                 let restore_refused = observed.restore_refused;
+                let editor_receipts = observed.editor_receipts;
+                let editor_receipt_count = observed.editor_receipt_count;
                 *observed = PreparationObservation {
                     output: control.output_identity(),
                     binding: source.map(|source| source.binding),
@@ -749,6 +753,8 @@ impl Plugins {
                     restore_refused,
                     observed_latency_receipt: source
                         .is_some_and(|source| source.observed_latency_receipt),
+                    editor_receipts,
+                    editor_receipt_count,
                 };
             }
             if let Some(queued) = &self.queued {
@@ -877,8 +883,13 @@ impl Plugins {
                 return Ok(());
             };
             if !edits::original_state(control, source.binding, cancellation)?.processing_eq(state) {
-                let selection = edits::armed_selection(control, source.binding, cancellation)?
-                    .ok_or("vst3 canonical program selection unavailable")?;
+                let selection = match edits::armed_selection(control, source.binding, cancellation)?
+                {
+                    Some(selection) => selection,
+                    None => AuthoredSelection::for_no_parameters(
+                        Hosting::saved_identity_on_control(state)?.class.bytes(),
+                    )?,
+                };
                 canonical.push(edits::canonical_bases(
                     self.host
                         .as_ref()

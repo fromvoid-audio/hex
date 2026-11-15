@@ -141,6 +141,22 @@ impl Plugins {
                 continue;
             }
             if changed_state
+                && !destination.is_instrument()
+                && input.preparing_edit()
+                && let Some(gesture) = self.parameter_gesture.as_ref()
+                && gesture.sequenced_candidate_source(
+                    control,
+                    input.context(),
+                    desired.map(|old| old.context()),
+                    source.binding,
+                    device,
+                    state,
+                    cancellation,
+                )?
+            {
+                return Ok(Some(source.binding));
+            }
+            if changed_state
                 && !retain_instrument
                 && !matches!(source.operation, SourceOperation::Edit(context) if context == input.context())
             {

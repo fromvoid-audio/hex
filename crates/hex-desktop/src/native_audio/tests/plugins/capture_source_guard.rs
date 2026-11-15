@@ -9,18 +9,37 @@ use hex_session::{
 #[test]
 #[ignore = "explicit source-bound signed SDK receipts required"]
 fn pause_before_publication_preserves_previous_graph() {
-    pause_guard_case(false);
+    pause_guard_case(false, true, false);
 }
 
 #[test]
 #[ignore = "explicit source-bound signed SDK receipts required"]
 fn pause_after_install_keeps_canonical_commit() {
-    pause_guard_case(true);
+    pause_guard_case(true, true, false);
 }
 
-fn pause_guard_case(after_install: bool) {
+#[test]
+#[ignore = "explicit source-bound signed SDK receipts required"]
+fn unlaned_pause_before_publication_preserves_previous_graph() {
+    pause_guard_case(false, false, false);
+}
+
+#[test]
+#[ignore = "explicit source-bound signed SDK receipts required"]
+fn unlaned_pause_after_install_keeps_canonical_commit() {
+    pause_guard_case(true, false, false);
+}
+
+#[test]
+#[ignore = "explicit source-bound signed SDK receipts required"]
+fn late_editor_value_remains_on_original_worker_after_unlaned_publication() {
+    pause_guard_case(false, false, true);
+}
+
+fn pause_guard_case(after_install: bool, with_lane: bool, late_editor: bool) {
     const CHILD: &str = "HEX_DESKTOP_TEST_UNLANED_EFFECT_COMMIT";
     if std::env::var_os(CHILD).is_none() {
+        let gates = Files::new();
         let output = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
@@ -29,7 +48,12 @@ fn pause_guard_case(after_install: bool) {
                 "--nocapture",
             ])
             .env(CHILD, "1")
-            .env("HEX_ORIGINAL_INSTANCE_VARIANT", "92")
+            .env(
+                "HEX_ORIGINAL_INSTANCE_VARIANT",
+                if late_editor { "147" } else { "92" },
+            )
+            .env("HEX_ORIGINAL_INSTANCE_RELEASE", gates.0.join("release"))
+            .env("HEX_ORIGINAL_INSTANCE_TRACE", gates.0.join("trace"))
             .output()
             .unwrap();
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -69,23 +93,28 @@ fn pause_guard_case(after_install: bool) {
     let (applied, metadata) = h.applied(applied);
     let prior = &before.state.project.main_devices()[0];
     let device = prior.id();
-    let target = DeviceAutomationTarget::Vst3 { parameter: 0 };
+    let parameter = if late_editor { 7 } else { 0 };
+    let target = DeviceAutomationTarget::Vst3 { parameter };
     assert!(prior.automation_target(target).is_none());
-    let lane = Request::DeviceAutomation {
-        project_generation: metadata.context.project_generation,
-        revision: metadata.context.editor_revision,
-        device,
-        target,
-        vst3_class: Some(class),
-        points: vec![hex_project::AutomationPoint {
-            beat: hex_project::BeatTime::ZERO,
-            value: hex_project::AutomationValue::new(0.25).unwrap(),
-            outgoing: hex_project::AutomationInterpolation::Step,
-        }],
+    let metadata = if with_lane {
+        let lane = Request::DeviceAutomation {
+            project_generation: metadata.context.project_generation,
+            revision: metadata.context.editor_revision,
+            device,
+            target,
+            vst3_class: Some(class),
+            points: vec![hex_project::AutomationPoint {
+                beat: hex_project::BeatTime::ZERO,
+                value: hex_project::AutomationValue::new(0.25).unwrap(),
+                outgoing: hex_project::AutomationInterpolation::Step,
+            }],
+        };
+        let edited = automation::edit_with_running_callback(&mut h, lane);
+        assert!(edited.error.is_none(), "{:?}", edited.error);
+        h.applied(applied).1
+    } else {
+        metadata
     };
-    let edited = automation::edit_with_running_callback(&mut h, lane);
-    assert!(edited.error.is_none(), "{:?}", edited.error);
-    let (_, metadata) = h.applied(applied);
     let output = h.audio.as_ref().unwrap().control.output_identity().unwrap();
     h.run(Request::QueryPluginParameters(PluginParameterQuery {
         context: metadata.context,
@@ -95,12 +124,12 @@ fn pause_guard_case(after_install: bool) {
         page_first: None,
     }));
     let result = h.next().plugin_parameters.unwrap();
-    assert!(result.source.is_some());
+    let original_source = result.source.unwrap();
     let rows = result.rows.unwrap();
     let [row] = rows.as_slice() else {
         panic!("one SDK parameter")
     };
-    assert_eq!((row.id, row.automation_class), (0, Some(class)));
+    assert_eq!((row.id, row.automation_class), (parameter, Some(class)));
     let origin = PluginParameterOrigin {
         context: metadata.context,
         device,
@@ -244,35 +273,52 @@ fn pause_guard_case(after_install: bool) {
         }
     }
     let old_output = h.audio.as_ref().unwrap().control.output_identity();
-    h.audio
-        .as_mut()
-        .unwrap()
-        .control
-        .command(PlaybackCommand::Pause)
-        .unwrap();
-    for _ in 0..16 {
-        h.render_worker_step();
-        if !h
-            .audio
-            .as_ref()
-            .unwrap()
-            .status()
-            .unwrap()
-            .playing
-            .load(Acquire)
-        {
-            break;
+    if late_editor {
+        let release = std::env::var_os("HEX_ORIGINAL_INSTANCE_RELEASE").unwrap();
+        let trace = std::env::var_os("HEX_ORIGINAL_INSTANCE_TRACE").unwrap();
+        std::fs::write(release, b"editor").unwrap();
+        loop {
+            let observed = std::fs::read(&trace)
+                .ok()
+                .and_then(|bytes| Some(i32::from_ne_bytes(bytes.get(..4)?.try_into().ok()?)));
+            if observed == Some(25) {
+                break;
+            }
+            h.render_worker_step();
+            assert!(Instant::now() < until, "late editor event was not emitted");
+            std::thread::yield_now();
         }
+    } else {
+        h.audio
+            .as_mut()
+            .unwrap()
+            .control
+            .command(PlaybackCommand::Pause)
+            .unwrap();
+        for _ in 0..16 {
+            h.render_worker_step();
+            if !h
+                .audio
+                .as_ref()
+                .unwrap()
+                .status()
+                .unwrap()
+                .playing
+                .load(Acquire)
+            {
+                break;
+            }
+        }
+        assert!(
+            !h.audio
+                .as_ref()
+                .unwrap()
+                .status()
+                .unwrap()
+                .playing
+                .load(Acquire)
+        );
     }
-    assert!(
-        !h.audio
-            .as_ref()
-            .unwrap()
-            .status()
-            .unwrap()
-            .playing
-            .load(Acquire)
-    );
     resume.send(()).unwrap();
     let event = loop {
         h.pump();
@@ -286,10 +332,72 @@ fn pause_guard_case(after_install: bool) {
         std::thread::yield_now();
     };
     let ack = event.gesture_ack.unwrap();
+    if late_editor {
+        assert!(ack.accepted, "{ack:?}");
+        let deadline = Instant::now() + Duration::from_millis(250);
+        let receipts = loop {
+            let observed = *h.plugin_progress.lock().unwrap();
+            if observed.editor_receipt_count >= 3 {
+                break observed.editor_receipts;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "late editor receipts did not arrive"
+            );
+            h.pump();
+            h.render_worker_step();
+        };
+        use hex_audio::plugin_worker::ParameterEditKind;
+        let [Some(begin), Some(perform), Some(end), ..] = receipts else {
+            panic!("missing editor receipts");
+        };
+        assert_eq!(
+            (begin.kind, perform.kind, end.kind),
+            (
+                ParameterEditKind::Begin,
+                ParameterEditKind::Perform,
+                ParameterEditKind::End
+            )
+        );
+        assert_eq!(
+            (begin.id, perform.id, end.id),
+            (parameter, parameter, parameter)
+        );
+        assert_eq!(perform.normalized, 0.75);
+        assert_eq!(
+            (perform.gesture, end.gesture),
+            (begin.sequence, begin.sequence)
+        );
+        assert!(begin.sequence < perform.sequence && perform.sequence < end.sequence);
+        let mut serial = 1;
+        let result = installed_edits::query(&mut h, device, None, &mut serial);
+        assert_eq!(result.source, Some(original_source));
+        let value = result
+            .rows
+            .unwrap()
+            .into_iter()
+            .find(|row| row.id == parameter)
+            .unwrap()
+            .normalized;
+        assert_eq!(value, 0.75, "late editor value must survive publication");
+        assert!(
+            (slope(&h) - base * 3.0).abs() < 1.0e-6,
+            "the late editor value must also reach the running processor"
+        );
+        return;
+    }
     assert_eq!(
         event.state.revision,
         metadata.context.editor_revision + u64::from(after_install),
-        "the session must agree with the installed graph"
+        "the session must agree with the installed graph: ack={ack:?}, applied={}, before={before_revision}, error={:?}",
+        h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .applied_revision
+            .load(Acquire),
+        event.error
     );
     let output = h
         .audio
@@ -320,4 +428,35 @@ fn pause_guard_case(after_install: bool) {
         "the refused gesture must not install its candidate; diagnostics {diagnostics:?}"
     );
     assert_eq!(output, old_output);
+    if !with_lane {
+        assert!(ack.preview_retained, "{ack:?}");
+        assert!(client.acknowledge_with_snapshot(&ack, event.active_device_gesture));
+        h.audio
+            .as_mut()
+            .unwrap()
+            .control
+            .command(PlaybackCommand::Play)
+            .unwrap();
+        client.cancel().unwrap();
+        send(&mut h, &mut client);
+        let mut serial = 1;
+        let deadline = Instant::now() + Duration::from_millis(250);
+        let result = loop {
+            let result = installed_edits::query_once(&mut h, device, None, &mut serial);
+            if result.source.is_some() || Instant::now() >= deadline {
+                break result;
+            }
+            h.pump();
+            h.render_worker_step();
+        };
+        assert_eq!(result.source, Some(original_source), "{:?}", result.rows);
+        let value = result
+            .rows
+            .unwrap()
+            .into_iter()
+            .find(|row| row.id == parameter)
+            .unwrap()
+            .normalized;
+        assert_eq!(value, 0.25, "cancel must restore the original parameter");
+    }
 }

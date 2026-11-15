@@ -122,6 +122,17 @@ impl Plugins {
                 #[cfg(all(test, feature = "allocation-probe"))]
                 {
                     source.observed_latency_receipt = true;
+                    if let Some(progress) = &self.progress
+                        && let Ok(mut progress) = progress.lock()
+                    {
+                        for edit in batch.edits.as_slice() {
+                            let index = progress.editor_receipt_count;
+                            if let Some(slot) = progress.editor_receipts.get_mut(index) {
+                                *slot = Some(*edit);
+                                progress.editor_receipt_count += 1;
+                            }
+                        }
+                    }
                 }
                 let binding = source.binding;
                 self.observe_recording_order(binding, batch.edits.as_slice());

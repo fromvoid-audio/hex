@@ -391,6 +391,85 @@ impl NativeAudioSink {
         file_sources: Option<&hex_session::service::ResidentFileSet>,
     ) -> Result<ResidentPublicationAcceptance, ResidentPublicationRefusal> {
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        let mut playback = playback;
+        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+        let playback = playback;
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        let mut continuation_fence = None;
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        {
+            let control = self
+                .output
+                .as_mut()
+                .and_then(|output| output.publication.control());
+            let request = match self.plugins.sequenced_publication_request(
+                control.as_deref(),
+                self.desired.as_deref(),
+                metadata.context,
+                &playback,
+            ) {
+                Ok(request) => request,
+                Err(error) => {
+                    return Err(ResidentPublicationRefusal {
+                        kind: hex_session::service::ResidentPublicationFailure::Other,
+                        playback,
+                        error,
+                    });
+                }
+            };
+            match request {
+                Some(request)
+                    if matches!(
+                        policy,
+                        ResidentPublicationPolicy::InheritRuntime
+                            | ResidentPublicationPolicy::InheritRuntimeAt(_)
+                    ) =>
+                {
+                    continuation_fence =
+                        Some((request.source, request.transport_epoch, request.playing));
+                    let valid = if playback.has_foreign_continuation_states() {
+                        playback.foreign_continuation_states_match_on_control(
+                            request.identity,
+                            request.binding,
+                            request.previous_state,
+                            request.capture.state(),
+                        )
+                    } else {
+                        playback
+                            .retain_foreign_continuation_states_on_control(
+                                request.identity,
+                                request.binding,
+                                request.previous_state.clone(),
+                                request.capture.state().clone(),
+                            )
+                            .is_ok()
+                    };
+                    if !valid {
+                        return Err(ResidentPublicationRefusal {
+                            kind: hex_session::service::ResidentPublicationFailure::Other,
+                            playback,
+                            error: "vst3 continuation state differs".into(),
+                        });
+                    }
+                }
+                Some(_) => {
+                    return Err(ResidentPublicationRefusal {
+                        kind: hex_session::service::ResidentPublicationFailure::Other,
+                        playback,
+                        error: "vst3 continuation policy differs".into(),
+                    });
+                }
+                None if playback.has_foreign_continuation_states() => {
+                    return Err(ResidentPublicationRefusal {
+                        kind: hex_session::service::ResidentPublicationFailure::Other,
+                        playback,
+                        error: "vst3 continuation gesture changed".into(),
+                    });
+                }
+                None => {}
+            }
+        }
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         let parameter_source = self.plugins.override_publication_source(metadata.context);
         let native_publication = self.plugins.preparing_edit(metadata.context)
             || playback.foreign_nodes_on_control().next().is_some();
@@ -742,6 +821,46 @@ impl NativeAudioSink {
                         error: cancellation_error.into(),
                     });
                 }
+                #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                let published = if retained_playback.has_foreign_continuation_states() {
+                    match self.plugins.sequenced_publication_request(
+                        Some(control),
+                        self.desired.as_deref(),
+                        metadata.context,
+                        &retained_playback,
+                    ) {
+                        Ok(Some(request))
+                            if continuation_fence
+                                == Some((
+                                    request.source,
+                                    request.transport_epoch,
+                                    request.playing,
+                                )) =>
+                        {
+                            control.publish_native_parameter_continuation_on_control(
+                                retained_playback,
+                                request,
+                                |prospective| admit(&[prospective, retired, pending]),
+                            )
+                        }
+                        Ok(_) => Err(hex_audio::prepared::AdmittedPublishError::Admission {
+                            reason: "vst3 continuation gesture changed".into(),
+                            playback: retained_playback,
+                        }),
+                        Err(error) => Err(hex_audio::prepared::AdmittedPublishError::Admission {
+                            reason: error,
+                            playback: retained_playback,
+                        }),
+                    }
+                } else {
+                    control.publish_with_admission_and_source_on_control(
+                        retained_playback,
+                        policy,
+                        metadata.context,
+                        |prospective| admit(&[prospective, retired, pending]),
+                    )
+                };
+                #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
                 let published = control.publish_with_admission_and_source_on_control(
                     retained_playback,
                     policy,

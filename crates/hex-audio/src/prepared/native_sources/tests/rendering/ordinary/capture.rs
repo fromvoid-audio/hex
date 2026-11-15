@@ -786,3 +786,157 @@ fn actual_ordinary_live_capture_held_sdk_keeps_installed_source_and_pcm() {
     drop(request);
     dispose(f);
 }
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn sequenced_capture_reserves_only_the_installed_original_endpoint() {
+    use crate::plugin_worker::{
+        NativeWorkerParameterProgress, NativeWorkerSequencedCaptureProgress,
+    };
+    if std::env::var_os("HEX_SEQUENCED_ENDPOINT_DRIVER").is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                std::thread::current().name().unwrap(),
+                "--ignored",
+            ])
+            .env("HEX_SEQUENCED_ENDPOINT_DRIVER", "1")
+            .env("HEX_ORIGINAL_INSTANCE_VARIANT", "91")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success() && String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    let _serial = serial();
+    let mut f = fixture_at("processing", 0);
+    let root = f.control.native_candidate_root();
+    let playback = compile(&f, true);
+    publish(&mut f.control, playback, PublicationPolicy::InheritRuntime);
+    f.control.command(PlaybackCommand::Play).unwrap();
+    block(&mut f);
+    replacement::wait_for_blocks(&root, f.binding, 1);
+    let until = Instant::now() + Duration::from_secs(3);
+    let request = loop {
+        match f
+            .control
+            .begin_native_source_parameter_change_on_control(f.binding, 7, 0.75)
+        {
+            Ok(request) => break request,
+            Err("native preparation is busy" | "native parameter mailbox is busy") => {}
+            Err(error) => panic!("input admission: {error}"),
+        }
+        assert!(Instant::now() < until);
+        std::thread::yield_now();
+    };
+    for n in 1..5_u64 {
+        block(&mut f);
+        replacement::wait_for_blocks(&root, f.binding, n + 1);
+    }
+    loop {
+        match f
+            .control
+            .poll_native_source_parameter_change_on_control(f.binding, &request)
+        {
+            Ok(NativeWorkerParameterProgress::Processed(_)) => break,
+            Ok(NativeWorkerParameterProgress::Pending) | Err("native preparation is busy") => {}
+            other => panic!("input terminal: {other:?}"),
+        }
+        assert!(Instant::now() < until);
+        std::thread::yield_now();
+    }
+    let capture = loop {
+        match f
+            .control
+            .begin_native_capture_after_parameter_on_control(f.binding, &request)
+        {
+            Ok(capture) => break capture,
+            Err("native preparation is busy" | "native capture mailbox is busy") => {}
+            Err(error) => panic!("capture admission: {error}"),
+        }
+        assert!(Instant::now() < until);
+        std::thread::yield_now();
+    };
+    let fact = loop {
+        match f
+            .control
+            .poll_native_capture_after_parameter_on_control(f.binding, &capture)
+        {
+            Ok(NativeWorkerSequencedCaptureProgress::Captured(fact)) => break fact,
+            Ok(NativeWorkerSequencedCaptureProgress::Pending)
+            | Err("native preparation is busy" | "native capture mailbox is busy") => {}
+            _ => panic!("capture terminal"),
+        }
+        assert!(Instant::now() < until);
+        std::thread::yield_now();
+    };
+    let source = loop {
+        match f
+            .control
+            .observe_native_sequenced_capture_input_on_control(f.binding, &fact)
+        {
+            Ok(Some(source)) => break source,
+            Err(
+                "native preparation is busy"
+                | "native source is busy"
+                | "native capture mailbox is busy",
+            ) => {}
+            _ => panic!("source observation"),
+        }
+        assert!(Instant::now() < until);
+        std::thread::yield_now();
+    };
+    allocation_free(|| {
+        f.data.owner_mut().unwrap().run(|callback, _| {
+            let wrong = Binding {
+                epoch: f.binding.epoch + 1,
+                ..f.binding
+            };
+            assert!(
+                callback
+                    .reserve_native_parameter_input_observation(wrong, &source)
+                    .is_none()
+            );
+            let mut fence = callback
+                .reserve_native_parameter_input_observation(f.binding, &source)
+                .unwrap();
+            assert!(fence.is_live());
+            assert!(fence.try_order_before_revocation());
+            assert!(
+                callback
+                    .reserve_native_parameter_input_observation(f.binding, &source)
+                    .is_none()
+            );
+        })
+    });
+    allocation_free(|| {
+        f.data.owner_mut().unwrap().run(|callback, _| {
+            let mut fence = callback
+                .reserve_native_parameter_input_observation(f.binding, &source)
+                .unwrap();
+            f.control.status.closing.store(true, Release);
+            assert!(!fence.is_live());
+            assert!(!fence.try_order_before_revocation());
+        })
+    });
+    f.control.status.closing.store(false, Release);
+    allocation_free(|| {
+        f.data.owner_mut().unwrap().run(|callback, _| {
+            callback.revoke_native_effects();
+            assert!(
+                callback
+                    .reserve_native_parameter_input_observation(f.binding, &source)
+                    .is_none()
+            );
+        })
+    });
+    drop(source);
+    let returned = dispose(f);
+    assert!(
+        matches!(returned.disposal, native::PreparationDisposal::Reaped(retired) if retired.status.success() && retired.terminal.is_some())
+    );
+}

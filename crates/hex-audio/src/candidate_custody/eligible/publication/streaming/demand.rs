@@ -63,6 +63,7 @@ pub(crate) struct StreamInstall<'a> {
     pub(crate) command_prefix: u64,
     pub(crate) frames: usize,
     pub(crate) fenced_restart: bool,
+    pub(crate) foreign_continuation: bool,
 }
 pub(super) fn envelope(
     domains: &mut [Option<DomainEnvelope>; 2],
@@ -215,6 +216,13 @@ impl StateView<'_> {
                     .ok_or(hex_engine::Invalid("stream predecessor unavailable"))?;
                 let preview = if request.fenced_restart {
                     runtime.preview_ordinary_fenced_restart(
+                        previous,
+                        frames,
+                        request.pending_play.then_some(true),
+                        &mut visit,
+                    )
+                } else if request.foreign_continuation {
+                    runtime.preview_ordinary_with_stored_foreign_continuation(
                         previous,
                         frames,
                         request.pending_play.then_some(true),
@@ -596,6 +604,7 @@ impl ActiveView<'_> {
             command_prefix,
             frames: output.len(),
             fenced_restart: false,
+            foreign_continuation: false,
         };
         let (action_applied, action_rejection) = match self.resolve_stream_action(&mut request) {
             super::actions::ActionResolution::Ready(Some((ticket, Ok(())))) => (Some(ticket), None),
@@ -632,6 +641,7 @@ impl ActiveView<'_> {
                 command_prefix,
                 frames: output.len() - committed,
                 fenced_restart: false,
+                foreign_continuation: false,
             };
             let mut planned =
                 self.state

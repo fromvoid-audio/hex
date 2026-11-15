@@ -5,6 +5,109 @@ use std::time::{Duration, Instant};
 
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn admitted_sequenced_capture_survives_close_during_admission() {
+    use super::super::endpoints::NativeEndpointBank;
+    use crate::plugin_worker::NativeWorkerParameterProgress;
+    use hex_lattice::{ForeignProcessorNode, ForeignProcessors};
+
+    if std::env::var_os("HEX_SEQUENCED_CLOSE_DRIVER").is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                std::thread::current().name().unwrap(),
+                "--ignored",
+                "--nocapture",
+            ])
+            .env("HEX_SEQUENCED_CLOSE_DRIVER", "1")
+            .env("HEX_ORIGINAL_INSTANCE_VARIANT", "92")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    let root = root();
+    root.configure_native_sources(1, source_reservation())
+        .unwrap();
+    let binding = start(&root);
+    root.complete_native_source(
+        binding,
+        Some(hex_plugin_host::protocol::PresentationLatency {
+            input_frames: 77,
+            output_frames: 91,
+        }),
+    )
+    .unwrap();
+    root.start_native_effect(binding).unwrap();
+    let (identity, prepared, configuration) = {
+        let work = lock(&root.work);
+        let Some(Owner::Effect(owner)) = work.sources.cells[0].owner.as_ref() else {
+            panic!("actual effect")
+        };
+        (
+            owner.identity(),
+            owner.prepared(),
+            owner.configuration().clone(),
+        )
+    };
+    let loan = root.loan_native_endpoint(binding).unwrap();
+    let mut bank = NativeEndpointBank::new().unwrap();
+    assert!(bank.install(binding.root, loan).is_ok());
+    let input = root
+        .begin_native_parameter_change(binding, 0, 0.5, false)
+        .unwrap();
+    let node = ForeignProcessorNode {
+        owner: identity.owner(),
+        device_id: identity.device_id(),
+        device_type: configuration.type_id(),
+        sample_rate: 48_000,
+        configuration: &configuration,
+        prepared,
+        automation: None,
+        bypassed: false,
+        input_gain: 1.0,
+        output_gain: 1.0,
+    };
+    bank.begin_rendering(8).unwrap();
+    bank.process_segment(node, 0, &mut [[0.5, -0.25]; 8], None)
+        .unwrap();
+    bank.finish_rendering(true).unwrap();
+    let until = Instant::now() + Duration::from_secs(3);
+    loop {
+        match root.poll_native_parameter_change(binding, &input) {
+            Ok(NativeWorkerParameterProgress::Processed(_)) => break,
+            Ok(NativeWorkerParameterProgress::Pending) | Err("native preparation is busy") => {}
+            other => panic!("parameter terminal: {other:?}"),
+        }
+        assert!(Instant::now() < until);
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let request = root
+        .sequenced_capture_admission(binding, &input, || root.close())
+        .unwrap();
+    assert!(!request.original_worker_released_on_control());
+    assert!(
+        root.poll_capture_after_parameter(binding, &request)
+            .is_err()
+    );
+    bank.request_epoch_return();
+    assert!(
+        root.ingest_native_endpoint(bank.take_requested(0).unwrap())
+            .is_ok()
+    );
+    dispose(&root, binding);
+    let returned = root.recover_native_source(binding).unwrap();
+    assert!(returned.cleanup_error.is_none());
+    assert!(matches!(returned.disposal, PreparationDisposal::Reaped(_)));
+    assert!(request.original_worker_released_on_control());
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn admitted_parameter_hold_survives_close_during_admission() {
     parameter_close_admission(true);
 }

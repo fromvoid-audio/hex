@@ -211,3 +211,28 @@ fn graph_refuses_wrong_effect_binding_or_instrument_and_requires_a_dense_consume
     assert!(ordinary.revoked);
     assert_eq!(pcm, [[0.0; 2]; 2]);
 }
+
+#[test]
+fn foreign_state_continuation_refuses_a_modulated_source() {
+    let previous = state();
+    let candidate = Arc::new(
+        NativeDeviceState::new(TYPE, 1, vec![4, 5, 6])
+            .unwrap()
+            .with_input_gain_db(20.0)
+            .unwrap()
+            .with_output_gain_db(-20.0)
+            .unwrap(),
+    );
+    let mut old = effect(0, 0.25, false, BINDING);
+    old.configuration = Some(Arc::clone(&previous));
+    let mut next = effect(0, 0.25, false, BINDING);
+    next.configuration = Some(Arc::clone(&candidate));
+    let old = NativeRuntimeChain::new_prepared(vec![old]).unwrap();
+    let next = NativeRuntimeChain::new_prepared(vec![next]).unwrap();
+    let identity =
+        crate::ProcessorInstanceIdentity::new(ProcessorChainOwner::Track(5), 17).unwrap();
+    let proof =
+        crate::ForeignConfigurationContinuation::new(identity, BINDING, &previous, &candidate)
+            .unwrap();
+    assert!(!old.configuration_matches_range_with_foreign_continuation(&next, 0..1, &proof));
+}

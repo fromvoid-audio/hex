@@ -84,6 +84,8 @@ fn queue(control: &mut Control, playback: Playback, revision: u64, policy: Publi
             fresh_runtime_cancellation: None,
             quantized_seek_frame: None,
             streams: None,
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            native_continuation: None,
             native_references: None,
             playback: Box::new(playback),
         }))

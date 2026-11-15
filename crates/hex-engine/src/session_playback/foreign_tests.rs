@@ -1449,6 +1449,496 @@ mod shared_source_release;
 mod instruments;
 
 #[test]
+fn exact_foreign_continuation_keeps_track_return_and_main_tail_in_the_running_chain() {
+    struct NonQuiet;
+    impl ForeignProcessors for NonQuiet {
+        fn process_segment(
+            &mut self,
+            _: ForeignProcessorNode<'_>,
+            _: usize,
+            frames: &mut [Frame],
+            _: Option<&dyn hex_lattice::NativeInstrumentClock>,
+        ) -> Result<(), DeviceContractError> {
+            frames.fill([0.2, 0.2]);
+            Ok(())
+        }
+        fn committed_tail_is_drained(&self, _: ForeignProcessorNode<'_>) -> bool {
+            false
+        }
+        fn reject_callback(&mut self) {}
+    }
+    for location in 0..=2 {
+        let (revision, endpoint, _) = prepared_with_latency(location, false, 0, Some(1));
+        let identity = ProcessorInstanceIdentity::new(endpoint.owner, endpoint.device).unwrap();
+        let binding = hex_lattice_contract::ForeignProcessorBinding {
+            root: 1,
+            instance: endpoint.device,
+            graph: 1,
+            epoch: 1,
+        };
+        let previous = Arc::new(state(19).unwrap());
+        let candidate = Arc::new(state(20).unwrap());
+        let chain = |state: Arc<NativeDeviceState>| {
+            hex_lattice::NativeRuntimeChain::new_prepared(vec![
+                hex_lattice::PreparedRuntimeInstance {
+                    meter: Default::default(),
+                    owner: endpoint.owner,
+                    device_id: endpoint.device,
+                    device_type: Definition.type_id(),
+                    matrix: StereoMatrix::identity(),
+                    bypassed: false,
+                    sample_rate: 48_000,
+                    configuration: Some(state),
+                    modulation: None,
+                    automation: Default::default(),
+                    definition: Some(PreparedProcessorFactory::Foreign(
+                        PreparedForeignProcessor::new(8, 0, 16)
+                            .unwrap()
+                            .with_output_tail(hex_lattice::OutputTail::Finite {
+                                max_tail_frames: 16,
+                            })
+                            .with_binding(binding)
+                            .unwrap(),
+                    )),
+                },
+            ])
+            .unwrap()
+        };
+        let mut old = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+        let mut next = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+        let mut refused = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+        match location {
+            0 => {
+                old.device_chains[0] = chain(Arc::clone(&previous));
+                next.device_chains[0] = chain(Arc::clone(&candidate));
+                refused.device_chains[0] = chain(Arc::clone(&candidate));
+            }
+            1 => {
+                old.return_chains[0] = chain(Arc::clone(&previous));
+                next.return_chains[0] = chain(Arc::clone(&candidate));
+                refused.return_chains[0] = chain(Arc::clone(&candidate));
+            }
+            _ => {
+                old.main_chain = chain(Arc::clone(&previous));
+                next.main_chain = chain(Arc::clone(&candidate));
+                refused.main_chain = chain(Arc::clone(&candidate));
+            }
+        }
+        old.apply(SessionPlaybackCommand::Play).unwrap();
+        old.render_with_foreign_processors(&mut [[0.0; 2]; 8], None, None, None, &mut NonQuiet)
+            .unwrap();
+        let old_frame = old.performance_frame;
+        assert!(matches!(
+            refused.try_inherit_state_from(&mut old),
+            Err(SessionPlaybackError::ForeignTailSourceBusy)
+        ));
+        assert_eq!(old.performance_frame, old_frame);
+        let wrong = Arc::new(state(21).unwrap());
+        let wrong_proof = hex_lattice::ForeignConfigurationContinuation::new(
+            identity, binding, &previous, &wrong,
+        )
+        .unwrap();
+        assert!(matches!(
+            refused.inherit_state_planned(&mut old, None, None, false, false, Some(&wrong_proof)),
+            Err(SessionPlaybackError::ForeignTailSourceBusy)
+        ));
+        assert_eq!(old.performance_frame, old_frame);
+        assert!(matches!(
+            refused.try_inherit_state_live_with_foreign_continuation_from(&mut old, &wrong_proof),
+            Err(SessionPlaybackError::ForeignTailSourceBusy)
+        ));
+        assert_eq!(old.performance_frame, old_frame);
+        let wrong_binding = hex_lattice_contract::ForeignProcessorBinding {
+            epoch: binding.epoch + 1,
+            ..binding
+        };
+        let wrong_endpoint = hex_lattice::ForeignConfigurationContinuation::new(
+            identity,
+            wrong_binding,
+            &previous,
+            &candidate,
+        )
+        .unwrap();
+        assert!(matches!(
+            refused.inherit_state_planned(
+                &mut old,
+                None,
+                None,
+                false,
+                false,
+                Some(&wrong_endpoint)
+            ),
+            Err(SessionPlaybackError::ForeignTailSourceBusy)
+        ));
+        assert_eq!(old.performance_frame, old_frame);
+        let proof = hex_lattice::ForeignConfigurationContinuation::new(
+            identity, binding, &previous, &candidate,
+        )
+        .unwrap();
+        next.preview_stream_handoff_with_continuation_and_report(
+            &mut old,
+            8,
+            None,
+            &mut |_| Ok(()),
+            true,
+            false,
+            Some(&proof),
+        )
+        .unwrap();
+        assert_eq!(old.performance_frame, old_frame);
+        next.try_inherit_state_live_with_foreign_continuation_from(&mut old, &proof)
+            .unwrap();
+        assert_eq!(next.performance_frame, old_frame);
+        next.render_with_foreign_processors(&mut [[0.0; 2]; 8], None, None, None, &mut NonQuiet)
+            .unwrap();
+        // Exercise the public ordinary playback preview and commit facades,
+        // with the same actual session graphs and original source pair.
+        let mut old_playback =
+            crate::playback::Playback::try_from_prepared_with_session(Arc::clone(&revision))
+                .unwrap();
+        let mut next_playback =
+            crate::playback::Playback::try_from_prepared_with_session(Arc::clone(&revision))
+                .unwrap();
+        {
+            let old_session = old_playback
+                .session_runtime_mut_for_stream_action()
+                .unwrap();
+            let next_session = next_playback
+                .session_runtime_mut_for_stream_action()
+                .unwrap();
+            match location {
+                0 => {
+                    old_session.device_chains[0] = chain(Arc::clone(&previous));
+                    next_session.device_chains[0] = chain(Arc::clone(&candidate));
+                }
+                1 => {
+                    old_session.return_chains[0] = chain(Arc::clone(&previous));
+                    next_session.return_chains[0] = chain(Arc::clone(&candidate));
+                }
+                _ => {
+                    old_session.main_chain = chain(Arc::clone(&previous));
+                    next_session.main_chain = chain(Arc::clone(&candidate));
+                }
+            }
+            old_session.apply(SessionPlaybackCommand::Play).unwrap();
+            old_session
+                .render_with_foreign_processors(&mut [[0.0; 2]; 8], None, None, None, &mut NonQuiet)
+                .unwrap();
+        }
+        assert!(
+            old_playback
+                .retain_foreign_continuation_states_on_control(
+                    identity,
+                    binding,
+                    (*previous).clone(),
+                    (*candidate).clone(),
+                )
+                .is_err()
+        );
+        assert!(!old_playback.has_foreign_continuation_states());
+        let baseline_bytes = next_playback
+            .resource_control_metadata_bytes_on_control()
+            .unwrap();
+        let previous_handles = previous.payload_storage_observation().1;
+        let candidate_handles = candidate.payload_storage_observation().1;
+        next_playback
+            .retain_foreign_continuation_states_on_control(
+                identity,
+                binding,
+                (*previous).clone(),
+                (*candidate).clone(),
+            )
+            .unwrap();
+        assert!(next_playback.foreign_continuation_states_match_on_control(
+            identity, binding, &previous, &candidate
+        ));
+        let copied_candidate = state(20).unwrap();
+        assert!(!next_playback.foreign_continuation_states_match_on_control(
+            identity,
+            binding,
+            &previous,
+            &copied_candidate
+        ));
+        assert_eq!(
+            previous.payload_storage_observation().1,
+            previous_handles + 1
+        );
+        assert_eq!(
+            candidate.payload_storage_observation().1,
+            candidate_handles + 1
+        );
+        assert!(
+            next_playback
+                .resource_control_metadata_bytes_on_control()
+                .unwrap()
+                > baseline_bytes
+        );
+        assert!(
+            next_playback
+                .retain_foreign_continuation_states_on_control(
+                    identity,
+                    binding,
+                    (*previous).clone(),
+                    (*candidate).clone(),
+                )
+                .is_err()
+        );
+        assert!(
+            next_playback
+                .visit_candidate_groups(&mut |_, _, _| Ok(()))
+                .is_err()
+        );
+        let limits = crate::AudioStorageLedgerReservation {
+            data_rows: 512,
+            handle_rows: 512,
+            root_rows: 64,
+            max_retained_bytes: 16 * 1024 * 1024,
+            max_construction_peak_bytes: 16 * 1024 * 1024,
+        };
+        let mut book =
+            crate::native_device_resources::DeviceResourcePublication::reserve_on_control(
+                limits, 8, 2,
+            )
+            .unwrap();
+        let mut next_playback = match book.publish_on_control(next_playback, Ok::<_, ()>) {
+            Ok(playback) => playback,
+            Err(_) => panic!("ordinary continuation resource admission refused"),
+        };
+        assert!(next_playback.has_foreign_continuation_states());
+        assert!(
+            next_playback
+                .visit_candidate_groups(&mut |_, _, _| Ok(()))
+                .is_err()
+        );
+        let context = crate::AudioSourceContext {
+            project_generation: 1,
+            editor_revision: 1,
+        };
+        assert!(matches!(
+            next_playback
+                .stream_playback(context)
+                .preview_ordinary_with_foreign_continuation(
+                    &mut old_playback.stream_playback(context),
+                    8,
+                    None,
+                    &mut |_| Ok(()),
+                    &wrong_proof,
+                ),
+            Err(crate::playback::PlaybackHandoffError::Session(
+                SessionPlaybackError::ForeignTailSourceBusy
+            ))
+        ));
+        next_playback
+            .stream_playback(context)
+            .preview_ordinary_with_stored_foreign_continuation(
+                &mut old_playback.stream_playback(context),
+                8,
+                None,
+                &mut |_| Ok(()),
+            )
+            .unwrap();
+        assert!(next_playback.has_foreign_continuation_states());
+        assert!(matches!(
+            next_playback.try_inherit_runtime_with_stored_foreign_continuation(
+                &mut old_playback,
+                Some(1),
+                Some(2),
+            ),
+            Err(crate::playback::PlaybackHandoffError::RuntimeFenceChanged)
+        ));
+        assert!(next_playback.has_foreign_continuation_states());
+        next_playback
+            .try_inherit_runtime_with_stored_foreign_continuation(
+                &mut old_playback,
+                Some(1),
+                Some(1),
+            )
+            .unwrap();
+        assert!(next_playback.has_foreign_continuation_states());
+        assert!(book.retire_on_control(Box::new(next_playback)).is_ok());
+        assert_eq!(previous.payload_storage_observation().1, previous_handles);
+        assert_eq!(candidate.payload_storage_observation().1, candidate_handles);
+    }
+}
+
+#[test]
+fn retained_foreign_continuation_is_charged_and_returned_when_capacity_refuses() {
+    use crate::native_device_resources::{DeviceResourcePublication, DeviceResourcePublishError};
+    let (revision, endpoint, _) = prepared_with_latency(0, false, 0, Some(1));
+    let identity = ProcessorInstanceIdentity::new(endpoint.owner, endpoint.device).unwrap();
+    let binding = hex_lattice_contract::ForeignProcessorBinding {
+        root: 1,
+        instance: endpoint.device,
+        graph: 1,
+        epoch: 1,
+    };
+    let state = |byte| {
+        NativeDeviceState::new(
+            hex_lattice_contract::VST3_DEVICE_TYPE_ID,
+            1,
+            vec![byte; 128 * 1024],
+        )
+        .unwrap()
+    };
+    let before = state(1);
+    let after = state(2);
+    let before_observer = before.clone();
+    let after_observer = after.clone();
+    let plain =
+        crate::playback::Playback::try_from_prepared_with_session(Arc::clone(&revision)).unwrap();
+    let mut candidate =
+        crate::playback::Playback::try_from_prepared_with_session(revision).unwrap();
+    candidate
+        .retain_foreign_continuation_states_on_control(identity, binding, before, after)
+        .unwrap();
+    assert_eq!(before_observer.payload_storage_observation().1, 2);
+    let limits = crate::AudioStorageLedgerReservation {
+        data_rows: 16,
+        handle_rows: 16,
+        root_rows: 4,
+        max_retained_bytes: 100_000,
+        max_construction_peak_bytes: 100_000,
+    };
+    let mut book = DeviceResourcePublication::reserve_on_control(limits, 0, 2).unwrap();
+    let plain = match book.publish_on_control(plain, Ok::<_, ()>) {
+        Ok(playback) => playback,
+        Err(_) => panic!("same graph without continuation should fit the budget"),
+    };
+    assert!(book.retire_on_control(Box::new(plain)).is_ok());
+    let refused = book.publish_on_control(candidate, |_| -> Result<(), ()> {
+        panic!("enqueue must not run without storage")
+    });
+    let Err(DeviceResourcePublishError::Resources { playback, .. }) = refused else {
+        panic!("proof backing must be charged before publication")
+    };
+    assert!(playback.has_foreign_continuation_states());
+    assert_eq!(book.unreturned_graphs_on_control(), 0);
+    let generous = crate::AudioStorageLedgerReservation {
+        max_retained_bytes: 16 * 1024 * 1024,
+        max_construction_peak_bytes: 16 * 1024 * 1024,
+        ..limits
+    };
+    let mut book = DeviceResourcePublication::reserve_on_control(generous, 0, 2).unwrap();
+    let refused = book.publish_on_control(playback, Err::<(), _>);
+    let Err(DeviceResourcePublishError::Publication(playback)) = refused else {
+        panic!("a queue refusal must return the candidate and its state")
+    };
+    assert!(playback.has_foreign_continuation_states());
+    assert_eq!(book.unreturned_graphs_on_control(), 0);
+    drop(playback);
+    assert_eq!(before_observer.payload_storage_observation().1, 1);
+    assert_eq!(after_observer.payload_storage_observation().1, 1);
+}
+
+#[test]
+fn unpublished_foreign_continuation_is_included_in_resource_union() {
+    use crate::native_device_resources::{
+        DeviceResourceAdmission, DeviceResourcePhase, inspect_device_resource_union,
+    };
+    let (revision, endpoint, _) = prepared_with_latency(0, false, 0, Some(1));
+    let identity = ProcessorInstanceIdentity::new(endpoint.owner, endpoint.device).unwrap();
+    let binding = hex_lattice_contract::ForeignProcessorBinding {
+        root: 1,
+        instance: endpoint.device,
+        graph: 1,
+        epoch: 1,
+    };
+    let mut playback = crate::playback::Playback::try_from_prepared_with_session(revision).unwrap();
+    let limits = crate::AudioStorageLedgerReservation {
+        data_rows: 256,
+        handle_rows: 256,
+        root_rows: 64,
+        max_retained_bytes: 16 * 1024 * 1024,
+        max_construction_peak_bytes: 16 * 1024 * 1024,
+    };
+    let inspect = |playback: &crate::playback::Playback, reservation| {
+        let selected = [DeviceResourceAdmission::unpublished_on_control(
+            playback, None,
+        )];
+        let phase = DeviceResourcePhase {
+            stores: &[],
+            registered: &selected,
+            selections: &[],
+            outbound: &[],
+            legacy: &[],
+            checked_runtime_bytes: 0,
+            construction_bytes: 0,
+        };
+        inspect_device_resource_union(&phase, &phase, reservation)
+    };
+    let baseline = inspect(&playback, limits).unwrap().retained;
+    let state = |value| {
+        NativeDeviceState::new(
+            hex_lattice_contract::VST3_DEVICE_TYPE_ID,
+            1,
+            vec![value; 128 * 1024],
+        )
+        .unwrap()
+    };
+    let before = state(1);
+    let after = state(2);
+    let required = before.retained_control_metadata_bytes().unwrap()
+        + after.retained_control_metadata_bytes().unwrap();
+    let budget = baseline.retained_bytes + required / 2;
+    let tight = crate::AudioStorageLedgerReservation {
+        max_retained_bytes: budget,
+        max_construction_peak_bytes: budget,
+        ..limits
+    };
+    assert!(inspect(&playback, tight).is_ok());
+    playback
+        .retain_foreign_continuation_states_on_control(identity, binding, before, after)
+        .unwrap();
+    assert!(
+        inspect(&playback, limits).unwrap().retained.data_bytes >= baseline.data_bytes + required,
+        "pending graph must include its retained state backing"
+    );
+    assert!(
+        inspect(&playback, tight).is_err(),
+        "pending state must respect the actual union budget"
+    );
+}
+
+#[test]
+fn foreign_continuation_matches_only_the_original_predecessor_state() {
+    for location in 0..=2 {
+        let (revision, endpoint, _) = prepared_with_latency(location, false, 0, Some(1));
+        let old = crate::playback::Playback::try_from_prepared_with_session(Arc::clone(&revision))
+            .unwrap();
+        let mut next =
+            crate::playback::Playback::try_from_prepared_with_session(Arc::clone(&revision))
+                .unwrap();
+        let identity = ProcessorInstanceIdentity::new(endpoint.owner, endpoint.device).unwrap();
+        let binding = hex_lattice_contract::ForeignProcessorBinding {
+            root: 1,
+            instance: endpoint.device,
+            graph: 1,
+            epoch: 1,
+        };
+        let previous = old
+            .foreign_nodes_on_control()
+            .find(|node| node.owner == endpoint.owner && node.device_id == endpoint.device)
+            .unwrap()
+            .configuration
+            .as_deref()
+            .unwrap()
+            .clone();
+        next.retain_foreign_continuation_states_on_control(
+            identity,
+            binding,
+            previous,
+            state(20).unwrap(),
+        )
+        .unwrap();
+        assert!(next.foreign_continuation_matches_predecessor_on_callback(&old));
+        let (other_revision, _, _) = prepared_with_latency(location, false, 0, Some(1));
+        let other =
+            crate::playback::Playback::try_from_prepared_with_session(other_revision).unwrap();
+        assert!(!next.foreign_continuation_matches_predecessor_on_callback(&other));
+    }
+}
+
+#[test]
 fn unbounded_foreign_tail_keeps_playing_with_its_original_endpoint_until_stop() {
     struct Probe {
         frames: [usize; 2],
@@ -1599,4 +2089,139 @@ fn unbounded_foreign_tail_keeps_playing_with_its_original_endpoint_until_stop() 
     );
     next.apply(SessionPlaybackCommand::Stop).unwrap();
     assert!(!next.tail_output_active.iter().any(|active| *active));
+}
+
+#[test]
+fn foreign_continuation_preserves_native_eq_history_in_the_same_chain() {
+    use hex_devices::eq8::{EQ8_DEFINITION, parameter};
+
+    struct PassThrough;
+    impl ForeignProcessors for PassThrough {
+        fn process_segment(
+            &mut self,
+            _: ForeignProcessorNode<'_>,
+            _: usize,
+            _: &mut [Frame],
+            _: Option<&dyn hex_lattice::NativeInstrumentClock>,
+        ) -> Result<(), DeviceContractError> {
+            Ok(())
+        }
+        fn committed_tail_is_drained(&self, _: ForeignProcessorNode<'_>) -> bool {
+            false
+        }
+        fn reject_callback(&mut self) {}
+    }
+
+    let (revision, endpoint, _) = prepared_with_latency(0, false, 0, Some(1));
+    let identity = ProcessorInstanceIdentity::new(endpoint.owner, endpoint.device).unwrap();
+    let binding = hex_lattice_contract::ForeignProcessorBinding {
+        root: 1,
+        instance: endpoint.device,
+        graph: 1,
+        epoch: 1,
+    };
+    let previous = Arc::new(state(19).unwrap());
+    let candidate = Arc::new(state(20).unwrap());
+    let mut eq = EQ8_DEFINITION.default_state().unwrap();
+    for (id, value) in [
+        (parameter::enabled(0, 0), ParameterValue::Bool(true)),
+        (parameter::frequency(0, 0), ParameterValue::Float(262.0)),
+        (parameter::gain(0, 0), ParameterValue::Float(12.0)),
+    ] {
+        eq = EQ8_DEFINITION.patch_parameter(&eq, id, value).unwrap();
+    }
+    let eq = Arc::new(eq);
+    let tuning = hex_lattice::TuningTable::default();
+    let context = DevicePreparationContext {
+        sample_rate: 48_000,
+        tuning: &tuning,
+        resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+    };
+    let eq_factory = EQ8_DEFINITION
+        .prepare_runtime_factory(&eq, &context)
+        .unwrap()
+        .unwrap();
+    let chain = |foreign_state: Arc<NativeDeviceState>| {
+        hex_lattice::NativeRuntimeChain::new_prepared(vec![
+            hex_lattice::PreparedRuntimeInstance {
+                modulation: None,
+                automation: Default::default(),
+                meter: Default::default(),
+                owner: endpoint.owner,
+                device_id: endpoint.device + 100,
+                device_type: eq.type_id(),
+                matrix: StereoMatrix::identity(),
+                bypassed: false,
+                sample_rate: 48_000,
+                configuration: Some(Arc::clone(&eq)),
+                definition: Some(eq_factory.clone()),
+            },
+            hex_lattice::PreparedRuntimeInstance {
+                modulation: None,
+                automation: Default::default(),
+                meter: Default::default(),
+                owner: endpoint.owner,
+                device_id: endpoint.device,
+                device_type: Definition.type_id(),
+                matrix: StereoMatrix::identity(),
+                bypassed: false,
+                sample_rate: 48_000,
+                configuration: Some(foreign_state),
+                definition: Some(PreparedProcessorFactory::Foreign(
+                    PreparedForeignProcessor::new(8, 0, 16)
+                        .unwrap()
+                        .with_binding(binding)
+                        .unwrap(),
+                )),
+            },
+        ])
+        .unwrap()
+    };
+    let mut old = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+    let mut reference = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+    let mut next = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+    let mut cold = SessionPlayback::new(revision).unwrap();
+    old.device_chains[0] = chain(Arc::clone(&previous));
+    reference.device_chains[0] = chain(Arc::clone(&previous));
+    next.device_chains[0] = chain(Arc::clone(&candidate));
+    cold.device_chains[0] = chain(Arc::clone(&previous));
+    for playback in [&mut old, &mut reference, &mut cold] {
+        playback.apply(SessionPlaybackCommand::Play).unwrap();
+        playback
+            .render_with_foreign_processors(&mut [[0.0; 2]; 16], None, None, None, &mut PassThrough)
+            .unwrap();
+    }
+    let proof = hex_lattice::ForeignConfigurationContinuation::new(
+        identity, binding, &previous, &candidate,
+    )
+    .unwrap();
+    next.try_inherit_state_live_with_foreign_continuation_from(&mut old, &proof)
+        .unwrap();
+    let mut actual = [[0.0; 2]; 8];
+    let mut expected = [[0.0; 2]; 8];
+    next.render_with_foreign_processors(&mut actual, None, None, None, &mut PassThrough)
+        .unwrap();
+    reference
+        .render_with_foreign_processors(&mut expected, None, None, None, &mut PassThrough)
+        .unwrap();
+    assert_eq!(
+        actual, expected,
+        "the EQ filter state must continue with the foreign endpoint"
+    );
+    assert!(
+        expected
+            .iter()
+            .flatten()
+            .any(|sample| sample.abs() > 1.0e-6)
+    );
+    // Preserve the same transport and input, but deliberately replace the
+    // stateful chain without inheriting it to prove the oracle detects a reset.
+    cold.device_chains[0] = chain(Arc::clone(&candidate));
+    let mut without_history = [[0.0; 2]; 8];
+    cold.render_with_foreign_processors(&mut without_history, None, None, None, &mut PassThrough)
+        .unwrap();
+    assert_ne!(
+        without_history, expected,
+        "the oracle must detect lost EQ history"
+    );
 }

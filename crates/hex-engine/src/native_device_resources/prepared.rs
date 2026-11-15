@@ -850,6 +850,14 @@ impl<'a> DeviceResourceAdmission<'a> {
         }
         if let Some(playback) = self.playback {
             ledger.root(playback, crate::AudioStorageRole::Caller)?;
+            let continuation_bytes = playback.foreign_continuation_metadata_bytes_on_control()?;
+            if continuation_bytes != 0 {
+                ledger.bytes(
+                    crate::audio_storage::Owner::exclusive(playback),
+                    crate::audio_storage::Location("unpublished-foreign-continuation", 0),
+                    continuation_bytes,
+                )?;
+            }
             if let Some(resources) = self.playback_resources {
                 let revision = playback
                     .prepared_revision()

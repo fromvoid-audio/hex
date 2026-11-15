@@ -180,6 +180,39 @@ impl NativeEffect {
     ) -> Result<NativeWorkerCaptureProgress, &'static str> {
         self.worker.poll_state_capture_on_control(request)
     }
+    pub(crate) fn begin_capture_after_parameter(
+        &mut self,
+        input: &NativeWorkerParameterChange,
+    ) -> Result<NativeWorkerCapture, &'static str> {
+        self.worker
+            .begin_state_capture_after_parameter_on_control(input)
+    }
+    pub(crate) fn begin_capture_after_idle_parameter(
+        &mut self,
+        input: &NativeWorkerParameterChange,
+    ) -> Result<NativeWorkerCapture, &'static str> {
+        self.worker
+            .begin_state_capture_after_idle_parameter_on_control(input)
+    }
+    pub(crate) fn poll_capture_after_parameter(
+        &mut self,
+        request: &NativeWorkerCapture,
+    ) -> Result<crate::plugin_worker::NativeWorkerSequencedCaptureProgress, &'static str> {
+        self.worker
+            .poll_state_capture_after_parameter_on_control(request)
+    }
+    pub(crate) fn sequenced_capture_is_current(
+        &self,
+        fact: &crate::plugin_worker::NativeWorkerStateAfterParameter,
+    ) -> Result<bool, &'static str> {
+        self.worker.sequenced_capture_is_current_on_control(fact)
+    }
+    pub(crate) fn observe_sequenced_capture_input(
+        &self,
+        fact: &crate::plugin_worker::NativeWorkerStateAfterParameter,
+    ) -> Result<Option<hex_plugin_host::transport::ParameterInputSource>, &'static str> {
+        self.worker.observe_sequenced_capture_input_on_control(fact)
+    }
     #[allow(clippy::result_large_err)] // Refusal retains the entire original pair, without an error-path allocation.
     pub(crate) fn loan_on_control(
         self,
@@ -308,6 +341,39 @@ impl NativeEffectControl {
         request: &NativeWorkerCapture,
     ) -> Result<NativeWorkerCaptureProgress, &'static str> {
         self.worker.poll_state_capture_on_control(request)
+    }
+    pub(crate) fn begin_capture_after_parameter(
+        &mut self,
+        input: &NativeWorkerParameterChange,
+    ) -> Result<NativeWorkerCapture, &'static str> {
+        self.worker
+            .begin_state_capture_after_parameter_on_control(input)
+    }
+    pub(crate) fn begin_capture_after_idle_parameter(
+        &mut self,
+        input: &NativeWorkerParameterChange,
+    ) -> Result<NativeWorkerCapture, &'static str> {
+        self.worker
+            .begin_state_capture_after_idle_parameter_on_control(input)
+    }
+    pub(crate) fn poll_capture_after_parameter(
+        &mut self,
+        request: &NativeWorkerCapture,
+    ) -> Result<crate::plugin_worker::NativeWorkerSequencedCaptureProgress, &'static str> {
+        self.worker
+            .poll_state_capture_after_parameter_on_control(request)
+    }
+    pub(crate) fn sequenced_capture_is_current(
+        &self,
+        fact: &crate::plugin_worker::NativeWorkerStateAfterParameter,
+    ) -> Result<bool, &'static str> {
+        self.worker.sequenced_capture_is_current_on_control(fact)
+    }
+    pub(crate) fn observe_sequenced_capture_input(
+        &self,
+        fact: &crate::plugin_worker::NativeWorkerStateAfterParameter,
+    ) -> Result<Option<hex_plugin_host::transport::ParameterInputSource>, &'static str> {
+        self.worker.observe_sequenced_capture_input_on_control(fact)
     }
     pub(crate) fn transport_is_live_on_control(&self) -> bool {
         self.worker.transport_is_live_on_control()
