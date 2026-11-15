@@ -241,6 +241,34 @@ impl Custody {
             "native recovery edit read was not admitted",
         )
     }
+    pub(in crate::candidate_custody) fn native_stopped_edits(
+        &self,
+        binding: Binding,
+        recovery: bool,
+    ) -> Result<crate::plugin_worker::StoppedEditProgress, &'static str> {
+        self.stopped_edits_admission(binding, recovery, |_| {})
+    }
+    fn stopped_edits_admission(
+        &self,
+        binding: Binding,
+        recovery: bool,
+        after_read: impl FnOnce(&crate::plugin_worker::StoppedEditProgress),
+    ) -> Result<crate::plugin_worker::StoppedEditProgress, &'static str> {
+        self.admit_live_operation(
+            binding,
+            |owner| {
+                let result = match owner {
+                    Owner::Effect(owner) => owner.poll_stopped_edits(recovery),
+                    Owner::Loaned(owner) => owner.poll_stopped_edits(recovery),
+                    _ => Err("native edit owner differs"),
+                }?;
+                after_read(&result);
+                Ok(result)
+            },
+            || {},
+            "native stopped edit read was not admitted",
+        )
+    }
     pub(in crate::candidate_custody) fn native_parameter_values(
         &self,
         binding: Binding,
@@ -646,6 +674,14 @@ impl CandidateRoot {
     ) -> Result<Option<hex_plugin_host::protocol::RecoveryEdits>, &'static str> {
         self.require_native_source_control_open()?;
         self.0.eligible.native_recovery_edits(binding, flush_idle)
+    }
+    pub(crate) fn native_source_stopped_edits(
+        &self,
+        binding: Binding,
+        recovery: bool,
+    ) -> Result<crate::plugin_worker::StoppedEditProgress, &'static str> {
+        self.require_native_source_control_open()?;
+        self.0.eligible.native_stopped_edits(binding, recovery)
     }
     pub(crate) fn native_source_parameter_values(
         &self,

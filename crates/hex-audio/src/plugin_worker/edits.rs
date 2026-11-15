@@ -68,6 +68,13 @@ impl State {
     }
 }
 impl NativeWorker {
+    #[cfg(test)]
+    pub(crate) fn pending_edit_result_nonempty_for_test(&self) -> Option<bool> {
+        let slot = self.reaper.completed.capture.try_lock().ok()?;
+        slot.edits_result
+            .as_ref()
+            .map(|batch| !batch.edits.as_slice().is_empty())
+    }
     /// Read one additional bounded batch only after this stopped original
     /// worker has observed its producer's seal. Earlier admitted reads must
     /// be consumed first; a failure remains attached to the worker.

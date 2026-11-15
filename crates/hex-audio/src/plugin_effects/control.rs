@@ -78,6 +78,10 @@ pub(crate) struct NativeEffectControl {
     pub(super) state_authority: hex_lattice_contract::Vst3StateAuthority,
 }
 impl NativeEffect {
+    #[cfg(test)]
+    pub(crate) fn pending_edit_result_nonempty_for_test(&self) -> Option<bool> {
+        self.worker.pending_edit_result_nonempty_for_test()
+    }
     pub(crate) fn parameter_hold(
         &mut self,
         command: NativeParameterHold<'_>,
@@ -171,6 +175,12 @@ impl NativeEffect {
     ) -> Result<Option<hex_plugin_host::protocol::RecoveryEdits>, &'static str> {
         self.worker.poll_recovery_edits_on_control(flush_idle)
     }
+    pub(crate) fn poll_stopped_edits(
+        &mut self,
+        recovery: bool,
+    ) -> Result<crate::plugin_worker::StoppedEditProgress, &'static str> {
+        self.worker.poll_stopped_edits_on_control(recovery)
+    }
     pub(crate) fn begin_state_capture(&mut self) -> Result<NativeWorkerCapture, &'static str> {
         self.worker.begin_state_capture_on_control()
     }
@@ -237,6 +247,10 @@ impl NativeEffect {
     }
 }
 impl NativeEffectControl {
+    #[cfg(test)]
+    pub(crate) fn pending_edit_result_nonempty_for_test(&self) -> Option<bool> {
+        self.worker.pending_edit_result_nonempty_for_test()
+    }
     pub(crate) fn reserve_program_revision_on_control(
         &mut self,
     ) -> Result<std::num::NonZeroU64, &'static str> {
@@ -332,6 +346,12 @@ impl NativeEffectControl {
         flush_idle: bool,
     ) -> Result<Option<hex_plugin_host::protocol::RecoveryEdits>, &'static str> {
         self.worker.poll_recovery_edits_on_control(flush_idle)
+    }
+    pub(crate) fn poll_stopped_edits(
+        &mut self,
+        recovery: bool,
+    ) -> Result<crate::plugin_worker::StoppedEditProgress, &'static str> {
+        self.worker.poll_stopped_edits_on_control(recovery)
     }
     pub(crate) fn begin_state_capture(&mut self) -> Result<NativeWorkerCapture, &'static str> {
         self.worker.begin_state_capture_on_control()
