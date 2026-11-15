@@ -56,7 +56,7 @@ struct Source {
     editor_open: bool,
     editor_transfer: bool,
     edit_backlog: bool,
-    edit_recovery: Option<bool>,
+    edit_recovery: Option<parameter_touches::PendingRead>,
     pending_touch: Option<parameter_touches::Touch>,
     #[cfg(all(test, feature = "allocation-probe"))]
     observed_latency_receipt: bool,
@@ -604,8 +604,6 @@ impl Plugins {
                     let status = control.native_source_endpoint_status(source.binding);
                     if status == Some((true, false)) {
                         source.edit_backlog = false;
-                        source.edit_recovery = None;
-                        source.pending_touch = None;
                     }
                     if status == Some((true, false)) {
                         #[cfg(all(test, feature = "allocation-probe"))]

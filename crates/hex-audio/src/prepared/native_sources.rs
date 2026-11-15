@@ -827,6 +827,20 @@ impl PublicationControl {
         self.candidate_root
             .native_source_recovery_edits(binding, !self.status.playing.load(Acquire))
     }
+    /// Recover only an earlier admitted edit read from the exact stopped
+    /// worker while its original source remains accepted by this output.
+    /// The returned batch belongs to the caller even if close races the read.
+    pub fn poll_native_source_stopped_edits_on_control(
+        &mut self,
+        binding: Binding,
+        recovery: bool,
+    ) -> Result<crate::plugin_worker::StoppedEditProgress, &'static str> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native edit output is closing");
+        }
+        self.candidate_root
+            .native_source_stopped_edits(binding, recovery)
+    }
     /// Inspect latest processor parameter values through the actual original
     /// Root-held effect or its unique loan control. Wrong/closed/revoked sources
     /// refuse; busy is a read refusal, not consumption or transport cancellation.
