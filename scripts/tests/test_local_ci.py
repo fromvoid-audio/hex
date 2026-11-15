@@ -484,6 +484,53 @@ class ManualFixtureCleanupTests(unittest.TestCase):
 
 
 class LocalCiRunnerTests(unittest.TestCase):
+    def test_qualifying_plan_refuses_partial_overlays_before_target_access(self):
+        self.step_sequence_patch.stop()
+        overlays = {
+            "edit": {"package": "fixture", "features": "", "target": None, "filter": "one_test"},
+            "health": {"python": False, "workspace_inputs": False, "packages": []},
+        }
+        for mode in ("full", "merge", "release"):
+            for key, value in overlays.items():
+                with self.subTest(mode=mode, overlay=key):
+                    plan = {"scope": "metadata", "profile": mode, "base": "base", "source": "source",
+                            "qualifies_merge": True, key: value}
+                    plan["plan_sha256"] = hashlib.sha256(json.dumps(plan, sort_keys=True).encode()).hexdigest()
+                    runner = local_ci.LocalCiRunner(
+                        self.repo, mode=mode, run_id=f"overlay-{mode}-{key}", env=self.env,
+                        plan=plan, steps=local_ci.planned_steps(plan), min_free_bytes=0,
+                        target_state_dir=self.target_state_dir)
+                    with patch.object(runner, "_capture_repository_state", return_value=False) as capture, \
+                            patch.object(runner, "_resolve_cargo_identity") as identity, \
+                            patch.object(runner, "_run_step") as execute:
+                        self.assertEqual(runner.run(), 2)
+                    self.assertIn("step_sequence_error", runner.summary)
+                    capture.assert_not_called()
+                    identity.assert_not_called()
+                    execute.assert_not_called()
+                    self.assertFalse(Path(self.env["FAKE_METADATA_TARGET"]).exists())
+        for key in overlays:
+            for index, value in enumerate((None, {}, [], "invalid")):
+                with self.subTest(overlay=key, malformed=value):
+                    plan = {"scope": "metadata", "profile": "merge", "qualifies_merge": True, key: value}
+                    runner = local_ci.LocalCiRunner(
+                        self.repo, mode="merge", run_id=f"malformed-{key}-{index}", env=self.env,
+                        plan=plan, steps=(), min_free_bytes=0, target_state_dir=self.target_state_dir)
+                    with patch.object(runner, "_capture_repository_state") as capture, \
+                            patch.object(runner, "_resolve_cargo_identity") as identity, \
+                            patch.object(runner, "_run_step") as execute:
+                        self.assertEqual(runner.run(), 2)
+                    self.assertIn("step_sequence_error", runner.summary)
+                    capture.assert_not_called()
+                    identity.assert_not_called()
+                    execute.assert_not_called()
+        for key, value in overlays.items():
+            plan = {"scope": "metadata", "profile": key, "base": "base", "source": "source",
+                    "qualifies_merge": False, key: value}
+            runner = local_ci.LocalCiRunner(self.repo, mode=key, env=self.env, plan=plan)
+            self.assertIsNone(runner._step_sequence_error())
+            self.assertTrue(runner.steps)
+
     def test_qualifying_step_sequence_refuses_drift_before_execution_or_target_access(self):
         self.step_sequence_patch.stop()
         expected = local_ci.planned_steps({"scope": "full"})
