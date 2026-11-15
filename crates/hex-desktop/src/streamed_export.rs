@@ -28,9 +28,10 @@ use std::{
 const PREPARATION_TIMEOUT: Duration = Duration::from_secs(60);
 const POLL: Duration = Duration::from_millis(5);
 
-pub(super) fn render(request: &StreamedExportRequest<'_>) -> Result<ExportReport, String> {
-    render_with_config(request, StreamConfig::initial())
-        .map_err(|error| hex_session::service::export_error_text(&error))
+pub(super) fn render(
+    request: &StreamedExportRequest<'_>,
+) -> Result<ExportReport, hex_session::service::ExportFailure> {
+    render_with_config(request, StreamConfig::initial()).map_err(Into::into)
 }
 
 pub(crate) fn render_with_config(

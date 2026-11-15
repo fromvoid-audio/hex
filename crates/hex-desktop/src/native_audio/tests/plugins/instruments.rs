@@ -3442,7 +3442,7 @@ fn verify_instrument_takeover(
                         // refusal at the exact committed revision, never export
                         // the old curve or publish a misleading file.
                         assert!(
-                            export.result.unwrap_err().contains(
+                            export.result.unwrap_err().message().contains(
                                 "vst3 automation requires interactive arrangement playback"
                             )
                         );

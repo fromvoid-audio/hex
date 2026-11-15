@@ -494,12 +494,11 @@ mod tests {
                 work_rx,
                 events_tx,
                 Arc::new(|_, _, _, _, _, _, _, _| {
-                    Err(export_error_text(
-                        &hex_export::ExportError::StagingRetained {
-                            path: PathBuf::from("/MixedCase/Stage.wav"),
-                            cause: Box::new(hex_export::ExportError::Invalid("render failed")),
-                        },
-                    ))
+                    Err(hex_export::ExportError::StagingRetained {
+                        path: PathBuf::from("/MixedCase/Stage.wav"),
+                        cause: Box::new(hex_export::ExportError::Invalid("render failed")),
+                    }
+                    .into())
                 }),
                 finished_tx,
                 Arc::new(AtomicBool::new(false)),
@@ -517,11 +516,171 @@ mod tests {
             .unwrap()
             .result
             .unwrap_err();
-        let displayed =
-            hex_storage::text::plain(&hex_storage::text::lowercase_outside_verbatim(&error));
+        let displayed = hex_storage::text::plain(&hex_storage::text::lowercase_outside_verbatim(
+            error.message(),
+        ));
         assert!(displayed.contains("render failed"), "{displayed}");
         assert!(displayed.contains("/MixedCase/Stage.wav"), "{displayed}");
         assert!(displayed.contains("notification failed"), "{displayed}");
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn worker_preserves_typed_recovery_paths_for_resident_and_streamed_exports() {
+        fn special_path() -> PathBuf {
+            #[cfg(unix)]
+            {
+                use std::os::unix::ffi::OsStringExt;
+                PathBuf::from(std::ffi::OsString::from_vec(
+                    b"/MixedCase/Stage-\xff.wav".to_vec(),
+                ))
+            }
+            #[cfg(not(unix))]
+            {
+                PathBuf::from("MixedCase/Stage.wav")
+            }
+        }
+        fn failure(case: usize) -> hex_export::ExportError {
+            match case {
+                0 => hex_export::ExportError::StagingRetained {
+                    path: special_path(),
+                    cause: Box::new(hex_export::ExportError::Invalid("render failed")),
+                },
+                1 => hex_export::ExportError::IncompleteDestination {
+                    path: special_path(),
+                    source: std::io::Error::other("copy failed"),
+                },
+                _ => hex_export::ExportError::PublicationConflict {
+                    path: PathBuf::from("/MixedCase/Output.wav"),
+                    recovery_path: special_path(),
+                },
+            }
+        }
+        fn streamed(request: &StreamedExportRequest<'_>) -> Result<ExportReport, ExportFailure> {
+            let case = request
+                .path()
+                .file_name()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .parse()
+                .unwrap();
+            Err(failure(case).into())
+        }
+        for is_streamed in [false, true] {
+            for case in 0..3 {
+                let files = Files::new(false);
+                let (session, snapshot) = direct_sampler(&files);
+                let mut job = job(&snapshot, files.output().with_file_name(case.to_string()));
+                if is_streamed {
+                    let project = Arc::new(session.project().clone());
+                    job.streamed = Some(streamed_export::StreamedExportJob {
+                        source: Arc::new(CanonicalAudioSourceSnapshot::capture(
+                            &project, 0, 0, &session,
+                        )),
+                        render: streamed,
+                    });
+                }
+                let (work_tx, work_rx) = mpsc::sync_channel(1);
+                let (finished_tx, _finished_rx) = mpsc::sync_channel(1);
+                // Exercise the terminal-notification failure path for every case.
+                finished_tx.try_send(99).unwrap();
+                let (events_tx, events_rx) = mpsc::sync_channel(1);
+                let worker = thread::spawn(move || {
+                    run_export_worker(
+                        work_rx,
+                        events_tx,
+                        Arc::new(move |_, _, _, _, _, _, _, _| Err(failure(case).into())),
+                        finished_tx,
+                        Arc::new(AtomicBool::new(false)),
+                        Arc::new(std::sync::Mutex::new(None)),
+                    );
+                });
+                work_tx.send(ExportWork::Render(job)).unwrap();
+                drop(work_tx);
+                let failure = events_rx
+                    .recv_timeout(Duration::from_secs(1))
+                    .unwrap()
+                    .result
+                    .unwrap_err();
+                assert!(failure.message().contains("notification failed"));
+                match failure.source_error().unwrap() {
+                    hex_export::ExportError::StagingRetained { path, cause } if case == 0 => {
+                        assert_eq!(path, &special_path());
+                        assert!(matches!(
+                            **cause,
+                            hex_export::ExportError::Invalid("render failed")
+                        ));
+                    }
+                    hex_export::ExportError::IncompleteDestination { path, source }
+                        if case == 1 =>
+                    {
+                        assert_eq!(path, &special_path());
+                        assert_eq!(source.to_string(), "copy failed");
+                    }
+                    hex_export::ExportError::PublicationConflict {
+                        path,
+                        recovery_path,
+                    } if case == 2 => {
+                        assert_eq!(path, Path::new("/MixedCase/Output.wav"));
+                        assert_eq!(recovery_path, &special_path());
+                    }
+                    other => panic!("unexpected failure: {other:?}"),
+                }
+                worker.join().unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn failed_control_notification_preserves_the_published_recovery_report() {
+        let files = Files::new(false);
+        let (_, snapshot) = direct_sampler(&files);
+        let (work_tx, work_rx) = mpsc::sync_channel(1);
+        let (finished_tx, _finished_rx) = mpsc::sync_channel(1);
+        finished_tx.try_send(99).unwrap();
+        let (events_tx, events_rx) = mpsc::sync_channel(1);
+        let worker = thread::spawn(move || {
+            run_export_worker(
+                work_rx,
+                events_tx,
+                Arc::new(|path, _, _, _, _, _, _, _| {
+                    Ok(ExportReport {
+                        path: path.to_path_buf(),
+                        sample_rate: 48_000,
+                        frames: 1,
+                        data_bytes: 4,
+                        clipped_samples: 0,
+                        recovery_path: Some(PathBuf::from("/MixedCase/Previous.wav")),
+                        stale_temporaries: Default::default(),
+                    })
+                }),
+                finished_tx,
+                Arc::new(AtomicBool::new(false)),
+                Arc::new(std::sync::Mutex::new(None)),
+            );
+        });
+        work_tx
+            .send(ExportWork::Render(job(
+                &snapshot,
+                files.output().to_path_buf(),
+            )))
+            .unwrap();
+        drop(work_tx);
+        let failure = events_rx
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap()
+            .result
+            .unwrap_err();
+        let report = failure
+            .published_report()
+            .expect("successful publication is retained");
+        assert_eq!(report.path, files.output());
+        assert_eq!(
+            report.recovery_path.as_deref(),
+            Some(Path::new("/MixedCase/Previous.wav"))
+        );
+        assert!(failure.message().contains("notification failed"));
         worker.join().unwrap();
     }
 
@@ -575,7 +734,7 @@ mod tests {
             if let Some(events) = events_rx {
                 let original = events.try_recv().unwrap();
                 assert_eq!(original.revision, 99);
-                assert_eq!(original.result.unwrap_err(), "existing result");
+                assert_eq!(original.result.unwrap_err().message(), "existing result");
             }
         }
     }
@@ -657,7 +816,9 @@ mod tests {
                 assert!(lane.active.is_none());
                 assert!(!lane.pending());
             } else {
-                assert!(result.result.unwrap_err().contains("notification failed"));
+                let failure = result.result.unwrap_err();
+                assert!(failure.message().contains("notification failed"));
+                assert_eq!(failure.published_report().unwrap().path, path);
                 assert!(lane.active.is_some());
                 let end = Instant::now() + crate::test_wait::HANG_BOUND;
                 while !lane.worker.as_ref().unwrap().is_finished() && Instant::now() < end {
