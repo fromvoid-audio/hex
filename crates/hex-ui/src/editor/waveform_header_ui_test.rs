@@ -83,7 +83,7 @@ fn fixture(
 #[gpui::test]
 fn completed_overrange_query_repaints_the_editor(cx: &mut TestAppContext) {
     let (_files, handle, editor, _track, _clip) = fixture(cx, false);
-    let visual = VisualTestContext::from_window(handle, cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
     let before = editor.read_with(&visual, |view, _| {
         view.waveform_geometry_cache
@@ -112,6 +112,31 @@ fn completed_overrange_query_repaints_the_editor(cx: &mut TestAppContext) {
         );
         std::thread::sleep(Duration::from_millis(1));
     }
+    let (weak_cache, exited) = editor.read_with(&visual, |view, _| {
+        (
+            std::rc::Rc::downgrade(&view.waveform_geometry_cache),
+            view.waveform_geometry_cache
+                .borrow()
+                .overrange_exit_observer()
+                .unwrap(),
+        )
+    });
+    drop(editor);
+    visual.update(|window, _| window.remove_window());
+    visual.run_until_parked();
+    drop(visual);
+    let deadline = std::time::Instant::now() + Duration::from_millis(500);
+    while !exited.load(std::sync::atomic::Ordering::Acquire) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "worker did not exit after window close"
+        );
+        std::thread::yield_now();
+    }
+    assert!(
+        weak_cache.upgrade().is_none(),
+        "editor retained the waveform cache after close"
+    );
 }
 fn assert_body(visual: &mut VisualTestContext, editor: &Entity<EditorView>, clip: ClipId) {
     let selector = Box::leak(format!("clip-name-{}", clip.value()).into_boxed_str());

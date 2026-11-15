@@ -431,6 +431,14 @@ impl WaveformGeometryCache {
             .count()
     }
 
+    #[cfg(all(test, feature = "ui-test-support"))]
+    pub(super) fn overrange_exit_observer(&self) -> Option<Arc<std::sync::atomic::AtomicBool>> {
+        self.overrange
+            .worker
+            .as_ref()
+            .map(|worker| worker.exit_observer())
+    }
+
     fn get(
         &mut self,
         key: &WaveformGeometryKey,

@@ -62,11 +62,15 @@ pub(super) struct Worker {
     sender: SyncSender<Job>,
     replies: Receiver<Reply>,
     latest: HashMap<u64, Arc<AtomicBool>>,
-    #[cfg(all(test, feature = "ui-unit-tier"))]
+    #[cfg(all(test, any(feature = "ui-unit-tier", feature = "ui-test-support")))]
     exited: Arc<AtomicBool>,
 }
 
 impl Worker {
+    #[cfg(all(test, feature = "ui-test-support"))]
+    pub(super) fn exit_observer(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.exited)
+    }
     #[cfg(all(test, feature = "ui-unit-tier"))]
     pub(super) fn saturated_for_test(
         request: &Request,
@@ -96,9 +100,9 @@ impl Worker {
     pub fn new() -> std::io::Result<Self> {
         let (sender, jobs) = mpsc::sync_channel::<Job>(QUEUE_CAPACITY);
         let (reply_tx, replies) = mpsc::sync_channel::<Reply>(QUEUE_CAPACITY);
-        #[cfg(all(test, feature = "ui-unit-tier"))]
+        #[cfg(all(test, any(feature = "ui-unit-tier", feature = "ui-test-support")))]
         let exited = Arc::new(AtomicBool::new(false));
-        #[cfg(all(test, feature = "ui-unit-tier"))]
+        #[cfg(all(test, any(feature = "ui-unit-tier", feature = "ui-test-support")))]
         let thread_exited = Arc::clone(&exited);
         std::thread::Builder::new()
             .name("hex-waveform-overrange".into())
@@ -112,14 +116,14 @@ impl Worker {
                         }
                     }
                 }
-                #[cfg(all(test, feature = "ui-unit-tier"))]
+                #[cfg(all(test, any(feature = "ui-unit-tier", feature = "ui-test-support")))]
                 thread_exited.store(true, Ordering::Release);
             })?;
         Ok(Self {
             sender,
             replies,
             latest: HashMap::new(),
-            #[cfg(all(test, feature = "ui-unit-tier"))]
+            #[cfg(all(test, any(feature = "ui-unit-tier", feature = "ui-test-support")))]
             exited,
         })
     }
