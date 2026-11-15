@@ -69,6 +69,20 @@ fn unlaned_effect_commit_keeps_the_running_source() {
     );
     let track = imported.state.project.tracks().last().unwrap().id();
     let (applied, _) = h.applied(applied);
+    // The callback can advance faster than wall time in optimized builds.
+    // Repeat the same verified file so the measurement never relies on the
+    // original short clip still covering the current playback position.
+    let asset = imported.state.project.assets().next().unwrap().id();
+    h.run(Request::Edit(Command::PlaceClip {
+        track,
+        asset,
+        start: 32_768,
+        duration: 32_768 * 256,
+        source_offset: 0,
+        source_length: 32_768,
+        looping: true,
+    }));
+    let (applied, _) = h.applied(applied);
     let mut eq = hex_engine::eq::EqState::default();
     let node_id = hex_engine::eq::NodeId::new(800).unwrap();
     let node = hex_engine::eq::Node::new(node_id, 90.97308, 0.0, 0).unwrap();
