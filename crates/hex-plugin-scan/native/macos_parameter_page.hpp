@@ -12,8 +12,9 @@ inline constexpr uint8 SELECTED_PARAMETERS=8;
 inline constexpr uint8 DETACH_EDITOR=11;
 inline constexpr uint8 REOPEN_EDITOR=12;
 inline constexpr uint8 SEAL_EDITOR_EDITS=13;
+inline constexpr uint8 DETACH_EDITOR_WHEN_IDLE=14;
 inline bool editor_request(uint8 kind) {
-    return kind==TOGGLE_EDITOR || kind==CLOSE_EDITOR || kind==DETACH_EDITOR || kind==REOPEN_EDITOR || kind==SEAL_EDITOR_EDITS;
+    return kind==TOGGLE_EDITOR || kind==CLOSE_EDITOR || kind==DETACH_EDITOR || kind==REOPEN_EDITOR || kind==SEAL_EDITOR_EDITS || kind==DETACH_EDITOR_WHEN_IDLE;
 }
 struct ControllerQuery {
     uint16 first=0;uint64 revision=0;
@@ -73,7 +74,7 @@ inline bool controller_text(String128 value) {
 }
 inline bool valid_controller_query(const ControllerQuery& query) {
     if(query.first>HOST_PARAMETER_COUNT ||
-       (query.first && !query.revision && query.kind!=SELECTED_PARAMETERS) || query.kind>SEAL_EDITOR_EDITS) return false;
+       (query.first && !query.revision && query.kind!=SELECTED_PARAMETERS) || query.kind>DETACH_EDITOR_WHEN_IDLE) return false;
     String128 text{};std::memcpy(text,query.text,sizeof(text));
     if(!controller_text(text) || std::memcmp(text,query.text,sizeof(text))) return false;
     if(query.kind==REOPEN_EDITOR) {

@@ -1178,16 +1178,29 @@ int main(int argc,char** argv) {
                                 @autoreleasepool {
                                     const bool was_open=editor.is_open();
                                     const auto kind=page_query.kind;
-                                    detached_editor_position=kind==hex_instance::DETACH_EDITOR?editor.position():std::nullopt;
+                                    const bool guarded=kind==hex_instance::DETACH_EDITOR_WHEN_IDLE;
+                                    const auto admission=guarded?instance.begin_editor_detach_on_control():hex_instance::EditorDetachAdmission::Granted;
+                                    const bool allowed=admission==hex_instance::EditorDetachAdmission::Granted;
+                                    struct DetachGuard {
+                                        decltype(instance)& owner;
+                                        bool held;
+                                        ~DetachGuard() { if(held) owner.end_editor_detach_on_control(); }
+                                    } guard{instance,guarded && allowed};
+                                    detached_editor_position=allowed &&
+                                        (kind==hex_instance::DETACH_EDITOR || guarded)?editor.position():std::nullopt;
                                     const auto placement=kind==hex_instance::REOPEN_EDITOR && page_query.id==1?
                                         std::optional<hex_instance::EditorPosition>(hex_instance::editor_reopen_position(page_query)):
                                         std::nullopt;
-                                    if(kind==hex_instance::SEAL_EDITOR_EDITS)
+                                    if(admission==hex_instance::EditorDetachAdmission::Refused)
+                                        page_failure=HostControl;
+                                    else if(!allowed)
+                                        editor_state=hex_instance::EditorState::GestureActive;
+                                    else if(kind==hex_instance::SEAL_EDITOR_EDITS)
                                         editor_edits_sealed=instance.seal_editor_edits_on_control();
                                     else if(kind==hex_instance::REOPEN_EDITOR && was_open)
                                         editor_state=hex_instance::EditorState::Open;
                                     else if(!editor.close()) page_failure=Teardown;
-                                    else if(kind==hex_instance::DETACH_EDITOR)
+                                    else if(kind==hex_instance::DETACH_EDITOR || guarded)
                                         editor_state=was_open?hex_instance::EditorState::Open:hex_instance::EditorState::Closed;
                                     else if(was_open || kind==hex_instance::CLOSE_EDITOR)
                                         editor_state=hex_instance::EditorState::Closed;

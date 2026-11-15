@@ -889,6 +889,91 @@ fn authored_quantum_partition_preserves_signed_pcm_after_pipeline_latency() {
 
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn live_editor_detach_waits_for_real_gesture_without_stopping_pcm() {
+    use crate::protocol::{ControllerRequest, PluginEditorState};
+    let case = Case::new();
+    let end = case.root.join("end");
+    let end_for_child = end.clone();
+    let setup = case.setup(147);
+    let mut instance = Prepared::prepare(
+        &build(),
+        source(),
+        options(),
+        PreparationCancellation::new_on_control().unwrap(),
+        move |command| {
+            setup(command);
+            command.env("HEX_ORIGINAL_EDITOR_END_RELEASE", end_for_child);
+        },
+    )
+    .unwrap();
+    let child = instance.child_id_on_control();
+    fs::write(case.release(), b"begin gesture").unwrap();
+    let until = Instant::now() + Duration::from_millis(850);
+    while case.observation().is_none_or(|trace| trace[0] != 25) {
+        assert!(Instant::now() < until, "SDK gesture did not begin");
+        thread::yield_now();
+    }
+    let query = |instance: &mut Prepared| {
+        instance
+            .begin_controller_request_on_worker(ControllerRequest::DetachEditorWhenIdle)
+            .unwrap();
+        loop {
+            match instance.poll_parameter_page_on_worker().unwrap() {
+                ParameterPageProgress::Pending => {}
+                ParameterPageProgress::Editor(state) => return state,
+                _ => panic!("unexpected guarded detach reply"),
+            }
+            assert!(Instant::now() < until, "guarded detach did not complete");
+            thread::yield_now();
+        }
+    };
+    assert_eq!(query(&mut instance), PluginEditorState::GestureActive);
+    let input = request(instance.configuration(), 0);
+    let output = instance.exchange_on_worker(input).unwrap();
+    assert!(output.pcm[..8].iter().any(|frame| *frame != [0.0; 2]));
+    assert_eq!(instance.child_id_on_control(), child);
+    fs::write(end, b"end gesture").unwrap();
+    loop {
+        match query(&mut instance) {
+            PluginEditorState::GestureActive => {}
+            PluginEditorState::Closed => break,
+            other => panic!("unexpected detach terminal: {other:?}"),
+        }
+        assert!(Instant::now() < until, "SDK gesture did not finish");
+    }
+    let input = request(instance.configuration(), 1);
+    let output = instance.exchange_on_worker(input).unwrap();
+    assert!(output.pcm[..8].iter().any(|frame| *frame != [0.0; 2]));
+    assert_eq!(instance.child_id_on_control(), child);
+    let mut edits = Vec::new();
+    while edits.len() < 3 {
+        edits.extend_from_slice(
+            instance
+                .poll_parameter_edits_on_worker()
+                .unwrap()
+                .as_slice(),
+        );
+        assert!(
+            Instant::now() < until,
+            "accepted editor receipts did not arrive"
+        );
+        thread::yield_now();
+    }
+    assert_eq!(edits.len(), 3);
+    assert_eq!(edits[0].kind, crate::protocol::ParameterEditKind::Begin);
+    assert_eq!(edits[1].kind, crate::protocol::ParameterEditKind::Perform);
+    assert_eq!(edits[2].kind, crate::protocol::ParameterEditKind::End);
+    assert!(
+        instance
+            .stop_and_reap_on_control()
+            .unwrap()
+            .status
+            .success()
+    );
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn replacement_editor_commands_report_closed_and_unavailable_without_opening_windows() {
     use crate::protocol::{ControllerRequest, PluginEditorPosition, PluginEditorState};
     let case = Case::new();

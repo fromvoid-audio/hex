@@ -115,6 +115,7 @@ struct EditEvent {
     bool grouped_gesture=false;
 };
 enum class HostDisposition { Idle, Refreshed, InvalidMetadata, NoController, Recursive, Retiring, WrongThread, Capacity, Pending, EditQueued };
+enum class EditorDetachAdmission { Granted, GestureActive, Refused };
 struct HostDispatch {
     uint64 sequence=0, metadata_revision=0;
     int32 flags=0;
@@ -168,6 +169,7 @@ class Host final : public IHostApplication, public IComponentHandler, public ICo
     // Main-lane editor admission can close while accepted work continues to
     // dispatch and the worker drains the exact ordered receipt prefix.
     bool editor_edits_sealed=false;
+    bool editor_detaching=false;
     std::atomic<pthread_t> processing_thread{nullptr};
     bool dispatching=false, recursive=false, applying_feedback=false, applying_saved_state=false;
     ParameterSnapshot metadata{};
@@ -232,10 +234,20 @@ public:
     // Normal dispatch, feedback and latency observations stay live.
     bool seal_editor_edits_on_control() {
         if(![NSThread isMainThread] || !accepting || dispatching || applying_saved_state ||
-            active_count || cohort) return false;
+            active_count || cohort || editor_detaching) return false;
         editor_edits_sealed=true;
         return true;
     }
+    // A live processor may still own an audible tail. Fence editor callbacks
+    // only for the synchronous window detach, without sealing that processor.
+    EditorDetachAdmission begin_editor_detach_on_control() {
+        if(![NSThread isMainThread] || !accepting || dispatching || applying_saved_state ||
+            editor_edits_sealed || editor_detaching) return EditorDetachAdmission::Refused;
+        if(active_count || cohort) return EditorDetachAdmission::GestureActive;
+        editor_detaching=true;
+        return EditorDetachAdmission::Granted;
+    }
+    void end_editor_detach_on_control() { editor_detaching=false; }
     // The helper's main lane owns the editor seal and resume transition.
     bool editor_edits_sealed_on_control() const { return editor_edits_sealed; }
     void bind_processing_thread() { processing_thread.store(pthread_self(),std::memory_order_release); }
@@ -320,7 +332,7 @@ public:
         if(!advertises_editor_groups) return kNotImplemented;
         if(![NSThread isMainThread]) {refuse(WrongThread);return kResultFalse;}
         if(!accepting) {refuse(Retiring);return kResultFalse;}
-        if(editor_edits_sealed && !applying_saved_state) return kResultFalse;
+        if((editor_edits_sealed || editor_detaching) && !applying_saved_state) return kResultFalse;
         if(dispatching) {recursive=true;refuse(RecursiveRestart);return kResultFalse;}
         if(applying_saved_state) return kResultOk;
         if(cohort) {poison_cohort();return kResultFalse;}
@@ -336,7 +348,7 @@ public:
         if(!advertises_editor_groups) return kNotImplemented;
         if(![NSThread isMainThread]) {refuse(WrongThread);return kResultFalse;}
         if(!accepting) {refuse(Retiring);return kResultFalse;}
-        if(editor_edits_sealed && !applying_saved_state) return kResultFalse;
+        if((editor_edits_sealed || editor_detaching) && !applying_saved_state) return kResultFalse;
         if(dispatching) {recursive=true;refuse(RecursiveRestart);return kResultFalse;}
         if(applying_saved_state) return kResultOk;
         if(!cohort) {refuse(InvalidEdit);return kResultFalse;}
@@ -496,11 +508,11 @@ private:
     tresult admit_edit(ParamID id,uint32 kind,ParamValue value) {
         if(![NSThread isMainThread]) {refuse(WrongThread);return kResultFalse;}
         if(!accepting) {refuse(Retiring);return kResultFalse;}
-        if(editor_edits_sealed && !applying_saved_state) return kResultFalse;
+        if((editor_edits_sealed || editor_detaching) && !applying_saved_state) return kResultFalse;
         if(dispatching) {recursive=true;refuse(RecursiveRestart);return kResultFalse;}
         const bool valid_value=kind!=Perform || (std::isfinite(value) && value>=0 && value<=1);
         if(applying_saved_state && id<=0x7FFFFFFFu && valid_value) return kResultOk;
-        if(editor_edits_sealed) return kResultFalse;
+        if(editor_edits_sealed || editor_detaching) return kResultFalse;
         ParameterSnapshot::Parameter* info=nullptr;
         for(uint32 n=0;n<metadata.count;++n) if(metadata.parameters[n].info.id==id) info=&metadata.parameters[n];
         if(!info) {refuse_editor_edit(InvalidEdit|UnknownEditParameter);return kInvalidArgument;}
