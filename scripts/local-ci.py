@@ -1181,6 +1181,8 @@ class LocalCiRunner:
             return "plan must explicitly declare its qualification status"
         if self.plan is not None and self.plan.get("profile") != self.mode:
             return "qualifying plan profile does not match runner mode"
+        if self.plan is not None and any(key in self.plan for key in ("edit", "health")):
+            return "qualifying plan cannot contain partial edit or health selections"
         try:
             expected = planned_steps(self.plan if self.plan is not None else {"scope": "full"})
         except (KeyError, TypeError, ValueError) as error:
