@@ -113,7 +113,10 @@ fn windowed_wav_refuses_cancelled_changed_and_invalid_requests() {
     assert!(source.read_window(u64::MAX, 1, &RUNNING).is_err());
     assert!(PreviewWindowSource::open(&path, 0, &RUNNING).is_err());
     fs::write(&path, wav_at(48_000, &[100; 513])).unwrap();
-    assert!(source.read_window(0, 32, &RUNNING).is_err());
+    assert_eq!(
+        source.read_window(0, 32, &RUNNING),
+        Err(PreviewFailure::SourceChanged)
+    );
     fs::write(&path, b"not a wav").unwrap();
     assert!(PreviewWindowSource::open(&path, 48_000, &RUNNING).is_err());
     let oversized = directory.0.join("oversized.wav");
