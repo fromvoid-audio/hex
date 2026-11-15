@@ -38,6 +38,9 @@ impl Service {
     /// Stop the session and export workers and join them within `timeout`.
     /// Further submissions return `SubmitError::Closed`. Idempotent: after a
     /// timeout the workers stay signalled and a later call may join them.
+    /// A completed export can still be read with `try_export_event` if its
+    /// result channel has capacity; a full or disconnected channel cannot
+    /// delay shutdown and does not provide durable recovery reporting.
     pub fn shutdown(&mut self, timeout: Duration) -> Result<(), ShutdownError> {
         self.shutdown.store(true, Ordering::Release);
         // Disconnect wakes a worker blocked in its idle request receive.
@@ -86,7 +89,9 @@ mod tests {
         next_event(&service);
         service.submit(Request::Import(source)).unwrap();
         assert!(next_event(&service).error.is_none());
-        let output = directory.0.join("long.wav");
+        let mixed_case = directory.0.join("MixedCase");
+        fs::create_dir(&mixed_case).unwrap();
+        let output = mixed_case.join("long.wav");
         let control = ExportControl::default();
         service
             .submit(Request::ExportRange {
@@ -101,7 +106,7 @@ mod tests {
             })
             .unwrap();
         let until = Instant::now() + Duration::from_secs(5);
-        while control.progress().processed_frames == 0 || temporary_files(&directory.0).is_empty() {
+        while control.progress().processed_frames == 0 || temporary_files(&mixed_case).is_empty() {
             assert!(Instant::now() < until, "export never started rendering");
             thread::sleep(Duration::from_millis(1));
         }
@@ -110,7 +115,16 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(3));
         assert!(control.is_cancelled());
         assert!(control.progress().processed_frames < 48_000 * 60 * 60);
-        assert_eq!(temporary_files(&directory.0).len(), 1);
+        let stages = temporary_files(&mixed_case);
+        assert_eq!(stages.len(), 1);
+        let event = service.try_export_event().expect("shutdown export result");
+        let error = event.result.expect_err("shutdown cancels the export");
+        let rendered = text::plain(&text::lowercase_outside_verbatim(&error));
+        assert!(rendered.contains("export cancelled"), "{rendered}");
+        assert!(
+            rendered.contains(&stages[0].display().to_string()),
+            "{rendered}"
+        );
         assert!(!output.exists());
         assert!(matches!(
             service.submit(Request::Undo),

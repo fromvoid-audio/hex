@@ -526,6 +526,61 @@ mod tests {
     }
 
     #[test]
+    fn shutdown_with_unavailable_result_receiver_does_not_block_export_worker() {
+        for disconnected in [false, true] {
+            let files = Files::new(false);
+            let (_, snapshot) = direct_sampler(&files);
+            let (work_tx, work_rx) = mpsc::sync_channel(1);
+            let (finished_tx, finished_rx) = mpsc::sync_channel(1);
+            let (events_tx, events_rx) = mpsc::sync_channel(1);
+            let events_rx = if disconnected {
+                drop(events_rx);
+                None
+            } else {
+                events_tx
+                    .try_send(ExportEvent {
+                        revision: 99,
+                        path: PathBuf::from("sentinel.wav"),
+                        result: Err("existing result".into()),
+                    })
+                    .unwrap();
+                Some(events_rx)
+            };
+            work_tx
+                .send(ExportWork::Render(job(
+                    &snapshot,
+                    files.output().to_path_buf(),
+                )))
+                .unwrap();
+            drop(work_tx);
+            let (stopped, wait) = mpsc::sync_channel(1);
+            let shutdown = Arc::new(AtomicBool::new(disconnected));
+            let worker_shutdown = Arc::clone(&shutdown);
+            let worker = thread::spawn(move || {
+                run_export_worker(
+                    work_rx,
+                    events_tx,
+                    Arc::new(|_, _, _, _, _, _, _, _| Err("export failed".into())),
+                    finished_tx,
+                    worker_shutdown,
+                    Arc::new(std::sync::Mutex::new(None)),
+                );
+                stopped.send(()).unwrap();
+            });
+            finished_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+            shutdown.store(true, Ordering::Release);
+            wait.recv_timeout(Duration::from_secs(1))
+                .expect("shutdown must not wait for the result consumer");
+            worker.join().unwrap();
+            if let Some(events) = events_rx {
+                let original = events.try_recv().unwrap();
+                assert_eq!(original.revision, 99);
+                assert_eq!(original.result.unwrap_err(), "existing result");
+            }
+        }
+    }
+
+    #[test]
     fn stale_and_pending_terminals_cannot_release_job_and_missing_terminal_requires_join() {
         let files = Files::new(false);
         let (session, snapshot) = direct_sampler(&files);
