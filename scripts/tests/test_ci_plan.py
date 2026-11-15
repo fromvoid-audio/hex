@@ -1198,10 +1198,39 @@ class ScopeTests(unittest.TestCase):
             self.assertEqual([s.step_id for s in ci.planned_steps(reused)], ["metadata-continuation"])
             self.assertEqual(reused["reuse"]["source"], previous)
             self.assertIs(reused["reuse"]["native_acceptance_opt_in"], False)
+            complete_bytes = report.read_bytes()
+            incomplete_bytes = json.dumps({**evidence, "steps": [{"status": "passed"}]}).encode()
+            resolved_report = report.resolve()
+            original_read = Path.read_bytes
+            reads = []
+            def change_report(path):
+                if path == resolved_report:
+                    reads.append(None)
+                    return complete_bytes if len(reads) == 1 else incomplete_bytes
+                return original_read(path)
+            with patch.object(Path, "read_bytes", change_report):
+                retained = ci.reusable_plan(root, resolved, report, env={})
+            self.assertEqual(len(reads), 1)
+            self.assertEqual(retained["reuse"]["sha256"], hashlib.sha256(complete_bytes).hexdigest())
+            reads.clear()
+            def change_incomplete_report(path):
+                if path == resolved_report:
+                    reads.append(None)
+                    return incomplete_bytes if len(reads) == 1 else complete_bytes
+                return original_read(path)
+            with patch.object(Path, "read_bytes", change_incomplete_report), \
+                    self.assertRaisesRegex(ValueError, "complete required configurations"):
+                ci.reusable_plan(root, resolved, report, env={})
+            self.assertEqual(len(reads), 1)
             with self.assertRaisesRegex(ValueError, "native/external"):
                 ci.reusable_plan(root, resolved, report, env={"HEX_VST3_SDK_DIR": "fixture"})
             original_report = report.read_bytes()
             original_plan = json.dumps(resolved, sort_keys=True)
+            report.write_bytes(b"[]")
+            for check in (ci.reusable_plan, plan.reuse_checks):
+                with self.subTest(check=check.__name__), self.assertRaisesRegex(ValueError, "must be an object"):
+                    check(root, resolved, report, env={})
+            report.write_bytes(original_report)
             # Full reports without a plan and scoped reports must both carry an
             # explicit false observation. Missing historical state is unknown.
             for old_plan in (None, {"scope": "tooling", "qualifies_merge": True}):
