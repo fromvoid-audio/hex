@@ -49,9 +49,11 @@ pub struct InputTake {
     pub open_error: Option<String>,
 }
 
-/// Drain a started or starting capture on a non-audio worker. The caller must
-/// retain its independent stop handle. `path` must not already exist. Setup or
-/// finalization errors return an error; the newly created file is not removed.
+/// Prepare the new file and drain a capture on a non-audio worker. If the
+/// capture has not started, start it only after its WAV header is written.
+/// A capture started by the caller can overflow while file setup is in progress.
+/// The caller must retain its independent stop handle. `path` must not already
+/// exist. Setup or finalization errors return an error; the file is not removed.
 pub fn write_input_take(mut capture: InputCapture, path: &Path) -> io::Result<InputTake> {
     let rate = capture.source().1.sample_rate;
     let file = open_take(path)?;
@@ -72,11 +74,25 @@ fn open_take(path: &Path) -> io::Result<File> {
 
 trait Source {
     type Stamp: Copy + Ord;
+    fn start(&mut self);
     fn read(&mut self) -> Result<Option<Block<Self::Stamp>>, InputEnd>;
     fn stop(&self);
 }
 impl Source for InputCapture {
     type Stamp = cpal::StreamInstant;
+    fn start(&mut self) {
+        loop {
+            match self.phase() {
+                super::InputPhase::Opening => thread::sleep(Duration::from_millis(1)),
+                super::InputPhase::Ready => {
+                    if self.start_on_control() {
+                        break;
+                    }
+                }
+                _ => break,
+            }
+        }
+    }
     fn read(&mut self) -> Result<Option<Block<Self::Stamp>>, InputEnd> {
         super::read(&mut self.input, &self.shared)
     }
@@ -122,6 +138,7 @@ fn run<S: Source, W: Output>(
         source.stop();
         return Err(error);
     }
+    source.start();
     let mut frames = 0_u64;
     let mut sequence = 0_u64;
     let mut timing: Vec<InputTiming<S::Stamp>> = Vec::new();
@@ -224,10 +241,22 @@ mod tests {
     struct Fake {
         blocks: VecDeque<Result<Option<Block<u64>>, InputEnd>>,
         stopped: Cell<bool>,
+        started: bool,
+        expected_header: Option<PathBuf>,
     }
     impl Source for Fake {
         type Stamp = u64;
+        fn start(&mut self) {
+            if let Some(path) = &self.expected_header {
+                assert_eq!(std::fs::metadata(path).unwrap().len(), HEADER);
+            }
+            self.started = true;
+        }
         fn read(&mut self) -> Result<Option<Block<u64>>, InputEnd> {
+            assert!(
+                self.started,
+                "the sink must start its source before reading"
+            );
             self.blocks.pop_front().unwrap_or(Err(InputEnd::Stopped))
         }
         fn stop(&self) {
@@ -251,6 +280,8 @@ mod tests {
         Fake {
             blocks,
             stopped: Cell::new(false),
+            started: false,
+            expected_header: None,
         }
     }
     static NEXT: AtomicUsize = AtomicUsize::new(0);
@@ -290,6 +321,7 @@ mod tests {
             ],
             InputEnd::Stopped,
         );
+        input.expected_header = Some(temp.0.clone());
         let take = run(&mut input, temp.file(), 48_000, 8, MAX_FRAMES).unwrap();
         assert!(matches!(take.end, InputTakeEnd::Stopped));
         assert_eq!(take.frames, 4);
@@ -443,10 +475,10 @@ mod tests {
         assert_eq!(take.open_error.as_deref(), Some("microphone unavailable"));
     }
 
-    struct PartialWrite(File, bool);
+    struct PartialWrite(File, bool, u64);
     impl Write for PartialWrite {
         fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-            if self.0.stream_position()? >= HEADER + FRAME_BYTES && !self.1 {
+            if self.0.stream_position()? >= self.2 && !self.1 {
                 self.1 = true;
                 self.0.write_all(&bytes[..bytes.len() / 2])?;
                 return Err(io::Error::other("simulated disk full"));
@@ -482,7 +514,7 @@ mod tests {
         );
         let take = run(
             &mut input,
-            PartialWrite(temp.file(), false),
+            PartialWrite(temp.file(), false, HEADER + FRAME_BYTES),
             48_000,
             8,
             MAX_FRAMES,
@@ -498,5 +530,21 @@ mod tests {
             .unwrap();
         assert_eq!(bytes.len(), (HEADER + FRAME_BYTES) as usize);
         assert_eq!(&bytes[40..44], &8_u32.to_le_bytes());
+    }
+
+    #[test]
+    fn header_failure_stops_without_starting_input() {
+        let temp = Temp::new();
+        let mut input = source(vec![block(0, 10, 0, &[[0.3, 0.3]])], InputEnd::Stopped);
+        let result = run(
+            &mut input,
+            PartialWrite(temp.file(), false, 0),
+            48_000,
+            8,
+            MAX_FRAMES,
+        );
+        assert!(result.is_err());
+        assert!(input.stopped.get());
+        assert!(!input.started);
     }
 }
