@@ -285,6 +285,11 @@ impl RuntimeMut<'_> {
     pub(super) fn position(&self) -> u64 {
         self.read().position()
     }
+    pub(super) fn main_output_latency_frames(&self) -> Option<u32> {
+        self.read()
+            .status()
+            .map(|status| status.main_output_latency_frames)
+    }
     pub(super) fn arm_midi_capture(
         &mut self,
         binding: hex_engine::midi_capture::MidiCaptureBinding,

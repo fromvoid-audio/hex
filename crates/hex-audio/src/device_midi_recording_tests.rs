@@ -53,6 +53,20 @@ fn fixture(
     Arc<ComputerKeyboardInput>,
     Target,
 ) {
+    let (control, callback, input, target, _) = fixture_with_latency(end, false);
+    (control, callback, input, target)
+}
+
+fn fixture_with_latency(
+    end: u64,
+    latency: bool,
+) -> (
+    prepared::Control,
+    prepared::Callback,
+    Arc<ComputerKeyboardInput>,
+    Target,
+    u64,
+) {
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
     let Created::Track(track) = editor
         .execute(Command::InsertTrackWithDevice {
@@ -72,6 +86,20 @@ fn fixture(
             length: BeatTime::from_quarters(4).unwrap(),
         })
         .unwrap();
+    if latency {
+        let limiter = hex_engine::default_native_device_state_for_class(
+            hex_engine::NativeDeviceClass::Effect,
+            hex_engine::DeviceTypeId::from_static("hex.limiter"),
+        )
+        .unwrap();
+        editor
+            .execute(Command::InsertDevice {
+                track,
+                before: None,
+                state: limiter,
+            })
+            .unwrap();
+    }
     let (mut control, mut callback) = prepared::channel(48_000).unwrap();
     control
         .configure_device_resource_publication_on_control(
@@ -101,6 +129,7 @@ fn fixture(
         .unwrap(),
     );
     let mut graph = Playback::try_from_prepared_with_session(prepared).unwrap();
+    let output_latency = u64::from(graph.main_output_latency_frames());
     graph
         .prepare_computer_keyboard(editor.project(), track, Arc::clone(&input))
         .unwrap();
@@ -150,7 +179,102 @@ fn fixture(
         output_identity: actual.output_identity,
         transport_epoch: control.status.transport_epoch.load(Acquire),
     };
-    (control, callback, input, target)
+    (control, callback, input, target, output_latency)
+}
+
+#[test]
+fn midi_recording_aligns_to_audible_position_with_device_latency() {
+    let (mut control, mut callback, input, target, latency) = fixture_with_latency(48_000, true);
+    let (mut direct_control, mut direct_callback, direct_input, direct_target, direct_latency) =
+        fixture_with_latency(48_000, false);
+    assert!(latency > 0);
+    assert_eq!(direct_latency, 0);
+    for _ in 0..4 {
+        assert!(deliver(&mut callback, &mut [[0.0; 2]; 64], 2));
+        assert!(deliver(&mut direct_callback, &mut [[0.0; 2]; 64], 2));
+    }
+    let cursor = control.status.position.load(Acquire);
+    assert_eq!(cursor, direct_control.status.position.load(Acquire));
+    control.midi_recording.begin(target).unwrap();
+    direct_control.midi_recording.begin(direct_target).unwrap();
+    input.set_key(0, Some((60, 100, 1))).unwrap();
+    direct_input.set_key(0, Some((60, 100, 1))).unwrap();
+    let mut delayed = Vec::new();
+    let mut direct = Vec::new();
+    for _ in 0..4 {
+        let mut delayed_block = [[0.0; 2]; 64];
+        let mut direct_block = [[0.0; 2]; 64];
+        assert!(deliver(&mut callback, &mut delayed_block, 2));
+        assert!(deliver(&mut direct_callback, &mut direct_block, 2));
+        delayed.extend_from_slice(&delayed_block);
+        direct.extend_from_slice(&direct_block);
+    }
+    let first_sound = |frames: &[[f32; 2]]| {
+        frames
+            .iter()
+            .position(|frame| frame.iter().any(|sample| sample.abs() > 1e-7))
+            .unwrap()
+    };
+    let measured_latency = (first_sound(&delayed) - first_sound(&direct)) as u64;
+    assert_eq!(latency, measured_latency);
+    let receipts = receipts(&mut control);
+    assert!(
+        receipts.iter().any(|receipt| matches!(
+            receipt,
+            Receipt::Note { content_frame, note, .. }
+                if matches!(note.event, MidiCaptureEvent::On { pitch: 60, .. })
+                    && *content_frame == cursor - measured_latency
+        )),
+        "expected audible-position note at {}, got {receipts:?}",
+        cursor - measured_latency
+    );
+}
+
+#[test]
+fn latency_corrected_capture_reaches_the_clip_end_across_partitions() {
+    for block in [1_usize, 7, 64] {
+        let (mut control, mut callback, input, target, latency) = fixture_with_latency(100, true);
+        assert!(latency > 0 && latency < 100);
+        control.midi_recording.begin(target).unwrap();
+        // Wait until the scheduled cursor is past the clip's uncorrected end,
+        // while its final latency-delayed samples are still being delivered.
+        while control.status.position.load(Acquire) < 110 {
+            assert!(deliver(&mut callback, &mut vec![[0.0; 2]; block], 2));
+        }
+        let cursor = control.status.position.load(Acquire);
+        assert!(cursor < target.capture.end_frame + latency);
+        input.set_key(0, Some((60, 100, 1))).unwrap();
+        assert!(deliver(&mut callback, &mut [[0.0; 2]; 1], 2));
+        let captured = receipts(&mut control);
+        let origin = captured
+            .iter()
+            .find_map(|receipt| match receipt {
+                Receipt::Armed { clock, .. } => Some(*clock),
+                _ => None,
+            })
+            .expect("arm receipt");
+        assert!(
+            captured.iter().any(|receipt| matches!(receipt,
+                Receipt::Note { content_frame, note, .. }
+                    if matches!(note.event, MidiCaptureEvent::On { pitch: 60, .. })
+                        && *content_frame == cursor - latency
+            )),
+            "block={block}, cursor={cursor}, receipts={captured:?}"
+        );
+        while control.status.position.load(Acquire) < target.capture.end_frame + latency {
+            assert!(deliver(&mut callback, &mut vec![[0.0; 2]; block], 2));
+        }
+        assert!(
+            receipts(&mut control).iter().any(|receipt| matches!(
+                receipt,
+                Receipt::Finished { clock: Some(clock), .. }
+                    if clock.content_frame == target.capture.end_frame + latency
+                        && clock.performance_frame - origin.performance_frame
+                            == clock.content_frame - origin.content_frame
+            )),
+            "block={block}"
+        );
+    }
 }
 fn receipts(control: &mut prepared::Control) -> Vec<Receipt> {
     std::iter::from_fn(|| control.midi_recording.try_receipt()).collect()
