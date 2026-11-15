@@ -34,9 +34,7 @@ use objc2_core_audio_types::{
 use objc2_core_foundation::CFString;
 use objc2_core_foundation::Type;
 
-pub use super::enumerate::{
-    default_input_device, default_output_device, SupportedInputConfigs, SupportedOutputConfigs,
-};
+pub use super::enumerate::{default_output_device, SupportedInputConfigs, SupportedOutputConfigs};
 use std::fmt;
 use std::mem::{self, size_of};
 use std::ptr::{null, NonNull};
@@ -391,12 +389,41 @@ pub struct Device {
     pub(crate) audio_device_id: AudioDeviceID,
 }
 
-fn is_default_input_device(device: &Device) -> bool {
-    default_input_device().is_some_and(|d| d.audio_device_id == device.audio_device_id)
-}
-
 fn is_default_output_device(device: &Device) -> bool {
     default_output_device().is_some_and(|d| d.audio_device_id == device.audio_device_id)
+}
+
+// The input stream is pinned to the selected device even when it is the
+// system default. Its disconnection must reach the stream's error callback.
+fn input_disconnect_callback<E>(callback: Arc<Mutex<E>>) -> super::ErrorCallback
+where
+    E: FnMut(StreamError) + Send + 'static,
+{
+    Box::new(move |err| {
+        invoke_error_callback(&callback, err);
+    })
+}
+
+#[cfg(test)]
+mod input_disconnect_regression {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn device_unavailable_reaches_the_input_error_callback() {
+        let observed = Arc::new(AtomicUsize::new(0));
+        let target = Arc::clone(&observed);
+        let callback = Arc::new(Mutex::new(move |error| {
+            if matches!(error, StreamError::DeviceNotAvailable) {
+                target.fetch_add(1, Ordering::Relaxed);
+            }
+        }));
+        // Input stream construction uses this same callback for every selected
+        // device, without a separate no-op route for the default device.
+        let mut disconnect = input_disconnect_callback(callback);
+        disconnect(StreamError::DeviceNotAvailable);
+        assert_eq!(observed.load(Ordering::Relaxed), 1);
+    }
 }
 
 impl Device {
@@ -895,15 +922,7 @@ impl Device {
             Ok(())
         })?;
 
-        // Create error callback for stream - either dummy or real based on device type
-        let error_callback_for_stream: super::ErrorCallback = if is_default_input_device(self) {
-            Box::new(|_: StreamError| {})
-        } else {
-            let error_callback_clone = error_callback_disconnect.clone();
-            Box::new(move |err: StreamError| {
-                invoke_error_callback(&error_callback_clone, err);
-            })
-        };
+        let error_callback_for_stream = input_disconnect_callback(error_callback_disconnect);
 
         let stream = Stream::new(
             StreamInner {
