@@ -1175,6 +1175,7 @@ impl WorkerAudioSink for Sink {
                         && actual.route_state_generation() == expected.route_generation
                         && actual.admitted_command_ticket() == expected.admitted_command_ticket
                         && actual.output_fault_epoch() == expected.output_fault_epoch
+                        && actual.consumed_stop_generation() == expected.consumed_stop_generation
                 }) else {
                     return Err(ResidentPublicationRefusal {
                         kind: hex_session::service::ResidentPublicationFailure::Other,
