@@ -3,11 +3,12 @@ use super::*;
 
 #[test]
 fn metered_resident_return_matches_scalar_pcm_and_meters_through_launch_and_loop() {
-    for (muted, automated, unity) in [
-        (false, false, false),
-        (true, false, false),
-        (false, true, false),
-        (false, false, true),
+    for (muted, automated, unity, graph_feed) in [
+        (false, false, false, false),
+        (true, false, false, false),
+        (false, true, false, false),
+        (false, false, true, false),
+        (false, false, true, true),
     ] {
         let mut snapshot = audio_fixture_project(true, false, false).snapshot();
         if unity {
@@ -40,6 +41,16 @@ fn metered_resident_return_matches_scalar_pcm_and_meters_through_launch_and_loop
         .unwrap();
         let mut editor = Editor::new(Project::from_snapshot(snapshot).unwrap(), 4).unwrap();
         let track = editor.project().tracks()[0].id();
+        if graph_feed {
+            let source = editor.project().tracks()[1].id();
+            editor
+                .execute(Command::SetAudioFeed {
+                    source: hex_project::RoutingOwner::Track(source),
+                    destination: track,
+                    gain: 0.5,
+                })
+                .unwrap();
+        }
         let asset = editor.project().assets().next().unwrap().id();
         let Created::Scene(scene) = editor
             .execute(Command::AddScene {
@@ -136,7 +147,7 @@ fn metered_resident_return_matches_scalar_pcm_and_meters_through_launch_and_loop
             }
             assert_eq!(
                 output, expected,
-                "muted={muted}, automated={automated}, unity={unity}, partition={partition}"
+                "muted={muted}, automated={automated}, unity={unity}, graph_feed={graph_feed}, partition={partition}"
             );
             assert_eq!(
                 (actual.performance_frame(), actual.arrangement_frame()),
