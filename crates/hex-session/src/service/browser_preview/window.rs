@@ -1,4 +1,4 @@
-//! Control-worker WAV windows for future incremental browser audition.
+//! Control-worker WAV windows for incremental browser audition.
 //!
 //! The reader pins one descriptor and retains the resampler's global phase. Each
 //! call reads at most one bounded output window and its bounded source halo;
@@ -138,9 +138,7 @@ impl PreviewWindowSource {
         let identity =
             SourceFileIdentity::observe(self.reader.path()).map_err(PreviewFailure::from_import)?;
         if !self.reader.matches_file_identity(identity) {
-            return Err(PreviewFailure::Failed(
-                "audio file changed while preparing preview · retry".into(),
-            ));
+            return Err(PreviewFailure::SourceChanged);
         }
         Ok(())
     }
