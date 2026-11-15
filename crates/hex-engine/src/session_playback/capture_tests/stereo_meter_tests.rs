@@ -3,13 +3,14 @@ use super::*;
 
 #[test]
 fn metered_resident_return_matches_scalar_pcm_and_meters_through_launch_and_loop() {
-    for (muted, automated, unity, graph_feed, return_feed) in [
-        (false, false, false, false, false),
-        (true, false, false, false, false),
-        (false, true, false, false, false),
-        (false, false, true, false, false),
-        (false, false, true, true, false),
-        (false, false, true, false, true),
+    for (muted, automated, unity, graph_feed, return_feed, stationary) in [
+        (false, false, false, false, false, false),
+        (true, false, false, false, false, false),
+        (false, true, false, false, false, false),
+        (false, false, true, false, false, true),
+        (false, false, true, true, false, true),
+        (false, false, true, false, true, true),
+        (false, false, false, false, false, true),
     ] {
         let mut snapshot = audio_fixture_project(true, false, false).snapshot();
         if unity {
@@ -112,7 +113,7 @@ fn metered_resident_return_matches_scalar_pcm_and_meters_through_launch_and_loop
             let mut reference = SessionPlayback::new(reference_revision).unwrap();
             actual.set_device_metering(true);
             reference.set_device_metering(true);
-            if !unity {
+            if !stationary {
                 actual.track_faders[0].retarget([0.0; 2], 48_000);
                 reference.track_faders[0].retarget([0.0; 2], 48_000);
             }
@@ -145,7 +146,7 @@ fn metered_resident_return_matches_scalar_pcm_and_meters_through_launch_and_loop
                     let used_window = actual.return_scratch[0][16] != [0.0; 2];
                     assert_eq!(
                         used_window,
-                        unity && !graph_feed && !return_feed,
+                        stationary && !graph_feed && !return_feed && !automated,
                         "batched send eligibility"
                     );
                 }
@@ -174,7 +175,7 @@ fn metered_resident_return_matches_scalar_pcm_and_meters_through_launch_and_loop
             }
             assert_eq!(
                 output, expected,
-                "muted={muted}, automated={automated}, unity={unity}, graph_feed={graph_feed}, return_feed={return_feed}, partition={partition}"
+                "muted={muted}, automated={automated}, unity={unity}, graph_feed={graph_feed}, return_feed={return_feed}, stationary={stationary}, partition={partition}"
             );
             assert_eq!(
                 (actual.performance_frame(), actual.arrangement_frame()),
