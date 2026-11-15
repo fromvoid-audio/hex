@@ -431,6 +431,27 @@ fn pause_guard_case(after_install: bool, with_lane: bool, late_editor: bool, add
                 (slope(&h) - base * 3.0).abs() < 1.0e-6,
                 "the later graph must keep the editor value in the processor"
             );
+            let path = directory.join("late-editor.hex");
+            h.service.submit(Request::SaveNew(path.clone())).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(3);
+            loop {
+                h.pump();
+                h.render_worker_step();
+                if let Ok(event) = h.service.try_event()
+                    && event.request_complete
+                {
+                    assert!(event.error.is_none(), "{:?}", event.error);
+                    assert!(event.save_complete);
+                    break;
+                }
+                assert!(Instant::now() < deadline, "save did not complete");
+                std::thread::yield_now();
+            }
+            let saved = hex_storage::load(&path).unwrap();
+            let state = hex_plugin_state::decode(saved.device(device).unwrap().state()).unwrap();
+            let component = state.component.unwrap();
+            let gain = f32::from_le_bytes(component[8..12].try_into().unwrap());
+            assert_eq!(gain, 3.0, "saved state must retain the late editor value");
         }
         return;
     }
