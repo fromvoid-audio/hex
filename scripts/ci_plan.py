@@ -1601,14 +1601,17 @@ def resolve(root: Path, *, profile: str, base: str, source: str, metadata: dict,
 
 def reuse_checks(root: Path, plan: dict, report: Path, env=None) -> dict:
     """Reuse runtime checks only for an ordered, prose-only continuation."""
-    if plan["profile"] != "merge":
-        raise ValueError("runtime reuse requires an explicit merge profile")
-    if python_tests.native_acceptance_inputs(os.environ if env is None else env):
-        raise ValueError("native/external acceptance inputs require fresh checks; runtime reuse refused")
-    if plan["runtime_inputs"].get("symlinks"):
-        raise ValueError("runtime continuation cannot certify external repository symlink targets")
-    raw = report.read_bytes()
+    _check_reuse_context(plan, env)
+    report = report.resolve()
+    return reuse_checks_from_snapshot(root, plan, report, report.read_bytes(), env=env)
+
+
+def reuse_checks_from_snapshot(root: Path, plan: dict, report: Path, raw: bytes, *, env=None) -> dict:
+    """Validate caller-checked bytes from the resolved report path without rereading it."""
+    _check_reuse_context(plan, env)
     evidence = json.loads(raw)
+    if not isinstance(evidence, dict):
+        raise ValueError("runtime report must be an object")
     if evidence.get("native_acceptance_opt_in") is not False:
         raise ValueError("native/external acceptance opt-in is present or unknown; runtime reuse refused")
     old_plan = evidence.get("plan")
@@ -1629,13 +1632,22 @@ def reuse_checks(root: Path, plan: dict, report: Path, env=None) -> dict:
     if not isinstance(dependency, dict):
         raise ValueError("runtime report lacks guarded toolchain/dependency identity")
     result = dict(plan)
-    result["reuse"] = {"report": str(report.resolve()), "sha256": hashlib.sha256(raw).hexdigest(),
+    result["reuse"] = {"report": str(report), "sha256": hashlib.sha256(raw).hexdigest(),
                        "source": previous, "dependency_inputs": dependency,
                        "native_acceptance_opt_in": False}
     result["reasons"] = [*plan["reasons"], "runtime inputs identical; metadata continuation checked separately"]
     result.pop("plan_sha256")
     result["plan_sha256"] = hashlib.sha256(json.dumps(result, sort_keys=True).encode()).hexdigest()
     return result
+
+
+def _check_reuse_context(plan: dict, env) -> None:
+    if plan["profile"] != "merge":
+        raise ValueError("runtime reuse requires an explicit merge profile")
+    if python_tests.native_acceptance_inputs(os.environ if env is None else env):
+        raise ValueError("native/external acceptance inputs require fresh checks; runtime reuse refused")
+    if plan["runtime_inputs"].get("symlinks"):
+        raise ValueError("runtime continuation cannot certify external repository symlink targets")
 
 
 # A base advance through these inputs can change every compiled configuration.

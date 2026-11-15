@@ -669,7 +669,11 @@ def utc_now() -> str:
 
 
 def reusable_plan(root: Path, plan: dict, report: Path, *, env=None) -> dict:
-    evidence = json.loads(report.read_bytes())
+    report = report.resolve()
+    raw = report.read_bytes()
+    evidence = json.loads(raw)
+    if not isinstance(evidence, dict):
+        raise ValueError("runtime report must be an object")
     old_plan = evidence.get("plan")
     if old_plan and old_plan.get("reuse"):
         raise ValueError("reference the original runtime report, not a chain of metadata reports")
@@ -682,7 +686,7 @@ def reusable_plan(root: Path, plan: dict, report: Path, *, env=None) -> dict:
         if required.requires_tests and sum(results.get("rust_passed_by_binary", [])) + sum(
                 results.get("python_executions", [])) - sum(results.get("python_skipped", [])) <= 0:
             raise ValueError("runtime report has a zero-match test configuration")
-    return ci_plan.reuse_checks(root, plan, report, env=env)
+    return ci_plan.reuse_checks_from_snapshot(root, plan, report, raw, env=env)
 
 
 def carry_decisions(steps: tuple[Step, ...], evidence: dict, basis: dict,
