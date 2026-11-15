@@ -527,6 +527,9 @@ public:
     bool seal_editor_edits_on_control() {
         return opened && host && !quarantined.load() && host->seal_editor_edits_on_control();
     }
+    bool editor_edits_sealed_on_control() const {
+        return host && host->editor_edits_sealed_on_control();
+    }
     uint64 host_callback_revision_on_control() const { return host?host->callback_revision_on_control():0; }
     uint64 editor_frontier_on_worker() const { return host?host->editor_frontier_on_worker():0; }
     void complete_parameter_edit() { if(host) host->complete_parameter_edit(); }

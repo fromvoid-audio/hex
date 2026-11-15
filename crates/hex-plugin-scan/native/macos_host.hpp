@@ -236,6 +236,8 @@ public:
         editor_edits_sealed=true;
         return true;
     }
+    // The helper's main lane owns the editor seal and resume transition.
+    bool editor_edits_sealed_on_control() const { return editor_edits_sealed; }
     void bind_processing_thread() { processing_thread.store(pthread_self(),std::memory_order_release); }
     // A synchronous SDK state setter may echo parameter edits. The saved
     // bytes already define the processor state and the controller inventory

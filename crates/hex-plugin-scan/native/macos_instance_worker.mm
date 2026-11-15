@@ -1344,6 +1344,9 @@ int main(int argc,char** argv) {
                         std::lock_guard<std::mutex> lock(startup_mutex);
                         epoch_stage=CaptureSent;startup_changed.notify_all();
                     } else if(stage==ResumeRequested) {
+                        // An editor seal is terminal for this actual helper.
+                        // Never acknowledge an epoch that cannot accept edits.
+                        if(instance.editor_edits_sealed_on_control()) { error(channel,&*config,Resume);std::_Exit(Resume); }
                         if(instance.latency_restart()) { error(channel,&*config,Quiescence);std::_Exit(Quiescence); }
                         supplied=next_presentation;
                         presentation=apply_presentation(instance,*available,supplied);
