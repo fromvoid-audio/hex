@@ -95,6 +95,9 @@ pub struct PreparedTakeExcerpt {
     pub preview: super::AudioPreview,
 }
 
+/// Prepare a selected take for dragging. If waveform construction fails after
+/// publication, leave the excerpt pathname untouched and report it for inspection;
+/// its current entry may no longer be the published file.
 pub fn prepare_excerpt(
     take: TakeSource<'_>,
     range: std::ops::Range<u64>,
@@ -163,17 +166,27 @@ pub fn prepare_excerpt(
         Ok(())
     })
     .map_err(|error| super::export_error_text(&error))?;
-    let waveform = match Waveform::from_peaks(size, bins).and_then(|waveform| {
+    let waveform = Waveform::from_peaks(size, bins).and_then(|waveform| {
         if identical_channels {
             waveform.with_identical_channels()
         } else {
             Ok(waveform)
         }
-    }) {
+    });
+    #[cfg(test)]
+    let waveform = match excerpt_failure_hook::run(&path) {
+        Some(error) => Err(error),
+        None => waveform,
+    };
+    let waveform = match waveform {
         Ok(waveform) => waveform,
         Err(error) => {
-            let _ = std::fs::remove_file(&path);
-            return Err(error.to_string());
+            // The published pathname may now name another process's file.
+            // Keep it untouched and report it without claiming its identity.
+            return Err(format!(
+                "{error} · excerpt path {} was not removed · inspect it before removing anything",
+                crate::service::text::verbatim(path.display())
+            ));
         }
     };
     Ok(PreparedTakeExcerpt {
@@ -187,9 +200,84 @@ pub fn prepare_excerpt(
 }
 
 #[cfg(test)]
+mod excerpt_failure_hook {
+    use std::{cell::RefCell, path::Path};
+    type Hook = Box<dyn FnOnce(&Path) -> hex_media::ImportError>;
+    thread_local! { static HOOK: RefCell<Option<Hook>> = const { RefCell::new(None) }; }
+    pub(super) struct Guard;
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            HOOK.with(|hook| drop(hook.borrow_mut().take()));
+        }
+    }
+    pub(super) fn install(hook: impl FnOnce(&Path) -> hex_media::ImportError + 'static) -> Guard {
+        HOOK.with(|slot| *slot.borrow_mut() = Some(Box::new(hook)));
+        Guard
+    }
+    pub(super) fn run(path: &Path) -> Option<hex_media::ImportError> {
+        HOOK.with(|hook| hook.borrow_mut().take())
+            .map(|hook| hook(path))
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::service::service_tests::{TestDir, wav_mono};
+
+    #[test]
+    fn excerpt_waveform_failure_preserves_and_reports_the_path() {
+        for substituted in [false, true] {
+            let dir = TestDir::new();
+            let mixed = dir.0.join("MixedCase");
+            std::fs::create_dir(&mixed).unwrap();
+            let path = mixed.join("Take.wav");
+            let moved = mixed.join("OriginalExcerpt.wav");
+            std::fs::write(&path, wav_mono(&[0, 8192, -16384, 4096, 0])).unwrap();
+            let source = TakeSource {
+                path: &path,
+                frames: 5,
+                sample_rate: 48_000,
+            };
+            let recorded = std::rc::Rc::new(std::cell::RefCell::new(None));
+            let result_path = recorded.clone();
+            let moved_for_hook = moved.clone();
+            let _hook = excerpt_failure_hook::install(move |excerpt| {
+                *result_path.borrow_mut() = Some(excerpt.to_path_buf());
+                if substituted {
+                    std::fs::rename(excerpt, &moved_for_hook).unwrap();
+                    std::fs::write(excerpt, b"unrelated user data").unwrap();
+                }
+                hex_media::ImportError::AllocationFailed
+            });
+            let error = match prepare_excerpt(source, 1..4, 48_000, &AtomicBool::new(false)) {
+                Ok(_) => panic!("injected failure must be returned"),
+                Err(error) => error,
+            };
+            let excerpt = recorded.borrow().clone().unwrap();
+            if substituted {
+                assert_eq!(std::fs::read(&excerpt).unwrap(), b"unrelated user data");
+                assert_eq!(&std::fs::read(&moved).unwrap()[..4], b"RIFF");
+            } else {
+                assert_eq!(&std::fs::read(&excerpt).unwrap()[..4], b"RIFF");
+            }
+            let visible = crate::service::text::plain(
+                &crate::service::text::lowercase_outside_verbatim(&error),
+            );
+            assert!(
+                visible.contains("could not allocate media buffer"),
+                "{visible}"
+            );
+            assert!(
+                visible.contains(&excerpt.display().to_string()),
+                "{visible}"
+            );
+            assert!(
+                visible.contains("inspect it before removing anything"),
+                "{visible}"
+            );
+        }
+    }
 
     #[test]
     fn take_audition_reads_only_the_half_open_source_range() {
