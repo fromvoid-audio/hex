@@ -874,6 +874,117 @@ fn sequenced_capture_reserves_only_the_installed_original_endpoint() {
         assert!(Instant::now() < until);
         std::thread::yield_now();
     };
+    let approved = loop {
+        match f
+            .control
+            .approve_native_sequenced_capture_on_control(f.binding, &fact)
+        {
+            Ok(state) => break state,
+            Err(
+                "native preparation is busy"
+                | "native source is busy"
+                | "native capture mailbox is busy",
+            ) => {}
+            Err(error) => panic!("sequenced capture provenance: {error}"),
+        }
+        assert!(Instant::now() < until);
+        std::thread::yield_now();
+    };
+    assert!(approved.processing_eq(fact.state()));
+    assert_eq!(
+        f.control
+            .native_source_approves_processing_state_on_control(f.binding, &approved),
+        Some(false),
+        "capture correspondence alone must not approve processing"
+    );
+    assert!(
+        f.control
+            .approve_native_sequenced_capture_on_control(
+                Binding {
+                    epoch: f.binding.epoch + 1,
+                    ..f.binding
+                },
+                &fact,
+            )
+            .is_err()
+    );
+    let identity = crate::plugin_effects::Hosting::saved_identity_on_control(&approved).unwrap();
+    let selection =
+        crate::plugin_effects::AuthoredSelection::for_no_parameters(identity.class.bytes())
+            .unwrap();
+    let (build, _, preparation) = crate::candidate_custody::native_source_test_fixture::input_for(
+        "processing",
+        [
+            0x48, 0x45, 0x58, 0x50, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12,
+        ],
+    );
+    let host = crate::plugin_effects::Hosting::from_test_build(build, preparation.limits);
+    let applied = f.control.status.native_parameter_source(true).unwrap().0;
+    let wrong_class =
+        crate::plugin_effects::AuthoredSelection::for_no_parameters([33; 16]).unwrap();
+    assert_eq!(
+        host.begin_canonical_bases_capture_on_control(
+            &mut f.control,
+            applied,
+            f.binding,
+            &approved,
+            &wrong_class,
+            true
+        )
+        .err()
+        .as_deref(),
+        Some("native canonical base class differs"),
+    );
+    let stale = AppliedAudioSource {
+        audio_revision: applied.audio_revision + 1,
+        ..applied
+    };
+    assert_eq!(
+        host.begin_canonical_bases_capture_on_control(
+            &mut f.control,
+            stale,
+            f.binding,
+            &approved,
+            &selection,
+            true
+        )
+        .err()
+        .as_deref(),
+        Some("native base capture requires the current ordinary processor"),
+    );
+    let mut query = loop {
+        match host.begin_canonical_bases_capture_on_control(
+            &mut f.control,
+            applied,
+            f.binding,
+            &approved,
+            &selection,
+            true,
+        ) {
+            Ok(query) => break query,
+            Err(error)
+                if error == "native preparation is busy" || error == "native source is busy" => {}
+            Err(error) => panic!("empty canonical profile admission: {error}"),
+        }
+        assert!(Instant::now() < until);
+        std::thread::yield_now();
+    };
+    let facts = loop {
+        if let Some(result) = query.poll_on_control(&mut f.control, &mut || false) {
+            break result.expect("empty canonical profile must be restorable");
+        }
+        assert!(Instant::now() < until);
+        std::thread::yield_now();
+    };
+    assert_eq!(facts.binding(), f.binding);
+    assert!(facts.canonical_state().processing_eq(&approved));
+    assert_eq!(facts.parameters().count(), 0);
+    assert_eq!(
+        f.control
+            .native_source_approves_processing_state_on_control(f.binding, facts.canonical_state()),
+        Some(true),
+        "the private empty-selection preparation must approve the exact state"
+    );
     let source = loop {
         match f
             .control
