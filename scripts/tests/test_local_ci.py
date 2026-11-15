@@ -483,6 +483,58 @@ class ManualFixtureCleanupTests(unittest.TestCase):
         self.assertIs(local_ci.LocalCiRunner._step_sequence_error, original)
 
 
+class RunnerEnvironmentInputTests(unittest.TestCase):
+    def test_qualifying_inputs_use_the_runner_git_environment(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory).resolve()
+            root = base / "repo"
+            root.mkdir()
+            clean_config = base / "clean-config"
+            clean_config.write_text("")
+            excludes = base / "excludes"
+            excludes.write_text("untracked.rs\n")
+            configured = base / "configured-git"
+            configured.write_text(f"[core]\n\texcludesfile = {excludes}\n")
+            default_env = {**os.environ, "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": str(clean_config)}
+            actual_env = {**default_env, "GIT_CONFIG_GLOBAL": str(configured)}
+
+            def git(*args):
+                return subprocess.check_output(["git", *args], cwd=root, env=default_env, text=True).strip()
+
+            git("init", "-q")
+            (root / ".gitignore").write_text("artifacts/\n")
+            (root / "tracked.rs").write_text("tracked\n")
+            git("add", ".gitignore", "tracked.rs")
+            git("-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "initial")
+            source = git("rev-parse", "HEAD")
+            (root / "untracked.rs").write_text("untracked\n")
+            default_inputs = local_ci.ci_plan.runtime_inputs(root, default_env)
+            actual_inputs = local_ci.ci_plan.runtime_inputs(root, actual_env)
+            self.assertNotEqual(default_inputs, actual_inputs)
+            self.assertEqual(subprocess.check_output(
+                ["git", "status", "--porcelain"], cwd=root, env=actual_env, text=True), "")
+
+            for label, inputs in (("mismatch", default_inputs), ("matching", actual_inputs)):
+                with self.subTest(label=label), patch.dict(os.environ, default_env, clear=True):
+                    plan = {"scope": "full", "profile": "merge", "qualifies_merge": True,
+                            "source": source, "runtime_inputs": inputs}
+                    runner = local_ci.LocalCiRunner(root, mode="merge", run_id=label, env=actual_env,
+                                                   plan=plan, min_free_bytes=0)
+                    def stop_before_target():
+                        runner.summary["cargo_metadata_error"] = "fixture stopped before target"
+                        return False
+                    with patch.object(runner, "_execution_policy_error", return_value=None), \
+                            patch.object(runner, "_resolve_cargo_identity", side_effect=stop_before_target) as identity, \
+                            patch.object(runner, "_run_step") as execute:
+                        self.assertEqual(runner.run(), 2)
+                    if label == "mismatch":
+                        self.assertIn("resolved plan source/inputs changed", runner.summary["metadata_error"])
+                        identity.assert_not_called()
+                    else:
+                        identity.assert_called_once()
+                    execute.assert_not_called()
+
+
 class LocalCiRunnerTests(unittest.TestCase):
     def test_qualifying_plan_refuses_partial_overlays_before_target_access(self):
         self.step_sequence_patch.stop()

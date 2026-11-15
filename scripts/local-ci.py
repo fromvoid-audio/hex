@@ -2927,7 +2927,7 @@ class LocalCiRunner:
             elif self.plan and self.plan["qualifies_merge"] and (
                     self.summary["start_tree"]["dirty"]
                     or self.summary["start_tree"]["commit"] != self.plan["source"]
-                    or ci_plan.runtime_inputs(self.root) != self.plan["runtime_inputs"]):
+                    or self.summary["runtime_inputs"] != self.plan["runtime_inputs"]):
                 self.summary.update(status="failed", exit_code=2,
                                     metadata_error="resolved plan source/inputs changed or are dirty")
             elif any(self._uses_cargo_target(step) for step in self.steps) and not (
