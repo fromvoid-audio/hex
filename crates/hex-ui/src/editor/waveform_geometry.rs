@@ -1478,6 +1478,20 @@ mod tests {
         let cache_ref = cache.borrow();
         let entries = &cache_ref.overrange.entries;
         assert_eq!(entries.len(), 3);
+        let OverrangeState::Ready(canonical_columns) = &entries[0].state else {
+            panic!("canonical result")
+        };
+        let OverrangeState::Ready(preview_columns) = &entries[1].state else {
+            panic!("preview result")
+        };
+        assert_eq!(
+            canonical_columns[0],
+            Some(Overrange {
+                positive: [true; 2],
+                negative: [false; 2]
+            })
+        );
+        assert_eq!(preview_columns[0], Some(Overrange::default()));
         for entry in entries {
             let OverrangeState::Ready(columns) = &entry.state else {
                 panic!("ready result")
