@@ -283,7 +283,7 @@ impl EditorView {
         if playing {
             if let Some((source, needs_preparation)) = early_source {
                 if needs_preparation {
-                    self.request_committed_locator_seek(frame, source);
+                    self.request_committed_locator_seek(frame, source, None);
                 } else {
                     self.queue_applied_source_seek(frame, source);
                 }
@@ -824,11 +824,14 @@ impl EditorView {
                 .is_some_and(|status| status.playing.load(Acquire));
             if !drag.moved
                 && !drag.click_disqualified
-                && (self.session_quantization == hex_engine::LaunchQuantization::Immediate
-                    || !playing)
                 && let Some(source) = self.locator_play_source()
             {
-                self.queue_applied_source_play(drag.frame, source, true);
+                let quantization = self.session_quantization;
+                if playing && quantization != hex_engine::LaunchQuantization::Immediate {
+                    self.request_committed_locator_seek(drag.frame, source, Some(quantization));
+                } else {
+                    self.queue_applied_source_play(drag.frame, source, true);
+                }
                 return;
             }
             self.status = "locator playback is waiting for the current edit".into();
@@ -1343,17 +1346,6 @@ mod tests {
                 view.locator_applied_source().is_some(),
                 "source unavailable after click"
             );
-            view.session_quantization = LaunchQuantization::OneBar;
-        });
-        visual.simulate_mouse_down(marker, MouseButton::Left, Modifiers::default());
-        visual.simulate_mouse_up(marker, MouseButton::Left, Modifiers::default());
-        editor.read_with(&visual, |view, _| {
-            assert_eq!(
-                view.status,
-                "locator playback is waiting for the current edit"
-            );
-            assert!(!view.section_launch_waiting());
-            assert!(view.pending_audio_commands.is_empty());
         });
         visual.update(|window, cx| editor.update(cx, |view, _| view.focus.focus(window)));
         visual.simulate_keystrokes("cmd-alt-right");
@@ -1506,8 +1498,8 @@ mod tests {
             );
             assert!(view.service.try_event().is_err());
         });
-        // A quantized click remains fenced here; an immediate click keeps the
-        // ordinary PlayFrom law. Keyboard navigation prepares a fresh seek below.
+        // An immediate click keeps the ordinary PlayFrom law. Keyboard
+        // navigation prepares a fresh seek below.
         for _ in 0..20 {
             fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
         }
@@ -1537,23 +1529,8 @@ mod tests {
             view.play_intent.priority_stop();
             assert!(!view.committed_locator_seek_context_is_current(source));
             view.play_intent = previous_intent;
-            view.session_quantization = hex_engine::LaunchQuantization::OneBar;
+            view.session_quantization = hex_engine::LaunchQuantization::Immediate;
             view.last_transport_command = None;
-        });
-        visual.simulate_mouse_down(marker, MouseButton::Left, Modifiers::default());
-        visual.simulate_mouse_up(marker, MouseButton::Left, Modifiers::default());
-        editor.read_with(&visual, |view, _| {
-            assert!(
-                view.last_transport_command.is_none(),
-                "quantized launch remains fenced"
-            );
-            assert!(
-                view.locator_applied_source().is_none(),
-                "direct seek cannot bypass stateful preparation"
-            );
-        });
-        editor.update(&mut visual, |view, _| {
-            view.session_quantization = hex_engine::LaunchQuantization::Immediate
         });
         visual.simulate_mouse_down(marker, MouseButton::Left, Modifiers::default());
         visual.simulate_mouse_up(marker, MouseButton::Left, Modifiers::default());
@@ -1678,6 +1655,175 @@ mod tests {
             );
             std::thread::yield_now();
         }
+        assert_eq!(
+            hex_storage::load_journal(&recovery).unwrap(),
+            *committed.project
+        );
+        fixture.finish(cx);
+    }
+
+    #[gpui::test]
+    fn quantized_committed_locator_applies_at_captured_boundary_while_checkpoint_held(
+        cx: &mut TestAppContext,
+    ) {
+        use hex_engine::LaunchQuantization;
+        use std::time::{Duration, Instant};
+
+        cx.update(super::super::bind_editor_keys);
+        let environment = super::super::test_environment::Environment::new().unwrap();
+        let recovery = environment
+            .root()
+            .join("held-quantized-locator.hex-journal");
+        let reverb = hex_engine::default_native_device_state(
+            hex_engine::DeviceTypeId::from_static("hex.reverb"),
+        )
+        .unwrap();
+        let mut fixture = super::super::worker_ui_fixture::open_with_section_and_recovery(
+            cx,
+            vec![Command::InsertMainDevice {
+                before: None,
+                state: reverb,
+            }],
+            false,
+            true,
+            Some(recovery.clone()),
+        );
+        let editor = fixture.editor.clone();
+        let mut visual = VisualTestContext::from_window(fixture.handle, cx);
+        editor.update(&mut visual, |view, cx| {
+            view.computer_keyboard.enabled = false;
+            view.place_locator_play_start(24_000);
+            cx.notify();
+        });
+        visual.update(|window, cx| editor.update(cx, |view, _| view.focus.focus(window)));
+        visual.run_until_parked();
+        let mut gate = hex_session::service::hold_next_checkpoint(recovery.clone()).unwrap();
+        visual.simulate_keystrokes("i");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut entered = false;
+        let mut observation = None;
+        while !entered || observation.is_none() {
+            if !entered {
+                match gate.try_entered() {
+                    Ok(()) => entered = true,
+                    Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                    Err(error) => panic!("checkpoint gate: {error}"),
+                }
+            }
+            if observation.is_none() {
+                observation = editor.read_with(&visual, |view, _| {
+                    view.service.try_arrangement_edit_view().ok()
+                });
+            }
+            assert!(Instant::now() < deadline, "held locator observation");
+            std::thread::yield_now();
+        }
+        let observation = observation.unwrap();
+        let committed = observation.state.upgrade().unwrap();
+        let locator = committed.project.arrangement_locators().first().unwrap();
+        let id = locator.id();
+        let revision = committed.revision;
+        editor.update(&mut visual, |view, cx| {
+            assert!(view.observe_locator_add_view(observation));
+            cx.notify();
+        });
+        loop {
+            fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+            let ready = editor.update(&mut visual, |view, cx| {
+                view.tick(cx);
+                let stateful =
+                    view.pending_publication_observation
+                        .as_ref()
+                        .is_some_and(|observation| {
+                            matches!(
+                                &observation.state,
+                                crate::EditorPublicationState::ResidentSubmitted { metadata, .. }
+                                    if metadata.requires_preroll
+                            )
+                        });
+                stateful
+                    && view
+                        .audio_status()
+                        .and_then(|status| status.recording_source())
+                        .is_some_and(|source| source.context.editor_revision == revision)
+                    && view.locator_play_source().is_some()
+            });
+            if ready {
+                break;
+            }
+            assert!(Instant::now() < deadline, "locator source not applied");
+            std::thread::yield_now();
+        }
+        editor.update(&mut visual, |view, _| {
+            let source = view.locator_play_source().unwrap();
+            view.queue_applied_source_play(47_960, source, true);
+        });
+        fixture.backend.render(&mut [[0.0; 2]; 16]).unwrap();
+        editor.update(&mut visual, |view, cx| {
+            view.tick(cx);
+            assert_eq!(view.audio_status().unwrap().position.load(Acquire), 47_976);
+            view.session_quantization = LaunchQuantization::Quarter;
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let marker = bounds(&mut visual, "locator-play", id).center();
+        visual.simulate_mouse_down(marker, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(marker, MouseButton::Left, Modifiers::default());
+        editor.update(&mut visual, |view, _| {
+            let seek = view
+                .prepared_seek
+                .as_ref()
+                .expect("quantized committed locator must be admitted");
+            assert_eq!(seek.destination_frame, 24_000);
+            assert_eq!(seek.kind.quantization(), Some(LaunchQuantization::Quarter));
+            view.session_quantization = LaunchQuantization::OneBar;
+        });
+        let published = loop {
+            let revision = editor.update(&mut visual, |view, cx| {
+                view.tick(cx);
+                assert!(view.error.is_none(), "{:?}", view.error);
+                match view.prepared_seek.as_ref().map(|seek| seek.stage) {
+                    Some(super::super::arrangement_seek::SeekStage::Published {
+                        audio_revision,
+                    }) => Some(audio_revision),
+                    _ => None,
+                }
+            });
+            if let Some(revision) = revision {
+                break revision;
+            }
+            assert!(Instant::now() < deadline, "quantized locator publication");
+            std::thread::yield_now();
+        };
+        fixture.backend.render(&mut [[0.0; 2]; 7]).unwrap();
+        editor.read_with(&visual, |view, _| {
+            let status = view.audio_status().unwrap();
+            assert_ne!(status.applied_revision.load(Acquire), published);
+            assert_eq!(status.position.load(Acquire), 47_983);
+        });
+        fixture.backend.render(&mut [[0.0; 2]; 18]).unwrap();
+        editor.update(&mut visual, |view, cx| {
+            view.tick(cx);
+            let status = view.audio_status().unwrap();
+            assert_eq!(status.applied_revision.load(Acquire), published);
+            assert_eq!(status.position.load(Acquire), 24_001);
+            assert!(view.service.try_event().is_err());
+        });
+        gate.release().unwrap();
+        let terminal = editor.read_with(&visual, |view, _| next_terminal(view));
+        assert!(
+            matches!(terminal.created, Some(hex_project::Created::ArrangementLocator(created)) if created == id)
+        );
+        editor.update(&mut visual, |view, cx| {
+            view.receive(terminal);
+            cx.notify();
+        });
+        let seek_terminal = editor.read_with(&visual, |view, _| next_terminal(view));
+        assert!(seek_terminal.error.is_none());
+        editor.update(&mut visual, |view, cx| {
+            view.receive(seek_terminal);
+            cx.notify();
+        });
         assert_eq!(
             hex_storage::load_journal(&recovery).unwrap(),
             *committed.project
