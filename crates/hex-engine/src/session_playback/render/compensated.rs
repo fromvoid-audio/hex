@@ -517,6 +517,8 @@ impl SessionPlayback {
                         .get(index)
                         .is_some_and(Option::is_some)
                     || self.source_effects.has_chain(index)
+                    // Device taps must publish as each frame is rendered.
+                    || (self.device_metering && !self.device_chains[index].is_empty())
                     || session_alignment_blocked)
             {
                 continue;

@@ -491,9 +491,14 @@ fn session_independent_alignment_matches_scalar_audio_and_visible_meters() {
             assert_eq!(output, expected, "partition={partition} block={block}");
             if partition == 256 && block == 1 {
                 assert_ne!(
-                    actual.resident_source_scratch[1][255],
+                    actual.resident_source_scratch[2][255],
                     [0.4, -0.2],
                     "eligible track must advance through its aligned window"
+                );
+                assert_eq!(
+                    actual.resident_source_scratch[1][255],
+                    [0.4, -0.2],
+                    "metered device chain must retain frame-wise publication"
                 );
             }
             assert!(expected.iter().flatten().any(|sample| *sample != 0.0));
