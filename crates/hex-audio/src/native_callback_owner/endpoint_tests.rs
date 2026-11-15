@@ -113,6 +113,15 @@ fn actual_four_terminal_factory_cleans_graph_without_client_poll_but_keeps_lease
             .ok()
             .unwrap();
         assert!(client.preview_request().is_err());
+        assert!(client.preview_begin_windows(1, 0, 1).is_err());
+        let pcm = hex_engine::Audio::new(48_000, vec![[0.25; 2]]).unwrap();
+        let owner = pcm.frames().as_ptr();
+        let refused = client.preview_publish_window(1, 0, pcm).unwrap_err();
+        assert_eq!(
+            refused.reason,
+            crate::sample_preview::WindowRefusalReason::Invalid
+        );
+        assert_eq!(refused.audio.frames().as_ptr(), owner);
         let root_identity = Arc::new(hex_engine::Project::new(48000, vec![]).unwrap());
         let rejected = client
             .forward_resident_publication(
