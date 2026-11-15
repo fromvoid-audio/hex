@@ -45,7 +45,10 @@ impl SessionPlayback {
         for (index, (route, done)) in self.route_scratch.iter().zip(passthrough).enumerate() {
             let track = &self.revision.arrangement().tracks()[index];
             if !eligible[index]
-                || !matches!(route.owner, RouteOwner::Arrangement)
+                || !matches!(
+                    route.owner,
+                    RouteOwner::Arrangement | RouteOwner::SessionAudio { .. }
+                )
                 || self.revision.gain_recording_track() == Some(route.id)
                 || track.has_gain_automation()
                 || track.instrument_id.is_some()
@@ -1425,15 +1428,20 @@ mod tests {
 
     #[test]
     fn unity_return_capture_and_refusal_preserve_pcm_and_transaction() {
-        return_capture_and_refusal(1.0);
+        return_capture_and_refusal(1.0, false);
     }
 
     #[test]
     fn static_gain_return_capture_and_refusal_preserve_pcm_and_transaction() {
-        return_capture_and_refusal(0.5);
+        return_capture_and_refusal(0.5, false);
     }
 
-    fn return_capture_and_refusal(gain: f32) {
+    #[test]
+    fn session_return_capture_and_refusal_preserve_pcm_and_transaction() {
+        return_capture_and_refusal(0.5, true);
+    }
+
+    fn return_capture_and_refusal(gain: f32, session: bool) {
         use crate::session_playback::capture::{OutputCapture, OutputCaptureId};
         use hex_lattice_contract::NativeDeviceMetadata;
         use hex_project::{Command, Created};
@@ -1460,9 +1468,15 @@ mod tests {
             }
         }
 
-        let mut f = fixture(&[&[]], 1024);
+        let mut f = if session {
+            fixture(&[&[], &[], &[], &[]], 1024)
+        } else {
+            fixture(&[&[]], 1024)
+        };
         let mut snapshot = f.editor.project().snapshot();
-        snapshot.tracks[0].gain = gain;
+        for track in &mut snapshot.tracks {
+            track.gain = gain;
+        }
         f.editor =
             hex_project::Editor::new(hex_project::Project::from_snapshot(snapshot).unwrap(), 32)
                 .unwrap();
@@ -1483,13 +1497,42 @@ mod tests {
                 state: hex_devices::limiter::DEFINITION.default_state().unwrap(),
             })
             .unwrap();
-        f.editor
-            .execute(Command::SetReturnSend {
-                track,
-                return_track: bus,
-                gain: 0.5,
-            })
-            .unwrap();
+        for &id in &f.tracks {
+            f.editor
+                .execute(Command::SetReturnSend {
+                    track: id,
+                    return_track: bus,
+                    gain: 0.5,
+                })
+                .unwrap();
+        }
+        let scene = if session {
+            let Created::Scene(scene) = f
+                .editor
+                .execute(Command::AddScene {
+                    name: "session".into(),
+                })
+                .unwrap()
+            else {
+                panic!("scene")
+            };
+            for &id in &f.tracks {
+                let asset = f.editor.project().track(id).unwrap().clips()[0].asset();
+                f.editor
+                    .execute(Command::CreateSessionAudioClip {
+                        track: id,
+                        scene,
+                        name: "clip".into(),
+                        asset,
+                        source_start: 0,
+                        source_end: 1024,
+                    })
+                    .unwrap();
+            }
+            Some(scene)
+        } else {
+            None
+        };
         let revision = Arc::new(
             PreparedRevision::prepare(
                 f.editor.project(),
@@ -1499,33 +1542,76 @@ mod tests {
             )
             .unwrap(),
         );
-        let mut actual =
-            SessionPlayback::new_linear_arrangement_export(Arc::clone(&revision)).unwrap();
-        let mut scalar = SessionPlayback::new_linear_arrangement_export(revision).unwrap();
+        let create_runtime = |revision| {
+            if session {
+                SessionPlayback::new(revision)
+            } else {
+                SessionPlayback::new_linear_arrangement_export(revision)
+            }
+            .unwrap()
+        };
+        let mut actual = create_runtime(Arc::clone(&revision));
+        let mut scalar = create_runtime(revision);
         scalar.resident_source_scratch.clear();
         for runtime in [&mut actual, &mut scalar] {
             runtime.set_device_metering(true);
+            if let Some(scene) = scene {
+                runtime
+                    .apply(SessionPlaybackCommand::LaunchScene {
+                        scene,
+                        quantization: LaunchQuantization::Immediate,
+                    })
+                    .unwrap();
+            }
             runtime.apply(SessionPlaybackCommand::Play).unwrap();
         }
         let ids = [OutputCaptureId::Track(track), OutputCaptureId::Return(bus)];
-        let actual_plan = actual.output_capture_plan(&ids, 256).unwrap();
-        let scalar_plan = scalar.output_capture_plan(&ids, 256).unwrap();
+        let actual_plan = (!session).then(|| actual.output_capture_plan(&ids, 256).unwrap());
+        let scalar_plan = (!session).then(|| scalar.output_capture_plan(&ids, 256).unwrap());
         let capture =
             |runtime: &mut SessionPlayback,
-             plan: &crate::session_playback::capture::OutputCapturePlan| {
+             plan: Option<&crate::session_playback::capture::OutputCapturePlan>| {
                 let mut main = [[0.0; 2]; 256];
                 let mut track_frames = [[0.0; 2]; 256];
                 let mut return_frames = [[0.0; 2]; 256];
-                let mut buffers = [&mut track_frames[..], &mut return_frames[..]];
-                let mut captured = OutputCapture::new(plan, &mut buffers);
-                runtime
-                    .render_with_capture(&mut main, &mut captured)
-                    .unwrap();
-                assert_eq!(captured.valid_frames(), 256);
+                if let Some(plan) = plan {
+                    let mut buffers = [&mut track_frames[..], &mut return_frames[..]];
+                    let mut captured = OutputCapture::new(plan, &mut buffers);
+                    runtime
+                        .render_with_capture(&mut main, &mut captured)
+                        .unwrap();
+                    assert_eq!(captured.valid_frames(), 256);
+                } else {
+                    let mut observer = |signal, offset: usize, frames: &[Frame]| {
+                        let destination = match signal {
+                            crate::ProjectSignal::Track(_) => &mut track_frames,
+                            crate::ProjectSignal::Return(_) => &mut return_frames,
+                            _ => return,
+                        };
+                        for (target, source) in destination[offset..].iter_mut().zip(frames) {
+                            target[0] += source[0];
+                            target[1] += source[1];
+                        }
+                    };
+                    let tracks = [track.value()];
+                    let returns = [bus];
+                    let mut tap =
+                        crate::ProjectOutputTap::with_returns(&tracks, &returns, &mut observer)
+                            .unwrap();
+                    runtime
+                        .render_internal::<dyn MediaPages>(
+                            &mut main,
+                            None,
+                            None,
+                            Some(&mut tap),
+                            None,
+                        )
+                        .unwrap();
+                }
                 (main, track_frames, return_frames)
             };
-        let expected = capture(&mut scalar, &scalar_plan);
-        let captured = capture(&mut actual, &actual_plan);
+        let expected = capture(&mut scalar, scalar_plan.as_ref());
+        let captured = capture(&mut actual, actual_plan.as_ref());
         assert!(
             actual.return_scratch[0][1..]
                 .iter()
@@ -1556,8 +1642,152 @@ mod tests {
             position
         );
         assert_eq!(
-            capture(&mut actual, &actual_plan),
-            capture(&mut scalar, &scalar_plan)
+            capture(&mut actual, actual_plan.as_ref()),
+            capture(&mut scalar, scalar_plan.as_ref())
+        );
+    }
+
+    #[test]
+    fn session_return_quantized_relaunch_matches_scalar_at_boundary() {
+        use hex_lattice_contract::NativeDeviceMetadata;
+        use hex_project::{Command, Created};
+
+        let mut f = fixture(&[&[], &[], &[], &[]], 256);
+        for (index, audio) in f.media.values_mut().enumerate() {
+            let sample = if index == 1 {
+                [0.25, -0.5]
+            } else {
+                [0.125, -0.25]
+            };
+            *audio = crate::Audio::new(48_000, vec![sample; 256]).unwrap();
+        }
+        let replacement_asset = f.editor.project().track(f.tracks[1]).unwrap().clips()[0].asset();
+        let Created::ReturnTrack(bus) = f
+            .editor
+            .execute(Command::AddReturnTrack {
+                name: "return".into(),
+            })
+            .unwrap()
+        else {
+            panic!("return")
+        };
+        f.editor
+            .execute(Command::InsertReturnDevice {
+                return_track: bus,
+                before: None,
+                state: hex_devices::limiter::DEFINITION.default_state().unwrap(),
+            })
+            .unwrap();
+        let Created::Scene(scene) = f
+            .editor
+            .execute(Command::AddScene {
+                name: "scene".into(),
+            })
+            .unwrap()
+        else {
+            panic!("scene")
+        };
+        let Created::Scene(next) = f
+            .editor
+            .execute(Command::AddScene {
+                name: "next".into(),
+            })
+            .unwrap()
+        else {
+            panic!("scene")
+        };
+        let mut replacement = None;
+        for (index, &track) in f.tracks.iter().enumerate() {
+            let asset = f.editor.project().track(track).unwrap().clips()[0].asset();
+            f.editor
+                .execute(Command::SetReturnSend {
+                    track,
+                    return_track: bus,
+                    gain: 0.25,
+                })
+                .unwrap();
+            f.editor
+                .execute(Command::CreateSessionAudioClip {
+                    track,
+                    scene,
+                    name: "first".into(),
+                    asset,
+                    source_start: 0,
+                    source_end: 256,
+                })
+                .unwrap();
+            if index == 0 {
+                let Created::SessionClip(clip) = f
+                    .editor
+                    .execute(Command::CreateSessionAudioClip {
+                        track,
+                        scene: next,
+                        name: "replacement".into(),
+                        asset: replacement_asset,
+                        source_start: 32,
+                        source_end: 256,
+                    })
+                    .unwrap()
+                else {
+                    panic!("clip")
+                };
+                replacement = Some(clip);
+            }
+        }
+        let revision = Arc::new(
+            PreparedRevision::prepare(
+                f.editor.project(),
+                &f.media,
+                Arc::new(crate::SineTable::new()),
+                None,
+            )
+            .unwrap(),
+        );
+        let mut actual = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+        let mut scalar = SessionPlayback::new(revision).unwrap();
+        for runtime in [&mut actual, &mut scalar] {
+            runtime.set_device_metering(true);
+            runtime.apply(SessionPlaybackCommand::Seek(95_990)).unwrap();
+            runtime
+                .apply(SessionPlaybackCommand::LaunchScene {
+                    scene,
+                    quantization: LaunchQuantization::Immediate,
+                })
+                .unwrap();
+            runtime.apply(SessionPlaybackCommand::Play).unwrap();
+        }
+        let mut first_actual = [[0.0; 2]; 1];
+        let mut first_expected = first_actual;
+        actual.render(&mut first_actual).unwrap();
+        scalar
+            .render_with_post_node_observer(&mut first_expected, Some(&mut |_, _, _| {}))
+            .unwrap();
+        assert_eq!(first_actual, first_expected);
+        for runtime in [&mut actual, &mut scalar] {
+            runtime
+                .apply(SessionPlaybackCommand::LaunchClip {
+                    clip: replacement.unwrap(),
+                    quantization: LaunchQuantization::FourQuarter,
+                })
+                .unwrap();
+        }
+        let mut output = [[0.0; 2]; 150];
+        let mut expected = output;
+        for (chunk, reference) in output.chunks_mut(17).zip(expected.chunks_mut(17)) {
+            actual.render(chunk).unwrap();
+            scalar
+                .render_with_post_node_observer(reference, Some(&mut |_, _, _| {}))
+                .unwrap();
+        }
+        assert_eq!(output, expected);
+        assert!(output.iter().flatten().any(|sample| *sample != 0.0));
+        assert_ne!(
+            output[75], output[145],
+            "relaunch must change the sounding mix"
+        );
+        assert_eq!(
+            (actual.performance_frame(), actual.arrangement_frame()),
+            (scalar.performance_frame(), scalar.arrangement_frame())
         );
     }
 

@@ -29,6 +29,18 @@ fn compensated_resident_return_sends_batch_without_callback_allocations()
 }
 
 #[test]
+fn compensated_session_return_sends_batch_without_callback_allocations()
+-> Result<(), Box<dyn Error>> {
+    check_compensated_audio_batch(true, true, false)
+}
+
+#[test]
+fn compensated_nonunity_session_return_sends_batch_without_callback_allocations()
+-> Result<(), Box<dyn Error>> {
+    check_compensated_audio_batch(true, true, true)
+}
+
+#[test]
 fn compensated_nonunity_return_sends_batch_without_callback_allocations()
 -> Result<(), Box<dyn Error>> {
     check_compensated_audio_batch(false, true, true)
