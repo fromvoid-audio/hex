@@ -897,6 +897,9 @@ mod tests {
             "project changed outside hex at /Users/Me/My Songs/Live Set.hex"
         );
         assert_eq!(text("Plain Status").as_ref(), "plain status");
+        let path = "/Mixed\u{2069}Case/Output.WAV";
+        let message = format!("Open {}", super::verbatim_text::verbatim(path));
+        assert_eq!(text(message).as_ref(), format!("open {path}"));
     }
 
     #[test]
