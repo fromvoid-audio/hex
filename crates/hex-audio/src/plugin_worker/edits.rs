@@ -68,6 +68,63 @@ impl State {
     }
 }
 impl NativeWorker {
+    /// Read one additional bounded batch only after this stopped original
+    /// worker has observed its producer's seal. Earlier admitted reads must
+    /// be consumed first; a failure remains attached to the worker.
+    pub fn poll_sealed_edits_on_control(&mut self) -> Result<RecoveryEdits, &'static str> {
+        if self.retirement_requested
+            || self.transport_is_live_on_control()
+            || !self.retains_original_source_on_control()
+            || !self.editor_edits_sealed
+        {
+            return Err("native editor source is not sealed");
+        }
+        let slot = self
+            .reaper
+            .completed
+            .capture
+            .try_lock()
+            .map_err(|error| match error {
+                TryLockError::WouldBlock => "native edit observation is busy",
+                TryLockError::Poisoned(_) => "native edit mailbox failed",
+            })?;
+        if slot.edits_pending || slot.edits_result.is_some() {
+            return Err("native prior edit read remains");
+        }
+        if self.reaper.completed.capture_requested.load(Acquire)
+            || self.reaper.completed.controller_requested.load(Acquire)
+            || self
+                .reaper
+                .completed
+                .parameter_change_requested
+                .load(Acquire)
+        {
+            return Err("native stopped control operation is busy");
+        }
+        drop(slot);
+        let state = self
+            .reaper
+            .worker
+            .as_mut()
+            .ok_or("native stopped edit owner missing")?;
+        if state.native_error.is_some() || state.edits.result.is_some() {
+            return Err("native stopped edit source failed");
+        }
+        if state.capture.is_in_flight() || state.controller.is_in_flight() {
+            return Err("native stopped control operation is busy");
+        }
+        let Some(Processor::Native(instance)) = state.processor.as_mut() else {
+            return Err("native stopped edit source failed");
+        };
+        match instance.service_idle_editor_edits_on_worker() {
+            Ok(result) => Ok(result),
+            Err(error) => {
+                state.native_error = Some(error);
+                Err("native stopped edit read failed")
+            }
+        }
+    }
+
     /// Recover one previously admitted edit read after transport revocation.
     /// This never starts a fresh read, revives playback, or transfers source
     /// custody. A completed receipt takes precedence over a later worker fault.
