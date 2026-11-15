@@ -3027,6 +3027,7 @@ impl ResidentHarness {
                 route_generation: fence.route_state_generation(),
                 admitted_command_ticket: fence.admitted_command_ticket(),
                 output_fault_epoch: fence.output_fault_epoch(),
+                consumed_stop_generation: fence.consumed_stop_generation(),
             },
             device_preview,
             tuning_preview,

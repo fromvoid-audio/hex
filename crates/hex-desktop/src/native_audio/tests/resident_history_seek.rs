@@ -13,6 +13,7 @@ enum HeldLocatorSeek {
     StaleRevision,
     WrongOutput,
     Cancelled,
+    ConsumedStop,
 }
 
 #[test]
@@ -33,6 +34,11 @@ fn held_locator_checkpoint_refuses_wrong_output() {
 #[test]
 fn held_locator_checkpoint_refuses_cancelled_seek() {
     held_locator_seek(HeldLocatorSeek::Cancelled);
+}
+
+#[test]
+fn held_locator_checkpoint_refuses_seek_after_consumed_stop() {
+    held_locator_seek(HeldLocatorSeek::ConsumedStop);
 }
 
 fn held_locator_seek(case: HeldLocatorSeek) {
@@ -101,6 +107,10 @@ fn held_locator_seek(case: HeldLocatorSeek) {
         HeldLocatorSeek::Accepted => {}
         HeldLocatorSeek::StaleRevision => intent.project_revision += 1,
         HeldLocatorSeek::WrongOutput => intent.fence.output_identity += 1,
+        HeldLocatorSeek::ConsumedStop => {
+            h.audio.as_ref().unwrap().control.stop();
+            h.render();
+        }
         HeldLocatorSeek::Cancelled => intent
             .cancelled
             .store(true, std::sync::atomic::Ordering::Release),
@@ -145,7 +155,7 @@ fn held_locator_seek(case: HeldLocatorSeek) {
                 HeldLocatorSeek::StaleRevision | HeldLocatorSeek::Cancelled => {
                     "seek target changed or was cancelled"
                 }
-                HeldLocatorSeek::WrongOutput => "runtime changed",
+                HeldLocatorSeek::WrongOutput | HeldLocatorSeek::ConsumedStop => "runtime changed",
                 HeldLocatorSeek::Accepted => unreachable!("accepted case handled above"),
             };
             assert!(error.contains(expected), "unexpected refusal: {error}");

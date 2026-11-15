@@ -408,6 +408,8 @@ pub struct ResidentFreshRuntimeFence {
     pub admitted_command_ticket: u64,
     /// Last output-fault epoch observed before the seek was prepared.
     pub output_fault_epoch: u64,
+    /// Callback-observed priority Stop generation of the captured audio fence.
+    pub consumed_stop_generation: u64,
 }
 /// Nonowning scalar witness for the actual installed graph's audition loop.
 /// No PCM, prepared graph, lease or callback runtime is borrowed or transferred.

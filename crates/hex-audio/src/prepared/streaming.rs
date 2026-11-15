@@ -433,11 +433,11 @@ impl Callback {
         }
     }
     pub(super) fn consume_stream_commands(&mut self) {
-        let cut = command_cut(
-            self.status.admitted_ticket.load(Acquire),
-            self.take_stop_marker(),
-        );
+        let entry = self.status.admitted_ticket.load(Acquire);
+        let marker = self.take_stop_marker();
+        let cut = command_cut(entry, marker);
         self.consume_stream_commands_through(cut, false);
+        self.finish_stop_marker(marker);
     }
     pub(super) fn consume_stream_commands_through(&mut self, cut: CommandCut, fault: bool) {
         if cut.stop_through.is_some() {

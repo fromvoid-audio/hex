@@ -37,6 +37,7 @@ impl Callback {
         }) || self.status.admitted_ticket.load(Acquire)
             != fence.admitted_command_ticket
             || self.status.last_output_fault_epoch.load(Acquire) != fence.output_fault_epoch
+            || self.status.consumed_stop_generation.load(Acquire) != fence.consumed_stop_generation
             || self.status.render_fault.load(Acquire)
             || self.status.device_fault.load(Acquire)
             || self.status.pending_stop_marker.load(Acquire) != 0;
@@ -282,6 +283,41 @@ mod tests {
                     control.status.rejected_revision(),
                     Some((revision, PlaybackHandoffRejection::RuntimeFenceChanged))
                 );
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    #[test]
+    fn section_seek_captured_before_consumed_stop_is_refused() {
+        std::thread::Builder::new()
+            .stack_size(8 * 1024 * 1024)
+            .spawn(|| {
+                let source = source();
+                let (mut control, mut callback) = active(&source, 0, true);
+                let fence = control.capture_fresh_runtime_fence().unwrap();
+                control.stop();
+                render_checked(&mut callback, &mut []);
+                assert!(!control.status.playing.load(Acquire));
+                let revision = control
+                    .publish_with_policy(
+                        candidate(&source),
+                        PublicationPolicy::InstallQuantizedSeekWhenReady {
+                            fence,
+                            quantization: LaunchQuantization::Quarter,
+                        },
+                    )
+                    .unwrap();
+                let mut output = [[1.0; 2]; 8];
+                render_checked(&mut callback, &mut output);
+                assert_eq!(output, [[0.0; 2]; 8]);
+                assert_eq!(control.status.applied_revision.load(Acquire), 1);
+                assert_eq!(
+                    control.status.rejected_revision(),
+                    Some((revision, PlaybackHandoffRejection::RuntimeFenceChanged))
+                );
+                assert_eq!(control.reclaim(), 1);
             })
             .unwrap()
             .join()
