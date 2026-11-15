@@ -240,6 +240,8 @@ impl EditorView {
         );
         let early_source = if playing && !self.locator_edit_available() {
             self.locator_applied_source()
+                .map(|source| (source, false))
+                .or_else(|| self.locator_play_source().map(|source| (source, true)))
         } else {
             None
         };
@@ -279,8 +281,12 @@ impl EditorView {
             return;
         };
         if playing {
-            if let Some(source) = early_source {
-                self.queue_applied_source_seek(frame, source);
+            if let Some((source, needs_preparation)) = early_source {
+                if needs_preparation {
+                    self.request_committed_locator_seek(frame, source);
+                } else {
+                    self.queue_applied_source_seek(frame, source);
+                }
             } else {
                 self.request_seek(frame);
             }
@@ -484,6 +490,67 @@ impl EditorView {
                                 .is_ok()
                     })
                 }))
+    }
+
+    /// An applied acknowledgement still needs its exact view even when new
+    /// work has closed admission for another seek.
+    pub(super) fn committed_locator_seek_ack_view(
+        &self,
+        source: hex_audio::prepared::AppliedAudioSource,
+    ) -> Option<&Arc<ViewState>> {
+        let state = self.locator_state()?;
+        (self.project_generation == source.context.project_generation
+            && state.audio_authoring_revision(source.context) == Some(state.revision))
+        .then_some(state)
+    }
+
+    /// New seeks additionally require a complete view and no unrelated work.
+    pub(super) fn committed_locator_seek_view(
+        &self,
+        source: hex_audio::prepared::AppliedAudioSource,
+    ) -> Option<&Arc<ViewState>> {
+        let state = self.committed_locator_seek_ack_view(source)?;
+        (self.mode == EditorMode::Arrangement && self.locator_committed_action_available())
+            .then_some(state)
+    }
+
+    pub(super) fn committed_locator_seek_context_is_current(
+        &self,
+        source: hex_audio::prepared::AppliedAudioSource,
+    ) -> bool {
+        let Some(audio) = self.audio.as_ref() else {
+            return false;
+        };
+        let Some(status) = audio.control.status() else {
+            return false;
+        };
+        self.committed_locator_seek_view(source).is_some()
+            && self.document_audio_mode == hex_session::DocumentAudioMode::Resident
+            && self.pending_audio_commands.is_empty()
+            && self.stopped_playback_restore.is_none()
+            && !self.section_install_pending()
+            && self.recovery.permits_seek(None)
+            && !self.device_gesture.has_pending_terminal()
+            && self.device_gesture_barriers.is_empty()
+            && self.tuning.client.snapshot().is_none()
+            && audio.control.output_identity() == Some(source.output_identity)
+            && !status.device_fault.load(Acquire)
+            && !status.render_fault.load(Acquire)
+            && !status.shutdown_complete.load(Acquire)
+            && !status.stopped_edit_pending()
+            && status.playing.load(Acquire)
+            && self.play_intent.desired_playing(true)
+    }
+
+    pub(super) fn committed_locator_seek_source_is_current(
+        &self,
+        source: hex_audio::prepared::AppliedAudioSource,
+    ) -> bool {
+        self.committed_locator_seek_context_is_current(source)
+            && self
+                .audio_status()
+                .and_then(|status| status.recording_source())
+                == Some(source)
     }
 
     /// A committed add may drive playback only after its exact resident,
@@ -1320,7 +1387,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn stopped_stateful_locator_click_plays_while_checkpoint_is_held(cx: &mut TestAppContext) {
+    fn stateful_locator_actions_survive_held_checkpoint(cx: &mut TestAppContext) {
         use hex_engine::PlaybackCommand;
         use std::time::{Duration, Instant};
 
@@ -1435,17 +1502,41 @@ mod tests {
             assert!((24_000..25_000).contains(&status.position.load(Acquire)));
             assert!(
                 view.locator_applied_source().is_none(),
-                "running stateful seek remains fenced"
+                "running stateful seek cannot use the direct transport path"
             );
             assert!(view.service.try_event().is_err());
         });
-        // Once playing, a quantized click and keyboard seek still wait for
-        // their prepared path; an immediate click keeps the ordinary PlayFrom law.
+        // A quantized click remains fenced here; an immediate click keeps the
+        // ordinary PlayFrom law. Keyboard navigation prepares a fresh seek below.
         for _ in 0..20 {
             fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
         }
         editor.update(&mut visual, |view, cx| {
             view.tick(cx);
+            let source = view.locator_play_source().unwrap();
+            assert!(view.committed_locator_seek_source_is_current(source));
+            let mut wrong = source;
+            wrong.output_identity += 1;
+            assert!(!view.committed_locator_seek_source_is_current(wrong));
+            wrong = source;
+            wrong.context.editor_revision += 1;
+            assert!(!view.committed_locator_seek_source_is_current(wrong));
+            view.pending_requests.push_back(Request::Undo);
+            assert!(!view.committed_locator_seek_context_is_current(source));
+            view.pending_requests.pop_back();
+            view.audio_status()
+                .unwrap()
+                .playing
+                .store(false, std::sync::atomic::Ordering::Release);
+            assert!(!view.committed_locator_seek_context_is_current(source));
+            view.audio_status()
+                .unwrap()
+                .playing
+                .store(true, std::sync::atomic::Ordering::Release);
+            let previous_intent = std::mem::take(&mut view.play_intent);
+            view.play_intent.priority_stop();
+            assert!(!view.committed_locator_seek_context_is_current(source));
+            view.play_intent = previous_intent;
             view.session_quantization = hex_engine::LaunchQuantization::OneBar;
             view.last_transport_command = None;
         });
@@ -1458,7 +1549,7 @@ mod tests {
             );
             assert!(
                 view.locator_applied_source().is_none(),
-                "keyboard seek remains fenced"
+                "direct seek cannot bypass stateful preparation"
             );
         });
         editor.update(&mut visual, |view, _| {
@@ -1488,6 +1579,71 @@ mod tests {
             std::thread::yield_now();
         }
         assert!(editor.read_with(&visual, |view, _| view.service.try_event().is_err()));
+        for _ in 0..20 {
+            fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+        }
+        let previous = editor.read_with(&visual, |view, _| {
+            view.audio_status().unwrap().applied_revision.load(Acquire)
+        });
+        visual.run_until_parked();
+        visual.simulate_keystrokes("cmd-alt-left");
+        editor.read_with(&visual, |view, _| {
+            assert!(
+                view.prepared_seek.is_some(),
+                "running stateful locator seek must be admitted while the checkpoint is held"
+            );
+        });
+        // Hold editor polling while the real callback installs the worker's
+        // candidate. Its scalar result has not yet been consumed by the UI.
+        let seek_deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+            let applied = editor.read_with(&visual, |view, _| {
+                let status = view.audio_status().unwrap();
+                status.applied_revision.load(Acquire) > previous
+                    && (24_000..25_000).contains(&status.position.load(Acquire))
+            });
+            if applied {
+                break;
+            }
+            assert!(
+                Instant::now() < seek_deadline,
+                "stateful locator seek not applied"
+            );
+            std::thread::yield_now();
+        }
+        editor.update(&mut visual, |view, cx| {
+            let pending = view.prepared_seek.as_ref().unwrap();
+            assert!(matches!(
+                pending.stage,
+                super::super::arrangement_seek::SeekStage::Preparing
+            ));
+            assert!(
+                view.pending_seek_source_is_current(pending),
+                "the applied callback must not invalidate its pending worker result"
+            );
+            view.pending_requests.push_back(Request::Undo);
+            assert!(!view.pending_seek_source_is_current(view.prepared_seek.as_ref().unwrap()));
+            let applied = view.audio_status().unwrap().applied_revision.load(Acquire);
+            view.prepared_seek.as_mut().unwrap().stage =
+                super::super::arrangement_seek::SeekStage::Published {
+                    audio_revision: applied,
+                };
+            assert!(
+                view.native_seek_applied_source(view.prepared_seek.as_ref().unwrap())
+                    .is_some(),
+                "an unrelated queued edit must not hide an already applied seek acknowledgement"
+            );
+            assert!(view.seek_publication_is_current(
+                view.prepared_seek.as_ref().unwrap().request_id,
+                None
+            ));
+            view.prepared_seek.as_mut().unwrap().stage =
+                super::super::arrangement_seek::SeekStage::Preparing;
+            view.pending_requests.pop_back();
+            view.tick(cx);
+        });
+        assert!(editor.read_with(&visual, |view, _| view.service.try_event().is_err()));
         gate.release().unwrap();
         let terminal = editor.read_with(&visual, |view, _| next_terminal(view));
         assert!(
@@ -1497,6 +1653,31 @@ mod tests {
             view.receive(terminal);
             cx.notify();
         });
+        let seek_terminal = editor.read_with(&visual, |view, _| next_terminal(view));
+        assert!(seek_terminal.error.is_none());
+        editor.update(&mut visual, |view, cx| {
+            view.receive(seek_terminal);
+            cx.notify();
+        });
+        let retirement_deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+            if editor.update(&mut visual, |view, cx| {
+                view.tick(cx);
+                view.prepared_seek.is_none()
+                    && view
+                        .state
+                        .as_ref()
+                        .is_some_and(|state| state.revision == revision)
+            }) {
+                break;
+            }
+            assert!(
+                Instant::now() < retirement_deadline,
+                "seek acknowledgement did not retire"
+            );
+            std::thread::yield_now();
+        }
         assert_eq!(
             hex_storage::load_journal(&recovery).unwrap(),
             *committed.project

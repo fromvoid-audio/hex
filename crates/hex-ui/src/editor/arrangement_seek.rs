@@ -58,6 +58,7 @@ impl SeekAudioControl for Client {
 #[derive(Clone, Copy)]
 pub(super) enum SeekKind {
     Fresh,
+    CommittedLocator(hex_audio::prepared::AppliedAudioSource),
     History,
     Section(hex_session::arrangement_seek::SectionLaunch),
     Locator(hex_engine::LaunchQuantization),
@@ -88,7 +89,9 @@ impl SeekKind {
 
     pub(super) fn mode(self) -> ArrangementSeekMode {
         match self {
-            Self::Fresh | Self::Locator(_) => ArrangementSeekMode::Interactive,
+            Self::Fresh | Self::CommittedLocator(_) | Self::Locator(_) => {
+                ArrangementSeekMode::Interactive
+            }
             Self::History => ArrangementSeekMode::HistoryPreservingInteractive,
             Self::Section(section) => section.mode(),
         }
@@ -420,6 +423,27 @@ impl EditorView {
             }
     }
 
+    pub(super) fn pending_seek_source_is_current(&self, pending: &PendingSeek) -> bool {
+        match pending.kind {
+            SeekKind::CommittedLocator(source) => {
+                // A fast callback may install the candidate before the worker's
+                // result reports its audio revision. Keep only the pending scalar
+                // correlation in that interval; the callback fence still decides
+                // whether the worker's candidate can actually be installed.
+                (pending.stage == SeekStage::Preparing
+                    && self.committed_locator_seek_context_is_current(source))
+                    || self.committed_locator_seek_source_is_current(source)
+                    || self.native_seek_applied_source(pending).is_some()
+            }
+            _ => self.seek_source_is_current(
+                pending.project_generation,
+                pending.project_revision,
+                pending.device_preview_identity,
+                pending.recovery_generation,
+            ),
+        }
+    }
+
     pub(super) fn seek_publication_is_current(
         &self,
         request_id: u64,
@@ -437,12 +461,8 @@ impl EditorView {
                 // promotion proves which runtime was installed or returned.
                 && matches!(pending.stage, SeekStage::Published { .. })
                 && pending.device_preview_identity == preview
-                && (self.native_seek_applied_source(pending).is_some() || self.seek_source_is_current(
-                    pending.project_generation,
-                    pending.project_revision,
-                    preview,
-                    pending.recovery_generation,
-                ))
+                && (self.native_seek_applied_source(pending).is_some()
+                    || self.pending_seek_source_is_current(pending))
         }) || (preview.is_none()
             && self.recovery.prepared_request() == Some(request_id)
             && self.state.as_ref().is_some_and(|state| {
@@ -467,7 +487,12 @@ impl EditorView {
             || pending.native_output_identity.is_none()
             || pending.native_output_identity != audio.control.output_identity()
             || pending.project_generation != self.project_generation
-            || self.state.as_ref()?.revision != pending.project_revision
+            || match pending.kind {
+                SeekKind::CommittedLocator(source) => self
+                    .committed_locator_seek_ack_view(source)
+                    .is_none_or(|state| state.revision != pending.project_revision),
+                _ => self.state.as_ref()?.revision != pending.project_revision,
+            }
             || audio.control.status()?.applied_revision.load(Acquire) != audio_revision
             || pending
                 .device_preview_identity
@@ -541,6 +566,38 @@ impl EditorView {
 
     pub(super) fn request_prepared_seek(&mut self, destination_frame: u64, start_playing: bool) {
         self.request_prepared_seek_with_kind(destination_frame, start_playing, SeekKind::Fresh);
+    }
+
+    /// Start only from the exact applied graph for a complete committed locator view.
+    pub(super) fn request_committed_locator_seek(
+        &mut self,
+        destination_frame: u64,
+        source: hex_audio::prepared::AppliedAudioSource,
+    ) {
+        let Some(state) = self.committed_locator_seek_view(source) else {
+            return;
+        };
+        if state
+            .project
+            .arrangement_locators()
+            .binary_search_by_key(&destination_frame, |locator| locator.frame())
+            .is_err()
+        {
+            return;
+        }
+        let intent = SeekIntent {
+            kind: SeekKind::CommittedLocator(source),
+            recovery_generation: None,
+            destination_frame,
+            start_playing: true,
+            project_generation: self.project_generation,
+            project_revision: state.revision,
+            prepared_revision: None,
+            device_preview_identity: None,
+        };
+        self.wake_poll();
+        self.latency_rebuild = None;
+        self.admit_prepared_seek(intent, source.audio_revision);
     }
 
     pub(super) fn request_history_playback(&mut self, frame: u64) {
@@ -723,6 +780,30 @@ impl EditorView {
         mut intent: super::arrangement_seek::SeekIntent,
         mut audio_revision: u64,
     ) {
+        if let SeekKind::CommittedLocator(source) = intent.kind {
+            let fence = self
+                .committed_locator_seek_source_is_current(source)
+                .then(|| {
+                    let state = self.committed_locator_seek_view(source)?;
+                    let audio = self.audio.as_ref()?;
+                    super::arrangement_seek::capture_arrangement_fence(
+                        &audio.control,
+                        &state.project,
+                        source.audio_revision,
+                    )
+                })
+                .flatten();
+            // A Stop may have landed while the fence was captured. The
+            // callback separately checks later commands and priority Stop.
+            if let Some(fence) =
+                fence.filter(|_| self.committed_locator_seek_source_is_current(source))
+            {
+                self.admit_worker_owned_seek(intent, fence);
+            } else {
+                self.error = Some("arrangement seek source is no longer available".into());
+            }
+            return;
+        }
         if !self.seek_context_is_current(
             intent.project_generation,
             intent.project_revision,
@@ -972,15 +1053,11 @@ impl EditorView {
 
     pub(super) fn tick_prepared_arrangement_seek(&mut self) -> bool {
         let mut changed = self.poll_worker_owned_seek();
-        if let Some(pending) = self.prepared_seek.as_ref().filter(|pending| {
-            !pending.cancelled
-                && !self.seek_source_is_current(
-                    pending.project_generation,
-                    pending.project_revision,
-                    pending.device_preview_identity,
-                    pending.recovery_generation,
-                )
-        }) {
+        if let Some(pending) = self
+            .prepared_seek
+            .as_ref()
+            .filter(|pending| !pending.cancelled && !self.pending_seek_source_is_current(pending))
+        {
             // Retain intent only for another sequence of this SAME held
             // gesture. Terminal, replacement, and other owners never restart it.
             let retry = pending.device_preview_identity.and_then(|previous| {
