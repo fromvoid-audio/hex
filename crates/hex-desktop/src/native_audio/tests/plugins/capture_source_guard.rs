@@ -9,34 +9,40 @@ use hex_session::{
 #[test]
 #[ignore = "explicit source-bound signed SDK receipts required"]
 fn pause_before_publication_preserves_previous_graph() {
-    pause_guard_case(false, true, false);
+    pause_guard_case(false, true, false, false);
 }
 
 #[test]
 #[ignore = "explicit source-bound signed SDK receipts required"]
 fn pause_after_install_keeps_canonical_commit() {
-    pause_guard_case(true, true, false);
+    pause_guard_case(true, true, false, false);
 }
 
 #[test]
 #[ignore = "explicit source-bound signed SDK receipts required"]
 fn unlaned_pause_before_publication_preserves_previous_graph() {
-    pause_guard_case(false, false, false);
+    pause_guard_case(false, false, false, false);
 }
 
 #[test]
 #[ignore = "explicit source-bound signed SDK receipts required"]
 fn unlaned_pause_after_install_keeps_canonical_commit() {
-    pause_guard_case(true, false, false);
+    pause_guard_case(true, false, false, false);
 }
 
 #[test]
 #[ignore = "explicit source-bound signed SDK receipts required"]
 fn late_editor_value_remains_on_original_worker_after_unlaned_publication() {
-    pause_guard_case(false, false, true);
+    pause_guard_case(false, false, true, false);
 }
 
-fn pause_guard_case(after_install: bool, with_lane: bool, late_editor: bool) {
+#[test]
+#[ignore = "explicit source-bound signed SDK receipts required"]
+fn late_editor_value_survives_a_later_track_addition() {
+    pause_guard_case(false, false, true, true);
+}
+
+fn pause_guard_case(after_install: bool, with_lane: bool, late_editor: bool, add_track: bool) {
     const CHILD: &str = "HEX_DESKTOP_TEST_UNLANED_EFFECT_COMMIT";
     if std::env::var_os(CHILD).is_none() {
         let gates = Files::new();
@@ -384,6 +390,48 @@ fn pause_guard_case(after_install: bool, with_lane: bool, late_editor: bool) {
             (slope(&h) - base * 3.0).abs() < 1.0e-6,
             "the late editor value must also reach the running processor"
         );
+        if add_track {
+            let previous_revision = h.submitted.unwrap().0;
+            h.service
+                .submit(Request::Edit(Command::AddTrack {
+                    name: "later".into(),
+                }))
+                .unwrap();
+            let until = Instant::now() + Duration::from_secs(3);
+            let event = loop {
+                h.pump();
+                h.render_worker_step();
+                if let Ok(event) = h.service.try_event()
+                    && event.request_complete
+                {
+                    break event;
+                }
+                assert!(
+                    Instant::now() < until,
+                    "later track addition did not complete"
+                );
+                std::thread::yield_now();
+            };
+            assert!(event.error.is_none(), "{:?}", event.error);
+            assert!(matches!(event.created, Some(Created::Track(_))));
+            h.applied(previous_revision);
+            let current = installed_edits::query(&mut h, device, None, &mut serial);
+            let current_value = current
+                .rows
+                .unwrap()
+                .into_iter()
+                .find(|row| row.id == parameter)
+                .unwrap()
+                .normalized;
+            assert_eq!(
+                current_value, 0.75,
+                "unrelated graph update must preserve the editor value"
+            );
+            assert!(
+                (slope(&h) - base * 3.0).abs() < 1.0e-6,
+                "the later graph must keep the editor value in the processor"
+            );
+        }
         return;
     }
     assert_eq!(
