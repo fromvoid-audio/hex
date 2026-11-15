@@ -26,6 +26,23 @@ impl FencedNativeQuantum {
     }
 }
 
+/// Exact control-side input and canonical contexts for one ordinary native
+/// parameter continuation. This describes the requested transaction; it is
+/// not a callback, native source, or graph publication acknowledgement.
+#[derive(Clone, Copy)]
+pub struct NativeParameterContinuationRequest<'a> {
+    pub source: AppliedAudioSource,
+    pub transport_epoch: u64,
+    pub playing: bool,
+    pub successor: hex_engine::AudioSourceContext,
+    pub identity: ProcessorInstanceIdentity,
+    pub binding: Binding,
+    pub previous_state: &'a NativeDeviceState,
+    pub capture: &'a crate::plugin_worker::NativeWorkerStateAfterParameter,
+    pub parameter: u32,
+    pub normalized: f64,
+}
+
 impl PublicationControl {
     fn stopped_native_quantum_fence_matches(
         &self,
@@ -70,6 +87,103 @@ impl PublicationControl {
         self.stopped_native_quantum_fence_matches(checkpoint.source, checkpoint.fence)
     }
 
+    /// Admit and enqueue one exact original-worker continuation. The candidate
+    /// owns both states, and the publication owns the source observation and
+    /// matching native references until returned on control. The callback still
+    /// revalidates the source, endpoint and transport before preview and commit.
+    #[allow(clippy::result_large_err)] // Refusal returns the actual unpublished graph to control.
+    pub fn publish_native_parameter_continuation_on_control<E>(
+        &mut self,
+        mut playback: Playback,
+        request: NativeParameterContinuationRequest<'_>,
+        admit: impl FnOnce(
+            hex_engine::native_device_resources::DeviceResourceAdmission<'_>,
+        ) -> Result<(), E>,
+    ) -> Result<u64, AdmittedPublishError<E>> {
+        let failure = |reason, playback| {
+            AdmittedPublishError::Publication(PublishError {
+                kind: PublishErrorKind::Other,
+                reason,
+                playback,
+            })
+        };
+        if self.status.device_fault.load(Acquire)
+            || self.status.render_fault.load(Acquire)
+            || request.binding.root != request.source.output_identity
+            || request.identity.device_id() != request.binding.instance
+            || request.successor.project_generation != request.source.context.project_generation
+            || request.source.context.editor_revision.checked_add(1)
+                != Some(request.successor.editor_revision)
+            || self.status.native_parameter_source(request.playing)
+                != Some((request.source, request.transport_epoch))
+            || request.capture.parameter() != request.parameter
+            || request.capture.normalized_input().to_bits() != request.normalized.to_bits()
+        {
+            return Err(failure(
+                "native continuation source or input differs",
+                playback,
+            ));
+        }
+        let matching = playback.foreign_nodes_on_control().filter(|node| {
+            node.owner == request.identity.owner() && node.device_id == request.identity.device_id()
+                && node.configuration.as_ref().is_some_and(|state| state.shares_payload_storage_with(request.capture.state()) && **state == *request.capture.state())
+                && matches!(&node.definition, Some(hex_lattice::PreparedProcessorFactory::Foreign(prepared)) if prepared.binding() == Some(request.binding) && !prepared.is_instrument_profile())
+        }).count();
+        if matching != 1 {
+            return Err(failure("native continuation candidate differs", playback));
+        }
+        let observation = match self
+            .observe_native_sequenced_capture_input_on_control(request.binding, request.capture)
+        {
+            Ok(Some(observation)) => observation,
+            Ok(None) => {
+                return Err(failure(
+                    "native continuation input is no longer current",
+                    playback,
+                ));
+            }
+            Err(reason) => return Err(failure(reason, playback)),
+        };
+        if playback.has_foreign_continuation_states() {
+            if !playback.foreign_continuation_states_match_on_control(
+                request.identity,
+                request.binding,
+                request.previous_state,
+                request.capture.state(),
+            ) {
+                return Err(failure(
+                    "native continuation candidate states differ",
+                    playback,
+                ));
+            }
+        } else if playback
+            .retain_foreign_continuation_states_on_control(
+                request.identity,
+                request.binding,
+                request.previous_state.clone(),
+                request.capture.state().clone(),
+            )
+            .is_err()
+        {
+            return Err(failure(
+                "native continuation state retention refused",
+                playback,
+            ));
+        }
+        self.publish_admitted_with_source(
+            playback,
+            PublicationPolicy::InheritUnderNativeParameter {
+                source: request.source,
+                transport_epoch: request.transport_epoch,
+                playing: request.playing,
+            },
+            request.successor.project_generation,
+            Some(request.successor),
+            Some(observation),
+            admit,
+        )
+    }
+
     /// Definite correspondence or a specific unavailable/busy observation.
     /// A control caller must not turn contention into a negative approval or
     /// use this observation as graph/native admission authority.
@@ -84,6 +198,25 @@ impl PublicationControl {
         self.candidate_root
             .try_native_source_approves_captured_state(binding, state)
     }
+    /// Mark the exact original worker's completed capture as source-corresponding.
+    /// This is not a processing-profile approval or graph publication permit.
+    pub fn approve_native_sequenced_capture_on_control(
+        &self,
+        binding: Binding,
+        fact: &crate::plugin_worker::NativeWorkerStateAfterParameter,
+    ) -> Result<NativeDeviceState, &'static str> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native captured-state output is closing");
+        }
+        let state = self
+            .candidate_root
+            .approve_native_sequenced_capture(binding, fact)?;
+        if self.status.closing.load(Acquire) {
+            return Err("native captured-state output is closing");
+        }
+        Ok(state)
+    }
+
     pub(crate) fn approve_native_canonical_processing_on_control(
         &self,
         facts: &crate::plugin_effects::CapturedCanonicalBases,
@@ -749,6 +882,84 @@ impl PublicationControl {
         }
         Ok(result)
     }
+    /// Admit a capture ordered after the exact original worker's processed
+    /// parameter input. This fact does not grant graph or canonical authority.
+    pub fn begin_native_capture_after_parameter_on_control(
+        &mut self,
+        binding: Binding,
+        input: &crate::plugin_worker::NativeWorkerParameterChange,
+    ) -> Result<crate::plugin_worker::NativeWorkerCapture, &'static str> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native capture output is closing");
+        }
+        self.candidate_root
+            .begin_capture_after_parameter(binding, input)
+    }
+    /// Admit capture after an idle flush on the exact live worker. This does
+    /// not assert PCM processing, output delivery, or publication authority.
+    pub fn begin_native_capture_after_idle_parameter_on_control(
+        &mut self,
+        binding: Binding,
+        input: &crate::plugin_worker::NativeWorkerParameterChange,
+    ) -> Result<crate::plugin_worker::NativeWorkerCapture, &'static str> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native capture output is closing");
+        }
+        self.candidate_root
+            .begin_capture_after_idle_parameter(binding, input)
+    }
+    pub fn poll_native_capture_after_parameter_on_control(
+        &mut self,
+        binding: Binding,
+        request: &crate::plugin_worker::NativeWorkerCapture,
+    ) -> Result<crate::plugin_worker::NativeWorkerSequencedCaptureProgress, &'static str> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native capture output is closing");
+        }
+        let result = self
+            .candidate_root
+            .poll_capture_after_parameter(binding, request)?;
+        if self.status.closing.load(Acquire) {
+            return Err("native capture output is closing");
+        }
+        Ok(result)
+    }
+    pub fn native_sequenced_capture_is_current_on_control(
+        &mut self,
+        binding: Binding,
+        fact: &crate::plugin_worker::NativeWorkerStateAfterParameter,
+    ) -> Result<bool, &'static str> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native capture output is closing");
+        }
+        let result = self
+            .candidate_root
+            .sequenced_capture_is_current(binding, fact)?;
+        if self.status.closing.load(Acquire) {
+            return Err("native capture output is closing");
+        }
+        Ok(result)
+    }
+    /// Observe the original endpoint of an exact processed input and capture.
+    /// This weak control-owned observation can become stale immediately; it
+    /// does not admit a candidate, identify its state, or authorize a handoff.
+    /// Return and destroy it on control, outside the audio callback.
+    pub fn observe_native_sequenced_capture_input_on_control(
+        &mut self,
+        binding: Binding,
+        fact: &crate::plugin_worker::NativeWorkerStateAfterParameter,
+    ) -> Result<Option<hex_plugin_host::transport::ParameterInputSource>, &'static str> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native capture output is closing");
+        }
+        let result = self
+            .candidate_root
+            .observe_sequenced_capture_input(binding, fact)?;
+        if self.status.closing.load(Acquire) {
+            return Err("native capture output is closing");
+        }
+        Ok(result)
+    }
     /// Nondefault deterministic fixture control: original worker's observed
     /// completion prefix. Neither queueing, readiness nor custody authority.
     #[cfg(feature = "allocation-probe")]
@@ -1294,7 +1505,62 @@ impl PublicationControl {
         Ok(())
     }
 }
+/// Bounded observation of the exact paired input and endpoint return signal.
+/// This grants no graph or publication authority; the caller must additionally
+/// validate the source, candidate, transport and actual native custody.
+pub(super) struct NativeParameterInputFence<'a> {
+    input: hex_plugin_host::transport::ParameterInputFence<'a>,
+    endpoint: crate::candidate_custody::EndpointReturnFence<'a>,
+    closing: &'a std::sync::atomic::AtomicBool,
+}
+impl NativeParameterInputFence<'_> {
+    pub(super) fn is_live(&self) -> bool {
+        self.input.is_live() && self.endpoint.is_live() && !self.closing.load(Acquire)
+    }
+    /// Order one decision before source revocation, endpoint return, and output
+    /// shutdown. The later atomic decisions are sticky with respect to the
+    /// first decision; the caller must still authenticate and commit its graph.
+    pub(super) fn try_order_before_revocation(&mut self) -> bool {
+        self.input.try_order_before_revocation()
+            && self.endpoint.try_order_before_return()
+            && self
+                .closing
+                .compare_exchange(false, false, AcqRel, Acquire)
+                .is_ok()
+    }
+}
+
+pub(super) fn reserve_parameter_observation<'a>(
+    sources: &'a crate::candidate_custody::NativeEndpointBank,
+    status: &'a Status,
+    binding: Binding,
+    source: &hex_plugin_host::transport::ParameterInputSource,
+) -> Option<NativeParameterInputFence<'a>> {
+    if status.closing.load(Acquire) {
+        return None;
+    }
+    let (input, endpoint) = sources.reserve_observed_parameter_input(binding, source)?;
+    let fence = NativeParameterInputFence {
+        input,
+        endpoint,
+        closing: &status.closing,
+    };
+    fence.is_live().then_some(fence)
+}
+
 impl Callback {
+    /// Borrow the installed original endpoint's input observation without
+    /// waiting, allocation, or ownership transfer. This is not graph, source,
+    /// transport, state, or publication authority; callers must validate each.
+    #[cfg(all(test, feature = "allocation-probe"))]
+    pub(super) fn reserve_native_parameter_input_observation(
+        &self,
+        binding: Binding,
+        source: &hex_plugin_host::transport::ParameterInputSource,
+    ) -> Option<NativeParameterInputFence<'_>> {
+        reserve_parameter_observation(&self.native_sources, &self.status, binding, source)
+    }
+
     #[cfg(feature = "allocation-probe")]
     pub(crate) fn native_root_for_control_fixture(
         &self,

@@ -16,6 +16,18 @@ pub(super) enum EffectTransport {
 }
 
 impl EffectTransport {
+    pub(super) fn reserve_observed_parameter_input(
+        &self,
+        source: &hex_plugin_host::transport::ParameterInputSource,
+    ) -> Option<hex_plugin_host::transport::ParameterInputFence<'_>> {
+        match self {
+            Self::Ordinary(callback) => {
+                callback.reserve_observed_parameter_input_on_callback(source)
+            }
+            Self::Dense(callback) => callback.reserve_observed_parameter_input_on_callback(source),
+        }
+    }
+
     pub(super) fn matches_worker(&self, worker: &NativeWorker) -> bool {
         match self {
             Self::Ordinary(callback) => worker.owns_callback(callback),

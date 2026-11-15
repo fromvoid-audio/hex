@@ -90,6 +90,7 @@ impl SessionPlayback {
             route_state_generation: _,
             candidate_admission_open,
             live_restart: _,
+            foreign_continuation,
         } = self;
         // The closed owner has no source effect lease or backing quote yet.
         if !source_effects.is_empty()
@@ -99,6 +100,7 @@ impl SessionPlayback {
             || computer_keyboard.is_some()
             || *linear_arrangement_export
             || !candidate_admission_open
+            || foreign_continuation.is_some()
             || mutable_instruments
                 .iter()
                 .flatten()

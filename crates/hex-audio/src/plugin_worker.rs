@@ -39,7 +39,10 @@ pub use parameter_change::{
 pub use parameters::{MAX_OBSERVED_PARAMETERS, NativeParameterValue, NativeParameterValues};
 mod storage;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-pub use capture::{NativeWorkerCapture, NativeWorkerCaptureProgress};
+pub use capture::{
+    NativeWorkerCapture, NativeWorkerCaptureProgress, NativeWorkerParameterApplication,
+    NativeWorkerSequencedCaptureProgress, NativeWorkerStateAfterParameter,
+};
 /// Non-terminal helper refusal carried by [`NativeWorkerCaptureProgress::Refused`].
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub use hex_plugin_host::protocol::StateCaptureRefusal;

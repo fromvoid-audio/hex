@@ -642,6 +642,14 @@ impl NativeEffectCallback {
     pub fn matches_worker(&self, worker: &NativeWorker) -> bool {
         self.transport.matches_worker(worker)
     }
+    /// Reserve an observation only on its constructor-paired endpoint. This
+    /// is not graph, state, transport or publication authorization.
+    pub(crate) fn reserve_observed_parameter_input(
+        &self,
+        source: &hex_plugin_host::transport::ParameterInputSource,
+    ) -> Option<hex_plugin_host::transport::ParameterInputFence<'_>> {
+        self.transport.reserve_observed_parameter_input(source)
+    }
     /// Bound one actual complete host callback before the engine stages any
     /// segments. A chunk/subsegment length is not the physical callback extent.
     pub fn begin_host_callback(&mut self, frames: usize) -> Result<(), Fault> {

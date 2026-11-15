@@ -4,6 +4,21 @@ use std::sync::Weak;
 mod shared_sources;
 use shared_sources::SharedSourceHandoff;
 
+// This comparison does not authenticate publication or transfer custody.
+pub(super) fn configuration_matches_continuation(
+    old: &hex_lattice::NativeRuntimeChain,
+    candidate: &hex_lattice::NativeRuntimeChain,
+    range: std::ops::Range<usize>,
+    continuation: Option<&hex_lattice::ForeignConfigurationContinuation<'_>>,
+) -> bool {
+    match continuation {
+        Some(proof) => {
+            old.configuration_matches_range_with_foreign_continuation(candidate, range, proof)
+        }
+        None => old.configuration_matches_range(candidate, range),
+    }
+}
+
 // Detached Return tails are summed directly at Main, outside graph edges.
 // Both the old and new graphs must therefore have the same flat origin.
 fn direct_return_tail_graph(graph: &crate::signal_graph::SignalGraph) -> bool {
@@ -486,7 +501,15 @@ impl SessionPlayback {
             return Err(SessionPlaybackError::InvalidCommand);
         }
         self.require_fresh_candidate()?;
-        self.inherit_state_planned_with_anchor(previous, None, None, true, false, Some(anchor))
+        self.inherit_state_planned_with_anchor(
+            previous,
+            None,
+            None,
+            true,
+            false,
+            None,
+            Some(anchor),
+        )
     }
     #[allow(clippy::too_many_arguments)] // Explicit old/candidate timing, identity and disjoint span-buffer borrows.
     fn mutable_candidates_at_cut<T: MidiTiming + ?Sized>(
@@ -643,7 +666,7 @@ impl SessionPlayback {
         &mut self,
         previous: &mut Self,
     ) -> Result<SessionHandoffReport, SessionPlaybackError> {
-        self.inherit_state_planned(previous, None, None, false, false)
+        self.inherit_state_planned(previous, None, None, false, false, None)
     }
     /// Live publication policy (Pulse #3770): see `inherit_state_planned`.
     pub(super) fn inherit_state_live(
@@ -651,13 +674,13 @@ impl SessionPlayback {
         previous: &mut Self,
         groups: Option<crate::audio_candidate::groups::Transfer<'_>>,
     ) -> Result<SessionHandoffReport, SessionPlaybackError> {
-        self.inherit_state_planned(previous, groups, None, true, false)
+        self.inherit_state_planned(previous, groups, None, true, false, None)
     }
     pub(super) fn inherit_state_fenced_restart(
         &mut self,
         previous: &mut Self,
     ) -> Result<SessionHandoffReport, SessionPlaybackError> {
-        self.inherit_state_planned(previous, None, None, true, true)
+        self.inherit_state_planned(previous, None, None, true, true, None)
     }
     /// With `live`, a transition the strict planner cannot prove (an unproven
     /// mutable chase, a changed MIDI source layout, compensated timing or tails,
@@ -677,10 +700,20 @@ impl SessionPlayback {
         demand: Option<&mut super::stream_demand::HandoffDemand<'_>>,
         live: bool,
         fenced_restart: bool,
+        continuation: Option<&hex_lattice::ForeignConfigurationContinuation<'_>>,
     ) -> Result<SessionHandoffReport, SessionPlaybackError> {
-        self.inherit_state_planned_with_anchor(previous, groups, demand, live, fenced_restart, None)
+        self.inherit_state_planned_with_anchor(
+            previous,
+            groups,
+            demand,
+            live,
+            fenced_restart,
+            continuation,
+            None,
+        )
     }
 
+    #[allow(clippy::too_many_arguments)] // The borrowed anchor and continuation are distinct proofs.
     pub(super) fn inherit_state_planned_with_anchor(
         &mut self,
         previous: &mut Self,
@@ -688,8 +721,12 @@ impl SessionPlayback {
         mut demand: Option<&mut super::stream_demand::HandoffDemand<'_>>,
         live: bool,
         fenced_restart: bool,
+        continuation: Option<&hex_lattice::ForeignConfigurationContinuation<'_>>,
         anchor: Option<&PreparedTempoAnchor>,
     ) -> Result<SessionHandoffReport, SessionPlaybackError> {
+        if continuation.is_some() && (fenced_restart || self.live_restart || anchor.is_some()) {
+            return Err(SessionPlaybackError::DeviceRuntime);
+        }
         let source_effect_handoff =
             !self.source_effects.is_empty() || !previous.source_effects.is_empty();
         let source_transfer = if source_effect_handoff {
@@ -746,6 +783,7 @@ impl SessionPlayback {
                     Restart::Ordinary
                 },
                 None,
+                None,
                 anchor,
             );
         }
@@ -759,6 +797,7 @@ impl SessionPlayback {
                 demand,
                 Restart::Ordinary,
                 None,
+                None,
                 anchor,
             );
         }
@@ -769,6 +808,7 @@ impl SessionPlayback {
             demand.as_deref_mut(),
             Restart::None,
             source_transfer.as_ref(),
+            continuation,
             None,
         ) {
             // An open admission proves the refusal came from the pure
@@ -787,6 +827,7 @@ impl SessionPlayback {
             }
             Err(error)
                 if live
+                    && continuation.is_none()
                     && !source_effect_handoff
                     && self.candidate_admission_open
                     && restartable(error) =>
@@ -796,6 +837,7 @@ impl SessionPlayback {
                     None,
                     demand,
                     Restart::Ordinary,
+                    None,
                     None,
                     None,
                 )
@@ -886,6 +928,7 @@ impl SessionPlayback {
             .main_chain
             .settle_idle_transitions_for(&self.main_chain);
     }
+    #[allow(clippy::too_many_arguments)] // Keep the handoff's borrowed inputs explicit.
     fn inherit_state_planned_once(
         &mut self,
         previous: &mut Self,
@@ -893,6 +936,7 @@ impl SessionPlayback {
         demand: Option<&mut super::stream_demand::HandoffDemand<'_>>,
         restart: Restart,
         source_transfer: Option<&crate::source_effect_stage::SourceEffectTransfer>,
+        continuation: Option<&hex_lattice::ForeignConfigurationContinuation<'_>>,
         anchor: Option<&PreparedTempoAnchor>,
     ) -> Result<SessionHandoffReport, SessionPlaybackError> {
         if previous.pending_shared_chase.is_some() || previous.pending_shared_live.is_some() {
@@ -4129,6 +4173,7 @@ impl SessionPlayback {
             &mut tail_processor_count,
             &mut tail_runtime_bytes,
             &mut suffix_entry_count,
+            continuation,
         )?;
         return_tail_plan.preflight_main(
             &previous.main_chain,
@@ -4143,6 +4188,7 @@ impl SessionPlayback {
             &mut tail_processor_count,
             &mut tail_runtime_bytes,
             &mut suffix_entry_count,
+            continuation,
         )?;
         if clock_transfer == 2
             && self.compensation.is_none()
@@ -4358,13 +4404,23 @@ impl SessionPlayback {
                 };
                 let candidate_suffix_start = candidate_track.instrument_position();
                 let exact_chain_configuration = old_chain.len() == candidate_chain.len()
-                    && old_chain.configuration_matches_range(candidate_chain, 0..old_chain.len());
+                    && configuration_matches_continuation(
+                        old_chain,
+                        candidate_chain,
+                        0..old_chain.len(),
+                        continuation,
+                    );
                 // Appending the first lookahead suffix leaves this exact old
                 // prefix in the current chain. Transfer its history normally;
                 // classifying it as detached would duplicate/strand the tail.
                 let retained_prefix_extension = first_compensation
                     && old_chain.len() < candidate_chain.len()
-                    && old_chain.configuration_matches_range(candidate_chain, 0..old_chain.len());
+                    && configuration_matches_continuation(
+                        old_chain,
+                        candidate_chain,
+                        0..old_chain.len(),
+                        continuation,
+                    );
                 let retargetable_effect_configuration = !exact_chain_configuration
                     && old_chain.len() == candidate_chain.len()
                     && old_track.instrument_position() == candidate_suffix_start

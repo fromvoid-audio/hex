@@ -602,6 +602,7 @@ pub struct SessionPlayback {
     current_sampler_console: bool,
     route_state_generation: u64,
     candidate_admission_open: bool,
+    pub(crate) foreign_continuation: Option<Box<crate::playback::StoredForeignContinuation>>,
     // Control-side request that the live handoff restart at the cursor rather
     // than carry voices or detached tails the candidate already represents.
     live_restart: bool,
@@ -1020,6 +1021,7 @@ impl SessionPlayback {
             current_sampler_console: _,
             route_state_generation: _,
             candidate_admission_open: _,
+            foreign_continuation,
             live_restart: _,
         } = self;
         // Fresh Main metadata must match before any location is emitted.
@@ -1036,6 +1038,7 @@ impl SessionPlayback {
         let moved_empty_main =
             !self.candidate_admission_open && main_chain.is_empty() && !main_present;
         if (!main_matches && !moved_empty_main)
+            || foreign_continuation.is_some()
             || !foreign_arrangement.is_empty()
             || live_expression.is_some()
             || computer_keyboard.is_some()
@@ -2249,6 +2252,7 @@ impl SessionPlayback {
             current_sampler_console: false,
             route_state_generation: 0,
             candidate_admission_open: true,
+            foreign_continuation: None,
             live_restart: false,
         })
     }
@@ -2579,6 +2583,25 @@ impl SessionPlayback {
         }
         self.require_fresh_candidate()?;
         self.inherit_state_live(previous, None)
+    }
+
+    /// The caller must authenticate and retain the source and state identities.
+    pub(crate) fn try_inherit_state_live_with_foreign_continuation_from(
+        &mut self,
+        previous: &mut Self,
+        continuation: &hex_lattice::ForeignConfigurationContinuation<'_>,
+    ) -> Result<SessionHandoffReport, SessionPlaybackError> {
+        if self.midi_capture_active()
+            || previous.midi_capture_active()
+            || self.linear_arrangement_export
+            || previous.linear_arrangement_export
+            || self.current_sampler_console
+            || previous.current_sampler_console
+        {
+            return Err(SessionPlaybackError::InvalidCommand);
+        }
+        self.require_fresh_candidate()?;
+        self.inherit_state_planned(previous, None, None, true, false, Some(continuation))
     }
 
     /// Reset a prepared bounce successor at an authenticated Arrangement fence.

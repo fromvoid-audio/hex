@@ -3,7 +3,7 @@ use super::*;
 use hex_session::device_gesture::{GestureClient, PluginParameterOrigin, PluginParameterValue};
 use hex_session::service::{Event, PluginParameterQuery, PluginParameterResult};
 
-fn query_once(
+pub(super) fn query_once(
     h: &mut ResidentHarness,
     device: hex_project::DeviceId,
     page: Option<u16>,

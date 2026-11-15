@@ -83,6 +83,10 @@ pub(crate) use native_effects::NativeEffectWindow;
 mod midi_recording;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 mod native_sources;
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub use hex_lattice::ProcessorInstanceIdentity as NativeProcessorIdentity;
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub use native_sources::NativeParameterContinuationRequest;
 mod resident_forwarding;
 pub use endpoints::{Client, WorkerControl};
 pub(crate) use endpoints::{ClientEndpoints, EndpointTerminals};
@@ -344,6 +348,10 @@ pub(crate) struct Publication {
     quantized_seek_frame: Option<u64>,
     streams: Option<Box<crate::candidate_custody::OrdinaryStreams>>,
     playback: Box<Playback>,
+    // Drop the source observation on control before releasing the native
+    // source reference, which keeps its actual paired allocation alive.
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    native_continuation: Option<hex_plugin_host::transport::ParameterInputSource>,
     // Field order matters: destroy the actual ordinary graph before releasing
     // its native source references. This publication is destroyed on control.
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -2019,7 +2027,15 @@ impl PublicationControl {
             hex_engine::native_device_resources::DeviceResourceAdmission<'_>,
         ) -> Result<(), E>,
     ) -> Result<u64, AdmittedPublishError<E>> {
-        self.publish_admitted_with_source(playback, policy, control_context_generation, None, admit)
+        self.publish_admitted_with_source(
+            playback,
+            policy,
+            control_context_generation,
+            None,
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            None,
+            admit,
+        )
     }
     /// Tag the actual admitted ordinary graph with its captured canonical source.
     /// Existing generation-only methods remain unknown to MIDI recording.
@@ -2037,6 +2053,8 @@ impl PublicationControl {
             policy,
             source_context.project_generation,
             Some(source_context),
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            None,
             admit,
         )
     }
@@ -2046,6 +2064,9 @@ impl PublicationControl {
         policy: PublicationPolicy,
         control_context_generation: u64,
         source_context: Option<hex_engine::AudioSourceContext>,
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))] native_continuation: Option<
+            hex_plugin_host::transport::ParameterInputSource,
+        >,
         admit: impl FnOnce(
             hex_engine::native_device_resources::DeviceResourceAdmission<'_>,
         ) -> Result<(), E>,
@@ -2065,8 +2086,17 @@ impl PublicationControl {
                 if let Err(reason) = admit(view) {
                     return Err(AdmittedPublishError::Admission { reason, playback });
                 }
-                self.publish_unaccounted_pcm_obligation(playback, policy, control_context_generation, true, false, source_context)
-                    .map_err(AdmittedPublishError::Publication)
+                self.publish_unaccounted_with_native_continuation(
+                    playback,
+                    policy,
+                    control_context_generation,
+                    true,
+                    false,
+                    source_context,
+                    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                    native_continuation,
+                )
+                .map_err(AdmittedPublishError::Publication)
             }).map_err(|error| match error {
                 hex_engine::native_device_resources::DeviceResourcePublishError::Resources { playback, .. } =>
                     AdmittedPublishError::Publication(PublishError { kind: PublishErrorKind::Other, reason: "device resource publication storage reservation exceeded", playback }),
@@ -2128,7 +2158,9 @@ impl PublicationControl {
         forwarded_pcm: bool,
     ) -> Result<u64, PublishError> {
         let Some(mut resources) = self.device_resources.take() else {
-            if playback.contains_device_resource_leases() {
+            if playback.contains_device_resource_leases()
+                || playback.has_foreign_continuation_states()
+            {
                 return Err(PublishError {
                     kind: PublishErrorKind::Other,
                     reason: "device resource publication was not reserved for this output",
@@ -2182,6 +2214,31 @@ impl PublicationControl {
         explicit_control_context: bool,
         forwarded_pcm: bool,
         source_context: Option<hex_engine::AudioSourceContext>,
+    ) -> Result<u64, PublishError> {
+        self.publish_unaccounted_with_native_continuation(
+            playback,
+            policy,
+            control_context_generation,
+            explicit_control_context,
+            forwarded_pcm,
+            source_context,
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)] // Existing ownership plus the exact move-only source observation.
+    fn publish_unaccounted_with_native_continuation(
+        &mut self,
+        playback: Playback,
+        policy: PublicationPolicy,
+        control_context_generation: u64,
+        explicit_control_context: bool,
+        forwarded_pcm: bool,
+        source_context: Option<hex_engine::AudioSourceContext>,
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))] native_continuation: Option<
+            hex_plugin_host::transport::ParameterInputSource,
+        >,
     ) -> Result<u64, PublishError> {
         let native_epoch = match policy {
             PublicationPolicy::InstallUnderNativeEpoch(token)
@@ -2318,6 +2375,15 @@ impl PublicationControl {
                 });
             }
         };
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        if native_continuation.is_some() && native_references.is_none() {
+            self.status.publication_pending.store(false, Release);
+            return Err(PublishError {
+                kind: PublishErrorKind::NativeSourceUnavailable,
+                reason: "native continuation requires its original graph source",
+                playback,
+            });
+        }
         let streams = if self.candidate_root.ordinary_streams_configured() {
             let Some(context) = source_context else {
                 self.status.publication_pending.store(false, Release);
@@ -2356,6 +2422,8 @@ impl PublicationControl {
             quantized_seek_frame: None,
             streams,
             playback: Box::new(playback),
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            native_continuation,
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             native_references,
         };
@@ -3728,13 +3796,27 @@ impl Callback {
                     source,
                     transport_epoch,
                     playing,
-                } => (!self.native_parameter_fence_matches(
-                    source,
-                    transport_epoch,
-                    playing,
-                    next.source_context,
-                ))
-                .then_some(hex_engine::PlaybackHandoffError::RuntimeFenceChanged),
+                } => {
+                    let predecessor_matches = next.native_continuation.is_none()
+                        || self
+                            .active
+                            .as_ref()
+                            .and_then(ActivePublication::legacy)
+                            .is_some_and(|active| {
+                                next.playback
+                                    .foreign_continuation_matches_predecessor_on_callback(
+                                        &active.playback,
+                                    )
+                            });
+                    (!predecessor_matches
+                        || !self.native_parameter_fence_matches(
+                            source,
+                            transport_epoch,
+                            playing,
+                            next.source_context,
+                        ))
+                    .then_some(hex_engine::PlaybackHandoffError::RuntimeFenceChanged)
+                }
                 PublicationPolicy::InheritRuntime | PublicationPolicy::InstallFreshRuntime => None,
             };
             #[cfg(test)]
@@ -3905,31 +3987,73 @@ impl Callback {
                         return;
                     }
                 }
-                let previous = if next.policy.inherits_runtime() {
-                    self.active
-                        .as_mut()
-                        .and_then(ActivePublication::legacy_mut)
-                        .and_then(|old| {
-                            old.source_context
-                                .map(|context| (&mut *old.playback, context, old.revision))
-                        })
-                } else {
-                    None
+                #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                let foreign_continuation = next.native_continuation.is_some();
+                #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+                let foreign_continuation = false;
+                let (prepared, preview_refused) = {
+                    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                    let guard = next.native_continuation.as_ref().and_then(|source| {
+                        next.playback
+                            .foreign_continuation_binding()
+                            .and_then(|binding| {
+                                native_sources::reserve_parameter_observation(
+                                    &self.native_sources,
+                                    &self.status,
+                                    binding,
+                                    source,
+                                )
+                            })
+                    });
+                    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                    let preview_refused =
+                        foreign_continuation && guard.as_ref().is_none_or(|guard| !guard.is_live());
+                    #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+                    let preview_refused = false;
+                    if preview_refused {
+                        (None, true)
+                    } else {
+                        let previous = if next.policy.inherits_runtime() {
+                            self.active
+                                .as_mut()
+                                .and_then(ActivePublication::legacy_mut)
+                                .and_then(|old| {
+                                    old.source_context
+                                        .map(|context| (&mut *old.playback, context, old.revision))
+                                })
+                        } else {
+                            None
+                        };
+                        let fenced_restart =
+                            matches!(next.policy, PublicationPolicy::InheritUnderArrangement(_))
+                                && next.playback.live_restart_requested();
+                        let prepared = next.streams.as_mut().map(|streams| {
+                            streams.prepare_install(
+                                &mut next.playback,
+                                previous,
+                                &mut self.domain_pages,
+                                self.stream_pending_play.is_some(),
+                                self.stream_prefix,
+                                frames.unwrap_or(0),
+                                fenced_restart,
+                                foreign_continuation,
+                            )
+                        });
+                        (prepared, false)
+                    }
                 };
-                let fenced_restart =
-                    matches!(next.policy, PublicationPolicy::InheritUnderArrangement(_))
-                        && next.playback.live_restart_requested();
-                let prepared = next.streams.as_mut().map(|streams| {
-                    streams.prepare_install(
-                        &mut next.playback,
-                        previous,
-                        &mut self.domain_pages,
-                        self.stream_pending_play.is_some(),
-                        self.stream_prefix,
-                        frames.unwrap_or(0),
-                        fenced_restart,
-                    )
-                });
+                if preview_refused {
+                    if let Some(streams) = next.streams.as_mut() {
+                        streams.cancel_install(&mut self.domain_pages);
+                    }
+                    self.reject_publication(
+                        next.revision,
+                        PlaybackHandoffRejection::RuntimeFenceChanged,
+                    );
+                    self.return_graph(next);
+                    self.status.publication_pending.store(false, Release);
+                    return;
+                }
                 match prepared {
                     Some(Ok(Some(_))) => {
                         // Page planning may span callbacks. Revalidate the
@@ -4092,32 +4216,89 @@ impl Callback {
             ) {
                 None
             } else {
-                self.active
-                    .as_mut()
-                    .and_then(ActivePublication::legacy_mut)
-                    .map(|previous| {
-                        let generation = next
-                            .explicit_control_context
-                            .then_some(next.control_context_generation);
-                        let previous_generation = previous
-                            .explicit_control_context
-                            .then_some(previous.control_context_generation);
-                        if matches!(next.policy, PublicationPolicy::InheritUnderArrangement(_))
-                            && next.playback.live_restart_requested()
-                        {
-                            next.playback.try_restart_runtime_under_arrangement_fence(
-                                &mut previous.playback,
-                                generation,
-                                previous_generation,
+                #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                let foreign_continuation = next.native_continuation.is_some();
+                #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+                let foreign_continuation = false;
+                #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                let mut guard = next.native_continuation.as_ref().and_then(|source| {
+                    next.playback
+                        .foreign_continuation_binding()
+                        .and_then(|binding| {
+                            native_sources::reserve_parameter_observation(
+                                &self.native_sources,
+                                &self.status,
+                                binding,
+                                source,
                             )
-                        } else {
-                            next.playback.try_inherit_runtime_in_control_context(
-                                &mut previous.playback,
-                                generation,
-                                previous_generation,
-                            )
-                        }
-                    })
+                        })
+                });
+                #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                let refused = foreign_continuation
+                    && guard.as_mut().is_none_or(|guard| {
+                        !guard.try_order_before_revocation()
+                            || self
+                                .status
+                                .device_fault
+                                .compare_exchange(false, false, AcqRel, Acquire)
+                                .is_err()
+                            || self
+                                .status
+                                .render_fault
+                                .compare_exchange(false, false, AcqRel, Acquire)
+                                .is_err()
+                            || self
+                                .status
+                                .pending_stop_marker
+                                .compare_exchange(0, 0, AcqRel, Acquire)
+                                .is_err()
+                            || {
+                                let consumed = self.status.consumed_command.load(Acquire);
+                                self.status
+                                    .admitted_ticket
+                                    .compare_exchange(consumed, consumed, AcqRel, Acquire)
+                                    .is_err()
+                            }
+                    });
+                #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+                let refused = false;
+                if refused {
+                    Some(Err(hex_engine::PlaybackHandoffError::RuntimeFenceChanged))
+                } else {
+                    self.active
+                        .as_mut()
+                        .and_then(ActivePublication::legacy_mut)
+                        .map(|previous| {
+                            let generation = next
+                                .explicit_control_context
+                                .then_some(next.control_context_generation);
+                            let previous_generation = previous
+                                .explicit_control_context
+                                .then_some(previous.control_context_generation);
+                            if matches!(next.policy, PublicationPolicy::InheritUnderArrangement(_))
+                                && next.playback.live_restart_requested()
+                            {
+                                next.playback.try_restart_runtime_under_arrangement_fence(
+                                    &mut previous.playback,
+                                    generation,
+                                    previous_generation,
+                                )
+                            } else if foreign_continuation {
+                                next.playback
+                                    .try_inherit_runtime_with_stored_foreign_continuation(
+                                        &mut previous.playback,
+                                        generation,
+                                        previous_generation,
+                                    )
+                            } else {
+                                next.playback.try_inherit_runtime_in_control_context(
+                                    &mut previous.playback,
+                                    generation,
+                                    previous_generation,
+                                )
+                            }
+                        })
+                }
             };
             match handoff {
                 Some(Err(error)) if error.is_transient() => {
@@ -9526,6 +9707,8 @@ mod tests {
                 streams: None,
                 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
                 native_references: None,
+                #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                native_continuation: None,
                 playback: Box::new(graph().0),
             }))
             .unwrap();
@@ -10578,6 +10761,8 @@ mod tests {
                     streams: None,
                     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
                     native_references: None,
+                    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                    native_continuation: None,
                     playback: Box::new(graph().0),
                 }))
                 .unwrap();
@@ -12332,6 +12517,8 @@ mod tests {
             streams: None,
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             native_references: None,
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            native_continuation: None,
             playback: Box::new(playback),
         }));
         assert!(weak_revision.upgrade().is_some());
@@ -12453,6 +12640,8 @@ mod tests {
                         streams: None,
                         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
                         native_references: None,
+                        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                        native_continuation: None,
                         playback: Box::new(playback),
                     }))
                     .is_ok()
@@ -12534,6 +12723,8 @@ mod tests {
                         streams: None,
                         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
                         native_references: None,
+                        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                        native_continuation: None,
                         playback: Box::new(playback),
                     }))
                     .is_ok()
@@ -12554,6 +12745,8 @@ mod tests {
             streams: None,
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             native_references: None,
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            native_continuation: None,
             playback: Box::new(held),
         }));
         let mut last_ticket = 0;
@@ -12708,6 +12901,8 @@ mod tests {
                     streams: None,
                     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
                     native_references: None,
+                    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                    native_continuation: None,
                     playback: Box::new(queued),
                 }))
                 .is_ok()

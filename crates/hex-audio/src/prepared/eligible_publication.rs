@@ -595,6 +595,7 @@ impl Callback {
                 command_prefix: self.stream_prefix,
                 frames,
                 fenced_restart: false,
+                foreign_continuation: false,
             });
             next.prepare_install(previous, &self.candidate_root, request.as_mut())
         } else {

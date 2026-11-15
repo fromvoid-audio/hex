@@ -40,6 +40,8 @@ enum Terminal {
 #[derive(Default)]
 pub(super) struct Slot {
     ordinal: u64,
+    last_processed: Option<u64>,
+    last_idle_flush: Option<u64>,
     phase: Phase,
     point: ParameterPoint,
     intent: Intent,
@@ -216,6 +218,8 @@ impl NativeWorker {
             // original owner and fence intact for explicit fault recovery.
             return Err("native parameter input terminal missing");
         }
+        slot.last_processed = None;
+        slot.last_idle_flush = None;
         slot.phase = Phase::Idle;
         slot.result = None;
         if state.parameter_change.ordinal == Some(request.ordinal) {
@@ -532,6 +536,8 @@ impl NativeWorker {
         let result = slot
             .result
             .ok_or("native parameter input terminal missing")?;
+        slot.last_processed = matches!(result, Terminal::Processed(_)).then_some(request.ordinal);
+        slot.last_idle_flush = matches!(result, Terminal::Flushed).then_some(request.ordinal);
         slot.phase = Phase::Idle;
         slot.result = None;
         Ok(match result {
@@ -548,7 +554,7 @@ impl NativeWorker {
             Terminal::Withdrawn => NativeWorkerParameterProgress::Withdrawn,
         })
     }
-    fn require_parameter_change_source(
+    pub(super) fn require_parameter_change_source(
         &self,
         request: &NativeWorkerParameterChange,
     ) -> Result<(), &'static str> {
@@ -561,6 +567,39 @@ impl NativeWorker {
     }
 }
 impl Slot {
+    pub(super) fn processed_ordinal(&self) -> Option<u64> {
+        (self.phase == Phase::Idle && self.last_processed == Some(self.ordinal))
+            .then_some(self.ordinal)
+    }
+
+    pub(super) fn processed_parameter(&self) -> Option<(u64, u32, u64)> {
+        self.processed_ordinal()
+            .map(|ordinal| (ordinal, self.point.id, self.point.normalized.to_bits()))
+    }
+
+    pub(super) fn is_processed(&self, request: &NativeWorkerParameterChange) -> bool {
+        request.pcm_delivery
+            && self.processed_ordinal() == Some(request.ordinal)
+            && self.point.id == request.parameter
+    }
+
+    pub(super) fn idle_flushed_parameter(&self) -> Option<(u64, u32, u64)> {
+        (self.phase == Phase::Idle && self.last_idle_flush == Some(self.ordinal)).then_some((
+            self.ordinal,
+            self.point.id,
+            self.point.normalized.to_bits(),
+        ))
+    }
+
+    pub(super) fn is_idle_flushed(&self, request: &NativeWorkerParameterChange) -> bool {
+        !request.pcm_delivery
+            && self
+                .idle_flushed_parameter()
+                .is_some_and(|(ordinal, id, _)| {
+                    ordinal == request.ordinal && id == request.parameter
+                })
+    }
+
     fn matches(&self, request: &NativeWorkerParameterChange) -> bool {
         self.phase != Phase::Idle && self.ordinal == request.ordinal
     }
