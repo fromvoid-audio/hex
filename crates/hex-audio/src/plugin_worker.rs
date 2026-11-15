@@ -27,6 +27,8 @@ pub use hex_plugin_host::protocol::{
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 mod edits;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub use edits::StoppedEditProgress;
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 mod parameter_change;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 mod parameters;
