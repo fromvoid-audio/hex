@@ -325,12 +325,12 @@ fn validate_tail_suffix(
     sample_rate: u32,
 ) -> Result<usize, SessionPlaybackError> {
     let suffix_range = suffix_start..chain.len();
-    if chain.range_has_unbounded_foreign_tail(suffix_range.clone()) {
-        return Err(SessionPlaybackError::DeviceRuntime);
-    }
     let tail = chain
         .zero_input_drain_for_range(suffix_range.clone())
         .ok_or(SessionPlaybackError::DeviceRuntime)?;
+    // An unbounded tail occupies one of the existing fixed tail slots until
+    // Stop/seek or an independently observed drain. Capacity exhaustion
+    // refuses the next handoff without dropping the committed predecessor.
     if let hex_lattice::OutputTail::Finite { max_tail_frames } = tail {
         let horizon = u64::from(sample_rate)
             .checked_mul(MAX_FINITE_EFFECT_TAIL_SECONDS)

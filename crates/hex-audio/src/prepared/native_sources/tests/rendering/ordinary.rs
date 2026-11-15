@@ -361,28 +361,59 @@ fn block(f: &mut OrdinaryFixture) -> [Frame; 8] {
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn retained_foreign_track_tail_and_successor_use_distinct_original_workers() {
-    retained_foreign_track_tail(false, false, false);
+    retained_foreign_track_tail(false, false, false, false);
 }
 
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn retained_foreign_track_tail_routes_through_unchanged_compensated_group() {
-    retained_foreign_track_tail(true, false, false);
+    retained_foreign_track_tail(true, false, false, false);
 }
 
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn retained_foreign_track_tail_preserves_direct_send_through_group() {
-    retained_foreign_track_tail(true, true, false);
+    retained_foreign_track_tail(true, true, false, false);
 }
 
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn overlapping_foreign_tails_keep_their_original_workers() {
-    retained_foreign_track_tail(true, true, true);
+    retained_foreign_track_tail(true, true, true, false);
 }
 
-fn retained_foreign_track_tail(grouped: bool, direct_send: bool, overlap: bool) {
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn unbounded_foreign_tails_keep_original_workers_through_overlap_and_shutdown() {
+    const CHILD: &str = "HEX_UNBOUNDED_TAIL_DRIVER";
+    if std::env::var_os(CHILD).is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                std::thread::current().name().unwrap(),
+                "--ignored",
+            ])
+            .env(CHILD, "1")
+            .env("HEX_ORIGINAL_TAIL_FRAMES", u32::MAX.to_string())
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success() && String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    retained_foreign_track_tail(true, true, true, true);
+}
+
+fn retained_foreign_track_tail(
+    grouped: bool,
+    direct_send: bool,
+    overlap: bool,
+    expect_unbounded: bool,
+) {
     let _serial = serial();
     let mut f = if overlap {
         fixture_with_authored_mode_and_capacity("processing", 0, 8, &[], false, 3)
@@ -435,6 +466,11 @@ fn retained_foreign_track_tail(grouped: bool, direct_send: bool, overlap: bool) 
             .unwrap();
     }
     let first = compile(&f, true);
+    if expect_unbounded {
+        assert!(first.foreign_nodes_on_control().any(|node| {
+            matches!(&node.definition, Some(hex_lattice::PreparedProcessorFactory::Foreign(prepared)) if prepared.binding() == Some(old) && prepared.output_tail() == hex_lattice::OutputTail::Unbounded)
+        }));
+    }
     publish(&mut f.control, first, PublicationPolicy::InheritRuntime);
     f.control.command(PlaybackCommand::Play).unwrap();
     let root = f.control.native_candidate_root();
@@ -1269,4 +1305,201 @@ fn ordinary_epochs(location: usize) {
         matches!(returned.disposal, native::PreparationDisposal::Reaped(retired)
         if retired.status.success() && retired.terminal.is_some_and(|terminal| (terminal.blocks, terminal.frames) == (9, 72)))
     );
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn unbounded_native_return_tail_refuses_unaligned_removal_without_losing_source() {
+    unbounded_return_or_main_tail(1);
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn unbounded_native_main_tail_is_held_until_stop_and_shutdown() {
+    unbounded_return_or_main_tail(2);
+}
+
+fn unbounded_return_or_main_tail(location: usize) {
+    const CHILD: &str = "HEX_UNBOUNDED_RETURN_TAIL_DRIVER";
+    if std::env::var_os(CHILD).is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                std::thread::current().name().unwrap(),
+                "--ignored",
+            ])
+            .env(CHILD, "1")
+            .env("HEX_ORIGINAL_TAIL_FRAMES", u32::MAX.to_string())
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success() && String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    let _serial = serial();
+    let mut f = fixture_at("tail", location);
+    let root = f.control.native_candidate_root();
+    let playback = compile(&f, true);
+    assert!(playback.foreign_nodes_on_control().any(|node| matches!(&node.definition, Some(hex_lattice::PreparedProcessorFactory::Foreign(prepared)) if prepared.binding() == Some(f.binding) && prepared.output_tail() == hex_lattice::OutputTail::Unbounded)));
+    let original_revision = publish(&mut f.control, playback, PublicationPolicy::InheritRuntime);
+    f.control.command(PlaybackCommand::Play).unwrap();
+    block(&mut f);
+    replacement::wait_for_blocks(&root, f.binding, 1);
+    let device = f
+        .editor
+        .project()
+        .devices()
+        .find(|device| device.id().value() == f.binding.instance)
+        .unwrap()
+        .id();
+    f.editor.execute(Command::RemoveDevice(device)).unwrap();
+    let successor = compile(&f, false);
+    let revision = publish(&mut f.control, successor, PublicationPolicy::InheritRuntime);
+    let mut heard_tail = false;
+    for n in 2..=5 {
+        let output = block(&mut f);
+        heard_tail |= output.iter().flatten().any(|sample| *sample != 0.0);
+        replacement::wait_for_blocks(&root, f.binding, n);
+        f.control.reclaim();
+    }
+    if location == 1 {
+        assert_eq!(
+            f.control.status.applied_revision.load(Acquire),
+            original_revision
+        );
+        assert_eq!(
+            f.control.status.rejected_revision(),
+            Some((revision, PlaybackHandoffRejection::LatencyLayoutChanged))
+        );
+    } else {
+        assert_eq!(f.control.status.applied_revision.load(Acquire), revision);
+    }
+    assert!(heard_tail, "original endpoint must contribute to output");
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while !f.control.retire_native_source_preparation(f.binding) {
+        assert!(Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+    f.control.reclaim();
+    assert!(
+        f.control
+            .recover_native_source_preparation(f.binding)
+            .is_none()
+    );
+    f.control.stop();
+    block(&mut f);
+    let OrdinaryFixture {
+        mut control,
+        data,
+        errors,
+        retirement,
+        binding,
+        ..
+    } = f;
+    let mut retirement = close_backend(data, errors, retirement);
+    let returned = recover(&mut control, binding);
+    assert!(returned.error.is_none() && returned.cleanup_error.is_none());
+    assert!(
+        matches!(returned.disposal, native::PreparationDisposal::Reaped(retired) if retired.status.success())
+    );
+    drop(control);
+    finish(&mut retirement);
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn unbounded_native_return_replacement_refuses_without_losing_original_worker() {
+    const CHILD: &str = "HEX_UNBOUNDED_RETURN_REPLACEMENT_DRIVER";
+    if std::env::var_os(CHILD).is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                std::thread::current().name().unwrap(),
+                "--ignored",
+            ])
+            .env(CHILD, "1")
+            .env("HEX_ORIGINAL_TAIL_FRAMES", u32::MAX.to_string())
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success() && String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    let _serial = serial();
+    let mut f = fixture_at("tail", 1);
+    let root = f.control.native_candidate_root();
+    let old = f.binding;
+    let first = compile(&f, true);
+    assert!(first.foreign_nodes_on_control().any(|node| matches!(&node.definition, Some(hex_lattice::PreparedProcessorFactory::Foreign(prepared)) if prepared.binding() == Some(old) && prepared.output_tail() == hex_lattice::OutputTail::Unbounded)));
+    let original_revision = publish(&mut f.control, first, PublicationPolicy::InheritRuntime);
+    f.control.command(PlaybackCommand::Play).unwrap();
+    for n in 1..=4 {
+        block(&mut f);
+        replacement::wait_for_blocks(&root, old, n);
+    }
+    let device = f
+        .editor
+        .project()
+        .devices()
+        .find(|device| device.id().value() == old.instance)
+        .unwrap()
+        .id();
+    let return_id = f.editor.project().return_tracks()[0].id();
+    let identity = ProcessorInstanceIdentity::new(
+        ProcessorChainOwner::Return(return_id.value()),
+        device.value(),
+    )
+    .unwrap();
+    let saved = f.control.native_source_prepared_state(old).unwrap();
+    let next = source_for_profile(&mut f.control, identity, "tail", 8, Some(saved));
+    assert_ne!(old, next);
+    f.control.publish_native_source_endpoint(next).unwrap();
+    allocation_free(|| {
+        f.data
+            .owner_mut()
+            .unwrap()
+            .run(|callback, _| callback.begin_block())
+    });
+    f.binding = next;
+    let successor = compile(&f, true);
+    let revision = publish(&mut f.control, successor, PublicationPolicy::InheritRuntime);
+    let mut output = [[0.0; 2]; 32];
+    for (index, chunk) in output.chunks_mut(8).enumerate() {
+        chunk.copy_from_slice(&block(&mut f));
+        replacement::wait_for_blocks(&root, old, index as u64 + 5);
+    }
+    assert_eq!(
+        f.control.status.applied_revision.load(Acquire),
+        original_revision
+    );
+    assert_eq!(
+        f.control.status.rejected_revision(),
+        Some((revision, PlaybackHandoffRejection::SessionRuntime))
+    );
+    assert!(output.iter().flatten().any(|sample| *sample != 0.0));
+    let OrdinaryFixture {
+        mut control,
+        data,
+        errors,
+        retirement,
+        ..
+    } = f;
+    let mut retirement = close_backend(data, errors, retirement);
+    for binding in [old, next] {
+        let returned = recover(&mut control, binding);
+        assert!(returned.error.is_none() && returned.cleanup_error.is_none());
+        assert!(
+            matches!(returned.disposal, native::PreparationDisposal::Reaped(retired) if retired.status.success())
+        );
+    }
+    drop(control);
+    finish(&mut retirement);
 }
