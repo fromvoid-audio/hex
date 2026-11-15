@@ -1,9 +1,13 @@
 //! Instrumented headless callback allocation regression; no device is opened.
 
+#[path = "callback_allocations/cold_track.rs"]
+mod cold_track;
 #[path = "callback_allocations/compressor.rs"]
 mod compressor;
 #[path = "callback_allocations/cursor_loop.rs"]
 mod cursor_loop;
+#[path = "callback_allocations/device_track.rs"]
+mod device_track;
 #[path = "callback_allocations/finite_bounce.rs"]
 mod finite_bounce;
 #[path = "callback_allocations/gate.rs"]
@@ -16,6 +20,8 @@ mod overdrive;
 pub(super) mod probe;
 #[path = "callback_allocations/project_tuning.rs"]
 mod project_tuning;
+#[path = "callback_allocations/return_tail.rs"]
+mod return_tail;
 #[path = "callback_allocations/reverb_outputs.rs"]
 mod reverb_outputs;
 #[path = "../../../hex-engine/examples/support/session_audio_fixture.rs"]
@@ -358,7 +364,8 @@ impl hex_lattice::MutableInstrumentRuntime for MutableFixtureRuntime {
         }
         for event in events {
             let (offset, id, on) = match *event {
-                hex_lattice::NativeInstrumentEvent::Expression { .. } => {
+                hex_lattice::NativeInstrumentEvent::NotePressure { .. }
+                | hex_lattice::NativeInstrumentEvent::Expression { .. } => {
                     return Err(hex_lattice::NativeInstrumentRuntimeError::InvalidEventBatch);
                 }
                 hex_lattice::NativeInstrumentEvent::NoteOn {
@@ -402,7 +409,8 @@ impl hex_lattice::MutableInstrumentRuntime for MutableFixtureRuntime {
             {
                 match events[event_index] {
                     // Unsupported by this fixture's read-only preflight.
-                    hex_lattice::NativeInstrumentEvent::Expression { .. } => {}
+                    hex_lattice::NativeInstrumentEvent::NotePressure { .. }
+                    | hex_lattice::NativeInstrumentEvent::Expression { .. } => {}
                     hex_lattice::NativeInstrumentEvent::NoteOn { occurrence_id, .. } => {
                         if let Some(voice) = self.voices.iter_mut().find(|voice| !voice.active) {
                             *voice = MutableFixtureVoice {
@@ -1446,10 +1454,21 @@ fn hybrid_arrangement_audio_and_midi_callback_is_allocation_free_and_exact()
 
 #[test]
 fn reverb_automation_publication_and_render_are_allocation_free() -> Result<(), Box<dyn Error>> {
+    reverb_parameter_publication(false)
+}
+
+#[test]
+fn reverb_modulation_publication_and_render_are_allocation_free() -> Result<(), Box<dyn Error>> {
+    reverb_parameter_publication(true)
+}
+
+fn reverb_parameter_publication(with_modulation: bool) -> Result<(), Box<dyn Error>> {
     use hex_devices::reverb::{REVERB_TYPE_ID, parameter};
     use hex_project::{
         AutomationInterpolation, AutomationPoint, AutomationValue, DeviceAutomationTarget,
-        DeviceAutomationTouchSpan, DeviceAutomationTouchStep,
+        DeviceAutomationTouchSpan, DeviceAutomationTouchStep, DeviceModulation,
+        DeviceModulationRoute, ElementColor, ModulationAmount, ModulationDestination,
+        ModulationOutputId, ModulationRange, ModulationRouteId, ModulationSourceId, Modulator,
     };
     let mut editor = Editor::new(Project::new(RATE)?, 8)?;
     let Created::Imported { track, asset, .. } =
@@ -1523,8 +1542,43 @@ fn reverb_automation_publication_and_render_are_allocation_free() -> Result<(), 
             }],
         }],
     })?;
-    let path =
-        std::env::temp_dir().join(format!("hex-reverb-automation-{}.hex", std::process::id()));
+    if with_modulation {
+        let next = editor.project().next_identity();
+        let source = ModulationSourceId::new(next)?;
+        editor.execute(Command::ReplaceDeviceModulation {
+            device,
+            modulation: DeviceModulation::new(
+                vec![Modulator {
+                    id: source,
+                    enabled: true,
+                    color: ElementColor::default(),
+                    state: hex_engine::lfo_modulator::Settings {
+                        rate: hex_engine::lfo_modulator::Rate::Hertz(f64::from(RATE) * 0.125),
+                        phase: 0.0,
+                        ..hex_engine::lfo_modulator::Settings::default()
+                    }
+                    .encode()?,
+                }],
+                vec![DeviceModulationRoute {
+                    id: ModulationRouteId::new(next + 1)?,
+                    source,
+                    output: ModulationOutputId::MAIN,
+                    destination: ModulationDestination::Device {
+                        device_type: REVERB_TYPE_ID,
+                        target: DeviceAutomationTarget::Parameter(parameter::DRY_WET),
+                        vst3_class: None,
+                    },
+                    amount: ModulationAmount::new(0.25)?,
+                    range: ModulationRange::default(),
+                    enabled: true,
+                }],
+            )?,
+        })?;
+    }
+    let path = std::env::temp_dir().join(format!(
+        "hex-reverb-automation-{}-{with_modulation}.hex",
+        std::process::id(),
+    ));
     hex_storage::save_new(&path, editor.project())?;
     let reopened = hex_storage::load(&path);
     std::fs::remove_file(path)?;
@@ -2884,6 +2938,71 @@ fn builtin_fm4_render_state_handoff_and_retirement_are_callback_allocation_free(
     compare_output(&actual, &expected);
     assert!(actual.iter().flatten().any(|sample| sample.abs() > 1.0e-6));
 
+    // First assignment while already sounding skips intermediate canonical
+    // revisions, then publishes four real source-global streams in one graph.
+    for (index, id) in (29..=32).enumerate() {
+        editor.execute(Command::ReplaceDeviceAutomation {
+            device: instrument,
+            parameter: ParameterId::from_static(id),
+            points: vec![
+                hex_project::AutomationPoint {
+                    beat: BeatTime::ZERO,
+                    value: hex_project::AutomationValue::new(0.55 + index as f32 * 0.05)?,
+                    outgoing: hex_project::AutomationInterpolation::Linear,
+                },
+                hex_project::AutomationPoint {
+                    beat: BeatTime::from_quarters(4)?,
+                    value: hex_project::AutomationValue::new(0.8 + index as f32 * 0.03)?,
+                    outgoing: hex_project::AutomationInterpolation::Linear,
+                },
+            ],
+        })?;
+    }
+    let authored = editor.project().clone();
+    assert!(editor.undo());
+    assert!(editor.redo());
+    assert_eq!(
+        editor.project(),
+        &authored,
+        "source curve Undo/Redo restores the full canonical state"
+    );
+    let path = std::env::temp_dir().join(format!(
+        "hex-fm4-carrier-automation-{}.hex",
+        std::process::id()
+    ));
+    hex_storage::save_new(&path, editor.project())?;
+    let reopened = hex_storage::load(&path);
+    std::fs::remove_file(path)?;
+    let reopened = reopened?;
+    assert_eq!(
+        &reopened,
+        editor.project(),
+        "current-format source curves retain the complete canonical state"
+    );
+    let curves_revision = Arc::new(PreparedRevision::prepare(
+        &reopened,
+        &media,
+        Arc::clone(&table),
+        Some(first_revision.session()),
+    )?);
+    let mut curves_oracle = Playback::try_from_prepared_with_session(Arc::clone(&curves_revision))?;
+    curves_oracle
+        .try_inherit_runtime_from(&mut oracle)
+        .map_err(|_| "FM4 first-curve oracle handoff failed")?;
+    control
+        .publish(Playback::try_from_prepared_with_session(Arc::clone(
+            &curves_revision,
+        ))?)
+        .map_err(|_| "FM4 curve publication failed")?;
+    curves_oracle.render(&mut expected)?;
+    measured_block(&mut callback, &mut actual);
+    compare_output(&actual, &expected);
+    assert!(control.status.rejected_revision().is_none());
+    assert!(!control.status.publication_in_flight());
+    // The output has two retirement slots. Pump the existing control owner
+    // between edits so the later bypass can install at this callback boundary.
+    assert!(control.reclaim() > 0);
+
     let changed_state = hex_engine::patch_native_device_parameter_for_class(
         hex_engine::NativeDeviceClass::Instrument,
         editor
@@ -2903,12 +3022,12 @@ fn builtin_fm4_render_state_handoff_and_retirement_are_callback_allocation_free(
         &changed_project,
         &media,
         Arc::clone(&table),
-        Some(first_revision.session()),
+        Some(curves_revision.session()),
     )?);
     let mut changed_oracle =
         Playback::try_from_prepared_with_session(Arc::clone(&changed_revision))?;
     changed_oracle
-        .try_inherit_runtime_from(&mut oracle)
+        .try_inherit_runtime_from(&mut curves_oracle)
         .map_err(|_| "FM4 state-change oracle handoff failed")?;
     let replacement = Playback::try_from_prepared_with_session(Arc::clone(&changed_revision))?;
     control
@@ -2917,6 +3036,39 @@ fn builtin_fm4_render_state_handoff_and_retirement_are_callback_allocation_free(
     changed_oracle.render(&mut expected)?;
     measured_block(&mut callback, &mut actual);
     compare_output(&actual, &expected);
+    assert!(control.status.rejected_revision().is_none());
+
+    // Actual automated publication, target capture, detached release and
+    // retirement share the original runtime and allocate/free nothing in callback.
+    editor.execute(Command::SetDeviceBypass {
+        device: instrument,
+        bypassed: true,
+    })?;
+    let tail_revision = Arc::new(PreparedRevision::prepare(
+        editor.project(),
+        &media,
+        Arc::clone(&table),
+        Some(changed_revision.session()),
+    )?);
+    let mut tail_oracle = Playback::try_from_prepared_with_session(Arc::clone(&tail_revision))?;
+    tail_oracle
+        .try_inherit_runtime_from(&mut changed_oracle)
+        .map_err(|_| "FM4 tail oracle handoff failed")?;
+    control
+        .publish(Playback::try_from_prepared_with_session(Arc::clone(
+            &tail_revision,
+        ))?)
+        .map_err(|_| "FM4 tail publication failed")?;
+    for _ in 0..4 {
+        tail_oracle.render(&mut expected)?;
+        measured_block(&mut callback, &mut actual);
+        assert!(
+            !control.status.publication_in_flight(),
+            "bypass must be installed before comparing its release"
+        );
+        assert!(control.status.rejected_revision().is_none());
+        compare_output(&actual, &expected);
+    }
     assert!(control.status.rejected_revision().is_none());
 
     let mut completed = 0;

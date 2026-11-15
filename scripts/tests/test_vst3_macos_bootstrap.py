@@ -27,6 +27,20 @@ finally:
     "explicit macOS VST3 SDK required for the hidden AppKit fixture",
 )
 class EditorFrameTests(unittest.TestCase):
+    def test_controller_feedback_respects_newer_native_edits(self):
+        sdk = Path(os.environ["HEX_VST3_MACOS_SDK"])
+        with tempfile.TemporaryDirectory() as directory:
+            binary = Path(directory) / "host-feedback"
+            subprocess.run(
+                ["xcrun", "clang++", "-std=c++17", "-arch", "arm64", "-O2",
+                 "-Wno-deprecated-declarations", "-I" + str(sdk),
+                 str(NATIVE / "macos_host_feedback_fixture.mm"), "-framework", "AppKit",
+                 "-o", str(binary)],
+                check=True, timeout=120,
+            )
+            result = subprocess.run([str(binary)], capture_output=True, text=True, timeout=5)
+            self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_editor_frame_negotiates_plugin_and_window_resizes(self):
         sdk = Path(os.environ["HEX_VST3_MACOS_SDK"])
         with tempfile.TemporaryDirectory() as directory:
@@ -196,57 +210,65 @@ class NativeBootstrapTests(unittest.TestCase):
         self.assertTrue(value["stable_close"], value)  # no repeated foreign teardown
         return value, observation[7:]
 
-    def test_persistent_component_controller_lifecycle_and_transition_failures(self):
-        for mode in range(3):  # absent, separate, combined controller
-            with self.subTest(mode=mode, failure=0):
-                normal, trace = self.lifecycle(mode, 0)
-                for field in ("opened", "configured", "started", "processed", "stopped", "closed", "unloaded"):
-                    self.assertTrue(normal[field], normal)
-                observation = normal["observation"]
-                self.assertEqual(observation[1:6], [1, int(mode == 1), 2, 0, 1])
-                # One actual component persists across both process calls. Combined
-                # interfaces get no duplicate initialization/termination or self-connect.
-                self.assertEqual(trace.count(2), 1)
-                self.assertEqual(trace.count(24), 1)
-                self.assertEqual(trace.count(5), int(mode == 1))
-                self.assertEqual(trace.count(23), int(mode == 1))
-                self.assertEqual(trace.count(7), int(mode == 1))
-                self.assertEqual(trace.count(8), int(mode == 1))
-                self.assertEqual(trace.count(15), 2)
-                for before, after in ((2, 13), (13, 14), (14, 15), (15, 16), (16, 17), (17, 24)):
-                    self.assertLess(trace.index(before), trace.index(after))
-                if mode == 1:
-                    self.assertLess(trace.index(7), trace.index(13))
-                    self.assertLess(trace.index(20), trace.index(23))
-                    self.assertLess(trace.index(21), trace.index(24))
-            # Only real transitions for this variant, not duplicate no-op cases.
-            for failure in sorted(set(trace)):
-                with self.subTest(mode=mode, failure=failure):
-                    value, failed_trace = self.lifecycle(mode, failure)
-                    self.assertIn(failure, failed_trace)
-                    if failure >= 16:
-                        # A refused teardown leaves resources in the isolated helper.
-                        # No later calls, repeat cleanup, live release or module unload.
-                        self.assertFalse(value["closed"], value)
-                        self.assertFalse(value["unloaded"], value)
-                        self.assertGreater(value["observation"][4], 0, value)
-                        self.assertEqual(failed_trace[-1], failure)
-                    else:
-                        self.assertTrue(value["closed"], value)
-                        self.assertTrue(value["unloaded"], value)
-                        self.assertEqual(value["observation"][4], 0, value)
-                    if failure <= 8:
-                        self.assertFalse(value["opened"], value)
-                    elif failure <= 13:
-                        self.assertEqual(failed_trace.count(failure), 1, "partial preparation is not replayed")
-                        self.assertFalse(value["configured"], value)
-                    elif failure == 14:
-                        self.assertEqual(failed_trace.count(14), 1, "failed processing start is not replayed")
-                        self.assertFalse(value["started"], value)
-                    elif failure == 15:
-                        self.assertEqual(failed_trace.count(15), 1, "failed foreign DSP is never replayed")
-                        self.assertFalse(value["processed"], value)
-                        self.assertTrue(value["stopped"], value)
+    def assert_persistent_lifecycle(self, mode):
+        with self.subTest(mode=mode, failure=0):
+            normal, trace = self.lifecycle(mode, 0)
+            for field in ("opened", "configured", "started", "processed", "stopped", "closed", "unloaded"):
+                self.assertTrue(normal[field], normal)
+            observation = normal["observation"]
+            self.assertEqual(observation[1:6], [1, int(mode == 1), 2, 0, 1])
+            # One actual component persists across both process calls. Combined
+            # interfaces get no duplicate initialization/termination or self-connect.
+            self.assertEqual(trace.count(2), 1)
+            self.assertEqual(trace.count(24), 1)
+            self.assertEqual(trace.count(5), int(mode == 1))
+            self.assertEqual(trace.count(23), int(mode == 1))
+            self.assertEqual(trace.count(7), int(mode == 1))
+            self.assertEqual(trace.count(8), int(mode == 1))
+            self.assertEqual(trace.count(15), 2)
+            for before, after in ((2, 13), (13, 14), (14, 15), (15, 16), (16, 17), (17, 24)):
+                self.assertLess(trace.index(before), trace.index(after))
+            if mode == 1:
+                self.assertLess(trace.index(7), trace.index(13))
+                self.assertLess(trace.index(20), trace.index(23))
+                self.assertLess(trace.index(21), trace.index(24))
+        # Only real transitions for this variant, not duplicate no-op cases.
+        for failure in sorted(set(trace)):
+            with self.subTest(mode=mode, failure=failure):
+                value, failed_trace = self.lifecycle(mode, failure)
+                self.assertIn(failure, failed_trace)
+                if failure >= 16:
+                    # A refused teardown leaves resources in the isolated helper.
+                    # No later calls, repeat cleanup, live release or module unload.
+                    self.assertFalse(value["closed"], value)
+                    self.assertFalse(value["unloaded"], value)
+                    self.assertGreater(value["observation"][4], 0, value)
+                    self.assertEqual(failed_trace[-1], failure)
+                else:
+                    self.assertTrue(value["closed"], value)
+                    self.assertTrue(value["unloaded"], value)
+                    self.assertEqual(value["observation"][4], 0, value)
+                if failure <= 8:
+                    self.assertFalse(value["opened"], value)
+                elif failure <= 13:
+                    self.assertEqual(failed_trace.count(failure), 1, "partial preparation is not replayed")
+                    self.assertFalse(value["configured"], value)
+                elif failure == 14:
+                    self.assertEqual(failed_trace.count(14), 1, "failed processing start is not replayed")
+                    self.assertFalse(value["started"], value)
+                elif failure == 15:
+                    self.assertEqual(failed_trace.count(15), 1, "failed foreign DSP is never replayed")
+                    self.assertFalse(value["processed"], value)
+                    self.assertTrue(value["stopped"], value)
+
+    def test_persistent_component_without_controller_lifecycle(self):
+        self.assert_persistent_lifecycle(0)
+
+    def test_persistent_component_separate_controller_lifecycle(self):
+        self.assert_persistent_lifecycle(1)
+
+    def test_persistent_component_combined_controller_lifecycle(self):
+        self.assert_persistent_lifecycle(2)
 
     def test_factory_alias_never_initializes_the_component_twice(self):
         value, trace = self.lifecycle(1, 25)
@@ -286,6 +308,12 @@ class NativeBootstrapTests(unittest.TestCase):
         self.assertEqual(value["before_revision"], 1)
         self.assertEqual(value["before_value"], 0.25)
         return value
+
+    def test_actual_sdk_sealed_editor_keeps_accepted_fifo_and_refuses_late_input(self):
+        value = self.host_control(15)
+        self.assertEqual((value["edit_count"], value["edit_order"], value["edit_backpressure"], value["enqueued"]), (16, 1, 1, 16))
+        self.assertEqual((value["known"], value["unknown"], value["message"], value["refusals"]), (1, 1, 16, 0))
+        self.assertTrue(value["closed"] and value["unloaded"])
 
     def test_actual_sdk_edit_fifo_preserves_boundaries_values_and_backpressure(self):
         value=self.host_control(13)

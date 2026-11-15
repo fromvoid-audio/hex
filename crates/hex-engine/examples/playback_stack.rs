@@ -362,6 +362,8 @@ fn project_fixture(
             muted: false,
             soloed: false,
             devices: vec![DeviceSnapshot {
+                modulation: Default::default(),
+                parent: None,
                 automation: Vec::new(),
                 comparison: None,
                 id: effect_id,
@@ -369,6 +371,8 @@ fn project_fixture(
                 state: utility_state.clone(),
             }],
             instrument: Some(DeviceSnapshot {
+                modulation: Default::default(),
+                parent: None,
                 automation: Vec::new(),
                 comparison: None,
                 id: instrument_id,
@@ -419,6 +423,8 @@ fn project_fixture(
         gain: 1.0,
         muted: false,
         devices: vec![DeviceSnapshot {
+            modulation: Default::default(),
+            parent: None,
             automation: Vec::new(),
             comparison: None,
             id: return_effect_id,

@@ -5,6 +5,7 @@ use crate::{
     AudioRootStorageLedger, AudioStorageError,
     audio_storage::{Location, Owner},
 };
+mod modulation;
 impl SessionPlayback {
     pub(crate) fn visit_fresh_candidate_storage<'a>(
         &'a self,
@@ -27,10 +28,13 @@ impl SessionPlayback {
             render_work: _, // inline scalar timing scratch, charged by size_of::<Self>()
             revision,
             transient_loop: _,
+            browser_audition: _,
             midi_admission,
             periodic_tempo: _,
             anchor: _,
             interactive_start_frame: _,
+            pending_shared_chase: _, // inline and charged by size_of::<Self>()
+            pending_shared_live: _,
             historical_floor: _,
             route_historical_floors: _,
             source_voice_envelopes: _,
@@ -39,6 +43,7 @@ impl SessionPlayback {
             route_scratch,
             track_faders: _,
             track_fader_scratch: _,
+            source_effects,
             device_chains,
             return_chains,
             main_chain,
@@ -53,6 +58,9 @@ impl SessionPlayback {
             current_route_cut_scratch,
             tail_groups,
             tail_track_ids: _,
+            tail_route_sends: _,
+            has_tail_route_sends: _,
+            tail_proven_grouped: _,
             tail_mutable_instruments,
             tail_mixes,
             tail_suffix_starts,
@@ -83,7 +91,9 @@ impl SessionPlayback {
             candidate_admission_open,
             live_restart: _,
         } = self;
-        if !foreign_arrangement.is_empty()
+        // The closed owner has no source effect lease or backing quote yet.
+        if !source_effects.is_empty()
+            || !foreign_arrangement.is_empty()
             || midi_admission.is_some()
             || live_expression.is_some()
             || computer_keyboard.is_some()
@@ -256,6 +266,7 @@ fn chain_storage<'a>(
         {
             return Err(AudioStorageError::UnsupportedGraph);
         }
+        modulation::visit(&entry, prepared, chain, index, l)?;
         if let Some((primary, scratch)) = entry.runtime_pair::<hex_devices::reverb::ReverbRuntime>()
         {
             for (runtime, object_tag, ring_tag) in [

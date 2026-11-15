@@ -17,6 +17,10 @@ widgets = (
     # Main's arrangement map paints cached geometry without text.
     'super::arrangement_map::view(', 'super::arrangement_map::section(',
     'self.section_launch_action(',
+    # Marker-only section feedback is a text-free shared paint component.
+    'crate::section_surface::marker_only_overlay(',
+    'crate::section_surface::insertion_indicator(',
+    'crate::section_surface::replacement_indicator(',
     # Meter insertion action normalizes its caption in the owning component.
     'device_add::button(',
     'device_picker::render(',
@@ -75,7 +79,7 @@ widgets = (
     'hex_widgets::device_rail(', 'hex_widgets::device_grouped_row(',
     'hex_widgets::device_split(',
     # Shared production composition slots are already-bound native view elements.
-    'compact_rail(', 'dense_rail(', 'device_compact_section(', 'plot(', 'range)', 'footer)', 'rail)',
+    'compact_rail(', 'dense_rail(', 'device_compact_section(', 'plot(', 'crate::device_composition::plot(', 'range)', 'footer)', 'rail)',
     'first)', 'second)', 'preview)', 'tabs)', 'rails)',
     'hex_widgets::device_divider(', 'hex_widgets::device_identity_marker(',
     'main)', 'mixer)', 'lane)', 'row)', 'rows)', 'clips)', 'strips)', 'track_labels)',
@@ -334,7 +338,12 @@ for path in (ROOT / 'crates/hex-ui/src').rglob('*.rs'):
             path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/device_panel/vst3_parameters.rs'
             and suffix.startswith('panel.search.clone())')
         )
-        if not suffix.startswith(widgets) and not typed_error and not fixture_canvas and not header_mixer_component and not clip_detail_component and not console_column_component and not reverb_component and not browser_vector_component and not browser_scrollbar_component and not transport_vector_component and not limiter_component and not device_insertion_component and not log_viewer_source and not plugin_parameter_search and not track_meter_component:
+        # This row contains only controls from the shared themed factory.
+        modulator_parameter_control = (
+            path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/device_panel/modulators.rs'
+            and suffix.startswith(('parameter_control_with_presentation(', 'control_row)'))
+        )
+        if not suffix.startswith(widgets) and not typed_error and not fixture_canvas and not header_mixer_component and not clip_detail_component and not console_column_component and not reverb_component and not browser_vector_component and not browser_scrollbar_component and not transport_vector_component and not limiter_component and not device_insertion_component and not log_viewer_source and not plugin_parameter_search and not track_meter_component and not modulator_parameter_control:
             line = source.count('\n', 0, match.start()) + 1
             errors.append(f'{path.relative_to(ROOT)}:{line}: route text through theme::text or add an explicit view component')
     for match in re.finditer(r'\.font_family\(([^)]*)\)', source):

@@ -1,4 +1,4 @@
-//! Opt-in Shift marquee selection through actual graph presses.
+//! Blank-space policies through actual graph presses.
 use super::*;
 use gpui::{AppContext, Render, TestAppContext, VisualTestContext, size};
 use std::{cell::RefCell, rc::Rc};
@@ -285,5 +285,55 @@ fn option_blank_press_keeps_the_creation_drag_stream(cx: &mut TestAppContext) {
     assert!(
         !seen.iter().any(|seen| matches!(seen, Seen::Marquee(..))),
         "option keeps the owner's create-and-shape gesture"
+    );
+}
+
+#[gpui::test]
+fn plain_marquee_mode_reserves_creation_for_the_second_blank_press(cx: &mut TestAppContext) {
+    let mut fixture = fixture(cx, true, &[3]);
+    fixture.graph.update(&mut fixture.visual, |graph, cx| {
+        graph.set_blank_marquee_enabled(true, cx);
+    });
+    let plain = Modifiers::default();
+    let blank = at(&mut fixture, [0.6, 0.6]);
+    fixture.visual.simulate_click(blank, plain);
+    assert_eq!(
+        fixture.seen.take(),
+        vec![Seen::Marquee(ResponseGraphMarqueePhase::Commit, vec![])]
+    );
+
+    drag(&mut fixture, [0.1, 0.9], [0.4, 0.6], plain);
+    let seen = fixture.seen.take();
+    assert_eq!(marquee_commits(&seen), vec![vec![1, 2]]);
+    assert!(seen.iter().all(|event| matches!(event, Seen::Marquee(..))));
+
+    fixture.visual.simulate_click(blank, plain);
+    fixture.seen.take();
+    fixture.visual.simulate_event(MouseDownEvent {
+        position: blank,
+        modifiers: plain,
+        button: MouseButton::Left,
+        click_count: 2,
+        first_mouse: false,
+    });
+    assert_eq!(
+        fixture.seen.take(),
+        vec![Seen::Node(ResponseGraphPhase::Create, 0)]
+    );
+    let end = at(&mut fixture, [0.7, 0.4]);
+    fixture
+        .visual
+        .simulate_mouse_move(end, Some(MouseButton::Left), plain);
+    fixture
+        .visual
+        .simulate_mouse_up(end, MouseButton::Left, plain);
+    assert_eq!(
+        fixture.seen.take(),
+        vec![
+            Seen::Node(ResponseGraphPhase::Begin, 0),
+            Seen::Node(ResponseGraphPhase::Change, 0),
+            Seen::Node(ResponseGraphPhase::Commit, 0),
+            Seen::Node(ResponseGraphPhase::Release, 0),
+        ]
     );
 }

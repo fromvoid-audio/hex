@@ -31,19 +31,25 @@ pub(super) struct PendingKinds {
     audio_events: bool,
     clip_loop: bool,
     bypass: Option<hex_project::DeviceId>,
+    modulation_depth: bool,
     clip_move: bool,
     clip_paint: bool,
     section: bool,
     track_reorder: bool,
     duplicate: bool,
     track_clipboard: bool,
+    device_duplicate: bool,
     midi_drag: bool,
     fade: bool,
+    locator_move: bool,
+    locator_add: Option<u64>,
     clip_gain: bool,
+    clip_activation: bool,
     gain: bool,
     gain_take: bool,
     device_automation: bool,
     time_copy: bool,
+    time_duplicate: bool,
     sample_drop: bool,
     project_rate: bool,
 }
@@ -69,11 +75,15 @@ pub(super) struct Refused {
     pub(super) kinds: PendingKinds,
 }
 
+fn is_initial_observation(request: &Request) -> bool {
+    request.is_read_only_observation() && !matches!(request, Request::ContinuePluginParameters)
+}
+
 impl EditorView {
     pub(super) fn classify_submission(&self, request: &Request) -> Submission {
         Submission {
             kinds: PendingKinds {
-                parameter_observation: matches!(request, Request::QueryPluginParameters(_)),
+                parameter_observation: is_initial_observation(request),
                 trim: self.pending_trim_matches(request),
                 loop_region: self.pending_loop_matches(request),
                 group_copy: self.pending_group_copy_matches(request),
@@ -89,19 +99,25 @@ impl EditorView {
                     }
                     _ => None,
                 },
+                modulation_depth: self.pending_modulation_depth_matches(request),
                 clip_move: self.pending_clip_move_matches(request),
                 clip_paint: self.pending_clip_paint_matches(request),
                 section: self.pending_section_matches(request),
                 track_reorder: self.pending_track_reorder_matches(request),
                 duplicate: self.pending_duplicate_matches(request),
                 track_clipboard: self.pending_track_clipboard_matches(request),
+                device_duplicate: self.device_panel.pending_duplicate_matches(request),
                 midi_drag: self.pending_midi_drag_matches(request),
                 fade: self.pending_fade_matches(request),
+                locator_move: self.locators.matches(request),
+                locator_add: self.locators.queued_add_frame(request),
                 clip_gain: self.clip_gain_matches(request),
+                clip_activation: self.clip_activation_matches(request),
                 gain: self.pending_gain_matches(request),
                 gain_take: self.pending_gain_take_matches(request),
                 device_automation: self.pending_device_automation_matches(request),
                 time_copy: self.pending_time_copy_matches(request),
+                time_duplicate: self.pending_time_duplicate_matches(request),
                 sample_drop: self.pending_sample_drop_matches(request),
                 project_rate: self.project_rate_settings.matches(request),
             },
@@ -148,6 +164,9 @@ impl EditorView {
         if kinds.time_copy {
             self.time_copy_submitted();
         }
+        if kinds.time_duplicate {
+            self.time_duplicate_submitted();
+        }
         if kinds.trim {
             self.trim_request_submitted();
         }
@@ -175,6 +194,9 @@ impl EditorView {
                 device,
             }));
         }
+        if kinds.modulation_depth {
+            self.modulation_depth_submitted();
+        }
         if kinds.clip_move {
             self.clip_move_submitted();
         }
@@ -190,17 +212,31 @@ impl EditorView {
         if kinds.track_clipboard {
             self.track_clipboard_submitted();
         }
+        if kinds.device_duplicate {
+            self.device_panel
+                .duplicate_submitted(self.worker_requests_pending);
+        }
         if kinds.duplicate {
             self.duplicate_submitted();
         }
         if kinds.midi_drag {
             self.midi_drag_submitted();
         }
+        if kinds.locator_move {
+            self.locators.submitted(self.worker_requests_pending);
+        }
+        if let Some(frame) = kinds.locator_add {
+            self.locators
+                .add_submitted(frame, self.worker_requests_pending);
+        }
         if kinds.fade {
             self.fade_submitted();
         }
         if kinds.clip_gain {
             self.clip_gain_submitted();
+        }
+        if kinds.clip_activation {
+            self.clip_activation_submitted();
         }
         if kinds.gain {
             self.gain_submitted();
@@ -231,7 +267,8 @@ impl EditorView {
         }
         self.midi_take_not_submitted(request);
         self.gain_take_not_submitted(request);
-        self.native_automation_request_not_submitted(request);
+        self.native_automation_request_not_submitted(request, refusal == Refusal::Closed);
+        self.automation_take_recovery_not_submitted(request, refusal == Refusal::Closed);
         if refusal == Refusal::Closed {
             visible |= self.cancel_new_preparation();
         }
@@ -246,6 +283,7 @@ impl EditorView {
         if matches!(
             request,
             Request::SaveNew(_)
+                | Request::SaveProjectAs { .. }
                 | Request::SaveCurrent
                 | Request::SaveCurrentWithFormatUpgrade { .. }
         ) {
@@ -257,6 +295,9 @@ impl EditorView {
         }
         if kinds.time_copy {
             self.pending_created_note_selection = None;
+        }
+        if kinds.time_duplicate {
+            visible |= self.refuse_time_duplicate(request);
         }
         if kinds.trim {
             visible |= self.retire_pending_trim();
@@ -279,6 +320,9 @@ impl EditorView {
         if kinds.bypass.is_some() {
             visible |= self.retire_unsubmitted_bypass(request);
         }
+        if kinds.modulation_depth {
+            visible |= self.retire_pending_modulation_depth();
+        }
         if kinds.clip_move {
             visible |= self.retire_pending_clip_move();
         }
@@ -286,13 +330,16 @@ impl EditorView {
             visible |= self.retire_pending_clip_paint();
         }
         if kinds.section {
-            visible |= self.retire_pending_section();
+            visible |= self.refuse_section(request);
         }
         if kinds.track_reorder {
             visible |= self.retire_pending_track_reorder();
         }
         if kinds.track_clipboard {
             visible |= self.pending_track_clipboard.take().is_some();
+        }
+        if kinds.device_duplicate {
+            visible |= self.device_panel.pending_duplicate.take().is_some();
         }
         if kinds.duplicate {
             visible |= self.duplicate_intent.reject();
@@ -303,8 +350,17 @@ impl EditorView {
         if kinds.fade {
             visible |= self.retire_pending_fade();
         }
+        if kinds.locator_move {
+            visible |= self.locators.refuse();
+        }
+        if let Some(frame) = kinds.locator_add {
+            visible |= self.locators.refuse_add(frame);
+        }
         if kinds.clip_gain {
             visible |= self.retire_clip_gain();
+        }
+        if kinds.clip_activation {
+            visible |= self.retire_clip_activation();
         }
         if kinds.gain {
             visible |= self.retire_pending_gain();
@@ -328,3 +384,17 @@ impl EditorView {
 
 #[cfg(all(test, feature = "ui-test-support"))]
 mod tests;
+
+#[cfg(all(test, not(feature = "ui-test-support")))]
+mod observation_tests {
+    use super::*;
+
+    #[test]
+    fn recovery_reads_do_not_count_as_editor_mutations() {
+        assert!(is_initial_observation(
+            &Request::QueryFailedPluginAutomation { request_id: 7 }
+        ));
+        assert!(!is_initial_observation(&Request::ContinuePluginParameters));
+        assert!(!is_initial_observation(&Request::Undo));
+    }
+}

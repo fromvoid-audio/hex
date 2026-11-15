@@ -25,7 +25,8 @@ pub(super) struct ExportLane {
     pub(super) native_hold: NativeSamplerReservationHold,
     /// Control of the most recently dispatched cancellable job. Teardown
     /// cancels it before joining, so an in-flight render stops at its next
-    /// block and removes its temporary file instead of running to completion.
+    /// block instead of running to completion. A staged file is retained for
+    /// inspection if cancellation happens after staging begins.
     dispatched_control: Option<hex_export::ExportControl>,
 }
 impl ExportLane {
@@ -326,10 +327,7 @@ impl ExportLane {
             .checked_mul(2)
             .and_then(|bytes| bytes.checked_add(base))
             .ok_or("export capture allowance overflow")?;
-        let mut registered = vec![DeviceResourceAdmission::prepared_on_control(
-            &snapshot.resources,
-            &snapshot.prepared,
-        )];
+        let mut registered = vec![snapshot.admission()];
         registered.extend(sink.resident_admission());
         if let Some(seeks) = seeks {
             registered.extend(seeks.views());
@@ -481,6 +479,106 @@ mod tests {
     use super::super::sampler_export::tests::{Files, direct_sampler, job};
     use super::*;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn failed_control_notification_preserves_export_failure_and_recovery_path() {
+        let files = Files::new(false);
+        let (_, snapshot) = direct_sampler(&files);
+        let (work_tx, work_rx) = mpsc::sync_channel(1);
+        let (finished_tx, _finished_rx) = mpsc::sync_channel(1);
+        finished_tx.try_send(99).unwrap();
+        let (events_tx, events_rx) = mpsc::sync_channel(1);
+        let hook: ExportTestHook = Arc::new(std::sync::Mutex::new(None));
+        let worker = thread::spawn(move || {
+            run_export_worker(
+                work_rx,
+                events_tx,
+                Arc::new(|_, _, _, _, _, _, _, _| {
+                    Err(export_error_text(
+                        &hex_export::ExportError::StagingRetained {
+                            path: PathBuf::from("/MixedCase/Stage.wav"),
+                            cause: Box::new(hex_export::ExportError::Invalid("render failed")),
+                        },
+                    ))
+                }),
+                finished_tx,
+                Arc::new(AtomicBool::new(false)),
+                hook,
+            )
+        });
+        work_tx
+            .send(ExportWork::Render(job(
+                &snapshot,
+                files.output().to_path_buf(),
+            )))
+            .unwrap();
+        let error = events_rx
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap()
+            .result
+            .unwrap_err();
+        let displayed =
+            hex_storage::text::plain(&hex_storage::text::lowercase_outside_verbatim(&error));
+        assert!(displayed.contains("render failed"), "{displayed}");
+        assert!(displayed.contains("/MixedCase/Stage.wav"), "{displayed}");
+        assert!(displayed.contains("notification failed"), "{displayed}");
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn shutdown_with_unavailable_result_receiver_does_not_block_export_worker() {
+        for disconnected in [false, true] {
+            let files = Files::new(false);
+            let (_, snapshot) = direct_sampler(&files);
+            let (work_tx, work_rx) = mpsc::sync_channel(1);
+            let (finished_tx, finished_rx) = mpsc::sync_channel(1);
+            let (events_tx, events_rx) = mpsc::sync_channel(1);
+            let events_rx = if disconnected {
+                drop(events_rx);
+                None
+            } else {
+                events_tx
+                    .try_send(ExportEvent {
+                        revision: 99,
+                        path: PathBuf::from("sentinel.wav"),
+                        result: Err("existing result".into()),
+                    })
+                    .unwrap();
+                Some(events_rx)
+            };
+            work_tx
+                .send(ExportWork::Render(job(
+                    &snapshot,
+                    files.output().to_path_buf(),
+                )))
+                .unwrap();
+            drop(work_tx);
+            let (stopped, wait) = mpsc::sync_channel(1);
+            let shutdown = Arc::new(AtomicBool::new(disconnected));
+            let worker_shutdown = Arc::clone(&shutdown);
+            let worker = thread::spawn(move || {
+                run_export_worker(
+                    work_rx,
+                    events_tx,
+                    Arc::new(|_, _, _, _, _, _, _, _| Err("export failed".into())),
+                    finished_tx,
+                    worker_shutdown,
+                    Arc::new(std::sync::Mutex::new(None)),
+                );
+                stopped.send(()).unwrap();
+            });
+            finished_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+            shutdown.store(true, Ordering::Release);
+            wait.recv_timeout(Duration::from_secs(1))
+                .expect("shutdown must not wait for the result consumer");
+            worker.join().unwrap();
+            if let Some(events) = events_rx {
+                let original = events.try_recv().unwrap();
+                assert_eq!(original.revision, 99);
+                assert_eq!(original.result.unwrap_err(), "existing result");
+            }
+        }
+    }
 
     #[test]
     fn stale_and_pending_terminals_cannot_release_job_and_missing_terminal_requires_join() {

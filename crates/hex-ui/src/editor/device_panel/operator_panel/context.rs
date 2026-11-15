@@ -1,13 +1,19 @@
-//! View selection guarded by the canonical instrument owner, independent of DSP edits.
+//! View selection guarded by canonical track or retained-source instrument identity.
 use super::super::{DevicePanelOwner, EditorView};
 use super::{OperatorPage, OperatorPanelState};
 use gpui::{App, Bounds, Context, FocusHandle, Pixels, Window};
-use hex_project::{DeviceId, TrackId};
+use hex_project::{DeviceId, SourceId, TrackId};
+
+#[derive(Clone, Copy, Debug)]
+enum InstrumentOwner {
+    Track(TrackId),
+    Source(SourceId),
+}
 
 #[derive(Clone, Copy, Debug)]
 pub(in crate::editor::device_panel) struct Owner {
     generation: u64,
-    track: TrackId,
+    owner: InstrumentOwner,
     device: DeviceId,
 }
 
@@ -17,6 +23,25 @@ impl Owner {
         device: DeviceId,
     ) -> Option<Self> {
         let state = view.state.as_ref()?;
+        if let Some(DevicePanelOwner::Source(source)) = view.device_panel.owner {
+            let definition = state.project.native_source(source)?;
+            let instrument = definition.instrument();
+            if instrument.id() != device
+                || instrument.state().type_id().as_str() != Ok("hex.instrument.operator")
+                || state
+                    .project
+                    .tracks()
+                    .iter()
+                    .any(|track| track.source_id() == Some(source))
+            {
+                return None;
+            }
+            return Some(Self {
+                generation: view.project_generation,
+                owner: InstrumentOwner::Source(source),
+                device,
+            });
+        }
         let track = state.project.tracks().iter().find(|track| {
             track.instrument().is_some_and(|instrument| {
                 instrument.id() == device
@@ -25,7 +50,7 @@ impl Owner {
         })?;
         Some(Self {
             generation: view.project_generation,
-            track: track.id(),
+            owner: InstrumentOwner::Track(track.id()),
             device,
         })
     }
@@ -35,8 +60,20 @@ impl Owner {
             && view
                 .state
                 .as_ref()
-                .and_then(|state| state.project.track(self.track))
-                .and_then(hex_project::Track::instrument)
+                .and_then(|state| match self.owner {
+                    InstrumentOwner::Track(track) => state.project.track(track)?.instrument(),
+                    InstrumentOwner::Source(source) => {
+                        if state
+                            .project
+                            .tracks()
+                            .iter()
+                            .any(|track| track.source_id() == Some(source))
+                        {
+                            return None;
+                        }
+                        Some(state.project.native_source(source)?.instrument())
+                    }
+                })
                 .is_some_and(|instrument| {
                     instrument.id() == self.device
                         && instrument.state().type_id().as_str() == Ok("hex.instrument.operator")
@@ -45,9 +82,45 @@ impl Owner {
 
     pub(super) fn is_current(self, view: &EditorView) -> bool {
         self.is_alive(view)
-            && view.selected_track == Some(self.track)
-            && view.focused_return.is_none()
-            && view.device_panel.owner == Some(DevicePanelOwner::Track(self.track))
+            && match self.owner {
+                InstrumentOwner::Track(track) => {
+                    view.selected_track == Some(track)
+                        && view.focused_return.is_none()
+                        && view.device_panel.owner == Some(DevicePanelOwner::Track(track))
+                }
+                InstrumentOwner::Source(source) => {
+                    view.clip_view_open
+                        && view.device_panel_active
+                        && view.device_panel.owner == Some(DevicePanelOwner::Source(source))
+                        && view.state.as_ref().is_some_and(|state| {
+                            view.device_panel.source_manager.source_view.is_some_and(
+                                |(generation, selected, anchor)| {
+                                    generation == self.generation
+                                        && selected == source
+                                        && anchor
+                                            == super::super::effect_bus::selected_track_owner(
+                                                view, state,
+                                            )
+                                },
+                            )
+                        })
+                }
+            }
+    }
+
+    /// Immutable canonical state for this currently selected instrument owner.
+    pub(in crate::editor::device_panel) fn state(
+        self,
+        view: &EditorView,
+    ) -> Option<&hex_lattice_contract::NativeDeviceState> {
+        if !self.is_current(view) {
+            return None;
+        }
+        let project = &view.state.as_ref()?.project;
+        Some(match self.owner {
+            InstrumentOwner::Track(track) => project.track(track)?.instrument()?.state(),
+            InstrumentOwner::Source(source) => project.native_source(source)?.instrument().state(),
+        })
     }
 }
 
@@ -58,11 +131,7 @@ pub(in crate::editor::device_panel) fn select_oscillator(
     owner: Owner,
     operator: usize,
 ) -> bool {
-    if operator >= 4
-        || !owner.is_current(view)
-        || !super::preview::finalize_controls(view, cx, owner.device)
-        || !super::super::finalize_controls(view, cx)
-    {
+    if operator >= 4 || !owner.is_current(view) || !super::super::finalize_controls(view, cx) {
         return false;
     }
     let current = view
@@ -78,6 +147,7 @@ pub(in crate::editor::device_panel) fn select_oscillator(
         } else {
             OperatorPage::Envelope
         },
+        ..current
     };
     if target != current {
         view.device_panel
@@ -94,10 +164,7 @@ pub(super) fn select_page(
     owner: Owner,
     page: OperatorPage,
 ) -> bool {
-    if !owner.is_current(view)
-        || !super::preview::finalize_controls(view, cx, owner.device)
-        || !super::super::finalize_controls(view, cx)
-    {
+    if !owner.is_current(view) || !super::super::finalize_controls(view, cx) {
         return false;
     }
     let state = view
@@ -105,6 +172,11 @@ pub(super) fn select_page(
         .operator_pages
         .entry(owner.device)
         .or_default();
+    let page = if page == OperatorPage::Oscillator && state.page == OperatorPage::Oscillator {
+        OperatorPage::Envelope
+    } else {
+        page
+    };
     if state.page != page {
         state.page = page;
         cx.notify();
@@ -186,4 +258,23 @@ pub(super) fn section_listener(
             }
         });
     }
+}
+
+/// View-only expansion. Never hide an unfinished invalid native parameter edit.
+pub(in crate::editor::device_panel) fn toggle_options(
+    view: &mut EditorView,
+    cx: &mut Context<EditorView>,
+    owner: Owner,
+) -> bool {
+    if !owner.is_current(view) || !super::super::finalize_controls(view, cx) {
+        return false;
+    }
+    let state = view
+        .device_panel
+        .operator_pages
+        .entry(owner.device)
+        .or_default();
+    state.options_open = !state.options_open;
+    cx.notify();
+    true
 }

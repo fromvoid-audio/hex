@@ -12,8 +12,43 @@ mod metronome;
 pub(crate) mod transport_fade;
 pub use transport_fade::TransportFadeCompletion;
 pub(crate) use transport_fade::fade_frames;
+mod timed_transport;
 mod tuning_audition;
 use metronome::Metronome;
+pub use timed_transport::{
+    MAX_TIMED_TRANSPORT_COMMANDS, TimedTransportCommand, TimedTransportError,
+};
+
+/// Why a bounded current-stream projection could not be completed.
+/// Visitor refusal may leave partial caller-owned observations speculative.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StreamQuantumProjectionError {
+    Unsupported,
+    ClockOverflow,
+    Visitor(Invalid),
+    Projection(Invalid),
+}
+
+impl From<StreamQuantumProjectionError> for Invalid {
+    fn from(error: StreamQuantumProjectionError) -> Self {
+        match error {
+            StreamQuantumProjectionError::Unsupported => {
+                Self("stream demand requires a closed audio runtime")
+            }
+            StreamQuantumProjectionError::ClockOverflow => {
+                Self("stream callback projection overflow")
+            }
+            StreamQuantumProjectionError::Visitor(error)
+            | StreamQuantumProjectionError::Projection(error) => error,
+        }
+    }
+}
+impl std::fmt::Display for StreamQuantumProjectionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&Invalid::from(self.clone()), f)
+    }
+}
+impl std::error::Error for StreamQuantumProjectionError {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlaybackCommand {
@@ -29,6 +64,15 @@ pub enum PlaybackCommand {
     Stop,
     /// Absolute content cursor; loop participation resumes only before its end.
     Seek(u64),
+}
+
+/// Browser Enter freezes the grid and the running output's transport epoch.
+/// The callback may install the authored edit after a seek or stop, but the
+/// older press has no authority to audition in the new transport.
+#[derive(Clone, Debug)]
+pub struct BrowserAuditionTiming {
+    pub grid: hex_project::ResolvedInputGrid,
+    pub transport_epoch: u64,
 }
 
 /// Fixed-size action passed through the native callback command ring.
@@ -115,6 +159,8 @@ pub enum PlaybackActionRejection {
     OutputFailed = 16,
     NoActivePlayback = 17,
     ProjectChanged = 18,
+    AudioSourceChanged = 19,
+    SharedSourceVoiceCapacity = 20,
 }
 
 impl PlaybackActionRejection {
@@ -138,6 +184,8 @@ impl PlaybackActionRejection {
             16 => Some(Self::OutputFailed),
             17 => Some(Self::NoActivePlayback),
             18 => Some(Self::ProjectChanged),
+            19 => Some(Self::AudioSourceChanged),
+            20 => Some(Self::SharedSourceVoiceCapacity),
             _ => None,
         }
     }
@@ -146,6 +194,10 @@ impl PlaybackActionRejection {
         match self {
             Self::NoActivePlayback => "no active playback graph",
             Self::ProjectChanged => "project changed · playback action cancelled",
+            Self::AudioSourceChanged => "audio source changed · playback action cancelled",
+            Self::SharedSourceVoiceCapacity => {
+                "shared source voice capacity is full · release notes or wait for tails, then retry"
+            }
             Self::MetronomeUnavailable => {
                 "metronome requires prepared musical timing and sample storage"
             }
@@ -194,6 +246,9 @@ impl PlaybackActionError {
             Self::Session(crate::SessionPlaybackError::ReleaseBankFull) => {
                 PlaybackActionRejection::ReleaseCapacity
             }
+            Self::Session(crate::SessionPlaybackError::SharedSourceVoiceCapacity) => {
+                PlaybackActionRejection::SharedSourceVoiceCapacity
+            }
             Self::Session(crate::SessionPlaybackError::TempoConversion)
             | Self::Session(crate::SessionPlaybackError::SessionTempoUnavailable(_)) => {
                 PlaybackActionRejection::Timing
@@ -237,6 +292,8 @@ pub enum PlaybackHandoffRejection {
     LatencyLayoutChanged = 10,
     SourceHistoryUnavailable = 11,
     StreamSourceChanged = 12,
+    SharedSourceVoiceCapacity = 13,
+    StreamedPageCapacity = 14,
 }
 
 impl PlaybackHandoffRejection {
@@ -245,6 +302,9 @@ impl PlaybackHandoffRejection {
             PlaybackHandoffError::Session(crate::SessionPlaybackError::LatencyLayoutChanged) => {
                 Self::LatencyLayoutChanged
             }
+            PlaybackHandoffError::Session(
+                crate::SessionPlaybackError::SharedSourceVoiceCapacity,
+            ) => Self::SharedSourceVoiceCapacity,
             PlaybackHandoffError::Session(
                 crate::SessionPlaybackError::SourceHistoryUnavailable
                 | crate::SessionPlaybackError::DetachedReceiverHistoryUnavailable,
@@ -282,6 +342,8 @@ impl PlaybackHandoffRejection {
             10 => Some(Self::LatencyLayoutChanged),
             11 => Some(Self::SourceHistoryUnavailable),
             12 => Some(Self::StreamSourceChanged),
+            13 => Some(Self::SharedSourceVoiceCapacity),
+            14 => Some(Self::StreamedPageCapacity),
             _ => None,
         }
     }
@@ -309,7 +371,11 @@ impl PlaybackHandoffRejection {
             Self::FreshRuntimeCancelled => "playback was cancelled before it became active",
             Self::ConstructorClaimsUnavailable => "constructor playback claims are unavailable",
             Self::StreamedPagesNotReady => "streamed playback page readiness is unavailable",
+            Self::StreamedPageCapacity => "stream cache capacity is full · stop playback or retry",
             Self::StreamSourceChanged => "original media changed · reopen or relink it",
+            Self::SharedSourceVoiceCapacity => {
+                "shared source voice capacity is full · release notes or wait for tails, then retry"
+            }
             Self::LatencyLayoutChanged => {
                 "latency layout could not change live · previous audio continues"
             }
@@ -416,6 +482,28 @@ impl Playback {
             .map(|runtime| runtime.request_live_restart())
             .is_some()
     }
+    /// Arm the resident clip in this exact candidate. Audio remains owned by
+    /// the prepared revision; the gesture carries only track, placement and grid.
+    pub fn arm_browser_audition(
+        &mut self,
+        track: hex_project::TrackId,
+        start: u64,
+        timing: BrowserAuditionTiming,
+    ) {
+        if let Some(runtime) = &mut self.session_runtime {
+            runtime.arm_browser_audition(track, start, timing);
+        }
+    }
+    pub fn bind_browser_audition_transport(&mut self, epoch: u64) {
+        if let Some(runtime) = &mut self.session_runtime {
+            runtime.bind_browser_audition_transport(epoch);
+        }
+    }
+    pub fn browser_audition_retained_bytes_on_control(&self) -> Option<usize> {
+        self.session_runtime
+            .as_ref()
+            .map_or(Some(0), |runtime| runtime.browser_audition_retained_bytes())
+    }
     /// Whether `request_live_restart` applies to this candidate's live handoff.
     pub fn live_restart_requested(&self) -> bool {
         self.session_runtime
@@ -443,8 +531,8 @@ impl Playback {
             _ => Ok(0),
         }
     }
-    /// Conservative resource-factory plus ordinary handoff-evidence allowance. This follows
-    /// the immutable graph's physical control-side destruction, not migrating runtime leases.
+    /// Conservative resource-factory, ordinary handoff-evidence and source-program allowance.
+    /// This follows the immutable graph's physical control-side destruction, not runtime leases.
     pub(crate) fn resource_control_metadata_bytes_on_control(
         &self,
     ) -> Result<usize, crate::AudioStorageError> {
@@ -454,6 +542,11 @@ impl Playback {
                     .as_deref()
                     .map_or(Ok(0), |revision| revision.device_handoff_metadata_bytes())?,
             )
+            .and_then(|bytes| {
+                bytes.checked_add(self.prepared_revision.as_deref().map_or(0, |revision| {
+                    revision.session().instrument_automation_storage_bytes()
+                }))
+            })
             .ok_or(crate::AudioStorageError::Overflow)
     }
     pub fn contains_device_resource_leases(&self) -> bool {
@@ -1361,6 +1454,17 @@ impl Playback {
         }
     }
 
+    /// At an accepted, same-project fresh seek, release old authored gates on
+    /// any exact retained foreign instrument. The destination owns transport
+    /// and all internal DSP history. Call only after the final publication
+    /// decision, while the predecessor still owns its accepted note ledger.
+    pub fn cut_retained_foreign_gates_for_fresh_seek(&mut self, previous: &mut Self) {
+        if let (Some(next), Some(old)) = (&mut self.session_runtime, &mut previous.session_runtime)
+        {
+            next.cut_retained_foreign_gates_from(old);
+        }
+    }
+
     fn reset_metronome(&mut self) {
         if let Some(metronome) = self.metronome.as_mut() {
             metronome.reset();
@@ -1438,6 +1542,13 @@ impl Playback {
             .map_or(self.position, |runtime| runtime.arrangement_frame())
     }
 
+    /// Session-owned Arrangement loop state, unavailable for legacy playback.
+    pub fn arrangement_loop_state(&self) -> Option<crate::session_playback::ArrangementLoopState> {
+        self.session_runtime
+            .as_ref()
+            .map(|runtime| runtime.arrangement_loop_state())
+    }
+
     /// Frames by which Main output trails the scheduled content frame: the
     /// graph's pre-Main compensation plus declared Main processor latency.
     pub fn main_output_latency_frames(&self) -> u32 {
@@ -1453,16 +1564,35 @@ impl Playback {
             })
     }
 
-    /// Callback-owned boundary for a prepared section seek. The caller keeps
+    /// Arm a fresh, playing Arrangement candidate to pause at the exact
+    /// half-open section end. The canonical loop must already be disabled.
+    pub fn arm_section_once(&mut self, region: hex_project::LoopRegion) -> Result<(), Invalid> {
+        if region.enabled()
+            || self.position() != region.start()
+            || !self.playing()
+            || self.automation_capture_loop().is_some()
+            || self.session_runtime.as_ref().is_none_or(|runtime| {
+                runtime
+                    .admits_transport(&crate::SessionPlaybackCommand::Pause)
+                    .is_err()
+            })
+        {
+            return Err(Invalid("invalid one-shot section transport"));
+        }
+        self.transport_fade.section_end = Some(region.end());
+        Ok(())
+    }
+
+    /// Callback-owned boundary for a prepared quantized seek. The caller keeps
     /// the current graph rendering until this frame, then installs the fresh
     /// preroll candidate using ordinary seek discontinuity semantics.
-    pub fn section_launch_frame(
+    pub fn quantized_seek_frame(
         &self,
         quantization: crate::LaunchQuantization,
     ) -> Result<u64, Invalid> {
         self.session_runtime
             .as_ref()
-            .ok_or(Invalid("section launch requires prepared session timing"))?
+            .ok_or(Invalid("quantized seek requires prepared session timing"))?
             .scheduled_at(quantization)
             .map(|(frame, _)| frame)
             .map_err(|error| Invalid(error.diagnostic_message()))
@@ -1543,8 +1673,8 @@ impl Playback {
     }
 
     /// Apply with the transport declick described in `transport_fade`: a
-    /// Pause/Stop or transport Seek while playing is admitted now and applied
-    /// after its fade, a Seek then ramping in at its target; Play from a
+    /// Pause/Stop, Seek or PlayFrom while playing is admitted now and applied
+    /// after its fade, a Seek or PlayFrom then ramping in at its target; Play from a
     /// paused, nonzero position ramps in. Static refusals are
     /// reported here. A deferred action that fails at its fade end falls back
     /// to Stop and is reported once by `take_transport_fade_failure`.
@@ -1597,6 +1727,14 @@ impl Playback {
     }
 
     fn admit_declicked_stop(&self, action: PlaybackAction) -> Result<(), PlaybackActionError> {
+        if let PlaybackAction::Transport(PlaybackCommand::PlayFrom(frame)) = action {
+            return match self.session_runtime.as_deref() {
+                Some(runtime) => runtime
+                    .admits_play_from(frame)
+                    .map_err(PlaybackActionError::Session),
+                None => Ok(()),
+            };
+        }
         let command = match action {
             PlaybackAction::Transport(PlaybackCommand::Pause) => {
                 crate::SessionPlaybackCommand::Pause
@@ -1672,6 +1810,9 @@ impl Playback {
                 )
             )
         {
+            if !transport_fade::pauses(action) {
+                self.transport_fade.section_end = None;
+            }
             self.reset_metronome();
         }
         result
@@ -1693,6 +1834,7 @@ impl Playback {
             )
             .is_ok()
         {
+            self.transport_fade.section_end = None;
             self.reset_metronome();
         }
     }
@@ -1828,7 +1970,17 @@ impl Playback {
         self.performance_clock_exhausted = previous.performance_clock_exhausted();
         self.playing = previous.playing();
         self.inherit_metronome(previous);
+        self.transport_fade.section_end = self.inherited_section_end(previous);
         Ok(())
+    }
+
+    fn inherited_section_end(&self, previous: &Self) -> Option<u64> {
+        previous
+            .transport_fade
+            .section_end
+            .filter(|_| self.automation_capture_loop().is_none())
+            .and_then(|end| remapped_linear_position(&self.project, &previous.project, end).ok())
+            .filter(|&end| end > self.position())
     }
 
     fn inherit_metronome(&mut self, previous: &Self) {
@@ -1883,6 +2035,7 @@ impl Playback {
         next.inherit_candidate_groups(old, groups)
             .map_err(PlaybackHandoffError::Session)?;
         self.inherit_metronome(previous);
+        self.transport_fade.section_end = self.inherited_section_end(previous);
         Ok(())
     }
 
@@ -1892,7 +2045,7 @@ impl Playback {
         &mut self,
         previous: &mut Self,
     ) -> Result<(), PlaybackHandoffError> {
-        self.try_inherit_runtime_impl(previous, false, false)
+        self.try_inherit_runtime_impl(previous, false, false, None)
     }
 
     /// Ordinary publication may rebind a fresh monitor to the same physical input client in
@@ -1909,7 +2062,29 @@ impl Playback {
             previous,
             generation.is_some() && generation == previous_generation,
             false,
+            None,
         )
+    }
+
+    /// Borrow a control-prepared tempo anchor through the ordinary Playback
+    /// lifecycle. Both graphs must have the same known control generation.
+    /// The publication owner must validate the output, command,
+    /// route, fault and cancellation fence and reclaim the plan on control.
+    pub fn try_inherit_runtime_with_tempo_anchor(
+        &mut self,
+        previous: &mut Self,
+        generation: Option<u64>,
+        previous_generation: Option<u64>,
+        anchor: &crate::session_playback::PreparedTempoAnchor,
+    ) -> Result<(), PlaybackHandoffError> {
+        if generation.is_none()
+            || generation != previous_generation
+            || self.session_runtime.is_none()
+            || previous.session_runtime.is_none()
+        {
+            return Err(PlaybackHandoffError::RuntimeFenceChanged);
+        }
+        self.try_inherit_runtime_impl(previous, true, false, Some(anchor))
     }
 
     /// Reset an explicitly prepared bounce successor at a verified live
@@ -1928,7 +2103,7 @@ impl Playback {
         {
             return Err(PlaybackHandoffError::RuntimeFenceChanged);
         }
-        self.try_inherit_runtime_impl(previous, true, true)
+        self.try_inherit_runtime_impl(previous, true, true, None)
     }
 
     fn try_inherit_runtime_impl(
@@ -1936,6 +2111,7 @@ impl Playback {
         previous: &mut Self,
         same_control_context: bool,
         fenced_restart: bool,
+        tempo_anchor: Option<&crate::session_playback::PreparedTempoAnchor>,
     ) -> Result<(), PlaybackHandoffError> {
         if previous
             .session_runtime
@@ -2014,6 +2190,8 @@ impl Playback {
         match (&mut self.session_runtime, &mut previous.session_runtime) {
             (Some(next), Some(old)) => (if fenced_restart {
                 next.try_inherit_state_fenced_restart_from(old)
+            } else if let Some(anchor) = tempo_anchor {
+                next.try_inherit_state_with_tempo_anchor(old, anchor)
             } else {
                 next.try_inherit_state_live_from(old)
             })
@@ -2102,6 +2280,12 @@ impl Playback {
                 self.playing = previous.playing;
             }
         }
+        if same_control_context
+            && !fenced_restart
+            && let (Some(next), Some(old)) = (&mut self.session_runtime, &previous.session_runtime)
+        {
+            next.inherit_browser_audition(old);
+        }
         self.inherit_metronome(previous);
         if let (Some(continued), Some(next), Some(old)) = (
             continued_audition,
@@ -2132,7 +2316,9 @@ impl Playback {
             previous.cancel_computer_keyboard();
         }
         // A fade in progress continues on the inheriting graph's transport.
+        let section_end = self.inherited_section_end(previous);
         *self.transport_fade = std::mem::take(&mut *previous.transport_fade);
+        self.transport_fade.section_end = section_end;
         Ok(())
     }
 
@@ -2435,31 +2621,57 @@ impl Playback {
             .ok_or(Invalid("ordinary session runtime unavailable"))?
             .visit_ordinary_stream_chunk(maximum_frames, playing, visit)
     }
-    pub(crate) fn preview_stream_handoff(
+    pub(crate) fn visit_current_stream_quantum(
         &mut self,
-        previous: &mut Self,
         maximum_frames: usize,
         playing: Option<bool>,
+        ordinary: bool,
         visit: &mut impl FnMut(crate::StreamResourceExtent) -> Result<(), Invalid>,
-    ) -> Result<crate::StreamChunkWindow, PlaybackHandoffError> {
-        let invalid = || PlaybackHandoffError::Session(crate::SessionPlaybackError::InvalidCommand);
-        let next = self.session_runtime.as_mut().ok_or_else(invalid)?;
-        let old = previous.session_runtime.as_mut().ok_or_else(invalid)?;
-        next.preview_stream_handoff(old, maximum_frames, playing, visit)
-            .map_err(PlaybackHandoffError::Session)
+    ) -> Result<usize, Invalid> {
+        self.session_runtime
+            .as_mut()
+            .ok_or(Invalid("session runtime unavailable"))?
+            .visit_current_stream_quantum(maximum_frames, playing, ordinary, visit)
     }
-    pub(crate) fn preview_ordinary_stream_handoff(
+    pub(crate) fn visit_current_stream_quantum_at(
+        &mut self,
+        start_offset: u64,
+        maximum_frames: usize,
+        playing: Option<bool>,
+        ordinary: bool,
+        visit: &mut impl FnMut(crate::StreamResourceExtent) -> Result<(), Invalid>,
+    ) -> Result<usize, crate::playback::StreamQuantumProjectionError> {
+        self.session_runtime
+            .as_mut()
+            .ok_or(crate::playback::StreamQuantumProjectionError::Projection(
+                Invalid("session runtime unavailable"),
+            ))?
+            .visit_current_stream_quantum_at(start_offset, maximum_frames, playing, ordinary, visit)
+    }
+    pub(crate) fn preview_stream_handoff_with_report(
         &mut self,
         previous: &mut Self,
         maximum_frames: usize,
         playing: Option<bool>,
         visit: &mut impl FnMut(crate::StreamResourceExtent) -> Result<(), Invalid>,
-    ) -> Result<crate::StreamChunkWindow, PlaybackHandoffError> {
+        ordinary: bool,
+        fenced_restart: bool,
+    ) -> Result<(crate::StreamChunkWindow, crate::SessionHandoffReport), PlaybackHandoffError> {
+        if fenced_restart && !self.live_restart_requested() {
+            return Err(PlaybackHandoffError::RuntimeFenceChanged);
+        }
         let invalid = || PlaybackHandoffError::Session(crate::SessionPlaybackError::InvalidCommand);
         let next = self.session_runtime.as_mut().ok_or_else(invalid)?;
         let old = previous.session_runtime.as_mut().ok_or_else(invalid)?;
-        next.preview_stream_handoff_with_scope(old, maximum_frames, playing, visit, true)
-            .map_err(PlaybackHandoffError::Session)
+        next.preview_stream_handoff_with_policy_and_report(
+            old,
+            maximum_frames,
+            playing,
+            visit,
+            ordinary,
+            fenced_restart,
+        )
+        .map_err(PlaybackHandoffError::Session)
     }
     /// Render through the same Arrangement loop segmentation or mixed Session
     /// route kernel while borrowing streamed pages from the caller.
@@ -2603,13 +2815,13 @@ impl Playback {
         Ok(())
     }
 
-    /// Render one callback as parts split only at a pending fade end. Each
-    /// part is followed by its declick gain and then monitor-only metronome
+    /// Render one callback as parts split at a pending fade or section end.
+    /// Each part is followed by its declick gain and then monitor-only metronome
     /// and tuning audio. A refused first part keeps the renderer's own atomic
     /// refusal (the output is left as the renderer left it). A part refused
     /// after an earlier part rendered silences the whole callback; rendered
     /// parts keep their committed clock, as consecutive callbacks would.
-    /// Without a pending fade this is exactly one part.
+    /// Without either boundary this is exactly one part.
     fn render_declicked(
         &mut self,
         output: &mut [Frame],
@@ -2618,9 +2830,17 @@ impl Playback {
         let frames = transport_fade::fade_frames(self.sample_rate());
         let mut offset = 0;
         loop {
-            let end = offset + self.transport_fade.part_len(output.len() - offset, frames);
             let start = self.position();
             let playing = self.playing();
+            let part_len = self.transport_fade.part_len(output.len() - offset, frames);
+            let remaining =
+                self.transport_fade
+                    .section_end
+                    .filter(|_| playing)
+                    .map(|section_end| {
+                        usize::try_from(section_end.saturating_sub(start)).unwrap_or(usize::MAX)
+                    });
+            let end = offset + remaining.map_or(part_len, |left| part_len.min(left));
             let chunk = &mut output[offset..end];
             if let Err(error) = part(self, chunk, offset) {
                 if offset > 0 {
@@ -2633,6 +2853,15 @@ impl Playback {
             self.mix_tuning_audition(chunk);
             if completed {
                 self.complete_transport_fade();
+            }
+            if self
+                .transport_fade
+                .section_end
+                .is_some_and(|limit| self.playing() && self.position() >= limit)
+            {
+                self.transport_fade.section_end = None;
+                self.apply_now(PlaybackAction::Transport(PlaybackCommand::Pause))
+                    .map_err(|_| Invalid("could not pause at the section end"))?;
             }
             offset = end;
             if offset >= output.len() {
@@ -2771,9 +3000,10 @@ fn with_part_offset<'a, 'observer, R>(
 ) -> R {
     match project {
         Some(tap) => {
-            tap.set_part_offset(offset);
+            let previous = tap.part_offset();
+            tap.replace_part_offset(previous.saturating_add(offset));
             let result = render(Some(&mut *tap));
-            tap.set_part_offset(0);
+            tap.replace_part_offset(previous);
             result
         }
         None => render(None),
@@ -2788,6 +3018,9 @@ struct ShiftedForeign<'a> {
 }
 
 impl hex_lattice::ForeignProcessors for ShiftedForeign<'_> {
+    fn returns_post_trim(&self, node: hex_lattice::ForeignProcessorNode<'_>) -> bool {
+        self.inner.returns_post_trim(node)
+    }
     fn process_segment(
         &mut self,
         node: hex_lattice::ForeignProcessorNode<'_>,
@@ -2829,6 +3062,22 @@ impl hex_lattice::ForeignProcessors for ShiftedForeign<'_> {
             notes,
             clock,
         )
+    }
+    fn process_segment_with_modulation(
+        &mut self,
+        node: hex_lattice::ForeignProcessorNode<'_>,
+        frame_offset: usize,
+        frames: &mut [Frame],
+        lane: hex_lattice::ForeignModulationSamples<'_>,
+        clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
+    ) -> Result<(), hex_lattice_contract::DeviceContractError> {
+        let Some(offset) = self.offset.checked_add(frame_offset) else {
+            self.inner.reject_callback();
+            frames.fill([0.0; 2]);
+            return Err(hex_lattice_contract::DeviceContractError::ForeignProcessingFailed);
+        };
+        self.inner
+            .process_segment_with_modulation(node, offset, frames, lane, clock)
     }
     fn committed_tail_is_drained(&self, node: hex_lattice::ForeignProcessorNode<'_>) -> bool {
         self.inner.committed_tail_is_drained(node)

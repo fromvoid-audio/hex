@@ -1,5 +1,4 @@
 use super::*;
-use operator_panel::preview::{Field, Switch};
 
 pub(super) fn operator_fixture() -> (Service, Arc<ViewState>, TrackId, DeviceId) {
     let (service, _, track, _, _, _) = actor_utility_fixture();
@@ -285,6 +284,7 @@ fn operator_section_navigation_keeps_rendered_bounds_and_owner_fields(cx: &mut T
     visual.update(|window, _| window.activate_window());
     visual.simulate_resize(size(px(1440.0), px(540.0)));
     visual.run_until_parked();
+    open_operator_options(&mut visual, device);
     let envelope = tab_bounds(&mut visual, device, "envelope", "amp env");
     let oscillator = tab_bounds(&mut visual, device, "oscillator", "osc");
     let rail = visual
@@ -310,7 +310,13 @@ fn operator_section_navigation_keeps_rendered_bounds_and_owner_fields(cx: &mut T
         tab_bounds(&mut visual, device, "oscillator", "osc"),
         oscillator
     );
-    assert_eq!(lfo_link_bounds(&mut visual, device), lfo);
+    assert_eq!(
+        lfo_link_bounds(&mut visual, device),
+        Bounds {
+            origin: lfo.origin + point(px(120.0), px(0.0)),
+            ..lfo
+        }
+    );
     for parameter in 82..=92 {
         assert!(
             visual
@@ -416,7 +422,7 @@ fn operator_section_navigation_keeps_rendered_bounds_and_owner_fields(cx: &mut T
         assert!(
             visual
                 .debug_bounds(selector(format!(
-                    "device-{}-parameter-{}-slider",
+                    "device-{}-parameter-{}-value",
                     device.value(),
                     63 + operator * 3
                 )))
@@ -436,25 +442,6 @@ fn operator_section_navigation_keeps_rendered_bounds_and_owner_fields(cx: &mut T
             view.worker_requests_pending == 0 && view.pending_requests.is_empty()
         });
     }
-    {
-        let switch = Switch::Pitch.index();
-        let bounds = visual
-            .debug_bounds(selector(format!(
-                "operator-preview-{}-toggle-{switch}",
-                device.value()
-            )))
-            .unwrap();
-        visual.simulate_click(bounds.center(), Modifiers::default());
-        visual.run_until_parked();
-        assert_eq!(
-            tab_bounds(&mut visual, device, "envelope", "amp env"),
-            envelope
-        );
-        assert_eq!(
-            tab_bounds(&mut visual, device, "oscillator", "osc"),
-            oscillator
-        );
-    }
     assert!(
         visual
             .debug_bounds(selector(format!(
@@ -463,16 +450,20 @@ fn operator_section_navigation_keeps_rendered_bounds_and_owner_fields(cx: &mut T
             )))
             .is_none()
     );
-    // Click the Time tile rather than the icon, then activate the rail by keyboard.
-    let time = visual
+    // Select the optional global context explicitly through its background.
+    let global = visual
         .debug_bounds(selector(format!(
-            "operator-preview-{}-{}",
-            device.value(),
-            Field::Time as usize
+            "operator-preview-row-{}-global",
+            device.value()
         )))
         .unwrap();
+    let routing = visual
+        .debug_bounds(Box::leak(
+            format!("operator-preview-{}-route-link", device.value()).into_boxed_str(),
+        ))
+        .unwrap();
     visual.simulate_click(
-        point(time.center().x, time.origin.y + px(3.0)),
+        point(routing.right() + px(2.0), global.center().y),
         Modifiers::default(),
     );
     visual.run_until_parked();
@@ -489,7 +480,10 @@ fn operator_section_navigation_keeps_rendered_bounds_and_owner_fields(cx: &mut T
                 device.value()
             )))
             .unwrap(),
-        rail
+        Bounds {
+            origin: rail.origin + point(px(120.0), px(0.0)),
+            ..rail
+        }
     );
     assert!(
         visual
@@ -552,8 +546,22 @@ fn operator_section_navigation_keeps_rendered_bounds_and_owner_fields(cx: &mut T
     editor.read_with(cx, |view, _| {
         assert_eq!(
             view.device_panel.operator_pages[&device].page,
-            operator_panel::OperatorPage::Routing,
-            "focused routing activation takes precedence over session launch"
+            operator_panel::OperatorPage::Envelope,
+            "focused routing picker preserves envelope context"
+        );
+    });
+    visual.simulate_keystrokes("escape");
+    visual.simulate_keystrokes("alt-enter");
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert_eq!(
+            view.device_panel.operator_pages[&device].page,
+            operator_panel::OperatorPage::Routing
+        );
+        assert!(
+            view.device_panel.operator_previews[&device]
+                .routing_popup
+                .is_none()
         );
     });
     visual.simulate_click(shell.center(), Modifiers::default());
@@ -572,17 +580,19 @@ fn operator_section_navigation_keeps_rendered_bounds_and_owner_fields(cx: &mut T
             view.device_panel.operator_pages[&device].page,
             page_before_space
         );
-        assert!(matches!(
-            view.last_transport_command,
-            Some(hex_engine::PlaybackCommand::PlayFrom(_))
-        ));
+        assert!(view.last_transport_command.is_none());
+        assert!(
+            view.device_panel.operator_previews[&device]
+                .routing_popup
+                .is_some()
+        );
     });
-    visual.simulate_keystrokes("enter");
+    visual.simulate_keystrokes("escape");
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
         assert_eq!(
             view.device_panel.operator_pages[&device].page,
-            operator_panel::OperatorPage::Routing
+            page_before_space
         );
         assert_eq!(
             view.state
@@ -596,6 +606,229 @@ fn operator_section_navigation_keeps_rendered_bounds_and_owner_fields(cx: &mut T
                 .state(),
             &original,
             "navigation and selection preserve canonical sound state"
+        );
+    });
+}
+
+#[gpui::test]
+fn retained_operator_preview_survives_unassigned_repaints_and_retires_on_replacement(
+    cx: &mut TestAppContext,
+) {
+    let (service, _, track, bound_device) = operator_fixture();
+    let operator = hex_engine::default_native_device_state_for_class(
+        NativeDeviceClass::Instrument,
+        hex_lattice_contract::DeviceTypeId::from_static("hex.instrument.operator"),
+    )
+    .unwrap();
+    service
+        .submit(Request::Edit(Command::CreateNativeSource {
+            name: "unassigned operator".into(),
+            devices: vec![operator.clone()],
+            instrument_index: 0,
+        }))
+        .unwrap();
+    let created = receive_service_event(&service);
+    let Some(Created::NativeSource(source)) = created.created else {
+        panic!("source")
+    };
+    let device = created
+        .state
+        .project
+        .native_source(source)
+        .unwrap()
+        .instrument()
+        .id();
+    let mut retained = Vec::new();
+    for name in ["delete operator", "replacement project"] {
+        service
+            .submit(Request::Edit(Command::CreateNativeSource {
+                name: name.into(),
+                devices: vec![operator.clone()],
+                instrument_index: 0,
+            }))
+            .unwrap();
+        let event = receive_service_event(&service);
+        let Some(Created::NativeSource(id)) = event.created else {
+            panic!("source")
+        };
+        retained.push((
+            id,
+            event
+                .state
+                .project
+                .native_source(id)
+                .unwrap()
+                .instrument()
+                .id(),
+        ));
+    }
+    service
+        .submit(Request::Edit(Command::AddMidiTrack {
+            name: "contributor".into(),
+        }))
+        .unwrap();
+    let added = receive_service_event(&service);
+    let Some(Created::Track(contributor)) = added.created else {
+        panic!("contributor")
+    };
+    let (handle, editor) = actor_editor_window(cx, service, added.state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(1440.0), px(700.0)));
+    visual.run_until_parked();
+    editor.update(&mut visual, |view, cx| {
+        assert!(
+            view.device_panel
+                .operator_previews
+                .contains_key(&bound_device)
+        );
+        view.device_panel
+            .operator_previews
+            .entry(device)
+            .or_default()
+            .routing_focus = Some(cx.focus_handle());
+        for &(_, retained_device) in &retained {
+            view.device_panel
+                .operator_previews
+                .entry(retained_device)
+                .or_default();
+        }
+        cx.notify();
+    });
+    for _ in 0..3 {
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, _| {
+            assert!(
+                view.device_panel.operator_previews.contains_key(&device),
+                "unassigned preview was retired"
+            );
+            assert!(
+                view.device_panel.operator_previews[&device]
+                    .routing_focus
+                    .is_some()
+            );
+            assert!(
+                view.device_panel
+                    .operator_previews
+                    .contains_key(&bound_device)
+            );
+            for &(_, retained_device) in &retained {
+                assert!(
+                    view.device_panel
+                        .operator_previews
+                        .contains_key(&retained_device)
+                );
+            }
+        });
+        editor.update(&mut visual, |_, cx| cx.notify());
+    }
+    editor.update(&mut visual, |view, _| {
+        assert!(view.enqueue(Request::Edit(Command::BindTrackSource {
+            track: contributor,
+            source: Some(source)
+        })))
+    });
+    pump_until(&editor, &mut visual, |view| {
+        view.state
+            .as_ref()
+            .unwrap()
+            .project
+            .track(contributor)
+            .unwrap()
+            .source_id()
+            == Some(source)
+    });
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        assert!(view.device_panel.operator_previews.contains_key(&device))
+    });
+    editor.update(&mut visual, |view, _| {
+        assert!(view.enqueue(Request::Edit(Command::ReplaceTrackInstrument {
+            track: contributor,
+            replacing: device,
+            state: operator
+        })))
+    });
+    pump_until(&editor, &mut visual, |view| {
+        view.state
+            .as_ref()
+            .unwrap()
+            .project
+            .native_source(source)
+            .unwrap()
+            .instrument()
+            .id()
+            != device
+    });
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        assert!(!view.device_panel.operator_previews.contains_key(&device));
+        assert!(
+            view.device_panel
+                .operator_previews
+                .contains_key(&bound_device)
+        );
+        for &(_, retained_device) in &retained {
+            assert!(
+                view.device_panel
+                    .operator_previews
+                    .contains_key(&retained_device)
+            );
+        }
+    });
+    let (deleted_source, deleted_device) = retained[0];
+    editor.update(&mut visual, |view, _| {
+        assert!(view.enqueue(Request::Edit(Command::RemoveNativeSource(deleted_source))))
+    });
+    pump_until(&editor, &mut visual, |view| {
+        view.state
+            .as_ref()
+            .unwrap()
+            .project
+            .native_source(deleted_source)
+            .is_none()
+    });
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        assert!(
+            !view
+                .device_panel
+                .operator_previews
+                .contains_key(&deleted_device)
+        );
+        assert!(
+            view.device_panel
+                .operator_previews
+                .contains_key(&retained[1].1)
+        );
+        assert!(
+            view.device_panel
+                .operator_previews
+                .contains_key(&bound_device)
+        );
+    });
+    let generation = editor.read_with(&visual, |view, _| view.project_generation);
+    editor.update(&mut visual, |view, _| {
+        assert!(view.enqueue(Request::NewWithAudioMode {
+            mode: hex_session::DocumentAudioMode::Resident,
+            reservation: None,
+        }))
+    });
+    pump_until(&editor, &mut visual, |view| {
+        view.project_generation != generation
+    });
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        assert!(
+            !view
+                .device_panel
+                .operator_previews
+                .contains_key(&retained[1].1)
+        );
+        assert!(
+            !view
+                .device_panel
+                .operator_previews
+                .contains_key(&bound_device)
         );
     });
 }

@@ -47,7 +47,32 @@ impl crate::SessionPlayback {
             identity: target.identity(),
             operation,
         };
+        if target.device_class() == crate::NativeDeviceClass::Instrument {
+            let program = self
+                .revision
+                .session()
+                .armed_instrument_automation(target)
+                .ok_or(Invalid("native instrument input is not prepared"))?;
+            if program.input_target() != Some(operation.target())
+                || program
+                    .block_with_input(None, 0, operation.value())
+                    .is_err()
+            {
+                return Err(Invalid("native instrument input is invalid or unsupported"));
+            }
+            let state = self
+                .native_parameter_state
+                .as_deref_mut()
+                .ok_or(Invalid("native parameter input state is not prepared"))?;
+            state.input = Some(input);
+            state.application = None;
+            return Ok(());
+        }
         let chain = match input.identity.owner() {
+            hex_lattice::ProcessorChainOwner::Source(source) => target
+                .source_effect_receiver()
+                .and_then(|receiver| self.source_effect_receiver_index(receiver))
+                .and_then(|index| self.source_effects.chain_for(index, source)),
             hex_lattice::ProcessorChainOwner::Main => Some(&self.main_chain),
             hex_lattice::ProcessorChainOwner::Track(id) => self
                 .revision
@@ -84,6 +109,19 @@ impl crate::SessionPlayback {
         Ok(())
     }
 
+    fn source_effect_receiver_index(&self, receiver: std::num::NonZeroU64) -> Option<usize> {
+        self.revision
+            .arrangement()
+            .tracks()
+            .iter()
+            .position(|track| {
+                track
+                    .canonical_track_id()
+                    .is_some_and(|id| id.value() == receiver.get())
+                    && track.receives_source_audio()
+            })
+    }
+
     /// An interrupted source/transport discards the pending input and any
     /// admitted transient output trajectory before the next render.
     pub fn invalidate_native_parameter_input(&mut self) {
@@ -94,6 +132,10 @@ impl crate::SessionPlayback {
         {
             let identity = target.identity();
             let chain = match identity.owner() {
+                ProcessorChainOwner::Source(source) => target
+                    .source_effect_receiver()
+                    .and_then(|receiver| self.source_effect_receiver_index(receiver))
+                    .and_then(|index| self.source_effects.chain_for_mut(index, source)),
                 ProcessorChainOwner::Main => Some(&mut self.main_chain),
                 ProcessorChainOwner::Track(id) => self
                     .revision

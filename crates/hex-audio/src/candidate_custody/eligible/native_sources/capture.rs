@@ -174,26 +174,72 @@ impl Custody {
             "native parameter point was not admitted",
         )
     }
+    pub(in crate::candidate_custody) fn arm_editor_pcm(
+        &self,
+        binding: Binding,
+        scope: std::num::NonZeroU64,
+        touch: Option<crate::foreign_parameter_delivery::editor::TouchAdmission<'_>>,
+    ) -> Result<(hex_plugin_host::transport::EditorScope, u16), &'static str> {
+        self.with_live_capture(binding, |owner| match owner {
+            Owner::Effect(owner) => owner.arm_editor_pcm(scope, touch),
+            Owner::Loaned(owner) => owner.arm_editor_pcm(scope, touch),
+            _ => Err("native editor source differs"),
+        })
+    }
+
     pub(in crate::candidate_custody) fn native_parameter_edits(
         &self,
         binding: Binding,
     ) -> Result<Option<hex_plugin_host::protocol::ParameterEdits>, &'static str> {
-        self.with_live_capture(binding, |owner| match owner {
-            Owner::Effect(owner) => owner.poll_parameter_edits(),
-            Owner::Loaned(owner) => owner.poll_parameter_edits(),
-            _ => Err("native edit owner differs"),
-        })
+        self.parameter_edits_admission(binding, |_| {})
+    }
+    fn parameter_edits_admission(
+        &self,
+        binding: Binding,
+        after_read: impl FnOnce(&Option<hex_plugin_host::protocol::ParameterEdits>),
+    ) -> Result<Option<hex_plugin_host::protocol::ParameterEdits>, &'static str> {
+        self.admit_live_operation(
+            binding,
+            |owner| {
+                let result = match owner {
+                    Owner::Effect(owner) => owner.poll_parameter_edits(),
+                    Owner::Loaned(owner) => owner.poll_parameter_edits(),
+                    _ => Err("native edit owner differs"),
+                }?;
+                after_read(&result);
+                Ok(result)
+            },
+            || {},
+            "native edit read was not admitted",
+        )
     }
     pub(in crate::candidate_custody) fn native_recovery_edits(
         &self,
         binding: Binding,
         flush_idle: bool,
     ) -> Result<Option<hex_plugin_host::protocol::RecoveryEdits>, &'static str> {
-        self.with_live_capture(binding, |owner| match owner {
-            Owner::Effect(owner) => owner.poll_recovery_edits(flush_idle),
-            Owner::Loaned(owner) => owner.poll_recovery_edits(flush_idle),
-            _ => Err("native edit owner differs"),
-        })
+        self.recovery_edits_admission(binding, flush_idle, |_| {})
+    }
+    fn recovery_edits_admission(
+        &self,
+        binding: Binding,
+        flush_idle: bool,
+        after_read: impl FnOnce(&Option<hex_plugin_host::protocol::RecoveryEdits>),
+    ) -> Result<Option<hex_plugin_host::protocol::RecoveryEdits>, &'static str> {
+        self.admit_live_operation(
+            binding,
+            |owner| {
+                let result = match owner {
+                    Owner::Effect(owner) => owner.poll_recovery_edits(flush_idle),
+                    Owner::Loaned(owner) => owner.poll_recovery_edits(flush_idle),
+                    _ => Err("native edit owner differs"),
+                }?;
+                after_read(&result);
+                Ok(result)
+            },
+            || {},
+            "native recovery edit read was not admitted",
+        )
     }
     pub(in crate::candidate_custody) fn native_parameter_values(
         &self,
@@ -505,19 +551,28 @@ impl CandidateRoot {
         binding: Binding,
     ) -> Result<Option<hex_plugin_host::protocol::ParameterEdits>, &'static str> {
         self.require_native_source_control_open()?;
-        let result = self.0.eligible.native_parameter_edits(binding)?;
-        self.require_native_source_control_open()?;
-        Ok(result)
+        // Admission owns the pending read or consumed receipt even if close races.
+        self.0.eligible.native_parameter_edits(binding)
     }
+    pub(crate) fn arm_native_editor_pcm(
+        &self,
+        binding: Binding,
+        scope: std::num::NonZeroU64,
+        touch: Option<crate::foreign_parameter_delivery::editor::TouchAdmission<'_>>,
+    ) -> Result<(hex_plugin_host::transport::EditorScope, u16), &'static str> {
+        self.require_native_source_control_open()?;
+        let armed = self.0.eligible.arm_editor_pcm(binding, scope, touch)?;
+        self.require_native_source_control_open()?;
+        Ok(armed)
+    }
+
     pub(crate) fn native_source_recovery_edits(
         &self,
         binding: Binding,
         flush_idle: bool,
     ) -> Result<Option<hex_plugin_host::protocol::RecoveryEdits>, &'static str> {
         self.require_native_source_control_open()?;
-        let result = self.0.eligible.native_recovery_edits(binding, flush_idle)?;
-        self.require_native_source_control_open()?;
-        Ok(result)
+        self.0.eligible.native_recovery_edits(binding, flush_idle)
     }
     pub(crate) fn native_source_parameter_values(
         &self,

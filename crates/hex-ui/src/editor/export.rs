@@ -372,7 +372,7 @@ fn export_status(
     status
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "ui-test-support")))]
 mod status_tests {
     use super::{ExportFormat, export_status, format_choice, format_label};
 

@@ -78,7 +78,7 @@ pub(crate) fn preview(project: &Project, edit: Edit) -> Result<Preview, Invalid>
     Ok(Preview { command, geometry })
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "ui-unit-tier"))]
 mod tests {
     use super::*;
     use hex_project::{Created, Editor, ElementColor};

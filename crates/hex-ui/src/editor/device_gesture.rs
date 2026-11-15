@@ -68,6 +68,7 @@ pub(super) fn retire_failed_finalize_barriers(
     while let Some(request) = deferred.pop_front() {
         match request {
             Request::SaveNew(_)
+            | Request::SaveProjectAs { .. }
             | Request::SaveCurrent
             | Request::SaveCurrentWithFormatUpgrade { .. } => effects.save_refused = true,
             Request::Export(_) => effects.export_refused = true,
@@ -81,6 +82,7 @@ pub(super) fn retire_failed_finalize_barriers(
             Request::Undo
             | Request::Redo
             | Request::SaveDevicePreset { .. }
+            | Request::SaveDeviceDefault { .. }
             | Request::LoadDevicePreset { .. } => {}
             Request::Open(_)
             | Request::OpenWith { .. }
@@ -112,6 +114,9 @@ impl EditorView {
         target: GestureTarget,
         initial: ParameterValue,
     ) -> Result<(), &'static str> {
+        if self.automation_close_preflight.frozen() {
+            return Err("close is pending · device gestures are unavailable");
+        }
         if self.native_automation_recorder.busy() {
             return Err("finish the current automation touch first");
         }
@@ -127,6 +132,9 @@ impl EditorView {
         second: hex_lattice_contract::ParameterId,
         initial: ParameterPairValue,
     ) -> Result<(), &'static str> {
+        if self.automation_close_preflight.frozen() {
+            return Err("close is pending · device gestures are unavailable");
+        }
         self.device_gesture
             .begin_pair(self.project_generation, device, first, second, initial)?;
         Ok(())
@@ -215,16 +223,17 @@ impl EditorView {
         let committed_plugin = (ack.phase == GesturePhase::Commit
             && ack.accepted
             && !ack.preview_retained
-            && !ack.source_lost)
-            .then(|| {
-                let active = self.device_gesture.snapshot()?;
-                (active.key == ack.key
-                    && active.sequence == ack.sequence
-                    && active.plugin_value.is_some()
-                    && self.device_gesture.terminal() == Some((GesturePhase::Commit, ack.sequence)))
-                .then_some(active)
-            })
-            .flatten();
+            && !ack.source_lost
+            && !self.owns_vst3_recording(ack.key))
+        .then(|| {
+            let active = self.device_gesture.snapshot()?;
+            (active.key == ack.key
+                && active.sequence == ack.sequence
+                && active.plugin_value.is_some()
+                && self.device_gesture.terminal() == Some((GesturePhase::Commit, ack.sequence)))
+            .then_some(active)
+        })
+        .flatten();
         let terminal =
             matches!(ack.phase, GesturePhase::Commit | GesturePhase::Cancel) || ack.source_lost;
         let plugin = self.device_gesture.snapshot().is_some_and(|active| {
@@ -388,16 +397,10 @@ impl EditorView {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "ui-test-support"))]
 mod tests {
-    use super::{
-        FailedBarrierEffects, actor_retired_gesture, defer_request, release_deferred,
-        retire_deferred, retire_failed_finalize_barriers,
-    };
     use hex_session::service::Request;
-    use std::collections::VecDeque;
 
-    #[cfg(feature = "ui-test-support")]
     #[gpui::test]
     fn plugin_source_loss_on_change_releases_edits_and_refuses_deferred_save(
         cx: &mut gpui::TestAppContext,
@@ -490,7 +493,6 @@ mod tests {
         });
     }
 
-    #[cfg(feature = "ui-test-support")]
     #[gpui::test]
     fn retained_preview_refusal_keeps_edit_barrier_until_cancel(cx: &mut gpui::TestAppContext) {
         use hex_lattice_contract::ParameterValue;
@@ -598,6 +600,16 @@ mod tests {
             ));
         });
     }
+}
+
+#[cfg(all(test, not(feature = "ui-test-support")))]
+mod unit_tests {
+    use super::{
+        FailedBarrierEffects, actor_retired_gesture, defer_request, release_deferred,
+        retire_deferred, retire_failed_finalize_barriers,
+    };
+    use hex_session::service::Request;
+    use std::collections::VecDeque;
 
     #[test]
     fn unrelated_event_does_not_retire_a_pending_begin_or_terminal() {
@@ -680,8 +692,43 @@ mod tests {
     #[test]
     fn failed_terminal_retires_finalize_barriers_and_keeps_open_and_edits_ordered() {
         let control = hex_session::service::ExportControl::default();
+        let mut project =
+            hex_project::Editor::new(hex_project::Project::new(48_000).unwrap(), 4).unwrap();
+        let hex_project::Created::Track(track) = project
+            .execute(hex_project::Command::AddTrack {
+                name: "default owner".into(),
+            })
+            .unwrap()
+        else {
+            panic!("track");
+        };
+        let state = hex_engine::default_native_device_state_for_class(
+            hex_engine::NativeDeviceClass::Effect,
+            hex_lattice_contract::DeviceTypeId::from_static("hex.utility"),
+        )
+        .unwrap();
+        let hex_project::Created::Device(device) = project
+            .execute(hex_project::Command::InsertDevice {
+                track,
+                before: None,
+                state,
+            })
+            .unwrap()
+        else {
+            panic!("device");
+        };
         let mut deferred = VecDeque::from([
             Request::SaveCurrent,
+            Request::SaveDeviceDefault {
+                owner: hex_session::service::preset::Owner {
+                    project_generation: 0,
+                    revision: 0,
+                    device,
+                    class: hex_engine::NativeDeviceClass::Effect,
+                    type_id: hex_lattice_contract::DeviceTypeId::from_static("hex.utility"),
+                },
+                root: "default-data".into(),
+            },
             Request::TuningLibrary {
                 project_generation: 1,
                 revision: 2,

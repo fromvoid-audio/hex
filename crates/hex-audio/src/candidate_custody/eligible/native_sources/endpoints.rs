@@ -38,6 +38,27 @@ pub(crate) struct NativeEndpointBank {
     ordinary_requirements: bool,
 }
 impl NativeEndpointBank {
+    pub(crate) fn take_accepted_editor_quantum(
+        &mut self,
+        binding: Binding,
+    ) -> Result<
+        Option<hex_plugin_host::transport::AcceptedEditorQuantum>,
+        hex_plugin_host::transport::Fault,
+    > {
+        use hex_plugin_host::transport::Fault;
+        let index = self.routing[..self.routing_len]
+            .binary_search_by_key(&Some(binding), |slot| {
+                self.entries[*slot].as_ref().map(|entry| entry.0.binding)
+            })
+            .map_err(|_| Fault::Revoked)?;
+        let entry = self.entries[self.routing[index]]
+            .as_mut()
+            .and_then(|entry| entry.0.callback.as_mut())
+            .filter(|entry| entry.transport_is_live())
+            .ok_or(Fault::Revoked)?;
+        Ok(entry.take_accepted_editor_quantum())
+    }
+
     pub(crate) fn take_accepted_manual_parameter(
         &mut self,
         binding: Binding,
@@ -176,6 +197,20 @@ impl NativeEndpointBank {
         self.entries
             .capacity()
             .checked_mul(std::mem::size_of::<Option<NativeEndpointEnvelope>>())
+    }
+    #[cfg(test)]
+    pub(crate) fn install_for_test(
+        &mut self,
+        callback: crate::plugin_effects::NativeEffectCallback,
+    ) {
+        let binding = callback.binding();
+        let endpoint = NativeEndpointEnvelope(Box::new(Endpoint {
+            slot: 0,
+            binding,
+            callback: Some(NativeEffectEntry::new(callback)),
+            signal: Arc::new(EndpointSignal::new()),
+        }));
+        assert!(self.install(binding.root, endpoint).is_ok());
     }
     pub(crate) fn install(
         &mut self,

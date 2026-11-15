@@ -4,6 +4,19 @@ use hex_widgets::{RectangleEdges, RectanglePart};
 pub(crate) const INNER_EDGE_WIDTH: f32 = 5.0;
 pub(crate) const SHARED_EDGE_RADIUS: f32 = 1.0;
 
+/// Match the existing inner edge width in a linear frame viewport. At dense
+/// zoom, overlapping edge zones deliberately leave no replace body.
+pub(crate) fn drop_edge_frames(span: u64, width: f32) -> Result<u64, hex_project::Invalid> {
+    if span == 0 || !width.is_finite() || width <= 0.0 {
+        return Err(hex_project::Invalid("section drop geometry unavailable"));
+    }
+    Ok(
+        (span as f64 * f64::from(INNER_EDGE_WIDTH) / f64::from(width))
+            .ceil()
+            .clamp(1.0, span as f64) as u64,
+    )
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Hit<K> {
     Leading(K),
@@ -44,7 +57,7 @@ pub(crate) fn hit<K: Copy, T: Copy + PartialEq>(
     None
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "ui-unit-tier"))]
 mod tests {
     use super::*;
 
@@ -114,5 +127,13 @@ mod tests {
             hit(sections.into_iter(), 20.0, project),
             Some(Hit::Seam(2, 3))
         );
+    }
+    #[test]
+    fn drop_edges_project_pixel_width_and_reject_invalid_geometry() {
+        assert_eq!(drop_edge_frames(1_000, 100.0).unwrap(), 50);
+        assert_eq!(drop_edge_frames(1_000, 1.0).unwrap(), 1_000);
+        for (span, width) in [(0, 100.0), (1, 0.0), (1, f32::NAN), (1, f32::INFINITY)] {
+            assert!(drop_edge_frames(span, width).is_err());
+        }
     }
 }

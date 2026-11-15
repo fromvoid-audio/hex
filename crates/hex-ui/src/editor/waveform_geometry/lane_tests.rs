@@ -115,6 +115,38 @@ fn short_rows_preserve_opposite_phase_peaks_instead_of_summing_to_silence() {
     }
 }
 
+#[test]
+fn compact_union_respects_the_selected_amplitude_scale() {
+    let peak = CachedPeak {
+        min: -0.1,
+        max: 0.1,
+    };
+    let source = CachedWaveform::from_peaks(2, vec![[peak, peak]; 2]).unwrap();
+    let mapping = WaveformMapping::Source { timeline_origin: 0 };
+    let bounds = Bounds::new(point(px(7.0), px(9.0)), size(px(100.0), px(28.0)));
+    let prepare = |decibels| {
+        prepare_waveform_geometry_with_scale(
+            &source,
+            &WaveformGeometryRequest {
+                mapping: &mapping,
+                amplitude_scale: WaveformAmplitudeScale::from_decibels(decibels),
+                visible_start: 0,
+                visible_end: 2,
+                bounds,
+                scale: 1.0,
+                columns: 2,
+                grid: None,
+            },
+        )
+        .unwrap()
+    };
+    let linear = prepare(false);
+    let decibels = prepare(true);
+    assert_eq!(linear.channels().len(), 1);
+    assert_eq!(decibels.channels().len(), 1);
+    assert!(decibels.channels()[0].outline[0].y < linear.channels()[0].outline[0].y);
+}
+
 #[cfg(feature = "ui-test-support")]
 #[test]
 fn scoped_reference_keeps_legacy_stereo_and_restores_adaptive_geometry() {

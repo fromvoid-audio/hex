@@ -170,6 +170,16 @@ fn version_seven_migrates_disabled_without_consuming_reserved_formats_or_ids() {
             .unwrap(),
         ParameterValue::Bool(false)
     );
+    for (range, default) in [(609..=612, 0.0), (613..=616, 100.0)] {
+        for id in range {
+            let id = ParameterId::from_static(id);
+            assert!(OPERATOR_METADATA.descriptors().iter().any(|d| d.id == id));
+            assert_eq!(
+                OPERATOR_METADATA.read_parameter(&migrated, id).unwrap(),
+                ParameterValue::Float(default)
+            );
+        }
+    }
     let v8 =
         NativeDeviceState::new(OPERATOR_TYPE_ID, 8, current.payload()[..380].to_vec()).unwrap();
     let migrated_v8 = OPERATOR_METADATA.migrate_state(&v8).unwrap();
@@ -188,7 +198,7 @@ fn version_seven_migrates_disabled_without_consuming_reserved_formats_or_ids() {
             .descriptors()
             .iter()
             .all(|d| d.id.value() <= 388
-                || (600..=608).contains(&d.id.value())
+                || (600..=616).contains(&d.id.value())
                 || (620..=639).contains(&d.id.value())
                 || (513..=516).contains(&d.id.value())
                 || d.id.value() >= 20001)

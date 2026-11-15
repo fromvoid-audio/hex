@@ -8,6 +8,73 @@
 use gpui::{Div, canvas, div, prelude::*, px, relative, rgb};
 use std::{cell::Cell, rc::Rc};
 
+// A test-only transparent element lets the scene helpers identify the actual
+// canvas edge by its resolved bounds, including its paint order and mask.
+#[cfg(any(test, feature = "ui-test-support"))]
+struct EdgeWitness {
+    child: gpui::AnyElement,
+    anchor: Rc<Cell<Option<gpui::Bounds<gpui::Pixels>>>>,
+}
+
+#[cfg(any(test, feature = "ui-test-support"))]
+impl gpui::IntoElement for EdgeWitness {
+    type Element = Self;
+    fn into_element(self) -> Self {
+        self
+    }
+}
+
+#[cfg(any(test, feature = "ui-test-support"))]
+impl gpui::Element for EdgeWitness {
+    type RequestLayoutState = ();
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<gpui::ElementId> {
+        None
+    }
+    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+        None
+    }
+    fn request_layout(
+        &mut self,
+        _: Option<&gpui::GlobalElementId>,
+        _: Option<&gpui::InspectorElementId>,
+        window: &mut gpui::Window,
+        cx: &mut gpui::App,
+    ) -> (gpui::LayoutId, ()) {
+        (self.child.request_layout(window, cx), ())
+    }
+    fn prepaint(
+        &mut self,
+        _: Option<&gpui::GlobalElementId>,
+        _: Option<&gpui::InspectorElementId>,
+        bounds: gpui::Bounds<gpui::Pixels>,
+        _: &mut (),
+        window: &mut gpui::Window,
+        cx: &mut gpui::App,
+    ) {
+        let offset = self
+            .anchor
+            .get()
+            .map_or(px(0.0), |anchor| anchor.right() - bounds.left());
+        window.with_element_offset(gpui::point(offset, px(0.0)), |window| {
+            self.child.prepaint(window, cx);
+        });
+    }
+    fn paint(
+        &mut self,
+        _: Option<&gpui::GlobalElementId>,
+        _: Option<&gpui::InspectorElementId>,
+        _: gpui::Bounds<gpui::Pixels>,
+        _: &mut (),
+        _: &mut (),
+        window: &mut gpui::Window,
+        cx: &mut gpui::App,
+    ) {
+        self.child.paint(window, cx);
+    }
+}
+
 /// Per-render geometry shared by the backdrop and its independently raised edge.
 /// Resolve after layout, so a resize cannot leave a cached-width corner gap.
 #[derive(Clone, Default)]
@@ -181,19 +248,24 @@ pub(super) fn pixel_backdrop_shell<T: gpui::IntoElement + gpui::Styled>(
         .w(bounds.size.width)
         .h(bounds.size.height);
     let mut outer = div().absolute().inset_0();
+    #[cfg(any(test, feature = "ui-test-support"))]
+    let anchor = Rc::new(Cell::new(None));
     if native_leading {
         let observe = notch.clone();
         let paint_style = style.clone();
+        #[cfg(any(test, feature = "ui-test-support"))]
+        let observed_anchor = anchor.clone();
         outer = outer.child(
             canvas(
-                move |bounds, _, _| observe.observe(bounds),
+                move |bounds, _, _| {
+                    observe.observe(bounds);
+                    #[cfg(any(test, feature = "ui-test-support"))]
+                    observed_anchor.set(Some(bounds));
+                },
                 move |bounds, _, window, _| {
-                    paint_backdrop(
-                        bounds,
-                        &paint_style,
-                        rgb(paint_style.outline).into(),
-                        window,
-                    )
+                    let color = rgb(paint_style.outline).into();
+                    paint_backdrop(bounds, &paint_style, color, window);
+                    paint_resolved_trailing(bounds, &paint_style, color, window);
                 },
             )
             .absolute()
@@ -207,17 +279,38 @@ pub(super) fn pixel_backdrop_shell<T: gpui::IntoElement + gpui::Styled>(
             .border_color(gpui::transparent_black());
     }
     outer = outer.child(body);
-    if !native_leading {
-        outer = outer.child(
-            div()
+    if native_leading {
+        #[cfg(any(test, feature = "ui-test-support"))]
+        {
+            let witness = div()
+                .debug_selector(selector)
                 .absolute()
-                .left(bounds.left())
+                .left(bounds.right())
                 .top(bounds.top())
-                .h(bounds.size.height)
                 .w(px(style.stroke))
-                .bg(rgb(style.outline)),
-        );
+                .h(px(
+                    (f32::from(bounds.size.height) - style.bottom_radius).max(0.0)
+                ));
+            return outer.children([EdgeWitness {
+                child: witness.into_any_element(),
+                anchor,
+            }]);
+        }
+        #[cfg(not(any(test, feature = "ui-test-support")))]
+        {
+            let _ = selector;
+            return outer;
+        }
     }
+    outer = outer.child(
+        div()
+            .absolute()
+            .left(bounds.left())
+            .top(bounds.top())
+            .h(bounds.size.height)
+            .w(px(style.stroke))
+            .bg(rgb(style.outline)),
+    );
     outer.child(
         trailing_edge(notch, style.outline, style.outline)
             .debug_selector(selector)
@@ -246,6 +339,7 @@ pub(super) struct Backdrop {
     pub stroke: f32,
     pub bottom_radius: f32,
     pub header_height: f32,
+    pub header_gradient: Option<super::clip_header_loop::HeaderGradient>,
     pub notch: Notch,
 }
 
@@ -267,6 +361,10 @@ pub(super) fn backdrop_shell(
     // occlusion and drag suppression. Clip contents remain a separate sibling.
     let observe = backdrop.notch.clone();
     let paint_style = backdrop.clone();
+    #[cfg(any(test, feature = "ui-test-support"))]
+    let anchor = Rc::new(Cell::new(None));
+    #[cfg(any(test, feature = "ui-test-support"))]
+    let observed_anchor = anchor.clone();
     let paint = div()
         .absolute()
         .inset_0()
@@ -278,11 +376,16 @@ pub(super) fn backdrop_shell(
         })
         .child(
             canvas(
-                move |bounds, _, _| observe.observe(bounds),
+                move |bounds, _, _| {
+                    observe.observe(bounds);
+                    #[cfg(any(test, feature = "ui-test-support"))]
+                    observed_anchor.set(Some(bounds));
+                },
                 move |bounds, _, window, _| {
                     if visible {
                         let color = window.text_style().color;
                         paint_backdrop(bounds, &paint_style, color, window);
+                        paint_resolved_trailing(bounds, &paint_style, color, window);
                     }
                 },
             )
@@ -290,19 +393,62 @@ pub(super) fn backdrop_shell(
             .inset_0(),
         );
     let contents = div().absolute().inset_0().child(paint).child(body);
-    boundary_shell(
+    let framed = boundary_shell(
         contents,
         left,
         width,
         backdrop.stroke,
         backdrop.outline,
         backdrop.hover_outline,
-        visible,
+        false,
         true,
         backdrop.bottom_radius,
         backdrop.notch,
-        selector,
-    )
+        String::new,
+    );
+    #[cfg(any(test, feature = "ui-test-support"))]
+    {
+        if visible {
+            let witness = div()
+                .debug_selector(selector)
+                .absolute()
+                .left(relative(1.0))
+                .top_0()
+                .bottom(px(backdrop.bottom_radius))
+                .w(px(backdrop.stroke));
+            return framed.children([EdgeWitness {
+                child: witness.into_any_element(),
+                anchor,
+            }]);
+        }
+    }
+    #[cfg(not(any(test, feature = "ui-test-support")))]
+    let _ = selector;
+    framed
+}
+
+/// Paint on the resolved endpoint so child layout rounding cannot move the edge.
+fn paint_resolved_trailing(
+    bounds: gpui::Bounds<gpui::Pixels>,
+    style: &Backdrop,
+    color: gpui::Hsla,
+    window: &mut gpui::Window,
+) {
+    let height = (f32::from(bounds.size.height) - style.bottom_radius).max(0.0);
+    if bounds.size.width <= px(0.0) || height == 0.0 || style.notch.extent() >= height {
+        return;
+    }
+    let edge = gpui::Bounds::new(
+        gpui::point(bounds.right(), bounds.top()),
+        gpui::size(px(style.stroke), px(height)),
+    );
+    let mask = style.notch.enabled().then(|| gpui::ContentMask {
+        bounds: gpui::Bounds::from_corners(
+            gpui::point(edge.left(), edge.top() + px(style.notch.extent())),
+            edge.bottom_right(),
+        ),
+    });
+    window.with_content_mask(mask, |window| window.paint_quad(gpui::fill(edge, color)));
 }
 
 fn paint_backdrop(
@@ -355,8 +501,21 @@ fn paint_backdrop(
             Default::default(),
         ));
     };
+    let paint_header_gradient = |window: &mut gpui::Window| {
+        if let Some(gradient) = &style.header_gradient {
+            gradient.paint(
+                bounds,
+                style.header_height,
+                style.stroke,
+                cut,
+                style.header,
+                window,
+            );
+        }
+    };
     if cut == 0.0 {
         paint_square(window);
+        paint_header_gradient(window);
         return;
     }
     let below = Bounds::from_corners(
@@ -386,6 +545,7 @@ fn paint_backdrop(
         if let Ok(path) = triangle.build() {
             window.paint_path(path, rgb(style.header));
         }
+        paint_header_gradient(window);
         let inset = px(style.stroke / (2.0 * std::f32::consts::SQRT_2));
         let mut diagonal = gpui::PathBuilder::stroke(px(style.stroke));
         diagonal.move_to(point(
@@ -405,3 +565,32 @@ fn paint_backdrop(
 #[cfg(all(test, feature = "ui-test-support"))]
 #[path = "clip_border_ui_test.rs"]
 pub(super) mod tests;
+
+#[cfg(all(test, not(feature = "ui-test-support")))]
+mod tests {
+    #[test]
+    fn corner_geometry_is_bounded_and_resolves_again_after_resize() {
+        use super::{Notch, corner_extent};
+        assert_eq!(corner_extent(100.0, 44.0), 5.0);
+        assert_eq!(corner_extent(6.0, 44.0), 3.0);
+        assert_eq!(corner_extent(100.0, 4.0), 2.0);
+        assert_eq!(corner_extent(0.0, 44.0), 0.0);
+        assert_eq!(corner_extent(-1.0, 44.0), 0.0);
+        assert_eq!(corner_extent(f32::NAN, 44.0), 0.0);
+        let notch = Notch::new(true);
+        let edge = notch.clone();
+        for width in [100.0, 6.0, 100.0] {
+            notch.observe(gpui::Bounds::new(
+                gpui::point(gpui::px(10.0), gpui::px(20.0)),
+                gpui::size(gpui::px(width), gpui::px(44.0)),
+            ));
+            assert_eq!(edge.extent(), corner_extent(width, 44.0));
+        }
+        let cropped = Notch::default();
+        cropped.observe(gpui::Bounds::new(
+            gpui::point(gpui::px(0.0), gpui::px(0.0)),
+            gpui::size(gpui::px(100.0), gpui::px(44.0)),
+        ));
+        assert_eq!(cropped.extent(), 0.0);
+    }
+}

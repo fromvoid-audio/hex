@@ -773,7 +773,32 @@ impl EditorView {
                 );
             }
         }
-        let sources = sidebar.child(self.browser_places(compact, cx));
+        let active = self.browser.section == BrowserSection::ProjectSamples;
+        let icon = picker_icon(browser_vector_icon_colored(
+            ICONS[0],
+            picker_ink(active, false),
+        ));
+        let sources = sidebar
+            .child(self.browser_places(compact, cx))
+            .child(picker_group_heading("project", compact))
+            .child(
+                picker_row(active, false)
+                    .id("browser-project-samples")
+                    .debug_selector(|| "browser-project-samples".to_owned())
+                    .tooltip(|_, cx| browser_label_tooltip("project samples", cx))
+                    .cursor_pointer()
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|view, _, window, cx| {
+                            view.select_browser_source(BrowserSection::ProjectSamples, cx);
+                            view.browser.results_focus.focus(window);
+                            window.prevent_default();
+                            cx.notify();
+                        }),
+                    )
+                    .child(icon)
+                    .child(picker_label("samples")),
+            );
         div()
             .id("browser-sidebar")
             .debug_selector(|| "browser-sidebar".to_owned())
@@ -1080,6 +1105,14 @@ impl EditorView {
 
     pub(super) fn browser_selected_label(&self, cx: &App) -> String {
         match self.browser_item_at(self.browser.selected_index, cx) {
+            Some(key @ BrowserItemKey::ProjectSample(..)) => self
+                .browser_history_index(&key, cx)
+                .and_then(|index| {
+                    self.browser_project_samples(cx)
+                        .get(index)
+                        .map(|row| row.name.clone())
+                })
+                .unwrap_or_else(|| "no item selected".into()),
             Some(BrowserItemKey::Plugin(path, id)) => self
                 .browser_visible_plugins(cx)
                 .iter()

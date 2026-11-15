@@ -81,3 +81,42 @@ fn queued_callback_pause_and_stop_fades_are_allocation_free() -> Result<(), Box<
     measured_shutdown(&mut callback, &mut output);
     Ok(())
 }
+
+#[test]
+fn queued_session_seek_and_play_from_fades_are_allocation_free() -> Result<(), Box<dyn Error>> {
+    let workload = fixture::fixture(false)?;
+    let playback = Playback::try_from_prepared_with_session(prepare_fixture(&workload)?)?;
+    let (mut control, mut callback) = prepared::channel(playback.sample_rate())?;
+    control
+        .publish(playback)
+        .map_err(|_| "publication failed")?;
+    let mut output = [[0.0; 2]; 300];
+    control
+        .command(PlaybackCommand::Play)
+        .map_err(|_| "play refused")?;
+    callback.begin_block();
+    callback.render(&mut output)?;
+    for action in [
+        PlaybackAction::Session(hex_engine::SessionPlaybackCommand::Seek(1000)),
+        PlaybackAction::Transport(PlaybackCommand::PlayFrom(2000)),
+    ] {
+        control
+            .action_with_ticket(action)
+            .map_err(|_| "seek admission failed")?;
+        measured_block(&mut callback, &mut output);
+        assert!(control.status.playing.load(Ordering::Acquire), "{action:?}");
+        let target = match action {
+            PlaybackAction::Session(hex_engine::SessionPlaybackCommand::Seek(frame))
+            | PlaybackAction::Transport(PlaybackCommand::PlayFrom(frame)) => frame,
+            _ => return Err("unexpected probe action".into()),
+        };
+        assert_eq!(
+            control.status.position.load(Ordering::Acquire),
+            target + 172,
+            "{action:?}"
+        );
+    }
+    control.request_shutdown();
+    measured_shutdown(&mut callback, &mut output);
+    Ok(())
+}

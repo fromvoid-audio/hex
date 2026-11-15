@@ -37,7 +37,9 @@ const WAVEFORM_STATE_VERSION: u32 = 2;
 pub mod algorithms;
 mod companion;
 mod enable;
+mod filter_response;
 mod fine;
+pub use filter_response::operator_filter_frequency_response;
 mod global;
 mod harmonic_runtime;
 mod harmonics;
@@ -522,6 +524,12 @@ impl OperatorSettings {
             fine: fine::Settings::default(),
             pitch_keytrack: keytrack::Settings::default(),
         }
+    }
+
+    /// Global voice settings select the mutable harmonic renderer. This
+    /// control-side query does not prepare a voice, context or runtime pair.
+    pub fn has_global_voice_runtime(&self) -> bool {
+        self.global.active
     }
 
     pub fn from_state(state: &NativeDeviceState) -> Result<Self, DeviceContractError> {

@@ -7,7 +7,7 @@ use hex_lattice::{
 use hex_lattice_contract::DeviceContractError;
 use std::any::Any;
 
-struct ClockRequiredInstrument;
+pub(crate) struct ClockRequiredInstrument;
 #[derive(Clone, Default)]
 struct ClockRequiredRuntime {
     active: bool,
@@ -223,4 +223,51 @@ fn unsupported_live_key_sets_rejected_and_later_keys_still_sound() {
     keyboard.render(&mut pcm, Some(&clock)).unwrap();
     keyboard.commit();
     assert_eq!(pcm, [[1.25, -0.75]; 4]);
+}
+
+#[test]
+fn fm4_releases_held_key_before_rejecting_unsupported_replacement_and_recovers() {
+    let (_, track) = super::tests::fixture();
+    let registry = hex_devices::native_instrument_registry().unwrap();
+    let state = registry
+        .default_state(hex_devices::fm4::device::FM4_TYPE_ID)
+        .unwrap();
+    let tuning = hex_lattice::TuningTable::default();
+    let instrument = registry
+        .prepare_instrument(
+            &state,
+            &hex_lattice::DevicePreparationContext {
+                sample_rate: 48000,
+                tuning: &tuning,
+                resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            },
+        )
+        .unwrap();
+    let input = Arc::new(ComputerKeyboardInput::default());
+    let mut keyboard = ComputerKeyboardRuntime::prepare_instrument(
+        track,
+        Arc::clone(&input),
+        48000,
+        instrument.as_ref(),
+    )
+    .unwrap();
+    let clock = AuditionClock(Some(false));
+    let mut render = |frames: usize| {
+        let mut pcm = vec![[0.0; 2]; frames];
+        keyboard.begin_block();
+        keyboard.render(&mut pcm, Some(&clock)).unwrap();
+        keyboard.commit();
+        pcm
+    };
+    input.set_key(0, Some((60, 80, 1))).unwrap();
+    assert!(render(256).iter().any(|frame| frame[0] != 0.0));
+    // One physical snapshot releases the supported key and presses a rejected
+    // high pitch. Rejection must not retain the previous key's held voice.
+    input.set_key(0, Some((127, 80, 2))).unwrap();
+    let tail = (0..20).flat_map(|_| render(256)).collect::<Vec<_>>();
+    assert!(input.rejected());
+    assert!(tail[..2400].iter().any(|frame| frame[0] != 0.0));
+    assert_eq!(&tail[4800..], &[[0.0; 2]; 320]);
+    input.set_key(0, Some((64, 80, 3))).unwrap();
+    assert!(render(256).iter().any(|frame| frame[0] != 0.0));
 }

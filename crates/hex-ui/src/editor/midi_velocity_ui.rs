@@ -563,38 +563,28 @@ impl EditorView {
                                 else {
                                     view.cancel_midi_note_gesture();
                                     view.midi_focus.focus(window);
-                                    if event.modifiers.shift {
-                                        view.cancel_midi_audition();
-                                        view.clear_midi_time_selection();
-                                        if let Some(marquee) = view
-                                            .velocity_marquee_context(captured.bounds)
-                                            .and_then(|context| {
-                                                super::midi_selection::Marquee::begin(
-                                                    context,
-                                                    position,
-                                                    true,
-                                                    &view.midi_selection,
-                                                )
-                                            })
-                                            && view.capture_midi_marquee_pointer(
-                                                &marquee,
-                                                super::midi_marquee::Surface::Velocity(Arc::clone(
-                                                    &down_scene,
-                                                )),
-                                                window,
-                                                cx,
+                                    view.cancel_midi_audition();
+                                    view.clear_midi_time_selection();
+                                    if let Some(marquee) = view
+                                        .velocity_marquee_context(captured.bounds)
+                                        .and_then(|context| {
+                                            super::midi_selection::Marquee::begin(
+                                                context,
+                                                position,
+                                                event.modifiers.shift,
+                                                &view.midi_selection,
                                             )
-                                        {
-                                            view.midi_velocity.install_marquee(marquee);
-                                        }
-                                    } else {
-                                        view.begin_midi_velocity_time_selection(
-                                            captured.bounds,
-                                            f32::from(event.position.x),
-                                            event.modifiers.platform,
+                                        })
+                                        && view.capture_midi_marquee_pointer(
+                                            &marquee,
+                                            super::midi_marquee::Surface::Velocity(Arc::clone(
+                                                &down_scene,
+                                            )),
                                             window,
                                             cx,
-                                        );
+                                        )
+                                    {
+                                        view.midi_velocity.install_marquee(marquee);
                                     }
                                     cx.stop_propagation();
                                     cx.notify();

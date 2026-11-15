@@ -1,4 +1,4 @@
-//! Live lane preparation extends the original instrument before source matching.
+//! Lane preparation extends the original instrument before source matching.
 //! SDK queries and isolated constructor facts retain their existing owners;
 //! cached UI pages supply only optional lookup hints, never eligibility.
 use super::*;
@@ -14,7 +14,7 @@ impl Plugins {
         state: &NativeDeviceState,
         cancellation: Option<&RequestCancellation>,
     ) -> Result<(), String> {
-        if !destination.is_instrument() || !control.status.playing.load(Acquire) {
+        if !destination.is_instrument() {
             return Ok(());
         }
         let Some(desired) = AuthoredSelection::from_targets(input.authored_plugin_targets(device))?
@@ -55,6 +55,10 @@ impl Plugins {
             {
                 continue;
             }
+            // The metadata extension uses the same serialized controller as
+            // display polling. Finish an admitted read on its original owner
+            // before starting the edit, while retaining its explicit terminal.
+            self.yield_parameters_to_control(control, input.context(), cancellation)?;
             let hint = self
                 .observed_parameters
                 .iter()
@@ -67,17 +71,43 @@ impl Plugins {
                 })
                 .and_then(|inventory| inventory.rows.iter().find(|row| row.id == id))
                 .map(|row| row.page_first);
-            let selection = parameter_gesture::metadata::extend_authored(
-                self.host
-                    .as_ref()
-                    .ok_or("qualified vst3 helper unavailable")?,
-                control,
-                binding,
-                class,
-                id,
-                hint,
-                cancellation,
-            )?;
+            let host = self
+                .host
+                .as_ref()
+                .ok_or("qualified vst3 helper unavailable")?;
+            let current = |control: &PublicationControl| {
+                let playing = control.status.playing.load(Acquire);
+                control
+                    .status
+                    .native_parameter_source(playing)
+                    .map(|(source, epoch)| (source, (epoch, playing)))
+            };
+            let before = current(control);
+            let extend = |control: &mut PublicationControl| {
+                parameter_gesture::metadata::extend_authored(
+                    host,
+                    control,
+                    binding,
+                    class,
+                    id,
+                    hint,
+                    cancellation,
+                )
+            };
+            let selection = match extend(control) {
+                // The metadata operation has drained its old token. Revalidate
+                // once when transport advanced on the same installed graph.
+                Err(_)
+                    if before.zip(current(control)).is_some_and(
+                        |((old, old_transport), (new, new_transport))| {
+                            old == new && old_transport != new_transport
+                        },
+                    ) =>
+                {
+                    extend(control)?
+                }
+                result => result?,
+            };
             self.sources[index].authored = Some(selection);
         }
         Ok(())

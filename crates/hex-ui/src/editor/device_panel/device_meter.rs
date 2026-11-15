@@ -270,7 +270,7 @@ fn peak_db(peak: f32) -> String {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "ui-test-support")))]
 mod tests {
     use super::*;
 

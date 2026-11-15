@@ -7,6 +7,9 @@ use hex_engine::eq::{EQ_TYPE_ID, EqState, NodeParameter};
 use hex_lattice_contract::{DeviceTypeId, NativeDeviceState};
 use hex_project::{Device, DeviceAutomationReplacement, Invalid};
 
+#[path = "state_edit/legacy.rs"]
+mod legacy;
+
 const EQ8_TYPE_ID: DeviceTypeId = DeviceTypeId::from_static("hex.eq8");
 
 pub(super) fn prepare(
@@ -25,10 +28,12 @@ pub(super) fn prepare(
         .and_then(|_| state.require_asset_free_processing())
         .map_err(|_| Invalid("eq edit cannot discard unsupported asset bindings"))?;
     let next = EqState::decode(&state).map_err(|_| Invalid("eq edit state is malformed"))?;
-    let mut removed = Vec::new();
-    if expected.type_id() == EQ_TYPE_ID {
+    let automation = if expected.type_id() == EQ8_TYPE_ID {
+        legacy::prepare(entry, expected, &state, &next)?
+    } else {
         let prior =
             EqState::decode(expected).map_err(|_| Invalid("eq source state is malformed"))?;
+        let mut removed = Vec::new();
         for node in prior.nodes {
             if next.nodes.iter().any(|candidate| candidate.id == node.id) {
                 continue;
@@ -41,28 +46,25 @@ pub(super) fn prepare(
                 );
             }
         }
-    } else {
-        hex_engine::native_device_view(expected)
-            .map_err(|_| Invalid("legacy eq source state is malformed"))?;
-    }
-    removed.sort_unstable();
-    let is_removed = |row: &hex_project::DeviceAutomation| {
-        row.target
-            .provider_parameter()
-            .is_some_and(|id| removed.binary_search(&id).is_ok())
-    };
-    let automation = if entry.automation().iter().any(is_removed) {
-        Some(DeviceAutomationReplacement::new(
-            entry.automation().to_vec(),
-            entry
-                .automation()
-                .iter()
-                .filter(|row| !is_removed(row))
-                .cloned()
-                .collect(),
-        )?)
-    } else {
-        None
+        removed.sort_unstable();
+        let is_removed = |row: &hex_project::DeviceAutomation| {
+            row.target
+                .provider_parameter()
+                .is_some_and(|id| removed.binary_search(&id).is_ok())
+        };
+        if entry.automation().iter().any(is_removed) {
+            Some(DeviceAutomationReplacement::new(
+                entry.automation().to_vec(),
+                entry
+                    .automation()
+                    .iter()
+                    .filter(|row| !is_removed(row))
+                    .cloned()
+                    .collect(),
+            )?)
+        } else {
+            None
+        }
     };
     // Both supported EQ formats are asset-free. Copy neutral host trims exactly,
     // including an EQ8 upgrade where same-provider metadata copying is unavailable.
@@ -73,7 +75,7 @@ pub(super) fn prepare(
     Ok((state, automation))
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "ui-unit-tier"))]
 mod tests {
     use super::*;
     use hex_engine::eq::{Node, NodeId, OUTPUT_GAIN};
@@ -197,7 +199,7 @@ mod tests {
         assert_eq!(e.project().snapshot(), before);
     }
     #[test]
-    fn no_op_creation_and_legacy_upgrade_do_not_replace_inventory() {
+    fn no_op_creation_preserve_inventory_and_legacy_upgrade_is_explicit() {
         let (mut e, device, mut eq) = fixture();
         lane(
             &mut e,
@@ -256,7 +258,9 @@ mod tests {
             .encode()
             .unwrap();
         let (state, change) = prepare(entry, entry.state(), upgraded).unwrap();
-        assert!(change.is_none());
+        let change = change.unwrap();
+        assert_eq!(change.expected(), entry.automation());
+        assert_eq!(change.replacement(), entry.automation());
         assert_eq!(EqState::decode(&state).unwrap().nodes.len(), 40);
         assert_eq!(state.input_gain_millidb(), 6123);
         assert_eq!(state.output_gain_millidb(), -3456);
@@ -273,3 +277,7 @@ mod tests {
         assert_eq!(e.project().snapshot(), before);
     }
 }
+
+#[cfg(all(test, feature = "ui-unit-tier"))]
+#[path = "state_edit/legacy_tests.rs"]
+mod legacy_tests;

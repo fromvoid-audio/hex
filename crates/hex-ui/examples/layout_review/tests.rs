@@ -327,6 +327,7 @@ fn selector_popup_is_real_retained_foreground_and_theme_refresh_keeps_focus(
     let _restore = RestoreTheme(theme::preferences());
     let (handle, view) = open(cx, Entry::Saturator);
     let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(960.0), px(660.0)));
     visual.update(|window, _| window.activate_window());
     visual.run_until_parked();
     let choice = view.read_with(cx, |view, _| {
@@ -365,6 +366,24 @@ fn selector_popup_is_real_retained_foreground_and_theme_refresh_keeps_focus(
         "real widget choice changes locally"
     );
     visual.simulate_keystrokes("enter escape");
+    assert!(!choice.read_with(cx, |control, _| control.is_open()));
+
+    visual.simulate_click(field.center(), Modifiers::default());
+    visual.run_until_parked();
+    let outside = visual
+        .debug_bounds("fixture-saturator-selector-0-option-17")
+        .unwrap();
+    assert!(
+        outside.center().y > card.bottom(),
+        "option must be outside the clipped card"
+    );
+    assert!(
+        outside.center().y < px(660.0),
+        "option must remain inside the window"
+    );
+    visual.simulate_click(outside.center(), Modifiers::default());
+    visual.run_until_parked();
+    assert_eq!(choice.read_with(cx, |control, _| control.selected()), 17);
     assert!(!choice.read_with(cx, |control, _| control.is_open()));
 }
 

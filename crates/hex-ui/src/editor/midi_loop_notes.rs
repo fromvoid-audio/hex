@@ -798,6 +798,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(all(test, not(feature = "ui-test-support")))]
     fn every_visible_repeat_draws_its_notes_where_playback_sounds_them() {
         let (editor, id) = looped_clip();
         let project = editor.project();
@@ -831,6 +832,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(all(test, not(feature = "ui-test-support")))]
     fn same_pitch_notes_within_one_pixel_merge_into_one_quad() {
         let (editor, id) = looped_clip();
         let project = editor.project();
@@ -847,6 +849,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(all(test, not(feature = "ui-test-support")))]
     fn cache_reuses_only_the_same_snapshot_and_window() {
         let (mut editor, id) = looped_clip();
         let project = Arc::new(editor.project().clone());
@@ -1116,6 +1119,7 @@ mod tests {
 
     /// Each tile note at each block, cut to the clip and window as the body's
     /// content mask cuts it, sorted like `visible_notes`.
+    #[cfg(all(test, not(feature = "ui-test-support")))]
     fn tiled_occurrences(
         tiles: &LoopTiles,
         clip: (u64, u64),
@@ -1141,6 +1145,7 @@ mod tests {
         all
     }
 
+    #[cfg(all(test, not(feature = "ui-test-support")))]
     fn assert_tiles_match(
         tiled: &[(f64, f64, u8)],
         expected: &[(u64, u64, u8)],
@@ -1159,6 +1164,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(all(test, not(feature = "ui-test-support")))]
     fn tiled_repeats_land_exactly_where_playback_sounds_them() {
         let (editor, id) = tiled_clip();
         let project = editor.project();
@@ -1210,6 +1216,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(all(test, not(feature = "ui-test-support")))]
     fn a_tempo_change_inside_the_clip_draws_every_occurrence() {
         let (editor, id) = looped_clip();
         let project = editor.project();

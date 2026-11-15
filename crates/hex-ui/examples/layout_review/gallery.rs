@@ -274,13 +274,17 @@ impl Fixture {
         }
         let mut choices = Vec::new();
         for index in 0..selectors {
+            // Exercise a compact menu beyond the taller clipped Saturator card.
+            let extra_choices = if entry == Entry::Saturator { 20 } else { 8 };
             let config = SelectorConfig::new(
                 format!("fixture-{}-selector-{index}", entry.key()),
                 ["sine", "saw", "square", "triangle", "long fixture option"]
                     .map(theme::text)
                     .into_iter()
-                    // Keep the compact menu taller than the clipped device body too.
-                    .chain((0..8).map(|index| theme::text(format!("extra choice {index}")))),
+                    .chain(
+                        (0..extra_choices)
+                            .map(|index| theme::text(format!("extra choice {index}"))),
+                    ),
                 0,
                 theme::device_style(theme::DeviceStyleRole::Control),
             )

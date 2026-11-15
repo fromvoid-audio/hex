@@ -49,8 +49,8 @@ fn held_f_exposes_neutral_handles_and_release_commits_one_fade_without_moving_cl
         .center();
     editor.update(&mut visual, |view, cx| {
         view.time_selection = Some(super::super::time_selection::TimeSelection {
-            anchor_track: track,
-            end_track: track,
+            anchor_track: Some(track),
+            end_track: Some(track),
             anchor_frame: 0,
             end_frame: 96_000,
         });
@@ -101,8 +101,12 @@ fn held_f_exposes_neutral_handles_and_release_commits_one_fade_without_moving_cl
         )
     );
     assert!(changed.fade().fade_in() > 0);
+    assert_eq!(changed.fade().curve_laws()[0], ClipFade::DEFAULT_S_CURVE);
+    let accepted = changed.clone();
     assert!(canonical.undo());
     assert_eq!(canonical.project().clip(clip).unwrap(), &original);
+    assert!(canonical.redo());
+    assert_eq!(canonical.project().clip(clip).unwrap(), &accepted);
 }
 #[gpui::test]
 fn authored_fades_reveal_on_hover_and_each_endpoint_and_curve_uses_its_real_handle(
@@ -814,6 +818,33 @@ fn pump(editor: &gpui::Entity<EditorView>, visual: &mut VisualTestContext) {
         std::thread::yield_now();
     }
 }
+
+fn painted_clip_waveform_outline(
+    editor: &gpui::Entity<EditorView>,
+    visual: &mut VisualTestContext,
+    clip: ClipId,
+) -> [u64; 2] {
+    let selector: &'static str =
+        Box::leak(format!("clip-visual-{}", clip.value()).into_boxed_str());
+    let clip_bounds = visual.debug_bounds(selector).expect("painted clip");
+    editor.read_with(visual, |view, _| {
+        view.waveform_geometry_cache
+            .borrow()
+            .painted_waveforms()
+            .iter()
+            .rev()
+            .find(|paint| clip_bounds.contains(&paint.bounds.origin))
+            .expect("completed clip waveform repaint")
+            .outline_fingerprint
+    })
+}
+fn clear_waveform_paints(editor: &gpui::Entity<EditorView>, visual: &mut VisualTestContext) {
+    editor.update(visual, |view, _| {
+        view.waveform_geometry_cache
+            .borrow_mut()
+            .clear_paint_samples()
+    });
+}
 // Imports one 2 s clip through the real worker and authors 0.5 s fades.
 fn real_faded_clip(
     cx: &mut TestAppContext,
@@ -849,6 +880,48 @@ fn real_faded_clip(
     pump(&editor, &mut visual);
     (files, editor, visual, clip)
 }
+
+#[gpui::test]
+fn double_click_straightens_only_the_selected_s_curve(cx: &mut TestAppContext) {
+    let (_files, editor, mut visual, clip) = real_faded_clip(cx);
+    let authored = editor.update(&mut visual, |v, _| {
+        let authored = v
+            .state
+            .as_ref()
+            .unwrap()
+            .project
+            .clip(clip)
+            .unwrap()
+            .fade()
+            .with_curve_laws([ClipFade::DEFAULT_S_CURVE; 2]);
+        assert!(v.enqueue(Request::Edit(Command::SetClipFadeEnvelope {
+            clip,
+            fade: authored
+        })));
+        authored
+    });
+    pump(&editor, &mut visual);
+    key(&mut visual, true, "f");
+    let selector: &'static str =
+        Box::leak(format!("fade-in-curve-{}", clip.value()).into_boxed_str());
+    let diamond = visual.debug_bounds(selector).unwrap().center();
+    visual.simulate_event(gpui::MouseDownEvent {
+        position: diamond,
+        button: MouseButton::Left,
+        modifiers: Modifiers::default(),
+        click_count: 2,
+        first_mouse: false,
+    });
+    visual.simulate_mouse_up(diamond, MouseButton::Left, Modifiers::default());
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        let fade = v.state.as_ref().unwrap().project.clip(clip).unwrap().fade();
+        assert_eq!(fade.fade_in(), authored.fade_in());
+        assert!(!fade.ramp_is_curved(false));
+        assert_eq!(fade.curve_laws()[1], ClipFade::DEFAULT_S_CURVE);
+    });
+}
+
 #[gpui::test]
 fn released_push_keeps_both_pushed_handles_painted_until_real_worker_ack(cx: &mut TestAppContext) {
     let (_files, editor, mut visual, clip) = real_faded_clip(cx);
@@ -953,16 +1026,35 @@ fn released_two_axis_fade_stays_painted_until_real_worker_ack(cx: &mut TestAppCo
         })))
     });
     pump(&editor, &mut visual);
+    clear_waveform_paints(&editor, &mut visual);
     key(&mut visual, true, "f");
     let selector: &'static str =
         Box::leak(format!("fade-out-curve-{}", clip.value()).into_boxed_str());
+    editor.read_with(&visual, |view, _| {
+        assert!(
+            !view
+                .state
+                .as_ref()
+                .unwrap()
+                .audio_clip_waveforms
+                .contains_key(&clip),
+            "fixture must use the plain waveform path"
+        );
+    });
+    let original_outline = painted_clip_waveform_outline(&editor, &mut visual, clip);
     let from = visual.debug_bounds(selector).unwrap().center();
     visual.simulate_mouse_down(from, MouseButton::Left, Modifiers::default());
     let to = point(from.x + px(9.0), from.y + px(8.0));
+    clear_waveform_paints(&editor, &mut visual);
     visual.simulate_mouse_move(to, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
     let held = visual.debug_bounds(selector).unwrap();
     let preview = editor.read_with(&visual, |v, _| v.fade_preview(clip).unwrap());
+    let held_outline = painted_clip_waveform_outline(&editor, &mut visual, clip);
+    assert_ne!(
+        held_outline, original_outline,
+        "held fade changes the painted waveform"
+    );
     visual.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
     let deadline = crate::test_wait::hang_deadline();
     let event = loop {
@@ -983,12 +1075,17 @@ fn released_two_axis_fade_stays_painted_until_real_worker_ack(cx: &mut TestAppCo
         preview
     );
     for _ in 0..3 {
+        clear_waveform_paints(&editor, &mut visual);
         editor.update(&mut visual, |v, cx| {
             v.cancel_fade_gesture(cx);
             cx.notify();
         });
         visual.run_until_parked();
         assert_eq!(visual.debug_bounds(selector), Some(held));
+        assert_eq!(
+            painted_clip_waveform_outline(&editor, &mut visual, clip),
+            held_outline
+        );
         editor.read_with(&visual, |v, _| {
             assert!(v.pending_fade.is_some());
             assert_ne!(
@@ -1004,11 +1101,16 @@ fn released_two_axis_fade_stays_painted_until_real_worker_ack(cx: &mut TestAppCo
             assert_eq!(v.fade_preview(clip), Some(preview));
         });
     }
+    clear_waveform_paints(&editor, &mut visual);
     editor.update(&mut visual, |v, cx| {
         v.receive(event);
         cx.notify();
     });
     visual.run_until_parked();
+    assert_eq!(
+        painted_clip_waveform_outline(&editor, &mut visual, clip),
+        held_outline
+    );
     editor.read_with(&visual, |v, _| {
         assert!(v.pending_fade.is_none());
         assert_eq!(

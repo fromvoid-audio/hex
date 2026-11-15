@@ -88,6 +88,7 @@ impl RuntimeRef<'_> {
                 position: p.position(),
                 performance_frame: p.performance_frame(),
                 playing: p.playing(),
+                arrangement_loop_state: p.arrangement_loop_state(),
                 metronome_enabled: p.metronome_enabled(),
                 session_capability: p.session_capability_status(),
                 sampler_console: false,
@@ -95,6 +96,31 @@ impl RuntimeRef<'_> {
                 route_count: p.session_route_count(),
                 main_output_latency_frames: p.main_output_latency_frames(),
                 content_loop: p.automation_capture_loop(),
+            }),
+        }
+    }
+    pub(super) fn transport(
+        &self,
+    ) -> Option<(
+        u64,
+        u64,
+        bool,
+        Option<hex_engine::session_playback::ArrangementLoopState>,
+    )> {
+        match self {
+            Self::Legacy(playback) => Some((
+                playback.position(),
+                playback.performance_frame(),
+                playback.playing(),
+                playback.arrangement_loop_state(),
+            )),
+            Self::Eligible(runtime) => runtime.status().map(|status| {
+                (
+                    status.position,
+                    status.performance_frame,
+                    status.playing,
+                    status.arrangement_loop_state,
+                )
             }),
         }
     }

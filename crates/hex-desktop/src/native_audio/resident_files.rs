@@ -28,14 +28,7 @@ impl NativeAudioSink {
         let matches_sources = playback
             .streamed_sources_on_control()
             .is_ok_and(|mut sources| {
-                sources.all(|source| {
-                    files
-                        .sources
-                        .metadata()
-                        .sources()
-                        .get(&source.key().asset())
-                        .is_some_and(|captured| captured.as_ref() == source)
-                })
+                sources.all(|source| files.sources.metadata().matches_source(source))
             });
         if files.sources.context().project_generation != metadata.context.project_generation
             || !matches_sources
@@ -81,6 +74,8 @@ impl NativeAudioSink {
             context: files.context(),
             semantic_source_epoch: files.semantic_source_epoch(),
             files: &refs,
+            pitches: files.pitches(),
+            repitches: files.repitches().requirements(),
         };
         let policy = self.policy.as_ref().map_err(Clone::clone)?;
         let control = self
@@ -137,7 +132,8 @@ impl NativeAudioSink {
                 let token = control
                     .begin_audio_candidate_domain_preparation(
                         policy.stream,
-                        sources.definitions()?,
+                        sources
+                            .definitions_for_files(&input, policy.stream.max_kernel_table_bytes)?,
                         policy.readiness,
                     )
                     .map_err(|error| format!("ordinary source preparation refused: {error:?}"))?;

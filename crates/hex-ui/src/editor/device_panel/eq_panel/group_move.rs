@@ -1,5 +1,10 @@
 //! Pure EQ graph coordinates and grouped-node movement; no gesture custody.
-use super::{eq::NodeKind, node_geometry::edits_q};
+use super::eq::NodeKind;
+
+/// Cut and notch nodes edit Q vertically; other shapes edit gain.
+pub(super) fn edits_q(kind: NodeKind) -> bool {
+    matches!(kind, NodeKind::LowCut | NodeKind::HighCut | NodeKind::Notch)
+}
 
 /// Group drags carry two parameters per node in the host snapshot.
 pub(super) const MAX_GROUP_NODES: usize = 32;
@@ -41,7 +46,7 @@ pub(super) fn option_q(initial: f32, displacement: f32) -> f32 {
     (initial * ((18.0_f32 / 0.1).ln() * displacement).exp()).clamp(0.1, 18.0)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "ui-unit-tier"))]
 mod tests {
     use super::*;
 
@@ -67,5 +72,15 @@ mod tests {
         assert!((high - 3_920.0).abs() < 0.001);
         assert!((q_from_y(1.0) - 18.0).abs() < 0.0001);
         assert_eq!(q, Vertical::Q(q_from_y(1.0)));
+    }
+
+    #[test]
+    fn option_displacement_keeps_initial_q_and_bounds_without_gain_coordinate_jump() {
+        for initial in [0.1, 0.707, 1.0, 18.0] {
+            assert_eq!(option_q(initial, 0.0), initial);
+            assert_eq!(option_q(initial, -2.0), 0.1);
+            assert_eq!(option_q(initial, 2.0), 18.0);
+            assert!(option_q(initial, 0.1) >= initial);
+        }
     }
 }

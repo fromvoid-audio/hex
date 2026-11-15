@@ -2,15 +2,12 @@
 //! owns project-scoped arm intent and the displayed recent list. The native
 //! output confirms PCM and the dedicated worker owns the file operations.
 
-use super::{
-    EditorView,
-    waveform::{button, toggle_button_with_style},
-};
+use super::{EditorView, waveform::toggle_button_with_style};
 use crate::theme;
 use gpui::{Context, Div, Stateful, div, prelude::*, px, rgb};
 use hex_audio::sample_recording::{self, End, OutputCaptureId, Phase, Source, Take};
 use std::{
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::mpsc::{self, Receiver, TryRecvError},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -60,7 +57,7 @@ pub(super) struct Recorder {
 }
 
 struct Job {
-    result: Receiver<std::io::Result<sample_recording::Takes>>,
+    result: Receiver<Result<sample_recording::Takes, String>>,
     names: Vec<(Source, String)>,
     output: u64,
 }
@@ -69,6 +66,16 @@ struct Job {
 struct Row {
     name: String,
     take: Take,
+}
+
+// The waveform adapter uses an icon-width hit target. Recorder labels
+// need their own text-sized surfaces, including their horizontal padding.
+fn button(label: &'static str, tooltip: &'static str, id: (&'static str, u64)) -> Stateful<Div> {
+    super::waveform::button(label, tooltip, id)
+        .w_auto()
+        .px_1()
+        .whitespace_nowrap()
+        .debug_selector(move || id.0.into())
 }
 
 impl EditorView {
@@ -173,7 +180,6 @@ impl EditorView {
             "switch spectrum and recorder",
             ("sample-recorder-mode", 0),
         )
-        .debug_selector(|| "sample-recorder-mode".into())
         .on_click(cx.listener(|view, _, _, cx| {
             view.sample_recorder.visible = !view.sample_recorder.visible;
             view.tick_project_spectrum();
@@ -203,15 +209,15 @@ impl EditorView {
         if names.is_empty() {
             return Err("arm at least one source for sampling".into());
         }
-        let home = std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .ok_or("sample take storage is unavailable")?;
-        let root = hex_preferences::theme_preferences_path(&home).with_file_name("sample-takes");
+        let document = self
+            .state
+            .as_ref()
+            .and_then(|state| state.document_path.clone());
         let stamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_err(|e| e.to_string())?
             .as_nanos();
-        let directory = root.join(format!("take-{stamp}-{}", std::process::id()));
+        let name = format!("take-{stamp}-{}", std::process::id());
         let audio = self.audio.as_mut().ok_or("audio output is unavailable")?;
         let output = audio
             .control
@@ -225,8 +231,11 @@ impl EditorView {
         std::thread::Builder::new()
             .name("hex-sample-takes".into())
             .spawn(move || {
-                let result = std::fs::create_dir_all(root)
-                    .and_then(|()| sample_recording::write_takes(reader, &directory));
+                let result = write_sample_take(
+                    hex_session::service::sample_take_root(document.as_deref()),
+                    &name,
+                    |directory| sample_recording::write_takes(reader, directory),
+                );
                 let _ = complete.send(result);
             })
             .map_err(|e| e.to_string())?;
@@ -272,7 +281,7 @@ impl EditorView {
             .unwrap_or(Phase::Finishing);
         let phase_changed = self.sample_recorder.phase.replace(phase) != Some(phase);
         let result = match job.result.try_recv() {
-            Ok(result) => result.map_err(|error| error.to_string()),
+            Ok(result) => result,
             Err(TryRecvError::Disconnected) => Err("sample take writer exited".into()),
             Err(TryRecvError::Empty) => return arms_changed || phase_changed || preview_changed,
         };
@@ -344,7 +353,12 @@ impl EditorView {
                     .gap_2()
                     .px_1()
                     .bg(rgb(theme::color(theme::PaletteRole::Surface)))
-                    .child(theme::text("sample recorder"))
+                    .child(
+                        div()
+                            .min_w_0()
+                            .truncate()
+                            .child(theme::text("sample recorder")),
+                    )
                     .child(self.sample_recorder_mode_button(cx))
                     .child(
                         button(
@@ -352,16 +366,15 @@ impl EditorView {
                             "start or stop sample recording",
                             ("sample-record", 0),
                         )
-                        .debug_selector(|| "sample-record".into())
                         .on_click(cx.listener(|view, _, _, cx| {
                             view.sample_record_or_stop();
                             cx.notify();
                         })),
                     )
-                    .child(theme::text(format!(
+                    .child(div().min_w_0().truncate().child(theme::text(format!(
                         "{label} · {} armed",
                         self.sample_recorder.armed.len()
-                    ))),
+                    )))),
             )
             .child(
                 div()
@@ -420,6 +433,24 @@ impl EditorView {
     }
 }
 
+fn write_sample_take(
+    root: Result<PathBuf, String>,
+    name: &str,
+    write: impl FnOnce(&Path) -> std::io::Result<sample_recording::Takes>,
+) -> Result<sample_recording::Takes, String> {
+    let root = root?;
+    std::fs::create_dir_all(&root).map_err(|error| error.to_string())?;
+    let directory = root.join(name);
+    write(&directory).map_err(|error| take_write_error(&directory, &error))
+}
+
+fn take_write_error(directory: &Path, error: &std::io::Error) -> String {
+    format!(
+        "{error} · check {} for recoverable take files",
+        hex_session::service::text::verbatim(directory.display())
+    )
+}
+
 fn end_label(end: End) -> &'static str {
     match end {
         End::Stopped => "stopped",
@@ -437,6 +468,185 @@ mod tests {
     use super::*;
     use crate::editor::clip_drag_ui_test::{audio_project, editor_window};
     use gpui::{Modifiers, TestAppContext, VisualTestContext};
+
+    #[gpui::test]
+    fn failed_take_reports_the_case_sensitive_recovery_location(cx: &mut TestAppContext) {
+        let (project, _, _, _) = audio_project();
+        let (window, editor) = editor_window(cx, project, Default::default());
+        let mut visual = VisualTestContext::from_window(window, cx);
+        struct TestRoot(PathBuf);
+        impl Drop for TestRoot {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let root = std::env::temp_dir().join(format!(
+            "Hex-Recovery-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        let _cleanup = TestRoot(root.clone());
+        let directory = root.join("Take-ABC");
+        let result = write_sample_take(Ok(root.clone()), "Take-ABC", |path| {
+            std::fs::create_dir(path)?;
+            std::fs::write(path.join("Partial.WAV"), b"recoverable bytes")?;
+            Err(std::io::Error::other("No Space Left"))
+        });
+        let (sender, receiver) = mpsc::sync_channel(1);
+        sender.send(result).unwrap();
+        editor.update(&mut visual, |view, _| {
+            view.sample_recorder.job = Some(Job {
+                result: receiver,
+                names: Vec::new(),
+                output: 0,
+            });
+            assert!(view.tick_sample_recorder());
+            let message = theme::text(view.sample_recorder.error.as_deref().unwrap());
+            assert_eq!(
+                message.as_ref(),
+                format!(
+                    "sample take writer · no space left · check {} for recoverable take files",
+                    directory.display()
+                )
+            );
+        });
+        let (sender, receiver) = mpsc::sync_channel(1);
+        sender
+            .send(write_sample_take(
+                Err("sample take storage is unavailable".into()),
+                "Take-ABC",
+                |_| panic!("writer must not run without a root"),
+            ))
+            .unwrap();
+        editor.update(&mut visual, |view, _| {
+            view.sample_recorder.job = Some(Job {
+                result: receiver,
+                names: Vec::new(),
+                output: 0,
+            });
+            assert!(view.tick_sample_recorder());
+            assert_eq!(
+                view.sample_recorder.error.as_deref(),
+                Some("sample take writer · sample take storage is unavailable")
+            );
+        });
+        let (sender, receiver) = mpsc::sync_channel(1);
+        sender
+            .send(Ok(sample_recording::Takes {
+                takes: vec![Take {
+                    source: Source::Main,
+                    path: directory.join("main.wav"),
+                    frames: 64,
+                    sample_rate: 48_000,
+                    timing: std::sync::Arc::from([]),
+                }],
+                end: End::Stopped,
+                write_error: None,
+            }))
+            .unwrap();
+        editor.update(&mut visual, |view, _| {
+            view.sample_recorder.job = Some(Job {
+                result: receiver,
+                names: vec![(Source::Main, "main".into())],
+                output: 0,
+            });
+            assert!(view.tick_sample_recorder());
+            assert!(view.sample_recorder.error.is_none());
+            assert_eq!(view.sample_recorder.recent.len(), 1);
+            assert_eq!(
+                view.sample_recorder.recent[0].take.path,
+                directory.join("main.wav")
+            );
+        });
+        assert_eq!(
+            std::fs::read(directory.join("Partial.WAV")).unwrap(),
+            b"recoverable bytes"
+        );
+        let (sender, receiver) = mpsc::sync_channel(1);
+        drop(sender);
+        editor.update(&mut visual, |view, _| {
+            view.sample_recorder.job = Some(Job {
+                result: receiver,
+                names: Vec::new(),
+                output: 0,
+            });
+            assert!(view.tick_sample_recorder());
+            assert_eq!(
+                view.sample_recorder.error.as_deref(),
+                Some("sample take writer · sample take writer exited")
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn recorder_header_fits_the_button_labels_and_hit_targets(cx: &mut TestAppContext) {
+        #[cfg(target_os = "macos")]
+        {
+            cx.use_native_text_system().expect("native font shaping");
+            cx.update(|cx| theme::load_fonts(cx).expect("bundled fonts"));
+        }
+        let (project, _, _, _) = audio_project();
+        let (window, editor) = editor_window(cx, project, Default::default());
+        let mut visual = VisualTestContext::from_window(window, cx);
+        let check = |visual: &mut VisualTestContext, selector, label: &str| {
+            let text = theme::text(label);
+            let width = visual.update(|window, _| {
+                window
+                    .text_system()
+                    .shape_line(
+                        text.clone(),
+                        window.rem_size() * 0.75,
+                        &[gpui::TextRun {
+                            len: text.len(),
+                            font: gpui::font(theme::FONT_FAMILY),
+                            color: rgb(0xffffff).into(),
+                            background_color: None,
+                            underline: None,
+                            strikethrough: None,
+                        }],
+                        None,
+                    )
+                    .width
+            });
+            let bounds = visual.debug_bounds(selector).expect("painted control");
+            assert!(bounds.size.width > width, "{label} must fit its button");
+            bounds
+        };
+        for (width, height) in [(880.0, 540.0), (1440.0, 800.0)] {
+            visual.simulate_resize(gpui::size(px(width), px(height)));
+            visual.run_until_parked();
+            let mode = check(&mut visual, "sample-recorder-mode", "recorder");
+            visual.simulate_click(mode.center(), Modifiers::default());
+            visual.run_until_parked();
+            let panel = visual.debug_bounds("sample-recorder").unwrap();
+            for (phase, label) in [(Some(Phase::Capturing), "stop"), (None, "record")] {
+                editor.update(&mut visual, |view, cx| {
+                    view.sample_recorder.phase = phase;
+                    cx.notify();
+                });
+                visual.run_until_parked();
+                let mode = check(&mut visual, "sample-recorder-mode", "spectrum");
+                let record = check(&mut visual, "sample-record", label);
+                assert!(panel.left() <= mode.left() && mode.right() < record.left());
+                assert!(record.right() <= panel.right());
+            }
+            let record = visual.debug_bounds("sample-record").unwrap();
+            visual.simulate_click(record.center(), Modifiers::default());
+            editor.read_with(&visual, |view, _| {
+                assert_eq!(
+                    view.sample_recorder.error.as_deref(),
+                    Some("arm at least one source for sampling")
+                );
+            });
+            let mode = visual.debug_bounds("sample-recorder-mode").unwrap();
+            visual.simulate_click(mode.center(), Modifiers::default());
+            visual.run_until_parked();
+            assert!(visual.debug_bounds("project-spectrum").is_some());
+        }
+    }
 
     #[gpui::test]
     fn sampler_mode_switch_preserves_independent_arrangement_and_main_arms(

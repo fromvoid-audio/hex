@@ -122,7 +122,10 @@ fn proposal_preserves_actual_legacy_prefix_signed_zero_and_inactive_bank_bits() 
         original.state_version(),
         hex_devices::operator_state::OPERATOR_STATE_VERSION
     );
-    assert_eq!(original.payload().len(), 1728);
+    // Fine-Hz and pitch-keytracking each add four f32 values after the
+    // historical 1,728-byte payload; the proposal below is not a codec.
+    assert_eq!(original.payload().len(), 1760);
+    let original_bytes = original.payload().to_vec();
     assert_eq!(&original.payload()[288..292], &(-0.0f32).to_le_bytes());
     let mut proposal = payload::Payload {
         prefix: original.payload()[..380].try_into().unwrap(),
@@ -145,6 +148,7 @@ fn proposal_preserves_actual_legacy_prefix_signed_zero_and_inactive_bank_bits() 
         }
     }
     assert_eq!(copied.mode_history, proposal.mode_history);
+    assert_eq!(original.payload(), original_bytes);
     assert_eq!(
         original.state_version(),
         hex_devices::operator_state::OPERATOR_STATE_VERSION
@@ -153,6 +157,11 @@ fn proposal_preserves_actual_legacy_prefix_signed_zero_and_inactive_bank_bits() 
 
 #[test]
 fn independent_byte_count_and_overflow_boundaries_are_not_hidden() {
+    assert!(
+        size_of::<payload::HostOwner>()
+            >= size_of::<crate::mutable_instrument::MutableInstrumentTrackRuntime>(),
+        "the proposed owner must charge at least the complete actual owner header"
+    );
     let pool = payload::PoolCapacity::allocated();
     let mut input = empty(pool);
     input.base = 32 * 1024 * 1024 - pool.bytes().unwrap();
@@ -174,6 +183,8 @@ fn independent_byte_count_and_overflow_boundaries_are_not_hidden() {
         header: size_of::<payload::HostOwner>(),
         payload: 8192,
         ledgers: 128 * size_of::<crate::mutable_instrument::MutableOccurrence>(),
+        frozen: 0,
+        modulation: 0,
     };
     let owners = [owner];
     input = empty(pool);
@@ -191,6 +202,19 @@ fn independent_byte_count_and_overflow_boundaries_are_not_hidden() {
     input.active_effect_bytes = 1;
     assert_eq!(planner::plan(&input), Err(Refusal::Pair));
     input.active_effect_bytes = 0;
+    let modulation_one = [OwnerCharge {
+        modulation: 1,
+        ..owner
+    }];
+    input.active = &modulation_one;
+    assert!(planner::plan(&input).is_ok());
+    let modulation_over = [OwnerCharge {
+        modulation: 1,
+        ..owner
+    }; 256];
+    input.active = &modulation_over;
+    assert_eq!(planner::plan(&input), Err(Refusal::Pair));
+    input.active = &maximal;
     input.active_effects = 1;
     assert_eq!(planner::plan(&input), Err(Refusal::Processors));
     // The retained bank has its own declaration/count limit, independent of active.
@@ -228,6 +252,12 @@ fn independent_byte_count_and_overflow_boundaries_are_not_hidden() {
     input = empty(pool);
     input.active = &overflow_owner;
     assert_eq!(planner::plan(&input), Err(Refusal::Overflow));
+    let overflow_frozen = [OwnerCharge {
+        frozen: usize::MAX,
+        ..owner
+    }];
+    input.active = &overflow_frozen;
+    assert_eq!(planner::plan(&input), Err(Refusal::Overflow));
 }
 
 #[test]
@@ -235,7 +265,9 @@ fn actual_recipe_charge_and_owner_generation_boundary_identity_govern_admission(
     let pool = payload::PoolCapacity::allocated();
     let charge = size_of::<payload::Slot>() + payload::context_bytes();
     let limit = 2 * 1024 * 1024 / charge;
-    assert_eq!(limit, 425); // W10 authored asset metadata; unchanged 2MiB cap.
+    assert_eq!(limit, 423); // Current proposed context; unchanged 2 MiB cap.
+    assert!(limit * charge <= 2 * 1024 * 1024);
+    assert!((limit + 1) * charge > 2 * 1024 * 1024);
     let recipes: Vec<_> = (1..=limit as u64).map(recipe).collect();
     let mut input = empty(pool);
     input.recipes = &recipes;
@@ -326,10 +358,34 @@ fn check_admitted_inventory_and_handoff_ownership(shape: Shape) {
         runtime.release_voice_count(),
     );
     let result = planner::plan(&input);
-    assert!(
-        result.is_ok() || result == Err(Refusal::Playback),
-        "unexpected proof refusal: {result:?}"
-    );
+    let active_declared = input.active_effect_bytes
+        + input
+            .active
+            .iter()
+            .map(|owner| owner.payload + owner.modulation)
+            .sum::<usize>();
+    let retained_declared = input.retained_effect_bytes
+        + input
+            .retained
+            .iter()
+            .map(|owner| owner.payload + owner.modulation)
+            .sum::<usize>();
+    let largest_owner = input
+        .active
+        .iter()
+        .chain(input.retained)
+        .map(|owner| owner.payload)
+        .max()
+        .unwrap_or(0);
+    if active_declared > 2 * 1024 * 1024 || retained_declared > 2 * 1024 * 1024 {
+        assert!(largest_owner <= 8192);
+        assert_eq!(result, Err(Refusal::Pair));
+    } else {
+        assert!(
+            result.is_ok() || result == Err(Refusal::Playback),
+            "unexpected proof refusal: {result:?}; active={active_declared} retained={retained_declared} largest_owner={largest_owner}"
+        );
+    }
     assert_eq!(
         before,
         (
@@ -510,6 +566,8 @@ fn namespace_generation_ledger_and_retained_slot_refusals_are_independent() {
         header: size_of::<payload::HostOwner>(),
         payload: size_of::<payload::Pair>(),
         ledgers: 0,
+        frozen: 0,
+        modulation: 0,
     }];
     input = empty(pool);
     input.active = &owner;

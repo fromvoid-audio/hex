@@ -338,3 +338,245 @@ fn source_only_midi_fanout_launch_release_relaunch_and_handoff_have_no_callback_
     assert_eq!(output, [[0.0; 2]; 256]);
     control.reclaim();
 }
+
+#[test]
+fn source_delay_history_survives_live_receiver_move_without_callback_allocations() {
+    use hex_devices::delay;
+    use hex_engine::native_device_resources::{PreparedDeviceResources, ResidentDeviceAssets};
+    use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+    let Created::Track(receiver) = editor
+        .execute(Command::InsertTrackWithDevice {
+            name: "receiver".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("receiver")
+    };
+    let Created::Track(contributor) = editor
+        .execute(Command::AddMidiTrack {
+            name: "contributor".into(),
+        })
+        .unwrap()
+    else {
+        panic!("contributor")
+    };
+    let source = editor
+        .project()
+        .track(receiver)
+        .unwrap()
+        .source_id()
+        .unwrap();
+    let parent = editor
+        .project()
+        .native_source(source)
+        .unwrap()
+        .instrument()
+        .id();
+    editor
+        .execute(Command::BindTrackSource {
+            track: contributor,
+            source: Some(source),
+        })
+        .unwrap();
+    let Created::Clip(clip) = editor
+        .execute(Command::PlaceMidiClip {
+            track: contributor,
+            start: BeatTime::ZERO,
+            length: BeatTime::ONE,
+        })
+        .unwrap()
+    else {
+        panic!("clip")
+    };
+    editor
+        .execute(Command::AddMidiNote {
+            clip,
+            start: BeatTime::ZERO,
+            duration: BeatTime::ONE,
+            pitch: 60,
+            channel: 0,
+            velocity: 100,
+        })
+        .unwrap();
+
+    let mut state = delay::DEFINITION.default_state().unwrap();
+    for (parameter, value) in [
+        (delay::LEFT_SYNC, ParameterValue::Bool(false)),
+        (delay::RIGHT_SYNC, ParameterValue::Bool(false)),
+        (delay::TIME, ParameterValue::Float(3.0)),
+        (delay::RIGHT_TIME, ParameterValue::Float(3.0)),
+        (delay::DRY_WET, ParameterValue::Float(1.0)),
+    ] {
+        state = delay::DEFINITION
+            .patch_parameter(&state, parameter, value)
+            .unwrap();
+    }
+    let Created::Device(child) = editor
+        .execute(Command::InsertNestedDevice { parent, state })
+        .unwrap()
+    else {
+        panic!("source delay")
+    };
+    let table = Arc::new(SineTable::new());
+    let cancel = AtomicBool::new(false);
+    let resources = PreparedDeviceResources::prepare_on_control(
+        &ResidentDeviceAssets::default(),
+        editor.project(),
+        1 << 20,
+        &cancel,
+    )
+    .unwrap();
+    let prepare = |project: &Project| {
+        let revision = PreparedRevision::prepare_with_device_resources(
+            project,
+            &BTreeMap::new(),
+            Arc::clone(&table),
+            None,
+            &hex_engine::audio_transform::AudioTransformPreparation::default(),
+            &resources,
+            0,
+            &cancel,
+        )
+        .unwrap();
+        Arc::new(revision)
+    };
+    let first = prepare(editor.project());
+    editor
+        .execute(Command::SetNativeSourceReceiver {
+            source,
+            track: Some(contributor),
+        })
+        .unwrap();
+    let moved = prepare(editor.project());
+    let mut dry_editor = Editor::new(editor.project().clone(), 2).unwrap();
+    dry_editor.execute(Command::RemoveDevice(child)).unwrap();
+    let dry = prepare(dry_editor.project());
+    editor
+        .execute(Command::SetDeviceBypass {
+            device: child,
+            bypassed: true,
+        })
+        .unwrap();
+    let changed = prepare(editor.project());
+
+    let mut reference =
+        hex_engine::SessionPlayback::new_with_device_resources(Arc::clone(&first), &resources)
+            .unwrap();
+    reference.apply(SessionPlaybackCommand::Play).unwrap();
+    let (mut control, mut callback) = prepared::channel(48_000).unwrap();
+    control
+        .configure_device_resource_publication_on_control(
+            hex_engine::AudioStorageLedgerReservation {
+                data_rows: 256,
+                handle_rows: 256,
+                root_rows: 64,
+                max_retained_bytes: 2_000_000,
+                max_construction_peak_bytes: 2_000_000,
+            },
+        )
+        .unwrap();
+    let publish = |control: &mut prepared::Control, revision| {
+        control
+            .publish_with_admission_on_control(
+                Playback::try_from_prepared_with_device_resources(revision, &resources).unwrap(),
+                prepared::PublicationPolicy::InheritRuntime,
+                1,
+                |_| Ok::<_, ()>(()),
+            )
+            .unwrap_or_else(|_| panic!("source graph could not be queued"))
+    };
+    let old = publish(&mut control, first);
+    control.command(PlaybackCommand::Play).unwrap();
+
+    let mut compare = |callback: &mut prepared::Callback| {
+        let mut actual = [[0.0; 2]; 256];
+        let mut expected = [[0.0; 2]; 256];
+        reference.render(&mut expected).unwrap();
+        measured(|| {
+            callback.begin_block();
+            callback.render(&mut actual).unwrap();
+            callback.finish_gain_recording_quantum(true);
+        });
+        for (actual, expected) in actual.iter().zip(expected) {
+            assert!((actual[0] - expected[0]).abs() < 1e-6);
+            assert!((actual[1] - expected[1]).abs() < 1e-6);
+        }
+        assert!(expected.iter().flatten().any(|sample| sample.abs() > 1e-5));
+        actual
+    };
+    let wet = compare(&mut callback);
+    assert!(wet[..100].iter().flatten().all(|sample| *sample == 0.0));
+    let rejected = publish(&mut control, changed);
+    compare(&mut callback);
+    assert_ne!(old, rejected);
+    assert_eq!(control.status.applied_revision.load(Ordering::Acquire), old);
+    control.reclaim();
+    assert_eq!(control.unreturned_resident_graphs_on_control(), Some(1));
+
+    let next = publish(&mut control, Arc::clone(&moved));
+    compare(&mut callback);
+    assert_eq!(
+        control.status.applied_revision.load(Ordering::Acquire),
+        next
+    );
+    control.reclaim();
+    assert_eq!(control.unreturned_resident_graphs_on_control(), Some(1));
+
+    let rejected_removal = publish(&mut control, Arc::clone(&dry));
+    compare(&mut callback);
+    assert_ne!(rejected_removal, next);
+    assert_eq!(
+        control.status.applied_revision.load(Ordering::Acquire),
+        next
+    );
+    control.reclaim();
+
+    let render = |callback: &mut prepared::Callback| {
+        let mut pcm = [[0.0; 2]; 256];
+        measured(|| {
+            callback.begin_block();
+            callback.render(&mut pcm).unwrap();
+            callback.finish_gain_recording_quantum(true);
+        });
+        pcm
+    };
+    control.stop();
+    assert_eq!(render(&mut callback), [[0.0; 2]; 256]);
+    let removed = publish(&mut control, dry);
+    assert_eq!(render(&mut callback), [[0.0; 2]; 256]);
+    assert_eq!(
+        control.status.applied_revision.load(Ordering::Acquire),
+        removed
+    );
+    control.reclaim();
+
+    control.command(PlaybackCommand::Play).unwrap();
+    let dry_pcm = render(&mut callback);
+    assert!(
+        dry_pcm[..100]
+            .iter()
+            .flatten()
+            .any(|sample| sample.abs() > 1e-5)
+    );
+    let attached = publish(&mut control, moved);
+    let wet_pcm = render(&mut callback);
+    assert!(wet_pcm[..100].iter().flatten().all(|sample| *sample == 0.0));
+    assert!(
+        wet_pcm[160..]
+            .iter()
+            .flatten()
+            .any(|sample| sample.abs() > 1e-5)
+    );
+    assert_eq!(
+        control.status.applied_revision.load(Ordering::Acquire),
+        attached
+    );
+    control.reclaim();
+    assert_eq!(control.unreturned_resident_graphs_on_control(), Some(1));
+}

@@ -51,6 +51,16 @@ impl Member {
             Self::Instrument(binding) => binding,
         }
     }
+
+    fn authored_devices(&self) -> impl Iterator<Item = &Device> {
+        let (effect, source) = match self {
+            Self::Effect(device) => (Some(device.as_ref()), None),
+            Self::Instrument(binding) => (None, Some(binding)),
+        };
+        effect
+            .into_iter()
+            .chain(source.into_iter().flat_map(|binding| binding.devices()))
+    }
 }
 
 /// Complete authored state, restricted to the project and media it was captured from.
@@ -62,12 +72,17 @@ pub struct DeviceClipboard {
 }
 
 impl Project {
+    /// Capture selected units and descendants once in canonical signal order.
+    /// Paste assigns fresh IDs and reroots a subtree copied without its parent.
     pub fn capture_devices(
         &self,
         owner: DeviceChainOwner,
         selected: &DeviceSelectionIds,
     ) -> Result<DeviceClipboard, Invalid> {
         let mut members = Vec::new();
+        members
+            .try_reserve_exact(crate::MAX_DEVICES_PER_TRACK + 1)
+            .map_err(|_| Invalid("could not reserve device clipboard"))?;
         match owner {
             DeviceChainOwner::Track(id) => {
                 let track = self
@@ -84,44 +99,34 @@ impl Project {
                                 .ok_or(Invalid("instrument no longer exists"))?;
                             members.push(Member::Instrument(binding.clone()));
                         }
-                        TrackDeviceRef::Effect(device) if selected.ids().contains(&device.id()) => {
-                            members.push(Member::Effect(Box::new(device.clone())))
+                        TrackDeviceRef::Effect(device) if included(device, selected, &members) => {
+                            members.push(Member::Effect(Box::new(device.clone())));
                         }
                         _ => {}
                     }
                 }
             }
-            DeviceChainOwner::Main => members.extend(
-                self.main_devices()
-                    .iter()
-                    .filter(|d| selected.ids().contains(&d.id()))
-                    .cloned()
-                    .map(|device| Member::Effect(Box::new(device))),
-            ),
+            DeviceChainOwner::Main => capture_effects(self.main_devices(), selected, &mut members),
             DeviceChainOwner::Return(id) => {
                 let track = self
                     .return_tracks()
                     .iter()
                     .find(|track| track.id() == id)
                     .ok_or(Invalid("return no longer exists"))?;
-                members.extend(
-                    track
-                        .devices()
-                        .iter()
-                        .filter(|d| selected.ids().contains(&d.id()))
-                        .cloned()
-                        .map(|device| Member::Effect(Box::new(device))),
-                );
+                capture_effects(track.devices(), selected, &mut members);
             }
         }
-        if members.len() != selected.ids().len() {
+        if selected
+            .ids()
+            .iter()
+            .any(|id| !members.iter().any(|member| member.device().id() == *id))
+        {
             return Err(Invalid("selected device no longer belongs to the chain"));
         }
         let mut asset_ids = BTreeSet::new();
-        for member in &members {
+        for device in members.iter().flat_map(Member::authored_devices) {
             asset_ids.extend(
-                member
-                    .device()
+                device
                     .authored_states()
                     .flat_map(|state| state.asset_references())
                     .map(|item| AssetId(item.asset.value())),
@@ -144,13 +149,37 @@ impl Project {
     }
 }
 
+// Validated preorder guarantees that an included parent precedes every child.
+fn included(device: &Device, selected: &DeviceSelectionIds, members: &[Member]) -> bool {
+    selected.ids().contains(&device.id())
+        || device
+            .parent()
+            .is_some_and(|parent| members.iter().any(|member| member.device().id() == parent))
+}
+fn capture_effects(devices: &[Device], selected: &DeviceSelectionIds, members: &mut Vec<Member>) {
+    for device in devices {
+        if included(device, selected, members) {
+            members.push(Member::Effect(Box::new(device.clone())));
+        }
+    }
+}
+
 pub(crate) fn remove(
     project: &mut Project,
     owner: DeviceChainOwner,
     selected: &DeviceSelectionIds,
 ) -> Result<Created, Invalid> {
     let captured = project.capture_devices(owner, selected)?;
-    for member in captured.members {
+    // An ancestor's RemoveDevice already removes its captured descendants.
+    for member in &captured.members {
+        if member.device().parent().is_some_and(|parent| {
+            captured
+                .members
+                .iter()
+                .any(|ancestor| ancestor.device().id() == parent)
+        }) {
+            continue;
+        }
         let command = match (owner, member) {
             (DeviceChainOwner::Track(track), Member::Instrument(_)) => {
                 Command::RemoveInstrument { track }
@@ -177,8 +206,19 @@ pub(crate) fn paste(
             return Err(Invalid("copied media no longer matches the project"));
         }
     }
+    preflight_paste(project, clipboard, owner)?;
+    let mut remapped = Vec::new();
+    remapped
+        .try_reserve_exact(clipboard.members.len())
+        .map_err(|_| Invalid("could not reserve device identity mapping"))?;
     let mut first = None;
     for member in &clipboard.members {
+        // External parents are intentionally absent: a copied subunit is a root.
+        let parent = member.device().parent().and_then(|parent| {
+            remapped
+                .iter()
+                .find_map(|(old, new)| (*old == parent).then_some(*new))
+        });
         let id = match (owner, member) {
             (DeviceChainOwner::Track(track), Member::Instrument(binding)) => {
                 let target = project
@@ -211,7 +251,7 @@ pub(crate) fn paste(
                 else {
                     return Err(Invalid("device insertion failed"));
                 };
-                copy_authored(project, id, device)?;
+                copy_authored(project, id, device, parent)?;
                 id
             }
             (DeviceChainOwner::Main, Member::Effect(device)) => {
@@ -222,7 +262,7 @@ pub(crate) fn paste(
                 else {
                     return Err(Invalid("device insertion failed"));
                 };
-                copy_authored(project, id, device)?;
+                copy_authored(project, id, device, parent)?;
                 id
             }
             (DeviceChainOwner::Return(return_track), Member::Effect(device)) => {
@@ -234,21 +274,95 @@ pub(crate) fn paste(
                 else {
                     return Err(Invalid("device insertion failed"));
                 };
-                copy_authored(project, id, device)?;
+                copy_authored(project, id, device, parent)?;
                 id
             }
             _ => return Err(Invalid("destination cannot accept an instrument")),
         };
+        remapped.push((member.device().id(), id));
         first.get_or_insert(id);
     }
     first
         .map(Created::Device)
         .ok_or(Invalid("device clipboard is empty"))
 }
-fn copy_authored(project: &mut Project, id: DeviceId, source: &Device) -> Result<(), Invalid> {
+/// Quote all expanded nodes before the first insertion reserves any new IDs.
+fn preflight_paste(
+    project: &Project,
+    clipboard: &DeviceClipboard,
+    owner: DeviceChainOwner,
+) -> Result<(), Invalid> {
+    let effects = clipboard
+        .members
+        .iter()
+        .filter(|member| matches!(member, Member::Effect(_)))
+        .count();
+    let instruments = clipboard
+        .members
+        .len()
+        .checked_sub(effects)
+        .ok_or(Invalid("device count underflow"))?;
+    let current = match owner {
+        DeviceChainOwner::Track(id) => {
+            let track = project
+                .track(id)
+                .ok_or(Invalid("device track no longer exists"))?;
+            if instruments > 1
+                || (instruments > 0 && (track.instrument.is_some() || track.is_group()))
+            {
+                return Err(Invalid("destination cannot accept an instrument"));
+            }
+            track.devices().len()
+        }
+        DeviceChainOwner::Main => {
+            if instruments > 0 {
+                return Err(Invalid("destination cannot accept an instrument"));
+            }
+            project.main_devices().len()
+        }
+        DeviceChainOwner::Return(id) => {
+            if instruments > 0 {
+                return Err(Invalid("destination cannot accept an instrument"));
+            }
+            project
+                .return_tracks()
+                .iter()
+                .find(|track| track.id() == id)
+                .ok_or(Invalid("return no longer exists"))?
+                .devices()
+                .len()
+        }
+    };
+    if current
+        .checked_add(effects)
+        .is_none_or(|count| count > crate::MAX_DEVICES_PER_TRACK)
+    {
+        return Err(Invalid("track device limit reached"));
+    }
+    let copied_devices = clipboard
+        .members
+        .iter()
+        .flat_map(Member::authored_devices)
+        .count();
+    if crate::returns::device_count(project)?
+        .checked_add(copied_devices)
+        .is_none_or(|count| count > crate::MAX_DEVICES)
+    {
+        return Err(Invalid("project device limit reached"));
+    }
+    Ok(())
+}
+
+fn copy_authored(
+    project: &mut Project,
+    id: DeviceId,
+    source: &Device,
+    parent: Option<DeviceId>,
+) -> Result<(), Invalid> {
     project.edit_device(id, |target| {
         let mut copied = source.clone();
         copied.id = id;
+        copied.parent = parent;
         *target = copied;
         Ok(())
     })
@@ -540,3 +654,7 @@ mod tests {
         assert_eq!(editor.project().track(source).unwrap().devices().len(), 2);
     }
 }
+
+#[cfg(test)]
+#[path = "device_clipboard_unit_tests.rs"]
+mod unit_tests;

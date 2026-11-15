@@ -121,6 +121,63 @@ pub(super) fn classify_publication(
 }
 
 impl NativeAudioSink {
+    /// Match the exact callback terminal before committing a native edit that
+    /// requires confirmation. A timed-out graph cannot later install.
+    pub(super) fn confirm_resident_edit_publication(
+        &mut self,
+        context: AudioSourceContext,
+        acceptance: ResidentPublicationAcceptance,
+        operation: &str,
+    ) -> Result<(), String> {
+        use hex_session::service::ResidentPublicationAcceptance;
+        use std::time::{Duration, Instant};
+
+        let ResidentPublicationAcceptance::Submitted {
+            output_identity,
+            audio_revision,
+        } = acceptance
+        else {
+            return Ok(());
+        };
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let control = self
+                .output
+                .as_mut()
+                .and_then(|output| output.publication.control())
+                .filter(|control| control.output_identity() == Some(output_identity))
+                .ok_or_else(|| format!("{operation} lost its audio output"))?;
+            let status = &control.status;
+            if status.recording_source().is_some_and(|source| {
+                source.output_identity == output_identity
+                    && source.audio_revision == audio_revision
+                    && source.context == context
+            }) {
+                return Ok(());
+            }
+            if let Some((revision, reason)) = status.rejected_revision()
+                && revision == audio_revision
+            {
+                return Err(format!(
+                    "{operation} playback refused · {}",
+                    reason.message()
+                ));
+            }
+            if status.device_fault.load(Acquire)
+                || status.render_fault.load(Acquire)
+                || Instant::now() >= deadline
+            {
+                // A queued candidate must not install after the editor refuses
+                // its revision. Retire this output before reporting loss.
+                self.relinquish_output();
+                return Err(format!(
+                    "{operation} lost audio confirmation · restart audio"
+                ));
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
     pub(super) fn resident_publication_readiness(&mut self) -> ResidentPublicationReadiness {
         let Some((output, applied, rejected)) = self.remember_applied_loop() else {
             return ResidentPublicationReadiness::NoOutput;
@@ -199,6 +256,7 @@ impl NativeAudioSink {
                 output_identity: output,
                 audio_revision: 0,
                 source_context: None,
+                source_origin: hex_session::service::ResidentSourceOrigin::Unknown,
                 section_loop: None,
             }));
         }
@@ -304,10 +362,16 @@ impl NativeAudioSink {
                 .pending
                 .as_ref()
                 .map_or(DeviceResourceAdmission::default(), |pending| {
-                    DeviceResourceAdmission::unpublished_on_control(
+                    let view = DeviceResourceAdmission::unpublished_on_control(
                         &pending.playback,
                         pending.resources.as_ref(),
-                    )
+                    );
+                    match pending.file_sources.as_ref() {
+                        Some(files) if !files.repitches().requirements().is_empty() => {
+                            view.with_repitch_requirements(files.repitches())
+                        }
+                        _ => view,
+                    }
                 }),
         ]
     }
@@ -326,6 +390,8 @@ impl NativeAudioSink {
         admit: &mut dyn FnMut(&[DeviceResourceAdmission<'_>]) -> Result<(), String>,
         file_sources: Option<&hex_session::service::ResidentFileSet>,
     ) -> Result<ResidentPublicationAcceptance, ResidentPublicationRefusal> {
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        let parameter_source = self.plugins.override_publication_source(metadata.context);
         let native_publication = self.plugins.preparing_edit(metadata.context)
             || playback.foreign_nodes_on_control().next().is_some();
         let edit_cancellation = self
@@ -360,7 +426,11 @@ impl NativeAudioSink {
             metadata.context,
             matches!(policy, ResidentPublicationPolicy::RestorePluginState),
         ) {
-            return Err(ResidentPublicationRefusal { playback, error });
+            return Err(ResidentPublicationRefusal {
+                kind: hex_session::service::ResidentPublicationFailure::Other,
+                playback,
+                error,
+            });
         }
         self.remember_applied_loop();
         self.poll_section_edit();
@@ -382,6 +452,7 @@ impl NativeAudioSink {
         if offline_edit && self.output.is_some() {
             self.cancel_section_edit();
             return Err(ResidentPublicationRefusal {
+                kind: hex_session::service::ResidentPublicationFailure::Other,
                 playback,
                 error: "audio output opened during the arrangement edit; try again".into(),
             });
@@ -391,10 +462,17 @@ impl NativeAudioSink {
         } else if matches!(policy, ResidentPublicationPolicy::ArrangementEdit) {
             match self.section_publication_policy() {
                 Ok(policy) => Some(policy),
-                Err(error) => return Err(ResidentPublicationRefusal { playback, error }),
+                Err(error) => {
+                    return Err(ResidentPublicationRefusal {
+                        kind: hex_session::service::ResidentPublicationFailure::Other,
+                        playback,
+                        error,
+                    });
+                }
             }
         } else if self.section_edit.is_some() {
             return Err(ResidentPublicationRefusal {
+                kind: hex_session::service::ResidentPublicationFailure::Other,
                 playback,
                 error: "stopped arrangement edit is pending".into(),
             });
@@ -410,6 +488,7 @@ impl NativeAudioSink {
             existing.or_else(|| self.resident.observations.iter().position(Option::is_none))
         else {
             return Err(ResidentPublicationRefusal {
+                kind: hex_session::service::ResidentPublicationFailure::Other,
                 playback,
                 error: "audio observation retirement is waiting for capacity".into(),
             });
@@ -425,6 +504,7 @@ impl NativeAudioSink {
             && (self.pending_observation.is_some() || self.pending_status_observation.is_some())
         {
             return Err(ResidentPublicationRefusal {
+                kind: hex_session::service::ResidentPublicationFailure::Other,
                 playback,
                 error: "audio publication observation is waiting for capacity".into(),
             });
@@ -435,21 +515,35 @@ impl NativeAudioSink {
                 Ok(Some(actual)) if actual == expected && section_loop == actual.section_loop => {}
                 Ok(_) => {
                     return Err(ResidentPublicationRefusal {
+                        kind: hex_session::service::ResidentPublicationFailure::Other,
                         playback,
                         error: "resident runtime changed during preparation".into(),
                     });
                 }
-                Err(error) => return Err(ResidentPublicationRefusal { playback, error }),
+                Err(error) => {
+                    return Err(ResidentPublicationRefusal {
+                        kind: hex_session::service::ResidentPublicationFailure::Other,
+                        playback,
+                        error,
+                    });
+                }
             }
         } else if matches!(policy, ResidentPublicationPolicy::InheritRuntime) {
             match self.current_runtime_loop(metadata.context) {
                 Ok(Some(actual)) if actual.section_loop.is_some() || section_loop.is_some() => {
                     return Err(ResidentPublicationRefusal {
+                        kind: hex_session::service::ResidentPublicationFailure::Other,
                         playback,
                         error: "resident audition loop requires an applied witness".into(),
                     });
                 }
-                Err(error) => return Err(ResidentPublicationRefusal { playback, error }),
+                Err(error) => {
+                    return Err(ResidentPublicationRefusal {
+                        kind: hex_session::service::ResidentPublicationFailure::Other,
+                        playback,
+                        error,
+                    });
+                }
                 _ => {}
             }
         }
@@ -459,6 +553,7 @@ impl NativeAudioSink {
                     == Some(metadata.context.project_generation)
                     && metadata.device_preview.is_none()
                     && metadata.tuning_preview.is_none()
+                    && metadata.clip_preview.is_none()
                     && metadata.seek_request.is_none()
                     && !metadata.stopped_restore
                     && metadata.computer_keyboard_request.is_none()
@@ -466,6 +561,7 @@ impl NativeAudioSink {
             })
         {
             return Err(ResidentPublicationRefusal {
+                kind: hex_session::service::ResidentPublicationFailure::Other,
                 playback,
                 error: "document replacement context is stale".into(),
             });
@@ -492,6 +588,7 @@ impl NativeAudioSink {
                 Some(identity) => identity,
                 None => {
                     return Err(ResidentPublicationRefusal {
+                        kind: hex_session::service::ResidentPublicationFailure::Other,
                         playback,
                         error: "audio output identity unavailable".into(),
                     });
@@ -510,6 +607,7 @@ impl NativeAudioSink {
                 ResidentPublicationPolicy::ArrangementEdit => {
                     let Some(policy) = section_policy else {
                         return Err(ResidentPublicationRefusal {
+                            kind: hex_session::service::ResidentPublicationFailure::Other,
                             playback,
                             error: "stopped arrangement fence unavailable".into(),
                         });
@@ -518,6 +616,17 @@ impl NativeAudioSink {
                 }
                 ResidentPublicationPolicy::InheritRuntime
                 | ResidentPublicationPolicy::InheritRuntimeAt(_) => {
+                    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                    if let Some((source, transport_epoch, playing)) = parameter_source {
+                        hex_audio::prepared::PublicationPolicy::InheritUnderNativeParameter {
+                            source,
+                            transport_epoch,
+                            playing,
+                        }
+                    } else {
+                        hex_audio::prepared::PublicationPolicy::InheritRuntime
+                    }
+                    #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
                     hex_audio::prepared::PublicationPolicy::InheritRuntime
                 }
                 ResidentPublicationPolicy::InstallFreshRuntime => {
@@ -529,12 +638,17 @@ impl NativeAudioSink {
                             Ok(None) => hex_audio::prepared::PublicationPolicy::InstallFreshRuntime,
                             Ok(Some(_)) => {
                                 return Err(ResidentPublicationRefusal {
+                                    kind: hex_session::service::ResidentPublicationFailure::Other,
                                     playback,
                                     error: "stopped vst3 restore owns publication".into(),
                                 });
                             }
                             Err(error) => {
-                                return Err(ResidentPublicationRefusal { playback, error });
+                                return Err(ResidentPublicationRefusal {
+                                    kind: hex_session::service::ResidentPublicationFailure::Other,
+                                    playback,
+                                    error,
+                                });
                             }
                         }
                     }
@@ -545,7 +659,7 @@ impl NativeAudioSink {
                     hex_audio::prepared::PublicationPolicy::InstallFreshRuntime
                 }
                 ResidentPublicationPolicy::FreshIfUnchanged(expected)
-                | ResidentPublicationPolicy::SectionWhenReady {
+                | ResidentPublicationPolicy::QuantizedSeekWhenReady {
                     fence: expected, ..
                 } => {
                     let Some(actual) = control.capture_fresh_runtime_fence().filter(|actual| {
@@ -554,15 +668,20 @@ impl NativeAudioSink {
                             && expected.route_generation == actual.route_state_generation()
                             && expected.admitted_command_ticket == actual.admitted_command_ticket()
                             && expected.output_fault_epoch == actual.output_fault_epoch()
+                            && expected.consumed_stop_generation
+                                == actual.consumed_stop_generation()
                     }) else {
                         return Err(ResidentPublicationRefusal {
+                            kind: hex_session::service::ResidentPublicationFailure::Other,
                             playback,
                             error: "audio runtime changed while preparing graph".into(),
                         });
                     };
                     match policy {
-                        ResidentPublicationPolicy::SectionWhenReady { quantization, .. } => {
-                            hex_audio::prepared::PublicationPolicy::InstallSectionWhenReady {
+                        ResidentPublicationPolicy::QuantizedSeekWhenReady {
+                            quantization, ..
+                        } => {
+                            hex_audio::prepared::PublicationPolicy::InstallQuantizedSeekWhenReady {
                                 fence: actual,
                                 quantization,
                             }
@@ -600,6 +719,7 @@ impl NativeAudioSink {
                         .is_err())
             {
                 return Err(ResidentPublicationRefusal {
+                    kind: hex_session::service::ResidentPublicationFailure::Other,
                     playback: retained_playback,
                     error: "fixture native graph publication gate closed".into(),
                 });
@@ -610,12 +730,14 @@ impl NativeAudioSink {
                         super::document_output::check_deadline(deadline, request_cancellation)
                 {
                     return Err(ResidentPublicationRefusal {
+                        kind: hex_session::service::ResidentPublicationFailure::Other,
                         playback: retained_playback,
                         error,
                     });
                 }
                 if !edit_admitted.get() && publication_cancelled() {
                     return Err(ResidentPublicationRefusal {
+                        kind: hex_session::service::ResidentPublicationFailure::Other,
                         playback: retained_playback,
                         error: cancellation_error.into(),
                     });
@@ -667,6 +789,7 @@ impl NativeAudioSink {
                         output_identity,
                         audio_revision,
                         source_context: Some(metadata.context),
+                        source_origin: metadata.source_origin,
                         section_loop,
                     });
                     self.resident.capture_target = observation.native_parameter_input_target();
@@ -688,12 +811,22 @@ impl NativeAudioSink {
                 }
                 Err(hex_audio::prepared::AdmittedPublishError::Admission { reason, playback }) => {
                     Err(ResidentPublicationRefusal {
+                        kind: hex_session::service::ResidentPublicationFailure::Other,
                         playback,
                         error: reason,
                     })
                 }
                 Err(hex_audio::prepared::AdmittedPublishError::Publication(error)) => {
+                    let kind = match error.kind {
+                        hex_audio::prepared::PublishErrorKind::NativeSourceUnavailable => {
+                            hex_session::service::ResidentPublicationFailure::NativeSourceUnavailable
+                        }
+                        hex_audio::prepared::PublishErrorKind::Other => {
+                            hex_session::service::ResidentPublicationFailure::Other
+                        }
+                    };
                     Err(ResidentPublicationRefusal {
+                        kind,
                         playback: error.playback,
                         error: error.reason.into(),
                     })
@@ -702,6 +835,7 @@ impl NativeAudioSink {
         }
         if (self.output.is_some() && !replacing_document) || on_replacement_output {
             return Err(ResidentPublicationRefusal {
+                kind: hex_session::service::ResidentPublicationFailure::Other,
                 playback,
                 error: "active audio publication endpoint is closed".into(),
             });
@@ -710,9 +844,10 @@ impl NativeAudioSink {
             policy,
             ResidentPublicationPolicy::InheritRuntimeAt(_)
                 | ResidentPublicationPolicy::FreshIfUnchanged(_)
-                | ResidentPublicationPolicy::SectionWhenReady { .. }
+                | ResidentPublicationPolicy::QuantizedSeekWhenReady { .. }
         ) {
             return Err(ResidentPublicationRefusal {
+                kind: hex_session::service::ResidentPublicationFailure::Other,
                 playback,
                 error: "fresh runtime publication requires its original active output".into(),
             });
@@ -728,6 +863,7 @@ impl NativeAudioSink {
             Ok(captured) => captured,
             Err(error) => {
                 return Err(ResidentPublicationRefusal {
+                    kind: hex_session::service::ResidentPublicationFailure::Other,
                     playback,
                     error: format!("resource capture refused: {error:?}"),
                 });
@@ -737,7 +873,11 @@ impl NativeAudioSink {
             DeviceResourceAdmission::unpublished_on_control(&playback, captured.as_ref());
         let current = self.resident_inventory();
         if let Err(error) = admit(&[candidate, current[0], current[1], current[2]]) {
-            return Err(ResidentPublicationRefusal { playback, error });
+            return Err(ResidentPublicationRefusal {
+                kind: hex_session::service::ResidentPublicationFailure::Other,
+                playback,
+                error,
+            });
         }
         self.resident.observations[observation_slot] = Some(Arc::clone(&observation));
         self.resident.pending = Some(Pending {
@@ -861,6 +1001,7 @@ mod publication_readiness_tests {
             output_identity: 7,
             audio_revision: 12,
             source_context: None,
+            source_origin: hex_session::service::ResidentSourceOrigin::ClipPlayStartPreview,
             section_loop: None,
         };
         assert_eq!(

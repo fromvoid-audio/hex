@@ -2,10 +2,21 @@
 //! remain in hex-project; prepare/admit/publication remains in hex-session.
 //! Focused device cards retain their captured-owner and gesture-barrier adapter.
 //! No cached inspector owner may become an activation target by itself.
-use super::{EditorMode, EditorView, track_name::Target};
+use super::{
+    EditorMode, EditorView,
+    pending_edit::{Disposition, Receipt},
+    track_name::Target,
+};
 use gpui::{Context, KeyDownEvent, Modifiers, Window};
-use hex_project::{ClipEdit, Command, SessionCellContent};
-use hex_session::service::Request;
+use hex_project::{ClipEdit, ClipId, Command, SessionCellContent};
+use hex_session::service::{Event, Request};
+use std::collections::BTreeSet;
+
+pub(super) struct PendingClipActivation {
+    clips: BTreeSet<ClipId>,
+    active: bool,
+    receipt: Receipt,
+}
 
 pub(super) fn is_activation_key(event: &KeyDownEvent) -> bool {
     matches!(event.keystroke.key.as_str(), "c" | "0")
@@ -58,11 +69,91 @@ impl EditorView {
         };
         if self.activation_gesture_blocked() {
             self.error = Some("finish the current edit before changing activation".into());
-        } else if self.enqueue(Request::Edit(command)) {
-            self.duplicate_intent.cancel_chain();
+        } else {
+            if let Command::EditClips {
+                clips,
+                edit: ClipEdit::Active { active },
+            } = &command
+            {
+                self.pending_clip_activation = Some(PendingClipActivation {
+                    clips: clips.iter().copied().collect(),
+                    active: *active,
+                    receipt: Receipt::new(self.project_generation),
+                });
+            }
+            if self.enqueue(Request::Edit(command)) {
+                self.duplicate_intent.cancel_chain();
+            } else {
+                self.retire_clip_activation();
+            }
         }
         cx.notify();
         true
+    }
+
+    /// Arrangement paint follows the admitted keypress until the same edit's
+    /// terminal installs canonical state or restores it on refusal.
+    pub(super) fn displayed_clip_active(&self, clip: ClipId, canonical: bool) -> bool {
+        self.pending_clip_activation
+            .as_ref()
+            .filter(|pending| pending.clips.contains(&clip))
+            .map_or(canonical, |pending| pending.active)
+    }
+
+    pub(super) fn clip_activation_matches(&self, request: &Request) -> bool {
+        let Request::Edit(Command::EditClips {
+            clips,
+            edit: ClipEdit::Active { active },
+        }) = request
+        else {
+            return false;
+        };
+        self.pending_clip_activation
+            .as_ref()
+            .is_some_and(|pending| {
+                pending.receipt.is_queued()
+                    && pending.active == *active
+                    && pending.clips.len() == clips.len()
+                    && clips.iter().all(|clip| pending.clips.contains(clip))
+            })
+    }
+
+    pub(super) fn clip_activation_submitted(&mut self) {
+        if let Some(pending) = self.pending_clip_activation.as_mut() {
+            pending.receipt.submitted(self.worker_requests_pending);
+        }
+    }
+
+    pub(super) fn clip_activation_complete(&mut self, event: &Event) {
+        if self
+            .pending_clip_activation
+            .as_mut()
+            .is_some_and(|pending| {
+                pending.receipt.observe(
+                    self.project_generation,
+                    event.project_replaced,
+                    event.request_complete,
+                ) != Disposition::Waiting
+            })
+        {
+            self.retire_clip_activation();
+        }
+    }
+
+    pub(super) fn retire_clip_activation(&mut self) -> bool {
+        self.pending_clip_activation.take().is_some()
+    }
+
+    pub(super) fn retire_abandoned_clip_activation(&mut self) -> bool {
+        self.pending_clip_activation
+            .as_ref()
+            .is_some_and(|pending| pending.receipt.is_queued())
+            && !self
+                .pending_requests
+                .iter()
+                .chain(self.device_gesture_barriers.iter())
+                .any(|request| self.clip_activation_matches(request))
+            && self.retire_clip_activation()
     }
 
     pub(super) fn activation_gesture_blocked(&self) -> bool {
@@ -105,7 +196,7 @@ impl EditorView {
                 .project
                 .midi_source(clip)
                 .ok_or("selected midi source is unavailable")?;
-            let mut remaining: std::collections::BTreeSet<_> = selected.iter().copied().collect();
+            let mut remaining: BTreeSet<_> = selected.iter().copied().collect();
             let mut any_active = false;
             for note in source.notes() {
                 if remaining.remove(&note.id()) {
@@ -176,8 +267,7 @@ impl EditorView {
                 }
                 let mut clips = Vec::new();
                 let mut any_active = false;
-                let mut remaining: std::collections::BTreeSet<_> =
-                    self.selected_clip_ids().into_iter().collect();
+                let mut remaining: BTreeSet<_> = self.selected_clip_ids().into_iter().collect();
                 // Resolve a large multi-selection in one pass rather than
                 // scanning the project for every selected identity.
                 for track in state.project.tracks() {

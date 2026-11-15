@@ -42,6 +42,7 @@ fn chain(state: &NativeDeviceState, bypassed: bool, rate: u32) -> NativeRuntimeC
         "exercise the stateful provider"
     );
     NativeRuntimeChain::new_prepared(vec![PreparedRuntimeInstance {
+        modulation: None,
         automation: Default::default(),
         meter: Default::default(),
         owner: ProcessorChainOwner::Track(1),

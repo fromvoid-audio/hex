@@ -11,6 +11,7 @@ use std::{path::PathBuf, rc::Rc};
 pub(super) struct PendingSampleDrop {
     receipt: Receipt,
     path: PathBuf,
+    project_asset: Option<hex_project::AssetId>,
     destination: BrowserDropDestination,
     pub(super) preview: Option<DropPreview>,
     pub(super) insertion_line_y: Option<f32>,
@@ -30,6 +31,7 @@ impl EditorView {
         self.pending_sample_drop = Some(PendingSampleDrop {
             receipt: Receipt::new(self.project_generation),
             path: drag.path.clone(),
+            project_asset: drag.project_asset,
             destination,
             preview: drag.preview.get(),
             insertion_line_y: drag.insertion_line_y.get(),
@@ -51,6 +53,36 @@ impl EditorView {
         drop.receipt.is_queued()
             && match (drop.destination, request) {
                 (
+                    destination,
+                    Request::InsertProjectSample {
+                        asset,
+                        destination: target,
+                        ..
+                    },
+                ) => {
+                    let matches_destination = match (destination, target) {
+                        (
+                            BrowserDropDestination::ExistingTrack { track, start },
+                            AudioBatchDestination::Track { track: t, start: s },
+                        ) => (track, start) == (*t, *s),
+                        (
+                            BrowserDropDestination::NewTrack {
+                                before_track,
+                                start,
+                            },
+                            AudioBatchDestination::NewTracks {
+                                before_track: t,
+                                start: s,
+                            },
+                        ) => (before_track, start) == (*t, *s),
+                        (BrowserDropDestination::Console(a), AudioBatchDestination::Console(b)) => {
+                            a == *b
+                        }
+                        _ => false,
+                    };
+                    drop.project_asset == Some(*asset) && matches_destination
+                }
+                (
                     BrowserDropDestination::ExistingTrack { track, start },
                     Request::ImportToTrackWithOverwrite {
                         path,
@@ -67,8 +99,43 @@ impl EditorView {
                         path,
                         before_track: t,
                         start: s,
+                    }
+                    | Request::ImportToNewTrackWithGain {
+                        path,
+                        before_track: t,
+                        start: s,
+                        ..
                     },
                 ) => drop.path == *path && (before_track, start) == (*t, *s),
+                (
+                    BrowserDropDestination::ExistingTrack { track, start },
+                    Request::ImportAudioBatch {
+                        paths,
+                        destination: AudioBatchDestination::Track { track: t, start: s },
+                        ..
+                    },
+                ) => {
+                    paths.as_slice() == std::slice::from_ref(&drop.path)
+                        && (track, start) == (*t, *s)
+                }
+                (
+                    BrowserDropDestination::NewTrack {
+                        before_track,
+                        start,
+                    },
+                    Request::ImportAudioBatch {
+                        paths,
+                        destination:
+                            AudioBatchDestination::NewTracks {
+                                before_track: t,
+                                start: s,
+                            },
+                        ..
+                    },
+                ) => {
+                    paths.as_slice() == std::slice::from_ref(&drop.path)
+                        && (before_track, start) == (*t, *s)
+                }
                 (
                     BrowserDropDestination::Console(target),
                     Request::ImportAudioBatch {

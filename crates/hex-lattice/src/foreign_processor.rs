@@ -1,7 +1,7 @@
 //! Borrowed, fallible foreign graph processing, separate from rollbackable DSP.
 //! The host retains actual source/endpoint/worker custody and performs final
 //! host-format acceptance. A scalar declaration or state equality grants none.
-use crate::{NativeInstrumentClock, ProcessorChainOwner, StereoFrame};
+use crate::{ForeignModulationSamples, NativeInstrumentClock, ProcessorChainOwner, StereoFrame};
 use hex_lattice_contract::{
     DeviceContractError, DeviceTypeId, ForeignParameterPoint, ForeignProcessorBinding,
     NativeDeviceState,
@@ -114,6 +114,9 @@ pub struct ForeignAutomationSource<'a> {
     pub class: [u8; 16],
     pub sample_rate: u32,
     pub quantum_frames: u16,
+    /// Raw continuous ID with a reserved dense lane on this exact effect.
+    /// Ordinary effects and all instruments expose no reservation here.
+    pub dense_parameter: Option<u32>,
     /// Strictly increasing raw parameter IDs.
     pub parameters: &'a [ForeignParameterCapability],
 }
@@ -280,6 +283,56 @@ impl PreparedForeignAutomation {
             return Err(DeviceContractError::ForeignProcessingFailed);
         }
         self.retain_previous_since_on_control(previous, Some(received))
+    }
+
+    /// Keep the predecessor's current program and precisely the additional
+    /// predecessor revisions selected by the caller. The caller must establish
+    /// that no omitted revision can be needed by any callback or graph; keys
+    /// alone are not a source, installation, or quiescence witness. A refusal
+    /// leaves both owners unchanged, including their actual allocations.
+    pub fn retain_selected_on_control(
+        &mut self,
+        previous: &Self,
+        required: &[NonZeroU64],
+    ) -> Result<(), DeviceContractError> {
+        if self.binding != previous.binding
+            || self.revision <= previous.revision
+            || required.len() > MAX_RETAINED_FOREIGN_PROGRAMS
+            || required
+                .iter()
+                .any(|key| !previous.borrow().contains_revision(*key))
+            || previous
+                .retained
+                .iter()
+                .flatten()
+                .any(|entry| entry.revision >= previous.revision)
+            || self
+                .retained
+                .iter()
+                .flatten()
+                .any(|entry| entry.revision >= self.revision)
+        {
+            return Err(DeviceContractError::ForeignProcessingFailed);
+        }
+        let mut candidate = self.clone();
+        let mut filtered = previous.clone();
+        for owner in [&mut candidate, &mut filtered] {
+            for slot in &mut owner.retained {
+                if slot.as_ref().is_some_and(|entry| {
+                    entry.revision != previous.revision && !required.contains(&entry.revision)
+                }) {
+                    let bytes = slot.as_ref().map_or(0, |entry| entry.bytes);
+                    owner.storage_bytes = owner
+                        .storage_bytes
+                        .checked_sub(bytes)
+                        .ok_or(DeviceContractError::RuntimeBudgetExceeded)?;
+                    *slot = None;
+                }
+            }
+        }
+        candidate.retain_previous_on_control(&filtered)?;
+        *self = candidate;
+        Ok(())
     }
 
     fn retain_previous_since_on_control(
@@ -523,6 +576,21 @@ pub trait ForeignProcessors {
             frames.fill([0.0; 2]);
             Err(DeviceContractError::ForeignProcessingUnavailable)
         }
+    }
+    /// Stage a dense value lane through the same endpoint and host acceptance
+    /// as PCM. Values are normalized f64 at the supplied segment's offsets.
+    /// Hosts without the exact reservation must refuse before dispatch.
+    fn process_segment_with_modulation(
+        &mut self,
+        _node: ForeignProcessorNode<'_>,
+        _frame_offset: usize,
+        frames: &mut [StereoFrame],
+        _lane: ForeignModulationSamples<'_>,
+        _clock: Option<&dyn NativeInstrumentClock>,
+    ) -> Result<(), DeviceContractError> {
+        self.reject_callback();
+        frames.fill([0.0; 2]);
+        Err(DeviceContractError::ForeignProcessingUnavailable)
     }
     /// Stage ordered note events along with the segment. Like PCM, staged
     /// events become visible to the worker only after host acceptance.

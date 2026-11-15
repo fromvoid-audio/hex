@@ -6,6 +6,7 @@ use gpui::{
     Context, Div, ExternalPaths, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
     ScrollWheelEvent, Window, canvas, div, list, point, prelude::*, px, relative, rgb,
 };
+use std::sync::Arc;
 
 impl EditorView {
     pub(super) fn begin_arrangement_pan(&mut self, x: f32, y: f32) -> bool {
@@ -107,8 +108,7 @@ impl EditorView {
     }
 
     pub(super) fn arrangement(&mut self, window: &Window, cx: &mut Context<Self>) -> Div {
-        let available_width =
-            (f32::from(window.bounds().size.width) - self.browser_content_width(window)).max(0.0);
+        let available_width = self.workspace_body_width(window);
         if self
             .track_layout
             .available_width
@@ -127,18 +127,36 @@ impl EditorView {
                 .flex_1()
                 .min_h_0()
                 .bg(rgb(theme::color(theme::PaletteRole::Background)));
-            let main = self.main_track_row(viewport, &[], &[], window.scale_factor(), cx);
+            let main = self.main_track_row(viewport, &[], &[], window.scale_factor(), window, cx);
             let returns = self.return_tracks_view(cx);
-            return self.arrangement_surface(upper, returns, main, cx);
+            return self.arrangement_surface(upper, returns, main, None, cx);
         };
+        let locator_state = self
+            .locator_display_state()
+            .unwrap_or_else(|| Arc::clone(&state));
         self.sync_track_layout(state.project.tracks());
-        let clip_move_guide = self.displayed_clip_move_guide_frame();
-        let ruler_width = (f32::from(window.bounds().size.width)
-            - self.browser_content_width(window)
-            - self.track_header_width())
-        .max(0.0);
+        let viewport = self.visible_viewport(state.timeline_frames);
+        let clip_move_guide = self.displayed_clip_move_guide_frame(viewport);
+        let guide_line = clip_move_guide
+            .and_then(|frame| viewport.fraction(frame))
+            .map(|position| {
+                div()
+                    .absolute()
+                    .top_0()
+                    .bottom_0()
+                    .left_0()
+                    .right(px(self.track_header_width()))
+                    .children([vertical_timeline_guide(
+                        "clip-move-guide-line",
+                        position,
+                        theme::time_position_marker_color(),
+                        1.0 / window.scale_factor().max(1.0),
+                    )])
+            });
+        let ruler_width = (self.workspace_body_width(window) - self.track_header_width()).max(0.0);
         if self.arrangement_track_index(0).is_none() {
-            let empty_viewport = self.visible_viewport(state.timeline_frames);
+            let empty_viewport = viewport;
+            self.refresh_locators(&locator_state, empty_viewport);
             let grid = super::musical_time::grid_lines(
                 &state.project,
                 empty_viewport,
@@ -158,6 +176,7 @@ impl EditorView {
                 .flex_col()
                 .bg(rgb(theme::color(theme::PaletteRole::Background)))
                 .child(self.ruler(&state, ruler_width, clip_move_guide, cx))
+                .children(self.locator_strip(&locator_state, empty_viewport, ruler_width, cx))
                 .child(super::loop_rail::view(
                     self,
                     &state,
@@ -197,17 +216,35 @@ impl EditorView {
                                             "no tracks · import audio or add a track"
                                         },
                                     )),
-                            ),
+                            )
+                            .children([loop_guides(
+                                &state,
+                                self,
+                                empty_viewport,
+                                self.track_header_width(),
+                            )])
+                            .children([self.locator_lines(
+                                empty_viewport,
+                                self.track_header_width(),
+                                "locator-line",
+                            )])
+                            .children(self.edit_cursor_layer(empty_viewport, clip_move_guide, cx)),
                     ),
                     cx,
                 )]);
-            let main =
-                self.main_track_row(empty_viewport, &bands, &grid, window.scale_factor(), cx);
+            let main = self.main_track_row(
+                empty_viewport,
+                &bands,
+                &grid,
+                window.scale_factor(),
+                window,
+                cx,
+            );
             let returns = self.return_tracks_view(cx);
-            return self.arrangement_surface(upper, returns, main, cx);
+            return self.arrangement_surface(upper, returns, main, guide_line, cx);
         }
 
-        let viewport = self.visible_viewport(state.timeline_frames);
+        self.refresh_locators(&locator_state, viewport);
         let grid =
             super::musical_time::grid_lines(&state.project, viewport, ruler_width, self.snap_grid);
         let bands = super::musical_time::adaptive_grid_bands_for_grid(
@@ -268,6 +305,17 @@ impl EditorView {
                 window.scale_factor(),
             )])
             .child(rows);
+        content = content.children([loop_guides(
+            &state,
+            self,
+            viewport,
+            self.track_header_width(),
+        )]);
+        content = content.children([self.locator_lines(
+            viewport,
+            self.track_header_width(),
+            "locator-line",
+        )]);
         content = content.children(self.edit_cursor_layer(viewport, clip_move_guide, cx));
         content = content.children(self.track_reorder_line());
         let upper = div()
@@ -276,6 +324,7 @@ impl EditorView {
             .flex_1()
             .min_h_0()
             .child(self.ruler(&state, ruler_width, clip_move_guide, cx))
+            .children(self.locator_strip(&locator_state, viewport, ruler_width, cx))
             .child(super::loop_rail::view(self, &state, viewport, &grid, cx))
             .children([self.arrangement_body(content, cx)])
             .children(super::gain_lane::view(
@@ -285,12 +334,12 @@ impl EditorView {
                 ruler_width,
                 cx,
             ));
-        let main = self.main_track_row(viewport, &bands, &grid, window.scale_factor(), cx);
+        let main = self.main_track_row(viewport, &bands, &grid, window.scale_factor(), window, cx);
         let returns = self.return_tracks_view(cx);
-        self.arrangement_surface(upper, returns, main, cx)
+        self.arrangement_surface(upper, returns, main, guide_line, cx)
     }
 
-    fn arrangement_body(&self, mut body: Div, cx: &mut Context<Self>) -> Div {
+    fn arrangement_body(&self, mut body: Div, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
         if self
             .time_range_move_gesture
             .as_ref()
@@ -298,8 +347,16 @@ impl EditorView {
         {
             body = body.cursor(gpui::CursorStyle::DragCopy);
         }
-        body = body
+        let mut body = body
+            .id("arrangement-content")
             .debug_selector(|| "arrangement-content".to_owned())
+            .when(self.context_menu.is_none(), |body| {
+                body.on_click(cx.listener(|view, event: &gpui::ClickEvent, window, cx| {
+                    if let gpui::ClickEvent::Mouse(event) = event {
+                        view.place_empty_arrangement_cursor(event, window, cx);
+                    }
+                }))
+            })
             .on_mouse_down(
                 MouseButton::Right,
                 cx.listener(|view, event: &gpui::MouseDownEvent, window, cx| {
@@ -429,11 +486,16 @@ impl EditorView {
                         let x = f32::from(event.position.x);
                         let y = f32::from(event.position.y);
                         let (started, moving) = cursor_down_entity.update(cx, |view, cx| {
-                            // An open menu paints above this body; its rows
-                            // own the press, never a section or range gesture.
+                            // Foreground controls own the press while open.
                             if view.context_menu.is_some()
+                                || view.theme_settings.open
                                 || super::device_panel::picker_is_open(view)
                             {
+                                return (false, false);
+                            }
+                            // The body click owns a point in the trailing space.
+                            // Lane gesture probes must leave click suppression intact there.
+                            if view.painted_arrangement_tail(x, y).is_some() {
                                 return (false, false);
                             }
                             if view.pointer_hits_section_launch(x, y) {
@@ -474,6 +536,14 @@ impl EditorView {
                             }
                             if view.pointer_hits_priority_clip_control(x, y, event.modifiers.alt) {
                                 return (false, false);
+                            }
+                            if event.click_count == 2
+                                && let Some((track, _)) = view.visible_lane_at(x, y)
+                                && let Some(clip) = view.visible_clip_at_pointer(track, x, y)
+                            {
+                                view.select_clip_header(track, clip, event.modifiers, window, cx);
+                                view.focus.focus(window);
+                                return (true, false);
                             }
                             if event.click_count == 2
                                 && !event.modifiers.shift
@@ -657,10 +727,101 @@ impl EditorView {
                 );
             }
         }
+        if matches!(
+            self.audible_clip_move_position(),
+            Some((
+                hex_session::service::ClipMovePreviewDestination::NewTrack { .. },
+                _
+            ))
+        ) {
+            let entity = cx.entity();
+            body = body.child(
+                div()
+                    .debug_selector(|| "new-track-audition-audible-marker".into())
+                    .absolute()
+                    .inset_0()
+                    .child(
+                        canvas(
+                            |_, _, _| (),
+                            move |_, _, window, cx| {
+                                let Some((x, y)) = entity.read(cx).new_track_audible_marker()
+                                else {
+                                    return;
+                                };
+                                let top = entity
+                                    .read(cx)
+                                    .arrangement_bounds
+                                    .map_or(y, |bounds| bounds.top);
+                                let marker_top = (y - 12.0).max(top);
+                                let text = theme::text("audible");
+                                let text_run = gpui::TextRun {
+                                    len: text.len(),
+                                    font: gpui::font(theme::FONT_FAMILY),
+                                    color: rgb(theme::color(theme::PaletteRole::Background)).into(),
+                                    background_color: None,
+                                    underline: None,
+                                    strikethrough: None,
+                                };
+                                let shaped = window.text_system().shape_line(
+                                    text,
+                                    px(10.0),
+                                    &[text_run],
+                                    None,
+                                );
+                                window.paint_quad(gpui::fill(
+                                    gpui::Bounds::new(
+                                        point(px(x), px(marker_top)),
+                                        gpui::size(px(1.0), px(12.0)),
+                                    ),
+                                    rgb(theme::color(theme::PaletteRole::Primary)),
+                                ));
+                                window.paint_quad(gpui::fill(
+                                    gpui::Bounds::new(
+                                        point(px(x + 2.0), px(marker_top)),
+                                        gpui::size(shaped.width + px(4.0), px(12.0)),
+                                    ),
+                                    rgb(theme::color(theme::PaletteRole::Primary)),
+                                ));
+                                let _ = shaped.paint(
+                                    point(px(x + 4.0), px(marker_top)),
+                                    px(10.0),
+                                    window,
+                                    cx,
+                                );
+                            },
+                        )
+                        .absolute()
+                        .inset_0(),
+                    ),
+            );
+        }
         body.children(
             self.time_selection_cursor_layer()
                 .map(|layer| layer.right(px(header_width))),
         )
+    }
+
+    /// Resolve the applied insertion in the current painted layout, never the pointer target.
+    pub(super) fn new_track_audible_marker(&self) -> Option<(f32, f32)> {
+        if self.arrangement_bounds_epoch != self.drag_layout_generation {
+            return None;
+        }
+        let (hex_session::service::ClipMovePreviewDestination::NewTrack { before_track }, frame) =
+            self.audible_clip_move_position()?
+        else {
+            return None;
+        };
+        let state = self.state.as_ref()?;
+        let bounds = self.arrangement_bounds?;
+        let y = self.painted_track_insertion_line(before_track)?;
+        let fraction = self
+            .visible_viewport(state.timeline_frames)
+            .fraction(frame)?;
+        let width = bounds.width - self.track_header_width();
+        if !y.is_finite() || y < bounds.top || y >= bounds.top + bounds.height || width <= 0.0 {
+            return None;
+        }
+        Some((bounds.left + width * fraction, y))
     }
 
     /// Paint after the body and Main have measured their current-frame bounds.
@@ -722,12 +883,14 @@ impl EditorView {
         upper: Div,
         returns: impl IntoElement,
         main: Div,
+        clip_move_guide: Option<Div>,
         cx: &mut Context<Self>,
     ) -> Div {
         let entity = cx.entity();
         let clip_entity = entity.clone();
         let device_entity = entity.clone();
         div()
+            .debug_selector(|| "arrangement-surface".into())
             .relative()
             .flex_1()
             .min_h_0()
@@ -737,6 +900,7 @@ impl EditorView {
             .child(returns)
             .child(main)
             .child(self.arrangement_playback_layer(cx))
+            .children(clip_move_guide)
             .child(self.track_resize_events(cx))
             .children([self.track_reorder_events(cx)])
             .on_drag_move::<super::drag::NativeDeviceDrag>(move |event, _, cx| {
@@ -811,6 +975,7 @@ impl EditorView {
         bands: &[super::musical_time::GridBand],
         lines: &[super::musical_time::GridLine],
         scale: f32,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> Div {
         let state = self.state.clone();
@@ -834,7 +999,7 @@ impl EditorView {
             .children([main_track_grid_layer(bands, lines, viewport, scale)])
             .child(super::arrangement_map::view(self, viewport))
             .children(self.main_time_selection_overlay(viewport))
-            .children(self.section_elements(viewport, scale, cx))
+            .children(self.section_elements(viewport, scale, window, cx))
             .children([self.section_pointer_events(cx)])
             .children(automation)
             .child(
@@ -855,7 +1020,8 @@ impl EditorView {
                 .absolute()
                 .inset_0(),
             )
-            .children(self.time_selection_cursor_layer());
+            .children(self.time_selection_cursor_layer())
+            .children([self.locator_lines(viewport, 0.0, "locator-main-line")]);
         let row = div()
             .on_scroll_wheel(cx.listener(|view, event: &ScrollWheelEvent, _, cx| {
                 view.resize_row_wheel(None, event, cx);
@@ -872,6 +1038,11 @@ impl EditorView {
             .child(
                 div()
                     .id("main-track-header")
+                    .on_drop(super::sampler_load::track_drop_listener(
+                        cx,
+                        None,
+                        hex_project::InstrumentLoadPlacement::First,
+                    ))
                     .on_mouse_down(
                         MouseButton::Right,
                         cx.listener(|view, event: &MouseDownEvent, window, cx| {
@@ -952,17 +1123,44 @@ impl EditorView {
         cx: &mut Context<Self>,
     ) -> Div {
         let viewport = self.visible_viewport(state.timeline_frames);
-        let labels = div()
-            .absolute()
-            .top_0()
-            .bottom_0()
-            .left_0()
-            .right_0()
+        let elapsed = div()
+            .debug_selector(|| "arrangement-elapsed-row".into())
+            .relative()
+            .h(relative(0.5))
+            .flex_shrink_0()
+            .border_b_1()
+            .border_color(rgb(theme::color(theme::PaletteRole::Border)))
+            .children(
+                super::elapsed_time::ruler_ticks(
+                    state.project.sample_rate(),
+                    viewport,
+                    ruler_width,
+                )
+                .into_iter()
+                .filter_map(|tick| {
+                    let x = viewport.fraction(tick.frame)?;
+                    super::timeline_strip::ruler_tick(x, tick.label, false, false, false).map(
+                        |tick_view| {
+                            tick_view
+                                .pb_0()
+                                .line_height(px(10.0))
+                                .debug_selector(move || {
+                                    format!("elapsed-ruler-tick-{}", tick.frame)
+                                })
+                        },
+                    )
+                }),
+            );
+        let beats = div()
+            .debug_selector(|| "arrangement-beat-row".into())
+            .relative()
+            .h(relative(0.5))
+            .flex_shrink_0()
             .children(
                 super::musical_time::ruler_ticks(&state.project, viewport, ruler_width)
                     .into_iter()
                     .filter_map(|tick| {
-                        let x = (tick.frame - viewport.start) as f32 / viewport.length as f32;
+                        let x = viewport.fraction(tick.frame)?;
                         super::timeline_strip::ruler_tick(
                             x,
                             tick.label,
@@ -971,10 +1169,19 @@ impl EditorView {
                             tick.fragmentary_bar,
                         )
                         .map(|tick_view| {
-                            tick_view.debug_selector(move || format!("ruler-tick-{}", tick.frame))
+                            tick_view
+                                .pb_0()
+                                .line_height(px(10.0))
+                                .debug_selector(move || format!("ruler-tick-{}", tick.frame))
                         })
                     }),
             );
+        let labels = div()
+            .absolute()
+            .inset_0()
+            .flex()
+            .flex_col()
+            .children([elapsed, beats]);
         let entity = cx.entity();
         let seek_viewport = viewport;
         let cells = div()
@@ -1137,6 +1344,50 @@ pub(super) fn timeline_grid_elements(
             )
         })
         .collect()
+}
+
+fn vertical_timeline_guide(name: &'static str, position: f32, color: u32, width: f32) -> Div {
+    div()
+        .debug_selector(move || name.into())
+        .absolute()
+        .top_0()
+        .bottom_0()
+        .w(px(width))
+        .when(position == 1.0, |d| d.right_0())
+        .when(position != 1.0, |d| d.left(relative(position)))
+        .bg(rgb(color))
+}
+
+fn loop_guides(state: &ViewState, view: &EditorView, viewport: Viewport, header_width: f32) -> Div {
+    let region = super::loop_rail::displayed_region(view, state);
+    let mut layer = div()
+        .absolute()
+        .top_0()
+        .bottom_0()
+        .left_0()
+        .right(px(header_width));
+    if let Some(region) = region
+        && let Some(end) = viewport.end()
+        && viewport.length > 0
+    {
+        let color = theme::color(if region.enabled() {
+            theme::PaletteRole::Text
+        } else {
+            theme::PaletteRole::Muted
+        });
+        for (frame, name) in [
+            (region.start(), "loop-guide-start"),
+            (region.end(), "loop-guide-end"),
+        ] {
+            if (viewport.start..=end).contains(&frame) {
+                let position = (frame - viewport.start) as f64 / viewport.length as f64;
+                layer =
+                    layer.children([vertical_timeline_guide(name, position as f32, color, 1.0)
+                        .opacity(if region.enabled() { 0.94 } else { 0.62 })]);
+            }
+        }
+    }
+    layer
 }
 
 fn timeline_grid_layer(

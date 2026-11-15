@@ -592,7 +592,7 @@ fn action_key(action: Action) -> String {
         ),
     }
 }
-#[cfg(test)]
+#[cfg(all(test, not(feature = "ui-test-support")))]
 mod tests;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod ui_tests;
