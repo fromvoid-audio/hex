@@ -8,6 +8,16 @@ use hex_engine::{
 use hex_project::{BeatTime, Command, Created, Editor, Project};
 use std::{collections::BTreeMap, sync::atomic::Ordering::Acquire};
 
+#[path = "device_midi_seven_frame_fixture.rs"]
+mod seven_frame;
+
+#[derive(Clone, Copy)]
+enum TestLatency {
+    None,
+    Limiter,
+    SevenFrames,
+}
+
 fn counted<T>(action: impl FnOnce() -> T) -> T {
     #[cfg(feature = "allocation-probe")]
     {
@@ -67,6 +77,26 @@ fn fixture_with_latency(
     Target,
     u64,
 ) {
+    fixture_with_mode(
+        end,
+        if latency {
+            TestLatency::Limiter
+        } else {
+            TestLatency::None
+        },
+    )
+}
+
+fn fixture_with_mode(
+    end: u64,
+    latency: TestLatency,
+) -> (
+    prepared::Control,
+    prepared::Callback,
+    Arc<ComputerKeyboardInput>,
+    Target,
+    u64,
+) {
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
     let Created::Track(track) = editor
         .execute(Command::InsertTrackWithDevice {
@@ -86,17 +116,40 @@ fn fixture_with_latency(
             length: BeatTime::from_quarters(4).unwrap(),
         })
         .unwrap();
-    if latency {
-        let limiter = hex_engine::default_native_device_state_for_class(
-            hex_engine::NativeDeviceClass::Effect,
-            hex_engine::DeviceTypeId::from_static("hex.limiter"),
-        )
-        .unwrap();
+    let mut media = BTreeMap::new();
+    if let TestLatency::SevenFrames = latency {
+        let Created::Imported { asset, .. } = editor
+            .execute(Command::ImportPreparedAudioTrack {
+                name: "reference".into(),
+                path: "reference.wav".into(),
+                source_sample_rate: 48_000,
+                source_frames: 1024,
+                playback_frames: 1024,
+                conversion_version: hex_project::IDENTITY_CONVERSION,
+            })
+            .unwrap()
+        else {
+            panic!("reference track")
+        };
+        let mut reference = vec![[0.0; 2]; 1024];
+        reference[100] = [0.5, 0.5];
+        media.insert(asset, hex_engine::Audio::new(48_000, reference).unwrap());
+    }
+    if !matches!(latency, TestLatency::None) {
+        let effect = match latency {
+            TestLatency::Limiter => hex_engine::default_native_device_state_for_class(
+                hex_engine::NativeDeviceClass::Effect,
+                hex_engine::DeviceTypeId::from_static("hex.limiter"),
+            )
+            .unwrap(),
+            TestLatency::SevenFrames => seven_frame::state(7).unwrap(),
+            TestLatency::None => unreachable!(),
+        };
         editor
             .execute(Command::InsertDevice {
                 track,
                 before: None,
-                state: limiter,
+                state: effect,
             })
             .unwrap();
     }
@@ -119,15 +172,21 @@ fn fixture_with_latency(
             .with_recording_support()
             .unwrap(),
     );
-    let prepared = Arc::new(
-        PreparedRevision::prepare(
+    let prepared = Arc::new(if matches!(latency, TestLatency::SevenFrames) {
+        let definitions: [&dyn hex_lattice::NativeDeviceDefinition; 1] = [&seven_frame::Definition];
+        let effects = hex_lattice::NativeDeviceRegistry::new(&definitions).unwrap();
+        PreparedRevision::prepare_with_effect_registry(
             editor.project(),
-            &BTreeMap::new(),
+            &media,
             Arc::new(SineTable::new()),
             None,
+            &effects,
         )
-        .unwrap(),
-    );
+        .unwrap()
+    } else {
+        PreparedRevision::prepare(editor.project(), &media, Arc::new(SineTable::new()), None)
+            .unwrap()
+    });
     let mut graph = Playback::try_from_prepared_with_session(prepared).unwrap();
     let output_latency = u64::from(graph.main_output_latency_frames());
     graph
@@ -180,6 +239,37 @@ fn fixture_with_latency(
         transport_epoch: control.status.transport_epoch.load(Acquire),
     };
     (control, callback, input, target, output_latency)
+}
+
+#[test]
+fn seven_frame_reference_and_recorded_note_align_across_blocks() {
+    for partition in [1_usize, 7, 64] {
+        let (mut control, mut callback, input, target, latency) =
+            fixture_with_mode(48_000, TestLatency::SevenFrames);
+        assert_eq!(latency, 7);
+        while control.status.position.load(Acquire) < 107 {
+            let remaining = 107 - control.status.position.load(Acquire);
+            let size = partition.min(remaining as usize);
+            assert!(deliver(&mut callback, &mut vec![[0.0; 2]; size], 2));
+        }
+        control.midi_recording.begin(target).unwrap();
+        input.set_key(0, Some((60, 100, 1))).unwrap();
+        let mut audible = [[0.0; 2]; 1];
+        assert!(deliver(&mut callback, &mut audible, 2));
+        assert!(
+            audible[0].iter().any(|sample| sample.abs() > 0.1),
+            "reference at frame 100 was not heard at output frame 107: {audible:?}"
+        );
+        assert!(
+            receipts(&mut control)
+                .iter()
+                .any(|receipt| matches!(receipt,
+                    Receipt::Note { content_frame: 100, note, .. }
+                        if matches!(note.event, MidiCaptureEvent::On { pitch: 60, .. })
+                )),
+            "partition={partition}"
+        );
+    }
 }
 
 #[test]

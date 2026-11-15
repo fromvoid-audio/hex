@@ -511,6 +511,51 @@ fn delivered_short_notes_chords_and_stop_pair_by_occurrence_and_keep_take_until_
 }
 
 #[test]
+fn seven_frame_corrected_note_commits_at_the_heard_arrangement_beat() {
+    use hex_engine::midi_capture::*;
+    let (project, track, clip) = fixture();
+    let binding = MidiTakeBinding::capture(&project, track, clip).unwrap();
+    let mut take = MidiTake::new_with_latency(
+        8_000,
+        16_000,
+        MidiCaptureClock {
+            content_frame: 8_507,
+            performance_frame: 100,
+        },
+        7,
+    )
+    .unwrap();
+    let mut event = AcceptedMidiNote {
+        source: capture_source(),
+        occurrence_id: 1,
+        performance_frame: 100,
+        event: MidiCaptureEvent::On {
+            pitch: 60,
+            velocity: 93,
+        },
+    };
+    take.push(event, 8_500).unwrap();
+    event.performance_frame = 104;
+    event.event = MidiCaptureEvent::Off;
+    take.push(event, 8_504).unwrap();
+    let end = take
+        .finish(MidiCaptureClock {
+            content_frame: 8_512,
+            performance_frame: 105,
+        })
+        .unwrap();
+    let Command::AddMidiNotes { notes, .. } = finish_take(&project, &binding, take.notes(), end)
+        .unwrap()
+        .unwrap()
+    else {
+        panic!("midi take command")
+    };
+    // At 120 bpm and 8 kHz the audible frame is 1/8 beat into the clip,
+    // whose source starts at beat 1.
+    assert_eq!(notes[0].start, BeatTime::from_ratio(9, 8).unwrap());
+}
+
+#[test]
 fn interrupted_or_noncontiguous_delivery_cannot_become_a_complete_take() {
     use hex_engine::midi_capture::*;
     let mut take = MidiTake::new(
