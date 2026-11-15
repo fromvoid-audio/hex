@@ -21,6 +21,7 @@ pub(super) struct BatchedSources<'a> {
     pub(super) stamps: Option<&'a [Option<TransportStamp>]>,
     pub(super) aligned: &'a [bool; MAX_TRACKS],
     pub(super) passthrough: &'a [ResidentRoute; MAX_TRACKS],
+    pub(super) batched_sends: bool,
 }
 
 impl SessionPlayback {
@@ -125,6 +126,54 @@ impl SessionPlayback {
             passthrough[index] = ResidentRoute::Unity;
         }
     }
+    /// Prepare Return inputs in graph owner order. Only zero-delay sends from
+    /// completely eligible tracks may advance ahead of the per-frame route.
+    pub(super) fn prepare_resident_return_sends(
+        &mut self,
+        frames: usize,
+        routes: &[ResidentRoute; MAX_TRACKS],
+    ) -> bool {
+        let Some(compensation) = self.compensation.as_ref() else {
+            return false;
+        };
+        if !compensation.resident_return_graph_is_passthrough()
+            || !compensation.resident_return_sends_are_independent()
+            || frames > 256
+            || self.route_scratch.len() > routes.len()
+            || self.route_scratch.len() != compensation.graph.tracks.len()
+            || self.resident_source_scratch.len() != self.route_scratch.len()
+            || self.return_scratch.len() != compensation.graph.returns.len()
+            || compensation.graph.owner_order.iter().any(|owner| {
+                matches!(*owner, crate::signal_graph::Owner::Track(index) if index >= self.route_scratch.len())
+            })
+            || routes[..self.route_scratch.len()]
+                .iter()
+                .any(|route| *route != ResidentRoute::Unity)
+        {
+            return false;
+        }
+        for scratch in &mut self.return_scratch {
+            scratch[..frames].fill([0.0; 2]);
+        }
+        for owner in &compensation.graph.owner_order {
+            if let crate::signal_graph::Owner::Track(index) = *owner {
+                let work_start = self.render_work.track(index);
+                let samples = &self.resident_source_scratch[index][..frames];
+                for send in &compensation.graph.tracks[index].sends {
+                    for (output, input) in self.return_scratch[send.target][..frames]
+                        .iter_mut()
+                        .zip(samples)
+                    {
+                        output[0] += input[0] * send.gain;
+                        output[1] += input[1] * send.gain;
+                    }
+                }
+                self.render_work.finish(work_start);
+            }
+        }
+        true
+    }
+
     /// Prepare resident audio and eligible analytic MIDI. A shared receiver uses
     /// its scratch only when its active route has no local audio source.
     /// Active suppressions or continuations retain per-frame scheduling. No page provider is read and
@@ -690,8 +739,14 @@ impl SessionPlayback {
         }
         let region = self.active_loop_region();
         let timing = timing_view_for(self.revision.session(), self.periodic_tempo(), self.anchor);
-        for scratch in &mut self.return_scratch {
-            scratch[0] = [0.0; 2];
+        let batched_sends = resident_source.is_some_and(|batch| batch.batched_sends);
+        let return_offset = resident_source
+            .filter(|batch| batch.batched_sends)
+            .map_or(0, |batch| batch.index);
+        if !batched_sends {
+            for scratch in &mut self.return_scratch {
+                scratch[0] = [0.0; 2];
+            }
         }
         let compensation = self
             .compensation
@@ -1184,14 +1239,16 @@ impl SessionPlayback {
                         compensation.inputs[target][0] += sent[0];
                         compensation.inputs[target][1] += sent[1];
                     }
-                    for send_index in 0..compensation.graph.tracks[index].sends.len() {
-                        let send = &compensation.graph.tracks[index].sends[send_index];
-                        let (target, gain, edge) = (send.target, send.gain, send.edge);
-                        let sent = compensation
-                            .edge(edge, [send_mixed[0] * gain, send_mixed[1] * gain])
-                            .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
-                        self.return_scratch[target][0][0] += sent[0];
-                        self.return_scratch[target][0][1] += sent[1];
+                    if !batched_sends {
+                        for send_index in 0..compensation.graph.tracks[index].sends.len() {
+                            let send = &compensation.graph.tracks[index].sends[send_index];
+                            let (target, gain, edge) = (send.target, send.gain, send.edge);
+                            let sent = compensation
+                                .edge(edge, [send_mixed[0] * gain, send_mixed[1] * gain])
+                                .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
+                            self.return_scratch[target][return_offset][0] += sent[0];
+                            self.return_scratch[target][return_offset][1] += sent[1];
+                        }
                     }
                     self.render_work.finish(work_start);
                 }
@@ -1203,7 +1260,7 @@ impl SessionPlayback {
                         .ok_or(SessionPlaybackError::DeviceRuntime)?;
 
                     let bus = &self.revision.arrangement().return_buses()[index];
-                    let mut frame = self.return_scratch[index][0];
+                    let mut frame = self.return_scratch[index][return_offset];
                     compensation
                         .effects_with_foreign(
                             crate::signal_graph::Owner::Return(index),
@@ -1242,13 +1299,13 @@ impl SessionPlayback {
                         let sent = compensation
                             .edge(edge, [frame[0] * gain, frame[1] * gain])
                             .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
-                        self.return_scratch[target][0][0] += sent[0];
-                        self.return_scratch[target][0][1] += sent[1];
+                        self.return_scratch[target][return_offset][0] += sent[0];
+                        self.return_scratch[target][return_offset][1] += sent[1];
                     }
                     let main = compensation
                         .edge(compensation.graph.returns[index].main, frame)
                         .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
-                    self.return_scratch[index][0] = main;
+                    self.return_scratch[index][return_offset] = main;
                     if let Some(capture) = capture.as_mut() {
                         capture.add_prepared_frame(
                             owner,
@@ -1271,8 +1328,8 @@ impl SessionPlayback {
             output[0][1] += main[1];
         }
         for scratch in &self.return_scratch {
-            output[0][0] += scratch[0][0];
-            output[0][1] += scratch[0][1];
+            output[0][0] += scratch[return_offset][0];
+            output[0][1] += scratch[return_offset][1];
         }
         // Grouped tails were routed through their track output above. Flat tails
         // enter Main directly after the handoff has proved their alignment.
@@ -1438,6 +1495,12 @@ mod tests {
             };
         let expected = capture(&mut scalar, &scalar_plan);
         let captured = capture(&mut actual, &actual_plan);
+        assert!(
+            actual.return_scratch[0][1..]
+                .iter()
+                .any(|frame| *frame != [0.0; 2]),
+            "batched send window"
+        );
         assert_eq!(captured, expected);
         assert!(captured.1.iter().flatten().any(|sample| *sample != 0.0));
         assert!(captured.2.iter().flatten().any(|sample| *sample != 0.0));

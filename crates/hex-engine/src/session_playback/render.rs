@@ -818,6 +818,7 @@ impl SessionPlayback {
         let mut passthrough = [compensated::ResidentRoute::Scalar; MAX_TRACKS];
         let mut stamps = [None; 256];
         let mut projected_history = None;
+        let mut batched_sends = false;
 
         while output_offset < output.len() {
             if let Some(region) = region {
@@ -935,6 +936,7 @@ impl SessionPlayback {
                     );
                 }
                 self.prepare_unity_faders(count, &mut passthrough, &aligned);
+                batched_sends = self.prepare_resident_return_sends(count, &passthrough);
                 resident_source_index = 0;
                 resident_source_end = count;
             }
@@ -1033,6 +1035,7 @@ impl SessionPlayback {
                         stamps: projected_history.map(|_| &stamps[..resident_source_end]),
                         aligned: &aligned,
                         passthrough: &passthrough,
+                        batched_sends,
                     }),
                 )?;
                 if use_resident_sources {

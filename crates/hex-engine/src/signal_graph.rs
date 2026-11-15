@@ -1749,6 +1749,32 @@ impl SignalRuntime {
                 .any(|bus| !bus.audio_feeds.is_empty()))
     }
 
+    /// A zero-delay send has no ring history; Return-to-Return feeds would
+    /// interleave with track sends and must keep the frame-wise summation order.
+    pub(crate) fn resident_return_sends_are_independent(&self) -> bool {
+        self.delays.transaction_active()
+            && self.graph.returns.iter().all(|bus| bus.feeds.is_empty())
+            && self
+                .graph
+                .tracks
+                .iter()
+                .any(|track| !track.sends.is_empty())
+            && self
+                .graph
+                .tracks
+                .iter()
+                .flat_map(|track| &track.sends)
+                .all(|send| {
+                    send.target < self.graph.returns.len()
+                        && self
+                            .delay_graph
+                            .pre_main_edges
+                            .get(send.edge)
+                            .and_then(|edge| self.delay_graph.plan.edges().get(*edge))
+                            .is_some_and(|edge| edge.delay_frames == 0)
+                })
+    }
+
     /// Check a track after `resident_return_graph_is_passthrough` succeeds.
     /// Main and sends continue to advance in graph order.
     pub(crate) fn resident_return_track_is_passthrough(&self, index: usize) -> bool {

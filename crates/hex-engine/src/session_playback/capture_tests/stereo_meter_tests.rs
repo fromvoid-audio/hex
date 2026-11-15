@@ -3,12 +3,13 @@ use super::*;
 
 #[test]
 fn metered_resident_return_matches_scalar_pcm_and_meters_through_launch_and_loop() {
-    for (muted, automated, unity, graph_feed) in [
-        (false, false, false, false),
-        (true, false, false, false),
-        (false, true, false, false),
-        (false, false, true, false),
-        (false, false, true, true),
+    for (muted, automated, unity, graph_feed, return_feed) in [
+        (false, false, false, false, false),
+        (true, false, false, false, false),
+        (false, true, false, false, false),
+        (false, false, true, false, false),
+        (false, false, true, true, false),
+        (false, false, true, false, true),
     ] {
         let mut snapshot = audio_fixture_project(true, false, false).snapshot();
         if unity {
@@ -47,6 +48,24 @@ fn metered_resident_return_matches_scalar_pcm_and_meters_through_launch_and_loop
                 .execute(Command::SetAudioFeed {
                     source: hex_project::RoutingOwner::Track(source),
                     destination: track,
+                    gain: 0.5,
+                })
+                .unwrap();
+        }
+        if return_feed {
+            let source = editor.project().return_tracks()[0].id();
+            let Created::ReturnTrack(destination) = editor
+                .execute(Command::AddReturnTrack {
+                    name: "downstream".into(),
+                })
+                .unwrap()
+            else {
+                panic!("return expected")
+            };
+            editor
+                .execute(Command::SetReturnFeed {
+                    source,
+                    destination,
                     gain: 0.5,
                 })
                 .unwrap();
@@ -122,6 +141,14 @@ fn metered_resident_return_matches_scalar_pcm_and_meters_through_launch_and_loop
                 for chunk in actual_block.chunks_mut(partition) {
                     actual.render(chunk).unwrap();
                 }
+                if index == 0 && partition == 256 {
+                    let used_window = actual.return_scratch[0][16] != [0.0; 2];
+                    assert_eq!(
+                        used_window,
+                        unity && !graph_feed && !return_feed,
+                        "batched send eligibility"
+                    );
+                }
                 for track in project.tracks() {
                     let actual_meter = actual_observation.track_output_meter(track.id()).unwrap();
                     let reference_meter = reference_observation
@@ -147,7 +174,7 @@ fn metered_resident_return_matches_scalar_pcm_and_meters_through_launch_and_loop
             }
             assert_eq!(
                 output, expected,
-                "muted={muted}, automated={automated}, unity={unity}, graph_feed={graph_feed}, partition={partition}"
+                "muted={muted}, automated={automated}, unity={unity}, graph_feed={graph_feed}, return_feed={return_feed}, partition={partition}"
             );
             assert_eq!(
                 (actual.performance_frame(), actual.arrangement_frame()),
