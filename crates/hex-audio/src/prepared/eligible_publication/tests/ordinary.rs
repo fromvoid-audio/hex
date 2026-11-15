@@ -2724,6 +2724,297 @@ fn prepared_audio_seek_does_not_render_a_late_old_page() {
 
 #[cfg(feature = "stream-test-support")]
 #[test]
+fn seek_then_source_replacement_does_not_render_late_old_generation() {
+    let _serial = serial();
+    let frames = (hex_engine::STREAM_PAGE_FRAMES * 3) as u64;
+    let project = super::readiness::project_with_frames(frames);
+    let asset = project.assets().next().unwrap().id();
+    let old_wav = stream_fixture::Wav::with_samples(frames.try_into().unwrap(), |_| 8192);
+    let new_wav = stream_fixture::Wav::with_samples(frames.try_into().unwrap(), |_| 24_576);
+    let old = old_wav.definition(asset, 11);
+    let new = new_wav.definition(asset, 12);
+    let old_key = old.metadata.key();
+    let new_key = new.metadata.key();
+    let (gate, entered, release) = hex_stream::test_support::PageGate::new(hex_stream::PageKey {
+        source: old_key,
+        page_index: 1,
+    });
+    let store = ResidentDeviceAssets::default();
+    let (mut control, mut data, errors, mut retirement) = anchored();
+    control
+        .configure_device_resource_publication_on_control(resource_limits())
+        .unwrap();
+    control
+        .configure_ordinary_streaming_on_control(
+            crate::AudioCandidateDomainReservation {
+                max_retained_data_bytes: 8 * 1024 * 1024,
+                max_construction_peak_data_bytes: 8 * 1024 * 1024,
+            },
+            3,
+            4096,
+        )
+        .unwrap();
+    let domain = control
+        .begin_audio_candidate_domain_preparation_with_gate(
+            hex_stream::StreamConfig::with_pool_pages(8),
+            vec![old.clone(), new.clone()],
+            hex_stream::StreamReadinessReservation {
+                extents_per_role: 3,
+            },
+            gate,
+        )
+        .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        match control
+            .poll_audio_candidate_domain_preparation(domain)
+            .unwrap()
+        {
+            crate::AudioCandidateDomainPreparationProgress::Ready => break,
+            crate::AudioCandidateDomainPreparationProgress::Verifying => {}
+            other => panic!("unexpected preparation: {other:?}"),
+        }
+        assert!(std::time::Instant::now() < deadline, "catalog did not seal");
+        std::thread::yield_now();
+    }
+    data.owner_mut()
+        .unwrap()
+        .run(|callback, _| callback.begin_block());
+    let context = hex_engine::AudioSourceContext {
+        project_generation: 7,
+        editor_revision: 3,
+    };
+    let revision = control
+        .publish_with_admission_and_source_on_control(
+            compile(&project, old.metadata, &store),
+            PublicationPolicy::InheritRuntime,
+            context,
+            |_| Ok::<_, ()>(()),
+        )
+        .unwrap_or_else(|_| panic!("old source publication"));
+    let mut output = [[0.0; 2]; 256];
+    while control.status.applied_revision.load(Acquire) != revision {
+        measured_render(&mut data, &mut output);
+        assert!(
+            std::time::Instant::now() < deadline,
+            "old source not installed"
+        );
+        std::thread::yield_now();
+    }
+    // Warm the replacement position before holding the single worker. The
+    // second seek targets a cold page with the same index as the delayed page.
+    let extents =
+        [(old_key, 2), (new_key, 2)].map(|(source, page_index)| hex_engine::StreamResourceExtent {
+            source: source.into(),
+            page_index,
+            start: 0,
+            end: hex_engine::STREAM_PAGE_FRAMES,
+        });
+    let mut stamp = None;
+    data.owner_mut().unwrap().run(|callback, _| {
+        let Some(ActivePublication::Legacy(active)) = callback.active.as_ref() else {
+            panic!("active graph")
+        };
+        let (loan, epoch) = active
+            .streams
+            .as_ref()
+            .unwrap()
+            .test_loan_for(&mut callback.domain_pages, old_key.into())
+            .unwrap();
+        *epoch += 1;
+        let value = hex_stream::ReadinessStamp {
+            request_epoch: *epoch,
+            artifact: hex_stream::ReadinessArtifact::Ordinary {
+                publication: revision,
+            },
+            project_generation: context.project_generation,
+            editor_revision: context.editor_revision,
+            device_epoch: 1,
+            device_rate: 48_000,
+            predecessor: None,
+            admitted_command_prefix: 0,
+            window: hex_engine::StreamChunkWindow {
+                performance_frame: 0,
+                arrangement_frame: 0,
+                route_generation: 0,
+                frames: 256,
+            },
+        };
+        loan.submit_resources(hex_stream::ProtectionRole::Candidate, value, &extents)
+            .unwrap();
+        stamp = Some(value);
+    });
+    let stamp = stamp.unwrap();
+    loop {
+        let mut ready = false;
+        data.owner_mut().unwrap().run(|callback, _| {
+            let Some(ActivePublication::Legacy(active)) = callback.active.as_ref() else {
+                panic!("active graph")
+            };
+            let (loan, _) = active
+                .streams
+                .as_ref()
+                .unwrap()
+                .test_loan_for(&mut callback.domain_pages, old_key.into())
+                .unwrap();
+            ready = loan
+                .service(hex_stream::ProtectionRole::Candidate, stamp, 2, 2)
+                .unwrap()
+                == hex_stream::ReadinessProgress::InstalledProtected;
+        });
+        if ready {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "destination pages not prewarmed"
+        );
+        std::thread::yield_now();
+    }
+    data.owner_mut().unwrap().run(|callback, _| {
+        let Some(ActivePublication::Legacy(active)) = callback.active.as_ref() else {
+            panic!("active graph")
+        };
+        let (loan, _) = active
+            .streams
+            .as_ref()
+            .unwrap()
+            .test_loan_for(&mut callback.domain_pages, old_key.into())
+            .unwrap();
+        assert!(loan.cancel(hex_stream::ProtectionRole::Candidate, stamp.request_epoch));
+    });
+    control.command(PlaybackCommand::Play).unwrap();
+    loop {
+        measured_render(&mut data, &mut output);
+        if entered.try_recv().is_ok() {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "old page not held");
+        std::thread::yield_now();
+    }
+    let destination = 2 * hex_engine::STREAM_PAGE_FRAMES as u64;
+    control
+        .command(PlaybackCommand::PlayFrom(destination))
+        .unwrap();
+    measured_render(&mut data, &mut output);
+    assert_eq!(output, [[0.25; 2]; 256]);
+    let replacement = control
+        .publish_with_admission_and_source_on_control(
+            compile(&project, new.metadata, &store),
+            PublicationPolicy::InheritRuntime,
+            hex_engine::AudioSourceContext {
+                editor_revision: 4,
+                ..context
+            },
+            |_| Ok::<_, ()>(()),
+        )
+        .unwrap_or_else(|_| panic!("new source publication"));
+    while control.status.applied_revision.load(Acquire) != replacement {
+        measured_render(&mut data, &mut output);
+        assert!(
+            std::time::Instant::now() < deadline,
+            "replacement not installed"
+        );
+        std::thread::yield_now();
+    }
+    assert_eq!(output, [[0.75; 2]; 256]);
+    let replacement_destination = hex_engine::STREAM_PAGE_FRAMES as u64;
+    let previous_position = control.status.position.load(Acquire);
+    control
+        .command(PlaybackCommand::PlayFrom(replacement_destination))
+        .unwrap();
+    measured_render(&mut data, &mut output);
+    assert_eq!(control.status.position.load(Acquire), previous_position);
+    assert_eq!(output, [[0.0; 2]; 256]);
+    release.send(()).unwrap();
+    loop {
+        let mut ready = false;
+        data.owner_mut().unwrap().run(|callback, _| {
+            let Some(ActivePublication::Legacy(active)) = callback.active.as_ref() else {
+                panic!("active graph")
+            };
+            let (loan, _) = active
+                .streams
+                .as_ref()
+                .unwrap()
+                .test_loan_for(&mut callback.domain_pages, new_key.into())
+                .unwrap();
+            ready = loan.test_ready_page(hex_stream::ResourcePageKey {
+                source: old_key.into(),
+                page_index: 1,
+            });
+        });
+        if ready {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "old completion not delivered"
+        );
+        std::thread::yield_now();
+    }
+    loop {
+        measured_render(&mut data, &mut output);
+        assert!(
+            output
+                .iter()
+                .all(|frame| *frame == [0.0; 2] || *frame == [0.75; 2]),
+            "old generation reached the callback"
+        );
+        if output == [[0.75; 2]; 256] {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "new destination not rendered"
+        );
+        std::thread::yield_now();
+    }
+    assert_eq!(
+        control.status.position.load(Acquire),
+        replacement_destination + 256
+    );
+    data.owner_mut().unwrap().run(|callback, _| {
+        let Some(ActivePublication::Legacy(active)) = callback.active.as_ref() else {
+            panic!("active graph")
+        };
+        let (loan, _) = active
+            .streams
+            .as_ref()
+            .unwrap()
+            .test_loan_for(&mut callback.domain_pages, new_key.into())
+            .unwrap();
+        assert!(
+            !loan.test_ready_page(hex_stream::ResourcePageKey {
+                source: old_key.into(),
+                page_index: 1
+            }),
+            "callback did not consume the late completion"
+        );
+    });
+    assert!(control.retire_audio_candidate_domain(domain));
+    control.request_shutdown();
+    loop {
+        measured_render(&mut data, &mut output);
+        control.reclaim();
+        if let Some(report) = control.recover_audio_candidate_domain(domain) {
+            assert!(report.worker_joined && report.accounting_complete);
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "domain did not retire"
+        );
+        std::thread::yield_now();
+    }
+    drop(data);
+    drop(errors);
+    drop(control);
+    finish(&mut retirement);
+}
+
+#[cfg(feature = "stream-test-support")]
+#[test]
 fn prepared_audio_cold_seek_waits_for_destination_after_old_page() {
     prepared_audio_domain_gate(GatedPageAction::SeekCold);
 }
