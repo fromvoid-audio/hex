@@ -368,9 +368,19 @@ impl Callback {
             self.abort(AbortReason::InvalidClock);
             return;
         };
+        if clock.content_frame >= capture_end {
+            self.abort(AbortReason::InvalidClock);
+            return;
+        }
+        let Some(delivered_performance_end) =
+            performance_end.checked_sub(end.saturating_sub(capture_end))
+        else {
+            self.abort(AbortReason::InvalidClock);
+            return;
+        };
         self.last_delivered = Some(MidiCaptureClock {
             content_frame: end.min(capture_end),
-            performance_frame: performance_end - end.saturating_sub(capture_end),
+            performance_frame: delivered_performance_end,
         });
         if !self.armed_delivered {
             if self
@@ -498,6 +508,33 @@ mod tests {
             },
         }
     }
+    #[test]
+    fn delivered_clock_past_capture_end_aborts_without_underflow() {
+        let (mut control, mut callback) = channel();
+        let target = target();
+        control.begin(target).unwrap();
+        let requested = callback.next_arm().unwrap();
+        callback.accept(requested);
+        let clock = MidiCaptureClock {
+            content_frame: target.capture.end_frame + 1,
+            performance_frame: 0,
+        };
+        assert!(callback.stage(clock, 1, 0));
+        callback.delivered(MidiCaptureRender {
+            binding: target.capture,
+            clock,
+            frames: 1,
+            events: &[],
+        });
+        assert!(matches!(
+            control.try_receipt(),
+            Some(Receipt::Aborted {
+                reason: AbortReason::InvalidClock,
+                ..
+            })
+        ));
+    }
+
     #[test]
     fn delivered_note_uses_fixed_latency_across_block_boundaries() {
         for (latency, expected) in [(0, 100), (7, 93)] {
