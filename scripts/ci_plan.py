@@ -83,18 +83,18 @@ def runtime_inputs(root: Path, env=None) -> dict:
             "metadata_exclusions": [p for p in paths if metadata_path(p)]}
 
 
-def changed_paths(root: Path, base: str, source: str) -> list[str]:
+def changed_paths(root: Path, base: str, source: str, *, env=None) -> list[str]:
     """Both sides of renames, deletions, and untracked inputs participate."""
     paths = set()
     for arguments in ((base, source), (source,)):
-        fields = git(root, "diff", "--name-status", "-z", "--find-renames", *arguments).decode().split("\0")
+        fields = git(root, "diff", "--name-status", "-z", "--find-renames", *arguments, env=env).decode().split("\0")
         index = 0
         while index < len(fields) and fields[index]:
             status = fields[index]
             count = 2 if status[0] in "RC" else 1
             paths.update(fields[index + 1:index + 1 + count])
             index += count + 1
-    paths.update(git(root, "ls-files", "--others", "--exclude-standard", "-z").decode().split("\0"))
+    paths.update(git(root, "ls-files", "--others", "--exclude-standard", "-z", env=env).decode().split("\0"))
     return sorted(paths - {""})
 
 
@@ -1494,7 +1494,7 @@ def manifest_sections(text: str) -> dict[str, list[str]] | None:
     return sections
 
 
-def profile_only_packages(root: Path, base: str, source: str, inventory: list[dict]) -> list[str] | None:
+def profile_only_packages(root: Path, base: str, source: str, inventory: list[dict], *, env=None) -> list[str] | None:
     """Workspace packages named by a root-manifest change that only retunes their profiles.
 
     Every changed table must be `[profile.NAME.package.MEMBER]` (never `"*"`) using
@@ -1503,7 +1503,7 @@ def profile_only_packages(root: Path, base: str, source: str, inventory: list[di
     Anything else returns None and keeps the comprehensive audit.
     """
     def read(revision: str) -> str | None:
-        result = subprocess.run(["git", "show", f"{revision}:Cargo.toml"], cwd=root, capture_output=True)
+        result = subprocess.run(["git", "show", f"{revision}:Cargo.toml"], cwd=root, env=env, capture_output=True)
         return result.stdout.decode(errors="replace") if result.returncode == 0 else None
 
     old_text, new_text = read(base), read(source)
@@ -1534,35 +1534,35 @@ def crate_root_path(package: str, inventory: list[dict], root: Path) -> str | No
 
 
 def resolve(root: Path, *, profile: str, base: str, source: str, metadata: dict,
-            allow_same_tree_merge: bool = False) -> dict:
+            allow_same_tree_merge: bool = False, env=None) -> dict:
     if profile not in {"edit", "merge", "full", "release", "health"}:
         raise ValueError("unknown check profile")
-    source_sha = git(root, "rev-parse", "--verify", source + "^{commit}").decode().strip()
-    base_sha = git(root, "rev-parse", "--verify", base + "^{commit}").decode().strip()
-    head = git(root, "rev-parse", "HEAD").decode().strip()
+    source_sha = git(root, "rev-parse", "--verify", source + "^{commit}", env=env).decode().strip()
+    base_sha = git(root, "rev-parse", "--verify", base + "^{commit}", env=env).decode().strip()
+    head = git(root, "rev-parse", "HEAD", env=env).decode().strip()
     if head != source_sha:
-        if (not allow_same_tree_merge or git(root, "rev-parse", "HEAD^{tree}")
-                != git(root, "rev-parse", source_sha + "^{tree}")):
+        if (not allow_same_tree_merge or git(root, "rev-parse", "HEAD^{tree}", env=env)
+                != git(root, "rev-parse", source_sha + "^{tree}", env=env)):
             raise ValueError("requested source is not the current checkout")
-        subprocess.run(["git", "merge-base", "--is-ancestor", source_sha, head], cwd=root, check=True)
+        subprocess.run(["git", "merge-base", "--is-ancestor", source_sha, head], cwd=root, env=env, check=True)
     if subprocess.run(["git", "merge-base", "--is-ancestor", base_sha, source_sha],
-                      cwd=root, capture_output=True).returncode != 0:
+                      cwd=root, env=env, capture_output=True).returncode != 0:
         raise ValueError(f"base {base_sha[:12]} is not an ancestor of source {source_sha[:12]}; "
                          "merge the current base into the candidate first, then rerun "
                          "(--carry-report <last passed summary.json> reuses unaffected steps)")
-    paths = changed_paths(root, base_sha, source_sha)
+    paths = changed_paths(root, base_sha, source_sha, env=env)
     if not paths:
         raise ValueError("empty scope is not qualifying test evidence; use --profile full for an audit")
     inventory = cargo_inventory(metadata, root)
-    inputs = runtime_inputs(root)
+    inputs = runtime_inputs(root, env=env)
     if profile in {"merge", "full", "release"}:
         require_qualifying_inputs(inputs)
-    if profile == "health" and git(root, "rev-parse", "--verify", source_sha + "^1").decode().strip() != base_sha:
+    if profile == "health" and git(root, "rev-parse", "--verify", source_sha + "^1", env=env).decode().strip() != base_sha:
         raise ValueError("health checks a merge commit against its first parent: use --base SOURCE^1")
     # A profile-only root-manifest change selects the retuned packages as if
     # their crate roots changed: their whole suites test, consumers lint.
     selection_paths = paths
-    profile_packages = profile_only_packages(root, base_sha, source_sha, inventory) if "Cargo.toml" in paths else None
+    profile_packages = profile_only_packages(root, base_sha, source_sha, inventory, env=env) if "Cargo.toml" in paths else None
     profile_roots = [crate_root_path(p, inventory, root) for p in profile_packages or []]
     if profile_packages and all(profile_roots):
         selection_paths = [p for p in paths if p != "Cargo.toml"] + profile_roots
@@ -1583,13 +1583,13 @@ def resolve(root: Path, *, profile: str, base: str, source: str, metadata: dict,
         reasons.append("explicit full audit/release request")
     result = {"policy_version": POLICY_VERSION, "profile": profile,
               "base": base_sha, "source": source_sha,
-              "tree": git(root, "rev-parse", source_sha + "^{tree}").decode().strip(),
+              "tree": git(root, "rev-parse", source_sha + "^{tree}", env=env).decode().strip(),
               "paths": paths, "scope": scope, "reasons": reasons,
               "affected_packages": affected, "cargo_inventory": inventory,
               "runtime_inputs": inputs,
               "python_tests": python_tests.select(
                   profile, [path for path in selection_paths if not metadata_path(path)],
-                  inventory, UI_PACKAGES, python_tests.available_modules(root)),
+                  inventory, UI_PACKAGES, python_tests.available_modules(root), env=env),
               "qualifies_merge": profile in {"merge", "full", "release"}}
     if scope in {"rust", "ui"}:
         result["boundary"] = boundary_selection(root, selection_paths, inventory, affected)
@@ -1621,8 +1621,8 @@ def reuse_checks(root: Path, plan: dict, report: Path, env=None) -> dict:
             or evidence.get("runtime_inputs", {}).get("sha256") != plan["runtime_inputs"]["sha256"]):
         raise ValueError("runtime report is incomplete/failed/stale/partial or executable inputs changed")
     previous = evidence["commit"]
-    subprocess.run(["git", "merge-base", "--is-ancestor", previous, plan["source"]], cwd=root, check=True)
-    delta = changed_paths(root, previous, plan["source"])
+    subprocess.run(["git", "merge-base", "--is-ancestor", previous, plan["source"]], cwd=root, env=env, check=True)
+    delta = changed_paths(root, previous, plan["source"], env=env)
     if not delta or any(not metadata_path(p) for p in delta):
         raise ValueError("reused runtime evidence requires a nonempty prose-only continuation")
     dependency = evidence.get("target_cache", {}).get("dependency_inputs")
