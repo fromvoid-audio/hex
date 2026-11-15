@@ -466,9 +466,17 @@ impl EditorView {
                 continue;
             }
             match receipt {
-                Receipt::Armed { target, clock } => {
-                    match MidiTake::new(target.capture.first_frame, target.capture.end_frame, clock)
-                    {
+                Receipt::Armed {
+                    target,
+                    clock,
+                    latency_frames,
+                } => {
+                    match MidiTake::new_with_latency(
+                        target.capture.first_frame,
+                        target.capture.end_frame,
+                        clock,
+                        latency_frames,
+                    ) {
                         Ok(take) => {
                             self.midi_recorder.take = Some(take);
                             self.status = "midi recording · next-block input timing".into();
@@ -506,10 +514,7 @@ impl EditorView {
                     let result = clock
                         .zip(self.midi_recorder.take.as_mut())
                         .ok_or("midi take completion is missing delivered notes")
-                        .and_then(|(clock, take)| {
-                            take.finish(clock)?;
-                            Ok(clock.content_frame)
-                        });
+                        .and_then(|(clock, take)| take.finish(clock));
                     match result {
                         Ok(end) => {
                             self.midi_recorder.stop_frame = Some(end);

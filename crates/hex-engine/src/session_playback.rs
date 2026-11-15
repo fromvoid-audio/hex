@@ -742,13 +742,6 @@ impl SessionPlayback {
                     .filter_map(|keyboard| keyboard.resources.as_ref()),
             )
     }
-    /// Keyboard monitoring plays through PDC at any latency. Recorded MIDI
-    /// stamps are not yet latency-corrected, so capture still requires none.
-    pub(crate) fn midi_capture_latency_supported(&self) -> bool {
-        self.compensation
-            .as_ref()
-            .is_none_or(|runtime| runtime.graph.plan.max_latency_frames() == 0)
-    }
     pub(crate) fn new_audio_candidate(
         revision: Arc<PreparedRevision>,
     ) -> Result<Self, crate::AudioStorageError> {
