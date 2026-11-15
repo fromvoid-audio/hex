@@ -1732,10 +1732,9 @@ pub(crate) struct SignalRuntime {
     key_taps: Vec<Frame>,
 }
 impl SignalRuntime {
-    /// With no graph-fed input or delay at this track, its resident source can
-    /// pass straight to the fader. Main and sends still advance in graph order.
-    pub(crate) fn resident_return_track_is_passthrough(&self, index: usize) -> bool {
-        if self.graph.returns.is_empty()
+    /// Check graph-wide conditions once before classifying individual tracks.
+    pub(crate) fn resident_return_graph_is_passthrough(&self) -> bool {
+        !(self.graph.returns.is_empty()
             || self.graph.has_group_outputs
             || !self.graph.key_stages.is_empty()
             || self
@@ -1747,10 +1746,12 @@ impl SignalRuntime {
                 .graph
                 .returns
                 .iter()
-                .any(|bus| !bus.audio_feeds.is_empty())
-        {
-            return false;
-        }
+                .any(|bus| !bus.audio_feeds.is_empty()))
+    }
+
+    /// Check a track after `resident_return_graph_is_passthrough` succeeds.
+    /// Main and sends continue to advance in graph order.
+    pub(crate) fn resident_return_track_is_passthrough(&self, index: usize) -> bool {
         let Some(track) = self.graph.tracks.get(index) else {
             return false;
         };

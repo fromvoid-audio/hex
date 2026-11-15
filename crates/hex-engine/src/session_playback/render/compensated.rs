@@ -38,6 +38,9 @@ impl SessionPlayback {
         let Some(compensation) = self.compensation.as_ref() else {
             return;
         };
+        if !compensation.resident_return_graph_is_passthrough() {
+            return;
+        }
         for (index, (route, done)) in self.route_scratch.iter().zip(passthrough).enumerate() {
             let track = &self.revision.arrangement().tracks()[index];
             if !eligible[index]
