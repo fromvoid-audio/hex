@@ -985,13 +985,29 @@ impl NativeWorker {
     /// Join, retain the exact old ring endpoints, and consume the returned
     /// native processor into its actual quiescent protocol. An admitted capture
     /// first drains through its existing bounded terminal. Unwind/refusal is
-    /// terminal and cannot become a retry. Old callback custody stays separate.
+    /// terminal and cannot become a retry. A pending editor seal or a sealed
+    /// editor refuses this reusable transition without taking the source; the
+    /// sealed worker remains available for receipt draining and retirement.
+    /// Old callback custody stays separate.
     pub fn quiesce_on_control(
         &mut self,
     ) -> Result<hex_plugin_host::native::Quiescent, hex_plugin_host::Error> {
         if self.retirement_requested {
             return Err(hex_plugin_host::Error::Protocol(
                 "native worker retirement is terminal",
+            ));
+        }
+        if self.editor_edits_sealed {
+            return Err(hex_plugin_host::Error::Protocol(
+                "sealed editor source cannot resume",
+            ));
+        }
+        if self
+            .editor_seal_query_pending_on_control()
+            .map_err(hex_plugin_host::Error::Protocol)?
+        {
+            return Err(hex_plugin_host::Error::Protocol(
+                "native editor seal query is pending",
             ));
         }
         if self
