@@ -62,7 +62,9 @@ mod resident_import;
 pub use recovered_source::{RecoveredSource, RecoverySourceError, recover_wav_to_new_source};
 pub mod service;
 pub mod tuning_gesture;
-pub use hex_media::waveform::{Peak as CachedPeak, Waveform as CachedWaveform};
+pub use hex_media::waveform::{
+    Overrange as CachedOverrange, Peak as CachedPeak, Waveform as CachedWaveform,
+};
 
 #[derive(Debug)]
 pub enum SessionError {
