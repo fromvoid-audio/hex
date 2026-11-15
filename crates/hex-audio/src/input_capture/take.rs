@@ -45,6 +45,8 @@ pub struct InputTake {
     pub frames: u64,
     pub timing: Vec<InputTiming>,
     pub end: InputTakeEnd,
+    /// Backend detail, when opening or starting the input failed.
+    pub open_error: Option<String>,
 }
 
 /// Drain a started or starting capture on a non-audio worker. The caller must
@@ -60,6 +62,7 @@ pub fn write_input_take(mut capture: InputCapture, path: &Path) -> io::Result<In
         frames: result.frames,
         timing: result.timing,
         end: result.end,
+        open_error: capture.take_open_error_on_control(),
     })
 }
 
@@ -404,6 +407,40 @@ mod tests {
             io::ErrorKind::AlreadyExists
         );
         assert_eq!(std::fs::read(&temp.0).unwrap(), b"existing audio");
+    }
+
+    #[test]
+    fn writer_retains_the_original_open_error_for_its_consumer() {
+        use std::sync::{Arc, atomic::AtomicU8, mpsc};
+        let temp = Temp::new();
+        let (_, input) = rtrb::RingBuffer::new(super::super::PACKETS);
+        let shared = Arc::new(super::super::Shared {
+            phase: AtomicU8::new(super::super::FINISHED),
+            stop: std::sync::atomic::AtomicBool::new(true),
+            fault: AtomicU8::new(super::super::OPEN_FAILED),
+            terminal: AtomicU8::new(super::super::OPEN_FAILED + 1),
+        });
+        let (sender, error) = mpsc::sync_channel(1);
+        sender.send("microphone unavailable".into()).unwrap();
+        let capture = InputCapture {
+            id: format!("{}:test-input", cpal::default_host().id())
+                .parse()
+                .unwrap(),
+            config: super::super::InputConfig {
+                sample_rate: 48_000,
+                channels: 1,
+            },
+            input,
+            shared,
+            worker: thread::spawn(|| {}),
+            error,
+        };
+        let take = write_input_take(capture, &temp.0).unwrap();
+        assert!(matches!(
+            take.end,
+            InputTakeEnd::Capture(InputEnd::OpenFailed)
+        ));
+        assert_eq!(take.open_error.as_deref(), Some("microphone unavailable"));
     }
 
     struct PartialWrite(File, bool);
