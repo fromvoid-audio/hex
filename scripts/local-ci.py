@@ -668,7 +668,7 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
-def reusable_plan(root: Path, plan: dict, report: Path) -> dict:
+def reusable_plan(root: Path, plan: dict, report: Path, *, env=None) -> dict:
     evidence = json.loads(report.read_bytes())
     old_plan = evidence.get("plan")
     if old_plan and old_plan.get("reuse"):
@@ -682,7 +682,7 @@ def reusable_plan(root: Path, plan: dict, report: Path) -> dict:
         if required.requires_tests and sum(results.get("rust_passed_by_binary", [])) + sum(
                 results.get("python_executions", [])) - sum(results.get("python_skipped", [])) <= 0:
             raise ValueError("runtime report has a zero-match test configuration")
-    return ci_plan.reuse_checks(root, plan, report)
+    return ci_plan.reuse_checks(root, plan, report, env=env)
 
 
 def carry_decisions(steps: tuple[Step, ...], evidence: dict, basis: dict,
@@ -3250,9 +3250,9 @@ def _run_cli(arguments, parser, reservation: FreshTargetReservation | None) -> i
             if (error := cli_policy_error(ROOT)) is not None:
                 raise ValueError("CLI planner changed before resolution: " + error)
             plan = ci_plan.resolve(ROOT, profile=arguments.profile, base=arguments.base,
-                                   source=arguments.source, metadata=metadata)
+                                   source=arguments.source, metadata=metadata, env=metadata_env)
             if arguments.reuse_report:
-                plan = reusable_plan(ROOT, plan, arguments.reuse_report)
+                plan = reusable_plan(ROOT, plan, arguments.reuse_report, env=metadata_env)
             if arguments.package or arguments.test_filter or arguments.features or arguments.lib or arguments.test is not None:
                 if arguments.profile != "edit" or not arguments.package or not arguments.test_filter:
                     raise ValueError("package/filter/features require --profile edit with a nonempty package and test filter")

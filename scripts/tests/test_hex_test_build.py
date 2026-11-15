@@ -1519,6 +1519,7 @@ if os.environ.get("HEX_FIXTURE_CHANGE_DELIVERY") == "1":
         delivery.write_json(report, evidence)
         def resolve(_root, **kwargs):
             self.assertEqual(kwargs["metadata"], {"target_directory": runner_target, "cache": "0"})
+            self.assertIs(kwargs["env"], runner.env)
             return plan
         with patch.dict(os.environ, {"PATH": path, "CARGO_TARGET_DIR": str(self.root / "ambient-target"),
                                     "CARGO_CACHE_RUSTC_INFO": "1"}), \
@@ -1526,6 +1527,23 @@ if os.environ.get("HEX_FIXTURE_CHANGE_DELIVERY") == "1":
                 patch.object(delivery, "run", self.mock.temp_original), \
                 patch.object(delivery.ci.ci_plan, "resolve", side_effect=resolve):
             delivery.validate_ci(report, runner, tree["commit"], allow_dev_profile=True)
+
+    def test_scoped_ci_reuse_uses_runner_environment(self):
+        runner = delivery.ci.LocalCiRunner(self.root, env={**os.environ, "HEX_VST3_SDK_DIR": "fixture"})
+        tree = {"commit": "a" * 40, "dirty": False, "content_sha256": "fixture"}
+        runner.summary["start_tree"] = tree
+        plan = {"scope": "tooling", "profile": "merge", "qualifies_merge": True,
+                "source": tree["commit"], "base": "b" * 40, "reuse": {"report": "previous.json"}}
+        report = self.root / "scoped-reuse-env.json"
+        report.write_text(json.dumps({"schema_version": 2, "steps": [], "start_tree": tree,
+                                      "end_tree": tree, "plan": plan}))
+        with patch.object(runner, "_capture_repository_state", return_value=True), \
+                patch.object(delivery, "run", return_value="{}"), \
+                patch.object(delivery.ci.ci_plan, "resolve", return_value={}), \
+                patch.object(delivery.ci, "reusable_plan", side_effect=ValueError("fixture stop")) as reuse:
+            with self.assertRaisesRegex(ValueError, "fixture stop"):
+                delivery.validate_ci(report, runner, tree["commit"], allow_dev_profile=True)
+        self.assertIs(reuse.call_args.kwargs["env"], runner.env)
 
     def test_scoped_ci_revalidates_reserved_target_around_metadata(self):
         target = self.root / "reserved-metadata"

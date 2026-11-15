@@ -1032,9 +1032,9 @@ def validate_ci(report: Path, runner, candidate: str, *, allow_dev_profile: bool
                 raise DeliveryError("CI metadata changed the reserved workspace")
         _require_delivery_sources(runner)
         resolved = ci.ci_plan.resolve(runner.root, profile=plan["profile"], base=plan["base"], source=candidate,
-                                      metadata=metadata, allow_same_tree_merge=True)
+                                      metadata=metadata, allow_same_tree_merge=True, env=runner.env)
         if plan.get("reuse"):
-            resolved = ci.reusable_plan(runner.root, resolved, Path(plan["reuse"]["report"]))
+            resolved = ci.reusable_plan(runner.root, resolved, Path(plan["reuse"]["report"]), env=runner.env)
         _require_delivery_sources(runner)
         if resolved != plan:
             raise DeliveryError("recorded scope differs from the current source/dependency plan")

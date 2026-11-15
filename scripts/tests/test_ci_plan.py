@@ -147,6 +147,47 @@ class PlannerSourceLoaderTests(unittest.TestCase):
 
 
 class ScopeTests(unittest.TestCase):
+    def test_resolve_uses_explicit_git_and_native_selection_environment(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve() / "repo"
+            root.mkdir()
+            empty = Path(directory) / "empty-config"
+            empty.write_text("")
+            exclusions = Path(directory) / "excludes"
+            exclusions.write_text("extra.rs\n")
+            configured = Path(directory) / "configured-git"
+            configured.write_text(f"[core]\n\texcludesfile = {exclusions}\n")
+            default_env = {**os.environ, "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": str(empty),
+                           "HEX_VST3_SDK_DIR": ""}
+            selected_env = {**default_env, "GIT_CONFIG_GLOBAL": str(configured),
+                            "HEX_VST3_SDK_DIR": "explicit-fixture"}
+            def git(*args):
+                return subprocess.check_output(["git", *args], cwd=root, env=default_env, text=True).strip()
+            git("init", "-q")
+            (root / "source.rs").write_text("before\n")
+            git("add", "source.rs")
+            git("-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "base")
+            base = git("rev-parse", "HEAD")
+            (root / "source.rs").write_text("after\n")
+            git("add", "source.rs")
+            git("-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "source")
+            source = git("rev-parse", "HEAD")
+            (root / "extra.rs").write_text("extra\n")
+            metadata = {"workspace_members": ["fixture"], "packages": [{
+                "id": "fixture", "name": "fixture", "manifest_path": str(root / "Cargo.toml"),
+                "features": {}, "dependencies": [], "targets": [],
+            }]}
+            with patch.dict(os.environ, default_env, clear=True):
+                default = plan.resolve(root, profile="merge", base=base, source=source, metadata=metadata)
+                selected = plan.resolve(root, profile="merge", base=base, source=source,
+                                        metadata=metadata, env=selected_env)
+            self.assertIn("extra.rs", default["paths"])
+            self.assertNotIn("extra.rs", selected["paths"])
+            self.assertEqual(selected["runtime_inputs"], plan.runtime_inputs(root, selected_env))
+            self.assertNotEqual(default["runtime_inputs"], selected["runtime_inputs"])
+            self.assertIn("explicit native acceptance inputs", selected["python_tests"]["reasons"][0])
+            self.assertNotIn("explicit native acceptance inputs", default["python_tests"]["reasons"][0])
+
     def test_session_density_inventory_retains_target_path(self):
         root = SCRIPTS.parent
         package_dir = root / "crates/hex-session"
@@ -400,6 +441,18 @@ class ScopeTests(unittest.TestCase):
                     ci.main(arguments)
                 self.assertEqual(error.exception.code, 2)
                 runner.assert_not_called()
+
+    def test_scoped_cli_resolves_with_its_metadata_environment(self):
+        fixture_plan = {"scope": "metadata", "qualifies_merge": True}
+        completed = subprocess.CompletedProcess([], 0, "{}", "")
+        with patch.object(ci, "command_output", return_value=completed) as metadata, \
+                patch.object(ci, "cli_policy_error", return_value=None), \
+                patch.object(ci.ci_plan, "resolve", return_value=fixture_plan) as resolve, \
+                patch.object(ci, "LocalCiRunner") as runner:
+            runner.return_value.run.return_value = 0
+            runner.return_value.summary = {"steps": [], "status": "partial"}
+            self.assertEqual(ci.main(["--profile", "merge", "--base", "base", "--source", "source"]), 0)
+        self.assertIs(resolve.call_args.kwargs["env"], metadata.call_args.args[2])
 
     def test_edit_target_validation_and_required_features(self):
         inventory = [{"name": "fixture", "features": {"default": ["enabled"], "enabled": [], "extra": []},
@@ -1145,6 +1198,8 @@ class ScopeTests(unittest.TestCase):
             self.assertEqual([s.step_id for s in ci.planned_steps(reused)], ["metadata-continuation"])
             self.assertEqual(reused["reuse"]["source"], previous)
             self.assertIs(reused["reuse"]["native_acceptance_opt_in"], False)
+            with self.assertRaisesRegex(ValueError, "native/external"):
+                ci.reusable_plan(root, resolved, report, env={"HEX_VST3_SDK_DIR": "fixture"})
             original_report = report.read_bytes()
             original_plan = json.dumps(resolved, sort_keys=True)
             # Full reports without a plan and scoped reports must both carry an
