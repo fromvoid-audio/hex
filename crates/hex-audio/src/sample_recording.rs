@@ -78,6 +78,16 @@ struct Packet {
     frames: usize,
     pcm: Box<[Frame]>,
     timing: Vec<TimingSpan>,
+    output_clock: Option<OutputClock>,
+}
+
+/// Original CPAL output playback instant for the native callback, plus this
+/// packet's frame offset in that callback. This is not a calibrated hardware
+/// time or proof that another stream shares the same clock origin.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OutputClock {
+    pub playback: cpal::StreamInstant,
+    pub offset_frames: u32,
 }
 
 pub struct Control {
@@ -203,6 +213,7 @@ impl Control {
                     frames: 0,
                     pcm: pcm.into_boxed_slice(),
                     timing,
+                    output_clock: None,
                 })
                 .map_err(|_| Invalid("sample recording reserve is full"))?;
         }
@@ -289,12 +300,30 @@ impl Reader {
         &mut self,
         mut block: impl FnMut(usize, &[Source], &[Frame], &[TimingSpan]),
     ) -> Option<End> {
+        self.drain_with_output_clock(|frames, sources, pcm, timing, _| {
+            block(frames, sources, pcm, timing)
+        })
+    }
+
+    /// Drain confirmed blocks with the render timing spans and original native
+    /// output timestamp, if one was supplied for that block. The timestamp's
+    /// stream origin and physical latency are not inferred here.
+    pub fn drain_with_output_clock(
+        &mut self,
+        mut block: impl FnMut(usize, &[Source], &[Frame], &[TimingSpan], Option<OutputClock>),
+    ) -> Option<End> {
         // Read the terminal before observing the queue. A terminal release
         // publishes the tail of the producer's confirmed prefix.
         let state = self.state.load(Acquire);
         for _ in 0..PACKETS {
             let Ok(packet) = self.full.pop() else { break };
-            block(packet.frames, &self.sources, &packet.pcm, &packet.timing);
+            block(
+                packet.frames,
+                &self.sources,
+                &packet.pcm,
+                &packet.timing,
+                packet.output_clock,
+            );
             let _ = self.recycle.push(packet);
         }
         let disconnected = self.full.is_abandoned() && self.full.is_empty();
@@ -363,6 +392,7 @@ impl Callback {
             };
             packet.frames = frames;
             packet.timing.clear();
+            packet.output_clock = None;
             for layer in packet.pcm.chunks_exact_mut(FRAMES) {
                 layer[..frames].fill([0.0; 2]);
             }
@@ -382,6 +412,16 @@ impl Callback {
         let active = self.active.as_mut()?;
         active.stage.packet.as_ref()?;
         Some((&active.layout, &mut active.stage))
+    }
+
+    pub(crate) fn set_output_clock(&mut self, clock: Option<OutputClock>) {
+        if let Some(packet) = self
+            .active
+            .as_mut()
+            .and_then(|active| active.stage.packet.as_mut())
+        {
+            packet.output_clock = clock;
+        }
     }
 
     pub(crate) fn finish(&mut self, valid_output: bool) {
