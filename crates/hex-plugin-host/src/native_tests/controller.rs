@@ -1033,3 +1033,57 @@ fn editor_seal_preserves_burst_and_refuses_an_active_sdk_gesture() {
         );
     }
 }
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn sealed_helper_must_not_resume_as_editable_source() {
+    use crate::protocol::{ControllerRequest, EditorSealState};
+    let case = Case::new();
+    let mut instance = Prepared::prepare(
+        &build(),
+        source(),
+        options(),
+        PreparationCancellation::new_on_control().unwrap(),
+        case.setup_restore(116),
+    )
+    .unwrap();
+    instance
+        .begin_controller_request_on_worker(ControllerRequest::SealEditorEdits)
+        .unwrap();
+    let until = Instant::now() + Duration::from_millis(600);
+    loop {
+        match instance.poll_parameter_page_on_worker().unwrap() {
+            ParameterPageProgress::EditorSeal(EditorSealState::Sealed) => break,
+            ParameterPageProgress::Pending => {}
+            other => panic!("seal terminal: {other:?}"),
+        }
+        assert!(Instant::now() < until);
+        thread::yield_now();
+    }
+    let old = instance.configuration().binding;
+    let stopped = instance.quiesce_on_control().unwrap();
+    let mut failure = match stopped.resume_retained_on_control(
+        Binding {
+            epoch: old.epoch + 1,
+            ..old
+        },
+        Some(options().presentation),
+    ) {
+        Err(failure) => failure,
+        Ok(_) => panic!("sealed helper must not report a reusable epoch"),
+    };
+    assert!(matches!(failure.cause(), Error::Worker(16)));
+    loop {
+        match failure.poll_disposal_on_control().unwrap() {
+            Some(PreparationDisposal::Reaped(retired)) => {
+                assert!(!retired.status.success());
+                assert!(retired.terminal.is_none());
+                break;
+            }
+            Some(PreparationDisposal::NoInstance) => panic!("original child custody disappeared"),
+            None => {}
+        }
+        assert!(Instant::now() < until);
+        thread::yield_now();
+    }
+}
