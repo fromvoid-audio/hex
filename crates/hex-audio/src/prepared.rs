@@ -565,6 +565,7 @@ pub struct FreshRuntimeFence {
     route_state_generation: u64,
     admitted_command_ticket: u64,
     output_fault_epoch: u64,
+    consumed_stop_generation: u64,
 }
 
 impl FreshRuntimeFence {
@@ -583,6 +584,11 @@ impl FreshRuntimeFence {
     pub const fn output_fault_epoch(self) -> u64 {
         self.output_fault_epoch
     }
+
+    /// Callback-owned Stop sequence. Odd values are in flight; exhaustion refuses new fences.
+    pub const fn consumed_stop_generation(self) -> u64 {
+        self.consumed_stop_generation
+    }
 }
 
 pub struct Status {
@@ -594,6 +600,8 @@ pub struct Status {
     keyboard_activation: Arc<hex_engine::computer_keyboard::KeyboardActivationClock>,
     project_spectrum: crate::spectrum_worker::ProjectSelectionMailbox,
     pending_stop_marker: AtomicU64,
+    // Only the callback writes this: even when idle, odd while handling Stop.
+    consumed_stop_generation: AtomicU64,
     admitted_ticket: AtomicU64,
     closing: AtomicBool,
     publication_pending: admission::PublicationAdmission,
@@ -835,6 +843,7 @@ impl Status {
             keyboard_activation: Arc::default(),
             project_spectrum: Default::default(),
             pending_stop_marker: AtomicU64::new(0),
+            consumed_stop_generation: AtomicU64::new(0),
             admitted_ticket: AtomicU64::new(0),
             closing: AtomicBool::new(false),
             publication_pending: admission::PublicationAdmission::default(),
@@ -1660,13 +1669,20 @@ pub(crate) fn channel_with_interface(
 }
 
 fn capture_runtime_fence(status: &Status) -> Option<FreshRuntimeFence> {
-    if status.render_fault.load(Acquire) || status.device_fault.load(Acquire) {
+    let consumed_stop_generation = status.consumed_stop_generation.load(Acquire);
+    if consumed_stop_generation & 1 != 0
+        || status.pending_stop_marker.load(Acquire) != 0
+        || status.render_fault.load(Acquire)
+        || status.device_fault.load(Acquire)
+    {
         return None;
     }
     let output_fault_epoch = status.last_output_fault_epoch.load(Acquire);
     let mut routes = [SessionRouteEntry::default(); SESSION_ROUTE_CAPACITY];
     let snapshot = status.session_routes(&mut routes)?;
-    if status.render_fault.load(Acquire)
+    if status.pending_stop_marker.load(Acquire) != 0
+        || status.consumed_stop_generation.load(Acquire) != consumed_stop_generation
+        || status.render_fault.load(Acquire)
         || status.device_fault.load(Acquire)
         || status.last_output_fault_epoch.load(Acquire) != output_fault_epoch
     {
@@ -1677,6 +1693,7 @@ fn capture_runtime_fence(status: &Status) -> Option<FreshRuntimeFence> {
         route_state_generation: snapshot.route_state_generation,
         admitted_command_ticket: status.admitted_ticket.load(Acquire),
         output_fault_epoch,
+        consumed_stop_generation,
     })
 }
 
@@ -1747,6 +1764,7 @@ impl PublicationControl {
             && self.status.admitted_ticket.load(Acquire) == fence.admitted_command_ticket
             && self.status.consumed_command.load(Acquire) == fence.admitted_command_ticket
             && self.status.last_output_fault_epoch.load(Acquire) == fence.output_fault_epoch
+            && self.status.consumed_stop_generation.load(Acquire) == fence.consumed_stop_generation
             && !self.status.render_fault.load(Acquire)
             && !self.status.device_fault.load(Acquire)
             && self.status.pending_stop_marker.load(Acquire) == 0
@@ -3653,6 +3671,8 @@ impl Callback {
                         || admitted_ticket != fence.admitted_command_ticket
                         || self.status.last_output_fault_epoch.load(Acquire)
                             != fence.output_fault_epoch
+                        || self.status.consumed_stop_generation.load(Acquire)
+                            != fence.consumed_stop_generation
                         || self.status.render_fault.load(Acquire)
                         || self.status.device_fault.load(Acquire)
                         || stop_pending)
@@ -4437,6 +4457,7 @@ impl Callback {
         let entry_ticket = self.status.admitted_ticket.load(Acquire);
         let stop_marker = self.take_stop_marker();
         self.consume_commands_through(command_cut(entry_ticket, stop_marker));
+        self.finish_stop_marker(stop_marker);
         self.acknowledge_sampler_edit();
     }
 
@@ -4445,6 +4466,14 @@ impl Callback {
     fn take_stop_marker(&self) -> u64 {
         let marker = self.status.pending_stop_marker.load(Acquire);
         if marker != 0 {
+            // This callback is the sole writer. The odd in-flight generation
+            // is visible before clearing the marker, until Stop's transport
+            // and route observations have been published. Saturation refuses
+            // new fences permanently while priority Stop remains effective.
+            let generation = self.status.consumed_stop_generation.load(Relaxed);
+            self.status
+                .consumed_stop_generation
+                .store(generation.saturating_add(1), Release);
             // A reader may observe the cleared marker before Stop finishes.
             // Refuse any existing stopped witness before opening that window.
             self.status.sampler_edit.interrupt_for_stop();
@@ -4457,6 +4486,15 @@ impl Callback {
                 .compare_exchange(marker, 0, AcqRel, Acquire);
         }
         marker
+    }
+
+    fn finish_stop_marker(&self, marker: u64) {
+        if marker != 0 {
+            let generation = self.status.consumed_stop_generation.load(Relaxed);
+            self.status
+                .consumed_stop_generation
+                .store(generation.saturating_add(1), Release);
+        }
     }
 
     fn trace_command_dequeued(&mut self, queued: QueuedCommand, cut: CommandCut) {
@@ -4824,6 +4862,7 @@ impl Callback {
         } else {
             self.consume_commands_through_inner(cut, true);
         }
+        self.finish_stop_marker(user_stop);
         self.acknowledge_sampler_edit();
         self.flush_stream_outcomes();
     }
@@ -9758,6 +9797,125 @@ mod tests {
         assert_eq!(control.status.pending_stop_marker.load(Acquire), 0);
         assert_fresh_fence_rejection(&mut control, rejected);
         assert_eq!(control.reclaim(), 1);
+        control.request_shutdown();
+        callback.begin_block();
+        control.reclaim();
+    }
+
+    #[test]
+    fn fresh_runtime_fence_rejects_stop_consumed_before_publication() {
+        assert_consumed_stop_invalidates_fresh_fence(false);
+    }
+
+    #[test]
+    fn resident_fresh_runtime_fence_rejects_stop_consumed_before_publication() {
+        assert_consumed_stop_invalidates_fresh_fence(true);
+    }
+
+    #[test]
+    fn fresh_fence_refuses_stop_between_marker_clear_and_transport_ack() {
+        let (mut control, mut callback) = channel(48_000).unwrap();
+        control.publish(session_audio_graph().0).unwrap();
+        callback.begin_block();
+        control.command(PlaybackCommand::Play).unwrap();
+        callback.begin_block();
+        assert!(control.status.playing.load(Acquire));
+        control.stop();
+        let barrier = Arc::new(Barrier::new(2));
+        callback.test_before_action_outcome_status = Some(Arc::clone(&barrier));
+        std::thread::scope(|scope| {
+            let worker = scope.spawn(|| callback.begin_block());
+            barrier.wait();
+            assert_eq!(control.status.pending_stop_marker.load(Acquire), 0);
+            assert!(control.capture_fresh_runtime_fence().is_none());
+            barrier.wait();
+            worker.join().unwrap();
+        });
+        assert!(!control.status.playing.load(Acquire));
+        assert_eq!(
+            control
+                .capture_fresh_runtime_fence()
+                .unwrap()
+                .consumed_stop_generation(),
+            2
+        );
+        control.request_shutdown();
+        callback.begin_block();
+        control.reclaim();
+    }
+
+    fn assert_consumed_stop_invalidates_fresh_fence(resident: bool) {
+        let make_graph = || {
+            if resident {
+                session_audio_graph().0
+            } else {
+                graph().0
+            }
+        };
+        let (mut control, mut callback) = channel(48_000).unwrap();
+        control.publish(make_graph()).unwrap();
+        begin_outcome_test_block(&mut callback);
+        control.command(PlaybackCommand::Play).unwrap();
+        begin_outcome_test_block(&mut callback);
+        assert!(control.status.playing.load(Acquire));
+        let stale = control.capture_fresh_runtime_fence().unwrap();
+        control.stop();
+        assert!(control.capture_fresh_runtime_fence().is_none());
+        begin_outcome_test_block(&mut callback);
+        assert!(!control.status.playing.load(Acquire));
+        let mut candidate = make_graph();
+        candidate.apply(PlaybackCommand::Play);
+        let rejected = control
+            .publish_with_policy(
+                candidate,
+                PublicationPolicy::InstallFreshRuntimeIfUnchanged(stale),
+            )
+            .unwrap();
+        begin_outcome_test_block(&mut callback);
+        assert_eq!(control.status.applied_revision.load(Acquire), 1);
+        assert!(!control.status.playing.load(Acquire));
+        assert_fresh_fence_rejection(&mut control, rejected);
+        assert_eq!(control.reclaim(), 1);
+        let fresh = control.capture_fresh_runtime_fence().unwrap();
+        let mut candidate = make_graph();
+        candidate.apply(PlaybackCommand::Play);
+        let accepted = control
+            .publish_with_policy(
+                candidate,
+                PublicationPolicy::InstallFreshRuntimeIfUnchanged(fresh),
+            )
+            .unwrap();
+        begin_outcome_test_block(&mut callback);
+        assert_eq!(control.status.applied_revision.load(Acquire), accepted);
+        assert!(control.status.playing.load(Acquire));
+        control.request_shutdown();
+        callback.begin_block();
+        control.reclaim();
+    }
+
+    #[test]
+    fn exhausted_stop_generation_refuses_new_fences_without_blocking_stop() {
+        let (mut control, mut callback) = channel(48_000).unwrap();
+        control.publish(graph().0).unwrap();
+        callback.begin_block();
+        control
+            .status
+            .consumed_stop_generation
+            .store(u64::MAX - 1, Release);
+        control.stop();
+        callback.begin_block();
+        assert_eq!(
+            control.status.consumed_stop_generation.load(Acquire),
+            u64::MAX
+        );
+        assert!(control.capture_fresh_runtime_fence().is_none());
+        control.stop();
+        callback.begin_block();
+        assert_eq!(
+            control.status.consumed_stop_generation.load(Acquire),
+            u64::MAX
+        );
+        assert!(!control.status.playing.load(Acquire));
         control.request_shutdown();
         callback.begin_block();
         control.reclaim();

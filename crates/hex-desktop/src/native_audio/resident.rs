@@ -668,6 +668,8 @@ impl NativeAudioSink {
                             && expected.route_generation == actual.route_state_generation()
                             && expected.admitted_command_ticket == actual.admitted_command_ticket()
                             && expected.output_fault_epoch == actual.output_fault_epoch()
+                            && expected.consumed_stop_generation
+                                == actual.consumed_stop_generation()
                     }) else {
                         return Err(ResidentPublicationRefusal {
                             kind: hex_session::service::ResidentPublicationFailure::Other,
