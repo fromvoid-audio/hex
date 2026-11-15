@@ -633,55 +633,80 @@ mod tests {
     }
 
     #[test]
-    fn failed_control_notification_preserves_the_published_recovery_report() {
-        let files = Files::new(false);
-        let (_, snapshot) = direct_sampler(&files);
-        let (work_tx, work_rx) = mpsc::sync_channel(1);
-        let (finished_tx, _finished_rx) = mpsc::sync_channel(1);
-        finished_tx.try_send(99).unwrap();
-        let (events_tx, events_rx) = mpsc::sync_channel(1);
-        let worker = thread::spawn(move || {
-            run_export_worker(
-                work_rx,
-                events_tx,
-                Arc::new(|path, _, _, _, _, _, _, _| {
-                    Ok(ExportReport {
-                        path: path.to_path_buf(),
-                        sample_rate: 48_000,
-                        frames: 1,
-                        data_bytes: 4,
-                        clipped_samples: 0,
-                        recovery_path: Some(PathBuf::from("/MixedCase/Previous.wav")),
-                        stale_temporaries: Default::default(),
-                    })
-                }),
-                finished_tx,
-                Arc::new(AtomicBool::new(false)),
-                Arc::new(std::sync::Mutex::new(None)),
+    fn failed_control_notification_preserves_and_displays_publication_paths() {
+        for has_recovery in [false, true] {
+            let files = Files::new(false);
+            let (_, snapshot) = direct_sampler(&files);
+            let destination = files.output().with_file_name("Mixed\u{2069}Case.WAV");
+            let recovery = files.output().with_file_name("Previous\u{2063}Case.WAV");
+            let unrelated = files.output().with_file_name("Unrelated.txt");
+            std::fs::write(&unrelated, b"preserve unrelated file").unwrap();
+            let recovery_for_worker = recovery.clone();
+            let (work_tx, work_rx) = mpsc::sync_channel(1);
+            let (finished_tx, _finished_rx) = mpsc::sync_channel(1);
+            finished_tx.try_send(99).unwrap();
+            let (events_tx, events_rx) = mpsc::sync_channel(1);
+            let worker = thread::spawn(move || {
+                run_export_worker(
+                    work_rx,
+                    events_tx,
+                    Arc::new(move |path, _, _, _, _, _, _, _| {
+                        Ok(ExportReport {
+                            path: path.to_path_buf(),
+                            sample_rate: 48_000,
+                            frames: 1,
+                            data_bytes: 4,
+                            clipped_samples: 0,
+                            recovery_path: has_recovery.then(|| recovery_for_worker.clone()),
+                            stale_temporaries: Default::default(),
+                        })
+                    }),
+                    finished_tx,
+                    Arc::new(AtomicBool::new(false)),
+                    Arc::new(std::sync::Mutex::new(None)),
+                );
+            });
+            work_tx
+                .send(ExportWork::Render(job(&snapshot, destination.clone())))
+                .unwrap();
+            drop(work_tx);
+            let failure = events_rx
+                .recv_timeout(Duration::from_secs(1))
+                .unwrap()
+                .result
+                .unwrap_err();
+            let report = failure
+                .published_report()
+                .expect("successful publication is retained");
+            assert_eq!(report.path, destination);
+            assert_eq!(
+                report.recovery_path.as_ref(),
+                has_recovery.then_some(&recovery)
             );
-        });
-        work_tx
-            .send(ExportWork::Render(job(
-                &snapshot,
-                files.output().to_path_buf(),
-            )))
-            .unwrap();
-        drop(work_tx);
-        let failure = events_rx
-            .recv_timeout(Duration::from_secs(1))
-            .unwrap()
-            .result
-            .unwrap_err();
-        let report = failure
-            .published_report()
-            .expect("successful publication is retained");
-        assert_eq!(report.path, files.output());
-        assert_eq!(
-            report.recovery_path.as_deref(),
-            Some(Path::new("/MixedCase/Previous.wav"))
-        );
-        assert!(failure.message().contains("notification failed"));
-        worker.join().unwrap();
+            let displayed = hex_storage::text::plain(
+                &hex_storage::text::lowercase_outside_verbatim(failure.message()),
+            );
+            let recovery_message = if has_recovery {
+                format!(
+                    "; inspect the previous-file recovery path at {} before removing anything",
+                    recovery.display()
+                )
+            } else {
+                String::new()
+            };
+            assert_eq!(
+                displayed,
+                format!(
+                    "export publication completed; inspect the destination path at {}{recovery_message}; export finished but control custody notification failed; export worker stopped",
+                    destination.display()
+                )
+            );
+            assert_eq!(
+                std::fs::read(unrelated).unwrap(),
+                b"preserve unrelated file"
+            );
+            worker.join().unwrap();
+        }
     }
 
     #[test]
