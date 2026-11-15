@@ -90,14 +90,29 @@ fn pause_guard_case(after_install: bool, with_lane: bool, late_editor: bool, add
     let (applied, _) = h.applied(0);
     let imported = h.run(Request::Import(wave));
     assert!(imported.error.is_none());
-    let (applied, _) = h.applied(applied);
-    let insert = request(&imported.state, PluginEffectDestination::Main);
+    let (mut applied, _) = h.applied(applied);
+    let source_state = if late_editor {
+        let mut eq = hex_engine::eq::EqState::default();
+        let node =
+            hex_engine::eq::Node::new(hex_engine::eq::NodeId::new(800).unwrap(), 90.97308, 0.0, 0)
+                .unwrap();
+        eq.add(node).unwrap();
+        let event = h.run(Request::Edit(Command::InsertMainDevice {
+            before: None,
+            state: eq.encode().unwrap(),
+        }));
+        (applied, _) = h.applied(applied);
+        event.state
+    } else {
+        imported.state
+    };
+    let insert = request(&source_state, PluginEffectDestination::Main);
     let class = insert.selection.cid;
     h.run(Request::InsertPluginEffect(insert));
     let before = terminal(&mut h);
     assert!(before.error.is_none());
     let (applied, metadata) = h.applied(applied);
-    let prior = &before.state.project.main_devices()[0];
+    let prior = before.state.project.main_devices().last().unwrap();
     let device = prior.id();
     let parameter = if late_editor { 7 } else { 0 };
     let target = DeviceAutomationTarget::Vst3 { parameter };
