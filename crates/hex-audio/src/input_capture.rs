@@ -212,6 +212,27 @@ pub struct InputCapture {
     worker: JoinHandle<()>,
     error: Receiver<String>,
 }
+
+/// A control-side stop request for one capture. It remains bound to that
+/// capture after the reader moves to a writer worker or the capture finishes.
+/// Dropping a clone does not stop recording. Never call it from an audio callback.
+#[derive(Clone)]
+pub struct InputStop {
+    shared: Arc<Shared>,
+    worker: thread::Thread,
+}
+impl InputStop {
+    /// Request asynchronous shutdown independently of packet queue capacity.
+    pub fn stop_on_control(&self) {
+        request_stop(&self.shared, &self.worker);
+    }
+}
+
+fn request_stop(shared: &Shared, worker: &thread::Thread) {
+    shared.stop.store(true, Release);
+    worker.unpark();
+}
+
 impl InputCapture {
     /// Begin opening the exact selected source on its dedicated worker.
     /// No PCM is admitted before a start request. CPAL backends can differ
@@ -304,8 +325,16 @@ impl InputCapture {
     }
 
     pub fn stop_on_control(&self) {
-        self.shared.stop.store(true, Release);
-        self.worker.thread().unpark();
+        request_stop(&self.shared, self.worker.thread());
+    }
+
+    /// Retain an independent stop request before moving this reader to a
+    /// writer. Creating or dropping the handle does not start or stop capture.
+    pub fn stop_handle_on_control(&self) -> InputStop {
+        InputStop {
+            shared: Arc::clone(&self.shared),
+            worker: self.worker.thread().clone(),
+        }
     }
 
     /// A reported failure while teardown may still be in progress. Only
@@ -674,6 +703,106 @@ mod tests {
             read(&mut reader, &state),
             Err(InputEnd::DeviceFailed)
         ));
+    }
+
+    #[test]
+    fn independent_stop_wakes_worker_with_a_full_queue_and_preserves_prefix() {
+        let (mut writer, mut reader, state) = channel(1);
+        writer.submit(&vec![0.5; MAX_CALLBACK_FRAMES], 1);
+        let worker_state = Arc::clone(&state);
+        let worker = thread::spawn(move || {
+            while !worker_state.stop.load(Acquire) {
+                thread::park();
+            }
+            worker_state.terminal.store(NO_FAULT + 1, Release);
+        });
+        let stop = InputStop {
+            shared: Arc::clone(&state),
+            worker: worker.thread().clone(),
+        };
+        drop(stop.clone());
+        assert!(!state.stop.load(Acquire));
+        let (ready, moved) = mpsc::sync_channel(1);
+        let (done, completed) = mpsc::sync_channel(1);
+        let reader_state = Arc::clone(&state);
+        let reader_worker = thread::spawn(move || {
+            ready.send(()).unwrap();
+            worker.join().unwrap();
+            let mut count = 0;
+            loop {
+                match read(&mut reader, &reader_state) {
+                    Ok(Some(block)) => {
+                        assert_eq!(block.sequence, count);
+                        count += 1;
+                    }
+                    Err(InputEnd::Stopped) => break,
+                    _ => panic!("unexpected input terminal"),
+                }
+            }
+            done.send(count).unwrap();
+        });
+        moved.recv_timeout(Duration::from_millis(500)).unwrap();
+        stop.stop_on_control();
+        stop.stop_on_control();
+        assert_eq!(
+            completed.recv_timeout(Duration::from_millis(500)).unwrap(),
+            PACKETS as u64
+        );
+        reader_worker.join().unwrap();
+
+        // An old handle only holds its own shared state and worker identity.
+        let (_, _, later) = channel(1);
+        stop.stop_on_control();
+        assert!(!later.stop.load(Acquire));
+    }
+
+    #[test]
+    fn stop_handle_remains_usable_after_capture_moves_to_a_reader_worker() {
+        let (_, input) = RingBuffer::new(PACKETS);
+        let state = Arc::new(Shared {
+            phase: AtomicU8::new(CAPTURING),
+            stop: AtomicBool::new(false),
+            fault: AtomicU8::new(NO_FAULT),
+            terminal: AtomicU8::new(0),
+        });
+        let worker_state = Arc::clone(&state);
+        let worker = thread::spawn(move || {
+            while !worker_state.stop.load(Acquire) {
+                thread::park();
+            }
+            worker_state.terminal.store(NO_FAULT + 1, Release);
+            worker_state.phase.store(FINISHED, Release);
+        });
+        let (_, error) = mpsc::sync_channel(1);
+        let capture = InputCapture {
+            id: format!("{}:test-input", cpal::default_host().id())
+                .parse()
+                .unwrap(),
+            config: InputConfig {
+                sample_rate: 48_000,
+                channels: 1,
+            },
+            input,
+            shared: state,
+            worker,
+            error,
+        };
+        let stop = capture.stop_handle_on_control();
+        let (done, completed) = mpsc::sync_channel(1);
+        let reader_worker = thread::spawn(move || {
+            let mut capture = capture;
+            loop {
+                match capture.try_read_on_control() {
+                    Ok(None) => thread::yield_now(),
+                    Err(InputEnd::Stopped) => break,
+                    _ => panic!("unexpected input terminal"),
+                }
+            }
+            done.send(()).unwrap();
+        });
+        stop.stop_on_control();
+        completed.recv_timeout(Duration::from_millis(500)).unwrap();
+        reader_worker.join().unwrap();
     }
 
     #[test]
