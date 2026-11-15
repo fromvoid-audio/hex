@@ -1552,7 +1552,7 @@ impl Callback {
     /// Borrow the installed original endpoint's input observation without
     /// waiting, allocation, or ownership transfer. This is not graph, source,
     /// transport, state, or publication authority; callers must validate each.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "allocation-probe"))]
     pub(super) fn reserve_native_parameter_input_observation(
         &self,
         binding: Binding,
