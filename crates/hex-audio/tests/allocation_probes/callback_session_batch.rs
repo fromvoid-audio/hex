@@ -13,24 +13,31 @@ use std::{collections::BTreeMap, error::Error, sync::Arc};
 
 #[test]
 fn compensated_session_audio_batches_without_callback_allocations() -> Result<(), Box<dyn Error>> {
-    check_compensated_audio_batch(true, false)
+    check_compensated_audio_batch(true, false, false)
 }
 
 #[test]
 fn compensated_dry_arrangement_tracks_batch_without_callback_allocations()
 -> Result<(), Box<dyn Error>> {
-    check_compensated_audio_batch(false, false)
+    check_compensated_audio_batch(false, false, false)
 }
 
 #[test]
 fn compensated_resident_return_sends_batch_without_callback_allocations()
 -> Result<(), Box<dyn Error>> {
-    check_compensated_audio_batch(false, true)
+    check_compensated_audio_batch(false, true, false)
+}
+
+#[test]
+fn compensated_nonunity_return_sends_batch_without_callback_allocations()
+-> Result<(), Box<dyn Error>> {
+    check_compensated_audio_batch(false, true, true)
 }
 
 fn check_compensated_audio_batch(
     session: bool,
     return_latency: bool,
+    nonunity: bool,
 ) -> Result<(), Box<dyn Error>> {
     const RATE: u32 = 48_000;
     const SOURCE: [f32; 2] = [0.01, -0.02];
@@ -77,6 +84,9 @@ fn check_compensated_audio_batch(
         else {
             return Err("track".into());
         };
+        if nonunity {
+            editor.execute(Command::Gain { track, gain: 0.5 })?;
+        }
         if session {
             editor.execute(Command::CreateSessionAudioClip {
                 track,
@@ -147,7 +157,16 @@ fn check_compensated_audio_batch(
                 if offset + i < latency {
                     [0.0; 2]
                 } else {
-                    SOURCE.map(|sample| sample * if return_latency { 5.0 } else { 4.0 })
+                    SOURCE.map(|sample| {
+                        sample
+                            * if nonunity {
+                                2.5
+                            } else if return_latency {
+                                5.0
+                            } else {
+                                4.0
+                            }
+                    })
                 }
             })
             .collect();

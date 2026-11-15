@@ -148,7 +148,8 @@ impl SessionPlayback {
             })
             || routes[..self.route_scratch.len()]
                 .iter()
-                .any(|route| *route != ResidentRoute::Unity)
+                .enumerate()
+                .any(|(index, route)| *route == ResidentRoute::Scalar || self.track_fader_scratch[index].active())
         {
             return false;
         }
@@ -159,13 +160,29 @@ impl SessionPlayback {
             if let crate::signal_graph::Owner::Track(index) = *owner {
                 let work_start = self.render_work.track(index);
                 let samples = &self.resident_source_scratch[index][..frames];
+                let track = &self.revision.arrangement().tracks()[index];
+                let mix = track
+                    .mix()
+                    .with_channel_gain(self.track_fader_scratch[index].current());
                 for send in &compensation.graph.tracks[index].sends {
                     for (output, input) in self.return_scratch[send.target][..frames]
                         .iter_mut()
                         .zip(samples)
                     {
-                        output[0] += input[0] * send.gain;
-                        output[1] += input[1] * send.gain;
+                        let mut value = *input;
+                        if routes[index] == ResidentRoute::Passthrough {
+                            // Match the per-frame input/output taps below exactly;
+                            // the original raw sample remains for meter publication.
+                            value[0] += 0.0;
+                            value[1] += 0.0;
+                            track.apply_instrument_input_gain(std::slice::from_mut(&mut value));
+                            value[0] += 0.0;
+                            value[1] += 0.0;
+                            track.apply_instrument_output_gain(std::slice::from_mut(&mut value));
+                            value = mix.apply_frame(value);
+                        }
+                        output[0] += value[0] * send.gain;
+                        output[1] += value[1] * send.gain;
                     }
                 }
                 self.render_work.finish(work_start);
@@ -1408,6 +1425,15 @@ mod tests {
 
     #[test]
     fn unity_return_capture_and_refusal_preserve_pcm_and_transaction() {
+        return_capture_and_refusal(1.0);
+    }
+
+    #[test]
+    fn static_gain_return_capture_and_refusal_preserve_pcm_and_transaction() {
+        return_capture_and_refusal(0.5);
+    }
+
+    fn return_capture_and_refusal(gain: f32) {
         use crate::session_playback::capture::{OutputCapture, OutputCaptureId};
         use hex_lattice_contract::NativeDeviceMetadata;
         use hex_project::{Command, Created};
@@ -1435,6 +1461,11 @@ mod tests {
         }
 
         let mut f = fixture(&[&[]], 1024);
+        let mut snapshot = f.editor.project().snapshot();
+        snapshot.tracks[0].gain = gain;
+        f.editor =
+            hex_project::Editor::new(hex_project::Project::from_snapshot(snapshot).unwrap(), 32)
+                .unwrap();
         let track = f.tracks[0];
         let Created::ReturnTrack(bus) = f
             .editor
