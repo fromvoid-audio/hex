@@ -5680,6 +5680,13 @@ impl Callback {
         self.finish_analysis_block(captured_start, output_valid).0
     }
 
+    pub(crate) fn set_sample_recording_output_clock(
+        &mut self,
+        clock: Option<crate::sample_recording::OutputClock>,
+    ) {
+        self.sample_recording.set_output_clock(clock);
+    }
+
     pub(crate) fn finish_sample_recording(&mut self, output_valid: bool) {
         if output_valid
             && self.sample_recording.selection().is_some_and(|layout| {

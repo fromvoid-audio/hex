@@ -62,12 +62,21 @@ fn tracks_with_timing(timing: bool) -> (Playback, [OutputCaptureId; 2]) {
 }
 
 fn deliver(callback: &mut prepared::Callback, channels: usize) -> bool {
+    deliver_with_output_clock(callback, channels, None)
+}
+
+fn deliver_with_output_clock(
+    callback: &mut prepared::Callback,
+    channels: usize,
+    clock: Option<OutputClock>,
+) -> bool {
     let mut pcm = [[0.0; 2]; 64];
     let mut device = [0.0; 128];
     let mut render = || {
         callback.begin_block();
         let rendered = callback.render(&mut pcm);
         assert!(rendered.is_ok(), "{rendered:?}");
+        callback.set_sample_recording_output_clock(clock);
         finish_host_chunk(
             callback,
             &mut device,
@@ -95,6 +104,67 @@ fn deliver(callback: &mut prepared::Callback, channels: usize) -> bool {
     }
     #[cfg(not(feature = "allocation-probe"))]
     render()
+}
+
+#[test]
+fn confirmed_output_clock_follows_timing_and_is_cleared_when_packets_recycle() {
+    let (graph, outputs) = tracks_with_timing(true);
+    let (mut control, mut callback) = prepared::channel(48_000).unwrap();
+    control
+        .publish_with_policy_and_context_generation(
+            graph,
+            prepared::PublicationPolicy::InstallFreshRuntime,
+            7,
+        )
+        .unwrap();
+    let mut reader = control.sample_recording.start(7, &outputs, false).unwrap();
+    assert!(reader.ready());
+    control.command(PlaybackCommand::Play).unwrap();
+    let playback = cpal::StreamInstant::new(10, 123);
+    for offset in 0..PACKETS {
+        assert!(deliver_with_output_clock(
+            &mut callback,
+            2,
+            Some(OutputClock {
+                playback,
+                offset_frames: (offset * 64) as u32
+            })
+        ));
+    }
+    let mut seen = 0;
+    reader.drain_with_output_clock(|frames, _, _, timing, clock| {
+        assert_eq!(frames, 64);
+        assert_eq!(
+            clock,
+            Some(OutputClock {
+                playback,
+                offset_frames: (seen * 64) as u32
+            })
+        );
+        assert!(!timing.is_empty());
+        seen += 1;
+    });
+    assert_eq!(seen, PACKETS);
+
+    // The next capture reuses a packet that previously held a timestamp.
+    assert!(deliver(&mut callback, 2));
+    reader.drain_with_output_clock(|_, _, _, _, clock| {
+        assert_eq!(clock, None);
+    });
+
+    // A timestamp staged for a refused output must never be published.
+    assert!(!deliver_with_output_clock(
+        &mut callback,
+        0,
+        Some(OutputClock {
+            playback,
+            offset_frames: 0
+        })
+    ));
+    let mut rejected = 0;
+    let end = reader.drain_with_output_clock(|_, _, _, _, _| rejected += 1);
+    assert_eq!(rejected, 0);
+    assert_eq!(end, Some(End::OutputFailed));
 }
 
 struct Directory(PathBuf);
