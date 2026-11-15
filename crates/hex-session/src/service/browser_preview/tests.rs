@@ -458,3 +458,25 @@ fn browser_sample_playback_decodes_at_output_rate_and_reports_bad_sources() {
     fs::write(&path, b"bad wave").unwrap();
     assert!(playback(&path, 48_000).is_err());
 }
+
+#[cfg(unix)]
+#[test]
+fn windowed_wav_refuses_replacement_with_same_length_and_time() {
+    let directory = TestDir::new();
+    let path = directory.0.join("current.wav");
+    fs::write(&path, wav_at(48_000, &[100; 512])).unwrap();
+    let modified = fs::metadata(&path).unwrap().modified().unwrap();
+    let mut source = PreviewWindowSource::open(&path, 48_000, &RUNNING).unwrap();
+    fs::rename(&path, directory.0.join("original.wav")).unwrap();
+    fs::write(&path, wav_at(48_000, &[200; 512])).unwrap();
+    fs::File::options()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_modified(modified)
+        .unwrap();
+    assert_eq!(
+        source.read_window(0, 32, &RUNNING),
+        Err(PreviewFailure::SourceChanged)
+    );
+}
