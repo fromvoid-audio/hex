@@ -186,11 +186,32 @@ fn unlaned_effect_commit_keeps_the_running_source() {
         b"editor",
     )
     .unwrap();
-    for _ in 0..30 {
+    let deadline = Instant::now() + Duration::from_millis(250);
+    let receipts = loop {
         h.render_worker_step();
         h.pump();
-        std::thread::sleep(Duration::from_millis(2));
-    }
+        let progress = *h.plugin_progress.lock().unwrap();
+        if progress.editor_receipt_count >= 3 {
+            break progress.editor_receipts;
+        }
+        assert!(Instant::now() < deadline, "editor receipts did not arrive");
+        std::thread::yield_now();
+    };
+    use hex_audio::plugin_worker::ParameterEditKind;
+    let [Some(begin), Some(perform), Some(end), ..] = receipts else {
+        panic!("missing editor receipts");
+    };
+    assert_eq!(
+        (begin.kind, perform.kind, end.kind),
+        (
+            ParameterEditKind::Begin,
+            ParameterEditKind::Perform,
+            ParameterEditKind::End
+        )
+    );
+    assert_eq!((begin.id, perform.id, end.id), (7, 7, 7));
+    assert_eq!(perform.normalized, 0.75);
+    assert!(begin.sequence < perform.sequence && perform.sequence < end.sequence);
     std::fs::remove_file(std::env::var_os("HEX_ORIGINAL_INSTANCE_RELEASE").unwrap()).unwrap();
     h.run(Request::QueryPluginParameters(PluginParameterQuery {
         context: metadata.context,
