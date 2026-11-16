@@ -147,6 +147,40 @@ impl AudioTransformPreparation {
             return Err(Invalid("audio preparation cancelled"));
         }
         let projection = AudioViewProjection::new(clip, tempo_map)?;
+        self.compile_view_projection(tempo_map, clip, edit, asset, source, projection)
+    }
+
+    // A preview can differ from the canonical edit, so it must never use the
+    // canonical view cache key. Root processing remains shared as before.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn compile_view_projection(
+        &self,
+        tempo_map: &hex_project::TempoMap,
+        clip: &hex_project::Clip,
+        edit: &AudioClipEdit,
+        asset: &Asset,
+        source: PreparedAudioSourceRef<'_>,
+        projection: AudioViewProjection<'_>,
+    ) -> Result<Clip, Invalid> {
+        if self.cancelled() {
+            return Err(Invalid("audio preparation cancelled"));
+        }
+        if !std::ptr::eq(projection.clip(), clip)
+            || clip
+                .audio_edit()
+                .is_none_or(|value| !std::ptr::eq(value, edit))
+            || clip.asset() != asset.id()
+            || projection.outer_frame_bounds()
+                != (
+                    clip.start(),
+                    clip.start()
+                        .checked_add(clip.duration())
+                        .ok_or(Invalid("audio placement end overflow"))?,
+                )
+        {
+            return Err(Invalid("audio projection differs from its clip"));
+        }
+        let canonical_cache = !projection.has_silent_repeat_gap();
         if clip.duration() > MAX_AUDIO_DOMAIN_FRAMES
             || projection.occurrence_count() > MAX_VIEW_OCCURRENCES
         {
@@ -159,6 +193,11 @@ impl AudioTransformPreparation {
                 "finite audio placement preparation currently requires resident audio; source changes were not committed",
             ));
         };
+        if source.sample_rate() != tempo_map.sample_rate()
+            || source.frames().len() as u64 != asset.playback_frames()
+        {
+            return Err(Invalid("audio preview source differs from project media"));
+        }
         let tempo = self.shared_tempo(tempo_map)?;
         // Admit all projections before PCM allocation or root preparation. Each
         // distinct musical occurrence has its own processing origin. Frame
@@ -191,9 +230,11 @@ impl AudioTransformPreparation {
         {
             return looped_clip(root, clip, shape);
         }
-        if let Some(audio) = self.lookup_key(source, asset, |key| {
-            key.matches_view(edit, tempo_map, clip.start(), clip.duration())
-        })? {
+        if canonical_cache
+            && let Some(audio) = self.lookup_key(source, asset, |key| {
+                key.matches_view(edit, tempo_map, clip.start(), clip.duration())
+            })?
+        {
             return placed_clip(audio, clip);
         }
         let length = usize::try_from(clip.duration())
@@ -254,20 +295,22 @@ impl AudioTransformPreparation {
             return Err(Invalid("audio preparation cancelled"));
         }
         let audio = Audio::from_derived(source.sample_rate(), frames, reservation)?;
-        self.retain(Entry {
-            source: source.clone(),
-            key: EntryKey::View {
-                edit: edit.clone(),
-                tempo,
-                start: clip.start(),
-                duration: clip.duration(),
-            },
-            algorithm_version: hex_warp::ALGORITHM_VERSION,
-            conversion: asset.conversion_version(),
-            source_rate: asset.source_sample_rate(),
-            prepared: audio.clone(),
-            bytes,
-        })?;
+        if canonical_cache {
+            self.retain(Entry {
+                source: source.clone(),
+                key: EntryKey::View {
+                    edit: edit.clone(),
+                    tempo,
+                    start: clip.start(),
+                    duration: clip.duration(),
+                },
+                algorithm_version: hex_warp::ALGORITHM_VERSION,
+                conversion: asset.conversion_version(),
+                source_rate: asset.source_sample_rate(),
+                prepared: audio.clone(),
+                bytes,
+            })?;
+        }
         placed_clip(audio, clip)
     }
 }

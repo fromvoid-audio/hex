@@ -603,6 +603,37 @@ impl<'a> AudioViewProjection<'a> {
         Ok(value)
     }
 
+    /// Project an uncommitted frame-clock repeat period without changing the
+    /// clip, project history or saved state. This is geometry only; callers
+    /// must separately prepare and admit audio before exposing an edit.
+    pub fn preview_frame_repeat_period(&self, period: u64) -> Result<Self, Invalid> {
+        let placement = self
+            .clip
+            .audio_edit()
+            .and_then(|edit| edit.placement)
+            .filter(|placement| placement.mode == AudioViewMode::Repeat)
+            .ok_or(Invalid("audio repeat preview requires a captured repeat"))?;
+        if self.beat_clock || self.content.is_some() {
+            return Err(Invalid(
+                "audio repeat preview requires a forward frame-clock view",
+            ));
+        }
+        let end = self
+            .view_start
+            .checked_add(self.audible)
+            .ok_or(Invalid("audio repeat preview exceeds its root"))?;
+        Self::from_parts_with_period(
+            self.clip,
+            self.tempo,
+            AudioDomainClock::Frames(self.domain_length),
+            self.view_start..end,
+            self.start,
+            Some(placement),
+            self.displacement,
+            Some(period),
+        )
+    }
+
     pub(super) fn from_clip(clip: &'a Clip, tempo: &'a TempoMap) -> Result<Self, Invalid> {
         let edit = clip.audio_edit();
         let retained_outer = edit
@@ -1139,6 +1170,10 @@ impl<'a> AudioViewProjection<'a> {
     }
     pub fn occurrence_count(&self) -> u64 {
         self.count
+    }
+    /// Whether this projection contains a silent interval in every repeat period.
+    pub fn has_silent_repeat_gap(&self) -> bool {
+        self.cycle != self.audible
     }
     /// Technical placement origin in the declared domain clock, even for
     /// silence. A retained occurrence may carry a separate processing origin.

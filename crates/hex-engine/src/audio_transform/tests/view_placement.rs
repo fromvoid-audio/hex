@@ -486,6 +486,77 @@ fn finite_audio_placement_renders_repeat_phase_partial_cycle_and_once_silence() 
 }
 
 #[test]
+fn uncommitted_repeat_gap_prepares_source_and_silence_without_cache_aliasing() {
+    for phase in [0, 500] {
+        let (editor, clip_id, media) = placed(AudioViewMode::Repeat, phase);
+        let clip = editor.project().clip(clip_id).unwrap();
+        let asset = editor.project().asset(clip.asset()).unwrap();
+        let source = &media[&clip.asset()];
+        let edit = clip.audio_edit().unwrap();
+        let tempo = editor.project().tempo_map();
+        let context = AudioTransformPreparation::default();
+        let before = editor.project().snapshot();
+        let canonical = hex_project::AudioViewProjection::new(clip, tempo).unwrap();
+        assert!(canonical.preview_frame_repeat_period(1_999).is_err());
+        for period in [3_000, 4_000] {
+            let preview = canonical.preview_frame_repeat_period(period).unwrap();
+            assert!(preview.has_silent_repeat_gap());
+            let other = clip.clone();
+            assert!(
+                context
+                    .compile_view_projection(
+                        tempo,
+                        &other,
+                        other.audio_edit().unwrap(),
+                        asset,
+                        crate::compile::PreparedAudioSourceRef::Resident(source),
+                        preview,
+                    )
+                    .is_err(),
+                "a projection must remain bound to its original clip"
+            );
+            let prepared = context
+                .compile_view_projection(
+                    tempo,
+                    clip,
+                    edit,
+                    asset,
+                    crate::compile::PreparedAudioSourceRef::Resident(source),
+                    preview,
+                )
+                .unwrap();
+            assert!(!prepared.looping, "a gapped placement must materialize");
+            let actual = prepared.audio.as_ref().unwrap().frames();
+            let expected: Vec<_> = (0..5_200)
+                .map(|elapsed| {
+                    let position = (phase + elapsed) % period;
+                    if position < 2_000 {
+                        source.frames()[(1_000 + position) as usize]
+                    } else {
+                        [0.0; 2]
+                    }
+                })
+                .collect();
+            assert_eq!(actual, expected, "phase={phase} period={period}");
+        }
+        let normal = context
+            .compile_view(
+                tempo,
+                clip,
+                edit,
+                asset,
+                crate::compile::PreparedAudioSourceRef::Resident(source),
+            )
+            .unwrap();
+        assert!(
+            normal.looping,
+            "preview must not pollute the canonical cache"
+        );
+        assert_eq!(editor.project().snapshot(), before);
+    }
+}
+
+#[test]
 fn accepted_preview_root_keeps_hidden_pcm_and_exhausted_once_source_under_the_transform_owner() {
     for (mode, phase) in [(AudioViewMode::Repeat, 500), (AudioViewMode::Once, 2500)] {
         let (editor, clip, media) = placed(mode, phase);
