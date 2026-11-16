@@ -360,6 +360,27 @@ impl StreamPlayback<'_> {
             _ => Err(PlaybackHandoffError::RuntimeFenceChanged),
         }
     }
+    /// Borrow live track input through the current streamed runtime.
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_with_live_track_audio(
+        &mut self,
+        output: &mut [crate::Frame],
+        track: hex_project::TrackId,
+        input: &[crate::Frame],
+        pages: Option<&mut dyn crate::MediaPages>,
+        observer: Option<&mut crate::NodeSignalObserver<'_>>,
+        project: Option<&mut crate::ProjectOutputTap<'_, '_>>,
+        foreign: &mut dyn hex_lattice::ForeignProcessors,
+    ) -> Result<(), Invalid> {
+        match &mut self.runtime {
+            Runtime::Constructor(runtime) => runtime.render_with_live_track_audio(
+                output, track, input, pages, observer, project, foreign,
+            ),
+            Runtime::Ordinary(runtime, _) => runtime.render_with_live_track_audio(
+                output, track, input, pages, observer, project, foreign,
+            ),
+        }
+    }
     /// Borrow the existing admitted foreign endpoints through the same runtime
     /// facade. Neither this view nor page facts grant endpoint authority.
     pub fn render_with_foreign_processors(

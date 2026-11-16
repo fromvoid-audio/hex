@@ -8,6 +8,8 @@ use std::sync::Arc;
 mod candidate_storage;
 #[cfg(test)]
 mod idle_transition_tests;
+#[cfg(test)]
+mod live_track_audio_tests;
 mod metronome;
 pub(crate) mod transport_fade;
 pub use transport_fade::TransportFadeCompletion;
@@ -2668,6 +2670,99 @@ impl Playback {
 
     pub fn render(&mut self, output: &mut [Frame]) -> Result<(), Invalid> {
         self.render_with_post_node_observer(output, None)
+    }
+
+    /// Render one bounded physical callback with a borrowed live track block.
+    /// Track input follows transport fades; project capture taps are refused.
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_with_live_track_audio(
+        &mut self,
+        output: &mut [Frame],
+        track: hex_project::TrackId,
+        input: &[Frame],
+        pages: Option<&mut dyn MediaPages>,
+        observer: Option<&mut crate::NodeSignalObserver<'_>>,
+        project: Option<&mut crate::ProjectOutputTap<'_, '_>>,
+        foreign: &mut dyn hex_lattice::ForeignProcessors,
+    ) -> Result<(), Invalid> {
+        self.render_live_audio(
+            output, track, input, pages, observer, project, None, foreign,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn render_live_audio<P: MediaPages + ?Sized>(
+        &mut self,
+        output: &mut [Frame],
+        track: hex_project::TrackId,
+        input: &[Frame],
+        mut pages: Option<&mut P>,
+        mut observer: Option<&mut crate::NodeSignalObserver<'_>>,
+        project: Option<&mut crate::ProjectOutputTap<'_, '_>>,
+        sources: Option<&crate::native_device_resources::current_sampler::CurrentSamplerSources>,
+        foreign: &mut dyn hex_lattice::ForeignProcessors,
+    ) -> Result<(), Invalid> {
+        let source_ref = sources.map(crate::native_device_resources::SamplerSourcesRef::Current);
+        let valid = self.session_runtime.as_ref().is_some_and(|runtime| {
+            runtime
+                .validate_live_audio(track, input, output.len(), project.is_some(), source_ref)
+                .is_ok()
+        });
+        if !valid {
+            output.fill([0.0; 2]);
+            foreign.reject_callback();
+            return Err(Invalid("invalid live track audio request"));
+        }
+        self.render_declicked(output, |playback, output, offset| {
+            let mut shifted = ShiftedForeign {
+                inner: &mut *foreign,
+                offset,
+            };
+            let result = playback
+                .session_runtime
+                .as_mut()
+                .ok_or(Invalid(
+                    "live track audio requires a prepared session runtime",
+                ))
+                .and_then(|runtime| {
+                    with_shifted_observer(observer.as_deref_mut(), offset, |observer| {
+                        if runtime.playing() {
+                            runtime.render_live_audio(
+                                output,
+                                track,
+                                &input[offset..offset + output.len()],
+                                pages.as_deref_mut(),
+                                observer,
+                                None,
+                                source_ref,
+                                &mut shifted,
+                            )
+                        } else if let Some(sources) = sources {
+                            runtime.render_current_sampler_with_foreign(
+                                output,
+                                pages.as_deref_mut(),
+                                observer,
+                                None,
+                                sources,
+                                &mut shifted,
+                            )
+                        } else {
+                            runtime.render_internal_without_live_audio(
+                                output,
+                                pages.as_deref_mut(),
+                                observer,
+                                &mut shifted,
+                            )
+                        }
+                        .map_err(|error| Invalid(error.diagnostic_message()))
+                    })
+                });
+            if result.is_err() {
+                foreign.reject_callback();
+                output.fill([0.0; 2]);
+            }
+            result
+        })
     }
 
     /// The normal canonical renderer with the audio owner's already retained
