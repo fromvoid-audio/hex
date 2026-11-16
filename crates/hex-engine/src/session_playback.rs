@@ -449,6 +449,7 @@ pub const MAX_FINITE_BOUNCE_FRAMES: u64 = hex_project::MAX_ARRANGEMENT_BOUNCE_FR
 enum RenderConstruction {
     Interactive,
     LinearExport,
+    LinearForeignExport,
     FiniteBounce,
     FiniteForeignBounce,
 }
@@ -1386,6 +1387,27 @@ impl SessionPlayback {
         Self::new_with_policy(revision, true, Some(resources))
     }
 
+    /// Prepare linear export with independently owned foreign processors.
+    /// The caller must supply those processors for every render, including
+    /// preroll and latency drain. The output owner bounds the export window;
+    /// the shorter source-bounce frame limit does not apply here.
+    pub fn new_linear_arrangement_export_with_foreign(
+        revision: Arc<PreparedRevision>,
+        resources: Option<&crate::native_device_resources::PreparedDeviceResources>,
+    ) -> Result<Self, SessionPlaybackError> {
+        if revision.requires_control_sampler_sources() {
+            return Err(SessionPlaybackError::MutableInstrumentDiagnostic(
+                "sampler requires private offline export resources",
+            ));
+        }
+        Self::new_with_render_policy(
+            revision,
+            RenderConstruction::LinearForeignExport,
+            resources,
+            None,
+        )
+    }
+
     /// Private-control export capability: the graph contains only scalar sampler
     /// coefficients. Every block must borrow this exact sealed source sidecar.
     /// This closed owner accepts only Play, Stop and frame-zero Seek, never
@@ -1448,6 +1470,7 @@ impl SessionPlayback {
                 preroll::arrangement_runtime_storage_preflight_bytes(revision)
             }
             RenderConstruction::LinearExport
+            | RenderConstruction::LinearForeignExport
             | RenderConstruction::FiniteBounce
             | RenderConstruction::FiniteForeignBounce => {
                 preroll::linear_export_runtime_storage_preflight_bytes(revision)
@@ -1660,8 +1683,11 @@ impl SessionPlayback {
         let arrangement = revision.arrangement();
         let recipes = recipe_override.unwrap_or(&arrangement.source_effects);
         let linear_arrangement_export = policy != RenderConstruction::Interactive;
-        let lacks_foreign_renderer =
-            linear_arrangement_export && policy != RenderConstruction::FiniteForeignBounce;
+        let lacks_foreign_renderer = linear_arrangement_export
+            && !matches!(
+                policy,
+                RenderConstruction::FiniteForeignBounce | RenderConstruction::LinearForeignExport
+            );
         let chain_has_foreign_automation = arrangement
             .tracks
             .iter()
@@ -1768,10 +1794,12 @@ impl SessionPlayback {
             None
         };
 
-        let mutable_arrangement_source_loop = policy == RenderConstruction::LinearExport
-            && arrangement_tracks
-                .iter()
-                .any(|track| track.has_mutable_looping_source());
+        let mutable_arrangement_source_loop = matches!(
+            policy,
+            RenderConstruction::LinearExport | RenderConstruction::LinearForeignExport
+        ) && arrangement_tracks
+            .iter()
+            .any(|track| track.has_mutable_looping_source());
         if mutable_arrangement_source_loop {
             return Err(SessionPlaybackError::MutableInstrumentLoopUnsupported);
         }

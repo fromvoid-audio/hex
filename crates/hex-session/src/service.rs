@@ -1535,6 +1535,7 @@ fn canonical_exporter() -> Exporter {
 struct ExportJob {
     job_id: u64,
     streamed: Option<streamed_export::StreamedExportJob>,
+    foreign: Option<Box<dyn OfflineBounceSource>>,
     sources: Option<hex_engine::native_device_resources::ControlSamplerSources>,
     resources: Option<hex_engine::native_device_resources::PreparedDeviceResources>,
     revision: u64,
@@ -9061,30 +9062,41 @@ fn run_worker(
                 request @ (Request::Export(_) | Request::ExportRange { .. }) => {
                     // Both spellings are export requests, so their parts always exist.
                     if let Some((path, frames, controlled)) = request.into_export_range() {
-                        let job = match compiled.as_ref() {
-                            Some((compiled_revision, prepared))
-                                if *compiled_revision == revision =>
-                            {
-                                hex_export::controlled_frame_count(
-                                    prepared.arrangement(),
-                                    controlled.start,
-                                    frames,
-                                    &controlled.signal,
-                                )
-                                .map_err(|error| error.to_string())
-                                .map(|frames| ExportJob {
-                                    job_id: 0,
-                                    streamed: None,
-                                    sources: None,
-                                    resources: None,
-                                    revision,
-                                    path: path.clone(),
-                                    prepared: Arc::clone(prepared),
-                                    frames,
-                                    controlled: Some(controlled),
-                                })
+                        let job = if audio_sink::requires_plugin_profile(session.project())
+                            && export_destination_is_original_media(
+                                session.project(),
+                                &path,
+                                media_base.as_deref(),
+                            ) {
+                            Err("export destination is original media; choose another path"
+                                .to_owned())
+                        } else {
+                            match compiled.as_ref() {
+                                Some((compiled_revision, prepared))
+                                    if *compiled_revision == revision =>
+                                {
+                                    hex_export::controlled_frame_count(
+                                        prepared.arrangement(),
+                                        controlled.start,
+                                        frames,
+                                        &controlled.signal,
+                                    )
+                                    .map_err(|error| error.to_string())
+                                    .map(|frames| ExportJob {
+                                        job_id: 0,
+                                        streamed: None,
+                                        foreign: None,
+                                        sources: None,
+                                        resources: None,
+                                        revision,
+                                        path: path.clone(),
+                                        prepared: Arc::clone(prepared),
+                                        frames,
+                                        controlled: Some(controlled),
+                                    })
+                                }
+                                _ => Err("latest project revision has not compiled".to_owned()),
                             }
-                            _ => Err("latest project revision has not compiled".to_owned()),
                         }
                         .and_then(|mut job| {
                             if session.audio_mode() == DocumentAudioMode::VerifiedStreaming
@@ -10301,18 +10313,78 @@ fn run_worker(
         if let Some(job) = export_job.as_mut() {
             let streamed = job.streamed.is_some();
             let verified_only = session.audio_mode() == DocumentAudioMode::VerifiedStreaming;
-            if let Err(reason) = export_lane.prepare_job(
-                job,
-                &session,
-                current_sources.as_ref().filter(|_| !streamed),
-                resident_snapshot.as_ref().filter(|_| !verified_only).zip(
-                    events
-                        .resident_audio()
-                        .map(|sink| &*sink as &dyn WorkerAudioSink),
-                ),
-                resident_seek.as_ref(),
-                resident_preview.as_ref(),
-            ) {
+            let needs_private = audio_sink::requires_plugin_profile(session.project());
+            let result = if needs_private {
+                let preflight = export_lane.preflight_private_job(job);
+                let control = job
+                    .controlled
+                    .as_ref()
+                    .map(|c| c.control.clone())
+                    .unwrap_or_default();
+                let cancellation = RequestCancellation::new(
+                    Arc::clone(&session.shutdown),
+                    Arc::clone(&document_intent),
+                    document_intent.load(Ordering::Acquire),
+                )
+                .with_bounce(&control);
+                let context = hex_engine::AudioSourceContext {
+                    project_generation,
+                    editor_revision: revision,
+                };
+                preflight.and_then(|()| match events.resident_audio() {
+                    Some(sink) => {
+                        let prepared = {
+                            let admission = export_lane.admission_with_resident_owners(
+                                compiled.as_ref().map(|(_, prepared)| {
+                                    hex_engine::native_device_resources::ControlSamplerSelection {
+                                        sources: current_sources.as_ref(),
+                                        prepared: Some(prepared),
+                                    }
+                                }),
+                                resident_seek.as_ref(),
+                                resident_preview.as_ref(),
+                            );
+                            resident_audio::prepare_private_export(
+                                &session,
+                                context,
+                                sink,
+                                admission,
+                                resident_snapshot.as_ref(),
+                                &cancellation,
+                                &control,
+                            )
+                        };
+                        prepared.and_then(|(snapshot, owner)| {
+                            job.prepared = Arc::clone(&snapshot.prepared);
+                            job.foreign = Some(owner);
+                            export_lane.prepare_private_job(
+                                job,
+                                &session,
+                                &snapshot,
+                                resident_snapshot.as_ref(),
+                                sink,
+                                resident_seek.as_ref(),
+                                resident_preview.as_ref(),
+                            )
+                        })
+                    }
+                    None => Err("private vst3 export is unavailable for this output".into()),
+                })
+            } else {
+                export_lane.prepare_job(
+                    job,
+                    &session,
+                    current_sources.as_ref().filter(|_| !streamed),
+                    resident_snapshot.as_ref().filter(|_| !verified_only).zip(
+                        events
+                            .resident_audio()
+                            .map(|sink| &*sink as &dyn WorkerAudioSink),
+                    ),
+                    resident_seek.as_ref(),
+                    resident_preview.as_ref(),
+                )
+            };
+            if let Err(reason) = result {
                 let failed = export_job.take();
                 if let Some(job) = failed {
                     export_completion = Some(ExportEvent {
@@ -10580,6 +10652,44 @@ fn run_worker(
     }
 }
 
+fn export_destination_is_original_media(
+    project: &Project,
+    destination: &Path,
+    base: Option<&Path>,
+) -> bool {
+    let Ok(destination_metadata) = std::fs::metadata(destination) else {
+        return false;
+    };
+    let destination_path = std::fs::canonicalize(destination).ok();
+    project.assets().any(|asset| {
+        let source = asset.path();
+        let source = if source.is_absolute() {
+            source.to_path_buf()
+        } else {
+            base.unwrap_or(Path::new(".")).join(source)
+        };
+        let Ok(source_metadata) = std::fs::metadata(&source) else {
+            return false;
+        };
+        same_media_file(&source_metadata, &destination_metadata)
+            || destination_path.as_ref().is_some_and(|destination| {
+                std::fs::canonicalize(&source).is_ok_and(|source| &source == destination)
+            })
+    })
+}
+
+#[cfg(unix)]
+fn same_media_file(left: &std::fs::Metadata, right: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    left.dev() == right.dev() && left.ino() == right.ino()
+}
+
+#[cfg(not(unix))]
+fn same_media_file(_left: &std::fs::Metadata, _right: &std::fs::Metadata) -> bool {
+    // The native VST hosting boundary currently supports macOS only.
+    false
+}
+
 fn latest_timeline_content_end(project: &Project) -> u64 {
     let audio_end = project
         .tracks()
@@ -10639,6 +10749,9 @@ fn run_export_worker(
                         .unwrap_or_else(ControlledExport::whole_main);
                     match controlled.publication(&job.path) {
                         Ok(publication) => (streamed.render)(&StreamedExportRequest {
+                            foreign: std::cell::RefCell::new(job.foreign.as_deref_mut().map(
+                                |source| source as &mut dyn hex_export::ForeignBounceRenderer,
+                            )),
                             source: &streamed.source,
                             prepared: &job.prepared,
                             resources: job.resources.as_ref(),
@@ -10652,6 +10765,32 @@ fn run_export_worker(
                         }),
                         Err(error) => Err(error.into()),
                     }
+                }
+            } else if let Some(foreign) = job.foreign.as_deref_mut() {
+                let controlled = job
+                    .controlled
+                    .take()
+                    .unwrap_or_else(ControlledExport::whole_main);
+                match controlled.publication(&job.path) {
+                    Ok(publication)
+                        if matches!(controlled.signal, hex_export::ExportSignal::Main) =>
+                    {
+                        hex_export::render_linear_main_with_foreign(
+                            &job.path,
+                            Arc::clone(&job.prepared),
+                            job.resources.as_ref(),
+                            controlled.start,
+                            job.frames,
+                            controlled.format,
+                            &controlled.control,
+                            &publication,
+                            None,
+                            foreign,
+                        )
+                        .map_err(ExportFailure::from)
+                    }
+                    Ok(_) => Err("private vst3 export requires main output".into()),
+                    Err(error) => Err(error.into()),
                 }
             } else if job.sources.is_some() && job.resources.is_some() {
                 Err("export cannot combine private and ordinary source scopes".into())

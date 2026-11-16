@@ -30,6 +30,20 @@ pub(super) struct ExportLane {
     dispatched_control: Option<hex_export::ExportControl>,
 }
 impl ExportLane {
+    pub(super) fn preflight_private_job(&mut self, job: &ExportJob) -> Result<(), String> {
+        self.poll();
+        if job
+            .controlled
+            .as_ref()
+            .is_some_and(|c| !matches!(c.signal, hex_export::ExportSignal::Main))
+        {
+            return Err("private vst3 export requires main output".into());
+        }
+        if self.worker.is_none() || self.active.is_some() {
+            return Err("export worker or resource custody is unavailable".into());
+        }
+        Ok(())
+    }
     pub(super) fn new(
         work: SyncSender<ExportWork>,
         finished: Receiver<u64>,
@@ -145,6 +159,14 @@ impl ExportLane {
         if job.sources.is_some() || job.resources.is_some() {
             return Err("export source capture is already initialized".into());
         }
+        if job.foreign.is_some()
+            && (job.streamed.is_none()
+                || job.controlled.as_ref().is_some_and(|controlled| {
+                    !matches!(controlled.signal, hex_export::ExportSignal::Main)
+                }))
+        {
+            return Err("private vst3 export requires main output".into());
+        }
         if job.prepared.requires_device_resources() && resident.is_none() {
             return Err("export requires its matching resident resource snapshot".into());
         }
@@ -158,6 +180,9 @@ impl ExportLane {
         self.next_id = id.checked_add(1).ok_or("export job identity exhausted")?;
         job.job_id = id;
         if session.native_reservation.is_none() {
+            if job.foreign.is_some() {
+                return Err("private vst3 export requires an explicit resident reservation".into());
+            }
             if resident.is_some() || job.prepared.requires_control_sampler_sources() {
                 return Err("sampler requires an explicit resident reservation".into());
             }
@@ -172,6 +197,7 @@ impl ExportLane {
                 sink,
                 seeks,
                 preview,
+                None,
             );
         }
         let mut registered = Vec::new();
@@ -220,6 +246,13 @@ impl ExportLane {
         let runtime_bytes = runtime_bytes
             .checked_add(std::mem::size_of::<DispatchState>())
             .and_then(|bytes| bytes.checked_add(scratch))
+            .and_then(|bytes| {
+                bytes.checked_add(
+                    job.foreign
+                        .as_ref()
+                        .map_or(0, |source| source.retained_data_bytes()),
+                )
+            })
             .ok_or("export runtime and owner metadata overflow")?;
         let selections = [
             ControlSamplerSelection {
@@ -290,6 +323,7 @@ impl ExportLane {
         sink: &dyn WorkerAudioSink,
         seeks: Option<&super::resident_seek::Lane>,
         preview: Option<&super::resident_preview::Preview>,
+        live: Option<&resident_audio::Snapshot>,
     ) -> Result<(), String> {
         if current_sources.is_some()
             || job.sources.is_some()
@@ -317,6 +351,13 @@ impl ExportLane {
         let base = runtime
             .checked_add(scratch)
             .and_then(|bytes| bytes.checked_add(wrappers))
+            .and_then(|bytes| {
+                bytes.checked_add(
+                    job.foreign
+                        .as_ref()
+                        .map_or(0, |source| source.retained_data_bytes()),
+                )
+            })
             .ok_or("export runtime allowance overflow")?;
         let capture_quote = snapshot
             .resources
@@ -328,6 +369,9 @@ impl ExportLane {
             .and_then(|bytes| bytes.checked_add(base))
             .ok_or("export capture allowance overflow")?;
         let mut registered = vec![snapshot.admission()];
+        if let Some(live) = live {
+            registered.push(live.admission());
+        }
         registered.extend(sink.resident_admission());
         if let Some(seeks) = seeks {
             registered.extend(seeks.views());
@@ -415,6 +459,36 @@ impl ExportLane {
         });
         Ok(())
     }
+
+    /// Admit an independently compiled offline graph alongside the live graph.
+    #[allow(clippy::too_many_arguments)] // Both graph owners and the existing admission lanes remain explicit.
+    pub(super) fn prepare_private_job(
+        &mut self,
+        job: &mut ExportJob,
+        session: &Session,
+        snapshot: &resident_audio::Snapshot,
+        live: Option<&resident_audio::Snapshot>,
+        sink: &dyn WorkerAudioSink,
+        seeks: Option<&super::resident_seek::Lane>,
+        preview: Option<&super::resident_preview::Preview>,
+    ) -> Result<(), String> {
+        self.poll();
+        if job.foreign.is_none()
+            || job
+                .controlled
+                .as_ref()
+                .is_some_and(|c| !matches!(c.signal, hex_export::ExportSignal::Main))
+        {
+            return Err("private vst3 export requires streamed main output".into());
+        }
+        if self.worker.is_none() || self.active.is_some() {
+            return Err("export worker or resource custody is unavailable".into());
+        }
+        let id = self.next_id;
+        self.next_id = id.checked_add(1).ok_or("export job identity exhausted")?;
+        job.job_id = id;
+        self.prepare_resident_job(job, session, None, snapshot, sink, seeks, preview, live)
+    }
     pub(super) fn submit(&mut self, job: ExportJob) -> Result<(), ExportEvent> {
         let job_id = job.job_id;
         let control = job
@@ -478,7 +552,173 @@ impl Drop for ExportLane {
 mod tests {
     use super::super::sampler_export::tests::{Files, direct_sampler, job};
     use super::*;
+    use hex_engine::SessionPlayback;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn streamed_worker_transfers_private_owner_once_and_drops_before_terminal() {
+        struct Owner(Arc<AtomicBool>);
+        impl Drop for Owner {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::Release);
+            }
+        }
+        impl hex_export::ForeignBounceRenderer for Owner {
+            fn max_block_frames(&self) -> usize {
+                64
+            }
+            fn render_block(
+                &mut self,
+                _: &mut SessionPlayback,
+                _: &mut [hex_engine::Frame],
+                _: Option<&mut dyn hex_engine::MediaPages>,
+                _: &hex_export::ExportControl,
+            ) -> Result<(), hex_export::ExportError> {
+                Ok(())
+            }
+            fn finish(
+                &mut self,
+                _: &hex_export::ExportControl,
+            ) -> Result<(), hex_export::ExportError> {
+                Ok(())
+            }
+        }
+        impl OfflineBounceSource for Owner {
+            fn retained_data_bytes(&self) -> usize {
+                32
+            }
+            fn prepare(
+                &self,
+                _: &mut dyn FnMut(
+                    &hex_engine::AudioCandidateEffects<'_, '_>,
+                ) -> Result<PreparedRevision, hex_engine::Invalid>,
+            ) -> Result<PreparedRevision, String> {
+                Err("not used by dispatch test".into())
+            }
+        }
+        fn streamed(request: &StreamedExportRequest<'_>) -> Result<ExportReport, ExportFailure> {
+            if request.control().is_cancelled() {
+                return Err("export cancelled".into());
+            }
+            let owner = request.take_foreign().expect("one private owner");
+            assert!(request.take_foreign().is_none());
+            owner.finish(request.control()).unwrap();
+            if request.path().ends_with("fail") {
+                return Err("processor failed".into());
+            }
+            Ok(ExportReport {
+                path: request.path().to_owned(),
+                sample_rate: 48_000,
+                frames: request.frames(),
+                data_bytes: 0,
+                clipped_samples: 0,
+                recovery_path: None,
+                stale_temporaries: Default::default(),
+            })
+        }
+        {
+            let files = Files::new(false);
+            let (session, snapshot) = direct_sampler(&files);
+            let (work_tx, work_rx) = mpsc::sync_channel(1);
+            let (_finished_tx, finished_rx) = mpsc::sync_channel(1);
+            let (release_tx, release_rx) = mpsc::sync_channel::<()>(1);
+            let worker = thread::spawn(move || {
+                let _held = work_rx;
+                let _ = release_rx.recv();
+            });
+            let mut lane = ExportLane::new(work_tx, finished_rx, worker);
+            struct Release(mpsc::SyncSender<()>);
+            impl Drop for Release {
+                fn drop(&mut self) {
+                    let _ = self.0.send(());
+                }
+            }
+            let _release = Release(release_tx);
+            let mut plain = job(&snapshot, files.output().to_owned());
+            plain.prepared = Arc::new(
+                PreparedRevision::prepare(
+                    &hex_project::Project::new(16_000).unwrap(),
+                    &std::collections::BTreeMap::new(),
+                    Arc::new(hex_engine::SineTable::new()),
+                    None,
+                )
+                .unwrap(),
+            );
+            let project = Arc::new(session.project().clone());
+            plain.streamed = Some(streamed_export::StreamedExportJob {
+                source: Arc::new(CanonicalAudioSourceSnapshot::capture(
+                    &project, 0, 0, &session,
+                )),
+                render: streamed,
+            });
+            lane.prepare_job(&mut plain, &session, None, None, None, None)
+                .unwrap();
+            let baseline = lane.active.as_ref().unwrap().runtime_bytes;
+            lane.active = None;
+            plain.foreign = Some(Box::new(Owner(Arc::new(AtomicBool::new(false)))));
+            lane.prepare_job(&mut plain, &session, None, None, None, None)
+                .unwrap();
+            assert_eq!(lane.active.as_ref().unwrap().runtime_bytes, baseline + 32);
+            lane.active = None;
+            let mut controlled = ControlledExport::whole_main();
+            controlled.signal = hex_export::ExportSignal::CapturedMix(Vec::new());
+            plain.controlled = Some(controlled);
+            assert!(
+                lane.prepare_job(&mut plain, &session, None, None, None, None)
+                    .is_err()
+            );
+            assert!(lane.active.is_none());
+            drop(plain);
+        }
+        for mode in ["success", "fail", "cancel"] {
+            let files = Files::new(false);
+            let (session, snapshot) = direct_sampler(&files);
+            let dropped = Arc::new(AtomicBool::new(false));
+            let mut job = job(&snapshot, files.output().with_file_name(mode));
+            if mode == "cancel" {
+                let controlled = ControlledExport::whole_main();
+                assert!(controlled.control.cancel());
+                job.controlled = Some(controlled);
+            }
+            let project = Arc::new(session.project().clone());
+            job.streamed = Some(streamed_export::StreamedExportJob {
+                source: Arc::new(CanonicalAudioSourceSnapshot::capture(
+                    &project, 0, 0, &session,
+                )),
+                render: streamed,
+            });
+            job.foreign = Some(Box::new(Owner(Arc::clone(&dropped))));
+            let (work_tx, work_rx) = mpsc::sync_channel(1);
+            let (finished_tx, finished_rx) = mpsc::sync_channel(1);
+            let (events_tx, events_rx) = mpsc::sync_channel(1);
+            let worker = thread::spawn(move || {
+                run_export_worker(
+                    work_rx,
+                    events_tx,
+                    Arc::new(|_, _, _, _, _, _, _, _| unreachable!()),
+                    finished_tx,
+                    Arc::new(AtomicBool::new(false)),
+                    Arc::new(std::sync::Mutex::new(None)),
+                )
+            });
+            work_tx.send(ExportWork::Render(job)).unwrap();
+            drop(work_tx);
+            finished_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            assert!(
+                dropped.load(Ordering::Acquire),
+                "owner must drop before terminal"
+            );
+            assert_eq!(
+                events_rx
+                    .recv_timeout(Duration::from_secs(5))
+                    .unwrap()
+                    .result
+                    .is_err(),
+                mode != "success"
+            );
+            worker.join().unwrap();
+        }
+    }
 
     #[test]
     fn failed_control_notification_preserves_export_failure_and_recovery_path() {
