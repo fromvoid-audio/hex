@@ -157,8 +157,14 @@ class ScopeTests(unittest.TestCase):
             exclusions.write_text("extra.rs\n")
             configured = Path(directory) / "configured-git"
             configured.write_text(f"[core]\n\texcludesfile = {exclusions}\n")
-            default_env = {**os.environ, "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": str(empty),
-                           "HEX_VST3_SDK_DIR": ""}
+            # The host may have present or future native qualification inputs.
+            # Seed both kinds so this fixture tests isolation on every machine.
+            ambient = {**os.environ, "HEX_VST3_FUTURE_FIXTURE": "ambient",
+                       "HEX_TEST_SIGNING_IDENTITY": "ambient"}
+            default_env = {key: value for key, value in ambient.items()
+                           if not key.startswith("HEX_VST3_") and key != "HEX_TEST_SIGNING_IDENTITY"}
+            default_env.update({"GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": str(empty),
+                                "HEX_VST3_SDK_DIR": ""})
             selected_env = {**default_env, "GIT_CONFIG_GLOBAL": str(configured),
                             "HEX_VST3_SDK_DIR": "explicit-fixture"}
             def git(*args):
