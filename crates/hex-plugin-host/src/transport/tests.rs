@@ -8,6 +8,27 @@ const BINDING: Binding = Binding {
 };
 
 #[test]
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn native_request_records_accepted_queue_time_with_its_exact_identity() {
+    let (_control, mut callback, mut worker) =
+        native_pcm_channel_from_completed_prefix(BINDING, 8, 0).unwrap();
+    let before = std::time::Instant::now();
+    callback
+        .stage(&[[0.25; 2]; 8], &[], &mut [[0.0; 2]; 8])
+        .unwrap();
+    assert!(worker.receive_request().unwrap().is_none());
+    callback.finish(true).unwrap();
+    let after = std::time::Instant::now();
+    let request = worker.receive_request().unwrap().unwrap();
+    assert_eq!(
+        (request.block.binding, request.block.sequence),
+        (BINDING, 0)
+    );
+    let queued = request.queued_at.unwrap();
+    assert!(queued >= before && queued <= after);
+}
+
+#[test]
 fn parameter_input_reservation_serializes_admission_and_callback() {
     use std::num::NonZeroU64;
     let ordinal = |n| NonZeroU64::new(n).unwrap();
@@ -849,6 +870,7 @@ fn bounded_input_validation_and_queue_independent_stop() {
                         .requests
                         .push(InputRequest {
                             block: Block::empty(BINDING, 8),
+                            queued_at: None,
                             parameter_capacity: MAX_PARAMETER_POINTS,
                             authored_program: None,
                             manual_origin: None,
@@ -865,6 +887,7 @@ fn bounded_input_validation_and_queue_independent_stop() {
                         .requests
                         .push(InputRequest {
                             block: Block::empty(BINDING, 8),
+                            queued_at: None,
                             parameter_capacity: MAX_PARAMETER_POINTS,
                             authored_program: None,
                             manual_origin: None,

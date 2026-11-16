@@ -1048,6 +1048,16 @@ impl PublicationControl {
         self.candidate_root
             .take_native_source_failure_diagnostic(binding)
     }
+    /// Drain one copied slow-instrument timing sample for this exact source.
+    pub fn take_native_source_slow_timing(
+        &self,
+        binding: Binding,
+    ) -> Option<crate::plugin_worker::SlowInstrumentTiming> {
+        if self.status.closing.load(Acquire) {
+            return None;
+        }
+        self.candidate_root.take_native_source_slow_timing(binding)
+    }
     /// Nonblocking observation of this original endpoint's actual callback
     /// installation, independent of queue admission. None includes a stale,
     /// retiring/closed source or control contention. True grants neither graph

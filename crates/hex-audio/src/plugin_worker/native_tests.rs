@@ -133,6 +133,8 @@ fn native_instrument_keeps_note_state_after_one_late_reply() {
     assert_eq!(render(&mut callback, &[on]), [[0.0; 2]; 8]);
     assert_eq!(render(&mut callback, &[]), [[0.0; 2]; 8]);
     assert_eq!(render(&mut callback, &[]), [[0.0; 2]; 8]);
+    // Hold the real worker after admission; the callback itself never waits.
+    thread::sleep(Duration::from_millis(5));
     release.send(()).unwrap();
     let wait_for = |blocks| {
         let deadline = std::time::Instant::now() + Duration::from_secs(3);
@@ -142,6 +144,23 @@ fn native_instrument_keeps_note_state_after_one_late_reply() {
         }
     };
     wait_for(3);
+    let timing = owner
+        .take_slow_timing_on_control()
+        .expect("slow pickup sample");
+    assert_eq!(
+        timing.binding,
+        Binding {
+            root: 1,
+            instance: 2,
+            graph: 3,
+            epoch: 1
+        }
+    );
+    assert_eq!(timing.sequence, 0);
+    assert!(timing.queue_ns >= 4_000_000);
+    assert!(timing.exchange_ns > 0);
+    assert_eq!(timing.deadline_ns, 166_666);
+    assert!(timing.dropped >= 2, "one-slot sample reports overflow");
     let resumed = render(&mut callback, &[off]);
     assert!(resumed.iter().flatten().all(|sample| *sample > 0.0));
     wait_for(4);

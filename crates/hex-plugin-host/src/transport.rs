@@ -697,6 +697,7 @@ pub struct EffectSegmentOrigins<'a> {
 #[derive(Clone, Copy)]
 struct InputRequest {
     block: Block,
+    queued_at: Option<std::time::Instant>,
     // Minimum spare capacity of every physical callback contributing to this
     // quantum. Control-originated input may consume it only after acceptance.
     parameter_capacity: usize,
@@ -707,6 +708,9 @@ struct InputRequest {
 
 pub struct WorkerRequest {
     pub block: Block,
+    /// Time the native callback committed this exact request to its queue.
+    /// This is diagnostic only and confers no delivery or lifecycle authority.
+    pub queued_at: Option<std::time::Instant>,
     pub parameter_capacity: usize,
     pub dense_parameter: Option<DenseParameterRequest>,
     /// Program frozen at the accepted physical quantum opening.
@@ -1485,6 +1489,7 @@ impl Callback {
                 }
                 stage.request = Some(InputRequest {
                     block: stage.state.input,
+                    queued_at: None,
                     parameter_capacity: stage.state.parameter_capacity,
                     authored_program: self.authored_origins.program,
                     manual_origin: stage.state.input_manual_origin,
@@ -1530,6 +1535,10 @@ impl Callback {
         let remaining = MAX_PARAMETER_POINTS - stage.input_parameters;
         if let Some(mut request) = stage.request {
             request.parameter_capacity = request.parameter_capacity.min(remaining);
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            if self.conceal_output_gap {
+                request.queued_at = Some(std::time::Instant::now());
+            }
             if self.requests.push(request).is_err() {
                 return self.fail(Fault::Saturated);
             }
@@ -1708,6 +1717,7 @@ impl Worker {
         });
         Ok(Some(WorkerRequest {
             block,
+            queued_at: request.queued_at,
             parameter_capacity: request.parameter_capacity,
             dense_parameter,
             authored_program: request.authored_program,

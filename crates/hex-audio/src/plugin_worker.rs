@@ -50,6 +50,20 @@ pub use capture::{
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub use hex_plugin_host::protocol::StateCaptureRefusal;
 
+/// A copied observation of one slow instrument exchange. This is diagnostic
+/// only: it does not acknowledge final audio or grant access to the worker.
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SlowInstrumentTiming {
+    pub binding: Binding,
+    pub sequence: u64,
+    pub queue_ns: u64,
+    pub exchange_ns: u64,
+    pub deadline_ns: u64,
+    /// Number of slow samples dropped since the preceding drain, saturating.
+    pub dropped: u64,
+}
+
 // Original completion allocation, shared only by joining control and worker.
 // The callback never sees the capture mailbox or takes its mutex.
 struct Signal {
@@ -67,6 +81,10 @@ struct Signal {
     controller_requested: std::sync::atomic::AtomicBool,
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     failure_diagnostic: std::sync::Mutex<Option<String>>,
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    slow_timing: std::sync::Mutex<Option<SlowInstrumentTiming>>,
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    slow_timing_dropped: AtomicU64,
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     parameter_change_requested: std::sync::atomic::AtomicBool,
 }
@@ -98,6 +116,10 @@ impl Signal {
             controller_requested: std::sync::atomic::AtomicBool::new(false),
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             failure_diagnostic: std::sync::Mutex::new(None),
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            slow_timing: std::sync::Mutex::new(None),
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            slow_timing_dropped: AtomicU64::new(0),
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             parameter_change_requested: std::sync::atomic::AtomicBool::new(false),
         }
@@ -612,12 +634,18 @@ fn transport_runner_with_setup(
             match state.worker.receive_request() {
                 Ok(Some(hex_plugin_host::transport::WorkerRequest {
                     block,
+                    queued_at,
                     parameter_capacity,
                     dense_parameter,
                     authored_program,
                     manual_origin_available,
                     editor_scope,
                 })) => {
+                    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                    let queue_ns = queued_at
+                        .map(|queued| queued.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64);
+                    #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+                    let _ = queued_at;
                     let dense = dense_parameter.as_ref().map(|request| request.lane());
                     let authored = authored_program.is_some() || dense.is_some();
                     #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
@@ -667,46 +695,86 @@ fn transport_runner_with_setup(
                     };
                     #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
                     let lost_origin = false;
-                    let result = state
-                        .process(
-                            block,
-                            authored,
-                            dense,
-                            manual_parameter,
-                            editor_scope.is_some(),
+                    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                    let timing = match state.processor.as_ref() {
+                        Some(Processor::Native(instance))
+                            if instance.configuration().input_channels == 0 =>
+                        {
+                            let config = instance.configuration();
+                            Some((
+                                block.binding,
+                                block.sequence,
+                                (f64::from(block.frames) * 1_000_000_000.0 / config.sample_rate)
+                                    as u64,
+                                std::time::Instant::now(),
+                            ))
+                        }
+                        _ => None,
+                    };
+                    let processed = state.process(
+                        block,
+                        authored,
+                        dense,
+                        manual_parameter,
+                        editor_scope.is_some(),
+                        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                        editor_touch,
+                    );
+                    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                    if let (Some(queue_ns), Some((binding, sequence, deadline_ns, start))) =
+                        (queue_ns, timing)
+                    {
+                        let exchange_ns =
+                            start.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64;
+                        if queue_ns.saturating_add(exchange_ns) >= deadline_ns {
+                            if let Ok(mut slot) = published.slow_timing.try_lock()
+                                && slot.is_none()
+                            {
+                                *slot = Some(SlowInstrumentTiming {
+                                    binding,
+                                    sequence,
+                                    queue_ns,
+                                    exchange_ns,
+                                    deadline_ns,
+                                    dropped: 0,
+                                });
+                            } else {
+                                let _ = published.slow_timing_dropped.fetch_update(
+                                    std::sync::atomic::Ordering::Relaxed,
+                                    std::sync::atomic::Ordering::Relaxed,
+                                    |count| Some(count.saturating_add(1)),
+                                );
+                            }
+                        }
+                    }
+                    let result = processed.and_then(
+                        |hex_plugin_host::protocol::EditorPcm {
+                             block: reply,
+                             performs,
+                             restorations,
+                         }| {
+                            // Native exchange already validated the complete SDK
+                            // reply. Retain its private input receipt even if Stop
+                            // revokes the transport before callback publication.
+                            // The live terminal is still published only below.
                             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-                            editor_touch,
-                        )
-                        .and_then(
-                            |hex_plugin_host::protocol::EditorPcm {
-                                 block: reply,
-                                 performs,
-                                 restorations,
-                             }| {
-                                // Native exchange already validated the complete SDK
-                                // reply. Retain its private input receipt even if Stop
-                                // revokes the transport before callback publication.
-                                // The live terminal is still published only below.
-                                #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-                                let manual = state.complete_parameter_change(&reply)?;
-                                #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
-                                let manual = None;
-                                state.worker.complete_with_editor_facts(
-                                    reply,
-                                    manual,
-                                    editor_scope.map(|_| {
-                                        hex_plugin_host::transport::EditorPcmFacts {
-                                            performs,
-                                            restorations,
-                                            lost_origin,
-                                        }
-                                    }),
-                                )?;
-                                #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-                                state.observe_parameter_reply(&reply)?;
-                                Ok(())
-                            },
-                        );
+                            let manual = state.complete_parameter_change(&reply)?;
+                            #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+                            let manual = None;
+                            state.worker.complete_with_editor_facts(
+                                reply,
+                                manual,
+                                editor_scope.map(|_| hex_plugin_host::transport::EditorPcmFacts {
+                                    performs,
+                                    restorations,
+                                    lost_origin,
+                                }),
+                            )?;
+                            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                            state.observe_parameter_reply(&reply)?;
+                            Ok(())
+                        },
+                    );
                     if let Err(error) = result {
                         state.worker.revoke();
                         if error != Fault::Revoked {
@@ -930,6 +998,17 @@ impl NativeWorker {
                 deadline,
             )
         })
+    }
+    /// Drain one bounded slow-exchange observation on the control lane.
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub(crate) fn take_slow_timing_on_control(&self) -> Option<SlowInstrumentTiming> {
+        let mut sample = self.reaper.completed.slow_timing.try_lock().ok()?.take()?;
+        sample.dropped = self
+            .reaper
+            .completed
+            .slow_timing_dropped
+            .swap(0, std::sync::atomic::Ordering::Relaxed);
+        Some(sample)
     }
     /// Actual original request pickup, distinct from successful processing.
     /// The copied observation grants no graph, canonical or final-output ACK.

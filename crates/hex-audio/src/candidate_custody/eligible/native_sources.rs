@@ -975,6 +975,14 @@ impl CandidateRoot {
             endpoint.take_failure_diagnostic_on_control()
         })?
     }
+    pub(crate) fn take_native_source_slow_timing(
+        &self,
+        binding: Binding,
+    ) -> Option<crate::plugin_worker::SlowInstrumentTiming> {
+        self.with_native_source_endpoint(binding, |_, endpoint| {
+            endpoint.take_slow_timing_on_control()
+        })?
+    }
     fn with_native_source_endpoint<T>(
         &self,
         binding: Binding,

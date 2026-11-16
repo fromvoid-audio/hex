@@ -609,6 +609,11 @@ impl Plugins {
                 .filter(|source| source.project_generation == generation)
                 .map(|source| {
                     let status = control.native_source_endpoint_status(source.binding);
+                    if let Some(log) = &self.diagnostics
+                        && let Some(timing) = control.take_native_source_slow_timing(source.binding)
+                    {
+                        record_slow_instrument(log, generation, output, source.device, timing);
+                    }
                     if status == Some((true, false)) {
                         source.edit_backlog = false;
                     }
@@ -1031,9 +1036,66 @@ fn advance_source(
     Ok(None)
 }
 
+fn record_slow_instrument(
+    log: &hex_diagnostics::DiagnosticsHandle,
+    generation: u64,
+    output: u64,
+    device: u64,
+    timing: hex_audio::plugin_worker::SlowInstrumentTiming,
+) {
+    let _ = log.record_typed(
+        hex_diagnostics::Level::Warn,
+        hex_diagnostics::Category::Audio,
+        &format!(
+            "vst3_worker v=1 stage=slow_instrument generation={generation} output={output} device={device} binding={:?} sequence={} queue_ns={} exchange_ns={} deadline_ns={} dropped={} sdk_ns=unavailable",
+            timing.binding, timing.sequence, timing.queue_ns, timing.exchange_ns,
+            timing.deadline_ns, timing.dropped
+        ),
+    );
+}
+
 #[cfg(test)]
 mod idle_tests {
     use super::*;
+
+    #[test]
+    fn slow_instrument_sample_reaches_the_session_log() {
+        let directory = std::env::temp_dir().join(format!(
+            "hex-slow-timing-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        let mut log = hex_diagnostics::SessionLog::start(directory.clone()).unwrap();
+        let path = log.path();
+        record_slow_instrument(
+            &log.handle(),
+            9,
+            11,
+            13,
+            hex_audio::plugin_worker::SlowInstrumentTiming {
+                binding: Binding {
+                    root: 1,
+                    instance: 2,
+                    graph: 3,
+                    epoch: 4,
+                },
+                sequence: 17,
+                queue_ns: 19,
+                exchange_ns: 23,
+                deadline_ns: 29,
+                dropped: 2,
+            },
+        );
+        log.shutdown().unwrap();
+        let contents = std::fs::read_to_string(path).unwrap();
+        assert!(contents.contains("stage=slow_instrument"));
+        assert!(contents.contains("generation=9 output=11 device=13"));
+        assert!(contents.contains(
+            "sequence=17 queue_ns=19 exchange_ns=23 deadline_ns=29 dropped=2 sdk_ns=unavailable"
+        ));
+        std::fs::remove_dir_all(directory).unwrap();
+    }
 
     #[test]
     fn recording_source_observation_rejects_pending_retiring_and_replaced_bindings() {
