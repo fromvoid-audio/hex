@@ -96,6 +96,64 @@ fn adding_future_audio_track_preserves_existing_compensated_pcm() {
 }
 
 #[test]
+fn adding_future_audio_track_during_loop_keeps_compensated_pcm() {
+    use hex_project::{Command, Created};
+    for (elapsed, start) in [(32, 33), (32, 50), (96, 33), (96, 50), (60, 63), (124, 63)] {
+        for partition in [1, 257] {
+            let mut f = fixture(&[&[7]], 1024);
+            for audio in f.media.values_mut() {
+                *audio = Audio::new(48_000, vec![[1.0, -0.5]; 1024]).unwrap();
+            }
+            f.editor
+                .execute(Command::SetLoopRegion {
+                    start: 0,
+                    end: 64,
+                    enabled: true,
+                })
+                .unwrap();
+            let mut old = SessionPlayback::new(prepare(&f).unwrap()).unwrap();
+            old.apply(SessionPlaybackCommand::Play).unwrap();
+            old.render(&mut vec![[0.0; 2]; elapsed]).unwrap();
+            let Created::Imported { track, asset, clip } = f
+                .editor
+                .execute(Command::ImportAudioTrack {
+                    name: "future".into(),
+                    path: "future-loop.wav".into(),
+                    sample_rate: 48_000,
+                    frames: 128,
+                })
+                .unwrap()
+            else {
+                panic!("import")
+            };
+            f.editor
+                .execute(Command::MoveClip { clip, track, start })
+                .unwrap();
+            f.media
+                .insert(asset, Audio::new(48_000, vec![[0.25; 2]; 128]).unwrap());
+            let revision = prepare(&f).unwrap();
+            let mut oracle = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+            oracle.apply(SessionPlaybackCommand::Play).unwrap();
+            oracle.render(&mut vec![[0.0; 2]; elapsed]).unwrap();
+            let mut next = SessionPlayback::new(revision).unwrap();
+            next.try_inherit_state_from(&mut old).unwrap();
+            let mut actual = [[0.0; 2]; 257];
+            let mut expected = actual;
+            for chunk in actual.chunks_mut(partition) {
+                next.render(chunk).unwrap();
+            }
+            for chunk in expected.chunks_mut(partition) {
+                oracle.render(chunk).unwrap();
+            }
+            assert_eq!(
+                actual, expected,
+                "elapsed={elapsed} start={start} partition={partition}"
+            );
+        }
+    }
+}
+
+#[test]
 fn newly_added_clip_near_cut_keeps_compensated_onset_in_time() {
     use hex_project::{Command, Created};
     for start in [33, 34, 39] {
@@ -150,7 +208,9 @@ fn future_audio_handoff_keeps_unsafe_cases_on_restart_path() {
         "active",
         "historical",
         "at_cut",
-        "loop",
+        "loop_active",
+        "loop_at_cut",
+        "loop_change",
         "routed",
         "latency",
     ] {
@@ -170,7 +230,7 @@ fn future_audio_handoff_keeps_unsafe_cases_on_restart_path() {
         } else {
             None
         };
-        if case == "loop" {
+        if matches!(case, "loop_active" | "loop_at_cut" | "loop_change") {
             f.editor
                 .execute(Command::SetLoopRegion {
                     start: 0,
@@ -182,6 +242,15 @@ fn future_audio_handoff_keeps_unsafe_cases_on_restart_path() {
         let mut old = SessionPlayback::new(prepare(&f).unwrap()).unwrap();
         old.apply(SessionPlaybackCommand::Play).unwrap();
         old.render(&mut [[0.0; 2]; 32]).unwrap();
+        if case == "loop_change" {
+            f.editor
+                .execute(Command::SetLoopRegion {
+                    start: 0,
+                    end: 72,
+                    enabled: true,
+                })
+                .unwrap();
+        }
         let frames = if case == "historical" { 16 } else { 1024 };
         let Created::Imported { track, asset, clip } = f
             .editor
@@ -196,9 +265,9 @@ fn future_audio_handoff_keeps_unsafe_cases_on_restart_path() {
             panic!("import")
         };
         let start = match case {
-            "active" | "historical" => 0,
-            "loop" => 50,
-            "at_cut" => 32,
+            "active" | "historical" | "loop_active" => 0,
+            "loop_change" => 50,
+            "at_cut" | "loop_at_cut" => 32,
             _ => 1024,
         };
         if start != 0 {
