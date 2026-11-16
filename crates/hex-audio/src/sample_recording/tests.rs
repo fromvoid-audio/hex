@@ -240,6 +240,26 @@ fn output_clock_index_keeps_confirmed_packets_gaps_and_terminal() {
     assert!(deliver(&mut callback, 2));
     assert_eq!(index.poll(&mut reader).unwrap(), Some(End::Stopped));
     assert_eq!(index.poll(&mut reader).unwrap(), Some(End::Stopped));
+    let take = crate::input_capture::InputTake {
+        path: PathBuf::new(),
+        sample_rate: 48_000,
+        frames: 128,
+        timing: vec![crate::input_capture::InputTiming {
+            take_start: 0,
+            frames: 128,
+            captured_at: playback,
+            offset_frames: 64,
+        }],
+        end: crate::input_capture::InputTakeEnd::Stopped,
+        open_error: None,
+    };
+    assert_eq!(
+        crate::input_capture::align_complete_take(crate::input_capture::SharedClock, &take, &index),
+        Ok(crate::input_capture::CandidatePlacement {
+            timeline_start: span.timeline_start,
+            frames: 128
+        })
+    );
 }
 
 struct Directory(PathBuf);
