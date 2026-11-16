@@ -57,6 +57,19 @@ public:
             if([event type]==NSEventTypeKeyUp) { owner=0;++key_serials[code]; }
             return false;
         }
+        const auto key_epoch=focus_epoch;
+        const auto key_serial=key_serials[code];
+        const auto appkit_pair=[&] {
+            // Even an unrepresentable initial down owns its repeats and up.
+            // A responder may reenter and admit a separate SDK pair first.
+            if(key_epoch==focus_epoch) {
+                if(!owner) { owner=1;++key_serials[code]; }
+                else if(owner==2 && key_serial!=key_serials[code]) {
+                    owner=3;++key_serials[code];
+                }
+            }
+            return false;
+        };
         const auto flags=[event modifierFlags];
         const int16 modifiers=(flags&NSEventModifierFlagShift?kShiftKey:0) |
             (flags&NSEventModifierFlagOption?kAlternateKey:0) |
@@ -75,6 +88,7 @@ public:
         }
         id responder=[window firstResponder];
         const bool text_responder=[responder respondsToSelector:@selector(hasMarkedText)];
+        if(key_epoch!=focus_epoch || key_serial!=key_serials[code]) return appkit_pair();
         int16 key=owner?key_values[code]:0;
         char16 character=owner?key_characters[code]:0;
         if(owner==2 && character && [event type]==NSEventTypeKeyDown) {
@@ -101,7 +115,7 @@ public:
         }
         if(!owner) {
             NSString* characters=[event charactersIgnoringModifiers];
-            if([characters length]!=1) return false;
+            if([characters length]!=1) return appkit_pair();
             const unichar unmodified=[characters characterAtIndex:0];
             key=nontext_key(unmodified);
             if(!key && !text_responder && !(flags&NSEventModifierFlagOption))
@@ -110,17 +124,19 @@ public:
                 // A text client owns even the first composing keystroke, before
                 // hasMarkedText becomes true. Option/dead keys and multi-unit
                 // or non-ASCII text likewise stay with the native input system.
-                if(text_responder || (flags&NSEventModifierFlagOption)) return false;
+                if(text_responder || (flags&NSEventModifierFlagOption)) return appkit_pair();
                 NSString* typed=[event characters];
-                if([typed length]!=1) return false;
+                if([typed length]!=1) return appkit_pair();
                 character=[typed characterAtIndex:0];
-                if(character<0x20 || character>0x7e) return false;
+                if(character<0x20 || character>0x7e) return appkit_pair();
                 const auto upper=unmodified>='a' && unmodified<='z'?
                     unmodified-('a'-'A'):unmodified;
                 key=CharToVirtualKeyCode(upper);
             }
         }
-        if(text_responder && [(id<NSTextInputClient>)responder hasMarkedText] && !owner) return false;
+        const bool marked=text_responder && [(id<NSTextInputClient>)responder hasMarkedText];
+        if(key_epoch!=focus_epoch || key_serial!=key_serials[code]) return appkit_pair();
+        if(marked && !owner) return appkit_pair();
         if([event type]==NSEventTypeKeyDown) {
             const auto previous_owner=owner;
             const auto epoch=focus_epoch;

@@ -186,6 +186,25 @@ static void check_focus(NSWindowStyleMask style) {
 - (BOOL)hasMarkedText { return NO; }
 @end
 
+@interface ReentrantTextResponder : NSView {
+@public
+    EditorFrame* host;
+    NSEvent* nested;
+    BOOL armed;
+}
+@end
+@implementation ReentrantTextResponder
+- (BOOL)acceptsFirstResponder { return YES; }
+- (BOOL)hasMarkedText {
+    if(armed) {
+        armed=NO;
+        [[self window] makeFirstResponder:nil];
+        assert(host->handle_key_event(nested));
+    }
+    return YES;
+}
+@end
+
 static NSEvent* key_event(NSWindow* window,NSEventType type,unichar character,
                           unsigned short code,NSEventModifierFlags modifiers=0) {
     NSString* text=[NSString stringWithCharacters:&character length:1];
@@ -233,6 +252,7 @@ static void check_keys() {
     const auto ups=view.key_ups;
     assert(!host.handle_key_event(up) && view.key_ups==ups);
     assert(!host.handle_key_event(down) && view.key_downs==calls+1);
+    assert(!host.handle_key_event(up));
     [window makeFirstResponder:nil];
     view.handles_keys=true;
     assert(host.handle_key_event(down));
@@ -241,6 +261,17 @@ static void check_keys() {
     assert(host.handle_key_event(up) && view.key_ups==sdk_ups+1);
     [window makeFirstResponder:nil];
     [marked removeFromSuperview];[marked release];
+    auto* reentrant=[[ReentrantTextResponder alloc] initWithFrame:NSMakeRect(0,0,20,20)];
+    reentrant->host=&host;
+    reentrant->nested=key_event(window,NSEventTypeKeyDown,'a',123);
+    [[window contentView] addSubview:reentrant];
+    assert([window makeFirstResponder:reentrant]);
+    reentrant->armed=YES;
+    const auto before_nested=view.key_downs;
+    assert(!host.handle_key_event(down) && view.key_downs==before_nested+1);
+    const auto before_nested_up=view.key_ups;
+    assert(!host.handle_key_event(up) && view.key_ups==before_nested_up+1);
+    [reentrant removeFromSuperview];[reentrant release];
     assert(host.handle_key_event(down));
     host.focus_changed(false);
     assert(!host.handle_key_event(up));
@@ -324,9 +355,16 @@ static void check_printable_keys() {
     assert(!host.handle_key_event(down) && view.key_downs==after_tab);
     assert(!host.handle_key_event(tab) && view.key_downs==after_tab);
     [window makeFirstResponder:nil];
+    assert(!host.handle_key_event(repeat) && view.key_downs==after_tab);
+    assert(!host.handle_key_event(up));
+    assert(!host.handle_key_event(key_event(window,NSEventTypeKeyUp,'\t',48)));
     [text removeFromSuperview];[text release];
     assert(!host.handle_key_event(key_event(window,NSEventTypeKeyDown,'a',0,NSEventModifierFlagOption)));
+    assert(!host.handle_key_event(repeat));
+    assert(!host.handle_key_event(up));
     assert(!host.handle_key_event(key_event(window,NSEventTypeKeyDown,0x00e9,0)));
+    assert(!host.handle_key_event(repeat));
+    assert(!host.handle_key_event(up));
     assert(view.key_downs==after_tab);
     host.invalidate();
     [window release];
