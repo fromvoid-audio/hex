@@ -175,12 +175,23 @@ impl SessionPlayback {
         Ok(())
     }
 
+    /// Record that a previously validated live-audio block drove this stopped
+    /// graph. This is history bookkeeping, not source or monitor admission.
+    /// The mark survives input removal and handoff so audible transitions can
+    /// drain; Stop and seek clear it with their existing discontinuities.
+    pub fn note_stopped_live_input(&mut self) {
+        if !self.playing {
+            self.stopped_live_input_history = true;
+        }
+    }
+
     fn stop_transport(&mut self) -> bool {
         self.browser_audition.voices = Default::default();
         self.foreign_arrangement.cut();
         let mut changed = self.performance_frame != 0;
         self.playing = false;
         self.monitor_source_releases = false;
+        self.stopped_live_input_history = false;
         self.performance_frame = 0;
         self.arrangement_frame = 0;
         self.arrangement_loop_pass = 0;
@@ -323,6 +334,7 @@ impl SessionPlayback {
     pub(super) fn install_seek(&mut self, frame: u64, beat: BeatTime) {
         self.browser_audition.voices = Default::default();
         self.monitor_source_releases = false;
+        self.stopped_live_input_history = false;
         let mut changed = self.performance_frame != frame;
         for route in &self.routes {
             changed |= route.pending.is_some();

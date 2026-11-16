@@ -12541,6 +12541,26 @@ fn arrangement_preroll_held_mutable_source_and_return_send_follow_seek_law() {
 }
 
 #[test]
+fn stopped_live_input_history_does_not_release_unrelated_prerolled_notes() {
+    let prepared = mutable_feedback_with_stateful_track_and_return();
+    let caller = SessionPlayback::new(prepared).unwrap();
+    let mut unmarked = caller
+        .prepare_arrangement_preroll(512, 512, false, &AtomicBool::new(false))
+        .unwrap();
+    let mut baseline = [[1.0; 2]; 64];
+    unmarked.render(&mut baseline).unwrap();
+    assert_eq!(baseline, [[0.0; 2]; 64]);
+    let mut candidate = caller
+        .prepare_arrangement_preroll(512, 512, false, &AtomicBool::new(false))
+        .unwrap();
+    candidate.note_stopped_live_input();
+    let mut output = [[1.0; 2]; 64];
+    candidate.render(&mut output).unwrap();
+    assert_eq!(output, [[0.0; 2]; 64]);
+    assert_eq!(candidate.performance_frame(), 512);
+}
+
+#[test]
 fn interactive_arrangement_preroll_released_mutable_source_and_return_start_empty() {
     let prepared = mutable_feedback_with_stateful_track_and_return();
     assert!(prepared.arrangement_seek_requires_preroll());

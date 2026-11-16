@@ -41,6 +41,7 @@ impl SessionPlayback {
     pub(super) fn renders_no_device_chains(&self) -> bool {
         !self.playing
             && !self.monitor_source_releases
+            && !self.stopped_live_input_history
             && self.computer_keyboard.is_none()
             && self.current_sampler_keyboards.is_empty()
             && !self.stopped_edit_tails()
@@ -729,6 +730,7 @@ impl SessionPlayback {
             && !self.foreign_arrangement.has_keyboard()
             && stopped_edit_tails
             && !self.monitor_source_releases
+            && !self.stopped_live_input_history
             && self.computer_keyboard.is_none()
             && self.current_sampler_keyboards.is_empty()
             && !self

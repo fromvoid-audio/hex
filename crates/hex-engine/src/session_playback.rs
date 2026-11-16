@@ -598,6 +598,9 @@ pub struct SessionPlayback {
     // until Play or live activation. False therefore permits Main-tail-only
     // draining without ticking a fresh replacement processor's input clock.
     monitor_source_releases: bool,
+    // A stopped live audio block has driven this graph. Keep rendering its
+    // device history after input removal until Stop or seek resets it.
+    stopped_live_input_history: bool,
     linear_arrangement_export: bool,
     current_sampler_console: bool,
     route_state_generation: u64,
@@ -1017,6 +1020,7 @@ impl SessionPlayback {
             arrangement_loop_pass: _,
             playing: _,
             monitor_source_releases: _,
+            stopped_live_input_history: _,
             linear_arrangement_export: _,
             current_sampler_console: _,
             route_state_generation: _,
@@ -2248,6 +2252,7 @@ impl SessionPlayback {
             arrangement_loop_pass: 0,
             playing: false,
             monitor_source_releases: false,
+            stopped_live_input_history: false,
             linear_arrangement_export,
             current_sampler_console: false,
             route_state_generation: 0,
