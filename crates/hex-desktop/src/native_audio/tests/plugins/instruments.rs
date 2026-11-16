@@ -4345,6 +4345,16 @@ fn installed_instrument_and_effect_export_with_streamed_audio() {
     let complete = std::env::var_os("HEX_TEST_EXPORT_COMPLETE").is_some();
     let source_frames = if probe || complete { 8_000_001 } else { 16_384 };
     let source = files.wav(48_000, source_frames);
+    // Distinct long silent sections reveal stale, skipped, or shifted streamed
+    // pages well after the instrument's short initial note has finished.
+    let markers = [(4_000_000usize, 8192usize), (7_950_000, 8192)];
+    if complete {
+        let mut marked = fs::read(&source).unwrap();
+        for (start, length) in markers {
+            marked[44 + start * 2..44 + (start + length) * 2].fill(0);
+        }
+        fs::write(&source, marked).unwrap();
+    }
     let source_bytes = fs::read(&source).unwrap();
     let imported = h.run(Request::ImportToNewTrack {
         path: source.clone(),
@@ -4395,6 +4405,7 @@ fn installed_instrument_and_effect_export_with_streamed_audio() {
     assert!(inserted.error.is_none(), "{:?}", inserted.error);
     let (applied, _) = h.applied(applied);
     let before = Arc::clone(&inserted.state.project);
+    let live_binding = h.plugin_progress.lock().unwrap().binding;
     let path = root.join("mixed.wav");
     let control = ExportControl::default();
     let queued = super::super::resident_sections::run_callback(
@@ -4476,6 +4487,19 @@ fn installed_instrument_and_effect_export_with_streamed_audio() {
         assert_eq!(wav.len() as u64, 44 + u64::from(source_frames) * 4);
         assert!(wav[44..44 + 4096].iter().any(|byte| *byte != 0));
         assert!(wav[wav.len() - 4096..].iter().any(|byte| *byte != 0));
+        for (start, length) in markers {
+            let silent = |frame: usize| wav[44 + frame * 4..44 + (frame + 1) * 4] == [0; 4];
+            let observed_start = (start - 2048..start + 2048)
+                .find(|frame| silent(*frame))
+                .expect("late-song silence begins near its source marker");
+            let observed_end = (start + length - 2048..start + length + 2048)
+                .find(|frame| !silent(*frame))
+                .expect("late-song audio resumes near its source marker");
+            assert_eq!(observed_end - observed_start, length);
+            assert_eq!(observed_start, start, "marker must be sample-aligned");
+            assert!((observed_start..observed_end).all(silent));
+            println!("source_marker={start} output_marker={observed_start} length={length}");
+        }
         println!(
             "complete_export elapsed_ns={} frames={} output_sha256={} source_sha256={}",
             started.elapsed().as_nanos(),
@@ -4493,6 +4517,7 @@ fn installed_instrument_and_effect_export_with_streamed_audio() {
             .any(|frame| i16::from_le_bytes([frame[0], frame[1]]) != 0)
     );
     assert_eq!(queued.state.project, before);
+    assert_eq!(h.plugin_progress.lock().unwrap().binding, live_binding);
     assert_eq!(fs::read(&source).unwrap(), source_bytes);
     let muted = h.run(Request::Edit(Command::Mute { track, muted: true }));
     h.applied(applied);
