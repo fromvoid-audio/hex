@@ -285,6 +285,25 @@ mod independent_repeat_period_tests {
                 })
                 .is_err()
         );
+        let large = AudioViewProjection::from_parts_with_period(
+            clip,
+            editor.project().tempo_map(),
+            AudioDomainClock::Frames(10),
+            2..8,
+            100,
+            Some(AudioViewPlacement {
+                mode: AudioViewMode::Repeat,
+                outer_length: AudioDomainClock::Frames(1_000_000_000_000),
+                cycle_phase: 8,
+            }),
+            0,
+            Some(10),
+        )
+        .unwrap();
+        assert_eq!(
+            large.root_ranges_for_frames(0..u64::MAX).unwrap(),
+            [Some(2..8), None]
+        );
         for period in [0, 5] {
             assert!(
                 AudioViewProjection::from_parts_with_period(
