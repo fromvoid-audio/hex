@@ -104,13 +104,13 @@ fn invalid_live_blocks_are_silent_and_do_not_advance() {
             .is_err()
     );
     assert_eq!(out, [[0.0; 2]; 2]);
-    let mut oversized = [[1.0; 2]; 257];
+    let mut oversized = vec![[1.0; 2]; MAX_OUTPUT_CAPTURE_FRAMES + 1];
     assert!(
         playback
             .render_with_live_track_audio(
                 &mut oversized,
                 track,
-                &[[0.5; 2]; 257],
+                &vec![[0.5; 2]; MAX_OUTPUT_CAPTURE_FRAMES + 1],
                 None,
                 None,
                 None,
@@ -118,7 +118,7 @@ fn invalid_live_blocks_are_silent_and_do_not_advance() {
             )
             .is_err()
     );
-    assert_eq!(oversized, [[0.0; 2]; 257]);
+    assert!(oversized.iter().all(|frame| *frame == [0.0; 2]));
     for input in [&[[0.5; 2]][..], &[[f32::NAN; 2]; 2][..]] {
         out.fill([1.0; 2]);
         assert!(

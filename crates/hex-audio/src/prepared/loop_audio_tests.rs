@@ -1570,3 +1570,53 @@ fn live_track_audio_engine_render_has_no_allocations_or_frees() {
         );
     }
 }
+
+#[test]
+fn live_track_audio_playback_wrapper_has_no_allocations_or_frees() {
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+    let Created::Track(track) = editor
+        .execute(Command::AddTrack {
+            name: "input".into(),
+        })
+        .unwrap()
+    else {
+        panic!("track")
+    };
+    let revision = Arc::new(
+        PreparedRevision::prepare(
+            editor.project(),
+            &BTreeMap::new(),
+            Arc::new(SineTable::new()),
+            None,
+        )
+        .unwrap(),
+    );
+    let mut playback =
+        hex_engine::playback::Playback::try_from_prepared_with_session(revision).unwrap();
+    playback.apply(hex_engine::PlaybackCommand::Play);
+    let input = [[0.25, -0.5]; 512];
+    let mut output = [[0.0; 2]; 512];
+    let mut result = Ok(());
+    let counts = allocation_counter::measure(|| {
+        result = playback.render_with_live_track_audio(
+            &mut output,
+            track,
+            &input,
+            None,
+            None,
+            None,
+            &mut hex_lattice::RefuseForeign,
+        );
+    });
+    result.unwrap();
+    assert_eq!(
+        (
+            counts.count_total,
+            counts.bytes_total,
+            counts.count_current,
+            counts.bytes_current
+        ),
+        (0, 0, 0, 0)
+    );
+    assert!(output.iter().any(|frame| *frame != [0.0; 2]));
+}

@@ -82,13 +82,10 @@ impl SessionPlayback {
         self.render_internal::<dyn MediaPages>(output, None, None, Some(&mut capture), None)
     }
 
-    /// Mix a borrowed live input block into one track before its device chain.
-    /// The caller retains the input and must provide exactly one finite stereo
-    /// frame per output frame (at most 256). Stopped monitoring is not admitted.
-    /// Refusal leaves the output silent and does not advance playback. This
-    /// entry point cannot admit a graph requiring a current sampler resource
-    /// scope; its owning wrapper must provide that scope in a future extension.
-    /// A project output tap is refused because its contract excludes monitoring.
+    /// Mix borrowed live input into one track before its device chain while
+    /// playing. The input and output lengths must match and may not exceed
+    /// `MAX_OUTPUT_CAPTURE_FRAMES`. A project output tap is refused because
+    /// its contract excludes monitoring; this public entry has no sampler scope.
     #[allow(clippy::too_many_arguments)]
     pub fn render_with_live_track_audio(
         &mut self,
@@ -100,30 +97,66 @@ impl SessionPlayback {
         project: Option<&mut ProjectOutputTap<'_, '_>>,
         foreign: &mut dyn hex_lattice::ForeignProcessors,
     ) -> Result<(), SessionPlaybackError> {
-        if !self.playing
-            || project.is_some()
-            || output.len() != input.len()
-            || input.len() > 256
-            || !self.routes.iter().any(|route| route.id == track)
-            || input.iter().flatten().any(|sample| !sample.is_finite())
+        self.render_live_audio(
+            output, track, input, pages, observer, project, None, foreign,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn render_live_audio<P: MediaPages + ?Sized>(
+        &mut self,
+        output: &mut [Frame],
+        track: TrackId,
+        input: &[Frame],
+        pages: Option<&mut P>,
+        observer: Option<&mut crate::NodeSignalObserver<'_>>,
+        project: Option<&mut ProjectOutputTap<'_, '_>>,
+        sources: Option<crate::native_device_resources::SamplerSourcesRef<'_>>,
+        foreign: &mut dyn hex_lattice::ForeignProcessors,
+    ) -> Result<(), SessionPlaybackError> {
+        if self
+            .validate_live_audio(track, input, output.len(), project.is_some(), sources)
+            .is_err()
         {
             output.fill([0.0; 2]);
             foreign.reject_callback();
             return Err(SessionPlaybackError::InvalidCommand);
         }
         self.candidate_admission_open = false;
-        self.render_internal_with_live_audio::<dyn MediaPages>(
+        self.render_internal_with_live_audio(
             output,
             pages,
             observer,
             None,
-            None,
+            sources,
             foreign,
             Some(LiveTrackAudio {
                 track,
                 frames: input,
             }),
         )
+    }
+
+    pub(crate) fn validate_live_audio(
+        &self,
+        track: TrackId,
+        input: &[Frame],
+        output_len: usize,
+        has_project_tap: bool,
+        sources: Option<crate::native_device_resources::SamplerSourcesRef<'_>>,
+    ) -> Result<(), SessionPlaybackError> {
+        if !self.playing
+            || has_project_tap
+            || output_len != input.len()
+            || input.len() > MAX_OUTPUT_CAPTURE_FRAMES
+            || !self.routes.iter().any(|route| route.id == track)
+            || input.iter().flatten().any(|sample| !sample.is_finite())
+            || (self.revision.resource_scope.is_some()
+                && self.revision.resource_scope != sources.map(|source| source.id()))
+        {
+            return Err(SessionPlaybackError::InvalidCommand);
+        }
+        Ok(())
     }
 
     /// Render using borrowed, already admitted foreign endpoints. This stages
@@ -419,6 +452,16 @@ impl SessionPlayback {
             sources,
             &mut hex_lattice::RefuseForeign,
         )
+    }
+
+    pub(crate) fn render_internal_without_live_audio<P: MediaPages + ?Sized>(
+        &mut self,
+        output: &mut [Frame],
+        pages: Option<&mut P>,
+        observer: Option<&mut crate::NodeSignalObserver<'_>>,
+        foreign: &mut dyn hex_lattice::ForeignProcessors,
+    ) -> Result<(), SessionPlaybackError> {
+        self.render_internal_with_foreign(output, pages, observer, None, None, foreign)
     }
 
     fn render_internal_with_foreign<P: MediaPages + ?Sized>(

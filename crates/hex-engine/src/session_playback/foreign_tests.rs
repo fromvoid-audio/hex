@@ -2241,3 +2241,19 @@ fn live_track_audio_reaches_borrowed_foreign_effect() {
     assert_eq!(effect.processed, 64);
     assert_eq!(output[19], [samples[0][0] * 0.5, samples[0][1] * 0.5]);
 }
+
+#[test]
+fn playback_wrapper_delivers_live_audio_to_borrowed_foreign_effect() {
+    let (revision, mut effect, samples) = prepared(0, false);
+    let track = revision.arrangement().tracks()[0]
+        .canonical_track_id()
+        .unwrap();
+    let mut playback = crate::playback::Playback::try_from_prepared_with_session(revision).unwrap();
+    playback.apply(crate::PlaybackCommand::Play);
+    let mut output = [[0.0; 2]; 64];
+    playback
+        .render_with_live_track_audio(&mut output, track, &samples, None, None, None, &mut effect)
+        .unwrap();
+    assert_eq!(effect.processed, 64);
+    assert_eq!(output[19], [samples[0][0] * 0.5, samples[0][1] * 0.5]);
+}
