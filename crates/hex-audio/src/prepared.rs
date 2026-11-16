@@ -5302,8 +5302,12 @@ impl Callback {
             .as_ref()
             .and_then(|c| c.project.as_ref())
             .is_some_and(|p| p.observing());
+        let recording_source = self.recording_source();
         if self.sample_recording.selection().is_some_and(|layout| {
             self.status.closing.load(Acquire)
+                || layout
+                    .expected_source
+                    .is_some_and(|source| Some(source) != recording_source)
                 || active.as_ref().is_none_or(|active| {
                     active.control_context_generation != layout.generation
                         || active.playback.sample_rate() != self.rate
@@ -5688,9 +5692,13 @@ impl Callback {
     }
 
     pub(crate) fn finish_sample_recording(&mut self, output_valid: bool) {
+        let recording_source = self.recording_source();
         if output_valid
             && self.sample_recording.selection().is_some_and(|layout| {
                 self.status.closing.load(Acquire)
+                    || layout
+                        .expected_source
+                        .is_some_and(|source| Some(source) != recording_source)
                     || self
                         .active
                         .as_ref()
@@ -10144,6 +10152,163 @@ mod tests {
         control.request_shutdown();
         callback.begin_block();
         control.reclaim();
+    }
+
+    #[test]
+    #[cfg(feature = "allocation-probe")]
+    fn bound_output_recording_rejects_replaced_source() {
+        use crate::native_callback_owner::{NativeRetirement, reserve_native_worker};
+        use crate::sample_recording::{End, OutputClock, OutputClockIndex};
+        use hex_engine::AudioSourceContext;
+
+        let _serial = super::candidate_tests::serial();
+        let (mut control, mut callback) = channel(48_000).unwrap();
+        let context = AudioSourceContext {
+            project_generation: 0,
+            editor_revision: 4,
+        };
+        let (graph, _, _, _) = session_audio_graph();
+        control
+            .publish_unaccounted_pcm_obligation(
+                graph,
+                PublicationPolicy::InstallFreshRuntime,
+                0,
+                true,
+                false,
+                Some(context),
+            )
+            .unwrap();
+        callback.begin_block();
+        let root = control.native_candidate_root();
+        let (mut data, errors, terminals, mut client, mut publication) =
+            reserve_native_worker(control, callback, None);
+        let mut retirement = NativeRetirement::new(terminals, root);
+        client.activate();
+        client.bind_resident_transport(0);
+        let source = client.status().unwrap().recording_source().unwrap();
+        let wrong = AppliedAudioSource {
+            audio_revision: source.audio_revision + 1,
+            ..source
+        };
+        assert!(client.start_bound_output_recording(wrong).is_err());
+        let mut take = client.start_bound_output_recording(source).unwrap();
+        let mut index = OutputClockIndex::new(&take);
+        assert_eq!(index.source_binding(), Some(source));
+        assert!(take.ready());
+        let mut output = [[0.0; 2]; 8];
+        let measured = allocation_counter::measure(|| {
+            data.owner_mut().unwrap().run(|c, _| {
+                c.begin_block();
+                c.render(&mut output).unwrap();
+                c.set_sample_recording_output_clock(Some(OutputClock {
+                    playback: cpal::StreamInstant::new(10, 0),
+                    offset_frames: 0,
+                }));
+                c.finish_sample_recording(true);
+            });
+        });
+        assert_eq!(
+            (
+                measured.count_total,
+                measured.bytes_total,
+                measured.count_current,
+                measured.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        assert_eq!(index.poll(&mut take), Ok(None));
+        assert_eq!(index.len(), 1);
+
+        // Hold a rendered packet until after the next source has been applied.
+        data.owner_mut().unwrap().run(|c, _| {
+            c.begin_block();
+            c.render(&mut output).unwrap();
+            c.set_sample_recording_output_clock(Some(OutputClock {
+                playback: cpal::StreamInstant::new(11, 0),
+                offset_frames: 0,
+            }));
+        });
+        let control = publication.control().unwrap();
+        let (graph, _, _, _) = session_audio_graph();
+        control
+            .publish_unaccounted_pcm_obligation(
+                graph,
+                PublicationPolicy::InheritRuntime,
+                0,
+                true,
+                false,
+                Some(context),
+            )
+            .unwrap();
+        let measured = allocation_counter::measure(|| {
+            data.owner_mut().unwrap().run(|c, _| {
+                c.begin_block();
+                c.finish_sample_recording(true);
+            });
+        });
+        assert_eq!(
+            (
+                measured.count_total,
+                measured.bytes_total,
+                measured.count_current,
+                measured.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        assert_eq!(index.poll(&mut take), Ok(Some(End::SourceChanged)));
+        assert_eq!(index.len(), 1);
+        assert!(client.start_bound_output_recording(source).is_err());
+        client.reclaim_sample_recording();
+        let current = client.status().unwrap().recording_source().unwrap();
+        let mut next = client.start_bound_output_recording(current).unwrap();
+        assert!(next.ready());
+        let control = publication.control().unwrap();
+        let (graph, _, _, _) = session_audio_graph();
+        control
+            .publish_unaccounted_pcm_obligation(
+                graph,
+                PublicationPolicy::InheritRuntime,
+                0,
+                true,
+                false,
+                Some(context),
+            )
+            .unwrap();
+        let measured = allocation_counter::measure(|| {
+            data.owner_mut().unwrap().run(|c, _| {
+                c.begin_block();
+                c.render(&mut output).unwrap();
+                c.finish_sample_recording(true);
+            });
+        });
+        assert_eq!(
+            (
+                measured.count_total,
+                measured.bytes_total,
+                measured.count_current,
+                measured.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        assert_eq!(
+            next.drain(|_, _, _| panic!("changed source published a packet")),
+            Some(End::SourceChanged)
+        );
+        client.close();
+        publication.close();
+        drop(data);
+        drop(errors);
+        assert!(
+            crate::lifecycle::test_dispose_backend(
+                &mut Some(()),
+                &mut false,
+                &mut false,
+                &mut retirement,
+                |_| Ok(())
+            )
+            .unwrap()
+        );
+        assert!(retirement.advance().unwrap());
     }
 
     #[test]

@@ -63,6 +63,7 @@ pub enum Source {
 
 pub(crate) struct Layout {
     pub(crate) generation: u64,
+    pub(crate) expected_source: Option<crate::prepared::AppliedAudioSource>,
     pub(crate) tracks: Box<[u64]>,
     // Kept as typed OutputCaptureIds on the control API; separated here for
     // the engine's borrowed Return tap.
@@ -105,6 +106,7 @@ pub struct Reader {
     state: Arc<AtomicU8>,
     sources: Box<[Source]>,
     rate: u32,
+    expected_source: Option<crate::prepared::AppliedAudioSource>,
     drain_count: u64,
 }
 
@@ -159,6 +161,23 @@ impl Control {
         outputs: &[OutputCaptureId],
         main: bool,
     ) -> Result<Reader, Invalid> {
+        self.start_inner(generation, outputs, main, None)
+    }
+
+    pub(crate) fn start_bound(
+        &mut self,
+        source: crate::prepared::AppliedAudioSource,
+    ) -> Result<Reader, Invalid> {
+        self.start_inner(source.context.project_generation, &[], true, Some(source))
+    }
+
+    fn start_inner(
+        &mut self,
+        generation: u64,
+        outputs: &[OutputCaptureId],
+        main: bool,
+        expected_source: Option<crate::prepared::AppliedAudioSource>,
+    ) -> Result<Reader, Invalid> {
         self.reclaim();
         if self.active.is_some() || self.incoming.is_abandoned() {
             return Err(Invalid("sample recording output is busy or unavailable"));
@@ -196,6 +215,7 @@ impl Control {
             .collect();
         let layout = Layout {
             generation,
+            expected_source,
             tracks: tracks.into(),
             returns: returns.into(),
             main,
@@ -241,6 +261,7 @@ impl Control {
             state,
             sources,
             rate: self.rate,
+            expected_source,
             drain_count: 0,
         })
     }
@@ -275,6 +296,10 @@ impl Control {
 }
 
 impl Reader {
+    /// Requested source binding, enforced by the callback on every captured block.
+    pub fn source_binding(&self) -> Option<crate::prepared::AppliedAudioSource> {
+        self.expected_source
+    }
     pub fn sources(&self) -> &[Source] {
         &self.sources
     }

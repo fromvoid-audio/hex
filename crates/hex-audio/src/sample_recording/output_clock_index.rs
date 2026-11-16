@@ -1,7 +1,7 @@
 //! Bounded worker-side retention of confirmed output packet timing.
 //!
 //! This index retains no PCM and does not establish common clock origin,
-//! source identity, hardware latency or Arrangement placement authority.
+//! hardware latency or Arrangement placement authority.
 use super::{End, FRAMES, OutputClock, Reader, TimingSpan};
 use std::{
     fmt,
@@ -32,6 +32,7 @@ pub struct OutputClockPacket<'a> {
 pub struct OutputClockIndex {
     state: Arc<AtomicU8>,
     rate: u32,
+    source: Option<crate::prepared::AppliedAudioSource>,
     packets: Vec<Packet>,
     spans: Vec<TimingSpan>,
     terminal: Option<End>,
@@ -72,6 +73,7 @@ impl OutputClockIndex {
         Self {
             state: Arc::clone(&reader.state),
             rate: reader.rate,
+            source: reader.source_binding(),
             packets: Vec::new(),
             spans: Vec::new(),
             terminal: None,
@@ -81,6 +83,10 @@ impl OutputClockIndex {
     }
     pub fn sample_rate(&self) -> u32 {
         self.rate
+    }
+    /// A requested source, checked against the callback's actual source for each block.
+    pub fn source_binding(&self) -> Option<crate::prepared::AppliedAudioSource> {
+        self.source
     }
     pub fn len(&self) -> usize {
         self.packets.len()
