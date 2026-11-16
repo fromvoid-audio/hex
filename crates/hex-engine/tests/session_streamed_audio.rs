@@ -27,6 +27,7 @@ fn project(source_start: u64, source_end: u64) -> Project {
         aliases: Default::default(),
         native_sources: Vec::new(),
         arrangement_sections: Vec::new(),
+        arrangement_locators: Vec::new(),
         main_devices: Vec::new(),
         tuning: Default::default(),
         return_feeds: Vec::new(),
@@ -1693,7 +1694,9 @@ fn arrangement_crossfade_demands_both_pages_and_matches_resident_audio() {
     cold.render_with_pages(&mut output, &mut pages).unwrap();
     for (offset, actual) in output.iter().enumerate() {
         let source = sample(5_596 + offset as u64);
-        let gain = (999 - offset) as f32 / 999.0;
+        // Selection-fitted crossfades use the default centered S curve.
+        let progress = offset as f64 / 999.0;
+        let gain = (1.0 - progress * progress * (3.0 - 2.0 * progress)) as f32;
         for channel in 0..2 {
             assert!((actual[channel] - source[channel] * gain).abs() < 1e-7);
         }

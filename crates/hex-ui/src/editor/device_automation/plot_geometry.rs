@@ -18,7 +18,9 @@
 
 use std::ops::Range;
 
-use hex_project::{AutomationValue, BeatTime, DeviceAutomationTouchSpan};
+use hex_project::{
+    AutomationInterpolation, AutomationPoint, AutomationValue, BeatTime, DeviceAutomationTouchSpan,
+};
 
 /// Visit the visible half-open regions of a canonical device envelope in order.
 /// Each recorded span replaces the base only over its own frame interval.
@@ -95,6 +97,37 @@ pub(super) fn visible_range<T>(
         .saturating_add(1)
         .min(points.len());
     first..last.max(first)
+}
+
+/// Sample the same frame-projected held or linear segment used by the plot.
+pub(super) fn value_at_frame(
+    points: &[AutomationPoint],
+    at: u64,
+    frame: impl Fn(BeatTime) -> Option<u64>,
+    discrete: bool,
+    base: f32,
+) -> Option<(f32, AutomationInterpolation)> {
+    let right = points.partition_point(|point| frame(point.beat).is_some_and(|f| f <= at));
+    let Some(left) = right.checked_sub(1).and_then(|index| points.get(index)) else {
+        return Some((
+            points.first().map_or(base, |point| point.value.get()),
+            AutomationInterpolation::Linear,
+        ));
+    };
+    let value = left.value.get();
+    if discrete || left.outgoing == AutomationInterpolation::Step {
+        return Some((value, left.outgoing));
+    }
+    let Some(right) = points.get(right) else {
+        return Some((value, left.outgoing));
+    };
+    let start = frame(left.beat)?;
+    let end = frame(right.beat)?;
+    let fraction = at.saturating_sub(start) as f64 / end.saturating_sub(start).max(1) as f64;
+    Some((
+        value + (right.value.get() - value) * fraction as f32,
+        left.outgoing,
+    ))
 }
 
 /// One displayed automation point in window logical pixels.
@@ -229,7 +262,7 @@ pub(super) fn reduce(
     reducer.paths
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "ui-unit-tier"))]
 mod tests {
     use super::{PlotPoint, recorded_knots, reduce, visible_range, visible_sections};
     use hex_project::{AutomationValue, BeatTime, DeviceAutomationTouchSpan};

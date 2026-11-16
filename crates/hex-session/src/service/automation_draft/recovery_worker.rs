@@ -1,5 +1,5 @@
 //! One control-owned recovery copy and its original custody.
-use super::{DraftWorkerOutcome, copy_failed_on_control};
+use super::{DraftWorkerOutcome, RecoveryCopyReceipt, copy_failed_on_control};
 use hex_storage::automation_draft::DraftReadLimits;
 use std::{
     path::PathBuf,
@@ -11,11 +11,13 @@ use std::{
 pub struct RecoveryCopyCompletion {
     pub outcome: Arc<DraftWorkerOutcome>,
     pub result: Result<(), String>,
+    /// Present only for a successful copy that produced a content receipt.
+    pub receipt: Option<RecoveryCopyReceipt>,
 }
 
 struct Running {
     outcome: Arc<DraftWorkerOutcome>,
-    thread: JoinHandle<Result<(), String>>,
+    thread: JoinHandle<Result<Option<RecoveryCopyReceipt>, String>>,
 }
 
 /// A single worker; retain the caller's own outcome until recovery is resolved.
@@ -43,6 +45,24 @@ impl RecoveryCopyWorker {
         &mut self,
         outcome: &Arc<DraftWorkerOutcome>,
         copy: impl FnOnce(&DraftWorkerOutcome) -> Result<(), String> + Send + 'static,
+    ) -> Result<(), String> {
+        self.start_inner(outcome, move |outcome| copy(outcome).map(|()| None))
+    }
+
+    pub(in crate::service) fn start_with_receipt(
+        &mut self,
+        outcome: &Arc<DraftWorkerOutcome>,
+        copy: impl FnOnce(&DraftWorkerOutcome) -> Result<RecoveryCopyReceipt, String> + Send + 'static,
+    ) -> Result<(), String> {
+        self.start_inner(outcome, move |outcome| copy(outcome).map(Some))
+    }
+
+    fn start_inner(
+        &mut self,
+        outcome: &Arc<DraftWorkerOutcome>,
+        copy: impl FnOnce(&DraftWorkerOutcome) -> Result<Option<RecoveryCopyReceipt>, String>
+        + Send
+        + 'static,
     ) -> Result<(), String> {
         if self.running.is_some() {
             return Err("automation recovery copy is already running".into());
@@ -72,9 +92,14 @@ impl RecoveryCopyWorker {
         let result = running.thread.join().unwrap_or_else(|_| {
             Err("automation recovery worker failed; retain original custody".into())
         });
+        let (result, receipt) = match result {
+            Ok(receipt) => (Ok(()), receipt),
+            Err(error) => (Err(error), None),
+        };
         Some(RecoveryCopyCompletion {
             outcome: running.outcome,
             result,
+            receipt,
         })
     }
 }

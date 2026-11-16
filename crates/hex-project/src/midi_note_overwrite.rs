@@ -123,21 +123,19 @@ impl MidiNoteOverwritePreview {
     }
 }
 
-impl MidiSource {
-    pub fn preview_note_overwrite(
-        &self,
-        removed: &[NoteId],
-        authored: &[MidiNoteInsert],
-    ) -> Result<MidiNoteOverwritePreview, Invalid> {
-        if self.notes.len() > MAX_NOTES || authored.len() > MAX_NOTES {
+/// Per-pitch overwrite geometry for displaying an edit. Construction depends
+/// only on the authored batch. The caller can query the existing notes it paints
+/// and skips originals that the edit moves or removes.
+pub struct MidiNoteOverwriteGeometry {
+    union: [BTreeMap<u64, u64>; 128],
+    authored: Vec<Option<BeatTime>>,
+}
+
+impl MidiNoteOverwriteGeometry {
+    pub fn new(authored: &[MidiNoteInsert]) -> Result<Self, Invalid> {
+        if authored.len() > MAX_NOTES {
             return Err(Invalid("midi note batch exceeds note limit"));
         }
-        let mut removed = if removed.is_empty() {
-            Vec::new()
-        } else {
-            crate::midi::note_indices(self, removed.iter().copied())?
-        };
-        removed.sort_unstable();
         for note in authored {
             crate::midi::validate_note(
                 note.start,
@@ -166,6 +164,50 @@ impl MidiSource {
             *gate = prefix(intervals, note.start.raw(), end);
             cover(intervals, note.start.raw(), end);
         }
+        Ok(Self {
+            union,
+            authored: gates,
+        })
+    }
+
+    pub fn authored_duration(&self, index: usize) -> Option<BeatTime> {
+        self.authored.get(index).copied().flatten()
+    }
+
+    /// Remaining left prefix of an existing note from the captured source.
+    pub fn retained_duration(
+        &self,
+        pitch: u8,
+        start: BeatTime,
+        duration: BeatTime,
+    ) -> Option<BeatTime> {
+        let intervals = self.union.get(usize::from(pitch))?;
+        let end = start.raw().checked_add(duration.raw())?;
+        if intervals.is_empty() {
+            return (duration != BeatTime::ZERO).then_some(duration);
+        }
+        (end > start.raw())
+            .then(|| prefix(intervals, start.raw(), end))
+            .flatten()
+    }
+}
+
+impl MidiSource {
+    pub fn preview_note_overwrite(
+        &self,
+        removed: &[NoteId],
+        authored: &[MidiNoteInsert],
+    ) -> Result<MidiNoteOverwritePreview, Invalid> {
+        if self.notes.len() > MAX_NOTES {
+            return Err(Invalid("midi note batch exceeds note limit"));
+        }
+        let mut removed = if removed.is_empty() {
+            Vec::new()
+        } else {
+            crate::midi::note_indices(self, removed.iter().copied())?
+        };
+        removed.sort_unstable();
+        let geometry = MidiNoteOverwriteGeometry::new(authored)?;
         let mut retained = Vec::new();
         let mut changes = Vec::new();
         retained
@@ -180,15 +222,7 @@ impl MidiSource {
                 removed.next();
                 None
             } else {
-                let intervals = union
-                    .get(usize::from(note.pitch))
-                    .ok_or(Invalid("midi note pitch must be 0..127"))?;
-                let end = note
-                    .start
-                    .raw()
-                    .checked_add(note.duration.raw())
-                    .ok_or(Invalid("midi note end overflow"))?;
-                prefix(intervals, note.start.raw(), end)
+                geometry.retained_duration(note.pitch, note.start, note.duration)
             };
             retained.push(gate);
             if gate != Some(note.duration) {
@@ -204,7 +238,7 @@ impl MidiSource {
         changes.sort_unstable_by_key(|(id, _)| *id);
         Ok(MidiNoteOverwritePreview {
             retained,
-            authored: gates,
+            authored: geometry.authored,
             changes,
         })
     }

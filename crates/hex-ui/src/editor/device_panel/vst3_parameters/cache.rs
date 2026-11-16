@@ -254,6 +254,7 @@ fn decode_rows(entries: &[Value]) -> Result<Vec<PluginParameterRow>, String> {
             automation_class: None,
             page_first,
             metadata_revision: 0,
+            editor_sequence: 0,
         };
         validate_row(index, &row, &mut ids)?;
         rows.push(row);
@@ -282,7 +283,7 @@ fn validate_row(
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "ui-test-support"))]
 mod tests {
     use super::*;
     use std::{
@@ -327,6 +328,7 @@ mod tests {
             automation_class: Some([9; 16]),
             page_first,
             metadata_revision: 42,
+            editor_sequence: 0,
         }
     }
 

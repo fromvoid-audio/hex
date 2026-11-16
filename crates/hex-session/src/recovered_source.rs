@@ -24,7 +24,11 @@ impl fmt::Display for RecoverySourceError {
         match self {
             Self::Decode(error) => write!(f, "could not recover source: {error}"),
             Self::OutputLimit => f.write_str("recovered source exceeds output limit"),
-            Self::Publish(error) => write!(f, "could not publish recovered source: {error}"),
+            Self::Publish(error) => write!(
+                f,
+                "could not publish recovered source: {}",
+                crate::export_error::export_error_text(error)
+            ),
             Self::PublishedSourceInvalid { path, reason } => write!(
                 f,
                 "recovered source retained at {} but could not be verified: {reason}",
@@ -100,6 +104,19 @@ mod tests {
         sync::atomic::{AtomicU64, Ordering},
     };
     static NEXT: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn recovery_failure_preserves_staging_path_case_for_display() {
+        let error = RecoverySourceError::Publish(hex_export::ExportError::StagingRetained {
+            path: PathBuf::from("/MixedCase/stage.tmp"),
+            cause: Box::new(hex_export::ExportError::Cancelled),
+        });
+        let text = hex_storage::text::plain(&hex_storage::text::lowercase_outside_verbatim(
+            &error.to_string(),
+        ));
+        assert!(text.contains("/MixedCase/stage.tmp"));
+        assert!(text.contains("export cancelled"));
+    }
 
     #[test]
     fn recovery_publishes_verified_frames_without_touching_original_or_collisions() {

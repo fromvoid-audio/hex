@@ -85,17 +85,21 @@ pub struct ExportReport {
     /// quantisation clamped to full scale. Float32 output preserves overs
     /// unclamped and always reports zero.
     pub clipped_samples: u64,
-    /// Reserved for exceptional publication recovery; successful overwrite
-    /// removes the displaced file and returns no backup path.
+    /// The displaced file retained after confirmed replacement, if any.
     pub recovery_path: Option<PathBuf>,
-    /// Abandoned `.hex-export-*.tmp` files swept from the destination
-    /// directory before staging; failures never block the export.
+    /// Historical cleanup counts; automatic stale-file cleanup is suspended.
     pub stale_temporaries: StaleTemporaries,
 }
 
 #[derive(Debug)]
 pub enum ExportError {
     Cancelled,
+    /// Publication failed after staging. The pathname was not removed; another
+    /// process may have moved or replaced it, so it must be inspected first.
+    StagingRetained {
+        path: PathBuf,
+        cause: Box<ExportError>,
+    },
     /// Independent offline source preparation/verification failed before publication.
     Media(String),
     /// Exchange committed, but displaced identity changed in the publication
@@ -103,6 +107,12 @@ pub enum ExportError {
     PublicationConflict {
         path: PathBuf,
         recovery_path: PathBuf,
+    },
+    /// Copy failed after exclusive destination creation. The current pathname
+    /// may contain a partial export or a file substituted by another writer.
+    IncompleteDestination {
+        path: PathBuf,
+        source: io::Error,
     },
     Invalid(&'static str),
     Render(hex_engine::Invalid),
@@ -120,17 +130,38 @@ pub enum ExportError {
     },
 }
 
+impl ExportError {
+    /// The original failure, including when a staging path is reported with it.
+    pub fn original_failure(&self) -> &Self {
+        let mut error = self;
+        while let Self::StagingRetained { cause, .. } = error {
+            error = cause;
+        }
+        error
+    }
+}
+
 impl fmt::Display for ExportError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::StagingRetained { path, cause } => write!(
+                f,
+                "{cause}; inspect the staging path at {} before removing anything",
+                path.display()
+            ),
             Self::PublicationConflict {
                 path,
                 recovery_path,
             } => write!(
                 f,
-                "export publication raced at {}; displaced data is preserved at {}",
+                "export publication raced at {}; inspect the retained file at {}",
                 path.display(),
                 recovery_path.display()
+            ),
+            Self::IncompleteDestination { path, source } => write!(
+                f,
+                "could not complete the wav copy: {source}; the destination path at {} may contain a partial export or another file; inspect it before removing anything",
+                path.display()
             ),
             Self::Cancelled => write!(f, "export cancelled"),
             Self::Media(reason) => write!(f, "could not prepare export media: {reason}"),
@@ -171,7 +202,10 @@ impl fmt::Display for ExportError {
 impl Error for ExportError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
-            Self::Io { source, .. } | Self::PublishedButNotDurable { source, .. } => Some(source),
+            Self::StagingRetained { cause, .. } => Some(cause.as_ref()),
+            Self::Io { source, .. }
+            | Self::IncompleteDestination { source, .. }
+            | Self::PublishedButNotDurable { source, .. } => Some(source),
             Self::Render(source) => Some(source),
             Self::SessionRender(source) => Some(source),
             Self::Invalid(_)
@@ -454,9 +488,11 @@ fn publish_encoded<R: BlockRenderer>(
             }
         }
     }
-    let stale_temporaries = stale_temporary::sweep(path);
+    // A matching name and an available advisory lock do not establish file
+    // ownership. Retain unclaimed files, including possible recovery copies.
+    let stale_temporaries = StaleTemporaries::default();
     let (file, temporary_path) = create_temporary(path)?;
-    // Held until this function returns, so a concurrent sweep keeps the file.
+    // When available, keep this lock until return for older cooperating sweeps.
     let _ownership = stale_temporary::hold(&file);
     let write_result = prepare_renderer().and_then(|mut renderer| {
         let clipped = write_wav(
@@ -474,38 +510,51 @@ fn publish_encoded<R: BlockRenderer>(
     });
     let clipped_samples = match write_result {
         Ok(clipped) => clipped,
-        Err(error) => {
-            let _ = fs::remove_file(&temporary_path);
-            return Err(error);
-        }
+        Err(error) => return Err(retained_stage(temporary_path, error)),
     };
 
-    let staging_remains = match publication {
+    let (staging_remains, recovery_path) = match publication {
         Publication::CreateNew => match publication::publish_new(&temporary_path, path) {
-            Ok(published) => published.staging_remains(),
-            Err(source) => {
-                let _ = fs::remove_file(&temporary_path);
-                return Err(ExportError::Io {
-                    operation: "publish the wav without replacing the destination",
-                    source,
-                });
+            Ok(published) => (published.staging_remains(), None),
+            Err(error) => {
+                let cause = match error {
+                    publication::NewPublicationError::BeforeCopy(source) => ExportError::Io {
+                        operation: "publish the wav without replacing the destination",
+                        source,
+                    },
+                    publication::NewPublicationError::IncompleteCopy(source) => {
+                        ExportError::IncompleteDestination {
+                            path: path.to_owned(),
+                            source,
+                        }
+                    }
+                };
+                return Err(retained_stage(temporary_path, cause));
             }
         },
         Publication::Replace(consent) => {
             if let Err(error) = publication::replace_staged(&temporary_path, path, consent, || {}) {
-                if !matches!(error, ExportError::PublicationConflict { .. }) {
-                    let _ = fs::remove_file(&temporary_path);
+                if matches!(error, ExportError::PublicationConflict { .. }) {
+                    return Err(error);
                 }
-                return Err(error);
+                return Err(retained_stage(temporary_path, error));
             }
-            true
+            #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+            after_exchange_hook::run(&temporary_path);
+            if !consent.matches(&temporary_path) {
+                return Err(ExportError::PublicationConflict {
+                    path: path.to_path_buf(),
+                    recovery_path: temporary_path,
+                });
+            }
+            // The pathname can be changed after the exchange, so deleting it
+            // cannot safely discard only the file that was displaced.
+            (false, Some(temporary_path.clone()))
         }
     };
 
-    // After a confirmed successful exchange this removes the displaced old
-    // export. It is not retained as a routine backup. On a race, the earlier
-    // error preserves unexpected displaced data instead of deleting it.
-    // An exclusive-rename publication already consumed the staging name.
+    // A create-new hard link or copy leaves our staging name; exclusive rename
+    // consumed it. A replacement instead keeps the displaced file for review.
     let cleanup_error = staging_remains
         .then(|| fs::remove_file(&temporary_path).err())
         .flatten();
@@ -517,8 +566,7 @@ fn publish_encoded<R: BlockRenderer>(
     if let Some(source) = cleanup_error {
         return Err(ExportError::PublishedButNotDurable {
             path: path.to_path_buf(),
-            recovery_path: matches!(publication, Publication::Replace(_))
-                .then(|| temporary_path.clone()),
+            recovery_path: recovery_path.clone(),
             operation: "remove the temporary file",
             source,
         });
@@ -526,7 +574,7 @@ fn publish_encoded<R: BlockRenderer>(
     if let Some(source) = sync_error {
         return Err(ExportError::PublishedButNotDurable {
             path: path.to_path_buf(),
-            recovery_path: None,
+            recovery_path: recovery_path.clone(),
             operation: "synchronize the destination directory",
             source,
         });
@@ -538,9 +586,64 @@ fn publish_encoded<R: BlockRenderer>(
         frames,
         data_bytes,
         clipped_samples,
-        recovery_path: None,
+        recovery_path,
         stale_temporaries,
     })
+}
+
+fn retained_stage(path: PathBuf, cause: ExportError) -> ExportError {
+    ExportError::StagingRetained {
+        path,
+        cause: Box::new(cause),
+    }
+}
+
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+mod after_exchange_hook {
+    use std::{
+        cell::{Cell, RefCell},
+        path::Path,
+    };
+
+    type Hook = Box<dyn FnOnce(&Path)>;
+    thread_local! { static HOOK: RefCell<Option<Hook>> = RefCell::new(None); }
+    thread_local! { static FAIL_SYNC: Cell<bool> = const { Cell::new(false) }; }
+
+    pub(super) struct Guard;
+
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            HOOK.with(|hook| drop(hook.borrow_mut().take()));
+        }
+    }
+
+    pub(super) fn install(hook: impl FnOnce(&Path) + 'static) -> Guard {
+        HOOK.with(|slot| *slot.borrow_mut() = Some(Box::new(hook)));
+        Guard
+    }
+
+    pub(super) fn run(path: &Path) {
+        if let Some(hook) = HOOK.with(|slot| slot.borrow_mut().take()) {
+            hook(path);
+        }
+    }
+
+    pub(super) struct SyncGuard;
+
+    impl Drop for SyncGuard {
+        fn drop(&mut self) {
+            FAIL_SYNC.with(|flag| flag.set(false));
+        }
+    }
+
+    pub(super) fn fail_sync() -> SyncGuard {
+        FAIL_SYNC.with(|flag| flag.set(true));
+        SyncGuard
+    }
+
+    pub(super) fn sync_fails() -> bool {
+        FAIL_SYNC.with(Cell::get)
+    }
 }
 
 fn create_temporary(destination: &Path) -> Result<(File, PathBuf), ExportError> {
@@ -593,6 +696,8 @@ fn write_wav(
     renderer: &mut impl BlockRenderer,
     encoding: ExportFormat,
 ) -> Result<u64, ExportError> {
+    #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+    let file = write_fault::Writer::new(file);
     let mut writer = BufWriter::with_capacity(IO_BUFFER_BYTES, file);
     write_header_encoded(&mut writer, sample_rate, data_bytes, byte_rate, encoding)?;
     let mut clipped = 0_u64;
@@ -633,6 +738,66 @@ fn write_wav(
     Ok(clipped)
 }
 
+// Simulate an underlying staged-file write failure, including a partial write,
+// without filling a real user volume. Production always uses the File directly.
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+mod write_fault {
+    use std::{
+        cell::Cell,
+        fs::File,
+        io::{self, Write},
+    };
+
+    thread_local! { static LIMIT: Cell<Option<usize>> = const { Cell::new(None) }; }
+
+    pub(super) struct Guard;
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            LIMIT.with(|limit| limit.set(None));
+        }
+    }
+    pub(super) fn after(bytes: usize) -> Guard {
+        LIMIT.with(|limit| limit.set(Some(bytes)));
+        Guard
+    }
+    pub(super) struct Writer {
+        file: File,
+        remaining: Option<usize>,
+    }
+    impl Writer {
+        pub(super) fn new(file: File) -> Self {
+            Self {
+                file,
+                remaining: LIMIT.with(Cell::get),
+            }
+        }
+        pub(super) fn sync_all(&self) -> io::Result<()> {
+            self.file.sync_all()
+        }
+    }
+    impl Write for Writer {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            let count = match self.remaining {
+                Some(0) => {
+                    return Err(io::Error::from_raw_os_error(
+                        rustix::io::Errno::NOSPC.raw_os_error(),
+                    ));
+                }
+                Some(remaining) => bytes.len().min(remaining),
+                None => bytes.len(),
+            };
+            let written = self.file.write(&bytes[..count])?;
+            if let Some(remaining) = &mut self.remaining {
+                *remaining -= written;
+            }
+            Ok(written)
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            self.file.flush()
+        }
+    }
+}
+
 fn write_all(
     writer: &mut impl Write,
     bytes: &[u8],
@@ -645,6 +810,10 @@ fn write_all(
 
 #[cfg(unix)]
 fn sync_parent_directory(path: &Path) -> io::Result<()> {
+    #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+    if after_exchange_hook::sync_fails() {
+        return Err(io::Error::other("injected directory sync failure"));
+    }
     let parent = path
         .parent()
         .filter(|path| !path.as_os_str().is_empty())
@@ -722,6 +891,14 @@ mod tests {
         }
     }
 
+    fn retained(error: ExportError) -> (PathBuf, ExportError) {
+        let ExportError::StagingRetained { path, cause } = error else {
+            panic!("expected retained staging path: {error:?}");
+        };
+        assert!(path.exists());
+        (path, *cause)
+    }
+
     fn project(frames: Vec<Frame>, gain: f32) -> Project {
         let duration = frames.len() as u64;
         let audio = Audio::new(48_000, frames).expect("audio");
@@ -779,23 +956,33 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn export_sweeps_an_abandoned_temporary_and_reports_it() {
+    fn export_preserves_unowned_matching_temporary() {
         let dir = TestDir::new();
         let abandoned = dir
             .0
             .join(stale_temporary::name(std::process::id().wrapping_add(1), 9));
         fs::write(&abandoned, b"interrupted render").unwrap();
+        let recovery = dir.0.join(stale_temporary::name(
+            std::process::id().wrapping_add(2),
+            10,
+        ));
+        fs::write(&recovery, b"displaced recovery data").unwrap();
         let path = dir.0.join("swept.wav");
         let report = render_new(&path, &project(vec![[0.5, -0.5]; 2], 1.0), 0, 2).unwrap();
         assert_eq!(
             report.stale_temporaries,
             StaleTemporaries {
-                removed: 1,
+                removed: 0,
                 failed: 0
             }
         );
-        assert!(!abandoned.exists());
+        assert_eq!(fs::read(&abandoned).unwrap(), b"interrupted render");
+        assert_eq!(fs::read(&recovery).unwrap(), b"displaced recovery data");
         assert!(path.exists());
+        let later = dir.0.join("later.wav");
+        render_new(&later, &project(vec![[0.25, -0.25]; 2], 1.0), 0, 2).unwrap();
+        assert_eq!(fs::read(&abandoned).unwrap(), b"interrupted render");
+        assert_eq!(fs::read(&recovery).unwrap(), b"displaced recovery data");
         let leftovers = fs::read_dir(&dir.0)
             .unwrap()
             .filter(|entry| {
@@ -807,7 +994,7 @@ mod tests {
                     .starts_with(".hex-export-")
             })
             .count();
-        assert_eq!(leftovers, 0, "the export removes its own temporary too");
+        assert_eq!(leftovers, 2, "each export removes only its own temporary");
     }
 
     #[test]
@@ -1053,7 +1240,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_non_finite_mix_and_removes_incomplete_temporary_file() {
+    fn rejects_non_finite_mix_and_retains_incomplete_temporary_file() {
         let dir = TestDir::new();
         let path = dir.0.join("overflow.wav");
         let audio = Audio::new(48_000, vec![[f32::MAX, f32::MAX]; 2]).expect("finite input");
@@ -1067,16 +1254,173 @@ mod tests {
             .collect();
         let project = Project::new(48_000, tracks).expect("project");
 
+        let (_, cause) = retained(render_new(&path, &project, 0, 1).unwrap_err());
         assert!(matches!(
-            render_new(&path, &project, 0, 1),
-            Err(ExportError::Invalid("render produced a non-finite sample"))
+            cause,
+            ExportError::Invalid("render produced a non-finite sample")
         ));
         assert!(!path.exists());
-        assert_eq!(fs::read_dir(&dir.0).expect("list directory").count(), 0);
+        assert_eq!(fs::read_dir(&dir.0).expect("list directory").count(), 1);
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn full_disk_during_staged_wav_write_preserves_existing_files() {
+        struct Constant;
+        impl BlockRenderer for Constant {
+            fn render_block(&mut self, frames: &mut [Frame]) -> Result<(), ExportError> {
+                frames.fill([0.5, -0.5]);
+                Ok(())
+            }
+        }
+        for replace in [false, true] {
+            for (frames, limit, operation) in [
+                (2, 0, "flush the temporary wav"),
+                (5_000, 3_000, "write samples"),
+            ] {
+                let dir = TestDir::new();
+                let path = dir.0.join("output.wav");
+                let project_path = dir.0.join("project.hex");
+                fs::write(&project_path, b"original project").unwrap();
+                if replace {
+                    fs::write(&path, b"original wav").unwrap();
+                }
+                let consent = Publication::confirmed_save(&path).unwrap();
+                let _fault = write_fault::after(limit);
+                let error =
+                    publish(&path, 48_000, 0, frames, &consent, || Ok(Constant)).unwrap_err();
+                let (_, error) = retained(error);
+                assert!(
+                    matches!(error, ExportError::Io { operation: actual, source }
+                    if actual == operation && source.raw_os_error() == Some(rustix::io::Errno::NOSPC.raw_os_error()))
+                );
+                assert_eq!(fs::read(project_path).unwrap(), b"original project");
+                if replace {
+                    assert_eq!(fs::read(&path).unwrap(), b"original wav");
+                } else {
+                    assert!(!path.exists());
+                }
+                assert_eq!(
+                    fs::read_dir(&dir.0).unwrap().count(),
+                    2 + usize::from(replace)
+                );
+            }
+        }
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn failed_copy_preserves_a_substituted_destination() {
+        let dir = TestDir::new();
+        let target = dir.0.join("output.wav");
+        let moved = dir.0.join("incomplete-output.wav");
+        let moved_for_hook = moved.clone();
+        let _volume = publication::simulate::volume(publication::simulate::Volume::NoAtomicCreate);
+        let _fault = publication::simulate::fail_copy(publication::simulate::CopyFailure::Write);
+        let _hook = after_exchange_hook::install(move |destination| {
+            fs::rename(destination, &moved_for_hook).unwrap();
+            fs::write(destination, b"unrelated user data").unwrap();
+        });
+        let result = publish_new(&target, 48_000, 0, 1, || Ok(Constant([0.0; 2])));
+        assert_incomplete_copy(result, &target, "injected copy failure");
+        assert_eq!(fs::read(moved).unwrap(), b"partial");
+        assert_eq!(fs::read(&target).unwrap(), b"unrelated user data");
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn failed_copy_reports_partial_destination_and_retained_stage() {
+        let dir = TestDir::new();
+        let target = dir.0.join("PartialOutput.wav");
+        let _volume = publication::simulate::volume(publication::simulate::Volume::NoAtomicCreate);
+        let _fault = publication::simulate::fail_copy(publication::simulate::CopyFailure::Write);
+        let result = publish_new(&target, 48_000, 0, 1, || Ok(Constant([0.0; 2])));
+        assert_incomplete_copy(result, &target, "injected copy failure");
+        assert_eq!(fs::read(target).unwrap(), b"partial");
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn failed_copy_sync_preserves_a_substituted_destination() {
+        let dir = TestDir::new();
+        let target = dir.0.join("output.wav");
+        let moved = dir.0.join("completed-copy.wav");
+        let moved_for_hook = moved.clone();
+        let _volume = publication::simulate::volume(publication::simulate::Volume::NoAtomicCreate);
+        let _fault = publication::simulate::fail_copy(publication::simulate::CopyFailure::Sync);
+        let _hook = after_exchange_hook::install(move |destination| {
+            fs::rename(destination, &moved_for_hook).unwrap();
+            fs::write(destination, b"unrelated user data").unwrap();
+        });
+        let result = publish_new(&target, 48_000, 0, 1, || Ok(Constant([0.0; 2])));
+        assert_incomplete_copy(result, &target, "injected sync failure");
+        assert_eq!(&fs::read(moved).unwrap()[..4], b"RIFF");
+        assert_eq!(fs::read(&target).unwrap(), b"unrelated user data");
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn assert_incomplete_copy(
+        result: Result<ExportReport, ExportError>,
+        target: &Path,
+        message: &str,
+    ) {
+        let Err(ExportError::StagingRetained { path, cause }) = result else {
+            panic!("failed copy must report a retained stage");
+        };
+        assert_eq!(&fs::read(path).unwrap()[..4], b"RIFF");
+        let ExportError::IncompleteDestination { path, source } = *cause else {
+            panic!("failed copy must report the destination and cause");
+        };
+        assert_eq!(path, target);
+        assert_eq!(source.kind(), io::ErrorKind::Other);
+        assert_eq!(source.to_string(), message);
     }
 
     #[test]
-    fn render_failure_after_complete_blocks_preserves_destination_and_removes_staging() {
+    fn substituted_stage_survives_render_failure() {
+        struct SubstitutingRenderer {
+            dir: PathBuf,
+        }
+        impl BlockRenderer for SubstitutingRenderer {
+            fn render_block(&mut self, _: &mut [Frame]) -> Result<(), ExportError> {
+                let stage = fs::read_dir(&self.dir)
+                    .unwrap()
+                    .next()
+                    .unwrap()
+                    .unwrap()
+                    .path();
+                fs::rename(&stage, self.dir.join("moved-stage")).unwrap();
+                fs::write(&stage, b"unrelated user data").unwrap();
+                Err(ExportError::Invalid("injected render failure"))
+            }
+        }
+        let dir = TestDir::new();
+        let target = dir.0.join("output.wav");
+        let error = publish_new(&target, 48_000, 0, 1, || {
+            Ok(SubstitutingRenderer { dir: dir.0.clone() })
+        })
+        .unwrap_err();
+        let message = error.to_string();
+        assert!(matches!(
+            error.original_failure(),
+            ExportError::Invalid("injected render failure")
+        ));
+        let ExportError::StagingRetained { path, cause } = error else {
+            panic!("failure must report the staging path");
+        };
+        assert!(message.contains(&path.display().to_string()));
+        assert!(message.contains("injected render failure"));
+        assert!(matches!(
+            *cause,
+            ExportError::Invalid("injected render failure")
+        ));
+        assert_eq!(fs::read(&path).unwrap(), b"unrelated user data");
+        assert!(dir.0.join("moved-stage").exists());
+        assert!(!target.exists());
+    }
+
+    #[test]
+    fn render_failure_after_complete_blocks_preserves_destination_and_retains_staging() {
         struct FailingRenderer {
             calls: std::rc::Rc<std::cell::Cell<usize>>,
         }
@@ -1112,9 +1456,10 @@ mod tests {
                     })
                 },
             );
+            let (_, cause) = retained(result.unwrap_err());
             assert!(matches!(
-                result,
-                Err(ExportError::Invalid("injected render failure"))
+                cause,
+                ExportError::Invalid("injected render failure")
             ));
             assert_eq!(calls.get(), 3);
             if replace {
@@ -1122,12 +1467,15 @@ mod tests {
             } else {
                 assert!(!path.exists());
             }
-            assert_eq!(fs::read_dir(&dir.0).unwrap().count(), usize::from(replace));
+            assert_eq!(
+                fs::read_dir(&dir.0).unwrap().count(),
+                1 + usize::from(replace)
+            );
         }
     }
 
     #[test]
-    fn cancellation_after_staging_cleans_temporary_and_late_collision_preserves_new_destination() {
+    fn cancellation_and_late_collision_retain_staging_and_preserve_destination() {
         struct BoundaryRenderer {
             collision: Option<PathBuf>,
         }
@@ -1147,23 +1495,25 @@ mod tests {
         }
         let dir = TestDir::new();
         let path = dir.0.join("cancelled.wav");
-        assert!(matches!(
-            publish_new(&path, 48_000, 0, 257, || Ok(BoundaryRenderer {
-                collision: None
-            })),
-            Err(ExportError::Cancelled)
-        ));
-        assert_eq!(fs::read_dir(&dir.0).unwrap().count(), 0);
+        let (_, cause) = retained(
+            publish_new(&path, 48_000, 0, 257, || {
+                Ok(BoundaryRenderer { collision: None })
+            })
+            .unwrap_err(),
+        );
+        assert!(matches!(cause, ExportError::Cancelled));
+        assert_eq!(fs::read_dir(&dir.0).unwrap().count(), 1);
         fs::write(&path, b"prior recording").unwrap();
         let consent = Publication::confirmed_save(&path).unwrap();
-        assert!(matches!(
-            publish(&path, 48_000, 0, 257, &consent, || Ok(BoundaryRenderer {
-                collision: None
-            })),
-            Err(ExportError::Cancelled)
-        ));
+        let (_, cause) = retained(
+            publish(&path, 48_000, 0, 257, &consent, || {
+                Ok(BoundaryRenderer { collision: None })
+            })
+            .unwrap_err(),
+        );
+        assert!(matches!(cause, ExportError::Cancelled));
         assert_eq!(fs::read(&path).unwrap(), b"prior recording");
-        assert_eq!(fs::read_dir(&dir.0).unwrap().count(), 1);
+        assert_eq!(fs::read_dir(&dir.0).unwrap().count(), 3);
         fs::remove_file(&path).unwrap();
         let consent = Publication::confirmed_save(&path).unwrap();
         assert!(matches!(consent, Publication::CreateNew));
@@ -1173,16 +1523,47 @@ mod tests {
             })
         })
         .unwrap_err();
+        let (_, cause) = retained(error);
         assert!(
-            matches!(error, ExportError::Io { source, .. } if source.kind() == io::ErrorKind::AlreadyExists)
+            matches!(cause, ExportError::Io { source, .. } if source.kind() == io::ErrorKind::AlreadyExists)
         );
         assert_eq!(fs::read(&path).unwrap(), b"concurrent writer");
-        assert_eq!(fs::read_dir(&dir.0).unwrap().count(), 1);
+        assert_eq!(fs::read_dir(&dir.0).unwrap().count(), 4);
+    }
+
+    #[test]
+    fn changed_confirmed_destination_refuses_and_reports_staging() {
+        struct ConcurrentEdit(PathBuf);
+        impl BlockRenderer for ConcurrentEdit {
+            fn render_block(&mut self, frames: &mut [Frame]) -> Result<(), ExportError> {
+                frames.fill([0.0; 2]);
+                Ok(())
+            }
+            fn before_publication(&mut self) -> Result<(), ExportError> {
+                fs::write(&self.0, b"changed by another writer").unwrap();
+                Ok(())
+            }
+        }
+        let dir = TestDir::new();
+        let target = dir.0.join("output.wav");
+        fs::write(&target, b"original").unwrap();
+        let consent = Publication::confirmed_save(&target).unwrap();
+        let error = publish(&target, 48_000, 0, 1, &consent, || {
+            Ok(ConcurrentEdit(target.clone()))
+        })
+        .unwrap_err();
+        let (stage, cause) = retained(error);
+        assert!(matches!(
+            cause,
+            ExportError::Invalid("confirmed overwrite destination changed")
+        ));
+        assert_eq!(fs::read(&target).unwrap(), b"changed by another writer");
+        assert_eq!(&fs::read(stage).unwrap()[..4], b"RIFF");
     }
 
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
-    fn file_size_limit_removes_incomplete_stage_and_preserves_destination() {
+    fn file_size_limit_retains_incomplete_stage_and_preserves_destination() {
         const CHILD: &str = "HEX_EXPORT_FILE_LIMIT_CHILD";
         if let Some(mode) = std::env::var_os(CHILD) {
             struct Silence;
@@ -1202,14 +1583,15 @@ mod tests {
             };
             let error =
                 publish(&target, 48_000, 0, 4096, &publication, || Ok(Silence)).unwrap_err();
-            assert!(matches!(error, ExportError::Io { source, .. }
+            let (_, cause) = retained(error);
+            assert!(matches!(cause, ExportError::Io { source, .. }
                 if source.kind() == io::ErrorKind::FileTooLarge));
             if mode == "replace" {
                 assert_eq!(fs::read(&target).unwrap(), b"prior recording");
-                assert_eq!(fs::read_dir(&dir.0).unwrap().count(), 1);
+                assert_eq!(fs::read_dir(&dir.0).unwrap().count(), 2);
             } else {
                 assert!(!target.exists());
-                assert_eq!(fs::read_dir(&dir.0).unwrap().count(), 0);
+                assert_eq!(fs::read_dir(&dir.0).unwrap().count(), 1);
             }
             return;
         }
@@ -1222,7 +1604,7 @@ mod tests {
                 .arg(std::env::current_exe().unwrap())
                 .args([
                     "--exact",
-                    "tests::file_size_limit_removes_incomplete_stage_and_preserves_destination",
+                    "tests::file_size_limit_retains_incomplete_stage_and_preserves_destination",
                     "--nocapture",
                 ])
                 .env(CHILD, mode)
@@ -1256,7 +1638,87 @@ mod tests {
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
-    fn confirmed_replacement_removes_prior_file_but_preserves_unexpected_external_race() {
+    fn confirmed_export_preserves_same_inode_changed_destination_with_restored_mtime() {
+        struct ConcurrentEdit {
+            target: PathBuf,
+            original_mtime: std::time::SystemTime,
+        }
+        impl BlockRenderer for ConcurrentEdit {
+            fn render_block(&mut self, frames: &mut [Frame]) -> Result<(), ExportError> {
+                frames.fill([0.0; 2]);
+                Ok(())
+            }
+            fn before_publication(&mut self) -> Result<(), ExportError> {
+                fs::write(&self.target, b"changed--content").unwrap();
+                let file = OpenOptions::new().write(true).open(&self.target).unwrap();
+                file.set_times(fs::FileTimes::new().set_modified(self.original_mtime))
+                    .unwrap();
+                Ok(())
+            }
+        }
+
+        let dir = TestDir::new();
+        let target = dir.0.join("overwrite.wav");
+        fs::write(&target, b"original-content").unwrap();
+        let original_mtime = fs::metadata(&target).unwrap().modified().unwrap();
+        let consent = Publication::confirmed_save(&target).unwrap();
+        let report = publish(&target, 48_000, 0, 1, &consent, || {
+            Ok(ConcurrentEdit {
+                target: target.clone(),
+                original_mtime,
+            })
+        })
+        .expect("publish while retaining the displaced file");
+        let recovery = report.recovery_path.expect("report retained file");
+        assert_eq!(fs::read(recovery).unwrap(), b"changed--content");
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn replacement_preserves_substitution_after_exchange() {
+        let dir = TestDir::new();
+        let target = dir.0.join("overwrite.wav");
+        let moved = dir.0.join("displaced-by-other-writer.wav");
+        fs::write(&target, b"prior recording").unwrap();
+        let consent = Publication::confirmed_save(&target).unwrap();
+        let moved_for_hook = moved.clone();
+        let _hook = after_exchange_hook::install(move |stage| {
+            fs::rename(stage, &moved_for_hook).unwrap();
+            fs::write(stage, b"competing file").unwrap();
+        });
+        let result = publish(&target, 48_000, 0, 1, &consent, || Ok(Constant([0.0; 2])));
+        let recovery = match result {
+            Err(ExportError::PublicationConflict { recovery_path, .. }) => recovery_path,
+            other => panic!("substitution must be reported: {other:?}"),
+        };
+        assert_eq!(fs::read(recovery).unwrap(), b"competing file");
+        assert_eq!(fs::read(moved).unwrap(), b"prior recording");
+        assert_eq!(&fs::read(target).unwrap()[..4], b"RIFF");
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn replacement_sync_failure_reports_retained_previous_file() {
+        let dir = TestDir::new();
+        let target = dir.0.join("overwrite.wav");
+        fs::write(&target, b"prior recording").unwrap();
+        let consent = Publication::confirmed_save(&target).unwrap();
+        let _fault = after_exchange_hook::fail_sync();
+        let result = publish(&target, 48_000, 0, 1, &consent, || Ok(Constant([0.0; 2])));
+        let recovery = match result {
+            Err(ExportError::PublishedButNotDurable {
+                recovery_path: Some(path),
+                ..
+            }) => path,
+            other => panic!("sync failure must report the previous file: {other:?}"),
+        };
+        assert_eq!(fs::read(recovery).unwrap(), b"prior recording");
+        assert_eq!(&fs::read(target).unwrap()[..4], b"RIFF");
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn confirmed_replacement_retains_prior_file_and_unexpected_external_race() {
         struct Silence;
         impl BlockRenderer for Silence {
             fn render_block(&mut self, frames: &mut [Frame]) -> Result<(), ExportError> {
@@ -1272,8 +1734,9 @@ mod tests {
             Ok(Silence)
         })
         .unwrap();
-        assert!(report.recovery_path.is_none());
-        assert_eq!(fs::read_dir(&dir.0).unwrap().count(), 1);
+        let recovery = report.recovery_path.expect("report previous file");
+        assert_eq!(fs::read(&recovery).unwrap(), b"prior recording");
+        assert_eq!(fs::read_dir(&dir.0).unwrap().count(), 2);
         assert_eq!(&fs::read(&target).unwrap()[..4], b"RIFF");
         let consent = OverwriteConsent::inspect(&target).unwrap();
         let stage = dir.0.join("stage.wav");
@@ -1318,7 +1781,9 @@ mod tests {
             let staging = dir.0.join("staging");
             fs::write(&staging, b"newer").unwrap();
             let error = publication::publish_new(&staging, &path).unwrap_err();
-            assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+            assert!(
+                matches!(error, publication::NewPublicationError::BeforeCopy(error) if error.kind() == io::ErrorKind::AlreadyExists)
+            );
             assert_eq!(fs::read(&path).unwrap(), expected);
             assert_eq!(fs::read(&staging).unwrap(), b"newer");
         }
@@ -1334,10 +1799,11 @@ mod tests {
             let path = dir.0.join("refused.wav");
             let error = render_new(&path, &project(vec![[0.5, -0.5]; 2], 1.0), 0, 2)
                 .expect_err("link failure is reported");
+            let (_, cause) = retained(error);
             assert!(
-                matches!(&error, ExportError::Io { source, .. } if source.raw_os_error() == Some(errno.raw_os_error()))
+                matches!(&cause, ExportError::Io { source, .. } if source.raw_os_error() == Some(errno.raw_os_error()))
             );
-            assert_eq!(fs::read_dir(&dir.0).unwrap().count(), 0);
+            assert_eq!(fs::read_dir(&dir.0).unwrap().count(), 1);
         }
     }
 

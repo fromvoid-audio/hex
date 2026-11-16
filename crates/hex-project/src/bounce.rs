@@ -1,6 +1,8 @@
 //! Arrangement bounce intent and atomic adoption. Render post-device/pre-mixer;
 //! mixer automation, sends, Returns and Main stay live. One Arrangement output
 //! per source track spans selected clips (including gaps and release tails).
+//! A merged range instead prints selected track mixers to one unity-gain root
+//! track. Selected groups contribute their subtrees once, without Main or Returns.
 //! Whole-track bakes additionally print each Console source independently. Explicit ranges
 //! have priority in the UI and adopt exactly their half-open frame interval.
 //! In-place baking is restricted to complete tracks; clip and range targets
@@ -37,6 +39,8 @@ pub enum BounceTarget {
     /// Arrangement only and retain descendant Console cells.
     Track(TrackId),
     Range(TimeRange),
+    /// One mixed output for the exact selected Arrangement interval.
+    MergedRange(TimeRange),
     /// Finite pre-device audio grouping, not a track/device bake. The range
     /// variant retains exterior fragments; the clip variant requires two clips.
     AudioGroup {
@@ -216,7 +220,12 @@ impl Project {
             BounceAdoption::NewTracks => Ok(()),
             BounceAdoption::NewTracksMutingSources
                 if !in_place
-                    && matches!(target, BounceTarget::Clips(_) | BounceTarget::Range(_)) =>
+                    && matches!(
+                        target,
+                        BounceTarget::Clips(_)
+                            | BounceTarget::Range(_)
+                            | BounceTarget::MergedRange(_)
+                    ) =>
             {
                 if let BounceTarget::Range(range) = target
                     && let Some(group) = group_range_owner(self, range)
@@ -281,6 +290,9 @@ impl Project {
             return Err(Invalid(
                 "bounce does not support external audio or midi routing",
             ));
+        }
+        if let BounceTarget::MergedRange(range) = target {
+            return self.plan_merged_bounce(range).map(|item| vec![item]);
         }
         if let BounceTarget::Track(id) = target {
             if !in_place {
@@ -369,8 +381,8 @@ impl Project {
                 range.validate(self)?;
                 BTreeSet::new()
             }
-            BounceTarget::AudioGroup { .. } => {
-                return Err(Invalid("audio grouping plan was not resolved"));
+            BounceTarget::AudioGroup { .. } | BounceTarget::MergedRange(_) => {
+                return Err(Invalid("special bounce plan was not resolved"));
             }
         };
         let mut found = 0;
@@ -446,6 +458,70 @@ impl Project {
         }
         Ok(result)
     }
+
+    /// Expand selected group rows to their complete subtrees in canonical
+    /// order. A selected child already covered by a group is only included once.
+    pub fn merged_bounce_range(&self, range: &TimeRange) -> Result<TimeRange, Invalid> {
+        let first = range.validate(self)?;
+        let hierarchy = self.track_hierarchy()?;
+        let end = hierarchy.rows()[first..first + range.tracks().len()]
+            .iter()
+            .map(|row| row.subtree_range().end)
+            .max()
+            .ok_or(Invalid("select arrangement tracks to bounce"))?;
+        let tracks = self.tracks()[first..end]
+            .iter()
+            .map(crate::Track::id)
+            .collect();
+        TimeRange::new(tracks, range.start(), range.end())
+    }
+
+    fn plan_merged_bounce(&self, range: &TimeRange) -> Result<BounceTrack, Invalid> {
+        if range.duration() > MAX_ARRANGEMENT_BOUNCE_FRAMES {
+            return Err(Invalid("bounce exceeds its finite frame budget"));
+        }
+        if self.tracks().len() >= crate::MAX_TRACKS {
+            return Err(Invalid("bounce exceeds track limit"));
+        }
+        let expanded = self.merged_bounce_range(range)?;
+        let tracks = expanded.tracks();
+        for &id in tracks {
+            let track = self.track(id).ok_or(Invalid("bounce track changed"))?;
+            if !track.midi_clips().is_empty()
+                && let Some(receiver) = track
+                    .source_id()
+                    .and_then(|source| self.native_source(source))
+                    .and_then(crate::NativeSource::receiver)
+                && !tracks.contains(&receiver)
+            {
+                return Err(Invalid(
+                    "include the shared instrument receiver in the bounce selection",
+                ));
+            }
+        }
+        for route in self.sidechains() {
+            if !tracks.contains(&route.source)
+                && matches!(self.sidechain_destination(route.device)?, crate::RoutingOwner::Track(track) if tracks.contains(&track))
+            {
+                return Err(Invalid(
+                    "include the sidechain key track in the bounce selection",
+                ));
+            }
+        }
+        let mut track = *tracks
+            .last()
+            .ok_or(Invalid("select arrangement tracks to bounce"))?;
+        while let Some(parent) = self.track(track).and_then(crate::Track::parent_group) {
+            track = parent;
+        }
+        Ok(BounceTrack {
+            source: BounceSource::Arrangement,
+            track,
+            start: range.start(),
+            end: range.end(),
+            clips: Vec::new(),
+        })
+    }
 }
 
 fn group_range_owner(project: &Project, range: &TimeRange) -> Option<TrackId> {
@@ -507,7 +583,9 @@ fn commit_planned(
             || file.frames > MAX_ARRANGEMENT_BOUNCE_FRAMES
             || file.start.checked_add(file.frames).is_none()
             || match target {
-                BounceTarget::Range(_) => file.frames != item.end - item.start,
+                BounceTarget::Range(_) | BounceTarget::MergedRange(_) => {
+                    file.frames != item.end - item.start
+                }
                 BounceTarget::Clips(_) | BounceTarget::Track(_) => {
                     file.frames < item.end - item.start
                 }
@@ -578,8 +656,8 @@ fn commit_planned(
                         range: TimeRange::new(vec![item.track], item.start, item.end)?,
                     })?;
                 }
-                BounceTarget::AudioGroup { .. } => {
-                    return Err(Invalid("audio grouping plan was not resolved"));
+                BounceTarget::AudioGroup { .. } | BounceTarget::MergedRange(_) => {
+                    return Err(Invalid("special bounce cannot be adopted in place"));
                 }
             }
             if !matches!(target, BounceTarget::Track(_)) {
@@ -599,6 +677,16 @@ fn commit_planned(
                 owner.instrument_position = None;
             }
             (item.track, file.start)
+        } else if matches!(target, BounceTarget::MergedRange(_)) {
+            let selection = crate::TrackSelectionIds::new(&[item.track])?;
+            let destination = project.track_destination_after_selection(&selection)?;
+            let index = project.track_hierarchy()?.insertion(destination)?;
+            let mut track =
+                crate::edit::new_track(project, "bounce".into(), crate::TrackKind::Ordinary, None)?;
+            track.gain = 1.0;
+            let id = track.id();
+            project.tracks.insert(index, track);
+            (id, file.start)
         } else {
             let name = format!("{} bounce", original.name);
             let id = if original.is_group() {
@@ -687,6 +775,10 @@ fn commit_planned(
                     })?
                 }
             }
+            BounceTarget::MergedRange(range) => project.apply(Command::SetTimeRangeActive {
+                range: project.merged_bounce_range(range)?,
+                active: false,
+            })?,
             BounceTarget::Track(_) | BounceTarget::AudioGroup { .. } => {
                 return Err(Invalid("bounce and mute target changed"));
             }

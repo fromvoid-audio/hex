@@ -29,6 +29,11 @@ impl EditorView {
             .child(
                 div()
                     .id("console-main-header")
+                    .on_drop(super::sampler_load::track_drop_listener(
+                        cx,
+                        None,
+                        hex_project::InstrumentLoadPlacement::First,
+                    ))
                     .debug_selector(|| "console-main-header".into())
                     .size_full()
                     .px(px(6.0))
@@ -101,12 +106,12 @@ impl EditorView {
                 .filter(|track| track.id() == column.id)
         }) {
             let id = track.id();
-            let (background, text) = super::track_gain::activator_colors(!track.muted());
-            let (solo_background, solo_text) =
-                super::track_gain::activator_colors(self.displayed_solo(id, track.soloed()));
+            let (muted, soloed) = self.displayed_track_switches(track);
+            let (background, text) = super::track_gain::activator_colors(!muted);
+            let (solo_background, solo_text) = super::track_gain::activator_colors(soloed);
             let activator = toggle_button_with_style(
                 "on",
-                if track.muted() {
+                if muted {
                     "activate track"
                 } else {
                     "deactivate track"
@@ -259,7 +264,7 @@ impl EditorView {
                     .flex()
                     .flex_col()
                     .gap(px(4.0))
-                    .child(self.main_track_controls(cx))
+                    .child(self.main_track_controls(cx).w_full().min_w_0())
                     .child(self.sample_arm_button(super::sample_recorder::Arm::Main, cx)),
                 super::track_meters::render_main(self.track_meters.main_level(), 50.0),
             ]);
@@ -485,7 +490,17 @@ mod tests {
             assert_eq!(header, scenes);
             assert_eq!(header.left(), column.left());
             assert_eq!(header.size.width, column.size.width);
-            assert_eq!(scene_label.left(), column.left() + px(8.0));
+            let launch = visual
+                .debug_bounds(Box::leak(
+                    format!("console-launch-scene-{}", scene.value()).into_boxed_str(),
+                ))
+                .unwrap();
+            assert_eq!(column.size.width, px(110.0));
+            assert_eq!(launch.left(), column.left() + px(8.0));
+            assert_eq!(scene_label.left(), launch.right() + px(4.0));
+            let meter = visual.debug_bounds("main-output-meter").unwrap();
+            assert!(slider.right() <= meter.left());
+            assert!(meter.right() <= column.right());
             assert!(slider.left() >= column.left() && slider.right() <= column.right());
             assert!(slider.top() >= column.top() && slider.bottom() <= column.bottom());
             assert!(arm.top() >= slider.bottom() && arm.bottom() <= column.bottom());

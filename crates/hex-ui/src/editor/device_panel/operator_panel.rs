@@ -19,6 +19,7 @@ pub(super) mod harmonics;
 pub(super) mod oscillator_options;
 pub(super) mod preview;
 pub(super) mod routing_picker;
+pub(super) mod waveform_editor;
 
 pub(super) const OPERATOR_FRAME_WIDTH: f32 = crate::device_composition::VECTOR_WIDTH;
 // Two compact control columns with a narrow power/identity column.
@@ -34,7 +35,14 @@ pub(super) fn detail_width(page: OperatorPage) -> f32 {
 }
 
 pub(super) fn frame_width(state: OperatorPanelState) -> f32 {
-    OPERATOR_FRAME_WIDTH + detail_width(state.page) - crate::device_composition::VECTOR_DETAIL_WIDTH
+    OPERATOR_FRAME_WIDTH
+        + if state.page == OperatorPage::Oscillator {
+            crate::device_composition::VECTOR_WAVEFORM_WIDTH
+        } else {
+            0.0
+        }
+        + detail_width(state.page)
+        - crate::device_composition::VECTOR_DETAIL_WIDTH
         + if state.options_open {
             crate::device_composition::VECTOR_OPTIONS_WIDTH
         } else {
@@ -62,6 +70,7 @@ gpui::actions!(
 pub(in crate::editor) fn bind_keys(cx: &mut gpui::App) {
     cx.bind_keys([
         gpui::KeyBinding::new("enter", ToggleOptions, Some("hex_operator_options")),
+        gpui::KeyBinding::new("space", ActivateSection, Some("hex_operator_waveform")),
         gpui::KeyBinding::new("space", ToggleOptions, Some("hex_operator_options")),
         gpui::KeyBinding::new("enter", ActivateSection, Some("hex_operator_section")),
         gpui::KeyBinding::new("enter", ActivatePower, Some("hex_operator_power")),
@@ -85,6 +94,7 @@ pub(super) struct OperatorPanelState {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub(super) enum OperatorPage {
+    /// The oscillator envelope plus the optional right-side waveform workspace.
     Oscillator,
     #[default]
     Envelope,
@@ -175,7 +185,11 @@ pub(super) fn render_body(
         view,
         cx,
         device,
-        (state.page == OperatorPage::Envelope).then_some(state.selected_operator),
+        matches!(
+            state.page,
+            OperatorPage::Envelope | OperatorPage::Oscillator
+        )
+        .then_some(state.selected_operator),
     );
     harmonics::retire(view, cx, |key| {
         key.0 != device
@@ -214,6 +228,12 @@ pub(super) fn render_body(
         ))
         .debug_selector(move || format!("operator-detail-{}", device.value()))
         .track_focus(&detail_focus);
+    let mut detail = div().flex().flex_1().min_w_0().h_full().child(detail);
+    if state.page == OperatorPage::Oscillator {
+        let control =
+            waveform_editor::render(view, cx, device, state.selected_operator, parameters);
+        detail = detail.child(control);
+    }
     let preview = preview::render(view, cx, device, device_view);
     crate::device_composition::three_pane(left, detail, preview)
         .tab_group()
@@ -289,7 +309,7 @@ fn page_tabs(
                 state.page,
                 oscillator_focus,
             )
-            .w(px(120.0)),
+            .w(px(44.0)),
         )
 }
 
@@ -535,41 +555,40 @@ fn page_tab(
     active: OperatorPage,
     focus: gpui::FocusHandle,
 ) -> Stateful<Div> {
-    hex_widgets::panel_tab(theme::text(label), page == active, display_style())
-        .w(px(90.0))
-        .h(px(16.0))
-        .flex_shrink_0()
-        .id(ElementId::Name(
-            format!("operator-page-{}-{label}", device.value()).into(),
-        ))
-        .debug_selector(move || format!("operator-page-{}-{label}", device.value()))
-        .track_focus(&focus)
-        .key_context("hex_operator_section")
-        .cursor(gpui::CursorStyle::PointingHand)
-        .on_click(cx.listener(move |view, _, window, cx| {
-            if owner.is_some_and(|owner| owner.is_current(view)) && finalize_controls(view, cx) {
-                focus.focus(window);
-                view.device_panel
-                    .operator_pages
-                    .entry(device)
-                    .or_default()
-                    .page = page;
-                cx.notify();
-            }
-        }))
-        .on_action(cx.trace(move |view, _: &ActivateSection, _, cx| {
-            if owner.is_some_and(|owner| owner.is_current(view)) {
-                if finalize_controls(view, cx) {
-                    view.device_panel
-                        .operator_pages
-                        .entry(device)
-                        .or_default()
-                        .page = page;
-                    cx.notify();
-                }
-                cx.stop_propagation();
-            }
-        }))
+    hex_widgets::panel_tab(
+        theme::text(if page == OperatorPage::Oscillator {
+            "wave"
+        } else {
+            label
+        }),
+        page == active,
+        display_style(),
+    )
+    .w(px(90.0))
+    .h(px(16.0))
+    .flex_shrink_0()
+    .id(ElementId::Name(
+        format!("operator-page-{}-{label}", device.value()).into(),
+    ))
+    .debug_selector(move || format!("operator-page-{}-{label}", device.value()))
+    .track_focus(&focus)
+    .key_context(if page == OperatorPage::Oscillator {
+        "hex_operator_section hex_operator_waveform"
+    } else {
+        "hex_operator_section"
+    })
+    .cursor(gpui::CursorStyle::PointingHand)
+    .on_click(cx.listener(move |view, _, window, cx| {
+        if owner.is_some_and(|owner| context::select_page(view, cx, owner, page)) {
+            focus.focus(window);
+        }
+    }))
+    .on_action(cx.trace(move |view, _: &ActivateSection, _, cx| {
+        if let Some(owner) = owner {
+            context::select_page(view, cx, owner, page);
+        }
+        cx.stop_propagation();
+    }))
 }
 
 fn oscillator_envelope_detail(
@@ -581,13 +600,11 @@ fn oscillator_envelope_detail(
     operator: usize,
     page: OperatorPage,
 ) -> Stateful<Div> {
-    let (graph, _) = harmonics::graph(view, cx, device, operator, parameters);
-    let harmonic_range_control = harmonics::ranges(view, cx, device, operator, parameters);
     let envelope_fields = envelope_fields(view, cx, device, identity, parameters, operator)
         .when(SHOW_HARMONIC_TOOLS, |fields| {
             fields.child(harmonics::tools(view, cx, device, operator))
         });
-    let upper_display = if page == OperatorPage::Envelope {
+    let upper_display = {
         let base = 33 + operator as u32 * 6;
         let values = std::array::from_fn(|field| {
             value(view, device, parameters, id(base + field as u32))
@@ -598,17 +615,6 @@ fn oscillator_envelope_detail(
                 .unwrap_or(0.0)
         });
         envelope::graph(view, cx, device, operator, values, parameters)
-    } else {
-        div()
-            .id("operator-waveform-cycle")
-            .debug_selector(|| "operator-waveform-cycle".into())
-            .w_full()
-            .h(px(86.0))
-            .flex_shrink_0()
-            .flex()
-            .gap(px(2.0))
-            .child(div().flex_1().min_w_0().h_full().child(graph))
-            .child(harmonic_range_control)
     };
     let selector = if page == OperatorPage::Envelope {
         format!("operator-envelope-{}-{operator}", device.value())
@@ -1306,7 +1312,7 @@ pub(super) fn filter_summary(
     row
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "ui-test-support")))]
 mod tests {
     use super::*;
 

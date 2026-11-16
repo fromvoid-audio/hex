@@ -55,6 +55,34 @@ fn real_fm4_carrier_processing_rollbacks_and_reset_allocate_and_free_nothing() {
     let mut results = [Ok(()); 3];
     let mut ids = [0; 64];
     let mut observed = Ok(0);
+    let target_ids = [
+        parameter::oscillator_level(1),
+        parameter::oscillator_phase(1),
+        parameter::oscillator_level(2),
+        parameter::oscillator_phase(2),
+        parameter::oscillator_level(3),
+        parameter::oscillator_phase(3),
+        parameter::oscillator_level(4),
+        parameter::oscillator_phase(4),
+        parameter::modulation(1, 2),
+        parameter::modulation(1, 3),
+        parameter::modulation(1, 4),
+        parameter::modulation(2, 1),
+        parameter::modulation(2, 3),
+        parameter::modulation(2, 4),
+        parameter::modulation(3, 1),
+        parameter::modulation(3, 2),
+        parameter::modulation(3, 4),
+        parameter::modulation(4, 1),
+        parameter::modulation(4, 2),
+        parameter::modulation(4, 3),
+        parameter::carrier(1),
+        parameter::carrier(2),
+        parameter::carrier(3),
+        parameter::carrier(4),
+    ];
+    let mut target_results = [Ok(()); 3];
+    let mut targets = [[None; 24]; 3];
     let counts = allocation_counter::measure(|| {
         pair.begin_block();
         results[0] = pair.process_block_with_clock_and_automation(
@@ -65,6 +93,7 @@ fn real_fm4_carrier_processing_rollbacks_and_reset_allocate_and_free_nothing() {
             &Values,
             &EMPTY_DEVICE_RESOURCES,
         );
+        target_results[0] = pair.copy_committed_parameter_targets(&target_ids, &mut targets[0]);
         pair.rollback_block();
         pair.begin_block();
         results[1] = pair.process_block_with_clock_and_automation(
@@ -77,6 +106,7 @@ fn real_fm4_carrier_processing_rollbacks_and_reset_allocate_and_free_nothing() {
         );
         pair.commit_block();
         observed = pair.active_occurrence_ids(&mut ids);
+        target_results[1] = pair.copy_committed_parameter_targets(&target_ids, &mut targets[1]);
         pair.begin_block();
         results[2] = pair.process_block_with_clock_and_automation(
             &[],
@@ -88,9 +118,22 @@ fn real_fm4_carrier_processing_rollbacks_and_reset_allocate_and_free_nothing() {
         );
         pair.commit_block();
         pair.reset();
+        target_results[2] = pair.copy_committed_parameter_targets(&target_ids, &mut targets[2]);
     });
     assert_eq!(results, [Ok(()); 3]);
     assert_eq!(observed, Ok(64));
+    assert_eq!(target_results, [Ok(()); 3]);
+    let base = [
+        1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, // levels and phases
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, // modulation edges
+        1.0, 0.0, 0.0, 0.0, // carriers
+    ]
+    .map(|value| Some(ParameterValue::Float(value)));
+    assert_eq!(targets[0], base);
+    let mut committed = base;
+    committed[20] = Some(ParameterValue::Float(0.0));
+    assert_eq!(targets[1], committed);
+    assert_eq!(targets[2], base);
     assert_eq!(
         (
             counts.count_total,
@@ -109,10 +152,21 @@ fn real_fm4_retune_retargets_actual_voice_history_without_allocations_or_frees()
     let tuning = TuningTable::default();
     let retuned = TuningTable::new(tuning.frequencies().map(|frequency| frequency * 1.01)).unwrap();
     let state = FM4_DEFINITION.default_state().unwrap();
-    let prepare = |tuning| {
+    let mut changed_state = state.clone();
+    for (id, value) in [
+        (parameter::oscillator_ratio(1), 1.25),
+        (parameter::oscillator_phase(1), 0.125),
+        (parameter::ATTACK, 0.015),
+        (parameter::RELEASE, 0.005),
+    ] {
+        changed_state = FM4_DEFINITION
+            .patch_parameter(&changed_state, id, ParameterValue::Float(value))
+            .unwrap();
+    }
+    let prepare = |state, tuning| {
         FM4_DEFINITION
             .prepare_carrier_runtime(
-                &state,
+                state,
                 &DevicePreparationContext {
                     sample_rate: 48000,
                     tuning,
@@ -121,8 +175,8 @@ fn real_fm4_retune_retargets_actual_voice_history_without_allocations_or_frees()
             )
             .unwrap()
     };
-    let source = prepare(&tuning);
-    let target = prepare(&retuned);
+    let source = prepare(&state, &tuning);
+    let target = prepare(&changed_state, &retuned);
     let limits = NativeInstrumentRuntimeLimits {
         max_pair_bytes: 2 * 1024 * 1024,
         max_events_per_block: 259,

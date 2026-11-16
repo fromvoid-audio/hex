@@ -9,7 +9,18 @@
  };
  use objc2_core_audio::kAudioDevicePropertyDeviceUID;
  use objc2_core_audio::kAudioObjectPropertyElementMain;
-@@ -203,8 +203,23 @@
+@@ -34,9 +34,7 @@
+ use objc2_core_foundation::CFString;
+ use objc2_core_foundation::Type;
+ 
+-pub use super::enumerate::{
+-    default_input_device, default_output_device, SupportedInputConfigs, SupportedOutputConfigs,
+-};
++pub use super::enumerate::{default_output_device, SupportedInputConfigs, SupportedOutputConfigs};
+ use std::fmt;
+ use std::mem::{self, size_of};
+ use std::ptr::{null, NonNull};
+@@ -203,8 +201,23 @@
      Ok(())
  }
  
@@ -34,12 +45,10 @@
          coreaudio::audio_unit::IOType::DefaultOutput
      } else {
          coreaudio::audio_unit::IOType::HalOutput
-@@ -240,6 +255,41 @@
-     )?;
- 
+@@ -242,6 +255,41 @@
      Ok(audio_unit)
-+}
-+
+ }
+ 
 +#[cfg(test)]
 +mod route_probe_regression {
 +    use super::*;
@@ -73,10 +82,12 @@
 +        let previous = get_io_buffer_frame_size_range(&unit).expect("Audio Unit buffer range");
 +        assert_eq!(*config.buffer_size(), previous);
 +    }
- }
- 
++}
++
  fn get_io_buffer_frame_size_range(
-@@ -320,19 +370,18 @@
+     audio_unit: &AudioUnit,
+ ) -> Result<SupportedBufferSize, coreaudio::Error> {
+@@ -320,19 +368,18 @@
          sample_format: SampleFormat,
          data_callback: D,
          error_callback: E,
@@ -99,7 +110,55 @@
          )
      }
  }
-@@ -688,8 +737,45 @@
+@@ -342,14 +389,43 @@
+     pub(crate) audio_device_id: AudioDeviceID,
+ }
+ 
+-fn is_default_input_device(device: &Device) -> bool {
+-    default_input_device().is_some_and(|d| d.audio_device_id == device.audio_device_id)
+-}
+-
+ fn is_default_output_device(device: &Device) -> bool {
+     default_output_device().is_some_and(|d| d.audio_device_id == device.audio_device_id)
+ }
+ 
++// The input stream is pinned to the selected device even when it is the
++// system default. Its disconnection must reach the stream's error callback.
++fn input_disconnect_callback<E>(callback: Arc<Mutex<E>>) -> super::ErrorCallback
++where
++    E: FnMut(StreamError) + Send + 'static,
++{
++    Box::new(move |err| {
++        invoke_error_callback(&callback, err);
++    })
++}
++
++#[cfg(test)]
++mod input_disconnect_regression {
++    use super::*;
++    use std::sync::atomic::{AtomicUsize, Ordering};
++
++    #[test]
++    fn device_unavailable_reaches_the_input_error_callback() {
++        let observed = Arc::new(AtomicUsize::new(0));
++        let target = Arc::clone(&observed);
++        let callback = Arc::new(Mutex::new(move |error| {
++            if matches!(error, StreamError::DeviceNotAvailable) {
++                target.fetch_add(1, Ordering::Relaxed);
++            }
++        }));
++        // Input stream construction uses this same callback for every selected
++        // device, without a separate no-op route for the default device.
++        let mut disconnect = input_disconnect_callback(callback);
++        disconnect(StreamError::DeviceNotAvailable);
++        assert_eq!(observed.load(Ordering::Relaxed), 1);
++    }
++}
++
+ impl Device {
+     /// Construct a new device given its ID.
+     /// Useful for constructing hidden devices.
+@@ -688,8 +764,45 @@
                      description: format!("unexpected scope (neither input nor output): {scope:?}"),
                  }),
              }?;
@@ -147,7 +206,24 @@
  
              let config = SupportedStreamConfig {
                  sample_rate: asbd.mSampleRate as _,
-@@ -843,19 +929,65 @@
+@@ -809,15 +922,7 @@
+             Ok(())
+         })?;
+ 
+-        // Create error callback for stream - either dummy or real based on device type
+-        let error_callback_for_stream: super::ErrorCallback = if is_default_input_device(self) {
+-            Box::new(|_: StreamError| {})
+-        } else {
+-            let error_callback_clone = error_callback_disconnect.clone();
+-            Box::new(move |err: StreamError| {
+-                invoke_error_callback(&error_callback_clone, err);
+-            })
+-        };
++        let error_callback_for_stream = input_disconnect_callback(error_callback_disconnect);
+ 
+         let stream = Stream::new(
+             StreamInner {
+@@ -843,19 +948,65 @@
          Ok(stream)
      }
  
@@ -155,8 +231,8 @@
 +    /// Construct a fixed-buffer stream with a verified client-frame ceiling.
 +    /// The hardware rate is observed separately from the client rate.
 +    pub fn build_bounded_output_stream<T, D, E>(
-+        &self,
-+        config: &StreamConfig,
+         &self,
+         config: &StreamConfig,
 +        device_rate: SampleRate,
 +        client_limit: u16,
 +        mut data_callback: D,
@@ -181,8 +257,8 @@
 +    }
 +
 +    fn build_output_stream_with_limit<D, E>(
-         &self,
-         config: &StreamConfig,
++        &self,
++        config: &StreamConfig,
          sample_format: SampleFormat,
          mut data_callback: D,
          error_callback: E,
@@ -216,7 +292,7 @@
  
          // The scope and element for working with a device's output stream.
          let scope = Scope::Input;
-@@ -863,6 +995,26 @@
+@@ -863,6 +1014,26 @@
  
          // Configure device buffer (see comprehensive documentation in input stream above)
          configure_stream_format_and_buffer(&mut audio_unit, config, sample_format, scope, element)?;
@@ -243,7 +319,7 @@
  
          let error_callback = Arc::new(Mutex::new(error_callback));
          let error_callback_disconnect = error_callback.clone();
-@@ -901,7 +1053,10 @@
+@@ -901,7 +1072,10 @@
                  // (may overestimate latency for BufferSize::Default)
                  buffer_frames,
              );
@@ -255,11 +331,10 @@
              let playback = callback
                  .add(delay)
                  .expect("`playback` occurs beyond representation supported by `StreamInstant`");
-@@ -911,6 +1066,20 @@
-             data_callback(&mut data, &info);
+@@ -912,6 +1086,20 @@
              Ok(())
          })?;
-+
+ 
 +        if let Some((_, client_limit)) = bounds {
 +            audio_unit.initialize()?;
 +            let maximum: u32 = audio_unit.get_property(
@@ -273,10 +348,11 @@
 +                ));
 +            }
 +        }
- 
++
          // Create error callback for stream - either dummy or real based on device type
          let error_callback_for_stream: super::ErrorCallback = if is_default_output_device(self) {
-@@ -943,8 +1112,74 @@
+             Box::new(|_: StreamError| {})
+@@ -943,10 +1131,76 @@
              .audio_unit
              .start()?;
  
@@ -285,8 +361,8 @@
 +        }
          Ok(stream)
      }
-+}
-+
+ }
+ 
 +fn bounded_output_error(description: &str) -> BuildStreamError {
 +    BackendSpecificError {
 +        description: description.into(),
@@ -348,6 +424,8 @@
 +        return Err(bounded_output_error("invalid coreaudio device buffer size"));
 +    }
 +    Ok(frames)
- }
- 
++}
++
  /// Configure stream format and buffer size for CoreAudio stream.
+ ///
+ /// This handles the common setup tasks for both input and output streams:

@@ -2,22 +2,36 @@
 //! receipts and retains a batch until Session acknowledges its admission.
 //! The disk worker seals the file independently of callback and UI lifetimes.
 use super::Session;
+mod native_recovery;
+pub use native_recovery::{
+    MAX_NATIVE_RECOVERY_CONTINUATION_EVENTS, NativeRecoveryContinuation, NativeRecoveryTerminal,
+    copy_native_recovery_on_control,
+};
 mod plugin_observation;
 pub use plugin_observation::{
-    FailedPluginContinuation, copy_failed_plugin_on_control,
+    FailedPluginContinuation, MAX_FAILED_PLUGIN_EDITOR_OBSERVATIONS, copy_failed_plugin_on_control,
     copy_failed_plugin_with_receipt_on_control, prepare_failed_plugin_continuation,
 };
 mod recovery;
 use super::automation_draft::{
-    DeviceDraftInput, DraftProvenance, DraftWorker, DraftWorkerOutcome, RecoveryCopyWorker,
-    Vst3CaptureTarget, Vst3ParameterApplication,
+    DeviceDraftInput, DraftProvenance, DraftWorker, DraftWorkerOutcome, GroupDraftEvent,
+    RecoveryCopyReceipt, RecoveryCopyWorker, Vst3CaptureTarget, Vst3GroupCaptureTarget,
+    Vst3ParameterApplication,
 };
-use super::automation_take::{CompletedAutomationTake, prepare_device_take_adoption_on_control};
+use super::automation_take::{
+    CompletedAutomationTake, prepare_device_take_adoption_on_control,
+    prepare_group_take_adoption_on_control,
+};
 use hex_engine::{AudioSourceContext, NativeParameterApplication, NativeParameterInputTarget};
 use hex_storage::automation_draft::{
-    CaptureClock, DraftAbortReason, DraftReadLimits, DraftTerminal,
+    CaptureClock, CompletedGroupedDraft, DraftAbortReason, DraftClock, DraftReadLimits,
+    DraftTerminal,
 };
-pub(super) use recovery::recover_sealed;
+pub use recovery::{
+    AutomationRecoveryFileIdentity, SealedAutomationRecoveryFile,
+    prepare_verified_vst3_recovery_on_control,
+};
+pub(super) use recovery::{inspect_sealed_file, recover_sealed};
 use std::{
     path::{Path, PathBuf},
     sync::{
@@ -32,12 +46,31 @@ use std::{
 pub enum DeviceCaptureTarget {
     Native(NativeParameterInputTarget),
     Vst3(Vst3CaptureTarget),
+    Vst3Group(Vst3GroupCaptureTarget),
 }
 impl DeviceCaptureTarget {
+    /// Durable target identity; this does not grant live worker admission.
+    pub fn draft_target(self) -> super::automation_draft::DraftTarget {
+        use super::automation_draft::DraftTarget;
+        match self {
+            Self::Native(target) => DraftTarget::Device {
+                device: target.device(),
+                target: target.target(),
+            },
+            Self::Vst3(target) => DraftTarget::Device {
+                device: target.device,
+                target: hex_project::DeviceAutomationTarget::Vst3 {
+                    parameter: target.parameter,
+                },
+            },
+            Self::Vst3Group(target) => DraftTarget::Vst3Group(target.draft),
+        }
+    }
+
     pub fn native(self) -> Option<NativeParameterInputTarget> {
         match self {
             Self::Native(target) => Some(target),
-            Self::Vst3(_) => None,
+            Self::Vst3(_) | Self::Vst3Group(_) => None,
         }
     }
 }
@@ -81,7 +114,7 @@ impl From<DeviceCaptureTarget> for TakePublication {
     fn from(target: DeviceCaptureTarget) -> Self {
         match target {
             DeviceCaptureTarget::Native(target) => Self::Native(target),
-            DeviceCaptureTarget::Vst3(_) => Self::Vst3,
+            DeviceCaptureTarget::Vst3(_) | DeviceCaptureTarget::Vst3Group(_) => Self::Vst3,
         }
     }
 }
@@ -120,10 +153,17 @@ impl DeviceAutomationSource {
 #[derive(Debug)]
 pub enum DeviceAutomationTakeAction {
     Begin,
+    /// Per-take deterministic writer refusal, available only in explicit fixtures.
+    #[cfg(feature = "recording-fault-test-support")]
+    InjectWriterFailure,
     Append(Arc<[(u64, NativeParameterApplication)]>),
     Finish(NativeParameterApplication),
     AppendVst3(Arc<[(u64, Vst3ParameterApplication)]>),
     FinishVst3(Vst3ParameterApplication),
+    /// Group rows carry actual Main clocks in delivery order, with one SDK
+    /// gesture per member and an independent file ordinal.
+    AppendVst3Group(Arc<[GroupDraftEvent]>),
+    FinishVst3Group(DraftClock),
     /// Original SDK/final-output observation. Retain it until Appended or
     /// Sealing; Backpressured does not consume its sequence or original clock.
     PluginObservation(Box<super::PluginParameterObservation>),
@@ -145,6 +185,35 @@ pub enum DeviceAutomationTakeAction {
     },
     /// Poll the one failed-writer copy without waiting for disk.
     PollFailedCopy,
+    /// Retrieve the last successful VST3 copy's identity without releasing custody.
+    InspectFailedPluginCopy,
+    /// Adopt a verified failed VST3 copy on its unchanged live source.
+    AdoptFailedPluginCopy {
+        max_events: u64,
+    },
+    /// Explicitly keep the verified copy instead of adopting its trajectory.
+    /// Release original memory custody only after revalidation; keep both files.
+    KeepFailedPluginCopy {
+        path: PathBuf,
+        receipt: RecoveryCopyReceipt,
+        max_events: u64,
+    },
+    /// Quiesce an exact native writer after its caller has retired the input.
+    /// Repeat while Pending; this never adopts the outcome or drops custody.
+    PrepareNativeRecovery,
+    /// Copy the retained writer and the caller's bounded, quiescent continuation.
+    CopyNativeRecovery {
+        destination: PathBuf,
+        max_events: u64,
+        continuation: NativeRecoveryContinuation,
+    },
+    /// Resolve only the exact verified copy selected by the caller. Both files
+    /// remain durable; no canonical edit is made.
+    KeepNativeRecoveryCopy {
+        path: PathBuf,
+        receipt: RecoveryCopyReceipt,
+        max_events: u64,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -154,8 +223,39 @@ pub enum DeviceAutomationTakeProgress {
     Backpressured,
     Sealing,
     Pending,
+    /// The original editor scope ended without a confirmed point or edit.
+    Unchanged,
     Committed,
+    /// The edit committed but a custody recheck refused release.
+    CommittedWithRetainedCustody(PathBuf),
+    /// No failed VST3 writer or SDK custody is currently retained.
+    FailedPluginUnavailable,
+    /// Original custody has not yet become quiescent.
+    FailedPluginPending,
+    /// Exact retained identity; querying it never changes custody.
+    FailedPluginCustody {
+        scope: Box<DeviceAutomationTakeScope>,
+        path: PathBuf,
+    },
+    /// Fully validated identity of a selected finished durable file.
+    SealedFile(Box<SealedAutomationRecoveryFile>),
+    /// An ordered observation found no device automation custody.
+    CloseSafe,
+    /// Device automation custody is active, retained or being copied.
+    CloseBlocked,
     Retained(PathBuf),
+    /// Poll found a failed native writer that still owns original observations.
+    /// Retain the caller's exact take scope for explicit recovery.
+    NativeWriterRetained {
+        path: PathBuf,
+        reason: String,
+    },
+    VerifiedCopy {
+        path: PathBuf,
+        receipt: RecoveryCopyReceipt,
+    },
+    /// Original memory custody was resolved by keeping the verified durable copy.
+    CopyKept(PathBuf),
     Refused,
 }
 
@@ -167,11 +267,13 @@ pub struct DeviceAutomationTakeCompletion {
 #[derive(Default)]
 pub(super) struct Lane {
     active: Option<Active>,
-    // A failed writer can still own unsynced original batches. Keep these
-    // with their original source and refuse new takes until recovery.
+    // Failed writers own unsynced batches; explicitly interrupted native
+    // writers keep their prefix while the caller retains its continuation.
     failed: Option<Failed>,
     failed_copy: RecoveryCopyWorker,
-    copy_destination: Option<PathBuf>,
+    copy_destination: Option<PendingCopy>,
+    verified_plugin_copy: Option<VerifiedPluginCopy>,
+    verified_native_copy: Option<(PathBuf, RecoveryCopyReceipt)>,
 }
 
 struct Failed {
@@ -180,11 +282,49 @@ struct Failed {
     outcome: Arc<DraftWorkerOutcome>,
 }
 
+enum PendingCopy {
+    Checkpoint(PathBuf),
+    Native(PathBuf),
+    Plugin {
+        path: PathBuf,
+        observations: Vec<super::PluginParameterObservation>,
+    },
+}
+
+struct VerifiedPluginCopy {
+    path: PathBuf,
+    receipt: RecoveryCopyReceipt,
+    observations: Vec<super::PluginParameterObservation>,
+}
+
+fn same_plugin_observation(
+    left: &super::PluginParameterObservation,
+    right: &super::PluginParameterObservation,
+) -> bool {
+    use super::PluginParameterObservation::{Delivered, Restored};
+    if left != right {
+        return false;
+    }
+    match (left, right) {
+        (Delivered(a), Delivered(b)) | (Restored(a), Restored(b)) => {
+            match (a.application.value, b.application.value) {
+                (
+                    super::automation_draft::Vst3ApplicationValue::Value(a),
+                    super::automation_draft::Vst3ApplicationValue::Value(b),
+                ) => a.to_bits() == b.to_bits(),
+                _ => true,
+            }
+        }
+        _ => true,
+    }
+}
+
 struct Active {
     scope: DeviceAutomationTakeScope,
     source: DeviceAutomationSource,
     input: DeviceDraftInput,
     worker: DraftWorker,
+    preparing_native_recovery: bool,
 }
 
 pub(super) enum Step {
@@ -193,6 +333,18 @@ pub(super) enum Step {
 }
 
 impl Lane {
+    pub(super) fn close_safe(&self) -> bool {
+        self.active.is_none() && self.failed.is_none() && self.copy_destination.is_none()
+    }
+    pub(super) fn failed_plugin_identity(&self) -> Option<(DeviceAutomationTakeScope, &Path)> {
+        let failed = self.failed.as_ref()?;
+        matches!(
+            failed.scope.target,
+            DeviceCaptureTarget::Vst3(_) | DeviceCaptureTarget::Vst3Group(_)
+        )
+        .then_some((failed.scope, failed.outcome.path.as_path()))
+    }
+
     pub(super) fn failed_source(
         &self,
         scope: DeviceAutomationTakeScope,
@@ -207,6 +359,17 @@ impl Lane {
         Ok(failed.source)
     }
 
+    pub(super) fn failed_outcome(
+        &self,
+        scope: DeviceAutomationTakeScope,
+    ) -> Result<&Arc<DraftWorkerOutcome>, String> {
+        self.failed_source(scope)?;
+        self.failed
+            .as_ref()
+            .map(|failed| &failed.outcome)
+            .ok_or_else(|| "no failed device automation custody is available".into())
+    }
+
     pub(super) fn copy_failed_plugin(
         &mut self,
         scope: DeviceAutomationTakeScope,
@@ -215,9 +378,11 @@ impl Lane {
         observations: Vec<super::PluginParameterObservation>,
     ) -> Result<Step, String> {
         let source = self.failed_source(scope)?;
-        if !matches!(scope.target, DeviceCaptureTarget::Vst3(_))
-            || max_events > hex_project::MAX_DEVICE_AUTOMATION_POINTS as u64
-            || observations.len() > 3
+        if !matches!(
+            scope.target,
+            DeviceCaptureTarget::Vst3(_) | DeviceCaptureTarget::Vst3Group(_)
+        ) || max_events > hex_project::MAX_DEVICE_AUTOMATION_POINTS as u64
+            || observations.len() > MAX_FAILED_PLUGIN_EDITOR_OBSERVATIONS
         {
             return Err("invalid VST3 recovery target or budget".into());
         }
@@ -227,9 +392,10 @@ impl Lane {
             .ok_or("no failed device automation custody is available")?;
         let destination = super::recovery::absolute_document_path(destination)?;
         let copy_path = destination.clone();
+        let copied_observations = observations.clone();
         self.failed_copy
-            .start_with(&failed.outcome, move |outcome| {
-                copy_failed_plugin_on_control(
+            .start_with_receipt(&failed.outcome, move |outcome| {
+                copy_failed_plugin_with_receipt_on_control(
                     outcome,
                     &copy_path,
                     DraftReadLimits {
@@ -238,12 +404,64 @@ impl Lane {
                     max_events,
                     scope,
                     source,
-                    &observations,
+                    &copied_observations,
                 )
-                .map(|_| ())
             })?;
-        self.copy_destination = Some(destination);
+        self.copy_destination = Some(PendingCopy::Plugin {
+            path: destination,
+            observations,
+        });
         Ok(Step::Progress(DeviceAutomationTakeProgress::Pending))
+    }
+
+    pub(super) fn inspect_failed_plugin_copy(
+        &self,
+        scope: DeviceAutomationTakeScope,
+        observations: &[super::PluginParameterObservation],
+    ) -> Result<Step, String> {
+        self.failed_source(scope)?;
+        if self.copy_destination.is_some() {
+            return Err("automation recovery copy is still pending".into());
+        }
+        let copy = self
+            .verified_plugin_copy
+            .as_ref()
+            .ok_or("no verified VST3 recovery copy is available")?;
+        if copy.observations.len() != observations.len()
+            || !copy
+                .observations
+                .iter()
+                .zip(observations)
+                .all(|(a, b)| same_plugin_observation(a, b))
+        {
+            return Err("retained VST3 observations changed after recovery copy".into());
+        }
+        Ok(Step::Progress(DeviceAutomationTakeProgress::VerifiedCopy {
+            path: copy.path.clone(),
+            receipt: copy.receipt,
+        }))
+    }
+
+    pub(super) fn release_failed_plugin_copy(
+        &mut self,
+        scope: DeviceAutomationTakeScope,
+        path: &Path,
+        receipt: RecoveryCopyReceipt,
+        observations: &[super::PluginParameterObservation],
+    ) -> Result<(), String> {
+        let Step::Progress(DeviceAutomationTakeProgress::VerifiedCopy {
+            path: found,
+            receipt: identity,
+        }) = self.inspect_failed_plugin_copy(scope, observations)?
+        else {
+            return Err("verified VST3 recovery copy is unavailable".into());
+        };
+        if found != path || identity != receipt {
+            return Err("verified VST3 recovery copy changed".into());
+        }
+        self.verified_plugin_copy = None;
+        self.failed = None;
+        Ok(())
     }
 
     pub(super) fn path(&self) -> Option<&Path> {
@@ -252,6 +470,10 @@ impl Lane {
 
     pub(super) fn busy(&self) -> bool {
         self.active.is_some()
+    }
+
+    pub(super) fn has_failed_custody(&self) -> bool {
+        self.failed.is_some()
     }
 
     pub(super) fn begin(
@@ -293,12 +515,23 @@ impl Lane {
                 scope.stamp,
                 clock,
             ),
+            DeviceCaptureTarget::Vst3Group(target) => {
+                DeviceDraftInput::start_vst3_group_on_control(
+                    session,
+                    document_base,
+                    path,
+                    target,
+                    scope.stamp,
+                    clock,
+                )
+            }
         }?;
         self.active = Some(Active {
             scope,
             source,
             input,
             worker,
+            preparing_native_recovery: false,
         });
         Ok(Step::Progress(DeviceAutomationTakeProgress::Started))
     }
@@ -312,6 +545,31 @@ impl Lane {
         action: &DeviceAutomationTakeAction,
     ) -> Result<Step, String> {
         use DeviceAutomationTakeProgress as Progress;
+        match action {
+            DeviceAutomationTakeAction::PrepareNativeRecovery => {
+                return self.prepare_native_recovery(scope);
+            }
+            DeviceAutomationTakeAction::CopyNativeRecovery {
+                destination,
+                max_events,
+                continuation,
+            } => {
+                return self.start_native_recovery_copy(
+                    scope,
+                    destination,
+                    *max_events,
+                    continuation,
+                );
+            }
+            DeviceAutomationTakeAction::KeepNativeRecoveryCopy {
+                path,
+                receipt,
+                max_events,
+            } => {
+                return self.keep_native_recovery_copy(scope, path, *receipt, *max_events);
+            }
+            _ => {}
+        }
         if matches!(
             action,
             DeviceAutomationTakeAction::CopyFailed { .. }
@@ -341,7 +599,7 @@ impl Lane {
                         },
                         *max_events,
                     )?;
-                    self.copy_destination = Some(destination);
+                    self.copy_destination = Some(PendingCopy::Checkpoint(destination));
                     Ok(Step::Progress(Progress::Pending))
                 }
                 DeviceAutomationTakeAction::PollFailedCopy => {
@@ -351,7 +609,7 @@ impl Lane {
                     let Some(completion) = self.failed_copy.poll() else {
                         return Ok(Step::Progress(Progress::Pending));
                     };
-                    let destination = self
+                    let pending = self
                         .copy_destination
                         .take()
                         .ok_or("automation recovery destination is unavailable")?;
@@ -359,7 +617,33 @@ impl Lane {
                         return Err("automation recovery custody changed during copy".into());
                     }
                     completion.result?;
-                    Ok(Step::Progress(Progress::Retained(destination)))
+                    match (pending, completion.receipt) {
+                        (PendingCopy::Checkpoint(destination), None) => {
+                            Ok(Step::Progress(Progress::Retained(destination)))
+                        }
+                        (PendingCopy::Native(path), Some(receipt)) => {
+                            self.verified_native_copy = Some((path.clone(), receipt));
+                            Ok(Step::Progress(Progress::VerifiedCopy { path, receipt }))
+                        }
+                        (
+                            PendingCopy::Plugin {
+                                path: destination,
+                                observations,
+                            },
+                            Some(receipt),
+                        ) => {
+                            self.verified_plugin_copy = Some(VerifiedPluginCopy {
+                                path: destination.clone(),
+                                receipt,
+                                observations,
+                            });
+                            Ok(Step::Progress(Progress::VerifiedCopy {
+                                path: destination,
+                                receipt,
+                            }))
+                        }
+                        _ => Err("automation recovery copy receipt is inconsistent".into()),
+                    }
                 }
                 _ => Err("invalid automation recovery action".into()),
             };
@@ -371,6 +655,9 @@ impl Lane {
         if active.scope != scope {
             return Err("device automation receipt belongs to another take".into());
         }
+        if active.preparing_native_recovery {
+            return Err("native recovery owns the original writer".into());
+        }
         let translated;
         let action = if let DeviceAutomationTakeAction::PluginObservation(observation) = action {
             translated = active.plugin_action(observation)?;
@@ -380,9 +667,20 @@ impl Lane {
         };
         while active.input.poll().is_some() {}
         let progress = match action {
+            #[cfg(feature = "recording-fault-test-support")]
+            DeviceAutomationTakeAction::InjectWriterFailure => {
+                active.input.inject_next_append_failure()?;
+                Progress::Appended
+            }
             DeviceAutomationTakeAction::CopyFailed { .. }
             | DeviceAutomationTakeAction::CopyFailedPlugin { .. }
-            | DeviceAutomationTakeAction::PollFailedCopy => {
+            | DeviceAutomationTakeAction::PollFailedCopy
+            | DeviceAutomationTakeAction::InspectFailedPluginCopy
+            | DeviceAutomationTakeAction::AdoptFailedPluginCopy { .. }
+            | DeviceAutomationTakeAction::KeepFailedPluginCopy { .. }
+            | DeviceAutomationTakeAction::PrepareNativeRecovery
+            | DeviceAutomationTakeAction::CopyNativeRecovery { .. }
+            | DeviceAutomationTakeAction::KeepNativeRecoveryCopy { .. } => {
                 return Err("invalid active automation recovery action".into());
             }
             DeviceAutomationTakeAction::Begin => {
@@ -443,6 +741,31 @@ impl Lane {
                     .finish_vst3_delivered(target, scope.stamp, *application)?;
                 Progress::Sealing
             }
+            DeviceAutomationTakeAction::AppendVst3Group(batch) => {
+                let DeviceCaptureTarget::Vst3Group(target) = scope.target else {
+                    return Err("grouped vst3 applications require a grouped take".into());
+                };
+                if active
+                    .input
+                    .append_vst3_group_delivered(target, scope.stamp, batch)?
+                    .is_some()
+                {
+                    Progress::Appended
+                } else {
+                    Progress::Backpressured
+                }
+            }
+            DeviceAutomationTakeAction::FinishVst3Group(clock) => {
+                let DeviceCaptureTarget::Vst3Group(target) = scope.target else {
+                    return Err("grouped vst3 restoration requires a grouped take".into());
+                };
+                active.input.finish_vst3_group_delivered(
+                    target,
+                    scope.stamp,
+                    DraftTerminal::Finished(*clock),
+                )?;
+                Progress::Sealing
+            }
             DeviceAutomationTakeAction::Abort(reason) => {
                 match scope.target {
                     DeviceCaptureTarget::Native(target) => {
@@ -452,6 +775,13 @@ impl Lane {
                         active
                             .input
                             .abort_vst3_delivered(target, scope.stamp, *reason)?
+                    }
+                    DeviceCaptureTarget::Vst3Group(target) => {
+                        active.input.finish_vst3_group_delivered(
+                            target,
+                            scope.stamp,
+                            DraftTerminal::Aborted(*reason),
+                        )?
                     }
                 }
                 Progress::Sealing
@@ -497,13 +827,19 @@ impl Lane {
         outcome: DraftWorkerOutcome,
     ) -> Result<Step, String> {
         if let Some(reason) = outcome.failure.as_deref() {
-            let error = retained_error(&outcome.path, reason);
+            let path = outcome.path.clone();
+            let reason = reason.to_owned();
             self.failed = Some(Failed {
                 scope,
                 source,
                 outcome: Arc::new(outcome),
             });
-            return Err(error);
+            if scope.target.native().is_some() {
+                return Ok(Step::Progress(
+                    DeviceAutomationTakeProgress::NativeWriterRetained { path, reason },
+                ));
+            }
+            return Err(retained_error(&path, &reason));
         }
         if !matches!(outcome.requested_terminal, DraftTerminal::Finished(_))
             || outcome.admitted_events == 0
@@ -512,6 +848,29 @@ impl Lane {
             return Ok(Step::Progress(DeviceAutomationTakeProgress::Retained(
                 outcome.path,
             )));
+        }
+        if let DeviceCaptureTarget::Vst3Group(target) = scope.target {
+            let command = (|| {
+                let mut take = CompletedGroupedDraft::open(
+                    &outcome.path,
+                    DraftReadLimits {
+                        max_source_bytes: hex_storage::MAX_PROJECT_DOCUMENT_BYTES as u64,
+                    },
+                    hex_project::MAX_DEVICE_AUTOMATION_POINTS as u64,
+                )
+                .map_err(|error| error.to_string())?;
+                if take.target() != target.draft {
+                    return Err("sealed group does not match the original capture target".into());
+                }
+                prepare_group_take_adoption_on_control(
+                    session,
+                    document_base,
+                    &mut take,
+                    scope.stamp,
+                )
+            })()
+            .map_err(|error| retained_error(&outcome.path, &error))?;
+            return Ok(Step::Commit(Box::new(command), outcome.path));
         }
         let mut take = CompletedAutomationTake::open_on_control(
             &outcome.path,

@@ -502,7 +502,9 @@ fn refused_commit_keeps_acknowledged_final_preview_until_exact_cancel() {
     client.finish_plugin(final_value).unwrap();
     let commit = client.next_request().unwrap();
     client.mark_submitted();
-    let refused = machine.handle_prepared(&mut session, commit, Some(&prepared), 9, &mut prepare);
+    let mut refused =
+        machine.handle_prepared(&mut session, commit, Some(&prepared), 9, &mut prepare);
+    machine.retire_unpublished_native_terminal(&mut refused.ack);
     assert!(!refused.ack.accepted && refused.ack.preview_retained);
     assert_eq!(machine.snapshot().unwrap().plugin_value, Some(final_value));
     assert!(client.acknowledge_with_snapshot(&refused.ack, machine.snapshot()));
@@ -744,4 +746,79 @@ fn refused_recorded_return_keeps_the_exact_final_preview_until_cancel() {
     assert!(machine.snapshot().is_none());
     assert!(client.snapshot().is_none());
     assert_eq!(session.project(), &before);
+}
+
+#[test]
+fn editor_recording_key_is_valid_in_the_initial_project_and_never_reuses_a_pointer_token() {
+    let mut client = GestureClient::default();
+    let editor = client.reserve_plugin_editor_key(0).unwrap();
+    assert_eq!((editor.generation, editor.token), (0, 1));
+    let pointer = client
+        .begin(0, GestureTarget::MainGain, ParameterValue::Float(0.5))
+        .unwrap();
+    assert!(pointer.token > editor.token);
+    assert!(client.reserve_plugin_editor_key(0).is_err());
+}
+
+#[test]
+fn output_restart_retires_unrecorded_plugin_preview_after_refused_commit() {
+    let (mut session, origin, prepared) = fixture();
+    let original = session.project().clone();
+    let mut client = GestureClient::default();
+    let key = client.begin_plugin(origin).unwrap();
+    let mut machine = GestureMachine::default();
+    let mut prepare = |_session: &mut Session, operation| match operation {
+        GesturePreparation::Plugin(PluginGesturePreparation::Begin { .. })
+        | GesturePreparation::Plugin(PluginGesturePreparation::Preview(_)) => Ok(None),
+        GesturePreparation::Plugin(PluginGesturePreparation::Commit(_)) => {
+            Err(SessionError::Invalid("session graph handoff was rejected"))
+        }
+        _ => panic!("unexpected preparation"),
+    };
+    let begin = client.next_request().unwrap();
+    client.mark_submitted();
+    let begun = machine.handle_prepared(&mut session, begin, Some(&prepared), 9, &mut prepare);
+    assert!(client.acknowledge(&begun.ack));
+    client.finish_plugin(value(0.75)).unwrap();
+    let commit = client.next_request().unwrap();
+    client.mark_submitted();
+    let refused = machine.handle_prepared(&mut session, commit, Some(&prepared), 9, &mut prepare);
+    assert!(!refused.ack.accepted && refused.ack.preview_retained);
+    assert!(client.acknowledge_with_snapshot(&refused.ack, machine.snapshot()));
+    let retired = machine
+        .retire_native_on_restart()
+        .expect("accepted restart must retire lost plugin source");
+    assert_eq!(retired.key, key);
+    assert!(retired.source_lost && !retired.accepted && !retired.preview_retained);
+    assert!(machine.snapshot().is_none());
+    assert_eq!(session.project(), &original);
+    let late = machine.handle_prepared(&mut session, commit, Some(&prepared), 9, &mut prepare);
+    assert!(!late.ack.accepted);
+    assert_eq!(session.project(), &original);
+    assert!(session.editor.undo());
+    assert_ne!(session.project(), &original);
+    assert!(session.editor.redo());
+    assert_eq!(session.project(), &original);
+}
+
+#[test]
+fn output_restart_keeps_recorded_plugin_gesture_in_recovery_custody() {
+    let (mut session, origin, prepared) = fixture();
+    let mut client = GestureClient::default();
+    let key = client.begin_plugin_recording(origin).unwrap();
+    let mut machine = GestureMachine::default();
+    let begin = client.next_request().unwrap();
+    let begun = machine.handle_prepared(&mut session, begin, Some(&prepared), 9, |_, operation| {
+        assert!(matches!(
+            operation,
+            GesturePreparation::Plugin(PluginGesturePreparation::Begin {
+                recording: true,
+                ..
+            })
+        ));
+        Ok(None)
+    });
+    assert!(begun.ack.accepted);
+    assert!(machine.retire_native_on_restart().is_none());
+    assert_eq!(machine.snapshot().unwrap().key, key);
 }

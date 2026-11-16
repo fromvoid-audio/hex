@@ -119,7 +119,7 @@ mod tests {
         )
         .unwrap()
     }
-    fn render(pair: &mut Pair, partition: usize, gain: bool) -> Vec<[f32; 2]> {
+    fn render(pair: &mut Pair, partition: usize, gain: bool, attenuation: bool) -> Vec<[f32; 2]> {
         let all = [
             NativeInstrumentEvent::NoteOn {
                 frame_offset: 0,
@@ -183,7 +183,16 @@ mod tests {
             ids.dedup();
             let gains: Vec<_> = ids
                 .iter()
-                .map(|id| Gain::new(*id, 0.125, 0.875, 2048, start as u64).unwrap())
+                .map(|id| {
+                    let value = Gain::new(*id, 0.125, 0.875, 2048, start as u64).unwrap();
+                    if attenuation {
+                        value
+                            .with_attenuation(1.0, 0.25, 2048, start as u64)
+                            .unwrap()
+                    } else {
+                        value
+                    }
+                })
                 .collect();
             if gain {
                 pair.process_block_with_clock_and_occurrence_gains(
@@ -211,9 +220,9 @@ mod tests {
         for factory in factories() {
             assert!(factory.supports_occurrence_gain());
             assert!(factory.supports_active_occurrence_ids());
-            let baseline = render(&mut pair(factory.as_ref()), 2048, false);
-            let whole = render(&mut pair(factory.as_ref()), 2048, true);
-            let split = render(&mut pair(factory.as_ref()), 7, true);
+            let baseline = render(&mut pair(factory.as_ref()), 2048, false, false);
+            let whole = render(&mut pair(factory.as_ref()), 2048, true, false);
+            let split = render(&mut pair(factory.as_ref()), 7, true, false);
             assert_eq!(whole, split);
             assert!(baseline.iter().any(|v| v[0].abs() > 1e-5));
             for (i, (original, scaled)) in baseline.iter().zip(&whole).enumerate() {
@@ -221,6 +230,27 @@ mod tests {
                 for c in 0..2 {
                     assert!(
                         (f64::from(original[c]) * gain - f64::from(scaled[c])).abs() < 2e-7,
+                        "frame {i}"
+                    );
+                }
+            }
+        }
+    }
+    #[test]
+    fn real_operator_composed_gain_matches_product_across_partitions() {
+        for factory in factories() {
+            let baseline = render(&mut pair(factory.as_ref()), 2048, false, false);
+            let whole = render(&mut pair(factory.as_ref()), 2048, true, true);
+            let split = render(&mut pair(factory.as_ref()), 7, true, true);
+            assert_eq!(whole, split);
+            assert!(baseline.iter().any(|v| v[0].abs() > 1e-5));
+            for (i, (original, scaled)) in baseline.iter().zip(&whole).enumerate() {
+                let clip = 0.125 + 0.75 * i as f64 / 2048.0;
+                let attenuation = 1.0 - 0.75 * i as f64 / 2048.0;
+                for c in 0..2 {
+                    assert!(
+                        (f64::from(original[c]) * clip * attenuation - f64::from(scaled[c])).abs()
+                            < 2e-7,
                         "frame {i}"
                     );
                 }

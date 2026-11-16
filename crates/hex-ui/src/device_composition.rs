@@ -25,6 +25,7 @@ pub(crate) const VECTOR_SHELL_WIDTH: f32 = 160.0;
 pub(crate) const VECTOR_DETAIL_WIDTH: f32 = 220.0;
 pub(crate) const VECTOR_ADVANCED_DETAIL_WIDTH: f32 = 340.0;
 pub(crate) const VECTOR_OPTIONS_WIDTH: f32 = 80.0;
+pub(crate) const VECTOR_WAVEFORM_WIDTH: f32 = 220.0;
 pub(crate) const VECTOR_PREVIEW_WIDTH: f32 = 2.0 * hex_widgets::MICRO_DIAL_WIDTH + 148.0;
 pub(crate) const VECTOR_WIDTH: f32 =
     VECTOR_SHELL_WIDTH + VECTOR_DETAIL_WIDTH + VECTOR_PREVIEW_WIDTH + 30.0;

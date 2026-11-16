@@ -70,6 +70,76 @@ fn paint_fixture(
 }
 
 #[gpui::test]
+fn double_click_creates_a_clip_in_the_clicked_grid_cell(cx: &mut TestAppContext) {
+    use super::super::musical_time::{SnapGrid, grid_lines};
+
+    for (grid, fraction) in [
+        (SnapGrid::Quarter, 0.0),
+        (SnapGrid::Quarter, 0.25),
+        (SnapGrid::Quarter, 0.75),
+        (SnapGrid::Adaptive, 0.75),
+    ] {
+        let (handle, editor, track) = paint_fixture(cx, false);
+        editor.update(cx, |view, cx| {
+            view.snap_grid = grid;
+            cx.notify();
+        });
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        let lane = visual
+            .debug_bounds(Box::leak(
+                format!("arrangement-lane-{}", track.value()).into_boxed_str(),
+            ))
+            .unwrap();
+        let (left, right, viewport) = editor.read_with(cx, |view, _| {
+            let state = view.state.as_ref().unwrap();
+            let viewport = view.visible_viewport(state.timeline_frames);
+            let lines = grid_lines(&state.project, viewport, f32::from(lane.size.width), grid);
+            let cell = lines
+                .windows(2)
+                .find(|cell| cell[0].frame >= 144_000)
+                .unwrap();
+            (cell[0].frame, cell[1].frame, viewport)
+        });
+        let x = |frame| {
+            lane.left()
+                + lane.size.width * ((frame - viewport.start) as f32 / viewport.length as f32)
+        };
+        let at = point(x(left) + (x(right) - x(left)) * fraction, lane.center().y);
+        visual.simulate_mouse_down(at, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(at, MouseButton::Left, Modifiers::default());
+        visual.simulate_event(MouseDownEvent {
+            position: at,
+            button: MouseButton::Left,
+            click_count: 2,
+            modifiers: Modifiers::default(),
+            first_mouse: false,
+        });
+        visual.run_until_parked();
+        let preview = visual.debug_bounds("clip-paint-preview").unwrap();
+        assert!(
+            f32::from(preview.left() - x(left)).abs() < 1.0,
+            "clip preview must start at the clicked cell's left edge: {grid:?}, {fraction}"
+        );
+        assert!(f32::from(preview.right() - x(right)).abs() < 1.0);
+
+        visual.simulate_mouse_up(at, MouseButton::Left, Modifiers::default());
+        editor.read_with(cx, |view, _| {
+            let event = next_paint_event(&view.service);
+            assert!(event.error.is_none(), "{:?}", event.error);
+            let Some(hex_project::Created::Clip(id)) = event.created else {
+                panic!("clip creation terminal");
+            };
+            let clip = event.state.project.midi_clip(id).unwrap();
+            let tempo = event.state.project.tempo_map();
+            assert_eq!(tempo.beat_to_frame(clip.start()).unwrap(), left);
+            let end = BeatTime::from_raw(clip.start().raw() + clip.length().raw());
+            assert_eq!(tempo.beat_to_frame(end).unwrap(), right);
+        });
+    }
+}
+
+#[gpui::test]
 fn double_press_selects_existing_clip_header_without_moving_it(cx: &mut TestAppContext) {
     for reverse in [false, true] {
         let (handle, editor, track) = paint_fixture(cx, false);

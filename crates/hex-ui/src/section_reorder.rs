@@ -243,7 +243,7 @@ pub(crate) fn insertion_target(
         .map(|(id, after, _)| (id, after))
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "ui-unit-tier"))]
 mod tests {
     use super::*;
     use hex_project::{Created, Editor, ElementColor};

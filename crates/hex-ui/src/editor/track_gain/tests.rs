@@ -178,6 +178,84 @@ pub(in crate::editor) fn pump(
 }
 
 #[gpui::test]
+fn degraded_plugin_explains_audio_restart_and_does_not_capture_the_fader(cx: &mut TestAppContext) {
+    cx.update(bind_editor_keys);
+    let mut fixture = super::super::worker_ui_fixture::open(
+        cx,
+        vec![Command::AddTrack {
+            name: "volume".into(),
+        }],
+    );
+    let mut visual = VisualTestContext::from_window(fixture.handle, cx);
+    let (track, initial_gain) = fixture.editor.update(&mut visual, |view, cx| {
+        view.degraded_plugins = crate::editor_backend::DegradedDevices::new(vec![119]);
+        cx.notify();
+        let track = &view.state.as_ref().unwrap().project.tracks()[0];
+        (track.id(), track.gain())
+    });
+    visual.run_until_parked();
+    let selector = Box::leak(format!("track-volume-{}-slider", track.value()).into_boxed_str());
+    let rail = visual.debug_bounds(selector).unwrap();
+    let from = point(rail.left() + px(10.0), rail.center().y);
+    let to = point(from.x, from.y - px(24.0));
+    let drag = |visual: &mut VisualTestContext| {
+        visual.simulate_mouse_down(from, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(to, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+    };
+    drag(&mut visual);
+    fixture.editor.read_with(&visual, |view, _| {
+        assert_eq!(
+            view.error.as_deref(),
+            Some("a plug-in failed · restart audio before changing volume")
+        );
+        assert!(view.device_gesture.snapshot().is_none());
+        assert_eq!(
+            view.state
+                .as_ref()
+                .unwrap()
+                .project
+                .track(track)
+                .unwrap()
+                .gain(),
+            initial_gain
+        );
+    });
+    // The output owner clears this flag when the replacement output is ready.
+    fixture.editor.update(&mut visual, |view, _| {
+        view.degraded_plugins = Default::default();
+    });
+    drag(&mut visual);
+    let deadline = crate::test_wait::hang_deadline();
+    loop {
+        fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+        let committed = fixture.editor.update(&mut visual, |view, cx| {
+            view.tick(cx);
+            !view.edit_pending()
+                && view
+                    .state
+                    .as_ref()
+                    .unwrap()
+                    .project
+                    .track(track)
+                    .unwrap()
+                    .gain()
+                    > initial_gain
+        });
+        if committed {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the next fader drag did not commit"
+        );
+        std::thread::yield_now();
+    }
+    fixture.finish(cx);
+}
+
+#[gpui::test]
 fn volume_drag_targets_its_track_without_selection_resize_or_clip_drag_and_cancels(
     cx: &mut TestAppContext,
 ) {
@@ -738,7 +816,7 @@ fn header_volume_is_one_filled_numeric_field_not_a_separate_rail(cx: &mut TestAp
     let pan = self::bounds(&mut visual, "track-pan", track);
     let activator = self::bounds(&mut visual, "track-mute", track);
     let solo = self::bounds(&mut visual, "track-solo", track);
-    let arm = self::bounds(&mut visual, "track-arm-unavailable", track);
+    let arm = self::bounds(&mut visual, "track-audio-arm", track);
     assert_eq!(activator.size.height, px(14.0));
     assert_eq!(solo.size.width, px(16.0));
     assert_eq!(solo.size.height, px(14.0));
@@ -763,7 +841,7 @@ fn header_volume_is_one_filled_numeric_field_not_a_separate_rail(cx: &mut TestAp
     for suffix in [
         "track-mute",
         "track-solo",
-        "track-arm-unavailable",
+        "track-audio-arm",
         "track-volume",
         "track-pan",
     ] {
@@ -882,7 +960,7 @@ fn header_mixer_pan_entry_drag_cancel_and_activator_solo_are_real_commands(
     assert!(
         visual
             .debug_bounds(Box::leak(
-                format!("track-arm-unavailable-{}", track.value()).into_boxed_str()
+                format!("track-audio-arm-{}", track.value()).into_boxed_str()
             ))
             .is_some()
     );

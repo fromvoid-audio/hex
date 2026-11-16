@@ -162,3 +162,42 @@ fn postpublication_sync_failure_reports_the_complete_new_default() {
     assert_eq!(load_preset(&target).unwrap(), value);
     assert_eq!(fs::read_dir(target.parent().unwrap()).unwrap().count(), 1);
 }
+
+#[test]
+fn complete_default_replaces_a_legacy_value_without_losing_nested_state() {
+    let root = Directory::new();
+    let unit = super::super::unit::tests::fixture();
+    let provider = unit.nodes()[0].state.type_id();
+    let class = DeviceClass::from(unit.class());
+    let state = Preset {
+        class,
+        state: NativeDeviceState::new(provider, 1, vec![7]).unwrap(),
+        comparison: None,
+    };
+    assert!(load_contents(&root.0, class, provider).unwrap().is_none());
+    save(&root.0, &state).unwrap();
+    assert_eq!(
+        load_contents(&root.0, class, provider).unwrap(),
+        Some(PresetContents::State(Box::new(state.clone())))
+    );
+
+    save_unit(&root.0, &unit).unwrap();
+    let target = path(&root.0, class, provider).unwrap();
+    let bytes = fs::read(&target).unwrap();
+    assert_eq!(
+        load_contents(&root.0, class, provider).unwrap(),
+        Some(PresetContents::Unit(unit.clone()))
+    );
+    assert!(load(&root.0, class, provider).is_err());
+    assert!(save(&root.0, &state).is_err());
+    assert_eq!(fs::read(&target).unwrap(), bytes);
+
+    let mut invalid: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    invalid["class"] = serde_json::json!("effect");
+    let invalid = serde_json::to_vec(&invalid).unwrap();
+    fs::write(&target, &invalid).unwrap();
+    assert!(load_contents(&root.0, class, provider).is_err());
+    assert!(save_unit(&root.0, &unit).is_err());
+    assert_eq!(fs::read(&target).unwrap(), invalid);
+    assert_eq!(fs::read_dir(target.parent().unwrap()).unwrap().count(), 1);
+}

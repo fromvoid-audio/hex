@@ -172,6 +172,7 @@ pub(in crate::editor) fn bottom_bar(
                     }));
                 }
             }
+            Some(DevicePanelOwner::Source(_)) => {}
             None => {}
         }
     }

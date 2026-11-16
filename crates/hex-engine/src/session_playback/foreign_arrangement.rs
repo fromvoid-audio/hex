@@ -24,7 +24,9 @@ mod hardware;
 mod live_keys;
 use live_keys::Input;
 
-const MAX_RENDER_EVENTS: usize = MAX_FOREIGN_NOTES + 2 * COMPUTER_KEY_COUNT + hardware::NOTE_BUDGET;
+const MAX_AUTHORED_EVENTS_AT_CUT: usize = 2 * MAX_FOREIGN_NOTES;
+const MAX_RENDER_EVENTS: usize =
+    MAX_AUTHORED_EVENTS_AT_CUT + 2 * COMPUTER_KEY_COUNT + hardware::NOTE_BUDGET;
 
 fn next_note_id(next: &mut u64) -> Result<NonZeroU32, MutableInstrumentRuntimeError> {
     let id = next
@@ -61,6 +63,7 @@ impl Ledger {
 struct Generator {
     track: TrackId,
     processor: PreparedForeignProcessor,
+    has_authored_automation: bool,
     committed: Ledger,
     scratch: Ledger,
 }
@@ -78,11 +81,11 @@ impl Generator {
         let track_id = track
             .canonical_track_id()
             .ok_or(SessionPlaybackError::RevisionTrackMismatch)?;
-        let Some(PreparedProcessorFactory::Foreign(processor)) = track
+        let node = track
             .foreign_instrument
             .as_ref()
-            .and_then(|node| node.definition.as_ref())
-        else {
+            .ok_or(SessionPlaybackError::DeviceRuntime)?;
+        let Some(PreparedProcessorFactory::Foreign(processor)) = node.definition.as_ref() else {
             return Err(SessionPlaybackError::DeviceRuntime);
         };
         if processor.binding().is_none() {
@@ -91,6 +94,7 @@ impl Generator {
         Ok(Self {
             track: track_id,
             processor: *processor,
+            has_authored_automation: node.automation.foreign().is_some(),
             committed: ledger()?,
             scratch: ledger()?,
         })
@@ -102,6 +106,7 @@ pub(super) struct Handoff {
     old_indices: [Option<usize>; MAX_TRACKS],
     pub(super) requires_clock_continuity: bool,
     pub(super) keeps_first_pass_loop_clock: bool,
+    pub(super) keeps_unautomated_loop_clock: bool,
 }
 
 pub(super) const INCOMPATIBLE_HANDOFF: SessionPlaybackError =
@@ -294,6 +299,7 @@ impl ForeignArrangement {
             old_indices: [None; MAX_TRACKS],
             requires_clock_continuity: false,
             keeps_first_pass_loop_clock: true,
+            keeps_unautomated_loop_clock: true,
         };
         let mut retained = [false; MAX_TRACKS];
         for (index, candidate) in self.generators.iter().enumerate() {
@@ -301,9 +307,9 @@ impl ForeignArrangement {
             let matched = old.generators.iter().enumerate().find_map(|(index, old)| {
                 let old = old.as_ref()?;
                 (old.track == candidate.track && old.processor == candidate.processor)
-                    .then_some((index, &old.committed))
+                    .then_some((index, old))
             });
-            let Some((old_index, ledger)) = matched else {
+            let Some((old_index, donor)) = matched else {
                 if cut.playing && fresh != Some(candidate.track) {
                     return Err(INCOMPATIBLE_HANDOFF);
                 }
@@ -316,8 +322,16 @@ impl ForeignArrangement {
             *retained
                 .get_mut(old_index)
                 .ok_or(SessionPlaybackError::RevisionTrackMismatch)? = true;
+            let ledger = &donor.committed;
             if ledger.loop_pass.is_some() && (cut.playing || ledger.has_any_held_notes()) {
                 plan.requires_clock_continuity = true;
+                // An Arrangement gate keeps its performance-frame deadline at
+                // the same cursor. A future wrap releases it through the normal
+                // renderer. Without an authored program, a changed loop does
+                // not affect the worker's parameter-origin budget.
+                plan.keeps_unautomated_loop_clock &= ledger.route == Some(RouteOwner::Arrangement)
+                    && !candidate.has_authored_automation
+                    && !donor.has_authored_automation;
                 // These held gates are timed against the canonical first
                 // pass. Keep their IDs and deadlines on the original worker.
                 plan.keeps_first_pass_loop_clock &= cut.loop_pass == 0
@@ -334,12 +348,7 @@ impl ForeignArrangement {
                         loops[0],
                         loops[1],
                     )
-                    && tracks.get(index).is_some_and(|track| {
-                        track
-                            .foreign_instrument
-                            .as_ref()
-                            .is_some_and(|node| node.automation.foreign().is_some())
-                    });
+                    && candidate.has_authored_automation;
             }
             if !ledger.cut
                 && matches!(ledger.route, Some(RouteOwner::Session { .. }))
@@ -448,6 +457,29 @@ impl ForeignArrangement {
         }
     }
 
+    /// A fresh Arrangement seek on the same revision keeps the worker but
+    /// restarts its authored clock. Keep the physical quantum phase and note
+    /// IDs, so the first destination frame releases old authored gates before
+    /// chasing new ones. A rebound monitor input keeps its own held gates.
+    pub(super) fn cut_retained_gates_from(&mut self, previous: &mut Self) {
+        let shares_input = self.shares_keyboard(previous);
+        let input_track = self.keyboard.as_ref().map(|input| input.track);
+        for (next, old) in self.generators.iter_mut().zip(&mut previous.generators) {
+            let (Some(next), Some(old)) = (next, old) else {
+                continue;
+            };
+            if next.track != old.track || next.processor != old.processor {
+                continue;
+            }
+            std::mem::swap(&mut next.committed, &mut old.committed);
+            next.committed.cut = true;
+            if !shares_input || input_track != Some(next.track) {
+                next.committed.live.disconnect();
+                next.committed.hardware.disconnect();
+            }
+        }
+    }
+
     #[allow(clippy::too_many_arguments)] // Borrow the existing callback and its disjoint scratch.
     pub(super) fn render_frame(
         &mut self,
@@ -488,8 +520,13 @@ impl ForeignArrangement {
             .ok_or(SessionPlaybackError::DeviceRuntime)?;
         let events = &mut self.events;
         events.clear();
+        let authored_capacity = if ledger.cut {
+            MAX_AUTHORED_EVENTS_AT_CUT
+        } else {
+            MAX_FOREIGN_NOTES
+        };
         let mut emit = |gate| -> Result<(), MutableInstrumentRuntimeError> {
-            if events.len() == MAX_FOREIGN_NOTES {
+            if events.len() == authored_capacity {
                 return Err(MutableInstrumentRuntimeError::OccurrenceCapacity);
             }
             events.push(ForeignNote::try_from(gate)?);
@@ -499,6 +536,9 @@ impl ForeignArrangement {
         // A fresh generator can first appear at a running Arrangement cursor.
         // Chase its current span without changing any retained generator's gate.
         let first_route = ledger.route.is_none();
+        // A same-clock audio restart can keep this ledger. Only chase an
+        // interactive start if this generator also cut its authored gates.
+        let chase = context.chase && ledger.cut;
         let wrapped = session.route.owner == RouteOwner::Arrangement
             && !route_changed
             && !ledger.cut
@@ -530,7 +570,7 @@ impl ForeignArrangement {
                     track
                         .for_each_mutable_midi_span(context.arrangement, end, |span| {
                             if span.start < context.arrangement
-                                && !(context.chase || wrapped || first_route)
+                                && !(chase || wrapped || first_route)
                             {
                                 return;
                             }
@@ -550,6 +590,7 @@ impl ForeignArrangement {
                                     pitch: span.pitch,
                                     channel: span.channel,
                                     velocity: span.velocity,
+                                    contributor_fade_in: false,
                                 })
                                 .is_err();
                         })
@@ -579,6 +620,7 @@ impl ForeignArrangement {
                     source_start,
                     width: 1,
                     source_age: None,
+                    contributor_fade_rate: None,
                     tail_frames: 0,
                     max_active: MAX_FOREIGN_NOTES,
                     steals_releasing: true,

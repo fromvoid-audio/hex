@@ -154,6 +154,39 @@ fn click_is_delayed_by_main_latency_to_meet_the_beat_aligned_transient() {
 }
 
 #[test]
+fn project_capture_timing_is_scheduled_not_latency_adjusted() {
+    const BEAT_ONE: u64 = 4_800;
+    let (revision, latency) = main_latency_revision_at_tempo(None, 600_000_000, BEAT_ONE);
+    for block in [63, 256] {
+        let mut playback = Playback::try_from_prepared_with_session(Arc::clone(&revision)).unwrap();
+        playback.apply(PlaybackCommand::Play);
+        let mut output = vec![[0.0; 2]; 6_000];
+        let mut clock = vec![None; output.len()];
+        for (index, part) in output.chunks_mut(block).enumerate() {
+            let offset = index * block;
+            let mut observe = |_, _, _: &[Frame]| {};
+            let mut timing = |start: usize, frame: u64, len: usize, _: &crate::PreparedTempoMap| {
+                for i in 0..len {
+                    clock[offset + start + i] = Some(frame + i as u64);
+                }
+            };
+            let mut tap = crate::ProjectOutputTap::new(&[], &mut observe)
+                .unwrap()
+                .with_timing(&mut timing);
+            playback
+                .render_with_timed_transport_and_signal_observers(part, &[], None, Some(&mut tap))
+                .unwrap();
+        }
+        let audible = (BEAT_ONE + latency) as usize;
+        assert!(output[audible][0] > 0.01);
+        // ProjectOutputTap reports the render cursor, not the earlier content
+        // heard after Main's processor delay. Recording placement must account
+        // for this without changing sample capture's existing timing contract.
+        assert_eq!(clock[audible], Some(BEAT_ONE + latency), "block {block}");
+    }
+}
+
+#[test]
 fn delayed_click_keeps_loop_wrap_pulses_and_its_in_flight_tail() {
     // Wrap 100 frames after beat 1, so the beat-1 click is still inside the
     // delay ring when the content clock wraps back to beat 0.

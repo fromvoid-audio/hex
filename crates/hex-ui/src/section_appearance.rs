@@ -21,7 +21,7 @@ pub(crate) fn new_marker(project: &Project) -> (String, ElementColor) {
     (format!("section {number}"), color)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "ui-unit-tier"))]
 mod tests {
     use super::*;
     use hex_project::{BeatTime, Command, Editor};

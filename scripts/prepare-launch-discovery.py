@@ -10,14 +10,38 @@ import os
 from pathlib import Path
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
 
 ROOT = Path(__file__).resolve().parent.parent
+
+
+def _delivery_source(path: Path) -> bytes:
+    """Read the delivery source from an opened regular file without links."""
+    directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        descriptor = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+        try:
+            if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+                raise RuntimeError("delivery source is not a regular file")
+            with os.fdopen(descriptor, "rb", closefd=False) as source:
+                return source.read()
+        finally:
+            os.close(descriptor)
+    finally:
+        os.close(directory)
+
+
 SPEC = importlib.util.spec_from_file_location("hex_launch_delivery", ROOT / "scripts/hex-test-build.py")
+if SPEC is None or SPEC.loader is None:
+    raise RuntimeError("launch delivery dependency unavailable")
 delivery = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(delivery)
+# Delivery authority must reflect source bytes, not a timestamp-valid pyc.
+_SOURCE = _delivery_source(Path(SPEC.origin))
+delivery._EXECUTED_DELIVERY_SOURCE_SHA256 = hashlib.sha256(_SOURCE).hexdigest()
+exec(compile(_SOURCE, SPEC.origin, "exec", dont_inherit=True), delivery.__dict__)
 
 
 def optimized_scanner() -> Path:
@@ -86,6 +110,7 @@ def build_native(builder, sdk: Path, instance: bool, staging: Path) -> Path:
 
 
 def prepare(instance: bool) -> Path:
+    delivery.require_delivery_source(ROOT)
     common = Path(delivery.run(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"]))
     artifacts = common.parent / "artifacts"
     sdk = Path(os.environ.get("HEX_VST3_SDK") or artifacts / "vst3-sdk")
@@ -117,7 +142,9 @@ def prepare(instance: bool) -> Path:
             with tempfile.TemporaryDirectory(prefix="stage-", dir=cache) as staging:
                 staging = Path(staging)
                 if not native.exists():
-                    build_native(builder, sdk, instance, staging).rename(native)
+                    built = build_native(builder, sdk, instance, staging)
+                    delivery.require_delivery_source(ROOT)
+                    built.rename(native)
                 receipt = native / "controlled-macos.json"
                 delivery.assert_plain_path(receipt)
                 source = json.loads(receipt.read_bytes()).get("source_commit", "")
@@ -136,6 +163,7 @@ def prepare(instance: bool) -> Path:
                     "files": delivery.inventory(tools),
                 })
                 verify_tools(tools, signing, instance)
+                delivery.require_delivery_source(ROOT)
                 tools.parent.rename(generation)
         else:
             verify_tools(app, signing, instance)

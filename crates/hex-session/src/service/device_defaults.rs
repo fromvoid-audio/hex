@@ -4,6 +4,7 @@
 use super::preset;
 use hex_engine::NativeDeviceClass;
 use hex_project::{Command, DeviceInitialization};
+use hex_storage::preset::PresetContents;
 use std::path::Path;
 
 pub(super) fn initialize(
@@ -24,14 +25,15 @@ pub(super) fn initialize(
         _ => return Err("device default requires a fresh catalog construction".into()),
     };
     let comparison = match root
-        .map(|root| preset::load_default(root, class, state.type_id()))
+        .map(|root| preset::load_default_contents(root, class, state.type_id()))
         .transpose()?
         .flatten()
     {
-        Some(preset) => {
+        Some(PresetContents::State(preset)) => {
             *state = preset.state;
             preset.comparison
         }
+        Some(PresetContents::Unit(unit)) => return preset::initialize_complete(command, unit),
         None => None,
     };
     DeviceInitialization::new(command, comparison)

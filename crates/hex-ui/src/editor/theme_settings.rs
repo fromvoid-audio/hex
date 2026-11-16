@@ -1227,6 +1227,10 @@ mod tests {
         click_bounds(&mut visual, "project rate 96000");
         click_bounds(&mut visual, "cancel theme changes");
         editor.read_with(&visual, |view, _| {
+            assert!(
+                !view.theme_settings.open,
+                "cancel closes the settings panel"
+            );
             assert_eq!(view.state.as_ref().unwrap().project.sample_rate(), 48_000);
             assert_eq!(view.worker_requests_pending, 0);
         });

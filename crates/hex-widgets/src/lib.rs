@@ -93,16 +93,17 @@ pub use frame::{
     DEVICE_FRAME_HEADER_HEIGHT, DEVICE_FRAME_HEADER_PADDING, DEVICE_FRAME_HEADER_WIDTH,
     DEVICE_LAYOUT_GUTTER, DEVICE_ROW_GUTTER, DEVICE_SECTION_INSET, DEVICE_SECTION_RADIUS,
     DeviceLayout, DeviceSectionSurface, device_body, device_compact_row, device_compact_section,
-    device_dense_section, device_display, device_frame, device_grouped_row, device_header,
-    device_layout, device_rail, device_section, device_split, device_windowed_body,
-    vertical_device_name,
+    device_dense_section, device_display, device_frame, device_frame_with_modulators,
+    device_grouped_row, device_header, device_layout, device_rail, device_section, device_split,
+    device_windowed_body, vertical_device_name,
 };
 pub use numeric::{NumericError, NumericScale, NumericSpec};
 pub use numeric_control::{
     COMPACT_DIAL_HEIGHT, COMPACT_DIAL_WIDTH, INLINE_VALUE_HEIGHT, INLINE_VALUE_WIDTH,
     NumericControl, NumericControlConfig, NumericControlEvent, NumericControlFinalValue,
     NumericControlKind, NumericControlPresentation, NumericEditState, NumericEscape,
-    NumericEventPhase, NumericGestureId, bind_numeric_control_keys,
+    NumericEventPhase, NumericGestureId, NumericTextRequest, NumericTextRequestId,
+    bind_numeric_control_keys,
 };
 pub use response_graph::{
     ResponseGraph, ResponseGraphAnalyzerStyle, ResponseGraphAxes, ResponseGraphCreationHint,
@@ -159,7 +160,7 @@ mod waveform_plot;
 pub use waveform_plot::{
     MAX_WAVEFORM_COLUMNS, MAX_WAVEFORM_ENVELOPE_POINTS, WaveformChannel, WaveformColors,
     WaveformEmphasis, WaveformEnvelope, WaveformEnvelopeMode, WaveformGeometry, WaveformRange,
-    WaveformStroke, WaveformViewport, waveform_plot,
+    WaveformStroke, WaveformViewport, waveform_plot, waveform_plot_with_offset,
 };
 
 #[cfg(test)]

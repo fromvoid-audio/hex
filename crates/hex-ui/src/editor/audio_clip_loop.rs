@@ -196,6 +196,34 @@ impl EditorView {
         }
         self.clip_loop.audio_gesture = Some(g);
     }
+    /// The Arrangement title shares the detail editor's held and released
+    /// cycle edit. Reuse its validated operation on just the displayed clip.
+    pub(in crate::editor) fn audio_header_loop_clip<'a>(
+        &'a self,
+        clip: &'a Clip,
+        state: &super::super::ViewState,
+    ) -> std::borrow::Cow<'a, Clip> {
+        if let Some(g) = self.clip_loop.audio_gesture.as_ref().filter(|g| {
+            g.clip == clip.id()
+                && g.generation == self.project_generation
+                && g.revision == state.revision
+                && g.preview != (g.root.view_start, g.root.view_end)
+        }) && let Some(asset) = state.project.asset(clip.asset())
+            && let Ok(preview) = hex_project::preview_audio_view_resize(
+                clip,
+                state.project.tempo_map(),
+                asset.playback_frames(),
+                AudioViewResizeOperation::CycleRange {
+                    start: g.preview.0,
+                    end: g.preview.1,
+                    looping: g.looping,
+                },
+            )
+        {
+            return std::borrow::Cow::Owned(preview);
+        }
+        std::borrow::Cow::Borrowed(self.pending_clip_loop_audio(clip.id()).unwrap_or(clip))
+    }
     pub(in crate::editor) fn audio_loop_ruler(
         &mut self,
         cx: &mut Context<Self>,

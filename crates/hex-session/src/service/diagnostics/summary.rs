@@ -162,6 +162,9 @@ pub(super) fn created(value: &hex_project::Created) -> Description {
         hex_project::Created::NativeSource(value0) => {
             describe!("native_source"; ["value0" => value0.value()]; omitted="")
         }
+        hex_project::Created::ArrangementLocator(locator) => {
+            describe!("arrangement_locator"; ["locator" => locator.value()]; omitted="")
+        }
         hex_project::Created::ArrangementSection(value0) => {
             describe!("arrangement_section"; ["value0" => value0.value()]; omitted="")
         }
@@ -298,6 +301,18 @@ pub(super) fn command(value: &Command) -> Description {
                 describe!("edit_clips"; ["clips_count" => clips.len()]; omitted="");
             description.nested("edit", self::clip_edit(edit));
             description
+        }
+        Command::AddArrangementLocator { frame } => {
+            describe!("add_arrangement_locator"; ["frame" => frame]; omitted="")
+        }
+        Command::MoveArrangementLocator { locator, frame } => {
+            describe!("move_arrangement_locator"; ["locator" => locator.value(), "frame" => frame]; omitted="")
+        }
+        Command::RenameArrangementLocator { locator, name } => {
+            describe!("rename_arrangement_locator"; ["locator" => locator.value(), "name_redacted_bytes" => name.as_deref().map_or(0, str::len)]; omitted="")
+        }
+        Command::RemoveArrangementLocator(locator) => {
+            describe!("remove_arrangement_locator"; ["locator" => locator.value()]; omitted="")
         }
         Command::AddArrangementSection {
             name, start, end, ..
@@ -518,6 +533,13 @@ pub(super) fn command(value: &Command) -> Description {
         Command::RemoveInstrument { track } => {
             describe!("remove_instrument"; ["track" => track.value()]; omitted="")
         }
+        Command::ReplaceTrackInstrument {
+            track,
+            replacing,
+            state,
+        } => {
+            describe!("replace_track_instrument"; ["track" => track.value(), "replacing" => replacing.value(), "state_type" => state.type_id().as_str(), "state_state_version" => state.state_version(), "state_payload_bytes" => state.payload().len()]; omitted="")
+        }
         Command::RemoveDevice(value0) => {
             describe!("remove_device"; ["value0" => value0.value()]; omitted="")
         }
@@ -535,6 +557,19 @@ pub(super) fn command(value: &Command) -> Description {
         } => {
             describe!("move_track_device"; ["device" => device.value(), "track" => track.value(), "before" => before.map(|id| id.value())]; omitted="")
         }
+        Command::InsertNestedDevice { parent, state } => {
+            describe!("insert_nested_device"; ["parent" => parent.value(), "state_type" => state.type_id().as_str(), "state_state_version" => state.state_version(), "state_payload_bytes" => state.payload().len()]; omitted="")
+        }
+        Command::MoveNativeSourceDevice {
+            source,
+            device,
+            before,
+        } => {
+            describe!("move_native_source_device"; ["source" => source.value(), "device" => device.value(), "before" => before.map(|id| id.value())]; omitted="")
+        }
+        Command::ReparentDevice { device, parent } => {
+            describe!("reparent_device"; ["device" => device.value(), "parent" => parent.map(|id| id.value())]; omitted="")
+        }
         Command::SpliceDeviceAutomationTouch {
             device,
             target,
@@ -542,6 +577,12 @@ pub(super) fn command(value: &Command) -> Description {
             ..
         } => {
             describe!("splice_device_automation_touch"; ["device" => device.value(), "target" => target, "span_count" => spans.len()]; omitted="")
+        }
+        Command::SpliceVst3AutomationTouchGroup { device, lanes, .. } => {
+            describe!("splice_vst3_automation_touch_group"; ["device" => device.value(), "lane_count" => lanes.len()]; omitted="")
+        }
+        Command::ReplaceDeviceModulation { device, modulation } => {
+            describe!("replace_device_modulation"; ["device" => device.value(), "source_count" => modulation.sources().len(), "route_count" => modulation.routes().len()]; omitted="")
         }
         Command::ReplaceDeviceAutomationTarget {
             device,
@@ -646,6 +687,18 @@ pub(super) fn command(value: &Command) -> Description {
             describe!("paste_time_range"; ["track" => track.value(), "frame" => frame]; omitted="clipboard")
         }
         Command::RemoveDevices { .. } => describe!("remove_devices"; []; omitted="owner,selected"),
+        Command::ReorderDevices {
+            selected, before, ..
+        } => {
+            describe!("reorder_devices"; ["devices" => selected.ids().len(), "before" => before.map(|id| id.value())]; omitted="owner,device ids")
+        }
+        Command::MoveTrackDevices {
+            source,
+            selected,
+            destination,
+        } => {
+            describe!("move_track_devices"; ["source" => source.value(), "destination" => destination.value(), "devices" => selected.ids().len()]; omitted="device ids")
+        }
         Command::PasteDevices { .. } => {
             describe!("paste_devices"; []; omitted="clipboard,owner,before")
         }
@@ -845,18 +898,19 @@ pub(super) fn command(value: &Command) -> Description {
         } => {
             describe!("import_device_asset"; ["path_redacted_bytes" => path.as_os_str().len(), "sample_rate" => sample_rate, "frames" => frames]; omitted="")
         }
-        Command::ImportDeviceAssetIntoEmptyInstrument {
+        Command::ImportDeviceAssetIntoNewInstrument {
             track,
+            placement,
             path,
             sample_rate,
             frames,
             state,
             ..
         } => {
-            describe!("import_device_asset_into_empty_instrument"; ["track" => track.value(), "path_redacted_bytes" => path.as_os_str().len(), "sample_rate" => sample_rate, "frames" => frames, "state_type" => state.type_id().as_str(), "state_state_version" => state.state_version(), "state_payload_bytes" => state.payload().len()]; omitted="source_slot")
+            describe!("import_device_asset_into_new_instrument"; ["track" => track.value(), "placement" => placement, "path_redacted_bytes" => path.as_os_str().len(), "sample_rate" => sample_rate, "frames" => frames, "state_type" => state.type_id().as_str(), "state_state_version" => state.state_version(), "state_payload_bytes" => state.payload().len()]; omitted="source_slot")
         }
         Command::ImportDeviceAssetReplacingInstrument {
-            track,
+            owner,
             device,
             expected_state,
             path,
@@ -865,7 +919,7 @@ pub(super) fn command(value: &Command) -> Description {
             state,
             ..
         } => {
-            describe!("import_device_asset_replacing_instrument"; ["track" => track.value(), "device" => device.value(), "expected_state_type" => expected_state.type_id().as_str(), "expected_state_state_version" => expected_state.state_version(), "expected_state_payload_bytes" => expected_state.payload().len(), "path_redacted_bytes" => path.as_os_str().len(), "sample_rate" => sample_rate, "frames" => frames, "state_type" => state.type_id().as_str(), "state_state_version" => state.state_version(), "state_payload_bytes" => state.payload().len()]; omitted="source_slot")
+            describe!("import_device_asset_replacing_instrument"; ["owner" => owner, "device" => device.value(), "expected_state_type" => expected_state.type_id().as_str(), "expected_state_state_version" => expected_state.state_version(), "expected_state_payload_bytes" => expected_state.payload().len(), "path_redacted_bytes" => path.as_os_str().len(), "sample_rate" => sample_rate, "frames" => frames, "state_type" => state.type_id().as_str(), "state_state_version" => state.state_version(), "state_payload_bytes" => state.payload().len()]; omitted="source_slot")
         }
         Command::RelinkAssets(relinks) => {
             describe!("relink_assets"; ["count" => relinks.len()]; omitted="paths")
@@ -893,7 +947,9 @@ pub(super) fn command(value: &Command) -> Description {
         Command::GroupClips(value0) => {
             describe!("group_clips"; ["value0_count" => value0.len()]; omitted="")
         }
-        Command::GroupTimeRange(_) => describe!("group_time_range"; []; omitted="value0"),
+        Command::GroupTimeRange(_) | Command::GroupTimeRangeOrCreate(_) => {
+            describe!("group_time_range"; []; omitted="value0")
+        }
         Command::GroupAudioEventRange { clip, start, end } => {
             describe!("group_audio_event_range"; ["clip" => clip.value(), "start" => start, "end" => end]; omitted="")
         }
@@ -1288,6 +1344,94 @@ pub(super) fn command(value: &Command) -> Description {
 
 pub(super) fn request(value: &Request) -> Description {
     match value {
+        Request::CreateRetainedNativeSource {
+            project_generation,
+            revision,
+            type_id,
+            name,
+        } => {
+            describe!("create_retained_native_source"; ["project_generation" => project_generation, "revision" => revision, "type_id" => type_id.as_str(), "name_redacted_bytes" => name.len()]; omitted="source name")
+        }
+        Request::RenameRetainedSource {
+            project_generation,
+            revision,
+            source,
+            name,
+        } => {
+            describe!("rename_retained_source"; ["project_generation" => project_generation, "revision" => revision, "source" => source.value(), "name_redacted_bytes" => name.len()]; omitted="source name")
+        }
+        Request::DeleteRetainedSource {
+            project_generation,
+            revision,
+            source,
+        } => {
+            describe!("delete_retained_source"; ["project_generation" => project_generation, "revision" => revision, "source" => source.value()]; omitted="")
+        }
+        Request::ChooseNativeSourceReceiver {
+            project_generation,
+            revision,
+            source,
+            expected_receiver,
+            track,
+        } => {
+            describe!("choose_native_source_receiver"; ["project_generation" => project_generation, "revision" => revision, "source" => source.value(), "expected_receiver" => expected_receiver.map(|id| id.value()), "track" => track.value()]; omitted="")
+        }
+        Request::MoveSourceUtility {
+            project_generation,
+            revision,
+            track,
+            source,
+            instrument,
+            effect,
+            neighbor,
+            direction,
+        } => {
+            describe!("move_source_utility"; ["project_generation" => project_generation, "revision" => revision, "track" => track.value(), "source" => source.value(), "instrument" => instrument.value(), "effect" => effect.value(), "neighbor" => neighbor.value(), "direction" => format!("{direction:?}")]; omitted="")
+        }
+        Request::RemoveSourceUtility {
+            project_generation,
+            revision,
+            track,
+            source,
+            instrument,
+            effect,
+        } => {
+            describe!("remove_source_utility"; ["project_generation" => project_generation, "revision" => revision, "track" => track.value(), "source" => source.value(), "instrument" => instrument.value(), "effect" => effect.value()]; omitted="")
+        }
+        Request::AppendSourceUtility {
+            project_generation,
+            revision,
+            track,
+            source,
+            instrument,
+        } => {
+            describe!("append_source_utility"; ["project_generation" => project_generation, "revision" => revision, "track" => track.value(), "source" => source.value(), "instrument" => instrument.value()]; omitted="")
+        }
+        Request::RebindNativeSource {
+            project_generation,
+            revision,
+            track,
+            expected_source,
+            source,
+        } => {
+            describe!("rebind_native_source"; ["project_generation" => project_generation, "revision" => revision, "track" => track.value(), "expected_source" => expected_source.map(|id| id.value()), "source" => source.map(|id| id.value())]; omitted="")
+        }
+        Request::BindUnassignedNativeSource {
+            project_generation,
+            revision,
+            track,
+            source,
+        } => {
+            describe!("bind_unassigned_native_source"; ["project_generation" => project_generation, "revision" => revision, "track" => track.value(), "source" => source.value()]; omitted="")
+        }
+        Request::ReplaceDeviceModulation {
+            project_generation,
+            revision,
+            device,
+            modulation,
+        } => {
+            describe!("replace_device_modulation"; ["project_generation" => project_generation, "revision" => revision, "device" => device.value(), "sources" => modulation.sources().len(), "routes" => modulation.routes().len()]; omitted="modulator payloads")
+        }
         Request::PaintMidiClip(intent) => {
             describe!("paint_midi_clip"; ["project_generation" => intent.project_generation, "revision" => intent.revision, "track" => intent.track.value(), "start" => intent.start.raw(), "length" => intent.length.raw()]; omitted="")
         }
@@ -1298,6 +1442,24 @@ pub(super) fn request(value: &Request) -> Description {
         } => {
             describe!("device_clipboard"; ["project_generation" => project_generation, "revision" => revision]; omitted="action")
         }
+        Request::ReorderDevices {
+            project_generation,
+            revision,
+            selected,
+            before,
+            ..
+        } => {
+            describe!("reorder_devices"; ["project_generation" => project_generation, "revision" => revision, "devices" => selected.ids().len(), "before" => before.map(|id| id.value())]; omitted="owner,device ids")
+        }
+        Request::MoveTrackDevices {
+            project_generation,
+            revision,
+            source,
+            selected,
+            destination,
+        } => {
+            describe!("move_track_devices"; ["project_generation" => project_generation, "revision" => revision, "source" => source.value(), "destination" => destination.value(), "devices" => selected.ids().len()]; omitted="device ids")
+        }
         Request::TrackClipboard {
             project_generation,
             revision,
@@ -1306,6 +1468,17 @@ pub(super) fn request(value: &Request) -> Description {
             let mut description = describe!("track_clipboard"; ["project_generation" => project_generation, "revision" => revision]; omitted="");
             description.nested("action", self::track_clipboard(action));
             description
+        }
+        Request::InsertProjectSample {
+            project_generation,
+            revision,
+            asset,
+            destination,
+            new_track_gain,
+            warp,
+            audition_timing,
+        } => {
+            describe!("insert_project_sample"; ["project_generation" => project_generation, "revision" => revision, "asset" => asset.value(), "destination" => format!("{destination:?}"), "new_track_gain" => new_track_gain, "warp" => format!("{warp:?}"), "audition_timing_present" => audition_timing.is_some()]; omitted="audition_timing")
         }
         Request::ReorderTracks {
             project_generation,
@@ -1418,6 +1591,12 @@ pub(super) fn request(value: &Request) -> Description {
         Request::SaveDeviceDefault { root, .. } => {
             describe!("save_device_default"; ["root_redacted_bytes" => root.as_os_str().len()]; omitted="owner")
         }
+        Request::SaveDeviceUnitPreset { path, .. } => {
+            describe!("save_device_unit_preset"; ["path_redacted_bytes" => path.as_os_str().len()]; omitted="owner")
+        }
+        Request::SaveDeviceUnitDefault { root, .. } => {
+            describe!("save_device_unit_default"; ["root_redacted_bytes" => root.as_os_str().len()]; omitted="owner")
+        }
         Request::LoadDevicePreset { path, .. } => {
             describe!("load_device_preset"; ["path_redacted_bytes" => path.as_os_str().len()]; omitted="owner")
         }
@@ -1432,6 +1611,7 @@ pub(super) fn request(value: &Request) -> Description {
         }
         Request::InsertPluginEffect(_) => describe!("insert_plugin_effect"; []; omitted="value0"),
         Request::ContinuePluginEffect => describe!("continue_plugin_effect"; []; omitted=""),
+        Request::ContinueRecovery => describe!("continue_recovery"; []; omitted=""),
         Request::TogglePluginEditor {
             project_generation,
             device,
@@ -1444,6 +1624,12 @@ pub(super) fn request(value: &Request) -> Description {
         }
         Request::ContinuePluginParameters => {
             describe!("continue_plugin_parameters"; []; omitted="")
+        }
+        Request::QueryPluginParameterConversion(query) => {
+            describe!("query_plugin_parameter_conversion"; ["device" => query.device.value(), "request_id" => query.request_id]; omitted="operation")
+        }
+        Request::ContinuePluginParameterConversion => {
+            describe!("continue_plugin_parameter_conversion"; []; omitted="")
         }
         Request::ContinuePluginStateRestore => {
             describe!("continue_plugin_state_restore"; []; omitted="")
@@ -1495,6 +1681,31 @@ pub(super) fn request(value: &Request) -> Description {
             action: _,
         } => {
             describe!("device_automation_take"; ["request_id" => request_id, "gesture_serial" => scope.stamp.gesture_serial]; omitted="delivery data")
+        }
+        Request::StartPluginEditorRecording { request_id, input } => match input.target {
+            crate::service::PluginEditorRecordingTarget::Single {
+                device, parameter, ..
+            } => {
+                describe!("start_plugin_editor_recording"; ["request_id" => request_id, "project_generation" => input.context.project_generation, "revision" => input.context.editor_revision, "device" => device.value(), "parameter" => parameter]; omitted="binding")
+            }
+            crate::service::PluginEditorRecordingTarget::Group(target) => {
+                describe!("start_plugin_editor_group_recording"; ["request_id" => request_id, "project_generation" => input.context.project_generation, "revision" => input.context.editor_revision, "device" => target.device().value(), "parameters" => target.ids().len()]; omitted="binding")
+            }
+        },
+        Request::StopPluginEditorRecording { request_id, .. } => {
+            describe!("stop_plugin_editor_recording"; ["request_id" => request_id]; omitted="gesture")
+        }
+        Request::ContinuePluginEditorRecording { request_id } => {
+            describe!("continue_plugin_editor_recording"; ["request_id" => request_id]; omitted="none")
+        }
+        Request::InspectSealedAutomationRecovery { request_id, .. } => {
+            describe!("inspect_sealed_automation_recovery"; ["request_id" => request_id]; omitted="path")
+        }
+        Request::QueryFailedPluginAutomation { request_id } => {
+            describe!("query_failed_plugin_automation"; ["request_id" => request_id]; omitted="none")
+        }
+        Request::QueryDeviceAutomationCloseSafety { request_id } => {
+            describe!("query_device_automation_close_safety"; ["request_id" => request_id]; omitted="none")
         }
         Request::RecoverDeviceAutomationTake {
             request_id,
@@ -1598,7 +1809,14 @@ pub(super) fn request(value: &Request) -> Description {
             let (generation, revision) = match edit {
                 crate::service::SamplerEdit::Parameter(e) => {
                     description.operation = Some("parameter");
-                    description.field("track", format_args!("{}", e.track.value()));
+                    match e.owner {
+                        crate::service::SamplerParameterOwner::Track(track) => {
+                            description.field("track", format_args!("{}", track.value()))
+                        }
+                        crate::service::SamplerParameterOwner::Source(source) => {
+                            description.field("source", format_args!("{}", source.value()))
+                        }
+                    }
                     description.field("device", format_args!("{}", e.device.value()));
                     description.field("parameter", format_args!("{:?}", e.parameter));
                     description.field("value", format_args!("{}", e.value));
@@ -1606,7 +1824,14 @@ pub(super) fn request(value: &Request) -> Description {
                 }
                 crate::service::SamplerEdit::Replacement(e) => {
                     description.operation = Some("replacement");
-                    description.field("track", format_args!("{}", e.track.value()));
+                    match e.owner {
+                        hex_project::InstrumentAssetOwner::Track(track) => {
+                            description.field("track", format_args!("{}", track.value()))
+                        }
+                        hex_project::InstrumentAssetOwner::Source(source) => {
+                            description.field("source", format_args!("{}", source.value()))
+                        }
+                    }
                     description.field("device", format_args!("{}", e.device.value()));
                     description.field(
                         "path_redacted_bytes",
@@ -1661,11 +1886,11 @@ pub(super) fn request(value: &Request) -> Description {
             project_generation,
             revision,
             track,
-            empty_sampler,
+            slot,
             path,
             ..
         } => {
-            describe!("load_first_sampler"; ["request_id" => request_id, "project_generation" => project_generation, "revision" => revision, "track" => track.value(), "empty_sampler_present" => empty_sampler.is_some(), "path_redacted_bytes" => path.as_os_str().len()]; omitted="cancel")
+            describe!("load_first_sampler"; ["request_id" => request_id, "project_generation" => project_generation, "revision" => revision, "track" => track.value(), "existing_sampler" => matches!(slot, super::super::SamplerLoadSlot::Existing { .. }), "path_redacted_bytes" => path.as_os_str().len()]; omitted="cancel,slot")
         }
         Request::AssignSampler { track, asset } => {
             describe!("assign_sampler"; ["track" => track.value(), "asset" => asset.value()]; omitted="")
@@ -1755,6 +1980,12 @@ pub(super) fn request(value: &Request) -> Description {
         Request::Redo => describe!("redo"; []; omitted=""),
         Request::SaveNew(value0) => {
             describe!("save_new"; ["value0_redacted_bytes" => value0.as_os_str().len()]; omitted="")
+        }
+        Request::SaveProjectAs {
+            path,
+            replace_existing,
+        } => {
+            describe!("save_project_as"; ["path_redacted_bytes" => path.as_os_str().len(), "replace_existing" => replace_existing]; omitted="")
         }
         Request::SaveCurrent => describe!("save_current"; []; omitted=""),
         Request::SaveCurrentWithFormatUpgrade {
@@ -1935,6 +2166,87 @@ pub(super) fn gesture_target(value: &crate::device_gesture::GestureTarget) -> De
 #[cfg(test)]
 mod default_tests {
     use super::*;
+
+    #[test]
+    fn retained_source_rename_redacts_the_name() {
+        let mut editor =
+            hex_project::Editor::new(hex_project::Project::new(48_000).unwrap(), 1).unwrap();
+        let hex_project::Created::NativeSource(source) = editor
+            .execute(Command::CreateNativeSource {
+                name: "source".into(),
+                devices: vec![hex_project::default_instrument_state().unwrap()],
+                instrument_index: 0,
+            })
+            .unwrap()
+        else {
+            panic!("source")
+        };
+        let description = request(&Request::RenameRetainedSource {
+            project_generation: 0,
+            revision: 1,
+            source,
+            name: "private source name".into(),
+        });
+        assert_eq!(description.name, "rename_retained_source");
+        assert!(description.details.text.contains("name_redacted_bytes=19"));
+        assert!(!description.details.text.contains("private source name"));
+        let description = request(&Request::CreateRetainedNativeSource {
+            project_generation: 0,
+            revision: 1,
+            type_id: Box::new(hex_project::default_instrument_state().unwrap().type_id()),
+            name: "private source name".into(),
+        });
+        assert_eq!(description.name, "create_retained_native_source");
+        assert!(description.details.text.contains("name_redacted_bytes=19"));
+        assert!(!description.details.text.contains("private source name"));
+    }
+
+    #[test]
+    fn source_reorder_projection_keeps_source_device_and_anchor_identities() {
+        let mut editor =
+            hex_project::Editor::new(hex_project::Project::new(48_000).unwrap(), 1).unwrap();
+        let hex_project::Created::NativeSource(source) = editor
+            .execute(Command::CreateNativeSource {
+                name: "source".into(),
+                devices: vec![hex_project::default_instrument_state().unwrap(); 2],
+                instrument_index: 0,
+            })
+            .unwrap()
+        else {
+            panic!("source")
+        };
+        let devices: Vec<_> = editor
+            .project()
+            .native_source(source)
+            .unwrap()
+            .devices()
+            .map(hex_project::Device::id)
+            .collect();
+        let description = command(&Command::MoveNativeSourceDevice {
+            source,
+            device: devices[0],
+            before: Some(devices[1]),
+        });
+        assert_eq!(description.name, "move_native_source_device");
+        assert!(
+            description
+                .details
+                .text
+                .contains(&format!("source={}", source.value()))
+        );
+        assert!(
+            description
+                .details
+                .text
+                .contains(&format!("device={}", devices[0].value()))
+        );
+        assert!(
+            description
+                .details
+                .text
+                .contains(&format!("before=Some({})", devices[1].value()))
+        );
+    }
 
     #[test]
     fn initialized_device_projection_preserves_kind_without_names_or_bank_payloads() {

@@ -292,8 +292,11 @@ section snapping; **control** remains an alias, including during marker-only edi
 release outside the section lane to accept the last valid preview, or press **escape**
 to cancel.
 
-turn on **section autoplay and loop** in the top toolbar, then click the body of
-an arrange section to play it repeatedly. the launch dropdown beside it also
+click a section's play button, or turn on **section autoplay and loop** in the
+top toolbar and click a section body. hex sets the arrange loop marker to that
+section, turns the loop on and starts playback at the section start.
+**enter** launches the focused section button. **space** controls play and
+pause even while the button has focus. the launch dropdown in the toolbar also
 sets quantization for console clip and scene launches: **none**, **8 bars**,
 **4 bars**, **2 bars**, **1 bar**, **1/2**, **1/2t**, **1/4**, **1/4t**, **1/8**,
 **1/8t**, **1/16**, **1/16t**, or **1/32**. **t** means triplet timing.
@@ -306,16 +309,16 @@ as it is ready. a stopped transport starts immediately. clicking another section
 replaces the pending launch. stop or turning autoplay off cancels a pending
 launch; turning autoplay off leaves current music playing.
 
-this section loop is temporary and does not change the saved project loop or
-undo history. a project edit, normal loop change, or other replacement of the
-playback graph restores the project's loop. autoplay stays armed for the next
-section click. modifier clicks, renaming and dragging keep their editing actions.
+the loop marker controls repetition after the launch. turn the loop off or move
+its edges to change what repeats. the marker is saved with the project and
+changing it is undoable. autoplay stays armed for the next section click.
+modifier clicks, renaming and dragging keep their editing actions.
 at narrow window widths the top toolbar uses two compact lines to keep every
 control, the full view name and audio status visible.
 section playback currently requires resident audio mode and an applied arrange
-playback graph. verified streaming mode is unavailable for this control. a section
-past the bounded arrangement preroll range, or a source that exceeds existing
-runtime storage or midi density limits, is refused while current playback continues.
+playback graph. verified streaming mode is unavailable for this control. a source
+that exceeds runtime storage or midi density limits is refused while current
+playback continues.
 
 hold **2** to force time selection over arrange clips, audio events, piano-roll
 notes or velocity bars, even with midi draw mode enabled. release **2** to return
@@ -340,6 +343,12 @@ original clip's start and length; drag its right edge out to reveal the tail. a 
 exactly its start-to-end interval, retaining earlier state needed for sound inside
 that interval. press **escape** to cancel; one undo restores the entire operation.
 
+use **shift+b** on a time selection across tracks to render one mixed audio
+clip on a new track. the mix includes the selected tracks' devices, gain and
+pan, and includes each selected group's submix once. **command+shift+b** also
+deactivates the source clips inside the selected interval. one undo reverses
+the bounce and the deactivation together.
+
 select a time range on a group row to bounce its submix. **b** inserts an audio
 track beside the group and leaves the original tracks playing. **command+b** on
 one group row adds the same bounce and silences the original group's output
@@ -361,7 +370,7 @@ playing: the render runs while the song continues, then audio restarts at the cu
 baked clips, so release voices and effect tails cannot duplicate the baked tails. when stopped,
 hex keeps the stopped cursor. undo and redo of an in-place bounce follow the same rule.
 
-bounce writes float audio before the track mixer. mixer automation, sends, returns
+per-track bounce writes float audio before the track mixer. mixer automation, sends, returns
 and main processing remain live. only the track-header **bounce in place** action replaces material in place and
 removes the track's devices. it covers the entire track, regardless of a smaller
 clip or time selection. on a group, it prints the descendants' arrangement
@@ -462,7 +471,7 @@ linked copies. a small link icon in the clip title identifies each alias. linked
 audio shares its events, pitch and warp edits; linked midi shares its notes.
 each copy keeps its own arrangement position, trims, loop window and fades.
 
-press **i** or choose **make unique** from the clip menu to detach the selected
+press **shift+i** or choose **make unique** from the clip menu to detach the selected
 copies. their current content and sound stay unchanged. **apply settings to aliases** in
 the clip menu copies the picked alias's local settings to every member of its
 group, preserving each arrangement position. there is no privileged original:
@@ -508,6 +517,7 @@ return headers offer the same picker for their effects.
 **show used automation lanes** reveals lanes with authored points. **show all
 automation lanes** also restores empty lanes you have already shown and the
 current parameter preview; it does not assign every available parameter.
+press **shift+a** to show all these lanes across the arranger at once.
 
 device parameters are not assigned automatically. the main row follows the last
 supported parameter you touch or show. a dashed line previews its base value
@@ -578,11 +588,36 @@ vertically in arrange. **x** restores the prior time view, track heights and
 vertical scroll, including former visible trailing space. minimum row heights
 can leave a large selection scrollable.
 
+## arrangement locators
+
+place the insert cursor or select a time range, then press **i**. a locator appears
+at the cursor or the start of the range. pressing **i** again at the same frame
+keeps the existing locator. computer-keyboard midi keeps priority.
+
+click a locator triangle to play from its position. drag the triangle to move it
+on the arrangement grid. hold **command** to invert snapping. double-click the
+name to edit it, or select the locator and press **command+r**. clear the name to
+restore automatic naming. select a locator and press **backspace** to delete it.
+
+with the arrangement focused, **command+option+left** and **command+option+right**
+move to the previous or next locator. while stopped, they change the next play
+start without starting playback; while playing, they seek from the scheduled
+playhead and keep playback running. navigation stops at either end of the list.
+
+inside a section, locators use its colour and take names such as **verse.1** and
+**verse.2** from left to right. custom names still count in the sequence. outside
+sections, locators are grey and use names such as **locator 1**. section edits
+that move, copy, or delete music carry locators with it. marker-only edits
+change the section bounds around the locators. locators are saved with the
+project and support undo and redo.
+
 ## create fades from a time selection
 
 select a positive time range at the beginning or end of an audio clip and press
-**command+f**. the selected portion becomes a linear fade-in or fade-out; the
-opposite authored ramp stays unchanged. a range entirely inside a clip, or one
+**command+f**. the selected portion becomes an s-shaped fade-in or fade-out; the
+opposite authored ramp stays unchanged. dragging a new fade also starts with an
+s-curve. drag the diamond to reshape it, or double-click the diamond to
+straighten an s-curve. a range entirely inside a clip, or one
 covering both ends, is refused with a message.
 
 across a join between two ordinary audio clips, **command+f** extends the source
@@ -624,8 +659,9 @@ sources. choose **src** again to return to the grouped event.
 
 drag an upper square to change a fade length. drag a diamond horizontally and
 vertically to shape its curve. lower squares trim the event; they move freely by
-default, with **command** opting into the event grid. double-click a fade control
-to reset that event's fades. one undo restores each completed gesture.
+default, with **command** opting into the event grid. double-click an s-curve
+diamond to straighten that ramp. double-click an endpoint to reset the event's
+fades. one undo restores each completed gesture.
 
 the preview becomes prepared audio after release. **escape** or leaving the
 editor cancels a held gesture. splitting retains the source fade, moving keeps
@@ -687,15 +723,15 @@ over it to see how many playback callbacks were affected on the current output.
 it clears three seconds after the last reported increase. short fades ease the
 transition into and out of missing audio.
 
-on an arrangement audio clip, hover over the top edge between the trim corners
-and drag vertically to adjust clip gain. drag down to reduce or up to increase;
-hold **shift** for fine adjustments. the displayed db value previews the change;
-release commits one undo step, and **escape** cancels. when the clip belongs to a
-whole-clip selection, selected audio clips change by the same db amount, retaining
-their relative levels; selected midi clips remain unchanged. held **2**, existing time
-selections and fade controls retain their input priorities. this top-edge gesture
-currently applies to audio clips; midi and individual event gain gestures remain
-unavailable.
+on an arrangement audio clip, hold **option** and drag vertically on the top edge
+between the trim corners to adjust clip gain. in the audio event editor,
+**option**-drag the top edge of an event to adjust its gain. drag down to reduce
+gain or up to increase it. hold **shift** during either drag for fine
+adjustments. the displayed db value previews the change. release commits one
+undo step, and **escape** cancels. when the clip belongs to a whole-clip
+selection, selected audio clips change by the same db amount, retaining their
+relative levels. held **2**, existing time selections and fade controls retain
+their input priorities.
 
 file-backed clips support placement, playback, clip gain and ordinary device
 processing. processing that materializes audio, including pitch,
@@ -816,6 +852,10 @@ click a device header to focus its card, then press **0** to toggle its bypass.
 this uses the same state as the header bypass control and supports undo/redo.
 while a parameter field or browser search has focus, **0** remains text input.
 
+select one or more effects in a device chain and press **d** to duplicate them
+after the selection. the copies keep their settings and become the selection.
+press **cmd-z** to undo the duplication.
+
 during playback, track gain, eq edits and supported device bypass changes apply
 to the running audio. supported latency-bearing effects keep the dry signal
 aligned when you bypass them. reverb and delay tails may shorten or stop.
@@ -881,23 +921,24 @@ louder. rattle processes at twice the sample rate and reports 11 samples of
 latency, which hex compensates. drive changes glide over about 20 ms and can be
 automated. bypass passes audio unchanged while keeping its history warm.
 
-in the eq graph, single-click empty space to create a band. the left and right
+in the eq graph, double-click empty space to create a band. the left and right
 edges create low-cut and high-cut bands; the bottom interior creates a notch;
 other empty space creates a bell. at the bottom corners, the edge cut takes
 priority. a small curve beside the crosshair shows the shape before pressing.
-hold **option** while pressing empty space to keep the button held, position the
-new band and hear its effect during playback; release to keep the band as one
+hold the second click and drag to position the new band and hear its effect
+during playback. release to keep the band as one
 undoable edit. vertical movement changes q for a cut or notch, or the gain of a
 bell. existing nodes keep their own selection and drag targets. press
 **escape** to cancel.
 
-hold **shift** and drag across empty space in the eq graph to select every node
-inside the rectangle; **shift-command** toggles those nodes against the selection.
+click empty space in the eq graph to clear the selection. drag from empty space
+to select every node inside the rectangle. **shift-command** toggles those nodes
+against the selection.
 dragging a selected node moves the whole selection, keeping each node's
 spacing, and **backspace** or **remove** deletes every selected node with its
 automation. one undo restores either edit.
 
-the fixed eight-band eq uses the same marquee selection. dragging a selected
+in the fixed eight-band eq, hold **shift** to draw a marquee. dragging a selected
 band moves the group in one undoable edit. **backspace** disables the selected
 bands; their fixed slots remain available. one undo restores their on flags.
 
@@ -959,12 +1000,28 @@ saved in the project. check the range and output choice before
 exporting, then audition the resulting files. offline rendering can be available
 even when live audio output is unavailable.
 
+when you confirm replacing an existing wav, hex keeps the previous file and
+shows its location after export. inspect it and remove it yourself when you no
+longer need it; retained files use disk space.
+
+if export fails or is cancelled after writing begins, inspect the staging path
+shown in the error before removing anything. a cancelled export during shutdown
+can leave a hidden `.hex-export-*.tmp` file beside the chosen destination even
+if the error is no longer visible. older running versions of hex may remove
+these files, so move anything you need to keep before running an older version.
+
 file-backed audio in ordinary and verified streaming projects uses offline
 media verification during export. keep original media available until export completes. hex verifies those files
 before reading and again before publishing; missing or changed media, unavailable
 pages and cancellation leave the previous destination intact. choose an export
 path separate from the original media. editing or opening another document does
 not change an export already in progress.
+
+an interrupted export can leave hidden `.hex-export-<pid>-<number>.tmp` files
+beside the destination. inspect and preserve any files you need; hex does not
+automatically remove them. older versions can remove matching files when
+exporting to the same folder, so keep possible recovery files elsewhere before
+using those versions.
 
 # reversing clips
 
@@ -993,10 +1050,11 @@ the complete edit.
 | open project | command+o |
 | save / save as | command+s / command+shift+s |
 | play or pause / stop | space / escape |
+| previous / next arrangement locator | command+option+left / command+option+right |
 | set loop from selection / toggle matching loop | l / w |
 | toggle active transport loop | command+l |
 | import audio | command+i |
-| add track | command+t |
+| add track | t |
 | add track for notes / midi clip | command+shift+t / command+shift+m |
 | undo / redo | command+z / command+shift+z |
 | toggle browser | command+option+b |
@@ -1005,8 +1063,11 @@ the complete edit.
 | settings | command+, |
 | bounce selected material to a new track | b |
 | bounce to a new track and deactivate the sources | command+b |
+| bounce a time selection to one mixed track | shift+b |
+| bounce a time selection to one mixed track and deactivate the sources | command+shift+b |
 | drop a bounce of dragged clips | hold b while releasing a clip drag |
 | arrangement automation view | a / toolbar a control |
+| show all arrangement automation lanes | shift+a |
 | contextual activation | c / 0 |
 | export | command+shift+e |
 | changelog | command+shift+l |

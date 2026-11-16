@@ -17,6 +17,9 @@ pub use touch::{
 
 pub const MAX_DEVICE_AUTOMATION_LANES: usize = 256;
 pub const MAX_DEVICE_AUTOMATION_POINTS_PER_LANE: usize = 1_024;
+/// Recorded touches have an independent lane budget. Authored point limits and
+/// the total project budget still apply; this is not a callback event budget.
+pub const MAX_DEVICE_AUTOMATION_TOUCH_STEPS_PER_LANE: usize = 16_384;
 pub const MAX_DEVICE_AUTOMATION_POINTS: usize = 65_536;
 
 /// A finite normalized parameter value, including a canonical positive zero.
@@ -40,6 +43,8 @@ pub enum AutomationInterpolation {
     Linear,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// At a shared beat, the first point ends the incoming segment and the
+/// second starts the outgoing segment and owns the value at that beat.
 pub struct AutomationPoint {
     pub beat: BeatTime,
     pub value: AutomationValue,
@@ -131,7 +136,7 @@ pub fn validate_device_automation(lanes: &[DeviceAutomation]) -> Result<(), Inva
         if lane.touch.is_empty() || !lane.points.is_empty() {
             validate_points(&lane.points)?;
         }
-        touch::validate(&lane.touch, lane.points.len())?;
+        touch::validate(&lane.touch)?;
     }
     Ok(())
 }
@@ -139,12 +144,16 @@ fn validate_points(points: &[AutomationPoint]) -> Result<(), Invalid> {
     if points.is_empty() || points.len() > MAX_DEVICE_AUTOMATION_POINTS_PER_LANE {
         return Err(Invalid("device automation envelope needs 1..1024 points"));
     }
-    if points.windows(2).any(|pair| pair[0].beat >= pair[1].beat) {
-        return Err(Invalid("device automation beats must strictly increase"));
+    if points.windows(2).any(|pair| pair[0].beat > pair[1].beat)
+        || points.windows(3).any(|run| run[0].beat == run[2].beat)
+    {
+        return Err(Invalid(
+            "device automation beats must be ordered with at most two points per beat",
+        ));
     }
     Ok(())
 }
-fn automation_class(
+pub(crate) fn automation_class(
     target: DeviceAutomationTarget,
     state: &hex_lattice_contract::NativeDeviceState,
 ) -> Result<Option<[u8; 16]>, Invalid> {
@@ -221,20 +230,71 @@ impl Device {
             .map(|index| &self.automation[index])
     }
 }
+// Project verifies canonical source order and target shape. Session and
+// Engine prove the exact receiver and provider can apply a delivered value.
+fn valid_source_touch(
+    source: &crate::NativeSource,
+    device: &Device,
+    target: DeviceAutomationTarget,
+) -> bool {
+    if matches!(target, DeviceAutomationTarget::Vst3 { .. }) {
+        return true;
+    }
+    if device.state().type_id() == hex_plugin_state::TYPE_ID {
+        return false;
+    }
+    if device.id() == source.instrument().id() {
+        return matches!(target, DeviceAutomationTarget::Parameter(_));
+    }
+    source.instrument_index() == 0
+        && source
+            .post_instrument_effects()
+            .iter()
+            .any(|entry| entry.id() == device.id())
+}
+
+fn splice_touch_lane(
+    entry: &mut Device,
+    target: DeviceAutomationTarget,
+    vst3_class: Option<[u8; 16]>,
+    spans: Vec<DeviceAutomationTouchSpan>,
+) -> Result<(), Invalid> {
+    if automation_class(target, entry.state())? != vst3_class {
+        return Err(Invalid("recorded touch differs from device class"));
+    }
+    match entry
+        .automation
+        .binary_search_by_key(&target, |lane| lane.target)
+    {
+        Ok(index) => {
+            let lane = &mut entry.automation[index];
+            lane.touch = touch::splice(&lane.touch, spans)?;
+            lane.read_selection = AutomationReadSelection::Authored;
+        }
+        Err(index) => {
+            if entry.automation.len() == MAX_DEVICE_AUTOMATION_LANES {
+                return Err(Invalid("device automation lane limit reached"));
+            }
+            entry.automation.insert(
+                index,
+                DeviceAutomation {
+                    target,
+                    vst3_class,
+                    points: Vec::new(),
+                    touch: touch::splice(&[], spans)?,
+                    read_selection: AutomationReadSelection::Authored,
+                },
+            );
+        }
+    }
+    Ok(())
+}
+
 impl Project {
     /// Each canonical device is visited once; immutable track source bindings
     /// are views and do not add duplicate authored envelopes to this inventory.
     pub fn automation_devices(&self) -> impl Iterator<Item = &Device> {
-        self.tracks
-            .iter()
-            .flat_map(|track| track.devices())
-            .chain(self.returns.iter().flat_map(|track| track.devices()))
-            .chain(self.main_devices())
-            .chain(
-                self.native_sources
-                    .iter()
-                    .flat_map(|source| source.devices()),
-            )
+        self.devices()
     }
     pub fn has_overridden_device_automation(&self) -> bool {
         self.automation_devices()
@@ -245,17 +305,13 @@ impl Project {
             .any(|device| !device.automation.is_empty())
     }
     pub(crate) fn validate_device_automation(&self) -> Result<(), Invalid> {
-        if self
-            .native_sources
-            .iter()
-            .flat_map(|source| source.devices())
-            .any(|device| {
+        if self.native_sources.iter().any(|source| {
+            source.devices().any(|device| {
                 device.automation().iter().any(|lane| {
-                    !lane.touch.is_empty()
-                        && !matches!(lane.target, DeviceAutomationTarget::Vst3 { .. })
+                    !lane.touch.is_empty() && !valid_source_touch(source, device, lane.target)
                 })
             })
-        {
+        }) {
             return Err(Invalid("recorded touch requires a native effect target"));
         }
         let mut total = 0usize;
@@ -367,42 +423,57 @@ impl Project {
         target
             .validate()
             .map_err(|_| Invalid("invalid automation target identity"))?;
-        if !matches!(target, DeviceAutomationTarget::Vst3 { .. })
-            && self
-                .native_sources
-                .iter()
-                .any(|source| source.devices().any(|entry| entry.id() == device))
-        {
-            return Err(Invalid("recorded touch requires a native effect target"));
+        if let Some((source, entry)) = self.native_sources.iter().find_map(|source| {
+            source
+                .devices()
+                .find(|entry| entry.id() == device)
+                .map(|entry| (source, entry))
+        }) {
+            if !valid_source_touch(source, entry, target) {
+                return Err(Invalid(
+                    "recorded touch requires a supported source device target",
+                ));
+            }
+            if !matches!(target, DeviceAutomationTarget::Vst3 { .. })
+                && entry.id() != source.instrument().id()
+                && source.receiver().is_none()
+            {
+                return Err(Invalid(
+                    "recorded source effect touch requires a bound receiver",
+                ));
+            }
         }
         self.edit_device(device, |entry| {
-            if automation_class(target, entry.state())? != vst3_class {
-                return Err(Invalid("recorded touch differs from device class"));
-            }
-            match entry
-                .automation
-                .binary_search_by_key(&target, |lane| lane.target)
-            {
-                Ok(index) => {
-                    let lane = &mut entry.automation[index];
-                    lane.touch = touch::splice(&lane.touch, spans, lane.points.len())?;
-                    lane.read_selection = AutomationReadSelection::Authored;
-                }
-                Err(index) => {
-                    if entry.automation.len() == MAX_DEVICE_AUTOMATION_LANES {
-                        return Err(Invalid("device automation lane limit reached"));
-                    }
-                    entry.automation.insert(
-                        index,
-                        DeviceAutomation {
-                            target,
-                            vst3_class,
-                            points: Vec::new(),
-                            touch: touch::splice(&[], spans, 0)?,
-                            read_selection: AutomationReadSelection::Authored,
-                        },
-                    );
-                }
+            splice_touch_lane(entry, target, vst3_class, spans)
+        })?;
+        self.validate_device_automation()?;
+        Ok(Created::None)
+    }
+
+    /// Use the same candidate for every lane so its preparation and history
+    /// can succeed only for the complete group. The wire/worker admits and
+    /// clocks the group before Project sees this edit.
+    pub(crate) fn splice_vst3_automation_touch_group(
+        &mut self,
+        device: DeviceId,
+        class: [u8; 16],
+        lanes: Vec<(u32, Vec<DeviceAutomationTouchSpan>)>,
+    ) -> Result<Created, Invalid> {
+        const MAX_GROUP_LANES: usize = 8;
+        if !(2..=MAX_GROUP_LANES).contains(&lanes.len())
+            || lanes.windows(2).any(|pair| pair[0].0 >= pair[1].0)
+        {
+            return Err(Invalid(
+                "vst3 touch group needs distinct ordered parameters",
+            ));
+        }
+        self.edit_device(device, |entry| {
+            for (parameter, spans) in lanes {
+                let target = DeviceAutomationTarget::Vst3 { parameter };
+                target
+                    .validate()
+                    .map_err(|_| Invalid("invalid grouped vst3 target"))?;
+                splice_touch_lane(entry, target, Some(class), spans)?;
             }
             Ok(())
         })?;

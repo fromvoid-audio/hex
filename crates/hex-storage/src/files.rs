@@ -254,7 +254,6 @@ fn save_with_finish(
     let mut temporary = None;
     for _ in 0..32 {
         let id = NEXT_TEMP.fetch_add(1, Relaxed);
-        // `crate::temporaries` sweeps this exact pattern once it is stale.
         let candidate = parent.join(format!(".hex-pending-{}-{id}", std::process::id()));
         match OpenOptions::new()
             .write(true)
@@ -279,8 +278,6 @@ fn save_with_finish(
     let warning = finish(&temporary.0, path)
         .err()
         .map(|(operation, source)| ReplaceWarning { operation, source });
-    // Best effort: leaked temporaries never fail a completed save.
-    let _ = crate::temporaries::sweep_stale_temporaries(parent);
     Ok(SaveNewOutcome {
         path: path.to_path_buf(),
         token: FileToken::from_validated_bytes(Arc::from(bytes)),
@@ -428,6 +425,8 @@ mod tests {
             .find(|candidate| candidate.id == track.value())
             .expect("new track");
         track_snapshot.devices.push(DeviceSnapshot {
+            modulation: Default::default(),
+            parent: None,
             automation: Vec::new(),
             comparison: None,
             id: device_id,
@@ -482,6 +481,8 @@ mod tests {
             .find(|candidate| candidate.id == track.value())
             .expect("new track");
         track_snapshot.devices.push(DeviceSnapshot {
+            modulation: Default::default(),
+            parent: None,
             automation: Vec::new(),
             comparison: None,
             id: device_id,
@@ -540,6 +541,8 @@ mod tests {
             .find(|candidate| candidate.id == track.value())
             .expect("new track");
         track_snapshot.devices.push(DeviceSnapshot {
+            modulation: Default::default(),
+            parent: None,
             automation: Vec::new(),
             comparison: None,
             id: device_id,
@@ -660,6 +663,8 @@ mod tests {
             .find(|candidate| candidate.id == track.value())
             .expect("new track");
         track_snapshot.devices.push(DeviceSnapshot {
+            modulation: Default::default(),
+            parent: None,
             automation: Vec::new(),
             comparison: None,
             id: device_id,

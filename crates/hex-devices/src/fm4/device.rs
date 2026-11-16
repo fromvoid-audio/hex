@@ -325,6 +325,40 @@ pub struct Fm4Definition;
 
 pub static FM4_DEFINITION: Fm4Definition = Fm4Definition;
 
+fn modulation_edge(id: ParameterId) -> Option<(usize, usize)> {
+    let index = usize::try_from(id.value().checked_sub(13)?).ok()?;
+    let (source, target) = (index / OPERATORS, index % OPERATORS);
+    (source < OPERATORS && source != target).then_some((source, target))
+}
+
+fn modulation_semantics(id: ParameterId) -> Option<hex_lattice_contract::ParameterSemantics> {
+    use hex_lattice_contract::{
+        ParameterAccess, ParameterAutomation, ParameterChangeImpact, ParameterModulation,
+        ParameterNormalization, ParameterSemantics, ParameterSmoothing, ParameterStepping,
+    };
+    let smoothing = if (parameter::carrier(1)..=parameter::carrier(4)).contains(&id) {
+        ParameterSmoothing::DeviceManaged
+    } else if modulation_edge(id).is_some()
+        || (1..=4).any(|operator| {
+            id == parameter::oscillator_level(operator)
+                || id == parameter::oscillator_phase(operator)
+        })
+    {
+        ParameterSmoothing::None
+    } else {
+        return None;
+    };
+    Some(ParameterSemantics {
+        access: ParameterAccess::ReadWrite,
+        normalization: ParameterNormalization::Linear,
+        stepping: ParameterStepping::Continuous,
+        automation: ParameterAutomation::DeviceArrangementEnvelope,
+        modulation: ParameterModulation::SampleRate,
+        smoothing,
+        change_impact: ParameterChangeImpact::ValueOnly,
+    })
+}
+
 impl NativeDeviceMetadata for Fm4Definition {
     fn type_id(&self) -> DeviceTypeId {
         FM4_TYPE_ID
@@ -340,6 +374,21 @@ impl NativeDeviceMetadata for Fm4Definition {
 
     fn descriptors(&self) -> &'static [ParameterDescriptor] {
         &PARAMETERS
+    }
+
+    fn parameter_semantics_for_state(
+        &self,
+        state: &NativeDeviceState,
+        id: ParameterId,
+    ) -> Result<Option<hex_lattice_contract::ParameterSemantics>, DeviceContractError> {
+        let settings = Fm4Settings::from_state(state)?;
+        settings.read_parameter(id)?;
+        if modulation_edge(id)
+            .is_some_and(|(source, target)| settings.modulation[source][target] == 0.0)
+        {
+            return Ok(None);
+        }
+        Ok(modulation_semantics(id))
     }
 
     fn default_state(&self) -> Result<NativeDeviceState, DeviceContractError> {
@@ -373,6 +422,10 @@ impl NativeDeviceMetadata for Fm4Definition {
 }
 
 impl NativeInstrumentDefinition for Fm4Definition {
+    fn resource_factory_inline_bound(&self) -> Option<usize> {
+        Some(std::mem::size_of::<runtime::Factory>())
+    }
+
     fn prepare_instrument(
         &self,
         state: &NativeDeviceState,
@@ -386,17 +439,23 @@ impl NativeInstrumentDefinition for Fm4Definition {
         let settings = Fm4Settings::from_state(state)?;
         let (oscillators, routing, envelope) = settings.kernel_parts()?;
         let _ = crate::shared_sine_table();
+        let runtime = runtime::Factory::prepare(state, context)?;
         Ok(Box::new(PreparedFm4Instrument {
             tuning: *tuning,
             sample_rate,
             oscillators,
             routing,
             envelope,
+            runtime,
         }))
     }
 }
 
+/// Inline note preparation remains available; registered hosts use the same
+/// bounded mutable factory for Arrangement, Session and live input. The existing
+/// graph transaction owns voice history and prepared retarget proofs.
 struct PreparedFm4Instrument {
+    runtime: runtime::Factory,
     tuning: hex_lattice::TuningTable,
     sample_rate: u32,
     oscillators: [Oscillator; OPERATORS],
@@ -405,6 +464,27 @@ struct PreparedFm4Instrument {
 }
 
 impl PreparedNativeInstrument for PreparedFm4Instrument {
+    fn validate_event_note(&self, pitch: u8, velocity: u8) -> Result<(), DeviceContractError> {
+        self.runtime.validate_note_on(pitch, velocity)
+    }
+
+    fn prepare_mutable_runtime(
+        &self,
+    ) -> Result<Option<Box<dyn hex_lattice::PreparedMutableInstrumentRuntime>>, DeviceContractError>
+    {
+        Ok(Some(Box::new(self.runtime)))
+    }
+
+    fn prepare_mutable_note_pressure(
+        &self,
+        source: hex_lattice_contract::ModulationSourceId,
+        route: Option<hex_lattice::PreparedPressureRoute>,
+    ) -> Result<Box<dyn hex_lattice::PreparedMutableInstrumentRuntime>, DeviceContractError> {
+        Ok(Box::new(
+            self.runtime.with_note_pressure(Some(source), route)?,
+        ))
+    }
+
     fn algorithmic_latency_frames(&self) -> Option<u32> {
         Some(0)
     }

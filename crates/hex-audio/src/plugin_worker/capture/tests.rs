@@ -3,6 +3,7 @@ use super::*;
 use crate::plugin_worker::native_tests::original_instance;
 use std::{fs, path::PathBuf, process::Command};
 mod controller;
+mod editor_pcm;
 mod parameter_change;
 mod stopped;
 
@@ -90,6 +91,191 @@ fn helper_refusal_completes_only_its_operation_and_frees_the_mailbox() {
 
 fn trace_path() -> PathBuf {
     PathBuf::from(std::env::var_os("HEX_ORIGINAL_INSTANCE_TRACE").unwrap())
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn stopped_worker_returns_its_admitted_editor_batch_once() {
+    use hex_plugin_host::protocol::ParameterEditKind;
+    const NAME: &str =
+        "plugin_worker::capture::tests::stopped_worker_returns_its_admitted_editor_batch_once";
+    if fixture_child(147, NAME) {
+        return;
+    }
+    let (mut owner, _callback) = NativeWorker::start_on_control(original_instance()).unwrap();
+    let (mut other, _other_callback) = NativeWorker::start_on_control(original_instance()).unwrap();
+    assert!(owner.poll_stopped_edits_on_control(true).is_err());
+    other.revoke_on_control();
+    let other_until = Instant::now() + Duration::from_secs(2);
+    loop {
+        match other.poll_stopped_edits_on_control(true) {
+            Err("native stopped edit read was not admitted") => break,
+            Err("native preparation is busy" | "native edit observation is busy") => {}
+            _ => panic!("another worker must not provide the source's receipt"),
+        }
+        assert!(Instant::now() < other_until);
+        thread::yield_now();
+    }
+    assert!(other.retire_on_control().unwrap().failure.is_none());
+    fs::write(
+        std::env::var_os("HEX_ORIGINAL_INSTANCE_RELEASE").unwrap(),
+        b"emit",
+    )
+    .unwrap();
+    let until = Instant::now() + Duration::from_secs(2);
+    loop {
+        if fs::read(trace_path())
+            .ok()
+            .is_some_and(|trace| trace.get(..4) == Some(&25_i32.to_le_bytes()))
+        {
+            break;
+        }
+        assert!(Instant::now() < until, "SDK editor burst did not complete");
+        thread::yield_now();
+    }
+    let mut prior = Vec::new();
+    loop {
+        match owner.poll_recovery_edits_on_control(true) {
+            Ok(Some(batch)) => prior.extend_from_slice(batch.edits.as_slice()),
+            Ok(None) | Err("native edit observation is busy") => {}
+            Err(reason) => panic!("editor read admission failed: {reason}"),
+        }
+        loop {
+            let slot = owner.reaper.completed.capture.lock().unwrap();
+            if let Some(batch) = slot.edits_result.as_ref() {
+                if batch
+                    .edits
+                    .as_slice()
+                    .iter()
+                    .any(|edit| edit.kind == ParameterEditKind::End)
+                {
+                    break;
+                }
+                drop(slot);
+                if let Some(batch) = owner.poll_recovery_edits_on_control(true).unwrap() {
+                    prior.extend_from_slice(batch.edits.as_slice());
+                }
+                break;
+            }
+            drop(slot);
+            assert!(Instant::now() < until, "editor read did not complete");
+            thread::yield_now();
+        }
+        if owner
+            .reaper
+            .completed
+            .capture
+            .lock()
+            .unwrap()
+            .edits_result
+            .is_some()
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < until,
+            "nonempty editor read was not admitted"
+        );
+        thread::yield_now();
+    }
+    owner.revoke_on_control();
+    let completed = Arc::clone(&owner.reaper.completed);
+    let mailbox = completed.capture.lock().unwrap();
+    assert!(matches!(
+        owner.poll_stopped_edits_on_control(true),
+        Err("native edit observation is busy")
+    ));
+    drop(mailbox);
+    assert!(matches!(
+        owner.poll_stopped_edits_on_control(false),
+        Err("native edit observation mode differs")
+    ));
+    while !owner.reaper.is_finished() {
+        assert!(Instant::now() < until, "original worker did not stop");
+        thread::yield_now();
+    }
+    owner.reaper.join_on_control().unwrap();
+    owner.reaper.worker.as_mut().unwrap().native_error = Some(hex_plugin_host::Error::Protocol(
+        "injected failure after editor receipt",
+    ));
+    let batch = loop {
+        match owner.poll_stopped_edits_on_control(true) {
+            Ok(crate::plugin_worker::StoppedEditProgress::Completed(batch)) => break batch,
+            Ok(crate::plugin_worker::StoppedEditProgress::Pending)
+            | Err("native preparation is busy" | "native edit observation is busy") => {}
+            Err(reason) => panic!("admitted editor read was not recovered: {reason}"),
+        }
+        assert!(
+            Instant::now() < until,
+            "admitted editor read did not complete"
+        );
+        thread::yield_now();
+    };
+    prior.extend_from_slice(batch.edits.as_slice());
+    assert_eq!(prior.len(), 3);
+    assert_eq!(prior[0].kind, ParameterEditKind::Begin);
+    assert_eq!(prior[0].sequence, 1);
+    assert_eq!(prior[2].kind, ParameterEditKind::End);
+    assert_eq!(owner.published_blocks_on_control(), 0);
+    assert!(owner.poll_stopped_edits_on_control(true).is_err());
+    assert!(owner.retire_on_control().unwrap().failure.is_some());
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn stopped_worker_reports_failed_admitted_edit_read() {
+    const NAME: &str =
+        "plugin_worker::capture::tests::stopped_worker_reports_failed_admitted_edit_read";
+    if fixture_child(140, NAME) {
+        return;
+    }
+    let (mut owner, mut callback) = NativeWorker::start_on_control(original_instance()).unwrap();
+    let mut output = [[0.0; 2]; 8];
+    callback
+        .stage(&[[0.5, -0.25]; 8], &[], &mut output)
+        .unwrap();
+    callback.finish(true).unwrap();
+    let until = Instant::now() + Duration::from_secs(2);
+    while fs::read(trace_path())
+        .ok()
+        .is_none_or(|trace| trace.get(..4) != Some(&27_i32.to_le_bytes()))
+    {
+        assert!(Instant::now() < until, "SDK processing gate did not engage");
+        thread::yield_now();
+    }
+    assert!(
+        owner
+            .poll_recovery_edits_on_control(true)
+            .unwrap()
+            .is_none()
+    );
+    let completed = Arc::clone(&owner.reaper.completed);
+    let mailbox = completed.capture.lock().unwrap();
+    owner.revoke_on_control();
+    fs::write(
+        std::env::var_os("HEX_ORIGINAL_INSTANCE_RELEASE").unwrap(),
+        b"release",
+    )
+    .unwrap();
+    while !owner.reaper.is_finished() {
+        assert!(Instant::now() < until, "original worker did not stop");
+        thread::yield_now();
+    }
+    owner.reaper.join_on_control().unwrap();
+    assert!(mailbox.edits_pending && mailbox.edits_result.is_none());
+    owner.reaper.worker.as_mut().unwrap().native_error = Some(hex_plugin_host::Error::Protocol(
+        "injected failure before editor read",
+    ));
+    drop(mailbox);
+    assert!(matches!(
+        owner.poll_stopped_edits_on_control(true),
+        Err("native stopped edit worker failed")
+    ));
+    assert!(matches!(
+        owner.poll_stopped_edits_on_control(true),
+        Err("native stopped edit read was not admitted")
+    ));
+    assert!(owner.retire_on_control().unwrap().failure.is_some());
 }
 
 #[test]
