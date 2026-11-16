@@ -95,6 +95,14 @@ pub struct OutputClock {
     /// Applied graph's declared Main delay, captured on the rendering callback.
     /// This excludes physical device and acoustic latency.
     pub graph_latency_frames: Option<u32>,
+    pub(crate) origin: OutputClockOrigin,
+}
+
+/// The origin is stamped inside the native output owner, not supplied by UI.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum OutputClockOrigin {
+    CoreAudioHostTime,
+    Unknown,
 }
 
 pub struct Control {

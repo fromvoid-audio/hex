@@ -129,6 +129,7 @@ fn confirmed_output_clock_follows_timing_and_is_cleared_when_packets_recycle() {
                 playback,
                 offset_frames: (offset * 64) as u32,
                 graph_latency_frames: Some(0),
+                origin: crate::sample_recording::OutputClockOrigin::Unknown,
             })
         ));
     }
@@ -141,6 +142,7 @@ fn confirmed_output_clock_follows_timing_and_is_cleared_when_packets_recycle() {
                 playback,
                 offset_frames: (seen * 64) as u32,
                 graph_latency_frames: Some(0),
+                origin: crate::sample_recording::OutputClockOrigin::Unknown,
             })
         );
         assert!(!timing.is_empty());
@@ -162,6 +164,7 @@ fn confirmed_output_clock_follows_timing_and_is_cleared_when_packets_recycle() {
             playback,
             offset_frames: 0,
             graph_latency_frames: Some(0),
+            origin: crate::sample_recording::OutputClockOrigin::Unknown,
         })
     ));
     let mut rejected = 0;
@@ -192,6 +195,7 @@ fn output_clock_index_keeps_confirmed_packets_gaps_and_terminal() {
             playback,
             offset_frames: 0,
             graph_latency_frames: Some(0),
+            origin: crate::sample_recording::OutputClockOrigin::Unknown,
         }),
     )); // stopped: the packet is an explicit timeline gap
     control.command(PlaybackCommand::Play).unwrap();
@@ -203,6 +207,7 @@ fn output_clock_index_keeps_confirmed_packets_gaps_and_terminal() {
                 playback,
                 offset_frames: (number * 64) as u32,
                 graph_latency_frames: Some(0),
+                origin: crate::sample_recording::OutputClockOrigin::Unknown,
             }),
         ));
         assert_eq!(index.poll(&mut reader).unwrap(), None);

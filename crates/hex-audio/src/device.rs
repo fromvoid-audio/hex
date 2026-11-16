@@ -541,6 +541,11 @@ fn sample_output_clock(
         playback: info.timestamp().playback,
         offset_frames: u32::try_from(chunk.checked_mul(chunk_frames)?).ok()?,
         graph_latency_frames: None,
+        origin: if cfg!(target_os = "macos") {
+            crate::sample_recording::OutputClockOrigin::CoreAudioHostTime
+        } else {
+            crate::sample_recording::OutputClockOrigin::Unknown
+        },
     })
 }
 
@@ -558,6 +563,16 @@ mod output_clock_tests {
         assert_eq!(sample_output_clock(&info, 0, 256).unwrap().offset_frames, 0);
         let second = sample_output_clock(&info, 1, 256).unwrap();
         assert_eq!((second.playback, second.offset_frames), (playback, 256));
+        #[cfg(target_os = "macos")]
+        assert_eq!(
+            second.origin,
+            crate::sample_recording::OutputClockOrigin::CoreAudioHostTime
+        );
+        #[cfg(not(target_os = "macos"))]
+        assert_eq!(
+            second.origin,
+            crate::sample_recording::OutputClockOrigin::Unknown
+        );
         assert!(sample_output_clock(&info, usize::MAX, 256).is_none());
         assert!(sample_output_clock(&info, u32::MAX as usize, 2).is_none());
         #[cfg(feature = "allocation-probe")]

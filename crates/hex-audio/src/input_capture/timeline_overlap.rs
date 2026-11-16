@@ -209,6 +209,7 @@ mod tests {
                 playback: StreamInstant::new(10, nanos),
                 offset_frames: native_offset,
                 graph_latency_frames: Some(0),
+                origin: crate::sample_recording::OutputClockOrigin::Unknown,
             },
             packet_frames: 256,
             packet_start: start,

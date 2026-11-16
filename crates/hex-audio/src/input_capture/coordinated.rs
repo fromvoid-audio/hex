@@ -116,6 +116,87 @@ pub enum CoordinatedOutcome {
     },
 }
 
+/// A retained take and its candidate frame for a source-bound session request.
+/// Device-buffer timestamps are estimated by CPAL; physical latency remains
+/// uncalibrated and requires native listening qualification.
+pub struct AlignedAudioTake<'a> {
+    pub path: &'a Path,
+    pub timeline_start: u64,
+    pub frames: u64,
+}
+
+#[derive(Debug)]
+pub enum ArrangementTakeError {
+    Interrupted,
+    SourceChanged,
+    InconsistentInput,
+    UnsupportedClock,
+    Alignment(super::TakeAlignmentError),
+}
+impl fmt::Display for ArrangementTakeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Interrupted => f.write_str("audio take did not complete"),
+            Self::SourceChanged => f.write_str("audio recording source changed"),
+            Self::InconsistentInput => f.write_str("audio take source metadata is inconsistent"),
+            Self::UnsupportedClock => {
+                f.write_str("audio input and output do not have a verified common clock")
+            }
+            Self::Alignment(error) => write!(f, "audio take alignment failed: {error}"),
+        }
+    }
+}
+impl std::error::Error for ArrangementTakeError {}
+
+impl CoordinatedOutcome {
+    /// Check this exact completed take against the expected callback-applied
+    /// source and the pinned macOS CoreAudio host-time implementation. This
+    /// neither mutates the project nor proves physical device latency.
+    pub fn arrangement_take(
+        &self,
+        expected_source: crate::prepared::AppliedAudioSource,
+    ) -> Result<AlignedAudioTake<'_>, ArrangementTakeError> {
+        let Self::Completed {
+            path,
+            input,
+            output,
+        } = self
+        else {
+            return Err(ArrangementTakeError::Interrupted);
+        };
+        if output.source_binding() != Some(expected_source) {
+            return Err(ArrangementTakeError::SourceChanged);
+        }
+        if *path != input.path
+            || input.sample_rate != input.input_config.sample_rate
+            || !(1..=2).contains(&input.input_config.channels)
+        {
+            return Err(ArrangementTakeError::InconsistentInput);
+        }
+        #[cfg(target_os = "macos")]
+        let input_is_coreaudio = input.input_device.cpal_id().0 == cpal::HostId::CoreAudio;
+        #[cfg(not(target_os = "macos"))]
+        let input_is_coreaudio = false;
+        if !input_is_coreaudio
+            || (0..output.len()).any(|i| {
+                output.packet(i).is_none_or(|packet| {
+                    packet.clock.origin
+                        != crate::sample_recording::OutputClockOrigin::CoreAudioHostTime
+                })
+            })
+        {
+            return Err(ArrangementTakeError::UnsupportedClock);
+        }
+        let placement = super::align_audible_take(super::SharedClock, input, output)
+            .map_err(ArrangementTakeError::Alignment)?;
+        Ok(AlignedAudioTake {
+            path,
+            timeline_start: placement.timeline_start,
+            frames: placement.frames,
+        })
+    }
+}
+
 /// Control-side job handle. Stop and Drop only request asynchronous stop; they
 /// never join a worker or wait for either native callback.
 pub struct CoordinatedJob {
@@ -542,6 +623,7 @@ mod tests {
                 playback: StreamInstant::new(50, 0),
                 offset_frames: offset,
                 graph_latency_frames: latency,
+                origin: crate::sample_recording::OutputClockOrigin::CoreAudioHostTime,
             }));
             callback.finish(valid);
             true
@@ -667,6 +749,88 @@ mod tests {
     }
 
     #[test]
+    fn arrangement_candidate_refuses_mixed_clock_and_interruption_without_touching_take() {
+        let temp = Temp::new();
+        std::fs::write(&temp.0, b"original take").unwrap();
+        let project = hex_project::Project::new(48_000).unwrap();
+        let map =
+            hex_engine::PreparedTempoMap::prepare(project.tempo_map().clone(), 48_000).unwrap();
+        let (mut control, _callback) = sample_recording::channel(48_000);
+        let reader = control.start_bound(source()).unwrap();
+        let mut index = OutputClockIndex::new(&reader);
+        let tempo = map.capture_tempo(0).unwrap().0;
+        for (offset, origin) in [
+            (0, sample_recording::OutputClockOrigin::CoreAudioHostTime),
+            (64, sample_recording::OutputClockOrigin::Unknown),
+        ] {
+            index
+                .test_push(
+                    64,
+                    &[sample_recording::TimingSpan {
+                        take_start: 0,
+                        take_end: 64,
+                        timeline_start: u64::from(offset),
+                        tempo,
+                    }],
+                    OutputClock {
+                        playback: StreamInstant::new(50, 0),
+                        offset_frames: offset,
+                        graph_latency_frames: Some(0),
+                        origin,
+                    },
+                )
+                .unwrap();
+        }
+        index.test_finish(End::Stopped);
+        let take = InputTake {
+            path: temp.0.clone(),
+            input_device: format!("{}:test-input", cpal::default_host().id())
+                .parse()
+                .unwrap(),
+            input_config: input_capture::InputConfig {
+                sample_rate: 48_000,
+                channels: 1,
+            },
+            sample_rate: 48_000,
+            frames: 64,
+            timing: vec![input_capture::InputTiming {
+                take_start: 0,
+                frames: 64,
+                captured_at: StreamInstant::new(50, 0),
+                offset_frames: 0,
+            }],
+            end: InputTakeEnd::Stopped,
+            open_error: None,
+        };
+        let mut outcome = CoordinatedOutcome::Completed {
+            path: temp.0.clone(),
+            input: take,
+            output: index,
+        };
+        assert!(matches!(
+            outcome.arrangement_take(source()),
+            Err(ArrangementTakeError::UnsupportedClock)
+        ));
+        if let CoordinatedOutcome::Completed { input, .. } = &mut outcome {
+            input.input_config.sample_rate = 44_100;
+        }
+        assert!(matches!(
+            outcome.arrangement_take(source()),
+            Err(ArrangementTakeError::InconsistentInput)
+        ));
+        let failed = CoordinatedOutcome::Failed {
+            path: temp.0.clone(),
+            input: None,
+            reason: CoordinatedFailure::CancelledBeforeInput,
+        };
+        assert!(matches!(
+            failed.arrangement_take(source()),
+            Err(ArrangementTakeError::Interrupted)
+        ));
+        assert_eq!(std::fs::read(&temp.0).unwrap(), b"original take");
+    }
+
+    #[test]
     fn captures_both_owners_and_returns_a_complete_clock_candidate() {
         let temp = Temp::new();
         let (input, started) = mock_input(false);
@@ -676,6 +840,22 @@ mod tests {
         wait_started(&mut callback, &map, &started, &mut offset);
         job.stop_on_control();
         let result = wait_result(&mut job, &mut callback, &map, &mut offset);
+        #[cfg(target_os = "macos")]
+        {
+            let placement = result.arrangement_take(source()).unwrap();
+            assert_eq!(
+                (placement.path, placement.timeline_start, placement.frames),
+                (temp.0.as_path(), 0, 64)
+            );
+            let other = crate::prepared::AppliedAudioSource {
+                audio_revision: source().audio_revision + 1,
+                ..source()
+            };
+            assert!(matches!(
+                result.arrangement_take(other),
+                Err(ArrangementTakeError::SourceChanged)
+            ));
+        }
         let (take, output) = match result {
             CoordinatedOutcome::Completed { input, output, .. } => (input, output),
             CoordinatedOutcome::Failed { reason, .. } => panic!("unexpected failure: {reason}"),
