@@ -324,6 +324,7 @@ UI_FEATURE_EQUIVALENT_TEST_CFGS = {
 UI_UNIT_TIER_TEST_CFGS = frozenset({
     '#[cfg(all(test, feature = "ui-unit-tier"))]',
     '#[cfg(all(test, any(feature = "ui-test-support", feature = "ui-unit-tier")))]',
+    '#[cfg(all(test, any(feature = "ui-unit-tier", feature = "ui-test-support")))]',
 })
 
 
