@@ -143,8 +143,15 @@ impl EditorView {
                 self.status = "canceling audio recording".into();
                 return;
             }
-            Stage::Capturing { job, stopping, .. } => {
+            Stage::Capturing {
+                job,
+                started,
+                stopping,
+                invalidated,
+                ..
+            } => {
                 if !*stopping {
+                    *invalidated |= !*started;
                     job.stop_on_control();
                     *stopping = true;
                 }
@@ -164,6 +171,10 @@ impl EditorView {
             || self.pending_playback.is_some()
             || !self.playback_candidates.is_empty()
             || self.device_gesture.snapshot().is_some()
+            || self.gain_recorder.blocks_edits()
+            || self.midi_recorder.blocks_edits()
+            || self.native_automation_recorder.busy()
+            || self.automation_take_recovery.unresolved()
         {
             self.error = Some(
                 "finish pending edits and use resident arrangement playback before recording audio"
@@ -259,7 +270,14 @@ impl EditorView {
                 }
                 false
             }
-            Stage::Capturing { job, stopping, .. } => {
+            Stage::Capturing {
+                job,
+                started,
+                stopping,
+                invalidated,
+                ..
+            } => {
+                *invalidated |= !*started;
                 job.stop_on_control();
                 *stopping = true;
                 self.audio_recorder.stop_transport_after = true;
@@ -339,6 +357,12 @@ impl EditorView {
                     false
                 }
                 Err(TryRecvError::Disconnected) => {
+                    if let Some(audio) = self.audio.as_mut().filter(|audio| {
+                        audio.control.output_identity() == Some(binding.source.output_identity)
+                    }) {
+                        audio.control.stop_sample_recording();
+                        audio.control.reclaim_sample_recording();
+                    }
                     self.error = Some("audio recording setup ended unexpectedly".into());
                     true
                 }
@@ -396,6 +420,12 @@ impl EditorView {
                         true
                     }
                     Err(_) => {
+                        if let Some(audio) = self.audio.as_mut().filter(|audio| {
+                            audio.control.output_identity() == Some(binding.source.output_identity)
+                        }) {
+                            audio.control.stop_sample_recording();
+                            audio.control.reclaim_sample_recording();
+                        }
                         if std::mem::take(&mut self.audio_recorder.stop_transport_after) {
                             self.stop();
                         }
@@ -433,6 +463,16 @@ impl EditorView {
             );
             return;
         }
+        if let CoordinatedOutcome::Failed { path, reason, .. } = &outcome {
+            self.error = Some(
+                format!(
+                    "audio recording failed · {reason} · take path {}",
+                    hex_session::service::text::verbatim(path.display())
+                )
+                .into(),
+            );
+            return;
+        }
         let take = match outcome.arrangement_take(binding.source) {
             Ok(take) => take,
             Err(error) => {
@@ -450,11 +490,15 @@ impl EditorView {
                 return;
             }
         };
+        self.commit_audio_take(binding, take.path.to_owned(), take.timeline_start);
+    }
+
+    fn commit_audio_take(&mut self, binding: Binding, path: PathBuf, timeline_start: u64) {
         if self.audio_batch.is_some() || self.device_gesture.snapshot().is_some() {
             self.error = Some(
                 format!(
                     "audio recording could not be committed · take retained at {}",
-                    hex_session::service::text::verbatim(take.path.display())
+                    hex_session::service::text::verbatim(path.display())
                 )
                 .into(),
             );
@@ -462,31 +506,30 @@ impl EditorView {
         }
         let (request, control) =
             match Request::recorded_audio_take(
-                take.path.to_owned(),
+                path.clone(),
                 binding.track,
-                take.timeline_start,
+                timeline_start,
                 binding.context,
             ) {
                 Ok(request) => request,
                 Err(error) => {
                     self.error = Some(format!(
                     "audio recording could not be committed · {error} · take retained at {}",
-                    hex_session::service::text::verbatim(take.path.display())
+                    hex_session::service::text::verbatim(path.display())
                 ).into());
                     return;
                 }
             };
-        let retained_path = take.path.to_owned();
         if self.enqueue_recorded_audio(request) {
             self.audio_batch = Some(control);
             self.audio_batch_progress = None;
-            self.audio_recorder.pending_commit_path = Some(retained_path);
+            self.audio_recorder.pending_commit_path = Some(path);
             self.status = "committing recorded audio".into();
         } else {
             self.error = Some(
                 format!(
                     "audio recording could not be queued · take retained at {}",
-                    hex_session::service::text::verbatim(take.path.display())
+                    hex_session::service::text::verbatim(path.display())
                 )
                 .into(),
             );
@@ -498,7 +541,68 @@ impl EditorView {
 mod tests {
     use super::*;
     use crate::editor::clip_drag_ui_test::{audio_project, editor_window};
-    use gpui::{TestAppContext, VisualTestContext};
+    use gpui::{AppContext, Modifiers, MouseButton, TestAppContext, VisualTestContext};
+
+    #[gpui::test]
+    fn transport_record_control_refuses_unavailable_output(cx: &mut TestAppContext) {
+        let (project, track, _, _) = audio_project();
+        let (window, editor) = editor_window(cx, project, Default::default());
+        let mut visual = VisualTestContext::from_window(window, cx);
+        editor.update(&mut visual, |view, _| {
+            view.mode = EditorMode::Arrangement;
+            view.selected_track = Some(track);
+        });
+        visual.run_until_parked();
+        let button = visual.debug_bounds("audio-record-toggle").unwrap().center();
+        visual.simulate_mouse_down(button, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(button, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, _| {
+            assert!(
+                view.error
+                    .as_ref()
+                    .unwrap()
+                    .contains("audio output is unavailable")
+            );
+            assert!(!view.audio_recorder.blocks_edits());
+        });
+    }
+
+    #[gpui::test]
+    fn close_is_refused_during_audio_preparation(cx: &mut TestAppContext) {
+        let (project, track, _, _) = audio_project();
+        let (window, editor) = editor_window(cx, project, Default::default());
+        let (_sender, result) = mpsc::sync_channel(1);
+        cx.update_window(window, |_, window, cx| {
+            editor.update(cx, |view, cx| {
+                let context = AudioBatchContext {
+                    project_generation: view.project_generation,
+                    revision: view.state.as_ref().unwrap().revision,
+                    active_gesture: false,
+                };
+                view.audio_recorder.stage = Stage::Opening {
+                    binding: Binding {
+                        source: AppliedAudioSource {
+                            context: hex_engine::AudioSourceContext {
+                                project_generation: context.project_generation,
+                                editor_revision: context.revision,
+                            },
+                            audio_revision: 1,
+                            output_identity: 2,
+                        },
+                        track,
+                        context,
+                    },
+                    cancel: Arc::new(AtomicBool::new(false)),
+                    result,
+                };
+                view.request_window_close(window, cx);
+                assert!(view.error.as_ref().unwrap().contains("finish pending work"));
+            });
+        })
+        .unwrap();
+        assert!(!cx.windows().is_empty());
+    }
 
     #[gpui::test]
     fn preparation_cancellation_and_failed_take_do_not_submit_a_clip(cx: &mut TestAppContext) {
@@ -535,6 +639,21 @@ mod tests {
                 result,
             };
             assert!(view.audio_recorder.blocks_edits());
+            view.toggle_midi_recording();
+            assert!(!view.midi_recorder.blocks_edits());
+            assert!(
+                view.error
+                    .as_ref()
+                    .unwrap()
+                    .contains("before recording midi")
+            );
+            assert!(
+                view.begin_device_gesture(
+                    hex_session::device_gesture::GestureTarget::TrackGain { track },
+                    hex_session::device_gesture::ParameterValue::Float(1.0),
+                )
+                .is_err()
+            );
             assert!(!view.enqueue(Request::Edit(hex_project::Command::AddTrack {
                 name: "blocked".into()
             })));
@@ -556,12 +675,108 @@ mod tests {
                 view.error
                     .as_ref()
                     .unwrap()
-                    .contains("audio recording failed")
+                    .contains("input recording was interrupted")
             );
             assert!(view.audio_batch.is_none());
             assert!(view.audio_recorder.pending_commit_path.is_none());
         });
         assert_eq!(std::fs::read(&path).unwrap(), b"retained");
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[gpui::test]
+    fn recorded_take_commits_at_captured_frame_without_import_auto_warp(cx: &mut TestAppContext) {
+        use hex_session::service::Service;
+        use std::time::{Duration, Instant};
+
+        fn next(service: &Service) -> hex_session::service::Event {
+            let deadline = crate::test_wait::hang_deadline();
+            loop {
+                if let Ok(event) = service.try_event() {
+                    assert!(event.error.is_none(), "{:?}", event.error);
+                    return event;
+                }
+                assert!(Instant::now() < deadline, "session setup timed out");
+                std::thread::sleep(Duration::from_millis(2));
+            }
+        }
+
+        let files = super::super::external_audio_drop_ui_test::BatchFiles::new();
+        let path = files.wav("Recorded.wav", 48_000, 480);
+        let service = Service::new(48_000, 32, 8_000_000).unwrap();
+        next(&service);
+        service
+            .submit(Request::Edit(hex_project::Command::AddTrack {
+                name: "record".into(),
+            }))
+            .unwrap();
+        let state = next(&service).state;
+        let track = state.project.tracks()[0].id();
+        let window = *cx.add_window(|_, _| gpui::Empty);
+        let editor = cx
+            .update_window(window, |_, window, cx| {
+                let editor = window.replace_root(cx, |window, cx| {
+                    EditorView::new(window, cx, service, Err("offline ui test".into()))
+                });
+                editor.update(cx, |view, _| {
+                    view.state = Some(state);
+                    view.set_auto_warp_imports_for_test(true);
+                    let context = AudioBatchContext {
+                        project_generation: view.project_generation,
+                        revision: view.state.as_ref().unwrap().revision,
+                        active_gesture: false,
+                    };
+                    let binding = Binding {
+                        source: AppliedAudioSource {
+                            context: hex_engine::AudioSourceContext {
+                                project_generation: context.project_generation,
+                                editor_revision: context.revision,
+                            },
+                            audio_revision: 1,
+                            output_identity: 2,
+                        },
+                        track,
+                        context,
+                    };
+                    view.commit_audio_take(binding, path.clone(), 128);
+                    assert!(view.audio_batch.is_some());
+                });
+                editor
+            })
+            .unwrap();
+        let mut visual = VisualTestContext::from_window(window, cx);
+        let deadline = crate::test_wait::hang_deadline();
+        loop {
+            let done = editor.update(&mut visual, |view, cx| {
+                view.tick(cx);
+                view.audio_batch.is_none() && view.worker_requests_pending == 0
+            });
+            if done {
+                break;
+            }
+            assert!(Instant::now() < deadline, "recorded take commit timed out");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        editor.read_with(&visual, |view, _| {
+            assert!(view.error.is_none(), "{:?}", view.error);
+            let clips = view
+                .state
+                .as_ref()
+                .unwrap()
+                .project
+                .track(track)
+                .unwrap()
+                .clips();
+            assert_eq!(clips.len(), 1);
+            assert_eq!(clips[0].start(), 128);
+            assert_eq!(clips[0].duration(), 480);
+            assert!(
+                clips[0]
+                    .audio_edit()
+                    .is_none_or(|edit| !edit.domain.warp_enabled)
+            );
+            assert!(view.audio_recorder.pending_commit_path.is_none());
+        });
+        assert!(path.exists());
     }
 }

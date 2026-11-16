@@ -114,6 +114,9 @@ impl EditorView {
         target: GestureTarget,
         initial: ParameterValue,
     ) -> Result<(), &'static str> {
+        if self.audio_recorder.blocks_edits() {
+            return Err("finish the audio recording before changing a device");
+        }
         if self.automation_close_preflight.frozen() {
             return Err("close is pending · device gestures are unavailable");
         }
@@ -132,6 +135,9 @@ impl EditorView {
         second: hex_lattice_contract::ParameterId,
         initial: ParameterPairValue,
     ) -> Result<(), &'static str> {
+        if self.audio_recorder.blocks_edits() {
+            return Err("finish the audio recording before changing a device");
+        }
         if self.automation_close_preflight.frozen() {
             return Err("close is pending · device gestures are unavailable");
         }
