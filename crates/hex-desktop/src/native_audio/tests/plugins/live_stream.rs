@@ -4,19 +4,25 @@ use super::*;
 #[test]
 #[ignore = "explicit source-bound signed SDK receipts required"]
 fn verified_stream_through_native_main_effect_keeps_compensated_pcm() {
-    verify_streamed_effect(EffectRoute::Main);
+    verify_streamed_effect(EffectRoute::Main, false);
 }
 
 #[test]
 #[ignore = "explicit source-bound signed SDK receipts required"]
 fn verified_stream_through_native_track_effect_keeps_compensated_pcm() {
-    verify_streamed_effect(EffectRoute::Track);
+    verify_streamed_effect(EffectRoute::Track, false);
 }
 
 #[test]
 #[ignore = "explicit source-bound signed SDK receipts required"]
 fn verified_stream_through_native_return_effect_keeps_compensated_pcm() {
-    verify_streamed_effect(EffectRoute::Return);
+    verify_streamed_effect(EffectRoute::Return, false);
+}
+
+#[test]
+#[ignore = "explicit source-bound signed SDK receipts required"]
+fn verified_stream_native_main_effect_renews_after_stop() {
+    verify_streamed_effect(EffectRoute::Main, true);
 }
 
 enum EffectRoute {
@@ -25,7 +31,7 @@ enum EffectRoute {
     Main,
 }
 
-fn verify_streamed_effect(location: EffectRoute) {
+fn verify_streamed_effect(location: EffectRoute, renew: bool) {
     let _native = native_fixture();
     let files = Files::new();
     let path = files.wav(48_000, 24_000);
@@ -82,7 +88,7 @@ fn verify_streamed_effect(location: EffectRoute) {
     let accepted = terminal(&mut h);
     assert!(accepted.error.is_none(), "{:?}", accepted.error);
     assert!(accepted.plugin_effect_complete[0].accepted);
-    h.applied(applied);
+    let (applied, _) = h.applied(applied);
     h.audio
         .as_mut()
         .unwrap()
@@ -91,10 +97,10 @@ fn verify_streamed_effect(location: EffectRoute) {
         .unwrap();
 
     let mut pcm = Vec::new();
-    let status = h.audio.as_ref().unwrap().status().unwrap();
     let deadline = Instant::now() + Duration::from_secs(3);
     while pcm.len() < 2_560 {
         let block = instruments::render_completed_block(&h);
+        let status = h.audio.as_ref().unwrap().status().unwrap();
         if status.stream_buffering.load(Acquire) {
             assert_eq!(block, [[0.0; 2]; 256]);
             assert_eq!(status.performance_frame.load(Acquire), pcm.len() as u64);
@@ -120,6 +126,100 @@ fn verify_streamed_effect(location: EffectRoute) {
             }
         };
         assert_eq!(*frame, [expected; 2], "streamed frame {index}");
+    }
+    if renew {
+        let old = h
+            .audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .native_effect_source()
+            .unwrap();
+        let binding = h.plugin_progress.lock().unwrap().binding.unwrap();
+        h.audio
+            .as_mut()
+            .unwrap()
+            .control
+            .command(PlaybackCommand::Stop)
+            .unwrap();
+        h.render_plugin_block();
+        assert!(
+            !h.audio
+                .as_ref()
+                .unwrap()
+                .status()
+                .unwrap()
+                .playing
+                .load(Acquire)
+        );
+        h.service.submit(Request::RestoreStoppedPlayback).unwrap();
+        let restored = restored_terminal(&mut h);
+        assert!(
+            restored.error.is_none(),
+            "streamed renewal: {:?}",
+            restored.error
+        );
+        assert_eq!(restored.state.project, accepted.state.project);
+        let (fresh, metadata) = h.applied(applied);
+        assert!(metadata.stopped_restore);
+        let new = h
+            .audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .native_effect_source()
+            .unwrap();
+        assert_eq!(
+            (new.output_identity, new.context, new.audio_revision),
+            (old.output_identity, old.context, fresh)
+        );
+        wait(|| {
+            h.plugin_progress
+                .lock()
+                .unwrap()
+                .binding
+                .is_some_and(|next| next.instance == binding.instance && next.epoch > binding.epoch)
+        });
+        wait(|| {
+            h.audio
+                .as_mut()
+                .unwrap()
+                .control
+                .command(PlaybackCommand::PlayFrom(0))
+                .is_ok()
+        });
+        let mut resumed = Vec::new();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while resumed.len() < 1536 {
+            let block = instruments::render_completed_block(&h);
+            let status = h.audio.as_ref().unwrap().status().unwrap();
+            if status.stream_buffering.load(Acquire) {
+                assert_eq!(block, [[0.0; 2]; 256]);
+                assert_eq!(status.performance_frame.load(Acquire), resumed.len() as u64);
+                assert!(
+                    Instant::now() < deadline,
+                    "stream pages did not become ready after renewal"
+                );
+                std::thread::yield_now();
+            } else {
+                resumed.extend(block);
+            }
+        }
+        let first = resumed[512][0];
+        assert!(
+            first > pcm[2304][0],
+            "the original processor sequence must continue"
+        );
+        for (index, frame) in resumed.iter().enumerate() {
+            let expected = if index < 512 {
+                0.0
+            } else {
+                first + ((index - 512) / 256) as f32 * 0.03125
+            };
+            assert_eq!(*frame, [expected; 2], "renewed streamed frame {index}");
+        }
     }
     assert_eq!(fs::read(path).unwrap(), original);
     assert_eq!(
