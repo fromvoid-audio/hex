@@ -1029,7 +1029,7 @@ int main(int argc,char** argv) {
                             window.processContext=slice?&packet.timing_changes[slice-1].context:(packet.context?&*packet.context:nullptr);
                             window.numSamples=width;phase.store(2,std::memory_order_release);
                             const auto host_frontier=instance.editor_frontier_on_worker();
-                            const bool processed=instance.process(window);
+                            const bool processed=instance.process(window,packet.observe_sdk_timing?&packet.sdk_process_ns:nullptr);
                             // No SDK stop/unload beneath a retained borrowed queue.
                             const bool input_returned=parameter_input.end_sdk(),output_returned=parameter_output.end_sdk();
                             const bool notes_returned=!event_channels || input_notes.end();

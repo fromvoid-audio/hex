@@ -692,6 +692,11 @@ impl Prepared {
             .map(|reply| reply.block)
     }
 
+    /// Return the original PCM reply and its helper-side diagnostic timing.
+    pub fn exchange_timed_on_worker(&mut self, block: Block) -> Result<protocol::EditorPcm> {
+        self.exchange_on_worker_with_metadata(block, None, None, false, None, None)
+    }
+
     /// Opt this exchange into facts about the effective editor input. This
     /// does not drain or acknowledge the ordered editor receipt reader.
     pub fn exchange_editor_on_worker(&mut self, block: Block) -> Result<protocol::EditorPcm> {
@@ -840,6 +845,15 @@ impl Prepared {
         manual_parameter: Option<crate::transport::ParameterPoint>,
     ) -> Result<protocol::EditorPcm> {
         self.exchange_armed_with_mode(block, manual_parameter, true, None)
+    }
+
+    /// Return the original authored PCM reply and its helper-side diagnostic timing.
+    pub fn exchange_armed_authored_timed_on_worker(
+        &mut self,
+        block: Block,
+        manual: Option<crate::transport::ParameterPoint>,
+    ) -> Result<protocol::EditorPcm> {
+        self.exchange_armed_with_mode(block, manual, false, None)
     }
 
     /// A scoped editor gesture may temporarily replace one authored parameter.
@@ -1055,6 +1069,7 @@ impl Prepared {
         if observe_editor {
             bytes[5] |= (protocol::EDITOR_PCM_BIT >> 8) as u8;
         }
+        bytes[5] |= (protocol::SDK_TIMING_BIT >> 8) as u8;
         let until = end_after(self.limits.exchange)?;
         let token = self.lease.cancellation.clone();
         self.lease
@@ -1095,12 +1110,18 @@ impl Prepared {
                 self.last_pcm_edit_sequence,
             )?
         } else {
+            let (block, sdk_process_ns) =
+                protocol::timed_pcm(self.packet.data(), &self.config, self.sequence)?;
             protocol::EditorPcm {
-                block: protocol::pcm(self.packet.data(), &self.config, self.sequence)?,
+                block,
                 performs: protocol::EditorPerforms::default(),
                 restorations: Default::default(),
+                sdk_process_ns,
             }
         };
+        if output.sdk_process_ns.is_none() {
+            return Err(Error::Protocol("missing requested SDK processing timing"));
+        }
         token.check()?;
         if let Some(last) = output.performs.as_slice().last() {
             self.last_pcm_edit_sequence = last.sequence;

@@ -14,8 +14,8 @@ mod parameter_page;
 pub(crate) use editor_pcm::pcm_packet_extent;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub(crate) use editor_pcm::{
-    EDITOR_GROUP_TOUCH_BIT, EDITOR_PCM_BIT, EDITOR_TOUCH_BIT, editor_group_touch_pcm, editor_pcm,
-    editor_touch_pcm,
+    EDITOR_GROUP_TOUCH_BIT, EDITOR_PCM_BIT, EDITOR_TOUCH_BIT, SDK_TIMING_BIT,
+    editor_group_touch_pcm, editor_pcm, editor_touch_pcm, timed_pcm,
 };
 pub use edits::{
     EditorPcm, EditorPerform, EditorPerforms, EditorRestoration, EditorRestorations,

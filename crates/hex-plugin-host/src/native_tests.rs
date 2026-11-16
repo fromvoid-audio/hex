@@ -445,6 +445,90 @@ impl Drop for Joining {
 fn source() -> Source {
     Source::inspect_on_control(&fixture("processing"), "Contents/MacOS/fixture", class()).unwrap()
 }
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn sdk_timing_follows_the_original_sliced_instrument_reply() {
+    use crate::transport::{ProcessTiming, SegmentTiming, channel};
+    let case = Case::new();
+    let mut options = options();
+    options.preparation.input_channels = 0;
+    let setup = case.setup(127);
+    let mut instance = Prepared::prepare(
+        &build(),
+        source(),
+        options,
+        PreparationCancellation::new_on_control().unwrap(),
+        move |command| {
+            setup(command);
+            command.env("HEX_ORIGINAL_SDK_TIMING_GATE", "1");
+        },
+    )
+    .unwrap();
+    let binding = instance.configuration().binding;
+    let (_control, mut callback, mut worker) = channel(binding, 8).unwrap();
+    callback.begin_physical_callback(8).unwrap();
+    for (offset, origin, playing) in [(0, 0, true), (4, 40, false)] {
+        callback
+            .stage_segment_with_timing(
+                offset,
+                &[[0.0; 2]; 4],
+                &[],
+                &[],
+                &mut [[0.0; 2]; 4],
+                SegmentTiming {
+                    playing: Some(playing),
+                    at: |i| {
+                        Some(ProcessTiming {
+                            playing,
+                            arrangement_frame: origin + i as i64,
+                            ..Default::default()
+                        })
+                    },
+                },
+            )
+            .unwrap();
+    }
+    callback.finish(true).unwrap();
+    let request = worker.receive_request().unwrap().unwrap().block;
+    assert_eq!(request.timing_changes.as_slice().len(), 1);
+    let (send, receive) = mpsc::sync_channel(1);
+    let task = thread::spawn(move || {
+        let reply = instance.exchange_timed_on_worker(request);
+        send.send((instance, reply)).unwrap();
+    });
+    let mut joining = Joining {
+        task: Some(task),
+        release: case.release(),
+    };
+    let until = Instant::now() + Duration::from_secs(3);
+    while case.observation().is_none_or(|values| values[0] != 9) {
+        assert!(Instant::now() < until, "SDK gate did not open");
+        thread::sleep(Duration::from_millis(1));
+    }
+    thread::sleep(Duration::from_millis(10));
+    fs::write(case.release(), b"release").unwrap();
+    let (mut instance, reply) = receive.recv_timeout(Duration::from_secs(3)).unwrap();
+    joining.task.take().unwrap().join().unwrap();
+    let reply = reply.unwrap();
+    assert_eq!(reply.block.binding, binding);
+    assert_eq!(reply.block.sequence, 0);
+    // The first slice is held for at least 10 ms; each of the two SDK calls
+    // then sleeps for 5 ms. A duration that omits either slice fails this bound.
+    assert!(reply.sdk_process_ns.unwrap() >= 18_000_000);
+    assert_eq!(
+        case.observation().unwrap()[10],
+        2,
+        "two SDK calls form one quantum"
+    );
+    assert!(
+        instance
+            .stop_and_reap_on_control()
+            .unwrap()
+            .status
+            .success()
+    );
+}
 fn cancelled_preparation<T>(result: Result<T>) {
     match result {
         Err(Error::Preparation {
