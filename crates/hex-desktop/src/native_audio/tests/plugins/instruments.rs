@@ -4343,6 +4343,7 @@ fn installed_instrument_and_effect_export_with_streamed_audio() {
     let (applied, _) = h.applied(0);
     let probe = std::env::var_os("HEX_TEST_EXPORT_PROBE").is_some();
     let complete = std::env::var_os("HEX_TEST_EXPORT_COMPLETE").is_some();
+    let verify_live_state = std::env::var_os("HEX_TEST_EXPORT_LIVE_STATE").is_some();
     let source_frames = if probe || complete { 8_000_001 } else { 16_384 };
     let source = files.wav(48_000, source_frames);
     // Distinct long silent sections reveal stale, skipped, or shifted streamed
@@ -4406,6 +4407,16 @@ fn installed_instrument_and_effect_export_with_streamed_audio() {
     let (applied, _) = h.applied(applied);
     let before = Arc::clone(&inserted.state.project);
     let live_binding = h.plugin_progress.lock().unwrap().binding;
+    let saved_path = root.join("live-state.hex");
+    let captured_before = if verify_live_state {
+        let saved = h.run(Request::SaveNew(saved_path.clone()));
+        assert!(saved.save_complete);
+        assert_eq!(saved.state.project, before);
+        assert_eq!(saved.state.revision, inserted.state.revision);
+        Some(hex_storage::load(&saved_path).unwrap())
+    } else {
+        None
+    };
     let path = root.join("mixed.wav");
     let control = ExportControl::default();
     let queued = super::super::resident_sections::run_callback(
@@ -4519,6 +4530,37 @@ fn installed_instrument_and_effect_export_with_streamed_audio() {
     assert_eq!(queued.state.project, before);
     assert_eq!(h.plugin_progress.lock().unwrap().binding, live_binding);
     assert_eq!(fs::read(&source).unwrap(), source_bytes);
+    if let Some(captured_before) = captured_before {
+        let saved = h.run(Request::SaveCurrent);
+        assert!(saved.save_complete);
+        assert_eq!(saved.state.project, before);
+        assert_eq!(saved.state.revision, inserted.state.revision);
+        assert_eq!(saved.state.can_undo, inserted.state.can_undo);
+        assert_eq!(saved.state.can_redo, inserted.state.can_redo);
+        let captured_after = hex_storage::load(&saved_path).unwrap();
+        let instrument_state = |project: &hex_project::Project| {
+            project
+                .track(track)
+                .unwrap()
+                .instrument()
+                .unwrap()
+                .state()
+                .clone()
+        };
+        let effect_state = |project: &hex_project::Project| {
+            project.track(audio_track).unwrap().devices()[0]
+                .state()
+                .clone()
+        };
+        assert_eq!(
+            instrument_state(&captured_before),
+            instrument_state(&captured_after)
+        );
+        assert_eq!(
+            effect_state(&captured_before),
+            effect_state(&captured_after)
+        );
+    }
     let muted = h.run(Request::Edit(Command::Mute { track, muted: true }));
     h.applied(applied);
     let silent_instrument_path = root.join("muted-instrument.wav");
