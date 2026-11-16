@@ -27,13 +27,16 @@ class EditorFrame final : public IPlugFrame {
     // 0 = no admitted down, 1 = AppKit owns the pair, 2 = SDK owns it.
     std::array<uint8_t,128> key_owners{};
     std::array<int16,128> key_values{};
+    std::array<uint64_t,128> key_serials{};
+    uint64_t focus_epoch=0;
 public:
     EditorFrame(NSWindow* parent,IPlugView* editor):window(parent),view(editor),
         accepted_size([[parent contentView] bounds].size) {}
-    void invalidate() { key_owners.fill(0);window=nil;view=nullptr; }
+    void invalidate() { ++focus_epoch;key_owners.fill(0);window=nil;view=nullptr; }
     void focus_changed(bool active) {
         if(![NSThread isMainThread] || !window || !view || focused==active) return;
         focused=active;
+        ++focus_epoch;
         if(!active) key_owners.fill(0);
         view->onFocus(active);
     }
@@ -50,7 +53,7 @@ public:
         // An unhandled down gives the complete pair, including repeats and
         // release, to AppKit. Never offer those later events to both owners.
         if(owner==1) {
-            if([event type]==NSEventTypeKeyUp) owner=0;
+            if([event type]==NSEventTypeKeyUp) { owner=0;++key_serials[code]; }
             return false;
         }
         int16 key=owner?key_values[code]:0;
@@ -69,13 +72,22 @@ public:
         if([responder respondsToSelector:@selector(hasMarkedText)] &&
            [(id<NSTextInputClient>)responder hasMarkedText] && !owner) return false;
         if([event type]==NSEventTypeKeyDown) {
+            const auto previous_owner=owner;
+            const auto epoch=focus_epoch;
+            const auto serial=key_serials[code];
             const auto handled=view->onKeyDown(0,key,modifiers)==kResultTrue;
-            if(!owner) { key_values[code]=key;owner=handled?2:1; }
+            // Foreign code can enter AppKit and change focus or dispatch the
+            // same physical key before returning. Do not restore an obsolete
+            // owner over that newer state.
+            if(epoch!=focus_epoch || serial!=key_serials[code])
+                return previous_owner==2 || handled;
+            if(!owner) { key_values[code]=key;owner=handled?2:1;++key_serials[code]; }
             return owner==2;
         }
-        view->onKeyUp(0,key,modifiers);
         const bool handled=owner==2;
         owner=0;
+        ++key_serials[code];
+        view->onKeyUp(0,key,modifiers);
         return handled;
     }
     static NSWindowStyleMask window_style(IPlugView& editor) {
