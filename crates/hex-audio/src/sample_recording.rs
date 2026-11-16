@@ -18,8 +18,10 @@ use std::sync::{
 pub use hex_engine::OutputCaptureId;
 use hex_engine::OutputCaptureId::{Return, Track};
 
+mod output_clock_index;
 pub(crate) mod takes;
 mod timing;
+pub use output_clock_index::{OutputClockIndex, OutputClockIndexError, OutputClockPacket};
 pub use takes::{Take, Takes, write_takes};
 pub use timing::TimingSpan;
 
@@ -103,6 +105,7 @@ pub struct Reader {
     state: Arc<AtomicU8>,
     sources: Box<[Source]>,
     rate: u32,
+    drain_count: u64,
 }
 
 pub(crate) struct Callback {
@@ -238,6 +241,7 @@ impl Control {
             state,
             sources,
             rate: self.rate,
+            drain_count: 0,
         })
     }
 
@@ -312,6 +316,7 @@ impl Reader {
         &mut self,
         mut block: impl FnMut(usize, &[Source], &[Frame], &[TimingSpan], Option<OutputClock>),
     ) -> Option<End> {
+        self.drain_count = self.drain_count.saturating_add(1);
         // Read the terminal before observing the queue. A terminal release
         // publishes the tail of the producer's confirmed prefix.
         let state = self.state.load(Acquire);

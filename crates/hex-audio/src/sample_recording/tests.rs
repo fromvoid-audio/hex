@@ -167,6 +167,81 @@ fn confirmed_output_clock_follows_timing_and_is_cleared_when_packets_recycle() {
     assert_eq!(end, Some(End::OutputFailed));
 }
 
+#[test]
+fn output_clock_index_keeps_confirmed_packets_gaps_and_terminal() {
+    let (graph, outputs) = tracks_with_timing(true);
+    let (mut control, mut callback) = prepared::channel(48_000).unwrap();
+    control
+        .publish_with_policy_and_context_generation(
+            graph,
+            prepared::PublicationPolicy::InstallFreshRuntime,
+            7,
+        )
+        .unwrap();
+    let mut reader = control.sample_recording.start(7, &outputs, false).unwrap();
+    let mut index = OutputClockIndex::new(&reader);
+    assert!(reader.ready());
+    let playback = cpal::StreamInstant::new(10, 0);
+    assert!(deliver_with_output_clock(
+        &mut callback,
+        2,
+        Some(OutputClock {
+            playback,
+            offset_frames: 0
+        }),
+    )); // stopped: the packet is an explicit timeline gap
+    control.command(PlaybackCommand::Play).unwrap();
+    for number in 1..=PACKETS {
+        assert!(deliver_with_output_clock(
+            &mut callback,
+            2,
+            Some(OutputClock {
+                playback,
+                offset_frames: (number * 64) as u32
+            }),
+        ));
+        assert_eq!(index.poll(&mut reader).unwrap(), None);
+    }
+    assert_eq!(index.sample_rate(), 48_000);
+    assert_eq!(index.len(), PACKETS + 1);
+    assert!(index.packet(0).unwrap().timing.is_empty());
+    assert!(!index.packet(1).unwrap().timing.is_empty());
+    let confirmed = index.packet(1).unwrap();
+    let span = confirmed.timing[0];
+    let window = crate::input_capture::OutputWindow::from_recorded(
+        confirmed.clock,
+        confirmed.frames as usize,
+        span,
+    )
+    .unwrap();
+    let mapped = crate::input_capture::timeline_overlap(
+        crate::input_capture::SharedClock,
+        48_000,
+        index.sample_rate(),
+        crate::input_capture::InputTiming {
+            take_start: 0,
+            frames: 64,
+            captured_at: playback,
+            offset_frames: 64,
+        },
+        window,
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(mapped.take_start, span.take_start);
+    assert_eq!(mapped.timeline_start, span.timeline_start);
+    assert_eq!(u64::from(mapped.frames), span.take_end - span.take_start);
+    assert_eq!(
+        index.packet(PACKETS).unwrap().clock.offset_frames,
+        (PACKETS * 64) as u32
+    );
+    assert!(index.packet(PACKETS + 1).is_none());
+    control.sample_recording.stop();
+    assert!(deliver(&mut callback, 2));
+    assert_eq!(index.poll(&mut reader).unwrap(), Some(End::Stopped));
+    assert_eq!(index.poll(&mut reader).unwrap(), Some(End::Stopped));
+}
+
 struct Directory(PathBuf);
 impl Drop for Directory {
     fn drop(&mut self) {
