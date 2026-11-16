@@ -10,8 +10,8 @@ use std::{
     sync::{
         Arc,
         atomic::{
-            AtomicU8,
-            Ordering::{AcqRel, Acquire},
+            AtomicBool, AtomicU8,
+            Ordering::{AcqRel, Acquire, Release},
         },
         mpsc::{self, Receiver, TryRecvError},
     },
@@ -75,6 +75,7 @@ pub enum CoordinatedFailure {
     OutputLatencyUnavailable,
     OutputLatencyChanged,
     OutputPrepareTimeout,
+    MonitorPrepareTimeout,
     OutputStopped(End),
     OutputIndex(OutputClockIndexError),
     InputBeforeStart {
@@ -101,6 +102,9 @@ impl fmt::Display for CoordinatedFailure {
                 f.write_str("output graph latency changed during recording")
             }
             Self::OutputPrepareTimeout => f.write_str("playback timing did not become available"),
+            Self::MonitorPrepareTimeout => {
+                f.write_str("input monitor did not become ready in time")
+            }
             Self::OutputStopped(end) => f.write_str(match end {
                 End::Stopped => "output timing stopped before input finished",
                 End::OutputFailed => "audio output failed during recording",
@@ -255,6 +259,7 @@ pub struct CoordinatedJob {
     result: Receiver<CoordinatedOutcome>,
     path: PathBuf,
     ready: Arc<AtomicU8>,
+    start_permitted: Arc<AtomicBool>,
 }
 impl CoordinatedJob {
     pub fn path(&self) -> &Path {
@@ -264,6 +269,11 @@ impl CoordinatedJob {
     /// preparation has also retained a packet covered by output history.
     pub fn input_capturing_on_control(&self) -> bool {
         self.ready.load(Acquire) & 1 != 0
+    }
+    /// Permit a gated job to start input after its monitor is acknowledged.
+    /// A concurrent stop may still win; this never waits for either worker.
+    pub fn permit_input_start_on_control(&self) {
+        self.start_permitted.store(true, Release);
     }
     pub fn stop_on_control(&self) {
         self.ready.fetch_or(2, AcqRel);
@@ -297,6 +307,25 @@ pub fn spawn_coordinated_take(
     spawn_with_timeouts(input, output, path, PREPARE_TIMEOUT, STOP_TIMEOUT)
 }
 
+/// Spawn a job that drains and validates output timing but cannot start input
+/// until the caller has installed and observed its monitor, then grants the
+/// nonblocking permit. Stop and the normal preparation deadline remain active.
+pub fn spawn_coordinated_take_gated(
+    input: InputCapture,
+    output: Reader,
+    path: PathBuf,
+) -> io::Result<CoordinatedJob> {
+    spawn_with_writer_start(
+        input,
+        output,
+        path,
+        PREPARE_TIMEOUT,
+        STOP_TIMEOUT,
+        write_input_take,
+        false,
+    )
+}
+
 fn spawn_with_timeouts(
     input: InputCapture,
     output: Reader,
@@ -322,6 +351,26 @@ fn spawn_with_writer(
     stop_timeout: Duration,
     writer: impl FnOnce(InputCapture, &Path) -> io::Result<InputTake> + Send + 'static,
 ) -> io::Result<CoordinatedJob> {
+    spawn_with_writer_start(
+        input,
+        output,
+        path,
+        prepare_timeout,
+        stop_timeout,
+        writer,
+        true,
+    )
+}
+
+fn spawn_with_writer_start(
+    input: InputCapture,
+    output: Reader,
+    path: PathBuf,
+    prepare_timeout: Duration,
+    stop_timeout: Duration,
+    writer: impl FnOnce(InputCapture, &Path) -> io::Result<InputTake> + Send + 'static,
+    initially_permitted: bool,
+) -> io::Result<CoordinatedJob> {
     if !matches!(
         super::InputCapture::phase(&input),
         super::InputPhase::Opening | super::InputPhase::Ready
@@ -346,6 +395,8 @@ fn spawn_with_writer(
     let input_stop = input.stop_handle_on_control();
     let ready = Arc::new(AtomicU8::new(0));
     let worker_ready = Arc::clone(&ready);
+    let start_permitted = Arc::new(AtomicBool::new(initially_permitted));
+    let worker_permitted = Arc::clone(&start_permitted);
     let worker_path = path.clone();
     let (sender, result) = mpsc::sync_channel(1);
     thread::Builder::new()
@@ -356,6 +407,7 @@ fn spawn_with_writer(
                 output,
                 worker_path,
                 worker_ready,
+                worker_permitted,
                 Timeouts {
                     prepare: prepare_timeout,
                     stop: stop_timeout,
@@ -369,6 +421,7 @@ fn spawn_with_writer(
         result,
         path,
         ready,
+        start_permitted,
     })
 }
 
@@ -389,6 +442,7 @@ fn coordinate(
     mut output: Reader,
     path: PathBuf,
     ready: Arc<AtomicU8>,
+    start_permitted: Arc<AtomicBool>,
     timeouts: Timeouts,
     writer: impl FnOnce(InputCapture, &Path) -> io::Result<InputTake> + Send + 'static,
 ) -> CoordinatedOutcome {
@@ -462,12 +516,21 @@ fn coordinate(
             }
             checked += 1;
         }
-        if graph_latency.is_some_and(|latency| timing_frames > u64::from(latency)) {
+        let output_ready = graph_latency.is_some_and(|latency| timing_frames > u64::from(latency));
+        if output_ready && start_permitted.load(Acquire) {
             break;
         }
         if prepare_start.elapsed() >= timeouts.prepare {
             output.stop();
-            return failure(path, None, CoordinatedFailure::OutputPrepareTimeout);
+            return failure(
+                path,
+                None,
+                if output_ready {
+                    CoordinatedFailure::MonitorPrepareTimeout
+                } else {
+                    CoordinatedFailure::OutputPrepareTimeout
+                },
+            );
         }
         thread::sleep(POLL);
     }
@@ -929,6 +992,128 @@ mod tests {
             thread::sleep(POLL);
         };
         assert!(matches!(outcome, CoordinatedOutcome::Completed { .. }));
+    }
+
+    #[test]
+    fn gated_input_waits_for_permit_while_output_history_continues() {
+        let temp = Temp::new();
+        let (input, started) = mock_input_at(false, 6_000_000);
+        let (_control, mut callback, reader, map) = output();
+        let mut job = spawn_with_writer_start(
+            input,
+            reader,
+            temp.0.clone(),
+            Duration::from_millis(500),
+            Duration::from_millis(500),
+            write_input_take,
+            false,
+        )
+        .unwrap();
+        let deadline = Instant::now() + Duration::from_millis(500);
+        let mut offset = 0;
+        while offset < 512 {
+            if emit(&mut callback, &map, offset, true) {
+                offset += 64;
+            }
+            assert!(started.try_recv().is_err());
+            assert!(Instant::now() < deadline);
+            thread::sleep(POLL);
+        }
+        assert!(!temp.0.exists());
+        assert!(!job.input_capturing_on_control());
+        job.permit_input_start_on_control();
+        wait_started(&mut callback, &map, &started, &mut offset);
+        while !job.input_capturing_on_control() {
+            if emit(&mut callback, &map, offset, true) {
+                offset += 64;
+            }
+            assert!(Instant::now() < deadline);
+            thread::sleep(POLL);
+        }
+        job.stop_on_control();
+        assert!(matches!(
+            wait_result(&mut job, &mut callback, &map, &mut offset),
+            CoordinatedOutcome::Completed { .. }
+        ));
+    }
+
+    #[test]
+    fn early_permit_still_waits_for_output_latency_history() {
+        let temp = Temp::new();
+        let (input, started) = mock_input_at(false, 6_000_000);
+        let (_control, mut callback, reader, map) = output();
+        let mut job = spawn_with_writer_start(
+            input,
+            reader,
+            temp.0.clone(),
+            Duration::from_millis(500),
+            Duration::from_millis(500),
+            write_input_take,
+            false,
+        )
+        .unwrap();
+        job.permit_input_start_on_control();
+        let deadline = Instant::now() + Duration::from_millis(500);
+        let mut offset = 0;
+        while offset < 256 {
+            if emit_with_latency(&mut callback, &map, offset, true, Some(256)) {
+                offset += 64;
+            }
+            assert!(Instant::now() < deadline);
+            thread::sleep(POLL);
+        }
+        assert!(started.recv_timeout(Duration::from_millis(15)).is_err());
+        while started.try_recv().is_err() {
+            if emit_with_latency(&mut callback, &map, offset, true, Some(256)) {
+                offset += 64;
+            }
+            assert!(Instant::now() < deadline);
+            thread::sleep(POLL);
+        }
+        job.stop_on_control();
+        let _ = wait_result(&mut job, &mut callback, &map, &mut offset);
+    }
+
+    #[test]
+    fn gated_input_stop_output_failure_and_timeout_do_not_start_capture() {
+        for case in 0..3 {
+            let temp = Temp::new();
+            let (input, started) = mock_input(false);
+            let (_control, mut callback, reader, map) = output();
+            let mut job = spawn_with_writer_start(
+                input,
+                reader,
+                temp.0.clone(),
+                Duration::from_millis(60),
+                Duration::from_millis(100),
+                write_input_take,
+                false,
+            )
+            .unwrap();
+            let deadline = Instant::now() + Duration::from_millis(500);
+            let mut offset = 0;
+            while !emit(&mut callback, &map, offset, true) {
+                assert!(Instant::now() < deadline);
+                thread::sleep(POLL);
+            }
+            offset += 64;
+            match case {
+                0 => job.stop_on_control(),
+                1 => callback.end(End::OutputFailed),
+                _ => {}
+            }
+            let reason = failed(wait_result(&mut job, &mut callback, &map, &mut offset)).0;
+            match case {
+                0 => assert!(matches!(reason, CoordinatedFailure::CancelledBeforeInput)),
+                1 => assert!(matches!(
+                    reason,
+                    CoordinatedFailure::OutputStopped(End::OutputFailed)
+                )),
+                _ => assert!(matches!(reason, CoordinatedFailure::MonitorPrepareTimeout)),
+            }
+            assert!(started.try_recv().is_err());
+            assert!(!temp.0.exists());
+        }
     }
 
     #[test]

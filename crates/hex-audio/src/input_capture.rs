@@ -18,7 +18,7 @@ mod take_alignment;
 mod timeline_overlap;
 pub use coordinated::{
     AlignedAudioTake, ArrangementTakeError, CoordinatedFailure, CoordinatedJob, CoordinatedOutcome,
-    spawn_coordinated_take,
+    spawn_coordinated_take, spawn_coordinated_take_gated,
 };
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use rtrb::{Consumer, Producer, RingBuffer};
