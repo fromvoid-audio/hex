@@ -26,6 +26,7 @@ class EditorFrame final : public IPlugFrame {
     bool resizing=false,focused=false;
     // 0 = no admitted down, 1 = AppKit owns the pair, 2 = SDK owns it.
     std::array<uint8_t,128> key_owners{};
+    std::array<int16,128> key_values{};
 public:
     EditorFrame(NSWindow* parent,IPlugView* editor):window(parent),view(editor),
         accepted_size([[parent contentView] bounds].size) {}
@@ -42,15 +43,21 @@ public:
         if(![NSThread isMainThread] || !window || !view || !focused ||
            [event window]!=window || ([event type]!=NSEventTypeKeyDown &&
                                       [event type]!=NSEventTypeKeyUp)) return false;
-        NSString* characters=[event charactersIgnoringModifiers];
-        if([characters length]!=1) return false;
-        const auto key=nontext_key([characters characterAtIndex:0]);
         const auto code=[event keyCode];
-        if(!key || code>=key_owners.size()) return false;
+        if(code>=key_owners.size()) return false;
+        auto& owner=key_owners[code];
+        if([event type]==NSEventTypeKeyUp && !owner) return false;
+        int16 key=owner?key_values[code]:0;
+        if(!owner) {
+            NSString* characters=[event charactersIgnoringModifiers];
+            if([characters length]!=1) return false;
+            key=nontext_key([characters characterAtIndex:0]);
+            if(!key) return false;
+        }
         id responder=[window firstResponder];
         if([responder respondsToSelector:@selector(hasMarkedText)] &&
-           [(id<NSTextInputClient>)responder hasMarkedText] && key_owners[code]!=2) {
-            if([event type]==NSEventTypeKeyUp) key_owners[code]=0;
+           [(id<NSTextInputClient>)responder hasMarkedText] && owner!=2) {
+            if([event type]==NSEventTypeKeyUp) owner=0;
             return false;
         }
         const auto flags=[event modifierFlags];
@@ -58,13 +65,11 @@ public:
             (flags&NSEventModifierFlagOption?kAlternateKey:0) |
             (flags&NSEventModifierFlagCommand?kCommandKey:0) |
             (flags&NSEventModifierFlagControl?kControlKey:0);
-        auto& owner=key_owners[code];
         if([event type]==NSEventTypeKeyDown) {
             const auto handled=view->onKeyDown(0,key,modifiers)==kResultTrue;
-            if(!owner) owner=handled?2:1;
+            if(!owner) { key_values[code]=key;owner=handled?2:1; }
             return owner==2;
         }
-        if(!owner) return false;
         view->onKeyUp(0,key,modifiers);
         const bool handled=owner==2;
         owner=0;

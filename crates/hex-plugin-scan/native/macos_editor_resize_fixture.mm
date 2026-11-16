@@ -178,7 +178,9 @@ static void check_keys() {
     EditorFrame host(window,&view);
     auto* down=key_event(window,NSEventTypeKeyDown,NSLeftArrowFunctionKey,123,
                          NSEventModifierFlagShift|NSEventModifierFlagCommand);
-    auto* up=key_event(window,NSEventTypeKeyUp,NSLeftArrowFunctionKey,123);
+    // A layout/input-source change can alter the key-up character while the
+    // physical key remains the same; the SDK must receive the original key.
+    auto* up=key_event(window,NSEventTypeKeyUp,'a',123);
     assert(!host.handle_key_event(down)); // Not focused.
     host.focus_changed(true);
     view.handles_keys=true;
@@ -186,7 +188,7 @@ static void check_keys() {
     assert(view.key_downs==1 && view.last_key==KEY_LEFT &&
            view.last_modifiers==(kShiftKey|kCommandKey));
     view.handles_keys=false; // Ownership stays with the down even if SDK responses change.
-    assert(host.handle_key_event(up) && view.key_ups==1);
+    assert(host.handle_key_event(up) && view.key_ups==1 && view.last_key==KEY_LEFT);
     auto* f1=key_event(window,NSEventTypeKeyDown,NSF1FunctionKey,122);
     assert(!host.handle_key_event(f1) && view.last_key==KEY_F1);
     view.handles_keys=true;
