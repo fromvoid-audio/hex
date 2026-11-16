@@ -191,8 +191,9 @@ static void check_keys() {
     assert(host.handle_key_event(up) && view.key_ups==1 && view.last_key==KEY_LEFT);
     auto* f1=key_event(window,NSEventTypeKeyDown,NSF1FunctionKey,122);
     assert(!host.handle_key_event(f1) && view.last_key==KEY_F1);
+    const auto initial_downs=view.key_downs;
     view.handles_keys=true;
-    assert(!host.handle_key_event(f1)); // Repeats cannot steal an AppKit-owned pair.
+    assert(!host.handle_key_event(f1) && view.key_downs==initial_downs);
     assert(!host.handle_key_event(key_event(window,NSEventTypeKeyUp,NSF1FunctionKey,122)));
     const auto calls=view.key_downs;
     assert(!host.handle_key_event(key_event(other,NSEventTypeKeyDown,NSLeftArrowFunctionKey,123)));

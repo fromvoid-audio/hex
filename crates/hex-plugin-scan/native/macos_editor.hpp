@@ -69,6 +69,9 @@ public:
             return false;
         }
         if([event type]==NSEventTypeKeyDown) {
+            // Once AppKit has the down, a repeat must not also be consumed
+            // by the SDK even if its response changes during the hold.
+            if(owner==1) return false;
             const auto handled=view->onKeyDown(0,key,modifiers)==kResultTrue;
             if(!owner) { key_values[code]=key;owner=handled?2:1; }
             return owner==2;
