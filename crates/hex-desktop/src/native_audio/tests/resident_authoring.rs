@@ -1237,7 +1237,16 @@ fn adding_a_latency_device_while_a_sampler_plays_applies_without_refusal() {
 #[test]
 fn running_tempo_edit_with_latency_keeps_the_audio_graph_playing() {
     let _native = native_fixture();
-    for (compensated, partition) in [(false, 1), (false, 257), (true, 1), (true, 257)] {
+    for (compensated, partition, looped) in [
+        (false, 1, false),
+        (false, 257, false),
+        (true, 1, false),
+        (true, 257, false),
+        (false, 1, true),
+        (false, 257, true),
+        (true, 1, true),
+        (true, 257, true),
+    ] {
         let files = Files::new();
         let mut h = ResidentHarness::with_frame_limit(32_768);
         assert!(h.next().error.is_none());
@@ -1252,6 +1261,16 @@ fn running_tempo_edit_with_latency_keeps_the_audio_graph_playing() {
                 type_id: Box::new(hex_engine::DeviceTypeId::from_static("hex.limiter")),
                 before: None,
             });
+            (applied, _) = h.applied(applied);
+        }
+        if looped {
+            h.run(Request::Edit(Command::SetLoopRegion {
+                start: 128,
+                // At 90 BPM this becomes a 128-frame loop, so a 257-frame
+                // publication callback necessarily crosses at least one seam.
+                end: 224,
+                enabled: true,
+            }));
             (applied, _) = h.applied(applied);
         }
         let latency = h
@@ -1325,10 +1344,20 @@ fn running_tempo_edit_with_latency_keeps_the_audio_graph_playing() {
             .tempo_map()
             .beat_to_frame(beat)
             .unwrap();
+        let advanced = relocated + partition as u64;
+        let expected_position = match edited.state.project.loop_region() {
+            Some(region) if region.enabled() && advanced >= region.end() => {
+                if partition == 257 {
+                    assert!(relocated >= region.start() && relocated < region.end());
+                    assert!(partition as u64 > region.end() - region.start());
+                }
+                region.start() + (advanced - region.start()) % (region.end() - region.start())
+            }
+            _ => advanced,
+        };
         assert_eq!(
-            after_position,
-            relocated + partition as u64,
-            "tempo publication must preserve its beat; compensated={compensated}, partition={partition}, cut={before_position}"
+            after_position, expected_position,
+            "tempo publication must preserve its beat; compensated={compensated}, partition={partition}, looped={looped}, cut={before_position}"
         );
         let status = h.audio.as_ref().unwrap().status().unwrap();
         assert!(status.playing.load(Acquire));
