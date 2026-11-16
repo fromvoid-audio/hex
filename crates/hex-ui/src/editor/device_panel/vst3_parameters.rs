@@ -125,17 +125,28 @@ impl Knob {
             .is_some_and(|(_, owner)| *owner == key)
     }
 
+    fn pending_value(
+        &self,
+        active: Option<hex_session::device_gesture::GestureSnapshot>,
+    ) -> Option<f64> {
+        active
+            .filter(|gesture| self.owns(gesture.key))
+            .and_then(|gesture| gesture.plugin_value)
+            .map(PluginParameterValue::normalized)
+    }
+
     fn renew(
         &self,
         query: PluginParameterQuery,
         row: &PluginParameterRow,
         value: f64,
         enabled: bool,
-        active: Option<GestureKey>,
+        active: Option<hex_session::device_gesture::GestureSnapshot>,
         cx: &mut Context<EditorView>,
     ) -> Option<Entity<NumericControl>> {
         self.origin.set(parameter_origin(query, row)?);
-        let busy = active.is_some_and(|key| !self.owns(key));
+        let value = self.pending_value(active).unwrap_or(value);
+        let busy = active.is_some_and(|gesture| !self.owns(gesture.key));
         self.control.update(cx, |control, cx| {
             let _ = control.set_external_value(value, cx);
             control.set_availability(ControlAvailability::for_edit(enabled, busy), cx);
@@ -243,6 +254,10 @@ impl Panel {
     }
 
     fn mark_values_stale(&mut self) {
+        self.mark_values_stale_with_commit(None);
+    }
+
+    fn mark_values_stale_with_commit(&mut self, committed: Option<(u32, f64)>) {
         self.scrollbar.invalidate();
         let total = self.rows().and_then(|rows| u16::try_from(rows.len()).ok());
         if let Some(rows) = &self.result {
@@ -255,6 +270,13 @@ impl Panel {
                         // and the disk cache still stores descriptors only.
                         pending.normalized = self.display_value(row);
                         pending.value = self.display_text(row).to_owned();
+                        if let Some((id, value)) = committed
+                            && row.id == id
+                        {
+                            pending.normalized = value;
+                            // The plug-in must supply its own formatted text.
+                            pending.value = "updating".into();
+                        }
                         pending
                     })
                     .collect(),
@@ -1861,10 +1883,10 @@ fn follow_display(
     let Some(panel) = view.device_panel.vst3_parameters.panels.get(&device) else {
         return (None, None, Some("no vst parameter touched"));
     };
-    let active = view.device_gesture.snapshot().map(|gesture| gesture.key);
+    let active = view.device_gesture.snapshot();
     if let Some((id, knob)) = panel.follow_knob.as_ref()
         && knob.control.read(cx).is_interacting()
-        && active.is_none_or(|key| knob.owns(key))
+        && active.is_none_or(|gesture| knob.owns(gesture.key))
     {
         let row = panel
             .rows()
@@ -1896,6 +1918,13 @@ fn follow_display(
         );
     };
     if !row.editable || row.metadata_revision == 0 || panel.source.is_none() {
+        let pending = panel.follow_knob.as_ref().and_then(|(current, knob)| {
+            (*current == id
+                && panel.source.is_none_or(|source| source == knob.source)
+                && panel.query.output_identity == knob.output)
+                .then(|| knob.pending_value(active))
+                .flatten()
+        });
         let control = panel
             .follow_knob
             .as_ref()
@@ -1903,7 +1932,7 @@ fn follow_display(
             .map(|(_, knob)| knob.control.clone());
         if let Some(control) = &control {
             control.update(cx, |control, cx| {
-                let _ = control.set_external_value(row.normalized, cx);
+                let _ = control.set_external_value(pending.unwrap_or(row.normalized), cx);
                 control.set_enabled(false, cx);
             });
         }
@@ -1968,6 +1997,43 @@ fn show_automation_menu(
 pub(in crate::editor) fn refresh(view: &mut EditorView) {
     for panel in view.device_panel.vst3_parameters.panels.values_mut() {
         panel.mark_values_stale();
+    }
+}
+
+/// Freeze only the exact accepted gesture's value as display-only while its
+/// controller page is refreshed. The old source grants no new edit authority.
+pub(in crate::editor) fn refresh_after_gesture(
+    view: &mut EditorView,
+    committed: Option<hex_session::device_gesture::GestureSnapshot>,
+) {
+    use hex_session::device_gesture::GestureTarget;
+    for (device, panel) in &mut view.device_panel.vst3_parameters.panels {
+        let preview = committed.and_then(|snapshot| {
+            let GestureTarget::PluginParameter {
+                device: target,
+                parameter,
+            } = snapshot.target
+            else {
+                return None;
+            };
+            if *device != target
+                || panel.query.context.project_generation != snapshot.key.generation
+            {
+                return None;
+            }
+            let owns = |knob: &Knob| {
+                panel.source.is_none_or(|source| source == knob.source)
+                    && panel.query.output_identity == knob.output
+                    && knob.owns(snapshot.key)
+            };
+            let current = panel.knobs.get(&parameter).is_some_and(owns)
+                || panel
+                    .follow_knob
+                    .as_ref()
+                    .is_some_and(|(id, knob)| *id == parameter && owns(knob));
+            current.then_some((parameter, snapshot.plugin_value?.normalized()))
+        });
+        panel.mark_values_stale_with_commit(preview);
     }
 }
 
@@ -2060,13 +2126,21 @@ fn row_placeholder(
     row: &PluginParameterRow,
     cx: &mut Context<EditorView>,
 ) -> Option<Entity<NumericControl>> {
+    let active = view.device_gesture.snapshot();
     let panel = view.device_panel.vst3_parameters.panels.get_mut(&device)?;
     if let Some(knob) = panel.knobs.get(&row.id)
         && knob.matches_descriptor(row)
     {
         let control = knob.control.clone();
+        let value = if panel.source.is_none_or(|source| source == knob.source)
+            && panel.query.output_identity == knob.output
+        {
+            knob.pending_value(active).unwrap_or(row.normalized)
+        } else {
+            row.normalized
+        };
         control.update(cx, |control, cx| {
-            let _ = control.set_external_value(row.normalized, cx);
+            let _ = control.set_external_value(value, cx);
             control.set_enabled(false, cx);
         });
         return Some(control);
@@ -2125,7 +2199,7 @@ fn knob(
     cx: &mut Context<EditorView>,
 ) -> Option<Entity<NumericControl>> {
     let enabled = !dense_target_owns_parameter(view, device, row.id);
-    let active = view.device_gesture.snapshot().map(|gesture| gesture.key);
+    let active = view.device_gesture.snapshot();
     let panel = view.device_panel.vst3_parameters.panels.get(&device)?;
     if let Some(knob) = panel.knobs.get(&row.id)
         && knob.matches_source(panel.source?, query, row)
@@ -2150,7 +2224,7 @@ fn follow_knob(
     row: &PluginParameterRow,
     cx: &mut Context<EditorView>,
 ) -> Option<Entity<NumericControl>> {
-    let active = view.device_gesture.snapshot().map(|gesture| gesture.key);
+    let active = view.device_gesture.snapshot();
     let panel = view.device_panel.vst3_parameters.panels.get(&device)?;
     let enabled = panel.pending_touch.is_none()
         && panel.queued_touch.is_none()
@@ -2223,12 +2297,18 @@ fn create_knob(
         &control,
         move |view, emitter, event: &NumericControlEvent, cx| {
             let origin = event_origin.get();
-            // A redraw can revoke or replace a page while the same numeric
-            // pointer owns an admitted edit. Its later events are fenced by
-            // the pointer ID and Session gesture key inside knob_event.
-            let continuing_pointer =
-                event.phase != NumericEventPhase::Begin && event.gesture.is_some();
-            if !continuing_pointer {
+            // Both pointer and typed edits must finish the exact gesture they
+            // began, even if a redraw has refreshed the original page. A
+            // different control or gesture cannot claim this continuation.
+            let continuing_owned = event.phase != NumericEventPhase::Begin
+                && event_drag.borrow().as_ref().is_some_and(|(gesture, key)| {
+                    *gesture == event.gesture
+                        && view
+                            .device_gesture
+                            .snapshot()
+                            .is_some_and(|active| active.key == *key)
+                });
+            if !continuing_owned {
                 if view.device_gesture.snapshot().is_some()
                     || current_context(view) != Some(origin.context)
                 {
@@ -2319,7 +2399,8 @@ fn knob_event(
         && event.gesture.is_none()
         && view.device_gesture.snapshot().is_none()
     {
-        view.begin_vst3_parameter_gesture(origin)?;
+        let key = view.begin_vst3_parameter_gesture(origin)?;
+        *drag = Some((None, key));
         return view.device_gesture.finish_plugin(value);
     }
     let Some((pointer, key)) = drag.as_ref() else {
@@ -2335,14 +2416,8 @@ fn knob_event(
     }
     match event.phase {
         NumericEventPhase::Change => view.device_gesture.change_plugin(value).map(|_| ()),
-        NumericEventPhase::Commit => {
-            *drag = None;
-            view.device_gesture.finish_plugin(value)
-        }
-        NumericEventPhase::Cancel => {
-            *drag = None;
-            view.device_gesture.cancel()
-        }
+        NumericEventPhase::Commit => view.device_gesture.finish_plugin(value),
+        NumericEventPhase::Cancel => view.device_gesture.cancel(),
         NumericEventPhase::Begin => Ok(()),
     }
 }
