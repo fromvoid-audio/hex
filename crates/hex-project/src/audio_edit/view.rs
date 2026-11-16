@@ -233,7 +233,20 @@ mod independent_repeat_period_tests {
                     assert_eq!(actual, expected, "phase={phase} range={start}..{end}");
                 }
             }
-            assert!(projection.repeat_boundaries().is_err());
+            let seams = projection.repeat_boundaries().unwrap().unwrap();
+            let expected_seams: Vec<u64> = (1..23)
+                .filter(|elapsed| (phase + elapsed) % 10 == 0)
+                .collect();
+            assert_eq!(seams.count(), expected_seams.len() as u64);
+            for (index, elapsed) in expected_seams.into_iter().enumerate() {
+                assert_eq!(seams.boundary(index as u64), Some(elapsed));
+                assert_eq!(projection.frame_at_elapsed(elapsed).unwrap(), 100 + elapsed);
+            }
+            let cycles = projection.retained_repeat_cycles().unwrap().unwrap();
+            for index in 0..cycles.count() {
+                let start = i128::from(index * 10) - i128::from(phase);
+                assert_eq!(cycles.full_bounds(index), Some((start, start + 10)));
+            }
         }
         let silent = AudioViewProjection::from_parts_with_period(
             clip,
@@ -251,6 +264,23 @@ mod independent_repeat_period_tests {
         )
         .unwrap();
         assert_eq!(silent.occurrence_count(), 0);
+        assert_eq!(silent.repeat_boundaries().unwrap(), None);
+        let endpoint = AudioViewProjection::from_parts_with_period(
+            clip,
+            editor.project().tempo_map(),
+            AudioDomainClock::Frames(10),
+            0..6,
+            100,
+            Some(AudioViewPlacement {
+                mode: AudioViewMode::Repeat,
+                outer_length: AudioDomainClock::Frames(2),
+                cycle_phase: 8,
+            }),
+            0,
+            Some(10),
+        )
+        .unwrap();
+        assert_eq!(endpoint.repeat_boundaries().unwrap(), None);
         let offset = AudioViewProjection::from_parts_with_period(
             clip,
             editor.project().tempo_map(),
@@ -304,6 +334,11 @@ mod independent_repeat_period_tests {
             large.root_ranges_for_frames(0..u64::MAX).unwrap(),
             [Some(2..8), None]
         );
+        let seams = large.repeat_boundaries().unwrap().unwrap();
+        assert_eq!(seams.count(), 100_000_000_000);
+        assert_eq!(seams.boundary(0), Some(2));
+        assert_eq!(seams.boundary(seams.count() - 1), Some(999_999_999_992));
+        assert_eq!(seams.boundary(seams.count()), None);
         for period in [0, 5] {
             assert!(
                 AudioViewProjection::from_parts_with_period(
@@ -1020,7 +1055,13 @@ impl<'a> AudioViewProjection<'a> {
             .and_then(crate::RepeatCycles::seams))
     }
     fn retained_repeat_cycles(&self) -> Result<Option<crate::RepeatCycles>, Invalid> {
-        self.require_complete_repeat_projection()?;
+        if self.cycle != self.audible {
+            let length = u64::try_from(self.end - self.start)
+                .map_err(|_| Invalid("audio repeat extent overflow"))?;
+            return crate::ContentWindow::new(0, length, false)?
+                .repeat_cycles(self.cycle - self.phase, self.cycle)
+                .map(Some);
+        }
         let edit = self.clip.audio_edit();
         let placement = edit.and_then(|edit| {
             edit.content_view
@@ -1098,12 +1139,6 @@ impl<'a> AudioViewProjection<'a> {
     }
     pub fn occurrence_count(&self) -> u64 {
         self.count
-    }
-    fn require_complete_repeat_projection(&self) -> Result<(), Invalid> {
-        if self.cycle != self.audible {
-            return Err(Invalid("silent repeat gap geometry is not yet supported"));
-        }
-        Ok(())
     }
     /// Technical placement origin in the declared domain clock, even for
     /// silence. A retained occurrence may carry a separate processing origin.
