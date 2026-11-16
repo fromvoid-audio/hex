@@ -86,6 +86,15 @@ public:
             }
             return false;
         }
+        if([event type]==NSEventTypeKeyUp) {
+            // The original down already selected the SDK. A text responder
+            // is not consulted for release and cannot reenter before it.
+            const auto key=key_values[code];
+            const auto character=key_characters[code];
+            owner=0;++key_serials[code];
+            view->onKeyUp(character,key,modifiers);
+            return true;
+        }
         id responder=[window firstResponder];
         const bool text_responder=[responder respondsToSelector:@selector(hasMarkedText)];
         if(key_epoch!=focus_epoch || key_serial!=key_serials[code]) return appkit_pair();
@@ -137,27 +146,20 @@ public:
         const bool marked=text_responder && [(id<NSTextInputClient>)responder hasMarkedText];
         if(key_epoch!=focus_epoch || key_serial!=key_serials[code]) return appkit_pair();
         if(marked && !owner) return appkit_pair();
-        if([event type]==NSEventTypeKeyDown) {
-            const auto previous_owner=owner;
-            const auto epoch=focus_epoch;
-            const auto serial=key_serials[code];
-            const auto handled=view->onKeyDown(character,key,modifiers)==kResultTrue;
-            // Foreign code can enter AppKit and change focus or dispatch the
-            // same physical key before returning. Do not restore an obsolete
-            // owner over that newer state.
-            if(epoch!=focus_epoch || serial!=key_serials[code])
-                return previous_owner==2 || handled;
-            if(!owner) {
-                key_values[code]=key;key_characters[code]=character;
-                owner=handled?2:1;++key_serials[code];
-            }
-            return owner==2;
+        const auto previous_owner=owner;
+        const auto epoch=focus_epoch;
+        const auto serial=key_serials[code];
+        const auto handled=view->onKeyDown(character,key,modifiers)==kResultTrue;
+        // Foreign code can enter AppKit and change focus or dispatch the
+        // same physical key before returning. Do not restore an obsolete
+        // owner over that newer state.
+        if(epoch!=focus_epoch || serial!=key_serials[code])
+            return previous_owner==2 || handled;
+        if(!owner) {
+            key_values[code]=key;key_characters[code]=character;
+            owner=handled?2:1;++key_serials[code];
         }
-        const bool handled=owner==2;
-        owner=0;
-        ++key_serials[code];
-        view->onKeyUp(character,key,modifiers);
-        return handled;
+        return owner==2;
     }
     static NSWindowStyleMask window_style(IPlugView& editor) {
         auto style=NSWindowStyleMaskTitled|NSWindowStyleMaskClosable;
