@@ -654,6 +654,12 @@ impl NativeAudioSink {
             .as_ref()
             .map(|replacement| replacement.deadline);
         let request_cancellation = self.request_cancellation.as_ref();
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        let stopped_history = self
+            .stopped_foreign_history
+            .as_ref()
+            .filter(|lease| lease.context == metadata.context)
+            .map(|lease| (lease.source, lease.fence));
         // Active-output refusal never enters the offline slot. The prospective view already
         // includes the active book, so it must not also be selected from resident_inventory.
         if let Some(control) = self
@@ -696,7 +702,12 @@ impl NativeAudioSink {
                 ResidentPublicationPolicy::InheritRuntime
                 | ResidentPublicationPolicy::InheritRuntimeAt(_) => {
                     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-                    if let Some((source, transport_epoch, playing)) = parameter_source {
+                    if let Some((source, fence)) = stopped_history {
+                        hex_audio::prepared::PublicationPolicy::InheritUnderStoppedNative {
+                            source,
+                            fence,
+                        }
+                    } else if let Some((source, transport_epoch, playing)) = parameter_source {
                         hex_audio::prepared::PublicationPolicy::InheritUnderNativeParameter {
                             source,
                             transport_epoch,

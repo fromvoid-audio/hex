@@ -241,11 +241,14 @@ fn every_chain_owner_retains_exact_predecessors_and_prunes_only_at_received_fron
 #[test]
 fn bounded_history_refuses_without_mutating_the_published_predecessor_and_recovers_by_pruning() {
     let mut previous = revision(1, 1);
+    assert!(!revision(2, 1).needs_foreign_history_pruning_from(&previous));
     for key in 2..=9 {
         previous = revision(key, 1)
             .with_foreign_program_history_from(&previous, |_| ForeignProgramFrontier::Unknown)
             .unwrap();
     }
+    assert!(revision(10, 1).needs_foreign_history_pruning_from(&previous));
+    assert!(!revision(10, 2).needs_foreign_history_pruning_from(&previous));
     assert!(
         revision(10, 1)
             .with_foreign_program_history_from(&previous, |_| ForeignProgramFrontier::Unknown)
@@ -258,6 +261,7 @@ fn bounded_history_refuses_without_mutating_the_published_predecessor_and_recove
         })
         .unwrap();
     keys(&next, &[8, 9, 10], &[1, 7]);
+    assert!(!revision(11, 1).needs_foreign_history_pruning_from(&next));
 }
 #[test]
 fn ambiguous_keys_frontiers_profiles_and_shared_candidates_refuse_while_new_sources_stay_independent()

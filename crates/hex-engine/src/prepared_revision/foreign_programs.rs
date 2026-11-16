@@ -31,6 +31,25 @@ impl PreparedRevision {
         nodes(&self.arrangement).any(|node| node.automation.foreign().is_some())
     }
 
+    /// Whether an unchanged original binding has exhausted its bounded
+    /// predecessor history. This is a control-side hint only: matching
+    /// installation, a stopped fence and the open quantum must be established
+    /// independently before pruning any program.
+    pub fn needs_foreign_history_pruning_from(&self, previous: &Self) -> bool {
+        nodes(&self.arrangement)
+            .filter_map(|node| node.automation.foreign())
+            .any(|program| {
+                let binding = program.borrow().binding;
+                nodes(&previous.arrangement)
+                    .filter_map(|old| old.automation.foreign())
+                    .any(|old| {
+                        old.borrow().binding == binding
+                            && old.storage_owners().count()
+                                > hex_lattice::MAX_RETAINED_FOREIGN_PROGRAMS
+                    })
+            })
+    }
+
     /// Preserve programs needed to finish the original worker's open quantum.
     /// Call before sharing/publication, using the actual preceding revision.
     /// Worker pickup values must come from that exact worker. Unknown/Empty
