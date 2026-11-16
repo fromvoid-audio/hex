@@ -1326,6 +1326,22 @@ impl Request {
         ))
     }
 
+    /// Commit one finalized recording through the existing atomic import path.
+    /// The caller must validate clock alignment and source identity before passing
+    /// the captured Arrangement frame. A stale context is refused by the worker.
+    pub fn recorded_audio_take(
+        path: PathBuf,
+        track: hex_project::TrackId,
+        start: u64,
+        context: AudioBatchContext,
+    ) -> Result<(Self, Arc<AudioBatchControl>), String> {
+        Self::audio_batch(
+            vec![path],
+            AudioBatchDestination::Track { track, start },
+            context,
+        )
+    }
+
     /// Preserve the captured authored frame while monitoring the imported
     /// source from its beginning on the applied output's clock.
     pub fn browser_audio_batch(
