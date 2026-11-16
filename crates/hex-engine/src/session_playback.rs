@@ -2860,6 +2860,8 @@ mod return_feed_tests;
 mod compensation_tests;
 #[cfg(test)]
 mod foreign_tests;
+#[cfg(test)]
+mod live_track_audio_tests;
 
 #[cfg(test)]
 mod routing_tests;

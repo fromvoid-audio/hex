@@ -206,6 +206,7 @@ impl SessionPlayback {
         frames: usize,
         eligible: &mut [bool; MAX_TRACKS],
         analytic: &mut [bool; MAX_TRACKS],
+        live_track: Option<TrackId>,
     ) -> Result<(), SessionPlaybackError> {
         if frames > 256 || self.resident_source_scratch.len() != self.route_scratch.len() {
             return Err(SessionPlaybackError::DeviceRuntime);
@@ -241,7 +242,9 @@ impl SessionPlayback {
             let work_start = self.render_work.track(index);
             let output = &mut scratch[..frames];
             output.fill([0.0; 2]);
-            if !self.browser_audition.voices.for_track(route.id).is_empty() {
+            if live_track == Some(route.id)
+                || !self.browser_audition.voices.for_track(route.id).is_empty()
+            {
                 // The ordinary per-frame route consumes the live clip clock.
                 self.render_work.finish(work_start);
                 continue;
@@ -739,6 +742,7 @@ impl SessionPlayback {
         foreign: &mut dyn hex_lattice::ForeignProcessors,
         external: Option<&dyn hex_lattice::NativeExternalAutomationSet>,
         resident_source: Option<BatchedSources<'_>>,
+        live_audio: Option<LiveTrackAudio<'_>>,
     ) -> Result<(), SessionPlaybackError> {
         let loop_fade = self
             .active_loop_region_at(arrangement_frame)
@@ -1198,6 +1202,11 @@ impl SessionPlayback {
                                         .and_then(|state| state.processing.as_mut()),
                                 )
                                 .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
+                        }
+                        if let Some(input) = live_audio.filter(|input| input.track == route.id) {
+                            let source = input.frames[frame_offset];
+                            audio[0][0] += source[0];
+                            audio[0][1] += source[1];
                         }
                         let processed = compensation
                             .process_track_with_foreign(
