@@ -569,6 +569,12 @@ mod tests {
             input_capture::align_complete_take(input_capture::SharedClock, &take, &output).unwrap();
         assert_eq!((placement.timeline_start, placement.frames), (0, 64));
         assert!(std::fs::metadata(&temp.0).unwrap().len() > 44);
+        let mut wav = hex_media::WavFrameReader::open(
+            &temp.0,
+            hex_media::WavReaderLimits::new(4_096, 64, 32, 64),
+        )
+        .unwrap();
+        assert_eq!(wav.read_frames(0, 64).unwrap(), vec![[0.25, 0.25]; 64]);
     }
 
     #[test]
