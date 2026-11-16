@@ -238,6 +238,13 @@ mod tests {
     fn input(timing: Vec<InputTiming>, frames: u64) -> InputTake {
         InputTake {
             path: PathBuf::new(),
+            input_device: format!("{}:alignment-test", cpal::default_host().id())
+                .parse()
+                .unwrap(),
+            input_config: super::super::InputConfig {
+                sample_rate: RATE,
+                channels: 1,
+            },
             sample_rate: RATE,
             frames,
             timing,

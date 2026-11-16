@@ -1,7 +1,8 @@
 //! Off-callback physical-input WAV writing and bounded capture-clock indexing.
 //! Input timestamps retain their original stream origin; they are not an
 //! Arrangement clock or evidence of physical input/output synchronization.
-use super::{Block, FRAMES, InputCapture, InputEnd};
+use super::{Block, FRAMES, InputCapture, InputConfig, InputEnd};
+use crate::input_devices::InputDeviceId;
 use crate::sample_recording::takes::{FRAME_BYTES, HEADER, MAX_FRAMES, write_header};
 use std::{
     fs::{File, OpenOptions},
@@ -41,6 +42,9 @@ pub enum InputTakeEnd {
 /// its frame count and index describe only the complete prefix on disk.
 pub struct InputTake {
     pub path: PathBuf,
+    /// Exact host-qualified device and requested format used for capture.
+    pub input_device: InputDeviceId,
+    pub input_config: InputConfig,
     pub sample_rate: u32,
     pub frames: u64,
     pub timing: Vec<InputTiming>,
@@ -55,11 +59,15 @@ pub struct InputTake {
 /// The caller must retain its independent stop handle. `path` must not already
 /// exist. Setup or finalization errors return an error; the file is not removed.
 pub fn write_input_take(mut capture: InputCapture, path: &Path) -> io::Result<InputTake> {
-    let rate = capture.source().1.sample_rate;
+    let (device, config) = capture.source();
+    let device = device.clone();
+    let rate = config.sample_rate;
     let file = open_take(path)?;
     let result = run(&mut capture, file, rate, MAX_TIMING, MAX_FRAMES)?;
     Ok(InputTake {
         path: path.to_owned(),
+        input_device: device,
+        input_config: config,
         sample_rate: rate,
         frames: result.frames,
         timing: result.timing,

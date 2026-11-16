@@ -242,6 +242,13 @@ fn output_clock_index_keeps_confirmed_packets_gaps_and_terminal() {
     assert_eq!(index.poll(&mut reader).unwrap(), Some(End::Stopped));
     let take = crate::input_capture::InputTake {
         path: PathBuf::new(),
+        input_device: format!("{}:test-input", cpal::default_host().id())
+            .parse()
+            .unwrap(),
+        input_config: crate::input_capture::InputConfig {
+            sample_rate: 48_000,
+            channels: 1,
+        },
         sample_rate: 48_000,
         frames: 128,
         timing: vec![crate::input_capture::InputTiming {
