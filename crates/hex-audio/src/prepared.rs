@@ -10257,6 +10257,7 @@ mod tests {
                         playback: origin,
                         offset_frames: (number * block_size) as u32,
                         graph_latency_frames: None,
+                        origin: crate::sample_recording::OutputClockOrigin::Unknown,
                     }));
                     callback.finish_sample_recording(true);
                 });
@@ -10382,6 +10383,7 @@ mod tests {
                     playback: cpal::StreamInstant::new(10, 0),
                     offset_frames: 0,
                     graph_latency_frames: Some(0),
+                    origin: crate::sample_recording::OutputClockOrigin::Unknown,
                 }));
                 c.finish_sample_recording(true);
             });
@@ -10406,6 +10408,7 @@ mod tests {
                 playback: cpal::StreamInstant::new(11, 0),
                 offset_frames: 0,
                 graph_latency_frames: Some(0),
+                origin: crate::sample_recording::OutputClockOrigin::Unknown,
             }));
         });
         let control = publication.control().unwrap();

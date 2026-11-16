@@ -383,6 +383,7 @@ mod tests {
                     playback: StreamInstant::new(10, nanos),
                     offset_frames: offset,
                     graph_latency_frames: Some(0),
+                    origin: crate::sample_recording::OutputClockOrigin::Unknown,
                 },
             )
             .unwrap();
@@ -409,6 +410,7 @@ mod tests {
             playback: StreamInstant::new(10, 0),
             offset_frames: 0,
             graph_latency_frames: Some(288),
+            origin: crate::sample_recording::OutputClockOrigin::Unknown,
         };
         index.test_push(64, &[span(0, 64, 4_800)], clock).unwrap();
         let take = input(vec![segment(0, 32, 0, 288)], 32);
@@ -600,6 +602,7 @@ mod tests {
                         playback: StreamInstant::new(10, 0),
                         offset_frames: frame,
                         graph_latency_frames: Some(0),
+                        origin: crate::sample_recording::OutputClockOrigin::Unknown,
                     },
                 )
                 .unwrap();
