@@ -4174,3 +4174,135 @@ fn verify_instrument_takeover(
     }
     println!("instrument takeover {case} passed");
 }
+
+#[test]
+#[ignore = "requires exact source-bound native helpers and original VST3 fixtures"]
+fn native_vst3_instrument_and_streamed_audio_export() {
+    const CHILD: &str = "HEX_DESKTOP_INSTRUMENT_EXPORT_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let name = std::thread::current().name().unwrap().to_owned();
+        let child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", &name, "--ignored", "--nocapture"])
+            .env(CHILD, "1")
+            .env("HEX_ORIGINAL_INSTANCE_VARIANT", "127")
+            .env("HEX_ORIGINAL_INSTRUMENT_LIVE_PRESET", "1")
+            .output()
+            .unwrap();
+        assert!(
+            child.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&child.stdout),
+            String::from_utf8_lossy(&child.stderr)
+        );
+        return;
+    }
+    use hex_session::service::{ExportControl, ExportSignal};
+    let _native = native_fixture();
+    let files = Files::new();
+    let mut selected = selection();
+    let module = files.0.canonicalize().unwrap().join("original.vst3");
+    super::ui::copy_original_module(&selected.module, &module);
+    selected.module = module;
+    hex_ui::write_plugin_effect_test_catalog(&files.0, &selected, "Instrument|Synth", 0).unwrap();
+    let recovery = files.0.join("recovery");
+    fs::create_dir(&recovery).unwrap();
+    let mut h = ResidentHarness::with_plugins_at_rate_and_catalog_recovery(
+        host(),
+        None,
+        48_000,
+        8_192,
+        files.0.canonicalize().unwrap().join("plugin-catalog.json"),
+        recovery.join("instrument-export.hex-journal"),
+    );
+    assert!(h.next().error.is_none());
+    let (applied, _) = h.applied(0);
+    let source = files.wav(48_000, 16_384);
+    let imported = h.run(Request::ImportToNewTrack {
+        path: source.clone(),
+        before_track: None,
+        start: 0,
+    });
+    let (applied, _) = h.applied(applied);
+    let added = h.run(Request::Edit(Command::AddMidiTrack {
+        name: "instrument".into(),
+    }));
+    let Some(Created::Track(track)) = added.created else {
+        panic!("midi track")
+    };
+    let (applied, _) = h.applied(applied);
+    let placed = h.run(Request::Edit(Command::PlaceMidiClip {
+        track,
+        start: BeatTime::ZERO,
+        length: BeatTime::ONE,
+    }));
+    let Some(Created::Clip(clip)) = placed.created else {
+        panic!("midi clip")
+    };
+    let (applied, _) = h.applied(applied);
+    let note = h.run(Request::Edit(Command::AddMidiNote {
+        clip,
+        start: BeatTime::ZERO,
+        duration: BeatTime::from_ratio(1, 2).unwrap(),
+        pitch: 60,
+        channel: 0,
+        velocity: 100,
+    }));
+    let (applied, _) = h.applied(applied);
+    let mut insertion = request(&note.state, PluginEffectDestination::Instrument(track));
+    insertion.selection = selected;
+    h.service
+        .submit(Request::InsertPluginEffect(insertion))
+        .unwrap();
+    let inserted = terminal(&mut h);
+    assert!(inserted.error.is_none(), "{:?}", inserted.error);
+    h.applied(applied);
+    assert!(
+        imported
+            .state
+            .canonical_audio_source
+            .as_ref()
+            .unwrap()
+            .sources()
+            .values()
+            .any(|source| matches!(source, hex_session::AudioSourceBinding::VerifiedFile(_)))
+    );
+    let before = Arc::clone(&inserted.state.project);
+    let live = h.plugin_progress.lock().unwrap().binding;
+    let path = files.0.join("instrument-export.wav");
+    let queued = super::super::resident_sections::run_callback(
+        &mut h,
+        Request::ExportRange {
+            path: path.clone(),
+            start: 0,
+            frames: Some(1024),
+            signal: ExportSignal::Main,
+            control: ExportControl::default(),
+            format: hex_export::ExportFormat::Pcm16,
+            overwrite: false,
+        },
+    );
+    assert!(queued.error.is_none(), "{:?}", queued.error);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let completed = loop {
+        h.pump();
+        h.render();
+        if let Ok(event) = h.service.try_export_event() {
+            break event;
+        }
+        assert!(Instant::now() < deadline, "instrument export timed out");
+        std::thread::yield_now();
+    };
+    assert_eq!(completed.result.expect("instrument export").frames, 1024);
+    let wav = fs::read(path).unwrap();
+    let pcm: Vec<_> = wav[44..]
+        .chunks_exact(4)
+        .map(|frame| i16::from_le_bytes([frame[0], frame[1]]))
+        .collect();
+    assert!(
+        pcm.iter().any(|sample| i32::from(*sample) > 8194),
+        "instrument must add audible PCM"
+    );
+    assert_eq!(queued.state.project, before);
+    assert_eq!(h.plugin_progress.lock().unwrap().binding, live);
+    assert_eq!(fs::read(source).unwrap().len(), 44 + 16_384 * 2);
+}
