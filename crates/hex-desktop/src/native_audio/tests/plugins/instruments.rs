@@ -4344,6 +4344,11 @@ fn installed_instrument_and_effect_export_with_streamed_audio() {
     let probe = std::env::var_os("HEX_TEST_EXPORT_PROBE").is_some();
     let complete = std::env::var_os("HEX_TEST_EXPORT_COMPLETE").is_some();
     let verify_live_state = std::env::var_os("HEX_TEST_EXPORT_LIVE_STATE").is_some();
+    let live_edit = std::env::var_os("HEX_TEST_EXPORT_LIVE_EDIT").is_some();
+    assert!(
+        !live_edit || std::env::var_os("HEX_TEST_EXPORT_LIVE_PLAYBACK").is_some(),
+        "live edit requires mixed playback"
+    );
     let source_frames = if probe || complete { 8_000_001 } else { 16_384 };
     let source = files.wav(48_000, source_frames);
     // Distinct long silent sections reveal stale, skipped, or shifted streamed
@@ -4405,6 +4410,9 @@ fn installed_instrument_and_effect_export_with_streamed_audio() {
     let inserted = terminal(&mut h);
     assert!(inserted.error.is_none(), "{:?}", inserted.error);
     let (mut applied, _) = h.applied(applied);
+    let mut expected_revision = inserted.state.revision;
+    let mut expected_can_undo = inserted.state.can_undo;
+    let mut expected_can_redo = inserted.state.can_redo;
     if std::env::var_os("HEX_TEST_EXPORT_LIVE_PLAYBACK").is_some() {
         assert!(
             complete,
@@ -4495,6 +4503,81 @@ fn installed_instrument_and_effect_export_with_streamed_audio() {
             heard_after_marker,
             "mixed playback did not resume after the streamed marker"
         );
+        if live_edit {
+            let position_before = h
+                .audio
+                .as_ref()
+                .unwrap()
+                .status()
+                .unwrap()
+                .position
+                .load(Acquire);
+            let muted = super::automation::edit_with_running_callback(
+                &mut h,
+                Request::Edit(Command::Mute {
+                    track: audio_track,
+                    muted: true,
+                }),
+            );
+            assert!(muted.error.is_none(), "mixed mute: {:?}", muted.error);
+            (applied, _) = h.applied(applied);
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let mut silent_blocks = 0;
+            loop {
+                let block = render_completed_block(&h);
+                let status = h.audio.as_ref().unwrap().status().unwrap();
+                assert!(status.playing.load(Acquire), "playback stopped during mute");
+                assert!(
+                    status.render_fault_snapshot().is_none(),
+                    "mute render fault"
+                );
+                if !status.stream_buffering.load(Acquire)
+                    && block.iter().flatten().all(|sample| sample.abs() < 1e-6)
+                {
+                    silent_blocks += 1;
+                    if silent_blocks == 8 {
+                        break;
+                    }
+                } else {
+                    silent_blocks = 0;
+                }
+                assert!(Instant::now() < deadline, "mixed mute did not reach output");
+            }
+            let undone = super::automation::edit_with_running_callback(&mut h, Request::Undo);
+            assert!(undone.error.is_none(), "mixed undo: {:?}", undone.error);
+            assert_eq!(undone.state.project, inserted.state.project);
+            (applied, _) = h.applied(applied);
+            expected_revision = undone.state.revision;
+            expected_can_undo = undone.state.can_undo;
+            expected_can_redo = undone.state.can_redo;
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                let block = render_completed_block(&h);
+                let status = h.audio.as_ref().unwrap().status().unwrap();
+                assert!(status.playing.load(Acquire), "playback stopped during undo");
+                assert!(
+                    status.render_fault_snapshot().is_none(),
+                    "undo render fault"
+                );
+                if !status.stream_buffering.load(Acquire)
+                    && block.iter().flatten().any(|sample| sample.abs() > 0.01)
+                {
+                    break;
+                }
+                assert!(Instant::now() < deadline, "mixed undo did not reach output");
+            }
+            assert!(
+                h.audio
+                    .as_ref()
+                    .unwrap()
+                    .status()
+                    .unwrap()
+                    .position
+                    .load(Acquire)
+                    > position_before,
+                "mixed playback did not advance across edit and undo"
+            );
+        }
         h.audio
             .as_mut()
             .unwrap()
@@ -4528,7 +4611,7 @@ fn installed_instrument_and_effect_export_with_streamed_audio() {
         let saved = h.run(Request::SaveNew(saved_path.clone()));
         assert!(saved.save_complete);
         assert_eq!(saved.state.project, before);
-        assert_eq!(saved.state.revision, inserted.state.revision);
+        assert_eq!(saved.state.revision, expected_revision);
         Some(hex_storage::load(&saved_path).unwrap())
     } else {
         None
@@ -4650,9 +4733,9 @@ fn installed_instrument_and_effect_export_with_streamed_audio() {
         let saved = h.run(Request::SaveCurrent);
         assert!(saved.save_complete);
         assert_eq!(saved.state.project, before);
-        assert_eq!(saved.state.revision, inserted.state.revision);
-        assert_eq!(saved.state.can_undo, inserted.state.can_undo);
-        assert_eq!(saved.state.can_redo, inserted.state.can_redo);
+        assert_eq!(saved.state.revision, expected_revision);
+        assert_eq!(saved.state.can_undo, expected_can_undo);
+        assert_eq!(saved.state.can_redo, expected_can_redo);
         let captured_after = hex_storage::load(&saved_path).unwrap();
         let instrument_state = |project: &hex_project::Project| {
             project
