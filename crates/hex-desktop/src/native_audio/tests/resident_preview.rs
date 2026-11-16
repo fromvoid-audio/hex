@@ -48,6 +48,7 @@ fn assert_loop_pcm(h: &ResidentHarness, level: f32) -> [hex_engine::Frame; 64] {
 type PluginFixture = (
     hex_audio::plugin_effects::Hosting,
     Option<hex_audio::plugin_effects::EffectPresentation>,
+    Option<hex_diagnostics::DiagnosticsHandle>,
 );
 #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
 enum PluginFixture {}
@@ -2139,7 +2140,7 @@ impl ResidentHarness {
             Arc::new(AtomicBool::new(true)),
             4,
             rate,
-            Some((host, presentation)),
+            Some((host, presentation, None)),
             None,
             None,
             None,
@@ -2156,7 +2157,7 @@ impl ResidentHarness {
             Arc::new(AtomicBool::new(true)),
             4,
             48_000,
-            Some((host, presentation)),
+            Some((host, presentation, None)),
             Some(facts),
             None,
             None,
@@ -2171,6 +2172,24 @@ impl ResidentHarness {
         Self::with_plugins_at_rate_and_catalog(host, presentation, 48_000, catalog, 8192)
     }
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub(super) fn with_plugins_catalog_and_diagnostics(
+        host: hex_audio::plugin_effects::Hosting,
+        presentation: Option<hex_audio::plugin_effects::EffectPresentation>,
+        catalog: PathBuf,
+        diagnostics: hex_diagnostics::DiagnosticsHandle,
+    ) -> Self {
+        Self::with_plugin_fixture(
+            8192,
+            Arc::new(AtomicBool::new(true)),
+            4,
+            48_000,
+            Some((host, presentation, Some(diagnostics))),
+            None,
+            Some(catalog),
+            None,
+        )
+    }
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     pub(super) fn with_plugins_at_rate_and_catalog(
         host: hex_audio::plugin_effects::Hosting,
         presentation: Option<hex_audio::plugin_effects::EffectPresentation>,
@@ -2183,7 +2202,7 @@ impl ResidentHarness {
             Arc::new(AtomicBool::new(true)),
             4,
             rate,
-            Some((host, presentation)),
+            Some((host, presentation, None)),
             None,
             Some(catalog),
             None,
@@ -2203,7 +2222,7 @@ impl ResidentHarness {
             Arc::new(AtomicBool::new(true)),
             4,
             rate,
-            Some((host, presentation)),
+            Some((host, presentation, None)),
             None,
             Some(catalog),
             Some(recovery),
@@ -2241,8 +2260,9 @@ impl ResidentHarness {
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         let plugin_failure = Arc::new(Mutex::new(None));
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-        if let Some((host, presentation)) = plugin {
+        if let Some((host, presentation, diagnostics)) = plugin {
             inner.plugins = crate::native_audio::plugins::Plugins::with_fixture(host, presentation);
+            inner.plugins.set_diagnostics(diagnostics);
             inner.plugins.catalog = catalog;
             inner.plugins.facts_gate = facts_gate;
             inner.plugins.progress = Some(Arc::clone(&plugin_progress));

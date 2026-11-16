@@ -975,6 +975,15 @@ impl CandidateRoot {
             endpoint.take_failure_diagnostic_on_control()
         })?
     }
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub(crate) fn take_native_source_slow_exchange(
+        &self,
+        binding: Binding,
+    ) -> Option<crate::plugin_worker::SlowPluginExchange> {
+        self.with_native_source_endpoint(binding, |_, endpoint| {
+            endpoint.take_slow_exchange_on_control()
+        })?
+    }
     fn with_native_source_endpoint<T>(
         &self,
         binding: Binding,
