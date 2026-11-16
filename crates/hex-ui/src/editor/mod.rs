@@ -88,6 +88,7 @@ mod activation;
 mod activation_ui_test;
 mod arranger_navigation;
 mod audio_import_settings;
+mod audio_recording;
 pub(crate) mod changelog;
 mod clip_detail_resize;
 #[cfg(all(test, feature = "ui-test-support"))]
@@ -928,6 +929,7 @@ pub(super) struct EditorView {
     device_panel: device_panel::DevicePanelState,
     project_spectrum: project_spectrum::ProjectSpectrumState,
     sample_recorder: sample_recorder::Recorder,
+    audio_recorder: audio_recording::Recorder,
     worker_requests_pending: usize,
     sampler_load: sampler_load::State,
     sampler_parameter: sampler_parameter::State,
@@ -1736,6 +1738,7 @@ impl EditorView {
             device_panel: device_panel::DevicePanelState::default(),
             project_spectrum: Default::default(),
             sample_recorder: Default::default(),
+            audio_recorder: Default::default(),
             worker_requests_pending: 0,
             sampler_load: Default::default(),
             sampler_parameter: Default::default(),

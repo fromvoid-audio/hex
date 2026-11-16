@@ -209,6 +209,10 @@ impl CoordinatedJob {
     pub fn path(&self) -> &Path {
         &self.path
     }
+    /// True only after the input worker confirms its stream is capturing.
+    pub fn input_capturing_on_control(&self) -> bool {
+        self.input_stop.shared.phase.load(Acquire) == super::CAPTURING
+    }
     pub fn stop_on_control(&self) {
         self.cancel.store(true, Release);
         self.input_stop.stop_on_control();

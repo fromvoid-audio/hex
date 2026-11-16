@@ -54,6 +54,15 @@ pub struct InputFormat {
     pub sample_format: cpal::SampleFormat,
 }
 
+impl InputFormat {
+    /// Whether this reported range supports the capture worker's exact f32 format.
+    pub fn supports_recording(&self, sample_rate: u32, channels: u16) -> bool {
+        self.sample_format == cpal::SampleFormat::F32
+            && self.channels == channels
+            && (self.min_sample_rate..=self.max_sample_rate).contains(&sample_rate)
+    }
+}
+
 /// An input device and its currently reported configurations.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InputDevice {
@@ -268,6 +277,27 @@ pub fn resolve_input_device_on_control(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recording_format_checks_exact_rate_channels_and_float_samples() {
+        let format = InputFormat {
+            channels: 2,
+            min_sample_rate: 44_100,
+            max_sample_rate: 96_000,
+            sample_format: cpal::SampleFormat::F32,
+        };
+        assert!(format.supports_recording(48_000, 2));
+        assert!(format.supports_recording(44_100, 2));
+        assert!(!format.supports_recording(48_000, 1));
+        assert!(!format.supports_recording(192_000, 2));
+        assert!(
+            !InputFormat {
+                sample_format: cpal::SampleFormat::I16,
+                ..format
+            }
+            .supports_recording(48_000, 2)
+        );
+    }
 
     fn id(value: &str) -> InputDeviceId {
         InputDeviceId(cpal::DeviceId(cpal::default_host().id(), value.into()))
