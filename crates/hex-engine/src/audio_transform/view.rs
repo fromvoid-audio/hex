@@ -25,6 +25,42 @@ pub struct AudioPreviewRoot {
 }
 
 impl AudioTransformPreparation {
+    /// Prepare a resident, uncommitted frame-clock repeat-period preview.
+    ///
+    /// Call on a control worker with the clip's already accepted decoded source;
+    /// rate and extent checks do not establish its identity. The
+    /// returned clip owns its prepared audio but does not publish a graph,
+    /// mutate the project or confer a saved edit. Unsupported source shapes,
+    /// stale media and capacity/cancellation failures are returned explicitly.
+    pub fn preview_repeat_period(
+        &self,
+        project: &CanonicalProject,
+        clip_id: hex_project::ClipId,
+        source: &Audio,
+        period: u64,
+    ) -> Result<Clip, Invalid> {
+        let clip = project
+            .clip(clip_id)
+            .ok_or(Invalid("audio preview clip is missing"))?;
+        let edit = clip
+            .audio_edit()
+            .ok_or(Invalid("audio repeat preview requires a captured repeat"))?;
+        let asset = project
+            .asset(clip.asset())
+            .ok_or(Invalid("audio preview asset is missing"))?;
+        edit.validate(clip, project.tempo_map(), asset.playback_frames())?;
+        let projection = AudioViewProjection::new(clip, project.tempo_map())?
+            .preview_frame_repeat_period(period)?;
+        self.compile_view_projection(
+            project.tempo_map(),
+            clip,
+            edit,
+            asset,
+            PreparedAudioSourceRef::Resident(source),
+            projection,
+        )
+    }
+
     /// Resolve the retained first forward processing root for an accepted finite
     /// placement or directed content view. Use inside the caller's existing
     /// preparation transaction;

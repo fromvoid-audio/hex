@@ -498,6 +498,11 @@ fn uncommitted_repeat_gap_prepares_source_and_silence_without_cache_aliasing() {
         let before = editor.project().snapshot();
         let canonical = hex_project::AudioViewProjection::new(clip, tempo).unwrap();
         assert!(canonical.preview_frame_repeat_period(1_999).is_err());
+        assert!(
+            context
+                .preview_repeat_period(editor.project(), clip_id, source, 1_999)
+                .is_err()
+        );
         for period in [3_000, 4_000] {
             let preview = canonical.preview_frame_repeat_period(period).unwrap();
             assert!(preview.has_silent_repeat_gap());
@@ -516,14 +521,7 @@ fn uncommitted_repeat_gap_prepares_source_and_silence_without_cache_aliasing() {
                 "a projection must remain bound to its original clip"
             );
             let prepared = context
-                .compile_view_projection(
-                    tempo,
-                    clip,
-                    edit,
-                    asset,
-                    crate::compile::PreparedAudioSourceRef::Resident(source),
-                    preview,
-                )
+                .preview_repeat_period(editor.project(), clip_id, source, period)
                 .unwrap();
             assert!(!prepared.looping, "a gapped placement must materialize");
             let actual = prepared.audio.as_ref().unwrap().frames();
@@ -538,6 +536,17 @@ fn uncommitted_repeat_gap_prepares_source_and_silence_without_cache_aliasing() {
                 })
                 .collect();
             assert_eq!(actual, expected, "phase={phase} period={period}");
+            let track = crate::Track::new(vec![prepared], 1.0, false).unwrap();
+            let arrangement = crate::Project::new(16_000, vec![track]).unwrap();
+            for block in [1, 127, 257] {
+                let mut renderer = crate::Renderer::new(&arrangement);
+                renderer.play();
+                let mut pcm = vec![[0.0; 2]; expected.len()];
+                for chunk in pcm.chunks_mut(block) {
+                    renderer.render(chunk).unwrap();
+                }
+                assert_eq!(pcm, expected, "phase={phase} period={period} block={block}");
+            }
         }
         let normal = context
             .compile_view(
@@ -552,6 +561,28 @@ fn uncommitted_repeat_gap_prepares_source_and_silence_without_cache_aliasing() {
             normal.looping,
             "preview must not pollute the canonical cache"
         );
+        let wrong_source = Audio::new(44_100, vec![[0.0; 2]; 8_000]).unwrap();
+        assert!(
+            context
+                .preview_repeat_period(editor.project(), clip_id, &wrong_source, 3_000)
+                .is_err()
+        );
+        let short_source = Audio::new(16_000, vec![[0.0; 2]; 7_999]).unwrap();
+        assert!(
+            context
+                .preview_repeat_period(editor.project(), clip_id, &short_source, 3_000)
+                .is_err()
+        );
+        let canceled = isolated(128_000, 64_000, 1);
+        canceled
+            .shutdown
+            .store(true, std::sync::atomic::Ordering::Release);
+        assert!(
+            canceled
+                .preview_repeat_period(editor.project(), clip_id, source, 3_000)
+                .is_err()
+        );
+        assert_eq!(canceled.retained_pcm_bytes(), 0);
         assert_eq!(editor.project().snapshot(), before);
     }
 }
