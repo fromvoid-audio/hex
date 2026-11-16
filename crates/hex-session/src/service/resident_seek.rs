@@ -341,6 +341,7 @@ impl Lane {
             snapshot: resident_audio::Snapshot {
                 source_origin: selected.source_origin,
                 prepared_context: selected.prepared_context,
+                submission: None,
                 file_sources: selected.file_sources.clone(),
                 prepared: Arc::clone(&selected.prepared),
                 resources: anchor,

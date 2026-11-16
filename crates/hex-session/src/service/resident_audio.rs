@@ -21,12 +21,39 @@ pub(super) struct Snapshot {
     /// Exact context used to prepare this graph. A retained overlay based on an
     /// older editor revision may still need accounting while it is rebased.
     pub(super) prepared_context: hex_engine::AudioSourceContext,
+    /// Latest submission of this exact prepared owner; never an application ACK.
+    pub(super) submission: Option<ResidentGraphSubmission>,
     pub(super) prepared: Arc<PreparedRevision>,
     pub(super) resources: PreparedDeviceResources,
     pub(super) inputs: RuntimeInputs,
     pub(super) file_sources: Option<ResidentFileSet>,
 }
 impl Snapshot {
+    pub(super) fn record_submission(
+        &mut self,
+        context: hex_engine::AudioSourceContext,
+        acceptance: ResidentPublicationAcceptance,
+    ) {
+        let next = match acceptance {
+            ResidentPublicationAcceptance::Submitted {
+                output_identity,
+                audio_revision,
+            } if context == self.prepared_context
+                && output_identity != 0
+                && audio_revision != 0 =>
+            {
+                Some(ResidentGraphSubmission {
+                    output_identity,
+                    audio_revision,
+                    context,
+                })
+            }
+            _ => None,
+        };
+        if self.submission != next {
+            self.submission = next;
+        }
+    }
     pub(super) fn include_file_sources<'a>(
         &'a self,
         view: DeviceResourceAdmission<'a>,
@@ -540,6 +567,7 @@ impl Inputs<'_> {
         let snapshot = Snapshot {
             source_origin: ResidentSourceOrigin::Unknown,
             prepared_context: context,
+            submission: None,
             file_sources,
             resources,
             prepared: Arc::new(prepared),
@@ -670,6 +698,7 @@ impl Inputs<'_> {
             ResidentPublicationPolicy::ArrangementEdit,
             selected.allowance()?,
         )?;
+        snapshot.record_submission(context, accepted);
         selected.cancel_retired_from(&previous);
         snapshot.inputs = selected;
         Ok(accepted)
@@ -777,6 +806,7 @@ impl Inputs<'_> {
             .ok_or(SessionError::Invalid("resident runtime allowance overflow"))?;
         let accepted =
             self.publish_runtime(snapshot, playback, sink, metadata, policy, additional_bytes)?;
+        snapshot.record_submission(metadata.context, accepted);
         selected.cancel_retired_from(&previous);
         snapshot.inputs = selected;
         Ok(accepted)
@@ -1802,6 +1832,11 @@ impl Session {
         let accepted = self
             .resident_seek_inputs(admission, Some(current), Some(cancelled))?
             .publish_runtime(snapshot, playback, sink, metadata, policy, extra)?;
+        if Arc::ptr_eq(&current.prepared, &snapshot.prepared) {
+            current.record_submission(metadata.context, accepted);
+        } else {
+            current.submission = None;
+        }
         selected.cancel_retired_from(&current.inputs);
         current.inputs = selected;
         Ok(accepted)
@@ -1818,7 +1853,7 @@ impl Session {
         required: Option<RequiredInput>,
     ) -> Result<Option<hex_engine::computer_keyboard::ComputerKeyboardTuningHint>, SessionError>
     {
-        let (hint, accepted) = self.prepare_resident_runtime_inputs(
+        let (hint, accepted, submission) = self.prepare_resident_runtime_inputs(
             snapshot,
             self.project(),
             sink,
@@ -1828,6 +1863,7 @@ impl Session {
             selected,
             required,
         )?;
+        snapshot.record_submission(metadata.context, submission);
         accepted.cancel_retired_from(&snapshot.inputs);
         snapshot.inputs = accepted;
         Ok(hint)
@@ -1847,6 +1883,7 @@ impl Session {
         (
             Option<hex_engine::computer_keyboard::ComputerKeyboardTuningHint>,
             RuntimeInputs,
+            ResidentPublicationAcceptance,
         ),
         SessionError,
     > {
@@ -1876,7 +1913,7 @@ impl Session {
         }
         selected.selected_after(&snapshot.inputs)?;
         let hint = playback.computer_keyboard_tuning_hint();
-        inputs.publish_runtime(
+        let accepted = inputs.publish_runtime(
             snapshot,
             playback,
             sink,
@@ -1884,7 +1921,7 @@ impl Session {
             policy,
             selected.allowance()?,
         )?;
-        Ok((hint, selected))
+        Ok((hint, selected, accepted))
     }
     fn resident_seek_inputs<'a>(
         &'a self,

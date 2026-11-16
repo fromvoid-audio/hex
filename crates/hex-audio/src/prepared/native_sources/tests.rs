@@ -8,6 +8,28 @@ use crate::prepared::candidate_tests::{finish, serial};
 use std::time::{Duration, Instant};
 
 #[test]
+fn stopped_frontier_preserves_only_actual_quantum_and_empty_receipt() {
+    use crate::plugin_worker::CommittedQuantumState;
+    use hex_engine::ForeignProgramFrontier as Frontier;
+    let key = std::num::NonZeroU64::new(7).unwrap();
+    for (quantum, expected_key) in [
+        (CommittedQuantumState::Closed, None),
+        (CommittedQuantumState::OpenUnprogrammed, None),
+        (CommittedQuantumState::OpenProgram(key), Some(key)),
+    ] {
+        for worker in [Frontier::Unknown, Frontier::Empty, Frontier::Program(key)] {
+            assert_eq!(
+                stopped_program_frontier(quantum, worker),
+                Frontier::Stopped {
+                    open_quantum: expected_key,
+                    worker_empty: worker == Frontier::Empty,
+                }
+            );
+        }
+    }
+}
+
+#[test]
 fn committed_quantum_is_unavailable_without_native_custody_or_after_closing() {
     let (mut control, _callback) = channel(48_000).unwrap();
     let binding = Binding {
