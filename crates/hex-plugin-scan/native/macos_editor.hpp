@@ -58,10 +58,32 @@ public:
             return false;
         }
         const auto flags=[event modifierFlags];
+        const int16 modifiers=(flags&NSEventModifierFlagShift?kShiftKey:0) |
+            (flags&NSEventModifierFlagOption?kAlternateKey:0) |
+            (flags&NSEventModifierFlagCommand?kCommandKey:0) |
+            (flags&NSEventModifierFlagControl?kControlKey:0);
         id responder=[window firstResponder];
         const bool text_responder=[responder respondsToSelector:@selector(hasMarkedText)];
         int16 key=owner?key_values[code]:0;
         char16 character=owner?key_characters[code]:0;
+        if(owner==2 && character && [event type]==NSEventTypeKeyDown) {
+            NSString* typed=[event characters];
+            const bool ascii=[typed length]==1 && [typed characterAtIndex:0]>=0x20 &&
+                [typed characterAtIndex:0]<=0x7e;
+            if(text_responder || (flags&NSEventModifierFlagOption) || !ascii) {
+                // End the SDK's logical pair before handing this repeat and
+                // its physical release to AppKit's text input system.
+                owner=0;
+                const auto serial=++key_serials[code];
+                const auto epoch=focus_epoch;
+                view->onKeyUp(character,key,modifiers);
+                if(epoch==focus_epoch && serial==key_serials[code]) {
+                    owner=1;++key_serials[code];
+                }
+                return false;
+            }
+            character=[typed characterAtIndex:0];
+        }
         if(!owner) {
             NSString* characters=[event charactersIgnoringModifiers];
             if([characters length]!=1) return false;
@@ -83,10 +105,6 @@ public:
                 key=CharToVirtualKeyCode(upper);
             }
         }
-        const int16 modifiers=(flags&NSEventModifierFlagShift?kShiftKey:0) |
-            (flags&NSEventModifierFlagOption?kAlternateKey:0) |
-            (flags&NSEventModifierFlagCommand?kCommandKey:0) |
-            (flags&NSEventModifierFlagControl?kControlKey:0);
         if(text_responder && [(id<NSTextInputClient>)responder hasMarkedText] && !owner) return false;
         if([event type]==NSEventTypeKeyDown) {
             const auto previous_owner=owner;
