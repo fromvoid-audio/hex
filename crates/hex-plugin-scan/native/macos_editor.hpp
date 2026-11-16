@@ -21,11 +21,16 @@ class EditorFrame final : public IPlugFrame {
     NSWindow* window;
     IPlugView* view;
     NSSize accepted_size;
-    bool resizing=false;
+    bool resizing=false,focused=false;
 public:
     EditorFrame(NSWindow* parent,IPlugView* editor):window(parent),view(editor),
         accepted_size([[parent contentView] bounds].size) {}
     void invalidate() { window=nil;view=nullptr; }
+    void focus_changed(bool active) {
+        if(![NSThread isMainThread] || !window || !view || focused==active) return;
+        focused=active;
+        view->onFocus(active);
+    }
     static NSWindowStyleMask window_style(IPlugView& editor) {
         auto style=NSWindowStyleMaskTitled|NSWindowStyleMaskClosable;
         if(editor.canResize()==kResultOk) style|=NSWindowStyleMaskResizable;
@@ -125,6 +130,12 @@ private:
 - (void)windowDidResize:(NSNotification*)notification {
     editor_frame->window_did_resize();
 }
+- (void)windowDidBecomeKey:(NSNotification*)notification {
+    editor_frame->focus_changed(true);
+}
+- (void)windowDidResignKey:(NSNotification*)notification {
+    editor_frame->focus_changed(false);
+}
 @end
 
 namespace hex_instance {
@@ -207,6 +218,7 @@ public:
         if(quarantined) return false;
         if(!view) return true;
         const bool was_visible=window && [window isVisible];
+        if(frame) frame->focus_changed(false);
         if(resize_delegate) {
             [window setDelegate:nil];
             [resize_delegate release];resize_delegate=nil;
@@ -262,11 +274,9 @@ public:
         if(!frame_set && frame_result!=kNotImplemented) return unavailable();
         if(view->attached([window contentView],kPlatformTypeNSView)!=kResultOk) return unavailable();
         attached=true;
-        if(style&NSWindowStyleMaskResizable) {
-            resize_delegate=[[HexVSTEditorResizeDelegate alloc] initWithEditorFrame:frame];
-            if(!resize_delegate) return unavailable();
-            [window setDelegate:resize_delegate];
-        }
+        resize_delegate=[[HexVSTEditorResizeDelegate alloc] initWithEditorFrame:frame];
+        if(!resize_delegate) return unavailable();
+        [window setDelegate:resize_delegate];
         // Apply the original top-left after attachment, when the SDK view
         // has supplied its final size. Ordering the panel keeps Hex focused.
         if(placement) restore_editor_window_position(window,*placement);
