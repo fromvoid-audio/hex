@@ -20,6 +20,7 @@ pub(crate) struct ClientEndpoints {
     pub(super) output_identity: u64,
     pub(super) sample_preview: crate::sample_preview::Control,
     sample_recording: crate::sample_recording::Control,
+    input_monitor: input_monitor::Control,
     pub(super) resident_forwarding: Arc<resident_forwarding::ResidentForwarding>,
     spectrum_reader: Option<crate::spectrum_worker::SpectrumReader>,
     commands: Producer<QueuedCommand>,
@@ -50,6 +51,7 @@ impl Control {
             action_admission,
             sample_preview,
             sample_recording,
+            input_monitor,
             commands,
             spectrum_target,
             processor_audition,
@@ -78,6 +80,7 @@ impl Control {
             output_identity,
             sample_preview,
             sample_recording,
+            input_monitor,
             resident_forwarding,
             spectrum_reader,
             commands,
@@ -245,6 +248,7 @@ impl Client {
         if let Some(endpoints) = self.endpoints.owner_ref() {
             endpoints.midi_recording.cancel();
             endpoints.sample_recording.stop();
+            endpoints.input_monitor.stop();
             endpoints.status.closing.store(true, Release);
             endpoints.stop();
         }
@@ -475,6 +479,14 @@ impl Client {
             e.sample_preview.reclaim();
         }
     }
+    /// Access monitor state and reclamation, including after an output fault.
+    /// A queued publication is stopped by the callback when the output faults.
+    pub fn input_monitor(&mut self) -> Option<&mut input_monitor::Control> {
+        self.endpoints
+            .owner_mut()
+            .map(|owner| &mut owner.input_monitor)
+    }
+
     pub fn start_sample_recording(
         &mut self,
         project_generation: u64,

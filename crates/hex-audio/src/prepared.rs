@@ -98,6 +98,9 @@ mod applied_source;
 mod delay_tests;
 #[cfg(all(test, feature = "allocation-probe"))]
 mod device_resources_tests;
+pub mod input_monitor;
+#[cfg(test)]
+mod input_monitor_tests;
 #[cfg(all(test, feature = "allocation-probe"))]
 mod keyboard_activation_tests;
 #[cfg(all(test, feature = "allocation-probe"))]
@@ -1303,6 +1306,7 @@ pub struct Control {
     action_admission: Option<action_outcomes::Admission>,
     pub sample_preview: crate::sample_preview::Control,
     pub sample_recording: crate::sample_recording::Control,
+    pub input_monitor: input_monitor::Control,
     commands: Producer<QueuedCommand>,
     pub spectrum_target: spectrum_target::SpectrumTargetControl,
     pub processor_audition: processor_audition::ProcessorAuditionTargetControl,
@@ -1444,6 +1448,7 @@ pub struct Callback {
     transport_setup_open: bool,
     sample_preview: crate::sample_preview::Callback,
     sample_recording: crate::sample_recording::Callback,
+    input_monitor: input_monitor::Callback,
     publications: Consumer<QueuedPublication>,
     retired: Producer<ReturnedPublication>,
     candidate_root: crate::candidate_custody::CandidateRoot,
@@ -1538,6 +1543,7 @@ pub(crate) fn channel_with_interface(
     if !(8_000..=192_000).contains(&rate) {
         return Err(Invalid("unsupported playback sample rate"));
     }
+    let (input_monitor, callback_input_monitor) = input_monitor::channel(rate);
     let (mut sample_preview, callback_preview) = crate::sample_preview::channel(rate);
     let (sample_recording, callback_recording) = crate::sample_recording::channel(rate);
     let (publications, incoming) = RingBuffer::new(1);
@@ -1576,6 +1582,7 @@ pub(crate) fn channel_with_interface(
             action_admission: None,
             sample_preview,
             sample_recording,
+            input_monitor,
             commands,
             spectrum_target,
             processor_audition,
@@ -1617,6 +1624,7 @@ pub(crate) fn channel_with_interface(
             transport_setup_open: true,
             sample_preview: callback_preview,
             sample_recording: callback_recording,
+            input_monitor: callback_input_monitor,
             candidate_root,
             publications: incoming,
             retired: returning,
@@ -2726,6 +2734,7 @@ impl Control {
         self.status.sampler_keyboard.revoke_all();
         self.status.closing.store(true, Release);
         self.sample_preview.shutdown();
+        self.input_monitor.stop();
         self.stop();
     }
     /// Resident compatibility reclamation; Verified clients never own preview PCM.
@@ -2990,6 +2999,7 @@ impl Callback {
             .plus(crate::sample_recording::Control::callback_storage(
                 &self.sample_recording,
             )?)?
+            .plus(self.input_monitor.constructor_channel_storage()?)?
             .plus(self.gain_recording.constructor_channel_storage()?)?
             .plus(self.native_parameter_input.constructor_channel_storage()?)?
             .plus(
@@ -3327,6 +3337,10 @@ impl Callback {
     fn begin_block_inner(&mut self) {
         self.transport_setup_open = false;
         self.device_fault_fenced_in_block = false;
+        self.input_monitor.begin_block(
+            self.status.closing.load(Acquire),
+            self.status.device_fault.load(Acquire),
+        );
         if self.status.device_fault.load(Acquire) && !self.status.closing.load(Acquire) {
             self.fence_device_fault();
             return;
@@ -5318,7 +5332,38 @@ impl Callback {
                 .end(crate::sample_recording::End::SourceChanged);
         }
         let mut recording = self.sample_recording.observation();
-        if !node_observed && !project_observed && recording.is_none() {
+        let monitor_track = self.input_monitor.target();
+        let monitor_supported = output.len() <= 256
+            && !project_observed
+            && recording
+                .as_ref()
+                .is_none_or(|(layout, _)| layout.timing_only)
+            && self
+                .active
+                .as_ref()
+                .is_some_and(|active| !active.streaming_enabled())
+            && active.as_ref().is_some_and(|active| {
+                monitor_track.is_some_and(|target| match target {
+                    hex_engine::OutputCaptureId::Track(track) => {
+                        active.playback.project_output_supported(&[track.value()])
+                    }
+                    _ => false,
+                })
+            });
+        let playing = active
+            .as_ref()
+            .is_some_and(|active| active.playback.playing());
+        let mut live_input = monitor_track.map(|_| [[0.0; 2]; 256]);
+        let live_len = output.len().min(256);
+        let monitor = live_input.as_mut().and_then(|input| {
+            self.input_monitor.read(
+                recording_source,
+                monitor_supported,
+                playing,
+                &mut input[..live_len],
+            )
+        });
+        if !node_observed && !project_observed && recording.is_none() && monitor.is_none() {
             return self.render_unobserved(output, capture_offset);
         }
         if self.status.closing.load(Acquire) {
@@ -5476,12 +5521,23 @@ impl Callback {
             .as_mut()
             .and_then(ActivePublication::current_mut)
         {
-            active.playback.render_with_signal_observers(
-                output,
-                node,
-                project.as_mut(),
-                foreign,
-            )?;
+            if let (Some(track), Some(input)) = (monitor, live_input.as_ref()) {
+                active.playback.render_with_live_track_audio(
+                    output,
+                    track,
+                    &input[..live_len],
+                    node,
+                    project.as_mut(),
+                    foreign,
+                )?;
+            } else {
+                active.playback.render_with_signal_observers(
+                    output,
+                    node,
+                    project.as_mut(),
+                    foreign,
+                )?;
+            }
         } else {
             output.fill([0.0; 2]);
         }
@@ -6202,6 +6258,7 @@ pub(crate) fn worker_boundary_storage_quote() -> Option<usize> {
         .checked_add(SESSION_ROUTE_CAPACITY.checked_mul(std::mem::size_of::<AtomicRouteSlot>())?)?
         .checked_add(crate::sample_preview::constructor_storage_quote()?)?
         .checked_add(crate::sample_recording::storage_quote()?)?
+        .checked_add(input_monitor::constructor_storage_quote()?)?
         .checked_add(crate::gain_recording::constructor_storage_quote()?)?
         .checked_add(crate::native_parameter_input::constructor_storage_quote()?)?
         .checked_add(crate::foreign_parameter_delivery::constructor_storage_quote()?)?
