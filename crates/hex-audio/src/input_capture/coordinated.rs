@@ -714,6 +714,7 @@ mod tests {
                 channels: 1,
                 sequence: 0,
                 previous: None,
+                monitor: None,
             };
             while state.phase.load(Acquire) != input_capture::STARTING && !state.stop.load(Acquire)
             {
@@ -772,6 +773,7 @@ mod tests {
                 channels: 1,
                 sequence: 0,
                 previous: None,
+                monitor: None,
             };
             while state.phase.load(Acquire) != input_capture::STARTING && !state.stop.load(Acquire)
             {
