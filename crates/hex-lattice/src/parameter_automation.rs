@@ -411,6 +411,26 @@ impl PreparedParameterAutomation {
         }
     }
 
+    /// Select foreign history while the caller holds the exact stopped source
+    /// fence and knows no omitted program can be used by any callback.
+    /// This control-side operation does not establish that fence or authorize
+    /// publication; failures leave the existing program owners unchanged.
+    pub fn retain_selected_foreign_history_on_control(
+        &mut self,
+        previous: &Self,
+        required: &[std::num::NonZeroU64],
+    ) -> Result<(), Error> {
+        let current = self
+            .foreign
+            .as_mut()
+            .ok_or(Error::ForeignProcessingFailed)?;
+        let previous = previous
+            .foreign
+            .as_ref()
+            .ok_or(Error::ForeignProcessingFailed)?;
+        current.retain_selected_on_control(previous, required)
+    }
+
     pub fn new(
         lanes: Vec<ParameterAutomationLane>,
         points: Vec<ParameterAutomationPoint>,
