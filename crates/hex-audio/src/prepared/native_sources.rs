@@ -1051,6 +1051,17 @@ impl PublicationControl {
         self.candidate_root
             .take_native_source_slow_exchange(binding)
     }
+    /// Drain an accepted concealed quantum for the exact active source.
+    pub fn take_native_source_concealed_output(
+        &self,
+        binding: Binding,
+    ) -> Option<hex_plugin_host::transport::ConcealedOutput> {
+        if self.status.closing.load(Acquire) {
+            return None;
+        }
+        self.candidate_root
+            .take_native_source_concealed_output(binding)
+    }
     /// Read the exact accepted endpoint's terminal diagnostic once, without
     /// joining its worker or exposing any callback state. Contention can defer it.
     pub fn take_native_source_failure_diagnostic(&self, binding: Binding) -> Option<String> {

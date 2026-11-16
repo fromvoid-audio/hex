@@ -8,6 +8,77 @@ const BINDING: Binding = Binding {
 };
 
 #[test]
+fn accepted_concealment_reports_exact_pair_and_bounded_overflow() {
+    let (control, mut callback, mut worker) =
+        native_pcm_channel_from_completed_prefix(BINDING, 8, 0).unwrap();
+    let counts = allocation_counter::measure(|| {
+        for _ in 0..2 {
+            callback
+                .stage(&[[0.0; 2]; 8], &[], &mut [[0.0; 2]; 8])
+                .unwrap();
+            callback.finish(true).unwrap();
+            assert!(
+                control.take_concealed_output().is_none(),
+                "pipeline warmup is not a miss"
+            );
+        }
+        // The first request is in flight when its output is needed.
+        assert_eq!(worker.receive().unwrap().unwrap().sequence, 0);
+        callback
+            .stage(&[[0.0; 2]; 8], &[], &mut [[0.0; 2]; 8])
+            .unwrap();
+        assert!(
+            control.take_concealed_output().is_none(),
+            "staged output is not yet accepted"
+        );
+        callback.finish(true).unwrap();
+        callback
+            .stage(&[[0.0; 2]; 8], &[], &mut [[0.0; 2]; 8])
+            .unwrap();
+        callback.finish(true).unwrap();
+        control.revoke();
+        assert_eq!(
+            control.take_concealed_output(),
+            Some(ConcealedOutput {
+                binding: BINDING,
+                miss: DeadlineMiss {
+                    reply_sequence: 0,
+                    worker_phase: DeadlineWorkerPhase::Processing
+                },
+                overflowed: true,
+            })
+        );
+        assert!(control.take_concealed_output().is_none());
+    });
+    assert_eq!(
+        (
+            counts.count_total,
+            counts.bytes_total,
+            counts.count_current,
+            counts.bytes_current
+        ),
+        (0, 0, 0, 0)
+    );
+}
+
+#[test]
+fn rejected_physical_callback_never_reports_a_concealed_output() {
+    let (control, mut callback, _worker) =
+        native_pcm_channel_from_completed_prefix(BINDING, 8, 0).unwrap();
+    for _ in 0..2 {
+        callback
+            .stage(&[[0.0; 2]; 8], &[], &mut [[0.0; 2]; 8])
+            .unwrap();
+        callback.finish(true).unwrap();
+    }
+    callback
+        .stage(&[[0.0; 2]; 8], &[], &mut [[0.0; 2]; 8])
+        .unwrap();
+    assert!(callback.finish(false).is_err());
+    assert!(control.take_concealed_output().is_none());
+}
+
+#[test]
 fn parameter_input_reservation_serializes_admission_and_callback() {
     use std::num::NonZeroU64;
     let ordinal = |n| NonZeroU64::new(n).unwrap();

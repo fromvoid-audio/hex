@@ -133,6 +133,11 @@ fn native_instrument_keeps_note_state_after_one_late_reply() {
     assert_eq!(render(&mut callback, &[on]), [[0.0; 2]; 8]);
     assert_eq!(render(&mut callback, &[]), [[0.0; 2]; 8]);
     assert_eq!(render(&mut callback, &[]), [[0.0; 2]; 8]);
+    let gap = owner.take_concealed_output_on_control().unwrap();
+    assert_eq!(gap.binding, owner.binding());
+    assert_eq!(gap.miss.reply_sequence, 0);
+    assert_eq!(gap.miss.worker_phase, DeadlineWorkerPhase::AwaitingPickup);
+    assert!(!gap.overflowed);
     release.send(()).unwrap();
     let wait_for = |blocks| {
         let deadline = std::time::Instant::now() + Duration::from_secs(3);

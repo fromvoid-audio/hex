@@ -36,6 +36,8 @@ fn slow_native_instrument_exchange_reaches_the_session_log() {
     let files = Files::new();
     let trace = PathBuf::from(std::env::var_os("HEX_ORIGINAL_INSTANCE_TRACE").unwrap());
     let release = PathBuf::from(std::env::var_os("HEX_ORIGINAL_INSTANCE_RELEASE").unwrap());
+    let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
+    let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
     let gate = std::thread::spawn(move || {
         let until = Instant::now() + Duration::from_secs(5);
         loop {
@@ -51,7 +53,9 @@ fn slow_native_instrument_exchange_reaches_the_session_log() {
             assert!(Instant::now() < until, "SDK process gate did not open");
             std::thread::sleep(Duration::from_millis(1));
         }
+        ready_tx.send(()).unwrap();
         std::thread::sleep(Duration::from_millis(15));
+        release_rx.recv_timeout(Duration::from_secs(3)).unwrap();
         fs::write(release, b"release").unwrap();
     });
     let selected = selection();
@@ -94,16 +98,23 @@ fn slow_native_instrument_exchange_reaches_the_session_log() {
         .command(PlaybackCommand::Play)
         .unwrap();
     harness.render_plugin_block();
+    ready_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+    harness.render_plugin_block();
+    harness.render_plugin_block();
+    release_tx.send(()).unwrap();
     gate.join().unwrap();
     let until = Instant::now() + Duration::from_secs(5);
-    let line = loop {
+    let (line, gap) = loop {
         harness.pump();
         let text = fs::read_to_string(&log_path).unwrap_or_default();
-        if let Some(line) = text
+        let slow = text
             .lines()
-            .find(|line| line.contains("stage=slow_exchange"))
-        {
-            break line.to_owned();
+            .find(|line| line.contains("stage=slow_exchange"));
+        let gap = text
+            .lines()
+            .find(|line| line.contains("stage=concealed_output"));
+        if let (Some(slow), Some(gap)) = (slow, gap) {
+            break (slow.to_owned(), gap.to_owned());
         }
         assert!(
             Instant::now() < until,
@@ -135,6 +146,12 @@ fn slow_native_instrument_exchange_reaches_the_session_log() {
     assert_eq!(number("sequence="), 0, "{line}");
     assert!(sdk >= 15_000_000 && exchange >= sdk, "{line}");
     assert_eq!(number("quantum_ns="), 5_333_333);
+    assert!(gap.contains(&format!("binding={binding:?}")), "{gap}");
+    assert!(
+        gap.contains("reply_sequence=0") && gap.contains("worker_phase=Processing"),
+        "{gap}"
+    );
+    assert!(gap.contains("overflowed="), "{gap}");
     drop(harness);
     log.shutdown().unwrap();
 }

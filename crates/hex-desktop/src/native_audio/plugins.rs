@@ -622,6 +622,19 @@ impl Plugins {
                             ),
                         );
                     }
+                    if let Some(log) = &self.diagnostics
+                        && let Some(sample) = control.take_native_source_concealed_output(source.binding)
+                    {
+                        let _ = log.record_typed(
+                            hex_diagnostics::Level::Warn,
+                            hex_diagnostics::Category::Audio,
+                            &format!(
+                                "vst3 v=1 stage=concealed_output generation={generation} output={output} device={} binding={:?} reply_sequence={} worker_phase={:?} overflowed={}",
+                                source.device, sample.binding, sample.miss.reply_sequence,
+                                sample.miss.worker_phase, sample.overflowed
+                            ),
+                        );
+                    }
                     if status == Some((true, false)) {
                         source.edit_backlog = false;
                     }
