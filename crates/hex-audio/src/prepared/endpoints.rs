@@ -493,6 +493,27 @@ impl Client {
             .start(project_generation, outputs, main)
     }
 
+    /// Reserve main-output timing for exactly the currently applied source.
+    /// Callback validation remains authoritative if the source changes after admission.
+    pub fn start_bound_output_recording(
+        &mut self,
+        source: AppliedAudioSource,
+    ) -> Result<crate::sample_recording::Reader, Invalid> {
+        let generation = self.project_generation;
+        let endpoints = self
+            .endpoints
+            .owner_mut()
+            .ok_or(Invalid("audio client is closed"))?;
+        if endpoints.status.closing.load(Acquire)
+            || endpoints.status.device_fault.load(Acquire)
+            || generation != Some(source.context.project_generation)
+            || endpoints.status.recording_source() != Some(source)
+        {
+            return Err(Invalid("audio recording source is unavailable or changed"));
+        }
+        endpoints.sample_recording.start_bound(source)
+    }
+
     pub fn sample_recording_phase(&self) -> Option<crate::sample_recording::Phase> {
         self.endpoints.owner_ref()?.sample_recording.phase()
     }
