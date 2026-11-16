@@ -1,7 +1,8 @@
 //! Linear whole-take matching against retained output timing on control.
 //!
-//! The result is a raw candidate only. Source and clock provenance, graph and
-//! hardware latency, and physical synchronization require separate evidence.
+//! Candidates require separate clock provenance, physical-latency and
+//! synchronization evidence. The audible matcher uses declared graph delay;
+//! the legacy raw matcher deliberately leaves it unadjusted.
 use super::timeline_overlap::frame_offset;
 use super::{
     ClockOverlapError, InputTake, InputTakeEnd, OutputWindow, SharedClock, timeline_overlap,
@@ -28,6 +29,9 @@ pub enum TakeAlignmentError {
     AmbiguousOutput,
     MissingCoverage,
     TimelineDiscontinuity,
+    MissingGraphLatency,
+    GraphLatencyChanged,
+    UnboundOutput,
     Clock(ClockOverlapError),
     Overflow,
 }
@@ -44,6 +48,9 @@ impl fmt::Display for TakeAlignmentError {
             Self::AmbiguousOutput => f.write_str("output packet clocks overlap or are invalid"),
             Self::MissingCoverage => f.write_str("output timeline does not cover the full take"),
             Self::TimelineDiscontinuity => f.write_str("rendered timeline is discontinuous"),
+            Self::MissingGraphLatency => f.write_str("output graph latency is unavailable"),
+            Self::GraphLatencyChanged => f.write_str("output graph latency changed"),
+            Self::UnboundOutput => f.write_str("output timing has no applied source binding"),
             Self::Clock(error) => write!(f, "clock overlap failed: {error}"),
             Self::Overflow => f.write_str("take alignment arithmetic overflowed"),
         }
@@ -65,6 +72,85 @@ pub fn align_complete_take(
     shared: SharedClock,
     take: &InputTake,
     output: &OutputClockIndex,
+) -> Result<CandidatePlacement, TakeAlignmentError> {
+    align_take(shared, take, output, 0)
+}
+
+/// Match input against delivered content after the applied graph's Main delay.
+/// Requires contiguous, source-bound output history throughout the take; a
+/// seek, loop, gap, unknown latency or latency change refuses the candidate.
+/// The caller must still establish a shared clock and physical latency.
+pub fn align_audible_take(
+    shared: SharedClock,
+    take: &InputTake,
+    output: &OutputClockIndex,
+) -> Result<CandidatePlacement, TakeAlignmentError> {
+    if output.source_binding().is_none() {
+        return Err(TakeAlignmentError::UnboundOutput);
+    }
+    let mut delay = None;
+    let mut previous: Option<(crate::sample_recording::OutputClock, u32, u64)> = None;
+    for i in 0..output.len() {
+        let packet = output
+            .packet(i)
+            .ok_or(TakeAlignmentError::AmbiguousOutput)?;
+        let actual = packet
+            .clock
+            .graph_latency_frames
+            .ok_or(TakeAlignmentError::MissingGraphLatency)?;
+        if delay.is_some_and(|expected| expected != actual) {
+            return Err(TakeAlignmentError::GraphLatencyChanged);
+        }
+        delay = Some(actual);
+        let mut position = 0_u64;
+        let mut timeline_end = previous.map(|(_, _, end)| end);
+        for span in packet.timing {
+            if span.take_start != position
+                || timeline_end.is_some_and(|end| end != span.timeline_start)
+            {
+                return Err(TakeAlignmentError::TimelineDiscontinuity);
+            }
+            position = span.take_end;
+            timeline_end = Some(
+                span.timeline_start
+                    .checked_add(span.take_end - span.take_start)
+                    .ok_or(TakeAlignmentError::Overflow)?,
+            );
+        }
+        if position != u64::from(packet.frames) {
+            return Err(TakeAlignmentError::MissingCoverage);
+        }
+        if let Some((clock, frames, _)) = previous {
+            let distance = frame_offset(
+                output.sample_rate(),
+                packet.clock.playback,
+                u64::from(packet.clock.offset_frames),
+                clock.playback,
+                u64::from(clock.offset_frames),
+            )?;
+            if distance != i128::from(frames) {
+                return Err(TakeAlignmentError::AmbiguousOutput);
+            }
+        }
+        previous = Some((
+            packet.clock,
+            packet.frames,
+            timeline_end.ok_or(TakeAlignmentError::MissingCoverage)?,
+        ));
+    }
+    align_take(
+        shared,
+        take,
+        output,
+        delay.ok_or(TakeAlignmentError::MissingCoverage)?,
+    )
+}
+
+fn align_take(
+    shared: SharedClock,
+    take: &InputTake,
+    output: &OutputClockIndex,
+    graph_delay: u32,
 ) -> Result<CandidatePlacement, TakeAlignmentError> {
     if !matches!(take.end, InputTakeEnd::Stopped) || take.frames == 0 || take.open_error.is_some() {
         return Err(TakeAlignmentError::InputNotStopped);
@@ -144,6 +230,7 @@ pub fn align_complete_take(
         index: output,
         packet: 0,
         span: 0,
+        graph_delay,
     };
     let mut window = windows.next()?;
     let mut timeline_start = None;
@@ -205,14 +292,20 @@ struct Windows<'a> {
     index: &'a OutputClockIndex,
     packet: usize,
     span: usize,
+    graph_delay: u32,
 }
 impl Windows<'_> {
     fn next(&mut self) -> Result<Option<OutputWindow>, TakeAlignmentError> {
         while let Some(packet) = self.index.packet(self.packet) {
             if let Some(span) = packet.timing.get(self.span) {
                 self.span += 1;
+                let mut clock = packet.clock;
+                clock.offset_frames = clock
+                    .offset_frames
+                    .checked_add(self.graph_delay)
+                    .ok_or(TakeAlignmentError::Overflow)?;
                 return Ok(Some(OutputWindow::from_recorded(
-                    packet.clock,
+                    clock,
                     packet.frames as usize,
                     *span,
                 )?));
@@ -289,6 +382,7 @@ mod tests {
                 OutputClock {
                     playback: StreamInstant::new(10, nanos),
                     offset_frames: offset,
+                    graph_latency_frames: Some(0),
                 },
             )
             .unwrap();
@@ -296,6 +390,97 @@ mod tests {
     fn completed(mut index: OutputClockIndex) -> OutputClockIndex {
         index.test_finish(End::Stopped);
         index
+    }
+
+    #[test]
+    fn audible_alignment_accounts_for_graph_delay_and_refuses_discontinuities() {
+        let source = crate::prepared::AppliedAudioSource {
+            context: hex_engine::AudioSourceContext {
+                project_generation: 1,
+                editor_revision: 2,
+            },
+            audio_revision: 3,
+            output_identity: 4,
+        };
+        let (mut control, _callback) = crate::sample_recording::channel(RATE);
+        let reader = control.start_bound(source).unwrap();
+        let mut index = OutputClockIndex::new(&reader);
+        let mut clock = OutputClock {
+            playback: StreamInstant::new(10, 0),
+            offset_frames: 0,
+            graph_latency_frames: Some(288),
+        };
+        index.test_push(64, &[span(0, 64, 4_800)], clock).unwrap();
+        let take = input(vec![segment(0, 32, 0, 288)], 32);
+        let complete = completed(index);
+        assert_eq!(
+            align_audible_take(SharedClock, &take, &complete),
+            Ok(CandidatePlacement {
+                timeline_start: 4_800,
+                frames: 32
+            })
+        );
+        assert_eq!(
+            align_audible_take(
+                SharedClock,
+                &input(vec![segment(0, 32, 0, 287)], 32),
+                &complete
+            ),
+            Err(TakeAlignmentError::MissingCoverage)
+        );
+
+        let (mut control, _callback) = crate::sample_recording::channel(RATE);
+        let reader = control.start_bound(source).unwrap();
+        let mut discontinuous = OutputClockIndex::new(&reader);
+        discontinuous
+            .test_push(64, &[span(0, 64, 4_800)], clock)
+            .unwrap();
+        clock.offset_frames = 64;
+        discontinuous
+            .test_push(64, &[span(0, 64, 2_000)], clock)
+            .unwrap();
+        assert_eq!(
+            align_audible_take(SharedClock, &take, &completed(discontinuous)),
+            Err(TakeAlignmentError::TimelineDiscontinuity)
+        );
+
+        let (mut control, _callback) = crate::sample_recording::channel(RATE);
+        let reader = control.start_bound(source).unwrap();
+        let mut changed = OutputClockIndex::new(&reader);
+        clock.offset_frames = 0;
+        changed.test_push(64, &[span(0, 64, 4_800)], clock).unwrap();
+        clock.offset_frames = 64;
+        clock.graph_latency_frames = Some(0);
+        changed.test_push(64, &[span(0, 64, 4_864)], clock).unwrap();
+        assert_eq!(
+            align_audible_take(SharedClock, &take, &completed(changed)),
+            Err(TakeAlignmentError::GraphLatencyChanged)
+        );
+
+        let (mut control, _callback) = crate::sample_recording::channel(RATE);
+        let reader = control.start_bound(source).unwrap();
+        let mut zero = OutputClockIndex::new(&reader);
+        clock.offset_frames = 0;
+        clock.graph_latency_frames = Some(0);
+        zero.test_push(64, &[span(0, 64, 4_800)], clock).unwrap();
+        let zero_take = input(vec![segment(0, 32, 0, 0)], 32);
+        assert_eq!(
+            align_audible_take(SharedClock, &zero_take, &completed(zero)),
+            Ok(CandidatePlacement {
+                timeline_start: 4_800,
+                frames: 32
+            })
+        );
+
+        let (mut control, _callback) = crate::sample_recording::channel(RATE);
+        let reader = control.start_bound(source).unwrap();
+        let mut unknown = OutputClockIndex::new(&reader);
+        clock.graph_latency_frames = None;
+        unknown.test_push(64, &[span(0, 64, 4_800)], clock).unwrap();
+        assert_eq!(
+            align_audible_take(SharedClock, &zero_take, &completed(unknown)),
+            Err(TakeAlignmentError::MissingGraphLatency)
+        );
     }
 
     #[test]
@@ -414,6 +599,7 @@ mod tests {
                     OutputClock {
                         playback: StreamInstant::new(10, 0),
                         offset_frames: frame,
+                        graph_latency_frames: Some(0),
                     },
                 )
                 .unwrap();

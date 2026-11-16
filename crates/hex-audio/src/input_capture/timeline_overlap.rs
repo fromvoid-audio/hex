@@ -208,6 +208,7 @@ mod tests {
             clock: OutputClock {
                 playback: StreamInstant::new(10, nanos),
                 offset_frames: native_offset,
+                graph_latency_frames: Some(0),
             },
             packet_frames: 256,
             packet_start: start,

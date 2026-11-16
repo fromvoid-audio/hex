@@ -34,6 +34,8 @@ struct Timeouts {
 pub enum CoordinatedFailure {
     CancelledBeforeInput,
     OutputNotReady,
+    OutputLatencyUnavailable,
+    OutputLatencyChanged,
     OutputPrepareTimeout,
     OutputStopped(End),
     OutputIndex(OutputClockIndexError),
@@ -53,6 +55,10 @@ impl fmt::Display for CoordinatedFailure {
         match self {
             Self::CancelledBeforeInput => f.write_str("recording was stopped before input began"),
             Self::OutputNotReady => f.write_str("output timing recorder is unavailable"),
+            Self::OutputLatencyUnavailable => f.write_str("output graph latency is unavailable"),
+            Self::OutputLatencyChanged => {
+                f.write_str("output graph latency changed during recording")
+            }
             Self::OutputPrepareTimeout => f.write_str("playback timing did not become available"),
             Self::OutputStopped(end) => f.write_str(match end {
                 End::Stopped => "output timing stopped before input finished",
@@ -62,6 +68,7 @@ impl fmt::Display for CoordinatedFailure {
                 End::InvalidBlock => "audio output produced an invalid block",
                 End::UnsupportedOutput => "audio output cannot provide recording timing",
                 End::StorageFailed => "output recording storage failed",
+                End::TransportChanged => "audio transport changed during recording",
             }),
             Self::OutputIndex(error) => write!(f, "output timing failed: {error}"),
             Self::InputBeforeStart { reason, detail } => {
@@ -143,7 +150,7 @@ impl Drop for CoordinatedJob {
 
 /// Start one coordinator with an unstarted input and a newly reserved output
 /// reader bound to the exact applied output source. Output must actually deliver
-/// a timed span before input writing starts.
+/// enough timed history for the applied graph delay before input writing starts.
 /// The requested file must not exist; no project or clock authority is inferred.
 pub fn spawn_coordinated_take(
     input: InputCapture,
@@ -257,6 +264,8 @@ fn coordinate(
     }
     let prepare_start = Instant::now();
     let mut checked = 0;
+    let mut timing_frames = 0_u64;
+    let mut graph_latency = None;
     loop {
         if cancel.load(Acquire) {
             output.stop();
@@ -289,17 +298,36 @@ fn coordinate(
             Ok(Some(end)) => return failure(path, None, CoordinatedFailure::OutputStopped(end)),
             Ok(None) => {}
         }
-        let mut timed = false;
         while checked < index.len() {
-            if index
-                .packet(checked)
-                .is_some_and(|packet| !packet.timing.is_empty())
+            let Some(packet) = index.packet(checked) else {
+                output.stop();
+                return failure(path, None, CoordinatedFailure::OutputNotReady);
+            };
+            let Some(latency) = packet.clock.graph_latency_frames else {
+                output.stop();
+                return failure(path, None, CoordinatedFailure::OutputLatencyUnavailable);
+            };
+            if graph_latency.is_some_and(|previous| previous != latency) {
+                output.stop();
+                return failure(path, None, CoordinatedFailure::OutputLatencyChanged);
+            }
+            graph_latency = Some(latency);
+            if packet
+                .timing
+                .first()
+                .is_some_and(|span| span.take_start == 0)
+                && packet
+                    .timing
+                    .last()
+                    .is_some_and(|span| span.take_end == u64::from(packet.frames))
             {
-                timed = true;
+                timing_frames = timing_frames.saturating_add(u64::from(packet.frames));
+            } else {
+                timing_frames = 0;
             }
             checked += 1;
         }
-        if timed {
+        if graph_latency.is_some_and(|latency| timing_frames > u64::from(latency)) {
             break;
         }
         if prepare_start.elapsed() >= timeouts.prepare {
@@ -497,6 +525,15 @@ mod tests {
         offset: u32,
         valid: bool,
     ) -> bool {
+        emit_with_latency(callback, map, offset, valid, Some(0))
+    }
+    fn emit_with_latency(
+        callback: &mut sample_recording::Callback,
+        map: &hex_engine::PreparedTempoMap,
+        offset: u32,
+        valid: bool,
+        latency: Option<u32>,
+    ) -> bool {
         callback.begin(64);
         if let Some((layout, stage)) = callback.observation() {
             stage.observe(layout, ProjectSignal::Master, 0, &[[0.1, 0.1]; 64]);
@@ -504,12 +541,76 @@ mod tests {
             callback.set_output_clock(Some(OutputClock {
                 playback: StreamInstant::new(50, 0),
                 offset_frames: offset,
+                graph_latency_frames: latency,
             }));
             callback.finish(valid);
             true
         } else {
             false
         }
+    }
+
+    #[test]
+    fn input_waits_for_output_graph_delay_history() {
+        let temp = Temp::new();
+        let (input, started) = mock_input(false);
+        let (_control, mut callback, reader, map) = output();
+        let mut job = spawn(input, reader, &temp.0);
+        let deadline = Instant::now() + Duration::from_millis(500);
+        let mut offset = 0;
+        while offset < 256 {
+            if emit_with_latency(&mut callback, &map, offset, true, Some(256)) {
+                offset += 64;
+            }
+            assert!(Instant::now() < deadline);
+            thread::sleep(POLL);
+        }
+        assert!(started.recv_timeout(Duration::from_millis(15)).is_err());
+        while started.try_recv().is_err() {
+            if emit_with_latency(&mut callback, &map, offset, true, Some(256)) {
+                offset += 64;
+            }
+            assert!(Instant::now() < deadline);
+            thread::sleep(POLL);
+        }
+        job.stop_on_control();
+        let outcome = loop {
+            if let Some(outcome) = job.try_result_on_control().unwrap() {
+                break outcome;
+            }
+            if emit_with_latency(&mut callback, &map, offset, true, Some(256)) {
+                offset += 64;
+            }
+            assert!(Instant::now() < deadline);
+            thread::sleep(POLL);
+        };
+        assert!(matches!(outcome, CoordinatedOutcome::Completed { .. }));
+    }
+
+    #[test]
+    fn input_does_not_start_when_graph_latency_is_unknown() {
+        let temp = Temp::new();
+        let (input, started) = mock_input(false);
+        let (_control, mut callback, reader, map) = output();
+        let mut job = spawn(input, reader, &temp.0);
+        let deadline = Instant::now() + Duration::from_millis(500);
+        while !emit_with_latency(&mut callback, &map, 0, true, None) {
+            assert!(Instant::now() < deadline);
+            thread::sleep(POLL);
+        }
+        let result = loop {
+            if let Some(result) = job.try_result_on_control().unwrap() {
+                break result;
+            }
+            assert!(Instant::now() < deadline);
+            thread::sleep(POLL);
+        };
+        assert!(matches!(
+            failed(result).0,
+            CoordinatedFailure::OutputLatencyUnavailable
+        ));
+        assert!(started.try_recv().is_err());
+        assert!(!temp.0.exists());
     }
     fn wait_started(
         callback: &mut sample_recording::Callback,
@@ -595,7 +696,7 @@ mod tests {
         assert!(matches!(take.end, InputTakeEnd::Stopped));
         assert_eq!(output.completion().unwrap(), Some(End::Stopped));
         let placement =
-            input_capture::align_complete_take(input_capture::SharedClock, &take, &output).unwrap();
+            input_capture::align_audible_take(input_capture::SharedClock, &take, &output).unwrap();
         assert_eq!((placement.timeline_start, placement.frames), (0, 64));
         assert!(std::fs::metadata(&temp.0).unwrap().len() > 44);
         let mut wav = hex_media::WavFrameReader::open(
