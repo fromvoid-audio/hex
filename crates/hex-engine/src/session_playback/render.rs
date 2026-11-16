@@ -84,8 +84,8 @@ impl SessionPlayback {
 
     /// Mix borrowed live input into one track before its device chain while
     /// playing. The input and output lengths must match and may not exceed
-    /// `MAX_OUTPUT_CAPTURE_FRAMES`. A project output tap is refused because
-    /// its contract excludes monitoring; this public entry has no sampler scope.
+    /// `MAX_OUTPUT_CAPTURE_FRAMES`. PCM project taps are refused; a timing-only
+    /// tap is admitted. This public entry has no sampler resource scope.
     #[allow(clippy::too_many_arguments)]
     pub fn render_with_live_track_audio(
         &mut self,
@@ -110,12 +110,18 @@ impl SessionPlayback {
         input: &[Frame],
         pages: Option<&mut P>,
         observer: Option<&mut crate::NodeSignalObserver<'_>>,
-        project: Option<&mut ProjectOutputTap<'_, '_>>,
+        mut project: Option<&mut ProjectOutputTap<'_, '_>>,
         sources: Option<crate::native_device_resources::SamplerSourcesRef<'_>>,
         foreign: &mut dyn hex_lattice::ForeignProcessors,
     ) -> Result<(), SessionPlaybackError> {
         if self
-            .validate_live_audio(track, input, output.len(), project.is_some(), sources)
+            .validate_live_audio(
+                track,
+                input,
+                output.len(),
+                project.as_ref().is_some_and(|tap| !tap.is_timing_only()),
+                sources,
+            )
             .is_err()
         {
             output.fill([0.0; 2]);
@@ -123,11 +129,14 @@ impl SessionPlayback {
             return Err(SessionPlaybackError::InvalidCommand);
         }
         self.candidate_admission_open = false;
+        let capture = project
+            .as_mut()
+            .map(|tap| &mut **tap as &mut dyn CaptureSink);
         self.render_internal_with_live_audio(
             output,
             pages,
             observer,
-            None,
+            capture,
             sources,
             foreign,
             Some(LiveTrackAudio {
@@ -459,9 +468,13 @@ impl SessionPlayback {
         output: &mut [Frame],
         pages: Option<&mut P>,
         observer: Option<&mut crate::NodeSignalObserver<'_>>,
+        mut project: Option<&mut ProjectOutputTap<'_, '_>>,
         foreign: &mut dyn hex_lattice::ForeignProcessors,
     ) -> Result<(), SessionPlaybackError> {
-        self.render_internal_with_foreign(output, pages, observer, None, None, foreign)
+        let capture = project
+            .as_mut()
+            .map(|tap| &mut **tap as &mut dyn CaptureSink);
+        self.render_internal_with_foreign(output, pages, observer, capture, None, foreign)
     }
 
     fn render_internal_with_foreign<P: MediaPages + ?Sized>(

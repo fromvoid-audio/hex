@@ -5317,7 +5317,7 @@ impl Callback {
             self.sample_recording
                 .end(crate::sample_recording::End::SourceChanged);
         }
-        let recording = self.sample_recording.observation();
+        let mut recording = self.sample_recording.observation();
         if !node_observed && !project_observed && recording.is_none() {
             return self.render_unobserved(output, capture_offset);
         }
@@ -5347,7 +5347,18 @@ impl Callback {
         let mut joined = [0; crate::sample_recording::TRACKS];
         let tracks =
             crate::sample_recording::merge_tracks(spectrum_tracks, record_tracks, &mut joined);
+        // A failed selection merge must invalidate recording even when its
+        // timing-only layout no longer relies on a Main PCM observation.
+        if project_observed
+            && tracks.is_none()
+            && let Some((layout, stage)) = recording.as_mut()
+        {
+            stage.observe(layout, hex_engine::ProjectSignal::Unavailable, 0, &[]);
+        }
         let recording_observed = recording.is_some();
+        let timing_only_recording = recording
+            .as_ref()
+            .is_some_and(|(layout, _)| layout.timing_only);
         let recording = std::cell::RefCell::new(recording);
         let mut observe_project = |signal, offset, frames: &[Frame]| {
             if let Some(project) = project_capture.as_mut()
@@ -5375,20 +5386,27 @@ impl Callback {
                 stage.observe_timing(capture_offset + offset, start, frames, map);
             }
         };
-        let mut project = tracks
-            .filter(|_| project_observed || recording_observed)
-            .and_then(|tracks| {
-                let tap = hex_engine::ProjectOutputTap::with_returns(
-                    tracks,
-                    returns,
-                    &mut observe_project,
-                )?;
-                Some(if recording_observed {
-                    tap.with_timing(&mut observe_timing)
-                } else {
-                    tap
+        let mut project = if timing_only_recording && !project_observed {
+            Some(hex_engine::ProjectOutputTap::timing_only(
+                &mut observe_timing,
+                &mut observe_project,
+            ))
+        } else {
+            tracks
+                .filter(|_| project_observed || recording_observed)
+                .and_then(|tracks| {
+                    let tap = hex_engine::ProjectOutputTap::with_returns(
+                        tracks,
+                        returns,
+                        &mut observe_project,
+                    )?;
+                    Some(if recording_observed {
+                        tap.with_timing(&mut observe_timing)
+                    } else {
+                        tap
+                    })
                 })
-            });
+        };
         let node: Option<&mut hex_engine::NodeSignalObserver<'_>> = if node_observed {
             Some(&mut observe)
         } else {
@@ -10166,6 +10184,109 @@ mod tests {
 
     #[test]
     #[cfg(feature = "allocation-probe")]
+    fn bound_timing_only_capture_tracks_loop_spans_and_output_confirmation() {
+        use crate::sample_recording::{OutputClock, OutputClockIndex};
+        use hex_project::{Command, Editor, Project};
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        editor
+            .execute(Command::AddTrack {
+                name: "input".into(),
+            })
+            .unwrap();
+        editor
+            .execute(Command::SetLoopRegion {
+                start: 32,
+                end: 160,
+                enabled: true,
+            })
+            .unwrap();
+        let revision = Arc::new(
+            hex_engine::PreparedRevision::prepare(
+                editor.project(),
+                &std::collections::BTreeMap::new(),
+                Arc::new(hex_engine::SineTable::new()),
+                None,
+            )
+            .unwrap(),
+        );
+        let playback = Playback::try_from_prepared_with_session(revision).unwrap();
+        let (mut control, mut callback) = channel(48_000).unwrap();
+        control
+            .publish_unaccounted_pcm_obligation(
+                playback,
+                PublicationPolicy::InstallFreshRuntime,
+                7,
+                true,
+                false,
+                Some(hex_engine::AudioSourceContext {
+                    project_generation: 7,
+                    editor_revision: 3,
+                }),
+            )
+            .unwrap();
+        callback.begin_block();
+        control.command(PlaybackCommand::Play).unwrap();
+        callback.begin_block();
+        let source = callback.recording_source().unwrap();
+        let mut reader = control.sample_recording.start_bound(source).unwrap();
+        assert!(reader.sources().is_empty());
+        let mut index = OutputClockIndex::new(&reader);
+        assert!(reader.ready());
+        for block in 0..4 {
+            let mut output = [[0.0; 2]; 64];
+            let measured = allocation_counter::measure(|| {
+                callback.begin_block();
+                callback.render(&mut output).unwrap();
+                callback.set_sample_recording_output_clock(Some(OutputClock {
+                    playback: cpal::StreamInstant::new(10, 0),
+                    offset_frames: block * 64,
+                    graph_latency_frames: None,
+                    origin: crate::sample_recording::OutputClockOrigin::Unknown,
+                }));
+                callback.finish_sample_recording(true);
+            });
+            assert_eq!(
+                (
+                    measured.count_total,
+                    measured.bytes_total,
+                    measured.count_current,
+                    measured.bytes_current
+                ),
+                (0, 0, 0, 0)
+            );
+            assert_eq!(index.poll(&mut reader), Ok(None));
+        }
+        let starts: Vec<_> = (0..index.len())
+            .map(|n| {
+                index
+                    .packet(n)
+                    .unwrap()
+                    .timing
+                    .iter()
+                    .map(|span| (span.take_start, span.take_end, span.timeline_start))
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        assert_eq!(
+            starts,
+            vec![
+                vec![(0, 64, 0)],
+                vec![(0, 64, 64)],
+                vec![(0, 32, 128), (32, 64, 32)],
+                vec![(0, 64, 64)]
+            ]
+        );
+        control.sample_recording.stop();
+        callback.begin_block();
+        callback.render(&mut [[0.0; 2]; 1]).unwrap();
+        assert_eq!(
+            index.poll(&mut reader),
+            Ok(Some(crate::sample_recording::End::Stopped))
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "allocation-probe")]
     fn recorded_audible_clock_accounts_for_actual_main_limiter_delay() {
         use crate::input_capture::{
             InputConfig, InputTake, InputTakeEnd, InputTiming, SharedClock, align_audible_take,
@@ -10245,6 +10366,10 @@ mod tests {
             callback.begin_block();
             let source = callback.recording_source().unwrap();
             let mut reader = control.sample_recording.start_bound(source).unwrap();
+            assert!(
+                reader.sources().is_empty(),
+                "source-bound capture retains timing only"
+            );
             let mut index = OutputClockIndex::new(&reader);
             assert!(reader.ready());
             let origin = cpal::StreamInstant::new(10, 0);

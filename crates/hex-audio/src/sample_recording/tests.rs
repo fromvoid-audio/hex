@@ -528,3 +528,164 @@ fn full_disk_mid_packet_preserves_the_common_recorded_prefix() {
     assert_eq!(std::fs::read(project_path).unwrap(), b"original project");
     assert_eq!(std::fs::read(media_path).unwrap(), b"original media");
 }
+
+#[test]
+fn bound_recording_publishes_timing_without_pcm_only_after_output_acceptance() {
+    let source = prepared::AppliedAudioSource {
+        context: hex_engine::AudioSourceContext {
+            project_generation: 1,
+            editor_revision: 2,
+        },
+        audio_revision: 3,
+        output_identity: 4,
+    };
+    let project = Project::new(48_000).unwrap();
+    let map = hex_engine::PreparedTempoMap::prepare(project.tempo_map().clone(), 48_000).unwrap();
+    for accepted in [false, true] {
+        let (mut control, mut callback) = channel(48_000);
+        let mut reader = control.start_bound(source).unwrap();
+        assert!(reader.sources().is_empty());
+        assert!(reader.ready());
+        callback.begin(16);
+        let (layout, stage) = callback.observation().unwrap();
+        assert!(layout.timing_only);
+        stage.observe_timing(0, 50, 16, &map);
+        let clock = OutputClock {
+            playback: cpal::StreamInstant::new(5, 0),
+            offset_frames: 0,
+            graph_latency_frames: Some(3),
+            origin: OutputClockOrigin::Unknown,
+        };
+        callback.set_output_clock(Some(clock));
+        callback.finish(accepted);
+        let mut packets = 0;
+        let end = reader.drain_with_output_clock(|frames, sources, pcm, timing, actual_clock| {
+            packets += 1;
+            assert_eq!(frames, 16);
+            assert!(sources.is_empty() && pcm.is_empty());
+            assert_eq!(actual_clock, Some(clock));
+            assert_eq!(timing.len(), 1);
+            assert_eq!(
+                (
+                    timing[0].take_start,
+                    timing[0].take_end,
+                    timing[0].timeline_start
+                ),
+                (0, 16, 50)
+            );
+        });
+        assert_eq!(packets, usize::from(accepted));
+        assert_eq!(
+            end,
+            if accepted {
+                None
+            } else {
+                Some(End::OutputFailed)
+            }
+        );
+    }
+}
+
+#[test]
+fn timing_only_recording_keeps_live_input_out_of_capture() {
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 4).unwrap();
+    let Created::Track(track) = editor
+        .execute(Command::AddTrack {
+            name: "input".into(),
+        })
+        .unwrap()
+    else {
+        panic!("track")
+    };
+    let revision = Arc::new(
+        PreparedRevision::prepare(
+            editor.project(),
+            &BTreeMap::new(),
+            Arc::new(SineTable::new()),
+            None,
+        )
+        .unwrap(),
+    );
+    let mut playback = Playback::try_from_prepared_with_session(revision).unwrap();
+    playback.apply(PlaybackCommand::Play);
+    let source = prepared::AppliedAudioSource {
+        context: hex_engine::AudioSourceContext {
+            project_generation: 1,
+            editor_revision: 2,
+        },
+        audio_revision: 3,
+        output_identity: 4,
+    };
+    let (mut control, mut callback) = channel(48_000);
+    let mut reader = control.start_bound(source).unwrap();
+    assert!(reader.ready());
+    callback.begin(64);
+    let (layout, stage) = callback.observation().unwrap();
+    let stage = std::cell::RefCell::new(stage);
+    let mut timing = |offset, start, frames, map: &hex_engine::PreparedTempoMap| {
+        stage
+            .borrow_mut()
+            .observe_timing(offset, start, frames, map)
+    };
+    let mut observe = |signal, offset, frames: &[Frame]| {
+        stage.borrow_mut().observe(layout, signal, offset, frames)
+    };
+    let mut tap = hex_engine::ProjectOutputTap::timing_only(&mut timing, &mut observe);
+    let mut output = [[0.0; 2]; 64];
+    playback
+        .render_with_live_track_audio(
+            &mut output,
+            track,
+            &[[0.25, -0.5]; 64],
+            None,
+            None,
+            Some(&mut tap),
+            &mut hex_lattice::RefuseForeign,
+        )
+        .unwrap();
+    assert!(output.iter().any(|frame| *frame != [0.0; 2]));
+    callback.finish(true);
+    let mut packets = 0;
+    assert_eq!(
+        reader.drain_with_output_clock(|frames, sources, pcm, spans, _| {
+            packets += 1;
+            assert_eq!(frames, 64);
+            assert!(sources.is_empty() && pcm.is_empty());
+            assert_eq!(
+                (
+                    spans[0].take_start,
+                    spans[0].take_end,
+                    spans[0].timeline_start
+                ),
+                (0, 64, 0)
+            );
+        }),
+        None
+    );
+    assert_eq!(packets, 1);
+}
+
+#[test]
+fn unavailable_timing_observer_cannot_publish_a_bound_packet() {
+    let source = prepared::AppliedAudioSource {
+        context: hex_engine::AudioSourceContext {
+            project_generation: 1,
+            editor_revision: 2,
+        },
+        audio_revision: 3,
+        output_identity: 4,
+    };
+    let (mut control, mut callback) = channel(48_000);
+    let mut reader = control.start_bound(source).unwrap();
+    assert!(reader.ready());
+    callback.begin(16);
+    let (layout, stage) = callback.observation().unwrap();
+    stage.observe(layout, ProjectSignal::Unavailable, 0, &[]);
+    callback.finish(true);
+    let mut packets = 0;
+    assert_eq!(
+        reader.drain(|_, _, _| packets += 1),
+        Some(End::InvalidBlock)
+    );
+    assert_eq!(packets, 0);
+}

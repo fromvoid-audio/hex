@@ -2673,7 +2673,7 @@ impl Playback {
     }
 
     /// Render one bounded physical callback with a borrowed live track block.
-    /// Track input follows transport fades; project capture taps are refused.
+    /// Track input follows transport fades; only timing-only project taps are admitted.
     #[allow(clippy::too_many_arguments)]
     pub fn render_with_live_track_audio(
         &mut self,
@@ -2698,14 +2698,20 @@ impl Playback {
         input: &[Frame],
         mut pages: Option<&mut P>,
         mut observer: Option<&mut crate::NodeSignalObserver<'_>>,
-        project: Option<&mut crate::ProjectOutputTap<'_, '_>>,
+        mut project: Option<&mut crate::ProjectOutputTap<'_, '_>>,
         sources: Option<&crate::native_device_resources::current_sampler::CurrentSamplerSources>,
         foreign: &mut dyn hex_lattice::ForeignProcessors,
     ) -> Result<(), Invalid> {
         let source_ref = sources.map(crate::native_device_resources::SamplerSourcesRef::Current);
         let valid = self.session_runtime.as_ref().is_some_and(|runtime| {
             runtime
-                .validate_live_audio(track, input, output.len(), project.is_some(), source_ref)
+                .validate_live_audio(
+                    track,
+                    input,
+                    output.len(),
+                    project.as_ref().is_some_and(|tap| !tap.is_timing_only()),
+                    source_ref,
+                )
                 .is_ok()
         });
         if !valid {
@@ -2725,36 +2731,39 @@ impl Playback {
                     "live track audio requires a prepared session runtime",
                 ))
                 .and_then(|runtime| {
-                    with_shifted_observer(observer.as_deref_mut(), offset, |observer| {
-                        if runtime.playing() {
-                            runtime.render_live_audio(
-                                output,
-                                track,
-                                &input[offset..offset + output.len()],
-                                pages.as_deref_mut(),
-                                observer,
-                                None,
-                                source_ref,
-                                &mut shifted,
-                            )
-                        } else if let Some(sources) = sources {
-                            runtime.render_current_sampler_with_foreign(
-                                output,
-                                pages.as_deref_mut(),
-                                observer,
-                                None,
-                                sources,
-                                &mut shifted,
-                            )
-                        } else {
-                            runtime.render_internal_without_live_audio(
-                                output,
-                                pages.as_deref_mut(),
-                                observer,
-                                &mut shifted,
-                            )
-                        }
-                        .map_err(|error| Invalid(error.diagnostic_message()))
+                    with_part_offset(project.as_deref_mut(), offset, |project| {
+                        with_shifted_observer(observer.as_deref_mut(), offset, |observer| {
+                            if runtime.playing() {
+                                runtime.render_live_audio(
+                                    output,
+                                    track,
+                                    &input[offset..offset + output.len()],
+                                    pages.as_deref_mut(),
+                                    observer,
+                                    project,
+                                    source_ref,
+                                    &mut shifted,
+                                )
+                            } else if let Some(sources) = sources {
+                                runtime.render_current_sampler_with_foreign(
+                                    output,
+                                    pages.as_deref_mut(),
+                                    observer,
+                                    project,
+                                    sources,
+                                    &mut shifted,
+                                )
+                            } else {
+                                runtime.render_internal_without_live_audio(
+                                    output,
+                                    pages.as_deref_mut(),
+                                    observer,
+                                    project,
+                                    &mut shifted,
+                                )
+                            }
+                            .map_err(|error| Invalid(error.diagnostic_message()))
+                        })
                     })
                 });
             if result.is_err() {

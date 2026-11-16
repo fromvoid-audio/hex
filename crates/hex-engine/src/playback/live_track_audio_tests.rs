@@ -156,3 +156,63 @@ fn playback_refuses_project_capture_with_live_input_before_advancing() {
     assert_eq!(live.position(), 0);
     assert!(!observed);
 }
+
+#[test]
+fn timing_only_tap_observes_live_input_across_transport_splits_without_pcm() {
+    for section in [false, true] {
+        let f = fixture(&[&[7]], 1024);
+        let track = f.tracks[0];
+        let revision = prepare(&f).unwrap();
+        let mut live = Playback::try_from_prepared_with_session(Arc::clone(&revision)).unwrap();
+        let mut reference = Playback::try_from_prepared_with_session(revision).unwrap();
+        for playback in [&mut live, &mut reference] {
+            playback.apply(PlaybackCommand::Play);
+            if section {
+                playback.transport_fade.section_end = Some(150);
+            }
+        }
+        let mut live_spans = Vec::new();
+        let mut reference_spans = Vec::new();
+        let mut received_pcm = false;
+        let mut timing = |offset, start, frames, _: &crate::PreparedTempoMap| {
+            live_spans.push((offset, start, frames))
+        };
+        let mut no_pcm = |signal, _, _: &[Frame]| {
+            if signal != crate::ProjectSignal::Unavailable {
+                received_pcm = true;
+            }
+        };
+        let mut tap = crate::ProjectOutputTap::timing_only(&mut timing, &mut no_pcm);
+        tap.observe(crate::ProjectSignal::Master, 0, &[[0.5; 2]]);
+        let mut output = [[0.0; 2]; 512];
+        live.render_with_live_track_audio(
+            &mut output,
+            track,
+            &[[0.125; 2]; 512],
+            None,
+            None,
+            Some(&mut tap),
+            &mut hex_lattice::RefuseForeign,
+        )
+        .unwrap();
+        let mut timing_ref = |offset, start, frames, _: &crate::PreparedTempoMap| {
+            reference_spans.push((offset, start, frames))
+        };
+        let mut ignore = |_, _, _: &[Frame]| {};
+        let mut normal = crate::ProjectOutputTap::new(&[], &mut ignore)
+            .unwrap()
+            .with_timing(&mut timing_ref);
+        reference
+            .render_with_foreign_processors(
+                &mut output,
+                None,
+                None,
+                Some(&mut normal),
+                &mut hex_lattice::RefuseForeign,
+            )
+            .unwrap();
+        assert!(!received_pcm);
+        assert_eq!(live_spans, reference_spans, "section {section}");
+        assert!(!live_spans.is_empty());
+    }
+}
