@@ -226,6 +226,11 @@ pub struct InputCapture {
     shared: Arc<Shared>,
     worker: JoinHandle<()>,
     error: Receiver<String>,
+    prefetched: Option<Block<cpal::StreamInstant>>,
+    preroll_frames: u64,
+    // Bit 0 means ready, bit 1 means stopped. One atomic orders stop against
+    // the writer's ready transition, so a cancelled preparation cannot start.
+    recording_ready: Option<Arc<AtomicU8>>,
 }
 
 /// A control-side stop request for one capture. It remains bound to that
@@ -309,6 +314,9 @@ impl InputCapture {
             shared,
             worker,
             error,
+            prefetched: None,
+            preroll_frames: 0,
+            recording_ready: None,
         })
     }
 
@@ -319,7 +327,10 @@ impl InputCapture {
     }
 
     pub fn phase(&self) -> InputPhase {
-        capture_phase(&self.input, &self.shared)
+        match capture_phase(&self.input, &self.shared) {
+            InputPhase::Finished(_) if self.prefetched.is_some() => InputPhase::Stopping,
+            phase => phase,
+        }
     }
 
     /// Queue a start for a prepared stream. `Capturing` confirms that CPAL
@@ -367,7 +378,13 @@ impl InputCapture {
     /// Return an accepted packet before reporting the terminal. None means
     /// no packet is ready yet; the producer may still be active.
     pub fn try_read_on_control(&mut self) -> Result<Option<InputPacket>, InputEnd> {
-        read(&mut self.input, &self.shared).map(|block| block.map(packet))
+        self.read_block().map(|block| block.map(packet))
+    }
+    fn read_block(&mut self) -> Result<Option<Block<cpal::StreamInstant>>, InputEnd> {
+        if let Some(block) = self.prefetched.take() {
+            return Ok(Some(block));
+        }
+        read(&mut self.input, &self.shared)
     }
 }
 impl Drop for InputCapture {
@@ -801,6 +818,9 @@ mod tests {
             shared: state,
             worker,
             error,
+            prefetched: None,
+            preroll_frames: 0,
+            recording_ready: None,
         };
         let stop = capture.stop_handle_on_control();
         let (done, completed) = mpsc::sync_channel(1);

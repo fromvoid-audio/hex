@@ -340,6 +340,7 @@ mod tests {
             },
             sample_rate: RATE,
             frames,
+            preroll_frames: 0,
             timing,
             end: InputTakeEnd::Stopped,
             open_error: None,

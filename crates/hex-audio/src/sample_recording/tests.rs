@@ -261,6 +261,7 @@ fn output_clock_index_keeps_confirmed_packets_gaps_and_terminal() {
         },
         sample_rate: 48_000,
         frames: 128,
+        preroll_frames: 0,
         timing: vec![crate::input_capture::InputTiming {
             take_start: 0,
             frames: 128,
