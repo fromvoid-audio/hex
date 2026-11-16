@@ -1153,6 +1153,48 @@ fn paused_source_monitor_preserves_buffered_arrangement_audio() {
 }
 
 #[test]
+fn paused_keyboard_preserves_same_track_device_history() {
+    use crate::playback::{Playback, PlaybackCommand};
+    use hex_project::Command;
+
+    let mut f = fixture(&[&[7]], 1024);
+    f.editor
+        .execute(Command::InsertInstrument {
+            track: f.tracks[0],
+            state: hex_project::default_instrument_state().unwrap(),
+        })
+        .unwrap();
+    let revision = prepare(&f).unwrap();
+    let mut monitored = Playback::from_prepared(Arc::clone(&revision));
+    let mut oracle = Playback::from_prepared(revision);
+    let keys = Arc::new(crate::computer_keyboard::ComputerKeyboardInput::default());
+    monitored
+        .prepare_computer_keyboard(f.editor.project(), f.tracks[0], keys)
+        .unwrap();
+    for playback in [&mut monitored, &mut oracle] {
+        playback.apply(PlaybackCommand::Play);
+        playback.render(&mut [[0.0; 2]; 4]).unwrap();
+        playback.apply(PlaybackCommand::Pause);
+    }
+    let mut paused = [[0.0; 2]; 257];
+    monitored.render(&mut paused).unwrap();
+    for playback in [&mut monitored, &mut oracle] {
+        playback.apply(PlaybackCommand::Play);
+    }
+    let mut actual = [[0.0; 2]; 32];
+    let mut expected = actual;
+    monitored.render(&mut actual).unwrap();
+    oracle.render(&mut expected).unwrap();
+    assert!(expected.iter().any(|frame| *frame != [0.0; 2]));
+    let leaked_while_paused = paused.iter().any(|frame| *frame != [0.0; 2]);
+    let resume_differs = actual != expected;
+    assert!(
+        !leaked_while_paused && !resume_differs,
+        "queued clip audio leaked while paused: {leaked_while_paused}; resume differs: {resume_differs}"
+    );
+}
+
+#[test]
 fn operator_sync_companions_preserve_pcm_through_compensated_startup_and_partitions() {
     use hex_lattice_contract::{DeviceTypeId, ParameterId, ParameterValue};
     use hex_project::{BeatTime, Command, Created};
