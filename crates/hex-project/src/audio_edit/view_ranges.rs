@@ -7,6 +7,7 @@ impl AudioViewProjection<'_> {
     /// their first sample/beat quantum; an exhausted once read has no cursor.
     /// This metadata query neither prepares audio nor transfers source custody.
     pub fn play_start_position(&self) -> Result<Option<u64>, Invalid> {
+        self.require_complete_repeat_projection()?;
         if self.count == 0 {
             return Ok(None);
         }
@@ -67,6 +68,7 @@ impl AudioViewProjection<'_> {
     /// live/frozen tempo, repeat phase and directed reads matching range queries.
     /// Constant work, no allocation, DSP preparation or source custody transfer.
     pub fn root_position_for_frame(&self, frame: u64) -> Result<Option<u64>, Invalid> {
+        self.require_complete_repeat_projection()?;
         if frame < self.placed_frames.0 || frame >= self.placed_frames.1 || self.count == 0 {
             return Ok(None);
         }
@@ -157,6 +159,7 @@ impl AudioViewProjection<'_> {
         &self,
         range: Range<u64>,
     ) -> Result<[Option<Range<u64>>; 2], Invalid> {
+        self.require_complete_repeat_projection()?;
         if range.start > range.end {
             return Err(Invalid("audio selection range is reversed"));
         }
