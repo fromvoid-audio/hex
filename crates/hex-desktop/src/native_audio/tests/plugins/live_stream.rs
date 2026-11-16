@@ -25,6 +25,18 @@ fn verified_stream_native_main_effect_renews_after_stop() {
     verify_streamed_effect(EffectRoute::Main, true);
 }
 
+#[test]
+#[ignore = "explicit source-bound signed SDK receipts required"]
+fn verified_stream_native_track_effect_renews_after_stop() {
+    verify_streamed_effect(EffectRoute::Track, true);
+}
+
+#[test]
+#[ignore = "explicit source-bound signed SDK receipts required"]
+fn verified_stream_native_return_effect_renews_after_stop() {
+    verify_streamed_effect(EffectRoute::Return, true);
+}
+
 enum EffectRoute {
     Track,
     Return,
@@ -132,6 +144,7 @@ fn verify_streamed_effect(location: EffectRoute, renew: bool) {
         } else {
             let scaled = 0.5 + ((index - 512) / 256) as f32 * 0.125;
             match location {
+                EffectRoute::Return if renew => source_sample(index - 512) * (1.0 + 0.5 * scaled),
                 EffectRoute::Return => 0.25 + 0.125 * scaled,
                 EffectRoute::Track | EffectRoute::Main if renew => {
                     source_sample(index - 512) * scaled
@@ -221,9 +234,13 @@ fn verify_streamed_effect(location: EffectRoute, renew: bool) {
                 resumed.extend(block);
             }
         }
-        let gain = resumed[512][0] / source_sample(0);
+        let effect_gain = |sample: f32, source: f32| match location {
+            EffectRoute::Return => (sample / source - 1.0) * 2.0,
+            EffectRoute::Track | EffectRoute::Main => sample / source,
+        };
+        let gain = effect_gain(resumed[512][0], source_sample(0));
         assert!(
-            gain > pcm[2304][0] / source_sample(2304 - 512),
+            gain > effect_gain(pcm[2304][0], source_sample(2304 - 512)),
             "the original processor sequence must continue"
         );
         for (index, frame) in resumed.iter().enumerate() {
@@ -231,7 +248,11 @@ fn verify_streamed_effect(location: EffectRoute, renew: bool) {
                 0.0
             } else {
                 let source = index - 512;
-                source_sample(source) * (gain + (source / 256) as f32 * 0.125)
+                let scaled = gain + (source / 256) as f32 * 0.125;
+                match location {
+                    EffectRoute::Return => source_sample(source) * (1.0 + 0.5 * scaled),
+                    EffectRoute::Track | EffectRoute::Main => source_sample(source) * scaled,
+                }
             };
             assert_eq!(*frame, [expected; 2], "renewed streamed frame {index}");
         }
