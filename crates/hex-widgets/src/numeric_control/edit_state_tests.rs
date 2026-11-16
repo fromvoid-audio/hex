@@ -7,6 +7,7 @@ fn deferred_text_keeps_drafts_and_ignores_stale_replies(cx: &mut TestAppContext)
     let (handle, control) =
         crate::tests::open_numeric_control(cx, NumericControlKind::HorizontalSlider);
     control.update(cx, |control, cx| {
+        assert!(control.set_external_display(0.0, "Unity dB", cx).is_err());
         control.set_deferred_text(true, cx);
         let mut style = crate::tests::STYLE;
         style.text_case = crate::TextCase::Lowercase;

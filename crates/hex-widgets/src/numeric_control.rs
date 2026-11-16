@@ -650,6 +650,9 @@ impl NumericControl {
         text: &str,
         cx: &mut Context<Self>,
     ) -> Result<(), NumericError> {
+        if !self.deferred_text {
+            return Err(NumericError::InvalidText);
+        }
         let value = self.spec.validate(value)?;
         if text.len() > 512 || text.contains(['\0', '\n', '\r']) {
             return Err(NumericError::InvalidText);
