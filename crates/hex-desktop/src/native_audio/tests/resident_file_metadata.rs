@@ -55,21 +55,23 @@ fn long_file_pitch_playback_undo_and_redo_use_verified_pages() {
     );
     h.run(Request::Edit(hex_project::Command::SetClipFades {
         clip,
-        fade_in: 0,
-        fade_out: 0,
+        fade_in: 128,
+        fade_out: 2000,
     }));
     (applied, _) = h.applied(applied);
-    h.run(Request::Edit(hex_project::Command::SetAudioClipPitch {
+    let pitched_event = h.run(Request::Edit(hex_project::Command::SetAudioClipPitch {
         clip,
         cents: 700,
     }));
     (applied, _) = h.applied(applied);
+    let edited = pitched_event.state.project.clip(clip).unwrap();
+    assert_eq!(edited.retained_fade().fade_in(), 128);
     fn crossings(h: &mut ResidentHarness) -> usize {
         h.audio
             .as_mut()
             .unwrap()
             .control
-            .command(PlaybackCommand::PlayFrom(0))
+            .command(PlaybackCommand::PlayFrom(128))
             .unwrap();
         let deadline = Instant::now() + Duration::from_secs(3);
         loop {
@@ -111,6 +113,21 @@ fn long_file_pitch_playback_undo_and_redo_use_verified_pages() {
     h.applied(applied);
     let redone = crossings(&mut h);
     assert!((24..=32).contains(&redone), "redo: {redone} crossings");
+    let saved = files.0.join("pitched-fade.hex");
+    assert!(h.run(Request::SaveNew(saved.clone())).save_complete);
+    let output = h.audio.as_ref().unwrap().control.output_identity().unwrap();
+    let reopened = h.run(Request::Open(saved));
+    assert!(reopened.open_complete);
+    assert_eq!(
+        reopened.state.project.snapshot(),
+        pitched_event.state.project.snapshot()
+    );
+    super::resident_lifecycle::finish_replacement(&mut h, &reopened, output);
+    let reopened_crossings = crossings(&mut h);
+    assert!(
+        (24..=32).contains(&reopened_crossings),
+        "reopened: {reopened_crossings} crossings"
+    );
     let after = hex_session::VerifiedAudioFile::inspect(path, 48_000, limits, || false).unwrap();
     assert_eq!(after.fingerprint(), fingerprint);
 }
