@@ -31,11 +31,22 @@ enum EffectRoute {
     Main,
 }
 
+fn source_sample(frame: usize) -> f32 {
+    (4096 + 4 * (frame % 2048)) as f32 / 32768.0
+}
+
 fn verify_streamed_effect(location: EffectRoute, renew: bool) {
     let _native = native_fixture();
     let files = Files::new();
     let path = files.wav(48_000, 24_000);
-    let original = fs::read(&path).unwrap();
+    let mut original = fs::read(&path).unwrap();
+    if renew {
+        for (index, sample) in original[44..].chunks_exact_mut(2).enumerate() {
+            let value = (4096 + 4 * (index % 2048)) as i16;
+            sample.copy_from_slice(&value.to_le_bytes());
+        }
+        fs::write(&path, &original).unwrap();
+    }
     // The source exceeds this harness's 8,192-frame resident limit.
     let mut h = ResidentHarness::with_plugins(
         host(),
@@ -122,6 +133,9 @@ fn verify_streamed_effect(location: EffectRoute, renew: bool) {
             let scaled = 0.5 + ((index - 512) / 256) as f32 * 0.125;
             match location {
                 EffectRoute::Return => 0.25 + 0.125 * scaled,
+                EffectRoute::Track | EffectRoute::Main if renew => {
+                    source_sample(index - 512) * scaled
+                }
                 EffectRoute::Track | EffectRoute::Main => 0.25 * scaled,
             }
         };
@@ -207,16 +221,17 @@ fn verify_streamed_effect(location: EffectRoute, renew: bool) {
                 resumed.extend(block);
             }
         }
-        let first = resumed[512][0];
+        let gain = resumed[512][0] / source_sample(0);
         assert!(
-            first > pcm[2304][0],
+            gain > pcm[2304][0] / source_sample(2304 - 512),
             "the original processor sequence must continue"
         );
         for (index, frame) in resumed.iter().enumerate() {
             let expected = if index < 512 {
                 0.0
             } else {
-                first + ((index - 512) / 256) as f32 * 0.03125
+                let source = index - 512;
+                source_sample(source) * (gain + (source / 256) as f32 * 0.125)
             };
             assert_eq!(*frame, [expected; 2], "renewed streamed frame {index}");
         }
