@@ -1422,11 +1422,13 @@ mod tests {
             epoch: 4,
         };
         let (control, mut callback, worker) = channel(binding, 8).unwrap();
-        let gate = Arc::new(std::sync::Barrier::new(2));
-        let processing = Arc::clone(&gate);
+        let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel(1);
+        let (resume_tx, resume_rx) = std::sync::mpsc::sync_channel(1);
         let mut reaper = spawn(control, worker, move |_| {
-            processing.wait();
-            processing.wait();
+            entered_tx.send(()).unwrap();
+            resume_rx
+                .recv_timeout(Duration::from_secs(3))
+                .expect("control did not release the worker fixture");
             panic!("original worker unwind fixture");
         })
         .unwrap();
@@ -1434,9 +1436,11 @@ mod tests {
             .stage(&[[0.5; 2]; 8], &[], &mut [[0.0; 2]; 8])
             .unwrap();
         callback.finish(true).unwrap();
-        gate.wait();
+        entered_rx
+            .recv_timeout(Duration::from_secs(3))
+            .expect("worker fixture did not begin processing");
         drop(callback); // worker endpoint is now the only owner of both rings
-        gate.wait();
+        resume_tx.send(()).unwrap();
         assert_eq!(reaper.join_on_control(), Err(Fault::Protocol));
         assert!(reaper.result.as_ref().unwrap().is_err());
         assert!(
