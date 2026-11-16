@@ -4341,7 +4341,10 @@ fn installed_instrument_and_effect_export_with_streamed_audio() {
     );
     assert!(h.next().error.is_none());
     let (applied, _) = h.applied(0);
-    let source = files.wav(48_000, 16_384);
+    let probe = std::env::var_os("HEX_TEST_EXPORT_PROBE").is_some();
+    let complete = std::env::var_os("HEX_TEST_EXPORT_COMPLETE").is_some();
+    let source_frames = if probe || complete { 8_000_001 } else { 16_384 };
+    let source = files.wav(48_000, source_frames);
     let source_bytes = fs::read(&source).unwrap();
     let imported = h.run(Request::ImportToNewTrack {
         path: source.clone(),
@@ -4399,7 +4402,11 @@ fn installed_instrument_and_effect_export_with_streamed_audio() {
         Request::ExportRange {
             path: path.clone(),
             start: 0,
-            frames: Some(1024),
+            frames: Some(if probe || complete {
+                u64::from(source_frames)
+            } else {
+                1024
+            }),
             signal: ExportSignal::Main,
             control: control.clone(),
             format: hex_export::ExportFormat::Pcm16,
@@ -4407,23 +4414,79 @@ fn installed_instrument_and_effect_export_with_streamed_audio() {
         },
     );
     assert!(queued.error.is_none(), "{:?}", queued.error);
-    let until = Instant::now() + Duration::from_secs(10);
+    let started = Instant::now();
+    let until = started
+        + Duration::from_secs(if probe {
+            3
+        } else if complete {
+            27
+        } else {
+            10
+        });
     let result = loop {
         h.pump();
-        h.render();
+        if !probe && !complete {
+            h.render();
+        }
         if let Ok(event) = h.service.try_export_event() {
             break event.result;
         }
+        let now = Instant::now();
+        if probe && now >= until {
+            let progress = control.progress();
+            let elapsed = started.elapsed();
+            assert!(control.cancel());
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                h.pump();
+                if let Ok(event) = h.service.try_export_event() {
+                    assert!(event.result.is_err());
+                    break;
+                }
+                assert!(Instant::now() < deadline, "cancelled probe did not stop");
+                std::thread::yield_now();
+            }
+            assert!(!path.exists());
+            println!(
+                "export_probe elapsed_ns={} processed_frames={} total_frames={}",
+                elapsed.as_nanos(),
+                progress.processed_frames,
+                progress.total_frames
+            );
+            return;
+        }
         assert!(
-            Instant::now() < until,
+            now < until,
             "mixed export timed out: {:?}",
             control.progress()
         );
         std::thread::yield_now();
     };
-    assert_eq!(result.expect("mixed VST export").frames, 1024);
+    let report = result.expect("mixed VST export");
     let wav = fs::read(path).unwrap();
-    assert_eq!(wav.len(), 44 + 1024 * 4);
+    if complete {
+        use sha2::{Digest, Sha256};
+        let hash = |bytes: &[u8]| {
+            Sha256::digest(bytes)
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        };
+        assert_eq!(report.frames, u64::from(source_frames));
+        assert_eq!(wav.len() as u64, 44 + u64::from(source_frames) * 4);
+        assert!(wav[44..44 + 4096].iter().any(|byte| *byte != 0));
+        assert!(wav[wav.len() - 4096..].iter().any(|byte| *byte != 0));
+        println!(
+            "complete_export elapsed_ns={} frames={} output_sha256={} source_sha256={}",
+            started.elapsed().as_nanos(),
+            report.frames,
+            hash(&wav),
+            hash(&source_bytes)
+        );
+    } else {
+        assert_eq!(report.frames, 1024);
+        assert_eq!(wav.len(), 44 + 1024 * 4);
+    }
     assert!(
         wav[44..]
             .chunks_exact(4)
@@ -4466,11 +4529,14 @@ fn installed_instrument_and_effect_export_with_streamed_audio() {
         "effect must audibly process the streamed source"
     );
     assert_ne!(
-        &wav[44..],
+        &wav[44..44 + 1024 * 4],
         &without_instrument[44..],
         "instrument must change the rendered mix"
     );
     assert_eq!(muted_queued.state.project, muted.state.project);
+    if complete {
+        return;
+    }
     for changed in [false, true] {
         if changed {
             let mut altered = source_bytes.clone();
