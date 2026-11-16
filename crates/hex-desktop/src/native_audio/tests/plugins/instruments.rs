@@ -4345,9 +4345,14 @@ fn installed_instrument_and_effect_export_with_streamed_audio() {
     let complete = std::env::var_os("HEX_TEST_EXPORT_COMPLETE").is_some();
     let verify_live_state = std::env::var_os("HEX_TEST_EXPORT_LIVE_STATE").is_some();
     let live_edit = std::env::var_os("HEX_TEST_EXPORT_LIVE_EDIT").is_some();
+    let full_playthrough = std::env::var_os("HEX_TEST_FULL_MIXED_PLAYTHROUGH").is_some();
     assert!(
         !live_edit || std::env::var_os("HEX_TEST_EXPORT_LIVE_PLAYBACK").is_some(),
         "live edit requires mixed playback"
+    );
+    assert!(
+        !full_playthrough || std::env::var_os("HEX_TEST_EXPORT_LIVE_PLAYBACK").is_some(),
+        "full playthrough requires mixed playback"
     );
     let source_frames = if probe || complete { 8_000_001 } else { 16_384 };
     let source = files.wav(48_000, source_frames);
@@ -4454,6 +4459,105 @@ fn installed_instrument_and_effect_export_with_streamed_audio() {
             }),
             "live mix did not differ from the controlled effect alone"
         );
+        if full_playthrough {
+            let started = Instant::now();
+            let mut quiet_markers = [0usize; 2];
+            let mut audible_blocks = 0usize;
+            let mut buffering_blocks = 0usize;
+            let mut previous = h
+                .audio
+                .as_ref()
+                .unwrap()
+                .status()
+                .unwrap()
+                .position
+                .load(Acquire);
+            while previous < u64::from(source_frames) {
+                let block = h.render_plugin_block();
+                // This phase has no edit/retirement acknowledgement in flight.
+                // Wait for every native DSP prefix, while allowing the existing
+                // control owner to poll independently rather than gating each block.
+                let deadline = Instant::now() + Duration::from_millis(800);
+                while h
+                    .callback
+                    .lock()
+                    .unwrap()
+                    .as_mut()
+                    .unwrap()
+                    .native_workers_idle_on_control()
+                    != Some(true)
+                {
+                    assert!(Instant::now() < deadline);
+                    std::thread::yield_now();
+                }
+                let status = h.audio.as_ref().unwrap().status().unwrap();
+                assert!(status.playing.load(Acquire), "mixed playback stopped early");
+                assert!(
+                    status.render_fault_snapshot().is_none(),
+                    "full-song render fault"
+                );
+                assert!(
+                    status.rejected_action().is_none(),
+                    "full-song action rejected"
+                );
+                let position = status.position.load(Acquire);
+                assert!(position >= previous, "full-song cursor moved backwards");
+                assert!(block.iter().flatten().all(|sample| sample.is_finite()));
+                if status.stream_buffering.load(Acquire) {
+                    buffering_blocks += 1;
+                    assert_eq!(position, previous, "buffering advanced the cursor");
+                    assert_eq!(block, [[0.0; 2]; 256]);
+                } else if position > previous {
+                    let peak = block
+                        .iter()
+                        .flatten()
+                        .fold(0.0f32, |peak, sample| peak.max(sample.abs()));
+                    if let Some(index) = markers.iter().position(|(start, length)| {
+                        position >= (start + 2048) as u64
+                            && position < (start + length - 2048) as u64
+                    }) {
+                        assert!(peak < 0.005, "source marker {index} was not quiet: {peak}");
+                        quiet_markers[index] += 1;
+                    } else if position < u64::from(source_frames)
+                        && !markers.iter().any(|(start, length)| {
+                            position >= (start - 2048) as u64
+                                && position < (start + length + 2048) as u64
+                        })
+                    {
+                        assert!(peak > 0.001, "missing audio at position {position}");
+                        audible_blocks += 1;
+                    }
+                }
+                previous = position;
+                assert!(
+                    started.elapsed() < Duration::from_secs(25),
+                    "full-song test exceeded the issue boundary budget"
+                );
+            }
+            assert!(quiet_markers.into_iter().all(|blocks| blocks >= 8));
+            assert!(audible_blocks > 30_000);
+            println!(
+                "full_live frames={source_frames} elapsed_ms={} audible_blocks={audible_blocks} buffering_blocks={buffering_blocks} quiet_markers={quiet_markers:?}",
+                started.elapsed().as_millis()
+            );
+            h.audio
+                .as_mut()
+                .unwrap()
+                .control
+                .command(PlaybackCommand::Stop)
+                .unwrap();
+            h.render_plugin_block();
+            h.service.submit(Request::RestoreStoppedPlayback).unwrap();
+            let restored = restored_terminal(&mut h);
+            assert!(
+                restored.error.is_none(),
+                "full-song restore: {:?}",
+                restored.error
+            );
+            assert_eq!(restored.state.project, inserted.state.project);
+            assert_eq!(fs::read(&source).unwrap(), source_bytes);
+            return;
+        }
         h.audio
             .as_mut()
             .unwrap()
