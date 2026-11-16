@@ -24,7 +24,7 @@ class EditorFrame final : public IPlugFrame {
     IPlugView* view;
     NSSize accepted_size;
     bool resizing=false,focused=false;
-    // 0 = no admitted down, 1 = AppKit owns the pair, 2 = SDK owns it.
+    // 0 = no down, 1 = AppKit, 2 = SDK, 3 = reentrant SDK plus AppKit.
     std::array<uint8_t,128> key_owners{};
     std::array<int16,128> key_values{};
     std::array<char16,128> key_characters{};
@@ -62,6 +62,17 @@ public:
             (flags&NSEventModifierFlagOption?kAlternateKey:0) |
             (flags&NSEventModifierFlagCommand?kCommandKey:0) |
             (flags&NSEventModifierFlagControl?kControlKey:0);
+        if(owner==3) {
+            // One physical release closes two separately admitted logical pairs.
+            // Clear custody before entering plug-in code, which can reenter.
+            if([event type]==NSEventTypeKeyUp) {
+                const auto key=key_values[code];
+                const auto character=key_characters[code];
+                owner=0;++key_serials[code];
+                view->onKeyUp(character,key,modifiers);
+            }
+            return false;
+        }
         id responder=[window firstResponder];
         const bool text_responder=[responder respondsToSelector:@selector(hasMarkedText)];
         int16 key=owner?key_values[code]:0;
@@ -77,8 +88,12 @@ public:
                 const auto serial=++key_serials[code];
                 const auto epoch=focus_epoch;
                 view->onKeyUp(character,key,modifiers);
-                if(epoch==focus_epoch && serial==key_serials[code]) {
-                    owner=1;++key_serials[code];
+                if(epoch==focus_epoch) {
+                    if(serial==key_serials[code] || owner==0) {
+                        owner=1;++key_serials[code];
+                    } else if(owner==2) {
+                        owner=3;++key_serials[code];
+                    }
                 }
                 return false;
             }

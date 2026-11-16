@@ -289,6 +289,12 @@ static void check_printable_keys() {
     assert(!host.handle_key_event(up));
     view.handles_keys=true;
     assert(host.handle_key_event(down));
+    view.nested_down=down;
+    view.reenter_on_up=true;
+    assert(!host.handle_key_event(key_event(window,NSEventTypeKeyDown,0x00e9,0,NSEventModifierFlagOption)));
+    const auto before_shared_up=view.key_ups;
+    assert(!host.handle_key_event(up) && view.key_ups==before_shared_up+1);
+    assert(host.handle_key_event(down));
     auto* native_text=[[NSTextView alloc] initWithFrame:NSMakeRect(0,0,80,20)];
     [[window contentView] addSubview:native_text];
     assert([window makeFirstResponder:native_text]);
