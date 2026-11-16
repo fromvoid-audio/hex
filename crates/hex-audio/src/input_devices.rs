@@ -91,6 +91,7 @@ pub enum InputDeviceError {
     NotFound,
     DuplicateIdentity,
     DefaultUnavailable,
+    NoDefault,
     TooManyDevices,
     TooManyFormats,
     InvalidDevice,
@@ -108,6 +109,7 @@ impl fmt::Display for InputDeviceError {
             Self::NotFound => f.write_str("selected audio input is no longer available"),
             Self::DuplicateIdentity => f.write_str("audio input identity is ambiguous"),
             Self::DefaultUnavailable => f.write_str("default audio input changed during discovery"),
+            Self::NoDefault => f.write_str("no default audio input is available"),
             Self::TooManyDevices => f.write_str("audio input device limit exceeded"),
             Self::TooManyFormats => f.write_str("audio input format limit exceeded"),
             Self::InvalidDevice => f.write_str("audio input reported invalid device information"),
@@ -183,6 +185,18 @@ impl InputDevices {
             .iter()
             .find(|device| &device.id == id)
             .ok_or(InputDeviceError::NotFound)
+    }
+
+    /// Resolve an explicit identity exactly, or resolve the current default
+    /// only when no identity was requested. Never substitute another input.
+    pub fn resolve_requested(
+        &self,
+        requested: Option<&InputDeviceId>,
+    ) -> Result<&InputDevice, InputDeviceError> {
+        let id = requested
+            .or(self.default.as_ref())
+            .ok_or(InputDeviceError::NoDefault)?;
+        self.resolve(id)
     }
 }
 
@@ -329,6 +343,12 @@ mod tests {
         assert_eq!(catalog.default(), Some(&second.id));
         assert_eq!(catalog.resolve(&first.id), Ok(&first));
         assert_eq!(catalog.resolve(&second.id), Ok(&second));
+        assert_eq!(catalog.resolve_requested(None), Ok(&second));
+        assert_eq!(catalog.resolve_requested(Some(&first.id)), Ok(&first));
+        assert_eq!(
+            catalog.resolve_requested(Some(&id("removed"))),
+            Err(InputDeviceError::NotFound)
+        );
         assert_eq!(
             catalog.resolve(&id("removed")),
             Err(InputDeviceError::NotFound)
@@ -345,6 +365,10 @@ mod tests {
         let host = cpal::default_host().id();
         let empty = collect_input_devices(host, None, [Ok(None)]).unwrap();
         assert!(empty.devices().is_empty());
+        assert_eq!(
+            empty.resolve_requested(None),
+            Err(InputDeviceError::NoDefault)
+        );
         assert_eq!(
             empty.resolve(&id("missing")),
             Err(InputDeviceError::NotFound)

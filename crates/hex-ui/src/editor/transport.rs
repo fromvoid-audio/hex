@@ -134,6 +134,22 @@ impl EditorView {
                 .rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS)),
             )
             .child(
+                self.control_icon_description(
+                    "in",
+                    "audio input",
+                    format!(
+                        "audio input · {}",
+                        hex_session::service::text::verbatim(self.audio_recorder.input_label())
+                    )
+                    .into(),
+                    theme::action_style(),
+                    |view, window, cx| view.open_audio_input_menu(window, cx),
+                    cx,
+                )
+                .rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS))
+                .debug_selector(|| "audio-input-picker".into()),
+            )
+            .child(
                 self.control_icon(
                     "●a",
                     self.audio_recorder.label(),
