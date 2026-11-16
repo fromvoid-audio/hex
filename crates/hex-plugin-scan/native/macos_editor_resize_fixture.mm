@@ -210,8 +210,13 @@ static void check_keys() {
     assert(!host.handle_key_event(up) && view.key_ups==ups);
     assert(!host.handle_key_event(down) && view.key_downs==calls+1);
     [window makeFirstResponder:nil];
-    [marked removeFromSuperview];[marked release];
     view.handles_keys=true;
+    assert(host.handle_key_event(down));
+    assert([window makeFirstResponder:marked]);
+    const auto sdk_ups=view.key_ups;
+    assert(host.handle_key_event(up) && view.key_ups==sdk_ups+1);
+    [window makeFirstResponder:nil];
+    [marked removeFromSuperview];[marked release];
     assert(host.handle_key_event(down));
     host.focus_changed(false);
     assert(!host.handle_key_event(up));
