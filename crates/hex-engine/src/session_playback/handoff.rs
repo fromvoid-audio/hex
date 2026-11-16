@@ -1207,8 +1207,7 @@ impl SessionPlayback {
                 .or_else(|| cold_added_track(old, new))
                 .or_else(|| {
                     (same_base_timing
-                        && old_loop_region.is_none()
-                        && new_loop_region.is_none()
+                        && old_loop_region == new_loop_region
                         && !self.revision.contains_streamed_sources()
                         && !previous.revision.contains_streamed_sources())
                     .then(|| future_audio_track(new, old, previous.arrangement_frame))
@@ -6466,7 +6465,8 @@ fn cold_added_track(candidate: &[Track], previous: &[Track]) -> Option<TrackId> 
 }
 
 /// One newly inserted resident audio track has no prior input when every clip
-/// starts after the current unlooped position. The graph independently checks
+/// starts after the current position. Loop changes are excluded by the caller.
+/// The graph independently checks
 /// routing, retained edge identities, equal alignment and silent delay rings.
 fn future_audio_track(candidate: &[Track], previous: &[Track], frame: u64) -> Option<TrackId> {
     if candidate.len() != previous.len().checked_add(1)? {
