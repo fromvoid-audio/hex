@@ -1535,6 +1535,7 @@ fn canonical_exporter() -> Exporter {
 struct ExportJob {
     job_id: u64,
     streamed: Option<streamed_export::StreamedExportJob>,
+    foreign: Option<Box<dyn OfflineBounceSource>>,
     sources: Option<hex_engine::native_device_resources::ControlSamplerSources>,
     resources: Option<hex_engine::native_device_resources::PreparedDeviceResources>,
     revision: u64,
@@ -9075,6 +9076,7 @@ fn run_worker(
                                 .map(|frames| ExportJob {
                                     job_id: 0,
                                     streamed: None,
+                                    foreign: None,
                                     sources: None,
                                     resources: None,
                                     revision,
@@ -10639,6 +10641,9 @@ fn run_export_worker(
                         .unwrap_or_else(ControlledExport::whole_main);
                     match controlled.publication(&job.path) {
                         Ok(publication) => (streamed.render)(&StreamedExportRequest {
+                            foreign: std::cell::RefCell::new(job.foreign.as_deref_mut().map(
+                                |source| source as &mut dyn hex_export::ForeignBounceRenderer,
+                            )),
                             source: &streamed.source,
                             prepared: &job.prepared,
                             resources: job.resources.as_ref(),
@@ -10653,6 +10658,8 @@ fn run_export_worker(
                         Err(error) => Err(error.into()),
                     }
                 }
+            } else if job.foreign.is_some() {
+                Err("private vst3 export requires verified streaming".into())
             } else if job.sources.is_some() && job.resources.is_some() {
                 Err("export cannot combine private and ordinary source scopes".into())
             } else if let Some(resources) = job.resources.take() {

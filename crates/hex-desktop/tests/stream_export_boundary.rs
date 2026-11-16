@@ -451,3 +451,133 @@ fn assert_verified_export_matches_resident(rate: u32, grouped: bool, signal_inde
     assert_eq!(fs::read(a).unwrap(), bytes[0]);
     assert_eq!(fs::read(b).unwrap(), bytes[1]);
 }
+
+use hex_stream::StreamConfig;
+fn tiny(
+    request: &hex_session::service::StreamedExportRequest<'_>,
+) -> Result<hex_export::ExportReport, hex_session::service::ExportFailure> {
+    crate::streamed_export::render_with_config(request, StreamConfig::with_pool_pages(3))
+        .map_err(Into::into)
+}
+
+struct OfflinePassthrough {
+    fail: bool,
+    frames: usize,
+}
+impl hex_export::ForeignBounceRenderer for OfflinePassthrough {
+    fn max_block_frames(&self) -> usize {
+        64
+    }
+    fn render_block(
+        &mut self,
+        playback: &mut hex_engine::SessionPlayback,
+        output: &mut [hex_engine::Frame],
+        pages: Option<&mut dyn hex_engine::MediaPages>,
+        _: &hex_export::ExportControl,
+    ) -> Result<(), hex_export::ExportError> {
+        assert!(output.len() <= 64);
+        self.frames += output.len();
+        if self.fail {
+            return Err(hex_export::ExportError::Invalid("test processor failed"));
+        }
+        playback
+            .render_with_pages_and_post_node_observer(
+                output,
+                pages.ok_or(hex_export::ExportError::Invalid("missing pages"))?,
+                None,
+            )
+            .map_err(hex_export::ExportError::SessionRender)
+    }
+    fn finish(&mut self, _: &hex_export::ExportControl) -> Result<(), hex_export::ExportError> {
+        assert!(self.frames > 0);
+        Ok(())
+    }
+}
+fn foreign_export(
+    request: &hex_session::service::StreamedExportRequest<'_>,
+) -> Result<hex_export::ExportReport, hex_session::service::ExportFailure> {
+    crate::streamed_export::render_with_config_and_foreign(
+        request,
+        StreamConfig::with_pool_pages(3),
+        Some(&mut OfflinePassthrough {
+            fail: false,
+            frames: 0,
+        }),
+    )
+    .map_err(Into::into)
+}
+fn failing_foreign_export(
+    request: &hex_session::service::StreamedExportRequest<'_>,
+) -> Result<hex_export::ExportReport, hex_session::service::ExportFailure> {
+    crate::streamed_export::render_with_config_and_foreign(
+        request,
+        StreamConfig::with_pool_pages(3),
+        Some(&mut OfflinePassthrough {
+            fail: true,
+            frames: 0,
+        }),
+    )
+    .map_err(Into::into)
+}
+
+#[test]
+fn verified_pages_feed_offline_processor_and_failures_preserve_existing_output() {
+    use hex_session::service::{ExportControl, ExportSignal};
+    let files = Files::new();
+    let source = varied(&files, "foreign-source.wav", 48000, 12288);
+    let original = fs::read(&source).unwrap();
+    let foreign = offline(48000, foreign_export);
+    let imported = run(&foreign, Request::Import(source.clone()));
+    let track = imported.state.project.tracks()[0].id();
+    let output = files.0.join("foreign.wav");
+    run(&foreign, Request::Export(output.clone()));
+    assert!(exported(&foreign).result.is_ok());
+    let ordinary = offline(48000, tiny);
+    run(&ordinary, Request::Import(source.clone()));
+    let reference = files.0.join("ordinary.wav");
+    run(&ordinary, Request::Export(reference.clone()));
+    assert!(exported(&ordinary).result.is_ok());
+    assert_eq!(fs::read(&output).unwrap(), fs::read(reference).unwrap());
+    let existing = files.0.join("existing-foreign.wav");
+    let failing = offline(48000, failing_foreign_export);
+    run(&failing, Request::Import(source.clone()));
+    fs::write(&existing, b"keep existing").unwrap();
+    let request = || Request::ExportRange {
+        path: existing.clone(),
+        start: 0,
+        frames: None,
+        signal: ExportSignal::Main,
+        control: ExportControl::default(),
+        format: hex_export::ExportFormat::Pcm16,
+        overwrite: true,
+    };
+    run(&failing, request());
+    assert!(exported(&failing).result.is_err());
+    assert_eq!(fs::read(&existing).unwrap(), b"keep existing");
+    let mut changed = original.clone();
+    changed[48] ^= 1;
+    fs::write(&source, changed).unwrap();
+    run(&foreign, request());
+    assert!(exported(&foreign).result.is_err());
+    assert_eq!(fs::read(&existing).unwrap(), b"keep existing");
+    fs::remove_file(&source).unwrap();
+    run(&foreign, request());
+    assert!(exported(&foreign).result.is_err());
+    assert_eq!(fs::read(&existing).unwrap(), b"keep existing");
+    fs::write(&source, &original).unwrap();
+    run(
+        &foreign,
+        Request::ExportRange {
+            path: existing.clone(),
+            start: 0,
+            frames: None,
+            signal: ExportSignal::CapturedMix(vec![hex_engine::OutputCaptureId::Track(track)]),
+            control: ExportControl::default(),
+            format: hex_export::ExportFormat::Pcm16,
+            overwrite: true,
+        },
+    );
+    let error = exported(&foreign).result.unwrap_err();
+    assert!(error.message().contains("supports main only"), "{error}");
+    assert_eq!(fs::read(existing).unwrap(), b"keep existing");
+}

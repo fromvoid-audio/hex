@@ -422,6 +422,15 @@ fn prepared_with_tail(
 
 #[test]
 fn finite_foreign_bounce_applies_authored_parameter_values_to_audio() {
+    foreign_export_applies_authored_parameter_values_to_audio(false);
+}
+
+#[test]
+fn linear_foreign_export_applies_authored_parameter_values_to_audio() {
+    foreign_export_applies_authored_parameter_values_to_audio(true);
+}
+
+fn foreign_export_applies_authored_parameter_values_to_audio(linear: bool) {
     use hex_project::{
         AutomationInterpolation, AutomationPoint, AutomationReadSelection, AutomationValue,
         BeatTime, DeviceAutomation, DeviceAutomationTarget,
@@ -511,9 +520,11 @@ fn finite_foreign_bounce_applies_authored_parameter_values_to_audio() {
         SessionPlayback::new_finite_arrangement_bounce(Arc::clone(&revision), None, frames)
             .is_err()
     );
-    let mut bounce =
-        SessionPlayback::new_finite_arrangement_bounce_with_foreign(revision, None, frames)
-            .unwrap();
+    let mut bounce = if linear {
+        SessionPlayback::new_linear_arrangement_export_with_foreign(revision, None).unwrap()
+    } else {
+        SessionPlayback::new_finite_arrangement_bounce_with_foreign(revision, None, frames).unwrap()
+    };
     bounce.apply(SessionPlaybackCommand::Play).unwrap();
     let mut effect = AutomatedEffect(effect);
     for block in output.chunks_mut(5) {

@@ -453,6 +453,64 @@ fn finite_bounce_requires_an_explicit_foreign_instrument_renderer() {
 }
 
 #[test]
+fn linear_foreign_export_requires_a_renderer_and_delivers_authored_notes() {
+    use crate::native_device_resources::{PreparedDeviceResources, ResidentDeviceAssets};
+    use std::sync::atomic::AtomicBool;
+
+    let (mut editor, identity) = fixture();
+    editor
+        .execute(Command::SetLoopRegion {
+            start: 0,
+            end: 1024,
+            enabled: true,
+        })
+        .unwrap();
+    let revision = prepare(&editor, identity, true).unwrap();
+    assert!(SessionPlayback::new_linear_arrangement_export(Arc::clone(&revision)).is_err());
+    let resources = PreparedDeviceResources::prepare_on_control(
+        &ResidentDeviceAssets::default(),
+        editor.project(),
+        1_000_000,
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    assert!(
+        SessionPlayback::new_linear_arrangement_export_with_foreign(
+            Arc::clone(&revision),
+            Some(&resources),
+        )
+        .is_err()
+    );
+    let mut without_renderer =
+        SessionPlayback::new_linear_arrangement_export_with_foreign(Arc::clone(&revision), None)
+            .unwrap();
+    without_renderer
+        .apply(SessionPlaybackCommand::Play)
+        .unwrap();
+    assert!(without_renderer.render(&mut [[0.0; 2]; 8]).is_err());
+
+    let mut playback =
+        SessionPlayback::new_linear_arrangement_export_with_foreign(revision, None).unwrap();
+    assert!(playback.is_linear_arrangement_export());
+    playback.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut endpoint = NoteEndpoint::default();
+    endpoint.render(&mut playback, &mut [[0.0; 2]; 8]).unwrap();
+    let [(offset, note)] = endpoint.notes.as_slice() else {
+        panic!("expected one authored MIDI note");
+    };
+    assert_eq!((*offset, note.frame, note.pitch, note.on), (0, 0, 60, true));
+    playback.apply(SessionPlaybackCommand::Seek(1023)).unwrap();
+    endpoint.render(&mut playback, &mut [[0.0; 2]; 8]).unwrap();
+    assert_eq!(playback.arrangement_frame(), 1031);
+    let long_frame = MAX_FINITE_BOUNCE_FRAMES + 1;
+    playback
+        .apply(SessionPlaybackCommand::Seek(long_frame))
+        .unwrap();
+    endpoint.render(&mut playback, &mut [[0.0; 2]; 8]).unwrap();
+    assert_eq!(playback.arrangement_frame(), long_frame + 8);
+}
+
+#[test]
 fn vst_note_audition_sends_a_finite_exact_velocity_chord_once() {
     use crate::{
         computer_keyboard::{ComputerKeyboardInput, KeyboardActivationClock},
