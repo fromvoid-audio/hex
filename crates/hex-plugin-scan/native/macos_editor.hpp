@@ -2,7 +2,9 @@
 #pragma once
 #import <AppKit/AppKit.h>
 #include "pluginterfaces/gui/iplugview.h"
+#include "pluginterfaces/base/keycodes.h"
 #include "macos_editor_position.hpp"
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -22,14 +24,59 @@ class EditorFrame final : public IPlugFrame {
     IPlugView* view;
     NSSize accepted_size;
     bool resizing=false,focused=false;
+    // 0 = no admitted down, 1 = AppKit owns the pair, 2 = SDK owns it.
+    std::array<uint8_t,128> key_owners{};
+    std::array<int16,128> key_values{};
 public:
     EditorFrame(NSWindow* parent,IPlugView* editor):window(parent),view(editor),
         accepted_size([[parent contentView] bounds].size) {}
-    void invalidate() { window=nil;view=nullptr; }
+    void invalidate() { key_owners.fill(0);window=nil;view=nullptr; }
     void focus_changed(bool active) {
         if(![NSThread isMainThread] || !window || !view || focused==active) return;
         focused=active;
+        if(!active) key_owners.fill(0);
         view->onFocus(active);
+    }
+    // Only keys without a text representation are intercepted. Plain text and
+    // marked-text composition remain entirely with AppKit's input system.
+    bool handle_key_event(NSEvent* event) {
+        if(![NSThread isMainThread] || !window || !view || !focused ||
+           [event window]!=window || ([event type]!=NSEventTypeKeyDown &&
+                                      [event type]!=NSEventTypeKeyUp)) return false;
+        const auto code=[event keyCode];
+        if(code>=key_owners.size()) return false;
+        auto& owner=key_owners[code];
+        if([event type]==NSEventTypeKeyUp && !owner) return false;
+        // An unhandled down gives the complete pair, including repeats and
+        // release, to AppKit. Never offer those later events to both owners.
+        if(owner==1) {
+            if([event type]==NSEventTypeKeyUp) owner=0;
+            return false;
+        }
+        int16 key=owner?key_values[code]:0;
+        if(!owner) {
+            NSString* characters=[event charactersIgnoringModifiers];
+            if([characters length]!=1) return false;
+            key=nontext_key([characters characterAtIndex:0]);
+            if(!key) return false;
+        }
+        const auto flags=[event modifierFlags];
+        const int16 modifiers=(flags&NSEventModifierFlagShift?kShiftKey:0) |
+            (flags&NSEventModifierFlagOption?kAlternateKey:0) |
+            (flags&NSEventModifierFlagCommand?kCommandKey:0) |
+            (flags&NSEventModifierFlagControl?kControlKey:0);
+        id responder=[window firstResponder];
+        if([responder respondsToSelector:@selector(hasMarkedText)] &&
+           [(id<NSTextInputClient>)responder hasMarkedText] && !owner) return false;
+        if([event type]==NSEventTypeKeyDown) {
+            const auto handled=view->onKeyDown(0,key,modifiers)==kResultTrue;
+            if(!owner) { key_values[code]=key;owner=handled?2:1; }
+            return owner==2;
+        }
+        view->onKeyUp(0,key,modifiers);
+        const bool handled=owner==2;
+        owner=0;
+        return handled;
     }
     static NSWindowStyleMask window_style(IPlugView& editor) {
         auto style=NSWindowStyleMaskTitled|NSWindowStyleMaskClosable;
@@ -95,6 +142,26 @@ public:
         resizing=false;
     }
 private:
+    static int16 nontext_key(unichar character) {
+        switch(character) {
+        case NSLeftArrowFunctionKey: return KEY_LEFT;
+        case NSRightArrowFunctionKey: return KEY_RIGHT;
+        case NSUpArrowFunctionKey: return KEY_UP;
+        case NSDownArrowFunctionKey: return KEY_DOWN;
+        case NSHomeFunctionKey: return KEY_HOME;
+        case NSEndFunctionKey: return KEY_END;
+        case NSPageUpFunctionKey: return KEY_PAGEUP;
+        case NSPageDownFunctionKey: return KEY_PAGEDOWN;
+        case NSInsertFunctionKey: return KEY_INSERT;
+        case NSDeleteFunctionKey: return KEY_DELETE;
+        default:
+            if(character>=NSF1FunctionKey && character<=NSF12FunctionKey)
+                return KEY_F1+(character-NSF1FunctionKey);
+            if(character>=NSF13FunctionKey && character<=NSF24FunctionKey)
+                return KEY_F13+(character-NSF13FunctionKey);
+            return 0;
+        }
+    }
     static bool content_rectangle(NSSize size,ViewRect& rect) {
         if(!(size.width>=1 && size.width<=4096 && size.height>=1 && size.height<=4096))
             return false;
@@ -297,7 +364,7 @@ public:
                 NSEvent* event=[NSApp nextEventMatchingMask:NSEventMaskAny untilDate:[NSDate distantPast]
                     inMode:NSDefaultRunLoopMode dequeue:YES];
                 if(!event) break;
-                [NSApp sendEvent:event];
+                if(!frame || !frame->handle_key_event(event)) [NSApp sendEvent:event];
             }
             if(is_open() && owner>0) {
                 const auto now=std::chrono::steady_clock::now();
