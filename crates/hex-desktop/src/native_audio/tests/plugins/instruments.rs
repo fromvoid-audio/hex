@@ -4718,6 +4718,44 @@ fn installed_instrument_and_effect_export_with_streamed_audio() {
     );
     assert_eq!(muted_queued.state.project, muted.state.project);
     if complete {
+        if std::env::var_os("HEX_TEST_EXPORT_REOPEN").is_some() {
+            assert!(verify_live_state, "reopen requires the saved mixed project");
+            let saved_project = hex_storage::load(&saved_path).unwrap();
+            let old_output = h.audio.as_ref().unwrap().control.output_identity().unwrap();
+            let reopened = h.run(Request::Open(saved_path));
+            assert!(reopened.open_complete && reopened.project_replaced);
+            assert_eq!(reopened.state.project.snapshot(), saved_project.snapshot());
+            super::super::resident_lifecycle::finish_replacement(&mut h, &reopened, old_output);
+            h.audio
+                .as_mut()
+                .unwrap()
+                .control
+                .command(PlaybackCommand::Play)
+                .unwrap();
+            let mut pcm = Vec::new();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while pcm.len() < 4096 {
+                let block = render_completed_block(&h);
+                let status = h.audio.as_ref().unwrap().status().unwrap();
+                assert!(
+                    status.render_fault_snapshot().is_none(),
+                    "reopened render fault"
+                );
+                if !status.stream_buffering.load(Acquire) {
+                    pcm.extend(block);
+                }
+                assert!(Instant::now() < deadline, "reopened stream did not start");
+            }
+            assert!(pcm.iter().flatten().any(|sample| sample.abs() > 0.001));
+            assert!(
+                pcm.iter().enumerate().skip(512).any(|(index, frame)| {
+                    let dry = 0.25 * (0.5 + ((index - 512) / 256) as f32 * 0.125);
+                    (frame[0] - dry).abs() > 1e-4 || (frame[1] - dry).abs() > 1e-4
+                }),
+                "reopened mix did not differ from the controlled effect alone"
+            );
+            assert_eq!(fs::read(&source).unwrap(), source_bytes);
+        }
         return;
     }
     for changed in [false, true] {
