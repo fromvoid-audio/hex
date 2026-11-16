@@ -238,6 +238,13 @@ fn typed_value_case(
     visual.update(|window, _| window.activate_window());
     visual.run_until_parked();
     let selector = Box::leak(format!("vst3-knob-{}-7-value", device.value()).into_boxed_str());
+    // This headless fixture has no installed SDK source. Exercise the gesture
+    // subscription independently; the hosted text path has its own SDK test.
+    editor.update(&mut visual, |view, cx| {
+        view.device_panel.vst3_parameters.panels[&device].knobs[&7]
+            .control
+            .update(cx, |control, cx| control.set_deferred_text(false, cx));
+    });
     let value = visual.debug_bounds(selector).unwrap().center();
     visual.simulate_click(value, Modifiers::default());
     editor.read_with(&visual, |view, cx| {

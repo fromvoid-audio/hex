@@ -2457,6 +2457,13 @@ impl EditorView {
                 event.state.revision,
             );
         }
+        if let Some(result) = event.plugin_parameter_conversion.take() {
+            super::device_panel::vst3_parameters::install_conversion_result(
+                self,
+                result,
+                event.state.revision,
+            );
+        }
         let sampler_load_complete = event.sampler_load_complete;
         let sampler_load_succeeded = event.error.is_none();
         if self
@@ -3665,7 +3672,10 @@ impl EditorView {
         duplicate_continuation: bool,
     ) -> bool {
         self.wake_poll();
-        if matches!(&request, Request::QueryPluginParameters(_)) {
+        if matches!(
+            &request,
+            Request::QueryPluginParameters(_) | Request::QueryPluginParameterConversion(_)
+        ) {
             // The panel owns retryable read intent. A full/busy service must
             // not move observations into the edit queue or interrupt a gesture.
             return match self.submit_to_service(request) {
