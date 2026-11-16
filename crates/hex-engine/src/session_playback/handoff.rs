@@ -1203,7 +1203,13 @@ impl SessionPlayback {
             }
             let old = previous.revision.arrangement().tracks();
             let new = self.revision.arrangement().tracks();
-            cold_added_track(new, old).or_else(|| cold_added_track(old, new))
+            cold_added_track(new, old)
+                .or_else(|| cold_added_track(old, new))
+                .or_else(|| {
+                    (same_base_timing && old_loop_region.is_none() && new_loop_region.is_none())
+                        .then(|| future_audio_track(new, old, previous.arrangement_frame))
+                        .flatten()
+                })
         });
         let compensation_pair = self
             .compensation
@@ -6453,6 +6459,38 @@ fn cold_added_track(candidate: &[Track], previous: &[Track]) -> Option<TrackId> 
             .iter()
             .any(|track| track.canonical_track_id() == Some(id)))
     .then_some(id)
+}
+
+/// One newly inserted resident audio track has no prior input when every clip
+/// starts after the current unlooped position. The graph independently checks
+/// routing, retained edge identities, equal alignment and silent delay rings.
+fn future_audio_track(candidate: &[Track], previous: &[Track], frame: u64) -> Option<TrackId> {
+    if candidate.len() != previous.len().checked_add(1)? {
+        return None;
+    }
+    let mut retained = previous.iter();
+    let mut next_retained = retained.next();
+    let mut added = None;
+    for track in candidate {
+        let id = track.canonical_track_id()?;
+        if next_retained.is_some_and(|old| old.canonical_track_id() == Some(id)) {
+            next_retained = retained.next();
+            continue;
+        }
+        if added.is_some()
+            || track.clips.is_empty()
+            || track.has_streamed_clips
+            || !track.device_chain.is_empty()
+            || track.instrument_id.is_some()
+            || track.source_id.is_some()
+            || track.midi_source_index.is_some()
+            || !crate::clip_index::all_start_after(&track.clip_index, track.clips.len(), frame)
+        {
+            return None;
+        }
+        added = Some(id);
+    }
+    if next_retained.is_some() { None } else { added }
 }
 
 /// The initial selective case is resident, Arrangement-owned audio only.
