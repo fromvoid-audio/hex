@@ -239,6 +239,117 @@ fn fourth_installed_instrument_lane_accepts_repeated_arrangement_edits() {
 }
 
 #[test]
+#[ignore = "requires an installed Diva catalog and source-bound native helper"]
+fn stopped_diva_automation_undo_redo_retains_the_original_source() {
+    use super::automation::edit_with_running_callback;
+    use hex_project::{
+        AutomationInterpolation, AutomationPoint, AutomationValue, BeatTime, DeviceAutomationTarget,
+    };
+    let _native = native_fixture();
+    let catalog = PathBuf::from(std::env::var_os("HEX_TEST_VST3_INSTRUMENT_CATALOG").unwrap());
+    let selected = installed_selection(
+        &catalog,
+        "Diva.vst3",
+        hex_plugin_catalog::PluginRole::Instrument,
+    );
+    let class = selected.cid;
+    println!(
+        "Diva class={class:?} executable_sha256={}",
+        selected.executable_sha256
+    );
+    let mut h = ResidentHarness::with_plugins_at_rate_and_catalog(
+        host(),
+        Some(EffectPresentation {
+            input_frames: 0,
+            output_frames: 512,
+        }),
+        44_100,
+        catalog,
+        20_000_000,
+    );
+    assert!(h.next().error.is_none());
+    let (applied, _) = h.applied(0);
+    let added = h.run(Request::Edit(Command::AddMidiTrack {
+        name: "keys".into(),
+    }));
+    let Some(Created::Track(track)) = added.created else {
+        panic!("track")
+    };
+    let (applied, _) = h.applied(applied);
+    let mut insert = request(&added.state, PluginEffectDestination::Instrument(track));
+    insert.selection = selected;
+    h.service
+        .submit(Request::InsertPluginEffect(insert))
+        .unwrap();
+    let inserted = terminal(&mut h);
+    assert!(inserted.error.is_none(), "{:?}", inserted.error);
+    let device = inserted
+        .state
+        .project
+        .track(track)
+        .unwrap()
+        .instrument()
+        .unwrap()
+        .id();
+    let (applied, metadata) = h.applied(applied);
+    let points = vec![AutomationPoint {
+        beat: BeatTime::ZERO,
+        value: AutomationValue::new(0.25).unwrap(),
+        outgoing: AutomationInterpolation::Linear,
+    }];
+    let event = edit_with_running_callback(
+        &mut h,
+        Request::DeviceAutomation {
+            project_generation: metadata.context.project_generation,
+            revision: inserted.state.revision,
+            device,
+            target: DeviceAutomationTarget::Vst3 { parameter: 97 },
+            vst3_class: Some(class),
+            points,
+        },
+    );
+    assert!(event.error.is_none(), "{:?}", event.error);
+    let (mut applied, _) = h.applied(applied);
+    let edited = Arc::clone(&event.state.project);
+    let before = Arc::clone(&inserted.state.project);
+    let original = h
+        .plugin_progress
+        .lock()
+        .unwrap()
+        .binding
+        .expect("original binding");
+    let mut bindings = Vec::new();
+    for cycle in 0..10 {
+        for (request, expected) in [(Request::Undo, &before), (Request::Redo, &edited)] {
+            let started = Instant::now();
+            let terminal = edit_with_running_callback(&mut h, request);
+            assert!(
+                terminal.error.is_none(),
+                "cycle {cycle}: {:?}",
+                terminal.error
+            );
+            assert_eq!(&terminal.state.project, expected);
+            (applied, _) = h.applied(applied);
+            let binding = h
+                .plugin_progress
+                .lock()
+                .unwrap()
+                .binding
+                .expect("installed source");
+            println!(
+                "cycle={cycle} elapsed_ms={:.3} binding={binding:?}",
+                started.elapsed().as_secs_f64() * 1000.0
+            );
+            bindings.push(binding);
+        }
+    }
+    assert!(
+        bindings.iter().all(|binding| *binding == original),
+        "stopped undo replaced original source: original={original:?}, observed={bindings:?}"
+    );
+}
+
+#[test]
 #[ignore = "requires explicit installed instrument/catalog/parameter IDs and source-bound native helper"]
 fn distinct_instrument_parameters_commit_and_read_back_while_playing() {
     let _native = native_fixture();
