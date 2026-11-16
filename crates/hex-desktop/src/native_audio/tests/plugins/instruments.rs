@@ -816,6 +816,12 @@ fn paced_five_instruments_with_automation_and_polling() {
 }
 
 #[test]
+#[ignore = "requires an installed VST3 instrument, its catalog and a source-bound helper"]
+fn paced_five_instruments_with_automation_undo_and_redo() {
+    instrument_entrypoint(InstrumentWorkflow::PacedFiveHistory);
+}
+
+#[test]
 #[ignore = "requires explicit source-bound SDK receipts and optional installed catalog"]
 fn shared_instrument_lane_authoring_undo_read_controls_and_pcm() {
     instrument_entrypoint(InstrumentWorkflow::Authoring);
@@ -1037,6 +1043,7 @@ enum InstrumentWorkflow {
     PacedAuthoring,
     PacedMonitoring,
     PacedFive,
+    PacedFiveHistory,
     Takeover,
 }
 
@@ -1056,10 +1063,13 @@ fn instrument_entrypoint(workflow: InstrumentWorkflow) {
         InstrumentWorkflow::PacedAuthoring
             | InstrumentWorkflow::PacedMonitoring
             | InstrumentWorkflow::PacedFive
+            | InstrumentWorkflow::PacedFiveHistory
     );
     let monitor = matches!(
         workflow,
-        InstrumentWorkflow::PacedMonitoring | InstrumentWorkflow::PacedFive
+        InstrumentWorkflow::PacedMonitoring
+            | InstrumentWorkflow::PacedFive
+            | InstrumentWorkflow::PacedFiveHistory
     );
     let name = std::thread::current().name().unwrap().to_owned();
     const CHILD: &str = "HEX_DESKTOP_TEST_INSTRUMENT_CHILD";
@@ -1308,7 +1318,10 @@ fn instrument_entrypoint(workflow: InstrumentWorkflow) {
     assert_eq!(accepted.state.project.sample_rate(), rate);
     (applied, _) = harness.applied(applied);
     let instrument = project_track.instrument().unwrap().id();
-    if matches!(workflow, InstrumentWorkflow::PacedFive) {
+    if matches!(
+        workflow,
+        InstrumentWorkflow::PacedFive | InstrumentWorkflow::PacedFiveHistory
+    ) {
         for index in 1..5 {
             let added = harness.run(Request::Edit(Command::AddMidiTrack {
                 name: format!("synth {index}"),
@@ -1380,7 +1393,13 @@ fn instrument_entrypoint(workflow: InstrumentWorkflow) {
         return;
     }
     if paced {
-        verify_paced_instrument_authoring(&mut harness, instrument, applied, monitor);
+        verify_paced_instrument_authoring(
+            &mut harness,
+            instrument,
+            applied,
+            monitor,
+            matches!(workflow, InstrumentWorkflow::PacedFiveHistory),
+        );
         return;
     }
     if shared_authoring {
@@ -2241,6 +2260,7 @@ fn verify_paced_instrument_authoring(
     device: hex_project::DeviceId,
     mut applied: u64,
     monitor: bool,
+    history: bool,
 ) {
     use hex_project::{
         AutomationInterpolation, AutomationPoint, AutomationValue, DeviceAutomationTarget,
@@ -2366,7 +2386,9 @@ fn verify_paced_instrument_authoring(
             query_sent += 1;
             query_pending = Some(request_id);
         }
-        if !pending && sent < 3 && block >= 50 + sent * 125 {
+        let edit_count = if history { 5 } else { 3 };
+        let spacing = if history { 100 } else { 125 };
+        if !pending && sent < edit_count && block >= 50 + sent * spacing {
             let points = [
                 (BeatTime::ZERO, 0.4),
                 (BeatTime::from_ratio(1 + u64::from(sent), 8).unwrap(), 0.7),
@@ -2377,17 +2399,21 @@ fn verify_paced_instrument_authoring(
                 outgoing: AutomationInterpolation::Step,
             })
             .to_vec();
-            harness
-                .service
-                .submit(Request::DeviceAutomation {
+            let request = if sent == 3 {
+                Request::Undo
+            } else if sent == 4 {
+                Request::Redo
+            } else {
+                Request::DeviceAutomation {
                     project_generation: context.project_generation,
                     revision,
                     device,
                     target,
                     vst3_class: Some(class),
                     points,
-                })
-                .unwrap();
+                }
+            };
+            harness.service.submit(request).unwrap();
             sent += 1;
             pending = true;
         }
@@ -2423,6 +2449,22 @@ fn verify_paced_instrument_authoring(
                 query_pending = None;
             } else if event.state.revision > revision {
                 assert!(pending, "unexpected project revision during polling");
+                if history && completed >= 3 {
+                    let points = &event
+                        .state
+                        .project
+                        .device(device)
+                        .unwrap()
+                        .automation_target(target)
+                        .unwrap()
+                        .points;
+                    let expected_beat = if completed == 3 { 2 } else { 3 };
+                    assert_eq!(points.len(), 2);
+                    assert_eq!(
+                        points[1].beat,
+                        BeatTime::from_ratio(expected_beat, 8).unwrap()
+                    );
+                }
                 revision = event.state.revision;
                 pending = false;
                 completed += 1;
@@ -2456,7 +2498,11 @@ fn verify_paced_instrument_authoring(
         "vst endpoint degraded: {:?}",
         harness.degraded_devices
     );
-    assert_eq!((sent, completed, pending), (3, 3, false));
+    let expected_edits = if history { 5 } else { 3 };
+    assert_eq!(
+        (sent, completed, pending),
+        (expected_edits, expected_edits, false)
+    );
     if monitor {
         assert!(
             query_completed >= 5,
