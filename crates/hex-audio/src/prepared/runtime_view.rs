@@ -405,6 +405,29 @@ impl RuntimeMut<'_> {
             (Self::Eligible(p), None) => p.render_with_signal_observers(output, observer, project),
         }
     }
+    pub(super) fn render_with_live_track_audio(
+        &mut self,
+        output: &mut [Frame],
+        track: hex_engine::OutputCaptureId,
+        input: &[Frame],
+        observer: Option<&mut hex_engine::NodeSignalObserver<'_>>,
+        project: Option<&mut hex_engine::ProjectOutputTap<'_, '_>>,
+        foreign: Option<&mut dyn hex_lattice::ForeignProcessors>,
+    ) -> Result<(), Invalid> {
+        let hex_engine::OutputCaptureId::Track(track) = track else {
+            return Err(Invalid("input monitor target must be a track"));
+        };
+        let mut refuse = hex_lattice::RefuseForeign;
+        let foreign = foreign.unwrap_or(&mut refuse);
+        match self {
+            Self::Legacy(p) => p.render_with_live_track_audio(
+                output, track, input, None, observer, project, foreign,
+            ),
+            Self::Eligible(p) => p.render_with_live_track_audio(
+                output, track, input, None, observer, project, foreign,
+            ),
+        }
+    }
     pub(super) fn clear_gain_recording_override(&mut self) {
         match self {
             Self::Legacy(p) => p.clear_gain_recording_override(),

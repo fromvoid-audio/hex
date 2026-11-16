@@ -725,6 +725,31 @@ fn run_worker(
 }
 
 #[cfg(test)]
+pub(crate) struct TestMonitorSource {
+    writer: Writer<cpal::StreamInstant>,
+    recording: Consumer<Block<cpal::StreamInstant>>,
+}
+
+#[cfg(test)]
+impl TestMonitorSource {
+    pub(crate) fn submit(&mut self, samples: &[f32]) -> usize {
+        self.writer.submit(samples, cpal::StreamInstant::new(10, 0));
+        let mut packets = 0;
+        while self.recording.pop().is_ok() {
+            packets += 1;
+        }
+        packets
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn test_monitor_source() -> (TestMonitorSource, Box<MonitorStream>) {
+    let (writer, recording, monitor, _) = tests::monitored_channel(1);
+    let stream = MonitorStream::new_on_control(monitor, 48_000).ok().unwrap();
+    (TestMonitorSource { writer, recording }, Box::new(stream))
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
