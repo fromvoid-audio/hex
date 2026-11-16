@@ -1521,6 +1521,146 @@ fn parameter_conversion_reaches_the_exact_hosted_controller_without_editing() {
 
 #[test]
 #[ignore = "explicit original SDK helper and source fixtures required"]
+fn admitted_parameter_conversion_survives_output_close() {
+    use hex_session::service::{
+        PluginParameterConversion, PluginParameterConversionQuery, PluginParameterQuery,
+    };
+    const CHILD: &str = "HEX_DESKTOP_TEST_CONVERSION_CLOSE_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let gates = Files::new();
+        std::fs::write(gates.0.join("release"), b"allow inventory").unwrap();
+        let result = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                std::thread::current().name().unwrap(),
+                "--ignored",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .env("HEX_ORIGINAL_INSTANCE_VARIANT", "93")
+            .env("HEX_ORIGINAL_INSTANCE_RELEASE", gates.0.join("release"))
+            .env("HEX_ORIGINAL_INSTANCE_TRACE", gates.0.join("trace"))
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+        return;
+    }
+    let _native = native_fixture();
+    let mut h = ResidentHarness::with_plugins(
+        host(),
+        Some(EffectPresentation {
+            input_frames: 0,
+            output_frames: 512,
+        }),
+    );
+    let initial = h.next();
+    h.applied(0);
+    h.run(Request::InsertPluginEffect(request(
+        &initial.state,
+        PluginEffectDestination::Main,
+    )));
+    let inserted = terminal(&mut h);
+    assert!(inserted.error.is_none());
+    let (_, metadata) = h.applied(1);
+    let device = inserted.state.project.main_devices()[0].id();
+    let output = h.audio.as_ref().unwrap().control.output_identity().unwrap();
+    h.run(Request::QueryPluginParameters(PluginParameterQuery {
+        context: metadata.context,
+        device,
+        output_identity: output,
+        request_id: 1,
+        page_first: Some(0),
+    }));
+    let source = h.next().plugin_parameters.unwrap().source.unwrap();
+    let release = PathBuf::from(std::env::var_os("HEX_ORIGINAL_INSTANCE_RELEASE").unwrap());
+    let trace = PathBuf::from(std::env::var_os("HEX_ORIGINAL_INSTANCE_TRACE").unwrap());
+    std::fs::remove_file(&release).unwrap();
+    let _ = std::fs::remove_file(&trace);
+    let query = PluginParameterConversionQuery {
+        context: metadata.context,
+        device,
+        output_identity: output,
+        request_id: 2,
+        source,
+        parameter: 7,
+        operation: PluginParameterConversion::Format(0.25),
+    };
+    assert!(
+        h.run(Request::QueryPluginParameterConversion(query.clone()))
+            .plugin_parameter_conversion
+            .is_none()
+    );
+    let until = Instant::now() + Duration::from_secs(5);
+    loop {
+        h.pump();
+        let stage = std::fs::read(&trace)
+            .ok()
+            .and_then(|bytes| Some(i32::from_ne_bytes(bytes.get(..4)?.try_into().ok()?)));
+        if stage == Some(26) {
+            break;
+        }
+        assert!(
+            Instant::now() < until,
+            "conversion did not enter the original controller"
+        );
+        std::thread::yield_now();
+    }
+    h.service
+        .submit(Request::RestartAudio {
+            project_generation: metadata.context.project_generation,
+            request_id: 3,
+        })
+        .unwrap();
+    let restarted = h.next();
+    assert!(restarted.plugin_parameter_conversion.is_none());
+    h.release_relinquished_output();
+    let held_until = Instant::now() + Duration::from_millis(50);
+    let mut terminal = None;
+    while Instant::now() < held_until {
+        h.pump();
+        while let Ok(event) = h.service.try_event() {
+            if let Some(result) = event.plugin_parameter_conversion {
+                assert!(
+                    terminal.replace(result).is_none(),
+                    "duplicate conversion terminal"
+                );
+            }
+        }
+        std::thread::yield_now();
+    }
+    std::fs::write(&release, b"release controller").unwrap();
+    h.wait_fresh_output(output);
+    let result = match terminal {
+        Some(result) => result,
+        None => loop {
+            let event = h.next();
+            if let Some(result) = event.plugin_parameter_conversion {
+                break result;
+            }
+        },
+    };
+    assert_eq!(result.query, query);
+    assert!(result.value.is_err());
+    let until = Instant::now() + Duration::from_millis(50);
+    while Instant::now() < until {
+        h.pump();
+        while let Ok(event) = h.service.try_event() {
+            assert!(
+                event.plugin_parameter_conversion.is_none(),
+                "late duplicate conversion terminal"
+            );
+        }
+        std::thread::yield_now();
+    }
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
 fn native_effect_real_work_contention_waits_then_keeps_exact_accept_or_refusal() {
     let _native = native_fixture();
     for known_presentation in [false, true] {
