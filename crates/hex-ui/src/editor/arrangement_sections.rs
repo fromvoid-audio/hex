@@ -7128,17 +7128,21 @@ pub(super) mod tests {
         };
         let committed = second.state.upgrade().unwrap();
         assert_eq!(committed.revision, revision + 2);
+        let first_copy_start = committed
+            .project
+            .arrangement_section(first_copy)
+            .unwrap()
+            .start();
+        assert_eq!(
+            first_copy_start,
+            BeatTime::from_quarters(if copy_kind == 2 { 20 } else { 16 }).unwrap(),
+            "the queued duplicate must target the original section"
+        );
         let expected = if copy_kind != 0 {
             committed
                 .project
                 .tempo_map()
-                .beat_to_frame(
-                    committed
-                        .project
-                        .arrangement_section(first_copy)
-                        .unwrap()
-                        .start(),
-                )
+                .beat_to_frame(first_copy_start)
                 .unwrap()
         } else {
             expected
