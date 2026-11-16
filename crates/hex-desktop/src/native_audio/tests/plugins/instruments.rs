@@ -4404,7 +4404,123 @@ fn installed_instrument_and_effect_export_with_streamed_audio() {
         .unwrap();
     let inserted = terminal(&mut h);
     assert!(inserted.error.is_none(), "{:?}", inserted.error);
-    let (applied, _) = h.applied(applied);
+    let (mut applied, _) = h.applied(applied);
+    if std::env::var_os("HEX_TEST_EXPORT_LIVE_PLAYBACK").is_some() {
+        assert!(
+            complete,
+            "live mixed qualification requires the full streamed fixture"
+        );
+        // The default effect fixture serializes its processing counter in a
+        // field it refuses to restore after playback. Variant 37 retains the
+        // normal processing law while serializing restorable latency state.
+        assert!(
+            matches!(
+                std::env::var("HEX_ORIGINAL_INSTANCE_VARIANT").as_deref(),
+                Ok("37")
+            ),
+            "live mixed qualification requires the restorable effect fixture"
+        );
+        h.audio
+            .as_mut()
+            .unwrap()
+            .control
+            .command(PlaybackCommand::Play)
+            .unwrap();
+        let mut pcm = Vec::new();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while pcm.len() < 4096 {
+            let block = render_completed_block(&h);
+            let status = h.audio.as_ref().unwrap().status().unwrap();
+            if status.stream_buffering.load(Acquire) {
+                assert_eq!(block, [[0.0; 2]; 256]);
+                assert!(Instant::now() < deadline, "mixed stream did not start");
+            } else {
+                pcm.extend(block);
+            }
+        }
+        assert!(pcm.iter().flatten().any(|sample| sample.abs() > 0.001));
+        assert!(
+            pcm.iter().enumerate().skip(512).any(|(index, frame)| {
+                let dry = 0.25 * (0.5 + ((index - 512) / 256) as f32 * 0.125);
+                (frame[0] - dry).abs() > 1e-4 || (frame[1] - dry).abs() > 1e-4
+            }),
+            "live mix did not differ from the controlled effect alone"
+        );
+        h.audio
+            .as_mut()
+            .unwrap()
+            .control
+            .command(PlaybackCommand::Seek(4_000_000))
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            render_completed_block(&h);
+            h.pump();
+            let status = h.audio.as_ref().unwrap().status().unwrap();
+            assert!(
+                status.render_fault_snapshot().is_none(),
+                "mixed seek render fault"
+            );
+            assert!(
+                status.rejected_action().is_none(),
+                "mixed seek rejected: {:?}",
+                status.rejected_action()
+            );
+            if status.position.load(Acquire) >= 4_000_000 {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "mixed streamed seek did not complete"
+            );
+        }
+        let mut heard_after_marker = false;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            let block = render_completed_block(&h);
+            let status = h.audio.as_ref().unwrap().status().unwrap();
+            assert!(
+                status.render_fault_snapshot().is_none(),
+                "mixed playback fault after seek"
+            );
+            if status.position.load(Acquire) >= 4_009_216
+                && !status.stream_buffering.load(Acquire)
+                && block.iter().flatten().any(|sample| sample.abs() > 0.01)
+            {
+                heard_after_marker = true;
+                break;
+            }
+        }
+        assert!(
+            heard_after_marker,
+            "mixed playback did not resume after the streamed marker"
+        );
+        h.audio
+            .as_mut()
+            .unwrap()
+            .control
+            .command(PlaybackCommand::Stop)
+            .unwrap();
+        h.render_plugin_block();
+        assert!(
+            !h.audio
+                .as_ref()
+                .unwrap()
+                .status()
+                .unwrap()
+                .playing
+                .load(Acquire)
+        );
+        h.service.submit(Request::RestoreStoppedPlayback).unwrap();
+        let restored = restored_terminal(&mut h);
+        assert!(
+            restored.error.is_none(),
+            "mixed restore: {:?}",
+            restored.error
+        );
+        assert_eq!(restored.state.project, inserted.state.project);
+        (applied, _) = h.applied(applied);
+    }
     let before = Arc::clone(&inserted.state.project);
     let live_binding = h.plugin_progress.lock().unwrap().binding;
     let saved_path = root.join("live-state.hex");
