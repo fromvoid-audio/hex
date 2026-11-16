@@ -272,7 +272,7 @@ fn vst3_drag_roundtrip(playing: bool, stopped: bool, changed_steps: bool) {
     };
     h.run(Request::QueryPluginParameters(query));
     let result = h.next().plugin_parameters.unwrap().rows.unwrap();
-    let gain = &result[0];
+    let mut gain = result[0].clone();
     assert!(gain.editable);
     assert_eq!(gain.normalized, 0.75 / 4.0);
     if changed_steps {
@@ -361,22 +361,49 @@ fn vst3_drag_roundtrip(playing: bool, stopped: bool, changed_steps: bool) {
     } else {
         h.run(Request::DeviceGesture(begin))
     };
-    let ack = event.gesture_ack.unwrap();
-    if changed_steps {
+    let mut ack = event.gesture_ack.unwrap();
+    if stopped {
+        // Stop renews the original endpoint and invalidates the old page.
+        // The refused Begin must not edit the project; query the renewed
+        // source before trying the gesture again.
         assert!(!ack.accepted && !ack.source_lost, "{ack:?}");
-        assert!(ack.reason.unwrap().contains("metadata changed"));
+        assert!(
+            ack.reason
+                .as_deref()
+                .unwrap()
+                .contains("refresh the vst3 parameter list")
+        );
         assert_eq!(event.state.project.as_ref(), &fixture.project);
         assert!(!event.state.can_undo && !event.state.can_redo);
-        let saved = h.run(Request::SaveCurrent);
-        assert!(saved.save_complete && !saved.state.unsaved);
-        assert_eq!(hex_storage::load(&fixture.path).unwrap(), fixture.project);
         h.run(Request::QueryPluginParameters(PluginParameterQuery {
             request_id: 2,
             ..query
         }));
         let current = h.next().plugin_parameters.unwrap().rows.unwrap();
-        assert_eq!(current[0].steps, 3);
-        return;
+        if changed_steps {
+            assert_eq!(current[0].steps, 3);
+            assert_ne!(current[0].steps, gain.steps);
+            let saved = h.run(Request::SaveCurrent);
+            assert!(saved.save_complete && !saved.state.unsaved);
+            assert_eq!(hex_storage::load(&fixture.path).unwrap(), fixture.project);
+            return;
+        }
+        gain = current[0].clone();
+        assert!(gain.editable);
+        client = GestureClient::default();
+        client
+            .begin_plugin(PluginParameterOrigin {
+                context: metadata.context,
+                device,
+                parameter: gain.id,
+                page_first: gain.page_first,
+                metadata_revision: gain.metadata_revision,
+                initial: PluginParameterValue::new(gain.normalized).unwrap(),
+            })
+            .unwrap();
+        let begin = client.next_request().unwrap();
+        client.mark_submitted();
+        ack = h.run(Request::DeviceGesture(begin)).gesture_ack.unwrap();
     }
     assert!(ack.accepted, "{ack:?}");
     assert!(client.acknowledge(&ack));
