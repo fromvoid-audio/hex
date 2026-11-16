@@ -339,7 +339,7 @@ impl<'a> ResidentEffectPreparation<'a> {
 
 /// One private native bounce owner. It supplies exact compile facts before
 /// rendering and is dropped before Session adopts any of the output media.
-pub trait OfflineBounceSource: hex_export::ForeignBounceRenderer {
+pub trait OfflineBounceSource: hex_export::ForeignBounceRenderer + Send {
     fn retained_data_bytes(&self) -> usize;
     fn prepare(
         &self,

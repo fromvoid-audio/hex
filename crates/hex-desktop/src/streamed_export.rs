@@ -38,7 +38,7 @@ pub(crate) fn render_with_config(
     request: &StreamedExportRequest<'_>,
     config: StreamConfig,
 ) -> Result<ExportReport, ExportError> {
-    render_with_config_and_foreign(request, config, None)
+    render_with_config_and_foreign(request, config, request.take_foreign())
 }
 
 /// The job retains exclusive custody of the supplied offline processors; the
