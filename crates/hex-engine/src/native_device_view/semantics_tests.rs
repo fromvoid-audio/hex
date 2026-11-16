@@ -1,7 +1,7 @@
 use super::*;
 use hex_lattice_contract::{ParameterAccess, ParameterAutomation, ParameterNormalization};
 #[test]
-fn cached_view_retains_declarations_and_preserves_undeclared_legacy_controls() {
+fn cached_view_retains_declared_and_undeclared_controls() {
     let d = &hex_devices::auto_pan::AUTO_PAN_DEFINITION;
     let state = d.default_state().unwrap();
     let view = native_device_view(&state).unwrap();
@@ -16,14 +16,65 @@ fn cached_view_retains_declarations_and_preserves_undeclared_legacy_controls() {
     );
     assert_eq!(
         rate.semantics.unwrap().automation,
-        ParameterAutomation::Unsupported
+        ParameterAutomation::DeviceArrangementEnvelope
     );
     assert!(rate.enabled);
     let state = hex_devices::utility::UTILITY_DEFINITION
         .default_state()
         .unwrap();
     let view = native_device_view(&state).unwrap();
-    assert!(view.parameters.iter().all(|p| p.semantics.is_none()));
+    assert!(view.parameters.iter().all(|parameter| {
+        parameter.semantics.is_some_and(|semantics| {
+            semantics.access == ParameterAccess::ReadWrite
+                && semantics.automation == ParameterAutomation::DeviceArrangementEnvelope
+        })
+    }));
+    let compressor = &hex_devices::compressor::COMPRESSOR_DEFINITION;
+    let state = compressor.default_state().unwrap();
+    let view = native_device_view(&state).unwrap();
+    assert!(!view.parameters.is_empty());
+    for parameter in &view.parameters {
+        assert_eq!(
+            parameter.semantics,
+            compressor
+                .parameter_semantics_for_state(&state, parameter.descriptor.id)
+                .unwrap()
+        );
+        assert!(parameter.semantics.is_some());
+    }
+
+    // FM4's ratio remains undeclared, while a zero routing edge becomes
+    // declared only after the authored edge is enabled.
+    let fm4 = &hex_devices::fm4::device::FM4_DEFINITION;
+    let state = fm4.default_state().unwrap();
+    let edge = hex_devices::fm4::device::parameter::modulation(1, 2);
+    let ratio = hex_devices::fm4::device::parameter::oscillator_ratio(1);
+    let view = native_device_view_for_class(NativeDeviceClass::Instrument, &state).unwrap();
+    for id in [ratio, edge] {
+        let parameter = view
+            .parameters
+            .iter()
+            .find(|p| p.descriptor.id == id)
+            .unwrap();
+        assert!(parameter.semantics.is_none());
+        assert!(parameter.enabled);
+    }
+    let state = fm4
+        .patch_parameter(&state, edge, ParameterValue::Float(0.2))
+        .unwrap();
+    let view = native_device_view_for_class(NativeDeviceClass::Instrument, &state).unwrap();
+    let parameter = view
+        .parameters
+        .iter()
+        .find(|p| p.descriptor.id == edge)
+        .unwrap();
+    assert_eq!(parameter.value, ParameterValue::Float(0.2));
+    assert_eq!(
+        parameter.semantics,
+        fm4.parameter_semantics_for_state(&state, edge).unwrap()
+    );
+    assert!(parameter.semantics.is_some());
+    assert!(parameter.enabled);
 }
 #[test]
 fn dynamic_cached_semantics_never_enable_an_ineffective_eq_control() {

@@ -5,8 +5,15 @@ use hex_project::{MidiClipGain, MidiClipVolume, MidiClipVolumePoint};
 fn config(project: &Project, old: &PreparedSessionMidiClip) -> PreparedTrackInstrumentConfig {
     let device = project.track(old.track).unwrap().instrument().unwrap();
     PreparedTrackInstrumentConfig {
+        automation: None,
         track: old.track,
-        config: Some(hex_devices::prepare_legacy_sine_instrument(project.sample_rate()).unwrap()),
+        config: Some(
+            hex_devices::prepare_legacy_sine_instrument(project.sample_rate())
+                .unwrap()
+                .into(),
+        ),
+        mutable_limits: None,
+        foreign_events: false,
         device_id: Some(device.id()),
         tuning_identity: old.tuning_identity,
         state: Some(device.state().clone().without_host_gains()),

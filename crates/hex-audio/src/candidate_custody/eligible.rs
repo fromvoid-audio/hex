@@ -11,7 +11,7 @@ pub use preparation::{
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub(crate) mod native_sources;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-pub(crate) use native_sources::{NativeEndpointBank, NativeEndpointEnvelope};
+pub(crate) use native_sources::{EndpointReturnFence, NativeEndpointBank, NativeEndpointEnvelope};
 pub(super) mod publication;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub use native_sources::{
@@ -19,7 +19,7 @@ pub use native_sources::{
 };
 pub(crate) use pages::DomainEnvelope;
 pub(super) use publication::OrdinaryReservation;
-pub(crate) use publication::{ActiveView, OrdinaryStreams};
+pub(crate) use publication::{ActiveView, OrdinaryStreams, QuantumFailure, QuantumPins};
 pub use publication::{
     AudioCandidateCancellationResult, AudioCandidateEligibleStageRefusal,
     AudioCandidatePreparationProgress, AudioCandidatePreparationRefusal,
@@ -623,6 +623,21 @@ impl Custody {
             slot.phase = Phase::Complete;
         }
     }
+    pub(super) fn cleanup_failed(&self) -> bool {
+        let bank = lock(&self.bank);
+        bank.domains.iter().any(|s| s.phase == Phase::Failed)
+            || bank.publication.cleanup_failed()
+            || {
+                #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                {
+                    bank.sources.cleanup_failed()
+                }
+                #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+                {
+                    false
+                }
+            }
+    }
     fn fail(&self, index: usize) {
         let mut guard = lock(&self.bank);
         self.mark_closing(&mut guard);
@@ -649,6 +664,11 @@ impl Custody {
         slot.preparation_bound = None;
         slot.preparation_failure = None;
         Some(report)
+    }
+    #[cfg(test)]
+    pub(super) fn with_bank_held<R>(&self, f: impl FnOnce() -> R) -> R {
+        let _bank = lock(&self.bank);
+        f()
     }
     pub(super) fn usage(&self) -> Option<AudioCandidateDomainUsage> {
         let guard = self.bank.try_lock().ok()?;

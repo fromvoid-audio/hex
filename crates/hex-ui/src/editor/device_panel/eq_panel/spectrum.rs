@@ -261,9 +261,33 @@ fn context(view: &EditorView) -> Result<Option<(u64, u32)>, String> {
     let Some(state) = view.state.as_ref() else {
         return Ok(None);
     };
-    Ok(view
-        .audio_admission
-        .published_audio_revision(view.project_generation, state.revision)
+    // The analyzer follows the signal that reaches the output. A pending
+    // or refused publication does not advance the installed graph's revision.
+    let installed = audio
+        .control
+        .status()
+        .and_then(|status| status.recording_source())
+        .filter(|source| {
+            source.context.project_generation == view.project_generation
+                && audio.control.output_identity() == Some(source.output_identity)
+        })
+        .map(|source| source.audio_revision);
+    let retained = || {
+        desired(view)?
+            .iter()
+            .map(|(_, target)| target)
+            .find(|target| {
+                target.project_generation == view.project_generation
+                    && target.sample_rate_hz == audio.sample_rate
+            })
+            .map(|target| target.activation_floor)
+    };
+    Ok(installed
+        .or_else(retained)
+        .or_else(|| {
+            view.audio_admission
+                .published_audio_revision(view.project_generation, state.revision)
+        })
         .map(|floor| (floor, audio.sample_rate)))
 }
 
@@ -312,13 +336,26 @@ pub(in crate::editor) fn sync_visible(
             return;
         }
     };
+    let current = desired(view);
     let requests: Vec<_> = identities
         .into_iter()
-        .map(|identity| SpectrumTargetRequest {
-            identity,
-            project_generation: view.project_generation,
-            activation_floor: floor,
-            sample_rate_hz: rate,
+        .map(|identity| {
+            // Stable taps retain their FFT window across graph revisions. The
+            // callback still observes only the exact node on the active graph.
+            let previous = current
+                .and_then(|targets| targets.find(identity))
+                .map(|(_, target)| target)
+                .filter(|target| {
+                    target.project_generation == view.project_generation
+                        && target.sample_rate_hz == rate
+                });
+            SpectrumTargetRequest {
+                identity,
+                project_generation: view.project_generation,
+                activation_floor: previous
+                    .map_or(floor, |target| floor.min(target.activation_floor)),
+                sample_rate_hz: rate,
+            }
         })
         .collect();
     match publish(view, &requests) {
@@ -406,7 +443,7 @@ pub(super) fn focus_listener(
                             .is_some_and(|device| device.state().type_id() == eq::EQ_TYPE_ID)
                     })
                 {
-                    view.device_panel.selected_device = Some(device);
+                    view.device_panel.select_only(Some(device));
                     // Focus is delivered after paint; dirty the next frame,
                     // following the existing Operator focus subscription seam.
                     cx.defer_in(window, |_, _, cx| cx.notify());

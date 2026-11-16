@@ -126,7 +126,10 @@ pub(super) fn field(view: &mut EditorView, id: ClipId, cx: &mut Context<EditorVi
             _subscription: subscription,
         });
     }
-    let binding = view.sample_bpm_control.as_ref().unwrap();
+    let binding = view
+        .sample_bpm_control
+        .as_ref()
+        .expect("sample bpm control is bound above when missing");
     binding
         .entity
         .update(cx, |numeric, cx| numeric.set_availability(availability, cx));
@@ -147,7 +150,7 @@ fn parse_bpm(value: f64) -> Result<hex_project::Tempo, hex_project::Invalid> {
     hex_project::Tempo::new((value * 1_000_000.0).round() as u32)
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "ui-test-support")))]
 mod tests {
     use super::*;
     #[test]

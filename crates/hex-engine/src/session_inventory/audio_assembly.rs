@@ -64,6 +64,7 @@ pub(crate) struct ClipPlan {
     pub(crate) asset: AssetId,
     pub(crate) start: u64,
     pub(crate) end: u64,
+    pub(crate) loop_range: Option<hex_project::SessionAudioLoop>,
     pub(crate) gain: hex_project::ClipGain,
 }
 pub(crate) struct SceneRangePlan {
@@ -112,6 +113,7 @@ impl AudioTarget {
             asset: self.plan.asset,
             source_start: self.plan.start,
             source_end: self.plan.end,
+            loop_range: self.plan.loop_range,
             gain: self.plan.gain.linear(),
             source,
         });
@@ -135,6 +137,7 @@ impl AudioTarget {
             || clip.asset != self.plan.asset
             || clip.source_start != self.plan.start
             || clip.source_end != self.plan.end
+            || clip.loop_range != self.plan.loop_range
             || clip.gain != self.plan.gain.linear()
         {
             return Err(AudioStorageError::SourceMismatch);
@@ -303,8 +306,8 @@ impl SessionAssembly {
         if self.inventory.is_some() && external.is_some() {
             return Err(AudioStorageError::SourceMismatch);
         }
-        if let Some(i) = self.inventory.as_ref().or(external) {
-            if self.scenes.capacity() != 0
+        if let Some(i) = self.inventory.as_ref().or(external)
+            && (self.scenes.capacity() != 0
                 || self.tracks.capacity() != 0
                 || self.cells.capacity() != 0
                 || self.indices.capacity() != 0
@@ -321,9 +324,11 @@ impl SessionAssembly {
                 || i.routed_midi_clips.capacity() != 0
                 || i.midi_source_roots.capacity() != 0
                 || i.mutable_history_retarget_storage_bytes != 0
-            {
-                return Err(AudioStorageError::UnknownStorage);
-            }
+                || i.instrument_automation_storage_bytes != 0
+                || i.instrument_automation_indices.iter().any(Option::is_some)
+                || i.armed_instrument_index.is_some())
+        {
+            return Err(AudioStorageError::UnknownStorage);
         }
         let sampler_midi_bytes = self.current_sampler_midi_bytes(external)?;
         if let Some(i) = self.inventory.as_ref().or(external) {
@@ -481,19 +486,19 @@ impl SessionAssembly {
         }
         #[cfg(test)]
         {
-            if self.wrong_handle {
-                if let Some(row) = self.pairs.first_mut() {
-                    row.plan.handle = row
-                        .plan
-                        .handle
-                        .checked_add(1)
-                        .ok_or(AudioStorageError::Overflow)?;
-                }
+            if self.wrong_handle
+                && let Some(row) = self.pairs.first_mut()
+            {
+                row.plan.handle = row
+                    .plan
+                    .handle
+                    .checked_add(1)
+                    .ok_or(AudioStorageError::Overflow)?;
             }
-            if self.occupy_name {
-                if let Some(scene) = self.scenes.first_mut() {
-                    scene.name = "occupied negative owner".into();
-                }
+            if self.occupy_name
+                && let Some(scene) = self.scenes.first_mut()
+            {
+                scene.name = "occupied negative owner".into();
             }
         }
         self.metadata_handles = handles;
@@ -642,6 +647,9 @@ impl SessionAssembly {
                 midi_clips: mem::take(&mut self.unused_midi),
                 mutable_instruments: mem::take(&mut self.unused_mutable),
                 mutable_history_retarget_storage_bytes: 0,
+                instrument_automation_storage_bytes: 0,
+                instrument_automation_indices: [None; hex_project::MAX_TRACKS],
+                armed_instrument_index: None,
                 audio_clips: mem::take(&mut self.audio),
                 work: midi_work,
                 contains_streamed_sources,
@@ -958,6 +966,9 @@ impl SessionAssembly {
                 midi_source_roots,
                 mutable_instruments,
                 mutable_history_retarget_storage_bytes: _,
+                instrument_automation_storage_bytes: _,
+                instrument_automation_indices: _,
+                armed_instrument_index: _,
                 audio_clips,
                 work: _,
                 contains_streamed_sources: _,
@@ -1012,6 +1023,7 @@ impl SessionAssembly {
                     asset,
                     source_start,
                     source_end,
+                    loop_range,
                     gain,
                     source,
                 } = clip;
@@ -1022,6 +1034,7 @@ impl SessionAssembly {
                     || *asset != plan.asset
                     || *source_start != plan.start
                     || *source_end != plan.end
+                    || *loop_range != plan.loop_range
                     || *gain != plan.gain.linear()
                     || *actual_handle != Some(plan.handle)
                 {

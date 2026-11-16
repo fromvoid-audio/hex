@@ -1,5 +1,6 @@
 //! Original-frame pointer drafts. Release transfers the value to the existing
 //! sampler parameter serial; input cancellation never cancels an admitted edit.
+//! The Window lease owns only the held handle, independently of that serial.
 use super::*;
 use hex_engine::SamplerParameter;
 
@@ -52,7 +53,7 @@ pub(super) fn reconcile(view: &mut EditorView) {
 
 pub(in crate::editor) fn preview(
     view: &EditorView,
-    track: TrackId,
+    owner: hex_session::service::SamplerParameterOwner,
     device: DeviceId,
     parameter: SamplerParameter,
 ) -> Option<u64> {
@@ -61,7 +62,7 @@ pub(in crate::editor) fn preview(
         .boundary
         .as_ref()
         .filter(|g| {
-            g.source.track == track
+            g.source.owner == owner
                 && g.source.device == device
                 && g.parameter == parameter
                 && g.target.current(view)
@@ -74,6 +75,7 @@ pub(super) fn begin(
     source: SourceTarget,
     bounds: Bounds<Pixels>,
     position: gpui::Point<Pixels>,
+    window: &mut Window,
     cx: &mut Context<EditorView>,
 ) -> bool {
     if view.edit_pending()
@@ -93,12 +95,14 @@ pub(super) fn begin(
     {
         return false;
     }
-    let Some(device) = view
-        .state
-        .as_ref()
-        .and_then(|s| s.project.track(source.track))
-        .and_then(|t| t.instrument())
-    else {
+    let Some(device) = view.state.as_ref().and_then(|state| match source.owner {
+        hex_session::service::SamplerParameterOwner::Track(track) => {
+            state.project.track(track)?.instrument()
+        }
+        hex_session::service::SamplerParameterOwner::Source(source) => {
+            Some(state.project.native_source(source)?.instrument())
+        }
+    }) else {
         return false;
     };
     let parameter_at =
@@ -121,9 +125,54 @@ pub(super) fn begin(
     } else {
         (SamplerParameter::EndFrame, end)
     };
-    let Some(target) = view.sampler_boundary_target(source.track, source.device, parameter) else {
+    let Some(target) = view.sampler_boundary_target(source.owner, source.device, parameter) else {
         return true;
     };
+    let owner = cx.entity().downgrade();
+    let cancelled = owner.clone();
+    if !window.capture_pointer(
+        cx.entity_id(),
+        MouseButton::Left,
+        gpui::CursorStyle::ResizeColumn,
+        move |event, window, cx| {
+            let moved = event.downcast_ref::<gpui::MouseMoveEvent>();
+            let released = event
+                .downcast_ref::<gpui::MouseUpEvent>()
+                .filter(|e| e.button == MouseButton::Left);
+            if moved.is_none() && released.is_none() {
+                return;
+            }
+            let _ = owner.update(cx, |view, cx| {
+                if !owns(view, source, target) {
+                    return;
+                }
+                if !view.clip_view_open
+                    || !view.device_panel_active
+                    || !view.focus.is_focused(window)
+                {
+                    cancel(view);
+                } else if let Some(event) = moved {
+                    move_pointer(view, bounds, event, cx);
+                } else if let Some(event) = released {
+                    release(view, bounds, event.position, cx);
+                }
+                cx.notify();
+            });
+        },
+        move |_, cx| {
+            let _ = cancelled.update(cx, |view, cx| {
+                if owns(view, source, target) {
+                    cancel(view);
+                    cx.notify();
+                }
+            });
+        },
+        cx,
+    ) {
+        // The handle was hit, but another owner retained input. Do not stamp a
+        // cursor or construct a draft after refused admission.
+        return true;
+    }
     view.device_panel.sampler_cursor.boundary = Some(Gesture {
         source,
         target,
@@ -137,6 +186,44 @@ pub(super) fn begin(
     });
     cx.notify();
     true
+}
+
+fn owns(
+    view: &EditorView,
+    source: SourceTarget,
+    target: crate::editor::sampler_parameter::Target,
+) -> bool {
+    view.device_panel
+        .sampler_cursor
+        .boundary
+        .as_ref()
+        .is_some_and(|g| g.source == source && g.target == target)
+}
+
+/// Read-only witness: geometry/source changes retire the input lease after draw.
+pub(super) fn renew(
+    view: &EditorView,
+    bounds: Bounds<Pixels>,
+    owner: gpui::EntityId,
+    window: &mut Window,
+) {
+    if view.clip_view_open
+        && view.device_panel_active
+        && view.focus.is_focused(window)
+        && view
+            .device_panel
+            .sampler_cursor
+            .boundary
+            .as_ref()
+            .is_some_and(|g| {
+                g.bounds == bounds
+                    && g.source.current(view)
+                    && g.target.current(view)
+                    && !view.edit_pending()
+            })
+    {
+        window.renew_pointer_capture(owner, gpui::CursorStyle::ResizeColumn);
+    }
 }
 
 fn update(view: &mut EditorView, bounds: Bounds<Pixels>, position: gpui::Point<Pixels>) -> bool {
@@ -270,7 +357,7 @@ pub(super) fn cursor_action(
                     .cursor
                     .filter(|(source, _)| source.current(view))
                 && let Some(target) =
-                    view.sampler_boundary_target(source.track, source.device, parameter)
+                    view.sampler_boundary_target(source.owner, source.device, parameter)
             {
                 view.submit_sampler_boundary(target, frame);
             }

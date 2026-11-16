@@ -12,7 +12,7 @@ use hex_widgets::{
 use std::{cell::Cell, collections::BTreeMap, rc::Rc};
 
 #[cfg(all(test, feature = "ui-test-support"))]
-mod tests;
+pub(super) mod tests;
 
 #[derive(Default)]
 pub(super) struct Controls {
@@ -23,6 +23,30 @@ pub(super) struct Controls {
 }
 
 impl Controls {
+    /// Keep an unfinished numeric draft attached to its original track when
+    /// the Console selection changes before the draft can be completed.
+    pub(super) fn pending_track_gain(&self, generation: u64, cx: &gpui::App) -> Option<TrackId> {
+        if self.generation != generation {
+            return None;
+        }
+        self.bindings
+            .iter()
+            .find_map(|(id, binding)| binding.entity.read(cx).is_interacting().then_some(*id))
+    }
+    pub(super) fn pending_return_gain(&self, generation: u64, cx: &gpui::App) -> Option<ReturnId> {
+        if self.generation != generation {
+            return None;
+        }
+        self.mixer.iter().find_map(|(key, binding)| match key {
+            MixerKey::ReturnGain(id)
+                if binding.entity.read(cx).is_interacting()
+                    || binding.entity.read(cx).is_editing() =>
+            {
+                Some(*id)
+            }
+            _ => None,
+        })
+    }
     /// Read-only admission check; drafts remain with their numeric owners.
     /// Unlike finalization, it does not collect bindings or commit values.
     pub(super) fn has_pending_draft(&self, cx: &gpui::App) -> bool {
@@ -38,25 +62,44 @@ impl Controls {
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum MixerKey {
+    MainGain,
     Balance(TrackId),
     ReturnGain(ReturnId),
 }
 impl MixerKey {
     fn target(self) -> GestureTarget {
         match self {
+            Self::MainGain => GestureTarget::MainGain,
             Self::Balance(track) => GestureTarget::TrackBalance { track },
             Self::ReturnGain(return_track) => GestureTarget::ReturnGain { return_track },
         }
     }
-    fn current(self, view: &EditorView) -> bool {
-        view.state.as_ref().is_some_and(|state| match self {
-            Self::Balance(track) => state.project.track(track).is_some(),
-            Self::ReturnGain(id) => state
-                .project
+    fn canonical_value(self, view: &EditorView) -> Option<f32> {
+        let project = &view.state.as_ref()?.project;
+        match self {
+            Self::MainGain => Some(project.master_gain()),
+            Self::Balance(id) => project.track(id).map(Track::balance),
+            Self::ReturnGain(id) => project
                 .return_tracks()
                 .iter()
-                .any(|track| track.id() == id),
-        })
+                .find(|track| track.id() == id)
+                .map(ReturnTrack::gain),
+        }
+    }
+    fn current(self, view: &EditorView) -> bool {
+        self.canonical_value(view).is_some()
+    }
+    fn supports_atomic_gain(self) -> bool {
+        matches!(self, Self::MainGain | Self::ReturnGain(_))
+    }
+    fn atomic_gain_command(self, gain: f32) -> Option<hex_project::Command> {
+        match self {
+            Self::MainGain => Some(hex_project::Command::MasterGain { gain }),
+            Self::ReturnGain(return_track) => {
+                Some(hex_project::Command::ReturnGain { return_track, gain })
+            }
+            Self::Balance(_) => None,
+        }
     }
 }
 
@@ -86,7 +129,7 @@ fn automated(track: &Track) -> bool {
     !track.gain_envelope().is_empty() || !track.gain_lane().spans().is_empty()
 }
 
-fn retire_stale(view: &mut EditorView, cx: &mut Context<EditorView>) {
+pub(super) fn retire_stale(view: &mut EditorView, cx: &mut Context<EditorView>) {
     let Some(state) = view.state.as_ref() else {
         return;
     };
@@ -109,7 +152,7 @@ fn retire_stale(view: &mut EditorView, cx: &mut Context<EditorView>) {
         if let Some(binding) = view.track_gain_controls.bindings.remove(&track) {
             if device_panel::owns_numeric_gesture(
                 view,
-                GestureTarget::TrackGain { track },
+                binding_target(view, track, &binding.lease),
                 &binding.lease,
             ) {
                 let _ = view.cancel_device_gesture();
@@ -150,7 +193,7 @@ pub(super) fn controls_for_finalize(
         .iter()
         .map(|(track, binding)| {
             (
-                GestureTarget::TrackGain { track: *track },
+                binding_target(view, *track, &binding.lease),
                 binding.entity.clone(),
             )
         })
@@ -161,6 +204,75 @@ pub(super) fn controls_for_finalize(
                 .map(|(key, binding)| (key.target(), binding.entity.clone())),
         )
         .collect()
+}
+
+fn binding_target(
+    view: &EditorView,
+    track: TrackId,
+    lease: &device_panel::NumericGestureLease,
+) -> GestureTarget {
+    view.device_gesture
+        .snapshot()
+        .filter(|active| {
+            Some(device_panel::NumericGestureKey::Canonical(active.key)) == lease.get()
+                && active.key.generation == view.project_generation
+                && active.target.track_gain_anchor() == Some(track)
+        })
+        .map_or(GestureTarget::TrackGain { track }, |active| active.target)
+}
+
+fn dispatch_track_gain(
+    view: &mut EditorView,
+    track: TrackId,
+    lease: &device_panel::NumericGestureLease,
+    phase: NumericEventPhase,
+    value: ParameterValue,
+) -> Result<(), &'static str> {
+    if phase == NumericEventPhase::Begin
+        && let Some(state) = view.state.as_ref()
+        && view.track_selection.contains(track)
+        && state
+            .project
+            .track(track)
+            .is_some_and(|track| track.gain() > 0.0)
+    {
+        let selected = view.track_selection.ordered(&state.project);
+        if selected.len() > 1 {
+            let group = hex_project::RelativeTrackGains::capture(&state.project, track, &selected)
+                .map_err(|error| error.0)?;
+            if group.len() > 1 {
+                view.device_gesture
+                    .begin_track_gains(view.project_generation, group)?;
+                lease.set(
+                    view.device_gesture
+                        .snapshot()
+                        .map(|active| device_panel::NumericGestureKey::Canonical(active.key)),
+                );
+                return Ok(());
+            }
+        }
+    }
+    let target = binding_target(view, track, lease);
+    device_panel::dispatch_bound_numeric_gesture(view, target, lease, phase, value)
+}
+
+fn gain_recovery_blocker(view: &mut EditorView) -> Option<&'static str> {
+    if view.has_degraded_vst3_output() {
+        return Some("a plug-in failed · restart audio before changing volume");
+    }
+    if view.device_gesture.is_recovery_pending()
+        && view
+            .device_gesture
+            .snapshot()
+            .is_some_and(|active| active.target.is_mixer_gain())
+    {
+        if !view.device_gesture.has_pending_terminal() {
+            let _ = view.cancel_device_gesture();
+            view.wake_poll();
+        }
+        return Some("previous volume edit is canceling · drag again when it finishes");
+    }
+    None
 }
 
 impl EditorView {
@@ -179,7 +291,6 @@ impl EditorView {
                 .debug_selector(move || format!("track-volume-auto-{}", id.value()))
                 .child(theme::text("auto"));
         }
-        let target = GestureTarget::TrackGain { track: id };
         let generation = self.project_generation;
         if let std::collections::btree_map::Entry::Vacant(entry) =
             self.track_gain_controls.bindings.entry(id)
@@ -230,6 +341,8 @@ impl EditorView {
                             .is_none_or(automated)
                         {
                             Some("automation owns gain · edit or clear the gain lane")
+                        } else if let Some(reason) = gain_recovery_blocker(view) {
+                            Some(reason)
                         } else if view.edit_pending() {
                             Some("wait for the current project edit before changing volume")
                         } else {
@@ -242,9 +355,9 @@ impl EditorView {
                             return;
                         }
                     }
-                    if let Err(reason) = device_panel::dispatch_bound_numeric_gesture(
+                    if let Err(reason) = dispatch_track_gain(
                         view,
-                        target,
+                        id,
                         &captured,
                         event.phase,
                         ParameterValue::Float(event.value as f32),
@@ -265,12 +378,7 @@ impl EditorView {
         }
         let active = self
             .device_gesture
-            .snapshot()
-            .filter(|active| active.target == target)
-            .and_then(|active| match active.value {
-                ParameterValue::Float(gain) => Some(gain),
-                _ => None,
-            });
+            .preview_track_gain(self.project_generation, id);
         let enabled = !automated(track)
             && !self.gain_recorder.blocks_edits()
             && !self.midi_recorder.blocks_edits()
@@ -303,6 +411,30 @@ impl EditorView {
             "track pan · original stereo balance",
             device_panel::balance_spec(spec),
             track.balance(),
+            cx,
+        )
+    }
+
+    pub(super) fn main_volume(&mut self, cx: &mut Context<Self>) -> Div {
+        let Some(gain) = self.state.as_ref().map(|state| state.project.master_gain()) else {
+            return div();
+        };
+        let Ok(spec) = NumericSpec::new(
+            0.0,
+            2.0,
+            1.0,
+            NumericScale::LinearAmplitudeDecibels,
+            1,
+            Some("db"),
+        ) else {
+            return div();
+        };
+        self.mixer_control(
+            MixerKey::MainGain,
+            "main-volume".into(),
+            "main volume · db",
+            spec,
+            gain,
             cx,
         )
     }
@@ -353,27 +485,94 @@ impl EditorView {
             ) else {
                 return div();
             };
-            let config = config.with_presentation(NumericControlPresentation::FilledSlider);
+            let config = config
+                .with_presentation(NumericControlPresentation::FilledSlider)
+                .with_slider_center_mark(!matches!(key, MixerKey::Balance(_)));
             let entity = cx.new(|cx| NumericControl::from_config(cx, config));
             let lease: device_panel::NumericGestureLease = Rc::new(Cell::new(None));
             let captured = lease.clone();
+            let atomic_admitted = Cell::new(false);
             let subscription = cx.subscribe(
                 &entity,
                 move |view, control, event: &NumericControlEvent, cx| {
                     if generation != view.project_generation || !key.current(view) {
                         return;
                     }
+                    if event.phase == NumericEventPhase::Begin {
+                        atomic_admitted.set(false);
+                    }
+                    let explicit_gain = key.supports_atomic_gain() && event.gesture.is_none();
                     if event.phase == NumericEventPhase::Begin
-                        && (view.document_audio_mode != hex_session::DocumentAudioMode::Resident
-                            || (view.gain_recorder.blocks_edits()
-                                || view.midi_recorder.blocks_edits())
+                        && key.supports_atomic_gain()
+                        && view.document_audio_mode == hex_session::DocumentAudioMode::Resident
+                        && !view.gain_recorder.blocks_edits()
+                        && !view.midi_recorder.blocks_edits()
+                        && let Some(reason) = gain_recovery_blocker(view)
+                    {
+                        view.error = Some(reason.into());
+                        control.update(cx, |control, cx| control.cancel(cx));
+                        cx.notify();
+                        return;
+                    }
+                    if event.phase == NumericEventPhase::Begin
+                        && ((view.document_audio_mode != hex_session::DocumentAudioMode::Resident
+                            && !explicit_gain)
+                            || view.gain_recorder.blocks_edits()
+                            || view.midi_recorder.blocks_edits()
                             || view.edit_pending())
                     {
-                        view.error = Some(
+                        view.error = Some(if explicit_gain {
+                            "finish the current edit before changing output volume"
+                        } else {
                             "finish the current edit · held mixer controls require resident audio"
-                                .into(),
-                        );
-                        control.update(cx, |control, cx| control.cancel(cx));
+                        }.into());
+                        let rejected_gain = (key.supports_atomic_gain()
+                            && view.document_audio_mode
+                                != hex_session::DocumentAudioMode::Resident)
+                            .then(|| key.canonical_value(view).unwrap_or(canonical));
+                        control.update(cx, |control, cx| {
+                            control.cancel(cx);
+                            if let Some(gain) = rejected_gain {
+                                let _ = control.set_external_value(f64::from(gain), cx);
+                            }
+                        });
+                        cx.notify();
+                        return;
+                    }
+                    // Verified sources retain explicit atomic output-gain edits. Held
+                    // preview stays resident-only; the actor owns the sole edit.
+                    if key.supports_atomic_gain()
+                        && view.document_audio_mode != hex_session::DocumentAudioMode::Resident
+                    {
+                        match event.phase {
+                            NumericEventPhase::Begin => atomic_admitted.set(true),
+                            NumericEventPhase::Commit if atomic_admitted.replace(false) => {
+                                let Some(command) = key.atomic_gain_command(event.value as f32)
+                                else {
+                                    return;
+                                };
+                                if view.edit_pending()
+                                    || view.gain_recorder.blocks_edits()
+                                    || view.midi_recorder.blocks_edits()
+                                    || !view.enqueue_device_barrier(
+                                        hex_session::service::Request::Edit(command),
+                                    )
+                                {
+                                    view.error = Some(
+                                        "finish the current edit before changing output volume"
+                                            .into(),
+                                    );
+                                    let canonical = key.canonical_value(view).unwrap_or(canonical);
+                                    control.update(cx, |control, cx| {
+                                        control.cancel(cx);
+                                        let _ =
+                                            control.set_external_value(f64::from(canonical), cx);
+                                    });
+                                }
+                            }
+                            NumericEventPhase::Cancel => atomic_admitted.set(false),
+                            _ => {}
+                        }
                         cx.notify();
                         return;
                     }
@@ -406,7 +605,8 @@ impl EditorView {
                 ParameterValue::Float(value) => Some(value),
                 _ => None,
             });
-        let enabled = self.document_audio_mode == hex_session::DocumentAudioMode::Resident
+        let enabled = (self.document_audio_mode == hex_session::DocumentAudioMode::Resident
+            || key.supports_atomic_gain())
             && !self.gain_recorder.blocks_edits()
             && !self.midi_recorder.blocks_edits()
             && !self.opening_project
@@ -415,7 +615,14 @@ impl EditorView {
         binding.entity.update(cx, |control, cx| {
             control.set_enabled(enabled, cx);
             let _ = control.set_external_style(theme::control_style(), cx);
-            let _ = control.set_external_value(f64::from(active.unwrap_or(canonical)), cx);
+            // The existing worker queue retains an explicit output-gain edit until its
+            // acknowledgement; do not flash the old value during that handoff.
+            if !(key.supports_atomic_gain()
+                && self.document_audio_mode != hex_session::DocumentAudioMode::Resident
+                && self.edit_pending())
+            {
+                let _ = control.set_external_value(f64::from(active.unwrap_or(canonical)), cx);
+            }
         });
         div()
             .flex()

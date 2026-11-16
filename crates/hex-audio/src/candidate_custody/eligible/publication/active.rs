@@ -38,16 +38,21 @@ impl Queued {
             .as_mut()?
             .test_set_owned_runtime_reservation(bytes)
     }
+    /// Resource-free observations only; these never grant publication authority.
+    pub(crate) fn diagnostic_context(&self) -> Option<hex_engine::AudioSourceContext> {
+        self.state.runtime.as_ref()?.source_context()
+    }
+    pub(crate) fn take_handoff_diagnostic(&mut self) -> Option<hex_engine::PlaybackHandoffError> {
+        self.state.streaming.as_mut()?.take_handoff_diagnostic()
+    }
     pub(crate) fn revision(&self) -> u64 {
         self.state.revision
     }
-    pub(crate) fn prepare_install(
-        &mut self,
-        mut previous: Option<&mut Active>,
+    pub(crate) fn preflight_refusal(
+        &self,
         root: &CandidateRoot,
-        mut stream: Option<&mut StreamInstall<'_>>,
-    ) -> InstallDecision {
-        let next = &mut self.state;
+    ) -> Option<hex_engine::PlaybackHandoffRejection> {
+        let next = &self.state;
         if !next
             .claims
             .as_ref()
@@ -57,26 +62,38 @@ impl Queued {
             || next.covering_successor.is_some()
             || next.policy != crate::prepared::PublicationPolicy::InheritRuntime
         {
-            return InstallDecision::Refused(
-                hex_engine::PlaybackHandoffRejection::ConstructorClaimsUnavailable,
-            );
+            return Some(hex_engine::PlaybackHandoffRejection::ConstructorClaimsUnavailable);
         }
         let Some(decision) = next.claims.as_ref().map(|claims| &claims.life.cancellation) else {
-            return InstallDecision::Refused(
-                hex_engine::PlaybackHandoffRejection::ConstructorClaimsUnavailable,
-            );
+            return Some(hex_engine::PlaybackHandoffRejection::ConstructorClaimsUnavailable);
         };
-        if decision.load(Ordering::Acquire) == CANCELLED {
-            return InstallDecision::Refused(
-                hex_engine::PlaybackHandoffRejection::FreshRuntimeCancelled,
-            );
+        (decision.load(Ordering::Acquire) == CANCELLED)
+            .then_some(hex_engine::PlaybackHandoffRejection::FreshRuntimeCancelled)
+    }
+    pub(crate) fn prepare_install(
+        &mut self,
+        mut previous: Option<&mut Active>,
+        root: &CandidateRoot,
+        mut stream: Option<&mut StreamInstall<'_>>,
+    ) -> InstallDecision {
+        if let Some(reason) = self.preflight_refusal(root) {
+            return InstallDecision::Refused(reason);
         }
+        let next = &mut self.state;
         let streamed = next.streaming.is_some()
             || next
                 .runtime
                 .as_ref()
                 .is_none_or(|runtime| runtime.contains_streamed_sources());
         if streamed {
+            if previous
+                .as_mut()
+                .is_some_and(|old| old.stream_view().has_pending_render_window())
+            {
+                // The candidate's claims and cancellation were checked first.
+                // Let the predecessor complete its exact pending window.
+                return InstallDecision::Retry;
+            }
             let Some(request) = stream.as_deref_mut() else {
                 return InstallDecision::Refused(
                     hex_engine::PlaybackHandoffRejection::StreamedPagesNotReady,
@@ -89,16 +106,34 @@ impl Queued {
             ) {
                 Ok(Some(_)) => {}
                 Ok(None) => {
-                    if previous.is_some() {
-                        next.cancel_stream_pending(request.domains);
-                    }
                     return InstallDecision::Retry;
                 }
                 Err(_) => {
+                    let capacity_conflict = next
+                        .streaming
+                        .as_ref()
+                        .is_some_and(|workspace| workspace.capacity_conflict);
+                    if capacity_conflict
+                        && next
+                            .streaming
+                            .as_mut()
+                            .is_some_and(|workspace| workspace.retry_candidate_capacity_conflict())
+                    {
+                        next.cancel_stream_pending(request.domains);
+                        return InstallDecision::Retry;
+                    }
+                    let source_changed = next
+                        .streaming
+                        .as_mut()
+                        .is_some_and(|workspace| std::mem::take(&mut workspace.source_changed));
                     next.cancel_stream_pending(request.domains);
-                    return InstallDecision::Refused(
-                        hex_engine::PlaybackHandoffRejection::StreamedPagesNotReady,
-                    );
+                    return InstallDecision::Refused(if source_changed {
+                        hex_engine::PlaybackHandoffRejection::StreamSourceChanged
+                    } else if capacity_conflict {
+                        hex_engine::PlaybackHandoffRejection::StreamedPageCapacity
+                    } else {
+                        hex_engine::PlaybackHandoffRejection::StreamedPagesNotReady
+                    });
                 }
             }
         }
@@ -254,6 +289,18 @@ impl Queued {
     }
     pub(crate) fn streaming_enabled(&self) -> bool {
         self.state.streaming.is_some()
+    }
+    pub(crate) fn retry_stream_capacity_conflict(&mut self) -> bool {
+        self.state
+            .streaming
+            .as_mut()
+            .is_some_and(|workspace| workspace.retry_capacity_conflict())
+    }
+    pub(crate) fn has_stream_install_pending(&self) -> bool {
+        self.state.streaming.as_ref().is_some_and(|workspace| {
+            workspace.role == Some(hex_stream::ProtectionRole::Candidate)
+                && workspace.stamps.iter().any(Option::is_some)
+        })
     }
     pub(crate) fn cancel_stream_readiness(&mut self, domains: &mut [Option<DomainEnvelope>; 2]) {
         self.state.cancel_stream_pending(domains);

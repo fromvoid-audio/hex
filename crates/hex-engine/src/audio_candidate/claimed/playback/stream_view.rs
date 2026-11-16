@@ -6,7 +6,7 @@
 use super::*;
 use crate::{
     AudioSourceContext, Invalid, PlaybackAction, PlaybackActionError, PlaybackHandoffError,
-    PreparedStreamAction, StreamChunkWindow, StreamPageExtent,
+    PreparedStreamAction, StreamChunkWindow, StreamResourceExtent,
 };
 
 enum Runtime<'a> {
@@ -60,11 +60,14 @@ impl StreamPlayback<'_> {
                 position: r.position(),
                 performance_frame: r.performance_frame(),
                 playing: r.playing(),
+                arrangement_loop_state: r.arrangement_loop_state(),
                 metronome_enabled: r.metronome_enabled(),
                 session_capability: r.session_capability_status(),
                 sampler_console: false,
                 route_state_generation: r.session_route_state_generation(),
                 route_count: r.session_route_count(),
+                main_output_latency_frames: r.main_output_latency_frames(),
+                content_loop: r.automation_capture_loop(),
             }),
         }
     }
@@ -78,6 +81,17 @@ impl StreamPlayback<'_> {
         match &mut self.runtime {
             Runtime::Constructor(r) => r.apply_action(action),
             Runtime::Ordinary(r, _) => r.try_apply_action(action),
+        }
+    }
+    /// `apply_action` with the transport declick, so a ready streamed Play
+    /// from a paused position ramps in like the resident path.
+    pub fn apply_declicked_action(
+        &mut self,
+        action: PlaybackAction,
+    ) -> Result<(), PlaybackActionError> {
+        match &mut self.runtime {
+            Runtime::Constructor(r) => r.apply_declicked_action(action),
+            Runtime::Ordinary(r, _) => r.try_apply_declicked_action(action),
         }
     }
     pub fn prepare_stream_action(
@@ -122,7 +136,7 @@ impl StreamPlayback<'_> {
         &mut self,
         prepared: &PreparedStreamAction,
         maximum_frames: usize,
-        visit: &mut impl FnMut(StreamPageExtent) -> Result<(), Invalid>,
+        visit: &mut impl FnMut(StreamResourceExtent) -> Result<(), Invalid>,
     ) -> Result<StreamChunkWindow, Invalid> {
         match &mut self.runtime {
             Runtime::Constructor(r) => {
@@ -140,7 +154,7 @@ impl StreamPlayback<'_> {
         &mut self,
         due: u64,
         maximum_frames: usize,
-        visit: &mut impl FnMut(StreamPageExtent) -> Result<(), Invalid>,
+        visit: &mut impl FnMut(StreamResourceExtent) -> Result<(), Invalid>,
     ) -> Result<StreamChunkWindow, Invalid> {
         match &mut self.runtime {
             Runtime::Constructor(r) => r.visit_pending_stream_chunk(due, maximum_frames, visit),
@@ -153,7 +167,7 @@ impl StreamPlayback<'_> {
         &self,
         maximum_frames: usize,
         playing: Option<bool>,
-        visit: &mut impl FnMut(StreamPageExtent) -> Result<(), Invalid>,
+        visit: &mut impl FnMut(StreamResourceExtent) -> Result<(), Invalid>,
     ) -> Result<StreamChunkWindow, Invalid> {
         match &self.runtime {
             Runtime::Constructor(r) => r.visit_next_stream_chunk(maximum_frames, playing, visit),
@@ -162,20 +176,72 @@ impl StreamPlayback<'_> {
             }
         }
     }
+    /// Visit stream demand for at most 256 upcoming frames and return the
+    /// covered width. A longer callback is only partially covered. This is a
+    /// speculative observation, not a readiness receipt or transport commit.
+    pub fn visit_current_stream_quantum(
+        &mut self,
+        maximum_frames: usize,
+        playing: Option<bool>,
+        visit: &mut impl FnMut(StreamResourceExtent) -> Result<(), Invalid>,
+    ) -> Result<usize, Invalid> {
+        match &mut self.runtime {
+            Runtime::Constructor(r) => {
+                r.visit_current_stream_quantum(maximum_frames, playing, visit)
+            }
+            Runtime::Ordinary(r, _) => {
+                r.visit_current_stream_quantum(maximum_frames, playing, true, visit)
+            }
+        }
+    }
+    /// Visit at most 256 frames at an offset from the current clock. This does
+    /// not advance playback or establish readiness for the visited resources.
+    pub fn visit_current_stream_quantum_at(
+        &mut self,
+        start_offset: u64,
+        maximum_frames: usize,
+        playing: Option<bool>,
+        visit: &mut impl FnMut(StreamResourceExtent) -> Result<(), Invalid>,
+    ) -> Result<usize, crate::playback::StreamQuantumProjectionError> {
+        match &mut self.runtime {
+            Runtime::Constructor(r) => {
+                r.visit_current_stream_quantum_at(start_offset, maximum_frames, playing, visit)
+            }
+            Runtime::Ordinary(r, _) => r.visit_current_stream_quantum_at(
+                start_offset,
+                maximum_frames,
+                playing,
+                true,
+                visit,
+            ),
+        }
+    }
     pub fn preview_stream_handoff(
         &mut self,
         previous: &mut StreamPlayback<'_>,
         maximum_frames: usize,
         playing: Option<bool>,
-        visit: &mut impl FnMut(StreamPageExtent) -> Result<(), Invalid>,
+        visit: &mut impl FnMut(StreamResourceExtent) -> Result<(), Invalid>,
     ) -> Result<StreamChunkWindow, PlaybackHandoffError> {
+        self.preview_stream_handoff_with_report(previous, maximum_frames, playing, visit)
+            .map(|(window, _)| window)
+    }
+    /// Preview stream demand and the running-audio handoff classification.
+    /// The report does not authorize admission or a later publication.
+    pub fn preview_stream_handoff_with_report(
+        &mut self,
+        previous: &mut StreamPlayback<'_>,
+        maximum_frames: usize,
+        playing: Option<bool>,
+        visit: &mut impl FnMut(StreamResourceExtent) -> Result<(), Invalid>,
+    ) -> Result<(StreamChunkWindow, crate::SessionHandoffReport), PlaybackHandoffError> {
         // Constructor/constructor retains its exact existing identity and class
         // preflight. Mixed ownership can only borrow closed Current runtimes;
         // it never changes their owner, anchors, phase or publication eligibility.
         if let (Runtime::Constructor(next), Runtime::Constructor(old)) =
             (&mut self.runtime, &mut previous.runtime)
         {
-            return next.preview_stream_handoff(old, maximum_frames, playing, visit);
+            return next.preview_stream_handoff_with_report(old, maximum_frames, playing, visit);
         }
         fn musical_runtime<'a>(
             runtime: &'a mut Runtime<'_>,
@@ -202,10 +268,117 @@ impl StreamPlayback<'_> {
         let ordinary = matches!(self.runtime, Runtime::Ordinary(..));
         let next = musical_runtime(&mut self.runtime)?;
         let old = musical_runtime(&mut previous.runtime)?;
-        if ordinary {
-            next.preview_ordinary_stream_handoff(old, maximum_frames, playing, visit)
-        } else {
-            next.preview_stream_handoff(old, maximum_frames, playing, visit)
+        next.preview_stream_handoff_with_report(
+            old,
+            maximum_frames,
+            playing,
+            visit,
+            ordinary,
+            false,
+        )
+    }
+    /// Preview an ordinary graph continuation using an exact borrowed matcher.
+    /// The host must separately authenticate the actual endpoint, source,
+    /// predecessor, candidate, transport and custody at preview and commit.
+    /// This projection does not admit a graph or transfer any resource.
+    #[cfg(test)]
+    pub(crate) fn preview_ordinary_with_foreign_continuation(
+        &mut self,
+        previous: &mut StreamPlayback<'_>,
+        maximum_frames: usize,
+        playing: Option<bool>,
+        visit: &mut impl FnMut(StreamResourceExtent) -> Result<(), Invalid>,
+        continuation: &hex_lattice::ForeignConfigurationContinuation<'_>,
+    ) -> Result<StreamChunkWindow, PlaybackHandoffError> {
+        match (&mut self.runtime, &mut previous.runtime) {
+            (Runtime::Ordinary(next, _), Runtime::Ordinary(old, _)) => next
+                .preview_stream_handoff_with_continuation_and_report(
+                    old,
+                    maximum_frames,
+                    playing,
+                    visit,
+                    true,
+                    false,
+                    Some(continuation),
+                )
+                .map(|(window, _)| window),
+            _ => Err(PlaybackHandoffError::RuntimeFenceChanged),
+        }
+    }
+
+    /// Preview with state retained by this ordinary candidate. The host must
+    /// independently validate the source and transaction at preview and commit.
+    pub fn preview_ordinary_with_stored_foreign_continuation(
+        &mut self,
+        previous: &mut StreamPlayback<'_>,
+        maximum_frames: usize,
+        playing: Option<bool>,
+        visit: &mut impl FnMut(StreamResourceExtent) -> Result<(), Invalid>,
+    ) -> Result<StreamChunkWindow, PlaybackHandoffError> {
+        match (&mut self.runtime, &mut previous.runtime) {
+            (Runtime::Ordinary(next, _), Runtime::Ordinary(old, _)) => next
+                .preview_stream_handoff_with_stored_foreign_continuation(
+                    old,
+                    maximum_frames,
+                    playing,
+                    visit,
+                ),
+            _ => Err(PlaybackHandoffError::RuntimeFenceChanged),
+        }
+    }
+
+    /// Preview only: the publication owner must validate the actual live fence
+    /// and protect these pages before committing the corresponding reset.
+    pub fn preview_ordinary_fenced_restart(
+        &mut self,
+        previous: &mut StreamPlayback<'_>,
+        maximum_frames: usize,
+        playing: Option<bool>,
+        visit: &mut impl FnMut(StreamResourceExtent) -> Result<(), Invalid>,
+    ) -> Result<StreamChunkWindow, PlaybackHandoffError> {
+        self.preview_ordinary_fenced_restart_with_report(previous, maximum_frames, playing, visit)
+            .map(|(window, _)| window)
+    }
+    /// Classify a fenced ordinary restart without committing its fence or pages.
+    pub fn preview_ordinary_fenced_restart_with_report(
+        &mut self,
+        previous: &mut StreamPlayback<'_>,
+        maximum_frames: usize,
+        playing: Option<bool>,
+        visit: &mut impl FnMut(StreamResourceExtent) -> Result<(), Invalid>,
+    ) -> Result<(StreamChunkWindow, crate::SessionHandoffReport), PlaybackHandoffError> {
+        match (&mut self.runtime, &mut previous.runtime) {
+            (Runtime::Ordinary(next, _), Runtime::Ordinary(old, _)) => next
+                .preview_stream_handoff_with_report(
+                    old,
+                    maximum_frames,
+                    playing,
+                    visit,
+                    true,
+                    true,
+                ),
+            _ => Err(PlaybackHandoffError::RuntimeFenceChanged),
+        }
+    }
+    /// Borrow live track input through the current streamed runtime.
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_with_live_track_audio(
+        &mut self,
+        output: &mut [crate::Frame],
+        track: hex_project::TrackId,
+        input: &[crate::Frame],
+        pages: Option<&mut dyn crate::MediaPages>,
+        observer: Option<&mut crate::NodeSignalObserver<'_>>,
+        project: Option<&mut crate::ProjectOutputTap<'_, '_>>,
+        foreign: &mut dyn hex_lattice::ForeignProcessors,
+    ) -> Result<(), Invalid> {
+        match &mut self.runtime {
+            Runtime::Constructor(runtime) => runtime.render_with_live_track_audio(
+                output, track, input, pages, observer, project, foreign,
+            ),
+            Runtime::Ordinary(runtime, _) => runtime.render_with_live_track_audio(
+                output, track, input, pages, observer, project, foreign,
+            ),
         }
     }
     /// Borrow the existing admitted foreign endpoints through the same runtime

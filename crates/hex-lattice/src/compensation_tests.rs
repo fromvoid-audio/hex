@@ -106,6 +106,7 @@ fn paired_taps_bracket_whole_entry_and_preserve_bypass_pcm() {
                     &mut actual,
                     17,
                     Some(&Clock),
+                    Some(&Clock),
                     &mut |got_owner, device, _, phase, offset, audio| {
                         assert_eq!((got_owner, device, offset), (owner, 9, 17));
                         observations.push((phase, audio.to_vec()));
@@ -244,12 +245,16 @@ impl PreparedNativeProcessor for ClockPrepared {
         std::mem::size_of::<ClockRuntime>()
     }
     fn create_runtime(&self) -> Box<dyn NativeProcessorRuntime> {
-        Box::new(ClockRuntime { last_beat: 0 })
+        Box::new(ClockRuntime {
+            last_beat: 0,
+            last_input: [0.0; 2],
+        })
     }
 }
 
 struct ClockRuntime {
     last_beat: u64,
+    last_input: StereoFrame,
 }
 impl NativeProcessorRuntime for ClockRuntime {
     fn process_block(
@@ -291,6 +296,7 @@ impl NativeProcessorRuntime for ClockRuntime {
         clock: Option<&dyn NativeInstrumentClock>,
         _resources: &dyn crate::DeviceResources,
     ) {
+        self.last_input = frames.last().copied().unwrap_or_default();
         self.last_beat = clock
             .and_then(|clock| clock.beat_at_offset(frames.len().saturating_sub(1)))
             .unwrap_or(99);
@@ -341,7 +347,7 @@ fn per_node_clock_reaches_processors_and_observers_without_changing_legacy_calls
     chain.begin_block();
     let mut frames = [[0.0; 2]; 4];
     chain
-        .process_range_with_clock(0..1, &mut frames, Some(&Clock))
+        .process_range_with_clock(0..1, &mut frames, Some(&Clock), Some(&Clock))
         .unwrap();
     assert_eq!(
         frames,
@@ -353,6 +359,7 @@ fn per_node_clock_reaches_processors_and_observers_without_changing_legacy_calls
             0..1,
             &mut frames,
             17,
+            Some(&Clock),
             Some(&Clock),
             &mut |owner, id, _, offset, audio| {
                 assert_eq!(owner, ProcessorChainOwner::Track(1));
@@ -368,7 +375,7 @@ fn per_node_clock_reaches_processors_and_observers_without_changing_legacy_calls
     chain.process_block(&mut frames).unwrap();
     assert_eq!(frames, [[7.0, 9.0]; 4]);
     assert_eq!(
-        chain.process_range_with_clock(0..2, &mut frames, Some(&Clock)),
+        chain.process_range_with_clock(0..2, &mut frames, Some(&Clock), Some(&Clock)),
         Err(DeviceContractError::InvalidDescriptor)
     );
 }
@@ -385,7 +392,7 @@ fn bypass_private_clock_uses_offsets_while_audible_samples_are_preserved() {
         chain.begin_block();
         let mut frames = [[1.0, -0.5]; 4];
         chain
-            .process_range_with_clock(0..1, &mut frames, Some(&Clock))
+            .process_range_with_clock(0..1, &mut frames, Some(&Clock), Some(&Clock))
             .unwrap();
         assert_eq!(frames, [[1.0, -0.5]; 4]);
         let runtime = chain.entries[0]
@@ -408,6 +415,46 @@ fn bypass_private_clock_uses_offsets_while_audible_samples_are_preserved() {
             .unwrap();
         assert_eq!(runtime.last_beat, 99);
     }
+}
+
+#[test]
+fn unassigned_modulation_keeps_matrix_input_for_bypassed_private_history() {
+    let mut prepared =
+        PreparedRuntimeInstance::from(instance(1, Some(std::sync::Arc::new(ClockPrepared)), true));
+    prepared.matrix = StereoMatrix::new([[0.5, 0.0], [0.0, 0.25]]).unwrap();
+    prepared.modulation = Some(
+        PreparedModulationState::new(
+            vec![
+                PreparedModulationSource::free(
+                    ModulationSourceId::new(1).unwrap(),
+                    48_000.0,
+                    1.0,
+                    0.0,
+                )
+                .unwrap(),
+            ],
+            PreparedModulation::new(&[], &[], 1).unwrap(),
+            2,
+        )
+        .unwrap(),
+    );
+    let mut chain = NativeRuntimeChain::new_prepared(vec![prepared]).unwrap();
+    chain.begin_block();
+    let mut frames = [[1.0, -0.5]; 3];
+    chain
+        .process_range_with_clock(0..1, &mut frames, Some(&Clock), Some(&Clock))
+        .unwrap();
+    assert_eq!(frames, [[1.0, -0.5]; 3]);
+    let runtime = chain.entries[0]
+        .runtime
+        .legacy()
+        .unwrap()
+        .1
+        .as_any()
+        .downcast_ref::<ClockRuntime>()
+        .unwrap();
+    assert_eq!(runtime.last_input, [0.5, -0.125]);
+    assert_eq!(runtime.last_beat, 12);
 }
 
 #[test]

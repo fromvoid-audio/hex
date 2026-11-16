@@ -4,33 +4,30 @@ use super::{EditorView, ViewState, drag::LaneBounds, viewport::Viewport};
 use crate::theme;
 use gpui::{
     Context, Div, MouseButton, PathBuilder, Pixels, Point, Window, canvas, div, point, prelude::*,
-    px, relative, rgb, rgba,
+    px, relative, rgba,
 };
 use hex_project::{Clip, ClipFade, ClipId, Command, TrackId, TrimEdge};
 use hex_session::service::Request;
 use std::rc::Rc;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum Handle {
-    InTop,
-    InBottom,
-    InCurve,
-    OutTop,
-    OutBottom,
-    OutCurve,
+#[cfg(all(test, feature = "ui-test-support"))]
+pub(in crate::editor) mod paint_probe;
+
+#[cfg(all(test, feature = "ui-test-support"))]
+use super::fade_handle_geometry::curve_handle_gain;
+pub(super) use super::fade_handle_geometry::{Handle, edited_fade, knots};
+
+// Two 8 px endpoints plus an 8 px gap in each dimension. The body starts
+// below the title; use post-zoom logical pixels so the threshold is DPI independent.
+const MIN_FADE_CONTROL_EXTENT: f32 = 24.0;
+
+fn fade_controls_fit(width: f32, height: f32) -> bool {
+    width.is_finite()
+        && height.is_finite()
+        && width >= MIN_FADE_CONTROL_EXTENT
+        && height - super::clip_name::CLIP_NAME_HEIGHT >= MIN_FADE_CONTROL_EXTENT
 }
-impl Handle {
-    pub(super) fn name(self) -> &'static str {
-        match self {
-            Self::InTop => "fade-in-top",
-            Self::InBottom => "fade-in-bottom",
-            Self::InCurve => "fade-in-curve",
-            Self::OutTop => "fade-out-top",
-            Self::OutBottom => "fade-out-bottom",
-            Self::OutCurve => "fade-out-curve",
-        }
-    }
-}
+
 struct FadeControls {
     lane: LaneBounds,
     local_fade: ClipFade,
@@ -38,8 +35,22 @@ struct FadeControls {
     positions: Vec<(Handle, Point<f32>)>,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) struct Hover {
+    generation: u64,
+    track: TrackId,
+    clip: ClipId,
+    handle: Handle,
+}
+impl Hover {
+    pub(super) fn in_track(self, generation: u64, track: TrackId) -> Option<(ClipId, Handle)> {
+        (self.generation == generation && self.track == track).then_some((self.clip, self.handle))
+    }
+}
+
 // The hit target stays square; the painted curve control is a diamond.
-pub(super) fn handle_shape(curve: bool, active: bool) -> impl gpui::IntoElement {
+pub(super) fn handle_shape(curve: bool, state: theme::FadeHandleState) -> impl gpui::IntoElement {
+    let style = theme::fade_handle_style(state);
     canvas(
         |_, _, _| (),
         move |bounds, _, window, _| {
@@ -57,11 +68,6 @@ pub(super) fn handle_shape(curve: bool, active: bool) -> impl gpui::IntoElement 
             } else {
                 [(left, top), (right, top), (right, bottom), (left, bottom)]
             };
-            let color: gpui::Hsla = if active {
-                rgb(theme::color(theme::PaletteRole::Secondary)).into()
-            } else {
-                rgba(0x000000cc).into()
-            };
             for fill in [true, false] {
                 let mut path = if fill {
                     PathBuilder::fill()
@@ -77,16 +83,9 @@ pub(super) fn handle_shape(curve: bool, active: bool) -> impl gpui::IntoElement 
                 }
                 path.close();
                 if let Ok(path) = path.build() {
-                    let paint = if fill {
-                        if active {
-                            gpui::Hsla { a: 0.45, ..color }
-                        } else {
-                            rgba(0x00000020).into()
-                        }
-                    } else {
-                        color
-                    };
-                    window.paint_path(path, paint);
+                    #[cfg(all(test, feature = "ui-test-support"))]
+                    paint_probe::record(bounds, style);
+                    window.paint_path(path, rgba(if fill { style.fill } else { style.stroke }));
                 }
             }
         },
@@ -111,124 +110,6 @@ pub(super) struct FadeDrag {
     preview_clip: Option<Clip>,
     trim_frame: Option<u64>,
     snap_grid: super::musical_time::SnapGrid,
-}
-
-// Curve motion retains subframe precision; endpoint lengths still round to frames.
-pub(super) fn edited_fade(
-    fade: ClipFade,
-    handle: Handle,
-    frames: f64,
-    bend: i16,
-) -> Option<ClipFade> {
-    if !frames.is_finite() {
-        return None;
-    }
-    let whole_frames = frames.round() as i128;
-    let span = fade.span();
-    let start = fade.in_start();
-    let end_offset = fade.out_end_offset();
-    let mut fade_in = fade.fade_in();
-    let mut fade_out = fade.fade_out();
-    let mut in_curve = fade.in_curve();
-    let mut out_curve = fade.out_curve();
-    let mut in_position = fade.in_position();
-    let mut out_position = fade.out_position();
-    let shift = |value: u64, upper: u64| {
-        i128::from(value)
-            .saturating_add(whole_frames)
-            .clamp(0, i128::from(upper)) as u64
-    };
-    match handle {
-        Handle::InTop => fade_in = shift(fade_in, span - start),
-        Handle::OutTop => {
-            fade_out = i128::from(fade_out)
-                .saturating_sub(whole_frames)
-                .clamp(0, i128::from(span - end_offset)) as u64
-        }
-        Handle::InBottom | Handle::OutBottom => return None,
-        Handle::InCurve | Handle::OutCurve => {
-            let out = handle == Handle::OutCurve;
-            let curve = if out { &mut out_curve } else { &mut in_curve };
-            // The diamond stays between channel centers (central half of body).
-            // Opening a legacy bend never changes it. An explicit horizontal
-            // edit fits hidden extremes to the visible ordinate, so all four
-            // corners remain reachable without moving the diamond vertically.
-            if bend != 0 {
-                let control = (*curve).clamp(-500, 500);
-                let next = control.saturating_add(bend).clamp(-500, 500);
-                // Legacy bends can lie beyond the visual band. Start movement
-                // from the visible edge, with no dead zone or outward-only edit.
-                if next != control || *curve == control {
-                    *curve = next;
-                }
-            }
-            if frames != 0.0 {
-                *curve = (*curve).clamp(-500, 500);
-            }
-            let length = if out { fade.fade_out() } else { fade.fade_in() };
-            let changed = if out {
-                out_curve != fade.out_curve()
-            } else {
-                in_curve != fade.in_curve()
-            };
-            if length > 1 && (frames != 0.0 || changed) {
-                let original = fade.position_at_gain(out, curve_handle_gain(fade, out))?;
-                let target = (original + frames / (length - 1) as f64).clamp(0.001, 0.999);
-                // Explicit edits use the bounded ordinate, whose mapped half
-                // progress is the canonical horizontal position.
-                let position = (target * 1000.0).round().clamp(1.0, 999.0) as u16;
-                if out {
-                    out_position = position;
-                } else {
-                    in_position = position;
-                }
-            }
-        }
-    }
-    ClipFade::new(span, 0, fade_in, fade_out)
-        .ok()?
-        .with_shape(start, end_offset, in_curve, out_curve)
-        .ok()?
-        .with_curve_positions(in_position, out_position)
-        .ok()
-}
-
-// Each handle belongs to its own ramp, including legacy bends. Overlapping
-// ramps multiply in playback/the shaded envelope, but must not pull the other
-// ramp's control outside its editing box.
-fn curve_handle_gain(fade: ClipFade, out: bool) -> f64 {
-    fade.curve_midpoint_gain(out).clamp(0.25, 0.75)
-}
-
-pub(super) fn knots(fade: ClipFade) -> [(Handle, (u64, f64), f32); 6] {
-    let end = fade.span() - fade.out_end_offset() - 1;
-    let in_top = fade.in_start() + fade.fade_in().saturating_sub(1);
-    let out_top = (end + 1).saturating_sub(fade.fade_out()).min(end);
-    let interior = |start: u64, end: u64, out| {
-        let length = end - start;
-        let offset = length as f64
-            * fade
-                .position_at_gain(out, curve_handle_gain(fade, out))
-                .unwrap_or(0.5);
-        let whole = (offset.floor() as u64).min(length);
-        (start + whole, (offset - whole as f64).clamp(0.0, 1.0))
-    };
-    [
-        (Handle::InTop, (in_top, 0.0), 1.0),
-        (Handle::InBottom, (fade.in_start(), 0.0), 0.0),
-        (
-            Handle::InCurve,
-            interior(fade.in_start(), in_top, false),
-            curve_handle_gain(fade, false) as f32,
-        ),
-        (Handle::OutTop, (out_top, 0.0), 1.0),
-        (Handle::OutBottom, (end, 0.0), 0.0),
-        (
-            Handle::OutCurve,
-            interior(out_top, end, true),
-            curve_handle_gain(fade, true) as f32,
-        ),
-    ]
 }
 
 impl EditorView {
@@ -348,17 +229,62 @@ impl EditorView {
             && self.state.as_ref().is_some_and(|state| {
                 self.project_generation == drag.generation
                     && state.revision == drag.revision
-                    && self.visible_viewport(state.timeline_frames) == drag.viewport
-                    && self.drag_lanes.get(&drag.track).is_some_and(|lane| {
-                        lane.left == drag.lane.left
-                            && lane.width == drag.lane.width
-                            && lane.top == drag.lane.top
-                            && lane.height == drag.lane.height
-                    })
+                    && self.drag_lanes.contains_key(&drag.track)
                     && state.project.clip(drag.clip.id()) == Some(drag.clip.as_ref())
             })
     }
+    /// Hover follows the same title/body boundary as the waveform surface.
+    /// Held and admitted fade display is owned separately by the gesture below.
+    pub(super) fn update_fade_hover(
+        &mut self,
+        track: TrackId,
+        clip: ClipId,
+        generation: u64,
+        pointer_y: Option<f32>,
+    ) -> bool {
+        if pointer_y.is_some() && generation != self.project_generation {
+            return false;
+        }
+        let target = (generation, clip);
+        let over_body = self.track_height(track) > super::track_layout::HEADER_ONLY_HEIGHT
+            && self.drag_lane_epochs.get(&track) == Some(&self.drag_layout_generation)
+            && pointer_y
+                .zip(self.drag_lanes.get(&track))
+                .is_some_and(|(y, lane)| {
+                    let body_top = lane.top + super::clip_name::CLIP_NAME_HEIGHT;
+                    let bottom = lane.top + lane.height;
+                    [y, lane.top, lane.height, body_top, bottom]
+                        .into_iter()
+                        .all(f32::is_finite)
+                        && lane.height > super::clip_name::CLIP_NAME_HEIGHT
+                        && y >= body_top
+                        && y < bottom
+                });
+        let next = if over_body {
+            Some(target)
+        } else if self.hovered_fade_clip == Some(target) {
+            None
+        } else {
+            self.hovered_fade_clip
+        };
+        if self.hovered_fade_clip == next {
+            return false;
+        }
+        self.hovered_fade_clip = next;
+        true
+    }
+
     pub(super) fn reconcile_fade_gesture(&mut self) {
+        if self.hovered_fade_handle.is_some_and(|hover| {
+            hover.generation != self.project_generation
+                || self.mode != super::EditorMode::Arrangement
+                || self
+                    .state
+                    .as_ref()
+                    .is_none_or(|s| s.project.clip(hover.clip).is_none())
+        }) {
+            self.hovered_fade_handle = None;
+        }
         if self.hovered_fade_clip.is_some_and(|(generation, clip)| {
             generation != self.project_generation
                 || self.mode != super::EditorMode::Arrangement
@@ -556,19 +482,20 @@ impl EditorView {
 
     fn fade_controls(
         &self,
-        state: &ViewState,
         track: TrackId,
         clip: &Clip,
         visible: (u64, u64),
         viewport: Viewport,
     ) -> Option<FadeControls> {
-        // Header-only rows have no visible fade body; arbitration and rendered
-        // handles must both refuse those hidden targets.
-        if self.track_height(track) <= super::track_layout::HEADER_ONLY_HEIGHT {
-            return None;
-        }
+        // An admitted gesture keeps its display through sizing changes; its
+        // captured lane and viewport continue to own pointer conversion.
         let preview = self.fade_preview(clip.id());
         let active = self.fade_curve_active(clip.id());
+        if !active && self.track_height(track) <= super::track_layout::HEADER_ONLY_HEIGHT {
+            return None;
+        }
+        // Held `f` reveals every clip; otherwise only the hovered clip (or the
+        // one whose gesture is still displayed) shows its controls.
         if !self.fade_key_held
             && !active
             && self.hovered_fade_clip != Some((self.project_generation, clip.id()))
@@ -576,9 +503,6 @@ impl EditorView {
             return None;
         }
         let fade = preview.unwrap_or(clip.retained_fade());
-        if !self.fade_key_held && fade.is_neutral() && !fade.has_shape() && !active {
-            return None;
-        }
         let lane = self.drag_lanes.get(&track).copied()?;
         if !lane.width.is_finite()
             || lane.width <= 0.0
@@ -589,9 +513,13 @@ impl EditorView {
         {
             return None;
         }
-        let local_fade = fade.reanchor(clip.duration()).ok()?;
-        let local_controls = self.fade_key_held || preview.is_some() || active;
-        let controls = if local_controls { local_fade } else { fade };
+        let visible_width = lane.width * ((visible.1 - visible.0) as f32 / viewport.length as f32);
+        if !active && !fade_controls_fit(visible_width, lane.height) {
+            return None;
+        }
+        // Hover and held `f` share these local controls, so the hovered clip
+        // shows exactly the handle set and corner positions that `f` shows.
+        let controls = fade.reanchor(clip.duration()).ok()?;
         let reanchors =
             clip.audio_edit().is_some() || fade.offset() != 0 || fade.span() != clip.duration();
         let mut positions = Vec::with_capacity(6);
@@ -601,34 +529,11 @@ impl EditorView {
             {
                 continue;
             }
-            let local_frame = |position: u64| -> Option<i128> {
-                if local_controls {
-                    Some(i128::from(position))
-                } else if let Some(edit) = clip.audio_edit() {
-                    edit.projected_fade(state.project.tempo_map())
-                        .and_then(|projection| projection.frame_at_domain_position(position))
-                        .ok()
-                        .flatten()
-                        .zip(edit.projected_domain(state.project.tempo_map()).ok())
-                        .map(|(root, (_, _, start, _))| i128::from(root) - i128::from(start))
-                } else {
-                    Some(i128::from(position) - i128::from(fade.offset()))
-                }
-            };
-            let Some(first) = local_frame(domain_frame) else {
-                continue;
-            };
-            let subframe_offset = if subframe > 0.0 {
-                let Some(next) = domain_frame.checked_add(1).and_then(local_frame) else {
-                    continue;
-                };
-                (next - first) as f64 * subframe
-            } else {
-                0.0
-            };
             // Subtract integer origins before conversion, preserving short-clip
-            // precision even near the maximum absolute project frame.
-            let relative = (first - i128::from(visible.0 - clip.start())) as f64 + subframe_offset;
+            // precision even near the maximum absolute project frame. Local
+            // knots are clip frames, so a subframe is already a frame fraction.
+            let relative = (i128::from(domain_frame) - i128::from(visible.0 - clip.start())) as f64
+                + subframe.max(0.0);
             if !relative.is_finite() || relative < 0.0 || relative >= (visible.1 - visible.0) as f64
             {
                 continue;
@@ -657,14 +562,13 @@ impl EditorView {
         }
         Some(FadeControls {
             lane,
-            local_fade,
+            local_fade: controls,
             reanchors,
             positions,
         })
     }
     pub(super) fn fade_handle_hit(
         &self,
-        state: &ViewState,
         track: TrackId,
         clip: &Clip,
         x: f32,
@@ -678,7 +582,7 @@ impl EditorView {
             return false;
         };
         let visible = (clip.start().max(viewport.start), end.min(viewport_end));
-        let Some(controls) = self.fade_controls(state, track, clip, visible, viewport) else {
+        let Some(controls) = self.fade_controls(track, clip, visible, viewport) else {
             return false;
         };
         let left = controls.lane.left
@@ -703,7 +607,7 @@ impl EditorView {
         viewport: Viewport,
         cx: &mut Context<Self>,
     ) -> Vec<gpui::Stateful<Div>> {
-        let Some(controls) = self.fade_controls(state, track, clip, visible, viewport) else {
+        let Some(mut controls) = self.fade_controls(track, clip, visible, viewport) else {
             return Vec::new();
         };
         let lane = controls.lane;
@@ -711,12 +615,37 @@ impl EditorView {
         let reanchors = controls.reanchors;
         let original_clip = Rc::new(clip.clone());
         let mut handles = Vec::new();
+        // Pushed ramps can share one painted top knot. Keep the captured handle
+        // above its idle peer through the same pending receipt, without moving
+        // either hit target or changing their stable element identities.
+        if let Some(drag) = self
+            .displayed_fade_drag()
+            .filter(|drag| drag.clip.id() == clip.id())
+            && let Some(index) = controls
+                .positions
+                .iter()
+                .position(|(handle, _)| *handle == drag.handle)
+        {
+            let captured = controls.positions.remove(index);
+            controls.positions.push(captured);
+        }
         for (handle, position) in controls.positions {
             let clip_id = clip.id();
-            let active = self
-                .active_fade_drag
-                .as_ref()
-                .is_some_and(|drag| drag.clip.id() == clip_id && drag.handle == handle);
+            let hover = Hover {
+                generation: self.project_generation,
+                track,
+                clip: clip_id,
+                handle,
+            };
+            let display = self.displayed_fade_drag();
+            let paint_state =
+                if display.is_some_and(|drag| drag.clip.id() == clip_id && drag.handle == handle) {
+                    theme::FadeHandleState::Active
+                } else if display.is_none() && self.hovered_fade_handle == Some(hover) {
+                    theme::FadeHandleState::Hover
+                } else {
+                    theme::FadeHandleState::Idle
+                };
             let selector = format!("{}-{}", handle.name(), clip_id.value());
             let drag = FadeDrag {
                 generation: self.project_generation,
@@ -747,24 +676,43 @@ impl EditorView {
                     .mt(px(-4.0))
                     .children([handle_shape(
                         matches!(handle, Handle::InCurve | Handle::OutCurve),
-                        active,
+                        paint_state,
                     )])
-                    .cursor(if matches!(handle, Handle::InCurve | Handle::OutCurve) {
-                        gpui::CursorStyle::Crosshair
-                    } else {
-                        gpui::CursorStyle::ResizeLeftRight
-                    })
+                    .cursor(gpui::CursorStyle::Arrow)
+                    .on_hover(cx.listener(move |view, hovered: &bool, _, cx| {
+                        if hover.generation != view.project_generation {
+                            return;
+                        }
+                        let next = if *hovered {
+                            Some(hover)
+                        } else {
+                            view.hovered_fade_handle.filter(|current| *current != hover)
+                        };
+                        if next != view.hovered_fade_handle {
+                            view.hovered_fade_handle = next;
+                            cx.notify();
+                        }
+                    }))
                     .tooltip(move |_, cx| {
                         cx.new(|_| super::waveform::ClipTooltip {
                             kind: crate::tooltips::Kind::control(handle.name().replace('-', " ")),
-                            name: if reanchors {
-                                format!(
-                                    "{} · editing fits fades to this clip",
-                                    handle.name().replace('-', " ")
-                                )
-                            } else {
-                                handle.name().replace('-', " ")
-                            },
+                            name: format!(
+                                "{}{}{} · hold f to show all fade handles",
+                                handle.name().replace('-', " "),
+                                if handle.curve_side().is_some_and(|out| {
+                                    local_fade.curve_laws()[usize::from(out)]
+                                        == ClipFade::DEFAULT_S_CURVE
+                                }) {
+                                    " · double click to straighten"
+                                } else {
+                                    ""
+                                },
+                                if reanchors {
+                                    " · editing fits fades to this clip"
+                                } else {
+                                    ""
+                                }
+                            ),
                         })
                         .into()
                     })
@@ -775,11 +723,24 @@ impl EditorView {
                                 && view.active_fade_drag.is_none()
                                 && view.set_selected_clip(track, clip_id, window, cx)
                             {
+                                let straighten = handle.curve_side().filter(|&out| {
+                                    event.click_count == 2
+                                        && drag.original.curve_laws()[usize::from(out)]
+                                            == ClipFade::DEFAULT_S_CURVE
+                                });
                                 view.active_fade_drag = Some(FadeDrag {
                                     pointer: event.position,
+                                    preview: straighten.map_or(drag.original, |out| {
+                                        drag.original.straighten_ramp(out)
+                                    }),
+                                    moved: straighten.is_some(),
                                     ..drag.clone()
                                 });
-                                cx.notify();
+                                if straighten.is_some() {
+                                    view.finish_fade_gesture(window, cx);
+                                } else {
+                                    cx.notify();
+                                }
                             }
                             cx.stop_propagation();
                         }),
@@ -790,40 +751,6 @@ impl EditorView {
         handles
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn upper_lengths_and_curves_remain_independent() {
-        let fade = ClipFade::new(100, 0, 40, 30)
-            .unwrap()
-            .with_shape(10, 10, 0, 0)
-            .unwrap();
-        let bent = edited_fade(fade, Handle::InCurve, 0.0, 700).unwrap();
-        assert_eq!(
-            (bent.in_start(), bent.fade_in(), bent.fade_out()),
-            (10, 40, 30)
-        );
-        assert!(bent.gain_at(20) < fade.gain_at(20));
-        assert_eq!(
-            edited_fade(bent, Handle::InTop, (i128::MAX - 100) as f64, 0)
-                .unwrap()
-                .fade_in(),
-            90
-        );
-        assert_eq!(
-            edited_fade(bent, Handle::OutTop, i128::MIN as f64, 0)
-                .unwrap()
-                .fade_out(),
-            90
-        );
-    }
-}
-
-#[cfg(all(test, feature = "ui-test-support"))]
-#[path = "fade_handles_ui_test.rs"]
-mod ui_tests;
 
 // Released input transfers its immutable preview to the ordinary request receipt.
 // Canonical state and this exact terminal retire it in one synchronous receive.
@@ -894,53 +821,20 @@ impl EditorView {
     }
 }
 
-#[cfg(test)]
-mod two_axis_tests {
+#[cfg(all(test, not(feature = "ui-test-support")))]
+mod tests {
     use super::*;
     #[test]
-    fn overlapping_fades_keep_each_control_inside_its_own_box() {
-        let fade = ClipFade::new(101, 0, 101, 101)
-            .unwrap()
-            .with_shape(0, 0, 500, -500)
-            .unwrap()
-            .with_curve_positions(250, 750)
-            .unwrap();
-        for (handle, _, gain) in knots(fade) {
-            if matches!(handle, Handle::InCurve | Handle::OutCurve) {
-                assert!((0.25..=0.75).contains(&gain));
-            }
-        }
-    }
-    #[test]
-    fn rectangular_corners_are_independent_and_legacy_handles_stay_on_curve() {
-        let original = ClipFade::new(10001, 0, 5001, 5000).unwrap();
-        for original in [original, original.with_shape(0, 0, 1000, -1000).unwrap()] {
-            for handle in [Handle::InCurve, Handle::OutCurve] {
-                for dx in [-100000, 100000] {
-                    for dy in [-2000, 2000] {
-                        let edited = edited_fade(original, handle, f64::from(dx), dy).unwrap();
-                        let out = handle == Handle::OutCurve;
-                        let gain = curve_handle_gain(edited, out);
-                        let x = edited.position_at_gain(out, gain).unwrap();
-                        assert!((gain - if dy > 0 { 0.25 } else { 0.75 }).abs() < 0.001);
-                        assert!((x - if dx > 0 { 0.999 } else { 0.001 }).abs() < 0.001);
-                        assert_eq!((edited.fade_in(), edited.fade_out()), (5001, 5000));
-                    }
-                }
-            }
-        }
-        let legacy = original.with_shape(0, 0, 900, -900).unwrap();
-        assert_eq!(edited_fade(legacy, Handle::InCurve, 0.0, 10), Some(legacy));
-        let inward = edited_fade(legacy, Handle::InCurve, 0.0, -10).unwrap();
-        assert!(curve_handle_gain(inward, false) > curve_handle_gain(legacy, false));
-        let moved = edited_fade(legacy, Handle::InCurve, 500.0, 0).unwrap();
-        assert!((curve_handle_gain(moved, false) - curve_handle_gain(legacy, false)).abs() < 0.001);
-        let before = legacy
-            .position_at_gain(false, curve_handle_gain(legacy, false))
-            .unwrap();
-        let after = moved
-            .position_at_gain(false, curve_handle_gain(moved, false))
-            .unwrap();
-        assert!((after - before - 0.1).abs() < 0.002);
+    fn fade_control_geometry_requires_room_in_both_dimensions() {
+        let height = super::super::clip_name::CLIP_NAME_HEIGHT + MIN_FADE_CONTROL_EXTENT;
+        assert!(!fade_controls_fit(MIN_FADE_CONTROL_EXTENT - 0.01, height));
+        assert!(!fade_controls_fit(MIN_FADE_CONTROL_EXTENT, height - 0.01));
+        assert!(fade_controls_fit(MIN_FADE_CONTROL_EXTENT, height));
+        assert!(!fade_controls_fit(f32::NAN, height));
+        assert!(!fade_controls_fit(MIN_FADE_CONTROL_EXTENT, f32::INFINITY));
     }
 }
+
+#[cfg(all(test, feature = "ui-test-support"))]
+#[path = "fade_handles_ui_test.rs"]
+mod ui_tests;

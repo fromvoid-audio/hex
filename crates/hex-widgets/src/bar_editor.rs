@@ -1,12 +1,14 @@
 //! Bounded normalized bar editor. Domain values and paint interpolation belong
 //! to the owner. Clear events identify the inclusive, bounded crossed columns;
 //! owners set those values to canonical zero in the same gesture transaction.
+//! A held stroke owns the shared Window pointer lease; cancellation emits its
+//! existing typed intent, independently of canonical acknowledgement/history.
 use crate::ControlStyle;
 use gpui::{
-    App, Bounds, ContentMask, Context, Element, ElementId, Entity, EventEmitter, FocusHandle,
-    Focusable, GlobalElementId, LayoutId, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, PathBuilder, Pixels, Point, SharedString, Style, Subscription, Window, canvas,
-    div, point, prelude::*, px, rgb,
+    App, Bounds, ContentMask, Context, CursorStyle, Element, ElementId, Entity, EventEmitter,
+    FocusHandle, Focusable, GlobalElementId, LayoutId, Modifiers, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, PathBuilder, Pixels, Point, SharedString, Style, Subscription,
+    Window, canvas, div, point, prelude::*, px, rgb,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -161,6 +163,28 @@ impl BarEditor {
             return;
         }
         if let Some(position) = self.position(event.position) {
+            let owner = cx.entity().downgrade();
+            let cancelled = owner.clone();
+            if !window.capture_pointer(
+                cx.entity_id(),
+                event.button,
+                CursorStyle::Arrow,
+                move |event, _, cx| {
+                    let _ = owner.update(cx, |editor, cx| {
+                        if let Some(event) = event.downcast_ref::<MouseMoveEvent>() {
+                            editor.pointer_move(event, cx);
+                        } else if let Some(event) = event.downcast_ref::<MouseUpEvent>() {
+                            editor.pointer_up(event, cx);
+                        }
+                    });
+                },
+                move |_, cx| {
+                    let _ = cancelled.update(cx, |editor, cx| editor.cancel(cx));
+                },
+                cx,
+            ) {
+                return;
+            }
             let stroke = Stroke {
                 modifiers: event.modifiers,
                 button: event.button,
@@ -397,30 +421,11 @@ impl Element for BarEditorCaptureElement {
         _: &mut Self::RequestLayoutState,
         _: &mut Self::PrepaintState,
         window: &mut Window,
-        _: &mut App,
+        cx: &mut App,
     ) {
-        let entity = self.entity.clone();
-        window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
-            if !phase.capture() {
-                return;
-            }
-            let handled = entity.update(cx, |graph, cx| graph.pointer_move(event, cx));
-            if handled {
-                cx.stop_propagation();
-                window.refresh();
-            }
-        });
-        let entity = self.entity.clone();
-        window.on_mouse_event(move |event: &MouseUpEvent, phase, window, cx| {
-            if !phase.capture() {
-                return;
-            }
-            let handled = entity.update(cx, |graph, cx| graph.pointer_up(event, cx));
-            if handled {
-                cx.stop_propagation();
-                window.refresh();
-            }
-        });
+        if self.entity.read(cx).drag.is_some() {
+            window.renew_pointer_capture(self.entity.entity_id(), CursorStyle::Arrow);
+        }
     }
 }
 

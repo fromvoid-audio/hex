@@ -6,6 +6,9 @@ use crate::{
 };
 use std::sync::Arc;
 
+mod modulation;
+mod program_history;
+
 const TYPE: DeviceTypeId = DeviceTypeId::from_static("test.foreign");
 
 fn state() -> Arc<NativeDeviceState> {
@@ -20,6 +23,8 @@ fn state() -> Arc<NativeDeviceState> {
 }
 fn declaration(owner: ProcessorChainOwner, bypassed: bool) -> PreparedRuntimeInstance {
     PreparedRuntimeInstance {
+        modulation: None,
+        automation: Default::default(),
         meter: Default::default(),
         owner,
         device_id: 17,
@@ -108,6 +113,141 @@ fn endpoint(instance: &PreparedRuntimeInstance) -> BorrowedEndpoint {
 }
 
 #[test]
+fn graph_owns_one_program_for_the_exact_effect_binding() {
+    struct Program;
+    impl ForeignAutomationProgram for Program {
+        fn render_quantum(
+            &self,
+            _: &[Option<u64>],
+            _: &[u16],
+            output: &mut [ForeignParameterPoint],
+        ) -> Result<usize, DeviceContractError> {
+            output[0] = ForeignParameterPoint {
+                frame: 0,
+                id: 0,
+                normalized: 0.25,
+            };
+            Ok(1)
+        }
+    }
+    struct Endpoint(ForeignProcessorBinding);
+    impl ForeignProcessors for Endpoint {
+        fn process_segment(
+            &mut self,
+            node: ForeignProcessorNode<'_>,
+            _: usize,
+            frames: &mut [StereoFrame],
+            _: Option<&dyn NativeInstrumentClock>,
+        ) -> Result<(), DeviceContractError> {
+            let program = node.automation.unwrap();
+            assert_eq!(program.binding, self.0);
+            assert_eq!(program.revision, NonZeroU64::new(2).unwrap());
+            assert!(program.contains_revision(NonZeroU64::MIN));
+            let mut points = [ForeignParameterPoint::default()];
+            assert_eq!(
+                program
+                    .program
+                    .render_quantum(&[Some(0); 8], &[], &mut points)?,
+                1
+            );
+            assert_eq!(points[0].id, 0);
+            frames.fill([points[0].normalized as f32; 2]);
+            Ok(())
+        }
+
+        fn reject_callback(&mut self) {}
+    }
+
+    let binding = ForeignProcessorBinding {
+        root: 1,
+        instance: 17,
+        graph: 2,
+        epoch: 3,
+    };
+    let mut instance = declaration(ProcessorChainOwner::Track(5), false);
+    let baseline = NativeRuntimeChain::declared_storage_preflight_bytes_for_prepared(
+        std::slice::from_ref(&instance),
+    )
+    .unwrap();
+    let previous = PreparedForeignAutomation::new(binding, NonZeroU64::MIN, Program, 0).unwrap();
+    let mut program =
+        PreparedForeignAutomation::new(binding, NonZeroU64::new(2).unwrap(), Program, 0).unwrap();
+    program.retain_previous_on_control(&previous).unwrap();
+    drop(previous);
+    let bytes = program.storage_bytes();
+    instance.automation = crate::PreparedParameterAutomation::for_foreign(program);
+    assert!(matches!(
+        NativeRuntimeChain::new_prepared(vec![instance.clone()]),
+        Err(DeviceContractError::ForeignProcessingUnavailable)
+    ));
+    instance.definition = Some(PreparedProcessorFactory::Foreign(
+        PreparedForeignProcessor::new(8, 3, 16)
+            .unwrap()
+            .with_binding(binding)
+            .unwrap(),
+    ));
+    assert_eq!(
+        NativeRuntimeChain::declared_storage_preflight_bytes_for_prepared(std::slice::from_ref(
+            &instance
+        )),
+        Some(baseline + bytes)
+    );
+    let mut chain = NativeRuntimeChain::new_prepared(vec![instance]).unwrap();
+    assert_eq!(chain.accounted_storage_bytes(), Some(baseline + bytes));
+    let mut frames = [[0.0; 2]; 8];
+    chain.begin_block();
+    chain
+        .process_range_with_foreign(0..1, &mut frames, 0, None, None, &mut Endpoint(binding))
+        .unwrap();
+    chain.commit_block();
+    // This endpoint returns pre-trim audio. The chain retains its own gain law.
+    assert_eq!(frames, [[0.025; 2]; 8]);
+}
+
+#[test]
+fn post_trim_endpoint_applies_output_trim_once_and_keeps_bypass_dry() {
+    struct PostTrim;
+    impl ForeignProcessors for PostTrim {
+        fn returns_post_trim(&self, _: ForeignProcessorNode<'_>) -> bool {
+            true
+        }
+        fn process_segment(
+            &mut self,
+            node: ForeignProcessorNode<'_>,
+            _: usize,
+            frames: &mut [StereoFrame],
+            _: Option<&dyn NativeInstrumentClock>,
+        ) -> Result<(), DeviceContractError> {
+            if !node.bypassed {
+                for frame in frames {
+                    frame[0] *= node.output_gain;
+                    frame[1] *= node.output_gain;
+                }
+            }
+            Ok(())
+        }
+        fn reject_callback(&mut self) {}
+    }
+    for bypassed in [false, true] {
+        let instance = declaration(ProcessorChainOwner::Track(5), bypassed);
+        let gain = instance
+            .configuration
+            .as_ref()
+            .unwrap()
+            .output_gain_linear();
+        let mut chain = NativeRuntimeChain::new_prepared(vec![instance]).unwrap();
+        let mut frames = [[0.25, -0.5]];
+        chain.begin_block();
+        chain
+            .process_range_with_foreign(0..1, &mut frames, 0, None, None, &mut PostTrim)
+            .unwrap();
+        chain.commit_block();
+        let expected = if bypassed { 1.0 } else { gain };
+        assert!((frames[0][0] - 0.25 * expected).abs() < 1e-7);
+    }
+}
+
+#[test]
 fn foreign_nodes_borrow_exact_configuration_and_route_segments_for_all_chain_owners() {
     for owner in [
         ProcessorChainOwner::Track(5),
@@ -135,6 +275,7 @@ fn foreign_nodes_borrow_exact_configuration_and_route_segments_for_all_chain_own
                         segment,
                         offset,
                         None,
+                        None,
                         &mut foreign,
                         &mut |actual_owner, device, kind, phase, at, samples| {
                             assert_eq!((actual_owner, device, kind), (owner, 17, TYPE));
@@ -155,8 +296,9 @@ fn foreign_nodes_borrow_exact_configuration_and_route_segments_for_all_chain_own
             }
             chain.commit_block();
             let peaks = meter.take_peaks();
-            assert_eq!(peaks[0], 10.0);
-            assert!((peaks[1] - if bypassed { 1.0 } else { 0.25 }).abs() < 1.0e-6);
+            assert_eq!(peaks.input, 10.0);
+            let output = peaks.output[0].max(peaks.output[1]);
+            assert!((output - if bypassed { 1.0 } else { 0.25 }).abs() < 1.0e-6);
             assert_eq!(foreign.first_input, Some([1.0, -0.5]));
             assert_eq!(
                 (foreign.segments, foreign.next, foreign.rejections),
@@ -193,6 +335,7 @@ fn missing_foreign_context_refuses_and_failed_processing_revokes_without_replayi
             &mut [[1.0; 2]],
             0,
             None,
+            None,
             &mut foreign,
             &mut |_, _, _, phase, _, _| taps.push(phase),
         ),
@@ -207,6 +350,7 @@ fn missing_foreign_context_refuses_and_failed_processing_revokes_without_replayi
             0..1,
             &mut [[1.0; 2]],
             0,
+            None,
             None,
             &mut foreign,
             &mut |_, _, _, _, _, _| {},
@@ -316,6 +460,14 @@ fn finite_foreign_tail_requires_original_provider_observation_in_chain_transacti
     instance.definition = Some(PreparedProcessorFactory::Foreign(facts));
     let mut foreign = endpoint(&instance);
     let mut chain = NativeRuntimeChain::new_prepared(vec![instance]).unwrap();
+    let mut next = declaration(ProcessorChainOwner::Main, false);
+    next.definition = Some(PreparedProcessorFactory::Foreign(
+        PreparedForeignProcessor::new(8, 4, 16)
+            .unwrap()
+            .with_output_tail(crate::OutputTail::Finite { max_tail_frames: 3 }),
+    ));
+    let successor = NativeRuntimeChain::new_prepared(vec![next]).unwrap();
+    assert!(!successor.can_inherit_with_completed_foreign_range(&chain, 0..1));
     assert_eq!(
         chain.zero_input_drain_for_range(0..1),
         Some(crate::OutputTail::Finite {
@@ -325,7 +477,7 @@ fn finite_foreign_tail_requires_original_provider_observation_in_chain_transacti
     assert!(!chain.committed_range_is_quiescent(0..1));
     chain.begin_block();
     chain
-        .process_range_with_foreign(0..1, &mut [[0.0; 2]], 0, None, &mut foreign)
+        .process_range_with_foreign(0..1, &mut [[0.0; 2]], 0, None, None, &mut foreign)
         .unwrap();
     chain.commit_block();
     assert!(
@@ -335,24 +487,360 @@ fn finite_foreign_tail_requires_original_provider_observation_in_chain_transacti
     foreign.drained = true;
     chain.begin_block();
     chain
-        .process_range_with_foreign(0..1, &mut [[0.0; 2]], 1, None, &mut foreign)
+        .process_range_with_foreign(0..1, &mut [[0.0; 2]], 1, None, None, &mut foreign)
         .unwrap();
     assert!(chain.speculative_range_is_quiescent(0..1));
     assert!(!chain.committed_range_is_quiescent(0..1));
+    assert!(!successor.can_inherit_with_completed_foreign_range(&chain, 0..1));
     chain.rollback_block();
     assert!(!chain.speculative_range_is_quiescent(0..1));
     chain.begin_block();
     chain
-        .process_range_with_foreign(0..1, &mut [[0.0; 2]], 2, None, &mut foreign)
+        .process_range_with_foreign(0..1, &mut [[0.0; 2]], 2, None, None, &mut foreign)
         .unwrap();
     chain.commit_block();
     assert!(chain.committed_range_is_quiescent(0..1));
+    assert!(successor.can_inherit_with_completed_foreign_range(&chain, 0..1));
+    assert!(!successor.can_inherit_from(&chain));
     foreign.drained = false;
     chain.begin_block();
     chain
-        .process_range_with_foreign(0..1, &mut [[1.0; 2]], 3, None, &mut foreign)
+        .process_range_with_foreign(0..1, &mut [[1.0; 2]], 3, None, None, &mut foreign)
         .unwrap();
     assert!(!chain.speculative_range_is_quiescent(0..1));
     chain.commit_block();
     assert!(!chain.committed_range_is_quiescent(0..1));
+    assert!(!successor.can_inherit_with_completed_foreign_range(&chain, 0..1));
+}
+
+#[test]
+fn parameter_capability_default_refuses_nonempty_without_silent_loss_and_preserves_empty_processing()
+ {
+    let declaration = declaration(ProcessorChainOwner::Main, false);
+    let mut endpoint = endpoint(&declaration);
+    let node = ForeignProcessorNode {
+        owner: declaration.owner,
+        device_id: 17,
+        device_type: TYPE,
+        sample_rate: 48_000,
+        configuration: declaration.configuration.as_deref().unwrap(),
+        prepared: PreparedForeignProcessor::new(8, 3, 16).unwrap(),
+        automation: None,
+        bypassed: false,
+        input_gain: 10.0,
+        output_gain: 0.1,
+    };
+    let mut frames = [[1.0, -0.5]; 2];
+    endpoint
+        .process_segment_with_parameters(node, 0, &mut frames, &[], None)
+        .unwrap();
+    assert_eq!(frames, [[2.5, -1.25]; 2]);
+    assert_eq!(endpoint.segments, 1);
+    assert_eq!(
+        endpoint.process_segment_with_parameters(
+            node,
+            2,
+            &mut frames,
+            &[ForeignParameterPoint {
+                frame: 0,
+                id: 0,
+                normalized: 0.5
+            }],
+            None
+        ),
+        Err(DeviceContractError::ForeignProcessingUnavailable)
+    );
+    assert_eq!(frames, [[0.0; 2]; 2]);
+    assert_eq!(endpoint.segments, 1);
+    assert_eq!(endpoint.rejections, 1);
+}
+
+#[test]
+fn retained_programs_keep_exact_allocations_and_refuse_alias_or_capacity_without_mutation() {
+    use std::{
+        num::NonZeroU64,
+        sync::atomic::{AtomicUsize, Ordering},
+    };
+    static DROPS: AtomicUsize = AtomicUsize::new(0);
+    struct Value(f64);
+    impl Drop for Value {
+        fn drop(&mut self) {
+            DROPS.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+    impl ForeignAutomationProgram for Value {
+        fn render_quantum(
+            &self,
+            _: &[Option<u64>],
+            _: &[u16],
+            output: &mut [ForeignParameterPoint],
+        ) -> Result<usize, DeviceContractError> {
+            output[0] = ForeignParameterPoint {
+                id: 0,
+                frame: 0,
+                normalized: self.0,
+            };
+            Ok(1)
+        }
+    }
+    let binding = ForeignProcessorBinding {
+        root: 1,
+        instance: 2,
+        graph: 3,
+        epoch: 4,
+    };
+    let make = |binding, key, value| {
+        PreparedForeignAutomation::new(binding, NonZeroU64::new(key).unwrap(), Value(value), 0)
+            .unwrap()
+    };
+    let old = make(binding, 1, 0.25);
+    let old_bytes = old.storage_bytes();
+    let mut next = make(binding, 2, 0.5);
+    let current_bytes = next.storage_bytes();
+    next.retain_previous_on_control(&old).unwrap();
+    assert_eq!(next.storage_bytes(), old_bytes + current_bytes);
+    drop(old);
+    assert_eq!(DROPS.load(Ordering::SeqCst), 0);
+    let runtime = next.clone();
+    assert!(runtime.shares_storage_with(&next));
+    assert_eq!(runtime.storage_owners().count(), 2);
+    for (owner, bytes) in runtime.storage_owners() {
+        assert_eq!(Arc::strong_count(owner), 2);
+        assert_eq!(bytes, current_bytes);
+    }
+    let mut points = [ForeignParameterPoint::default(); 1];
+    for (key, expected) in [(1, 0.25), (2, 0.5)] {
+        runtime
+            .borrow()
+            .render_revision(NonZeroU64::new(key).unwrap(), &[Some(0)], &[], &mut points)
+            .unwrap();
+        assert_eq!(points[0].normalized, expected);
+    }
+    assert!(
+        !runtime
+            .borrow()
+            .contains_revision(NonZeroU64::new(3).unwrap())
+    );
+    assert!(
+        runtime
+            .borrow()
+            .render_revision(NonZeroU64::new(3).unwrap(), &[Some(0)], &[], &mut points)
+            .is_err()
+    );
+    drop(runtime);
+    for key in 3..=9 {
+        let mut current = make(binding, key, 0.75);
+        current.retain_previous_on_control(&next).unwrap();
+        next = current;
+    }
+    assert_eq!(
+        next.storage_owners().count(),
+        1 + MAX_RETAINED_FOREIGN_PROGRAMS
+    );
+    for (other_binding, key) in [
+        (binding, 10),
+        (binding, 9),
+        (
+            ForeignProcessorBinding {
+                epoch: 5,
+                ..binding
+            },
+            10,
+        ),
+    ] {
+        let mut refused = make(other_binding, key, 0.875);
+        let bytes = refused.storage_bytes();
+        assert!(refused.retain_previous_on_control(&next).is_err());
+        assert_eq!(refused.storage_owners().count(), 1);
+        assert_eq!(refused.storage_bytes(), bytes);
+        assert!(!refused.shares_storage_with(&next));
+    }
+    assert_eq!(next.storage_owners().count(), 9);
+    next.borrow()
+        .render_revision(NonZeroU64::MIN, &[Some(0)], &[], &mut points)
+        .unwrap();
+    assert_eq!(points[0].normalized, 0.25);
+    let huge = usize::MAX / 2;
+    let previous =
+        PreparedForeignAutomation::new(binding, NonZeroU64::new(20).unwrap(), Value(0.25), huge)
+            .unwrap();
+    let mut refused =
+        PreparedForeignAutomation::new(binding, NonZeroU64::new(21).unwrap(), Value(0.5), huge)
+            .unwrap();
+    let bytes = refused.storage_bytes();
+    assert_eq!(
+        refused.retain_previous_on_control(&previous),
+        Err(DeviceContractError::RuntimeBudgetExceeded)
+    );
+    assert_eq!(refused.storage_bytes(), bytes);
+    assert_eq!(refused.storage_owners().count(), 1);
+}
+
+#[test]
+fn exact_foreign_continuation_compares_only_the_named_state_pair() {
+    let binding = hex_lattice_contract::ForeignProcessorBinding {
+        root: 1,
+        instance: 17,
+        graph: 2,
+        epoch: 3,
+    };
+    let identity = crate::ProcessorInstanceIdentity::new(ProcessorChainOwner::Main, 17).unwrap();
+    let previous = state();
+    let candidate = Arc::new(
+        NativeDeviceState::new(TYPE, 1, vec![4, 5, 6])
+            .unwrap()
+            .with_input_gain_db(20.0)
+            .unwrap()
+            .with_output_gain_db(-20.0)
+            .unwrap(),
+    );
+    let declaration_for = |state: Arc<NativeDeviceState>, binding| {
+        let mut entry = declaration(ProcessorChainOwner::Main, false);
+        entry.configuration = Some(state);
+        entry.definition = Some(PreparedProcessorFactory::Foreign(
+            PreparedForeignProcessor::new(8, 3, 16)
+                .unwrap()
+                .with_binding(binding)
+                .unwrap(),
+        ));
+        NativeRuntimeChain::new_prepared(vec![entry]).unwrap()
+    };
+    let old = declaration_for(Arc::clone(&previous), binding);
+    let next = declaration_for(Arc::clone(&candidate), binding);
+    let proof =
+        crate::ForeignConfigurationContinuation::new(identity, binding, &previous, &candidate)
+            .unwrap();
+    assert!(!old.configuration_matches_range(&next, 0..1));
+    assert!(old.configuration_matches_range_with_foreign_continuation(&next, 0..1, &proof));
+    assert!(!next.configuration_matches_range_with_foreign_continuation(&old, 0..1, &proof));
+
+    let copied = Arc::new(
+        NativeDeviceState::new(TYPE, 1, vec![4, 5, 6])
+            .unwrap()
+            .with_input_gain_db(20.0)
+            .unwrap()
+            .with_output_gain_db(-20.0)
+            .unwrap(),
+    );
+    let reconstructed = declaration_for(copied, binding);
+    assert!(!old.configuration_matches_range_with_foreign_continuation(
+        &reconstructed,
+        0..1,
+        &proof
+    ));
+    let changed_epoch = declaration_for(
+        Arc::clone(&candidate),
+        hex_lattice_contract::ForeignProcessorBinding {
+            epoch: 4,
+            ..binding
+        },
+    );
+    assert!(!old.configuration_matches_range_with_foreign_continuation(
+        &changed_epoch,
+        0..1,
+        &proof
+    ));
+    let wrong_identity =
+        crate::ProcessorInstanceIdentity::new(ProcessorChainOwner::Track(5), 17).unwrap();
+    let wrong = crate::ForeignConfigurationContinuation::new(
+        wrong_identity,
+        binding,
+        &previous,
+        &candidate,
+    )
+    .unwrap();
+    assert!(!old.configuration_matches_range_with_foreign_continuation(&next, 0..1, &wrong));
+    let mut bypassed = declaration(ProcessorChainOwner::Main, true);
+    bypassed.configuration = Some(Arc::clone(&candidate));
+    bypassed.definition = Some(PreparedProcessorFactory::Foreign(
+        PreparedForeignProcessor::new(8, 3, 16)
+            .unwrap()
+            .with_binding(binding)
+            .unwrap(),
+    ));
+    let bypassed = NativeRuntimeChain::new_prepared(vec![bypassed]).unwrap();
+    assert!(!old.configuration_matches_range_with_foreign_continuation(&bypassed, 0..1, &proof));
+
+    let automation = crate::PreparedParameterAutomation::new_with_host(
+        vec![],
+        vec![crate::HostAutomationLane {
+            target: hex_lattice_contract::DeviceAutomationTarget::HostInputGain,
+            points: 0..1,
+        }],
+        vec![crate::ParameterAutomationPoint {
+            beat_raw: 0,
+            normalized: 0.5,
+            step: true,
+        }],
+    )
+    .unwrap();
+    let mut automated_old = declaration_for(Arc::clone(&previous), binding);
+    let mut automated_next = declaration_for(Arc::clone(&candidate), binding);
+    automated_old.entries[0].automation = automation.clone();
+    automated_next.entries[0].automation = automation;
+    assert!(
+        !automated_old.configuration_matches_range_with_foreign_continuation(
+            &automated_next,
+            0..1,
+            &proof
+        )
+    );
+    let instrument_chain = |state| {
+        let mut entry = declaration(ProcessorChainOwner::Main, false);
+        entry.configuration = Some(state);
+        entry.definition = Some(PreparedProcessorFactory::Foreign(
+            PreparedForeignProcessor::new(8, 3, 16)
+                .unwrap()
+                .with_binding(binding)
+                .unwrap()
+                .with_instrument_profile(),
+        ));
+        NativeRuntimeChain::new_prepared(vec![entry]).unwrap()
+    };
+    let instrument_old = instrument_chain(Arc::clone(&previous));
+    let instrument_next = instrument_chain(Arc::clone(&candidate));
+    assert!(
+        !instrument_old.configuration_matches_range_with_foreign_continuation(
+            &instrument_next,
+            0..1,
+            &proof
+        )
+    );
+    let mut native_old = declaration_for(Arc::clone(&previous), binding);
+    let mut native_next = declaration_for(Arc::clone(&candidate), binding);
+    native_old.entries[0].runtime = crate::runtime_ownership::RuntimeOwnership::Memoryless;
+    native_next.entries[0].runtime = crate::runtime_ownership::RuntimeOwnership::Memoryless;
+    assert!(
+        !native_old.configuration_matches_range_with_foreign_continuation(
+            &native_next,
+            0..1,
+            &proof
+        )
+    );
+    assert!(
+        crate::ForeignConfigurationContinuation::new(
+            identity,
+            hex_lattice_contract::ForeignProcessorBinding { root: 0, ..binding },
+            &previous,
+            &candidate,
+        )
+        .is_err()
+    );
+    assert!(
+        crate::ForeignConfigurationContinuation::new(
+            identity,
+            hex_lattice_contract::ForeignProcessorBinding {
+                instance: 18,
+                ..binding
+            },
+            &previous,
+            &candidate,
+        )
+        .is_err()
+    );
+    let changed_gain = candidate.as_ref().clone().with_input_gain_db(0.0).unwrap();
+    assert!(
+        crate::ForeignConfigurationContinuation::new(identity, binding, &previous, &changed_gain)
+            .is_err()
+    );
 }

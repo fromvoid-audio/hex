@@ -6,61 +6,173 @@ use hex_project::{BeatTime, Command, Created, TrimEdge};
 use hex_session::service::ResidentPublicationAcceptance;
 
 #[test]
-fn global_bpm_publishes_with_original_and_predecessor_pcm_still_retained() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
-    for rate in [44_100, 48_000] {
-        let file = Files::new();
-        let mut h = ResidentHarness::with_frame_limit_at_rate(8_000_000, rate);
-        assert!(h.next().error.is_none());
-        let (mut applied, _) = h.applied(0);
-        let imported = h.run(Request::Import(file.wav(rate, 2_000_000)));
-        (applied, _) = h.applied(applied);
-        let clip = imported.state.project.tracks()[0].clips()[0].id();
-        h.run(Request::Edit(Command::EditAudioEvents {
-            clip,
-            operation: hex_project::AudioEventEdit::Split { at: 250_000 },
-        }));
-        (applied, _) = h.applied(applied);
-        let edited = h.run(Request::Edit(Command::EditAudioEvents {
-            clip,
-            operation: hex_project::AudioEventEdit::Move {
-                event: 1,
-                start: 750_000,
-            },
-        }));
-        (applied, _) = h.applied(applied);
-        let settings = hex_project::default_audio_warp(
-            edited.state.project.clip(clip).unwrap(),
-            edited.state.project.tempo_map(),
-            hex_project::WarpMode::RePitch,
-        )
+fn active_source_provider_change_applies_while_playing() {
+    let _native = native_fixture();
+    let file = Files::new();
+    let mut h = ResidentHarness::with_frame_limit(32_768);
+    assert!(h.next().error.is_none());
+    let (mut applied, _) = h.applied(0);
+    let added = h.run(Request::Edit(Command::AddMidiTrack {
+        name: "sampler".into(),
+    }));
+    let Some(Created::Track(track)) = added.created else {
+        panic!("track");
+    };
+    (applied, _) = h.applied(applied);
+    let loaded = h.run(Request::LoadFirstSampler {
+        request_id: 1,
+        project_generation: 0,
+        revision: added.state.revision,
+        track,
+        slot: hex_session::service::SamplerLoadSlot::New(
+            hex_project::InstrumentLoadPlacement::First,
+        ),
+        path: file.wav(48_000, 8192),
+        cancel: Arc::new(AtomicBool::new(false)),
+    });
+    (applied, _) = h.applied(applied);
+    let sampler = loaded
+        .state
+        .project
+        .track(track)
+        .unwrap()
+        .instrument()
+        .unwrap()
+        .clone();
+    let placed = h.run(Request::Edit(Command::PlaceMidiClip {
+        track,
+        start: BeatTime::ZERO,
+        length: BeatTime::from_quarters(4).unwrap(),
+    }));
+    let Some(Created::Clip(clip)) = placed.created else {
+        panic!("clip");
+    };
+    (applied, _) = h.applied(applied);
+    h.run(Request::Edit(Command::AddMidiNote {
+        clip,
+        start: BeatTime::ZERO,
+        duration: BeatTime::from_quarters(4).unwrap(),
+        pitch: 60,
+        channel: 0,
+        velocity: 127,
+    }));
+    (applied, _) = h.applied(applied);
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(hex_engine::playback::PlaybackCommand::Play)
         .unwrap();
-        let warped = h.run(Request::Edit(Command::SetAudioClipWarp {
-            clip,
-            settings: Some(settings),
-        }));
-        (applied, _) = h.applied(applied);
-        let before = h.run(Request::Edit(Command::SetProjectTempo {
-            tempo: hex_project::Tempo::new(180_000_000).unwrap(),
-        }));
-        (applied, _) = h.applied(applied);
-        assert_eq!(
-            before
-                .state
-                .project
-                .tempo_map()
-                .tempo_at(BeatTime::ZERO)
-                .micro_bpm(),
-            180_000_000
-        );
-        let undone = h.run(Request::Undo);
-        (applied, _) = h.applied(applied);
-        assert_eq!(undone.state.project, warped.state.project);
-        let redone = h.run(Request::Redo);
-        h.applied(applied);
-        assert_eq!(redone.state.project, before.state.project);
-        assert!(h.publication_refusals.is_empty());
-    }
+    assert!(h.render().iter().flatten().any(|sample| *sample != 0.0));
+    let vector = hex_engine::default_native_device_state_for_class(
+        hex_engine::NativeDeviceClass::Instrument,
+        hex_session::device_gesture::DeviceTypeId::from_static("hex.instrument.fm4"),
+    )
+    .unwrap();
+    let replaced = h.run(Request::Edit(Command::ReplaceDeviceState {
+        device: sampler.id(),
+        state: vector,
+    }));
+    // Replacing the sounding sampler's source provider while playing used to
+    // refuse with SourceHistoryUnavailable until Stop. It now restarts audio
+    // at the cursor (Pulse #3784): the edit applies and playback continues.
+    (applied, _) = h.applied(applied);
+    let status = h.audio.as_ref().unwrap().status().unwrap();
+    assert!(status.playing.load(Acquire));
+    assert!(status.rejected_revision().is_none());
+    assert_ne!(
+        replaced.state.project.track(track).unwrap().instrument(),
+        Some(&sampler)
+    );
+    assert!(
+        (0..8).any(|_| h.render().iter().flatten().any(|sample| *sample != 0.0)),
+        "the replacement instrument sounds after the restart"
+    );
+    let undone = h.run(Request::Undo);
+    h.applied(applied);
+    assert_eq!(
+        undone.state.project.track(track).unwrap().instrument(),
+        Some(&sampler)
+    );
+    assert!(
+        h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .playing
+            .load(Acquire)
+    );
+    assert!(
+        (0..8).any(|_| h.render().iter().flatten().any(|sample| *sample != 0.0)),
+        "the restored sampler sounds after Undo"
+    );
+}
+
+fn global_bpm_preserves_pcm_at_rate(rate: u32) {
+    let _native = native_fixture();
+    let file = Files::new();
+    // Preserve the original four-to-one budget and edit offsets with a shorter source.
+    let mut h = ResidentHarness::with_frame_limit_at_rate(65_536, rate);
+    assert!(h.next().error.is_none());
+    let (mut applied, _) = h.applied(0);
+    let imported = h.run(Request::Import(file.wav(rate, 16_384)));
+    (applied, _) = h.applied(applied);
+    let clip = imported.state.project.tracks()[0].clips()[0].id();
+    h.run(Request::Edit(Command::EditAudioEvents {
+        clip,
+        operation: hex_project::AudioEventEdit::Split { at: 2_048 },
+    }));
+    (applied, _) = h.applied(applied);
+    let edited = h.run(Request::Edit(Command::EditAudioEvents {
+        clip,
+        operation: hex_project::AudioEventEdit::Move {
+            event: 1,
+            start: 6_144,
+        },
+    }));
+    (applied, _) = h.applied(applied);
+    let settings = hex_project::default_audio_warp(
+        edited.state.project.clip(clip).unwrap(),
+        edited.state.project.tempo_map(),
+        hex_project::WarpMode::RePitch,
+    )
+    .unwrap();
+    let warped = h.run(Request::Edit(Command::SetAudioClipWarp {
+        clip,
+        settings: Some(settings),
+    }));
+    (applied, _) = h.applied(applied);
+    let before = h.run(Request::Edit(Command::SetProjectTempo {
+        tempo: hex_project::Tempo::new(180_000_000).unwrap(),
+    }));
+    (applied, _) = h.applied(applied);
+    assert_eq!(
+        before
+            .state
+            .project
+            .tempo_map()
+            .tempo_at(BeatTime::ZERO)
+            .micro_bpm(),
+        180_000_000
+    );
+    let undone = h.run(Request::Undo);
+    (applied, _) = h.applied(applied);
+    assert_eq!(undone.state.project, warped.state.project);
+    let redone = h.run(Request::Redo);
+    h.applied(applied);
+    assert_eq!(redone.state.project, before.state.project);
+    assert!(h.publication_refusals.is_empty());
+}
+
+#[test]
+fn global_bpm_preserves_pcm_at_44100() {
+    global_bpm_preserves_pcm_at_rate(44_100);
+}
+
+#[test]
+fn global_bpm_preserves_pcm_at_48000() {
+    global_bpm_preserves_pcm_at_rate(48_000);
 }
 
 fn pcm_at_cursor(
@@ -83,6 +195,7 @@ fn scalar_pcm_at_cursor(
 ) {
     *request_id += 1;
     let intent = h.seek_intent(*request_id, state.state.revision, None, None);
+    let destination = intent.destination_frame;
     h.service.submit_resident_arrangement_seek(intent).unwrap();
     assert!(h.next().error.is_none());
     let ResidentPublicationAcceptance::Submitted { audio_revision, .. } =
@@ -112,10 +225,12 @@ fn scalar_pcm_at_cursor(
         "fixture advanced past its short audio clip while awaiting scalar observation: {position}"
     );
     for (offset, frame) in h.render().into_iter().enumerate() {
+        // Seeks start voices empty: the held sampler note retriggers at the
+        // destination, so its attack restarts there.
         let envelope = if attack_frames == 0 {
             1.0
         } else {
-            ((position + offset as u64) as f64 / attack_frames as f64).min(1.0)
+            ((position - destination + offset as u64) as f64 / attack_frames as f64).min(1.0)
         };
         let expected = (f64::from(value) * envelope) as f32;
         assert_eq!(
@@ -128,7 +243,7 @@ fn scalar_pcm_at_cursor(
 
 #[test]
 fn loaded_resident_normal_authoring_history_and_noops_keep_exact_native_context() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let sampler_file = Files::new();
     let audio_file = Files::new();
     // This fixture reserves below the production aggregate frame policy, with room for actual distinct
@@ -149,7 +264,9 @@ fn loaded_resident_normal_authoring_history_and_noops_keep_exact_native_context(
         project_generation: 0,
         revision: added.state.revision,
         track,
-        empty_sampler: None,
+        slot: hex_session::service::SamplerLoadSlot::New(
+            hex_project::InstrumentLoadPlacement::First,
+        ),
         path: sampler_file.wav(48_000, 8192),
         cancel: Arc::new(AtomicBool::new(false)),
     });
@@ -225,6 +342,7 @@ fn loaded_resident_normal_authoring_history_and_noops_keep_exact_native_context(
         clip: midi_clip,
         remove: Vec::new(),
         insert: vec![hex_project::MidiNoteInsert {
+            active: true,
             start: BeatTime::ONE,
             duration: BeatTime::from_raw(BeatTime::ONE.raw() / 4),
             pitch: 64,
@@ -468,6 +586,29 @@ fn loaded_resident_normal_authoring_history_and_noops_keep_exact_native_context(
     pcm_at_cursor(&mut h, &again_removed, &mut applied, &mut request_id, 0.25);
     h.run(Request::Undo);
     (applied, _) = h.applied(applied);
+    // A provider change under the same retained source/device identity has no
+    // DSP-history transfer proof. Acknowledge Stop before replacement and Undo;
+    // the explicit seek below starts the restored source again.
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(hex_engine::playback::PlaybackCommand::Stop)
+        .unwrap();
+    // The queued Stop settles after its declick fade.
+    for _ in 0..super::FADE_BLOCKS {
+        h.render();
+    }
+    assert_eq!(h.render(), [[0.0; 2]; 64]);
+    assert!(
+        !h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .playing
+            .load(Acquire)
+    );
     let vector = hex_engine::default_native_device_state_for_class(
         hex_engine::NativeDeviceClass::Instrument,
         hex_session::device_gesture::DeviceTypeId::from_static("hex.instrument.fm4"),
@@ -514,11 +655,17 @@ fn loaded_resident_normal_authoring_history_and_noops_keep_exact_native_context(
     pcm_at_cursor(&mut h, &refused, &mut applied, &mut request_id, 0.5);
 }
 
-#[test]
-fn loaded_resident_scalar_edits_reach_pcm_history_and_current_save_reopen() {
-    use hex_engine::SamplerParameter::{AttackMs, Gain};
-    use hex_session::service::{SamplerEdit, SamplerParameterEdit};
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+/// Loaded sampler on a MIDI track with one full-velocity note, all applied.
+struct SamplerNote {
+    h: ResidentHarness,
+    _files: Files,
+    notes: Event,
+    track: hex_project::TrackId,
+    sampler: hex_project::Device,
+    applied: u64,
+}
+
+fn sampler_note_fixture() -> SamplerNote {
     let files = Files::new();
     let mut h = ResidentHarness::with_frame_limit(32_768);
     assert!(h.next().error.is_none());
@@ -535,7 +682,9 @@ fn loaded_resident_scalar_edits_reach_pcm_history_and_current_save_reopen() {
         project_generation: 0,
         revision: added.state.revision,
         track,
-        empty_sampler: None,
+        slot: hex_session::service::SamplerLoadSlot::New(
+            hex_project::InstrumentLoadPlacement::First,
+        ),
         path: files.wav(48_000, 8192),
         cancel: Arc::new(AtomicBool::new(false)),
     });
@@ -548,7 +697,6 @@ fn loaded_resident_scalar_edits_reach_pcm_history_and_current_save_reopen() {
         .instrument()
         .unwrap()
         .clone();
-    let device = sampler.id();
     let placed = h.run(Request::Edit(Command::PlaceMidiClip {
         track,
         start: BeatTime::ZERO,
@@ -567,13 +715,37 @@ fn loaded_resident_scalar_edits_reach_pcm_history_and_current_save_reopen() {
         velocity: 127,
     }));
     (applied, _) = h.applied(applied);
+    SamplerNote {
+        h,
+        _files: files,
+        notes,
+        track,
+        sampler,
+        applied,
+    }
+}
+
+#[test]
+fn loaded_resident_scalar_edits_reach_pcm_history_and_current_save_reopen() {
+    use hex_engine::SamplerParameter::{AttackMs, Gain};
+    use hex_session::service::{SamplerEdit, SamplerParameterEdit};
+    let _native = native_fixture();
+    let SamplerNote {
+        mut h,
+        _files: files,
+        notes,
+        track,
+        sampler,
+        mut applied,
+    } = sampler_note_fixture();
+    let device = sampler.id();
     let mut request_id = 100;
     pcm_at_cursor(&mut h, &notes, &mut applied, &mut request_id, 0.25);
     let make_edit = |event: &Event, parameter, value| SamplerParameterEdit {
         request_id: 2,
         project_generation: 0,
         revision: event.state.revision,
-        track,
+        owner: hex_session::service::SamplerParameterOwner::Track(track),
         device,
         parameter,
         value,
@@ -671,6 +843,10 @@ fn loaded_resident_scalar_edits_reach_pcm_history_and_current_save_reopen() {
         .control
         .command(hex_engine::playback::PlaybackCommand::Stop)
         .unwrap();
+    // The queued Stop settles after its declick fade.
+    for _ in 0..super::FADE_BLOCKS {
+        h.render();
+    }
     assert_eq!(h.render(), [[0.0; 2]; 64]);
     scalar_pcm_at_cursor(&mut h, &redone, &mut applied, &mut request_id, 0.125, 6000);
 
@@ -703,7 +879,7 @@ fn loaded_resident_scalar_edits_reach_pcm_history_and_current_save_reopen() {
 #[test]
 fn clip_loop_resize_publishes_native_pcm_with_retained_preview_root_and_exact_history() {
     use hex_project::AudioViewResizeOperation as Resize;
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     for rate in [44_100, 48_000] {
         let file = Files::new();
         let mut h = ResidentHarness::with_frame_limit_at_rate(32_768, rate);
@@ -731,9 +907,14 @@ fn clip_loop_resize_publishes_native_pcm_with_retained_preview_root_and_exact_hi
         applied = revision;
         assert_eq!(metadata.context.editor_revision, resized.state.revision);
         let peaks = &resized.state.audio_clip_waveforms[&clip];
-        assert_eq!(peaks.waveform.source_frames, 624);
+        assert_eq!(peaks.waveform.source_frames(), 624);
         assert_eq!(
-            peaks.preview_root.as_ref().unwrap().waveform.source_frames,
+            peaks
+                .preview_root
+                .as_ref()
+                .unwrap()
+                .waveform
+                .source_frames(),
             112
         );
         // The real callback starts at frame129, beyond the first boundary80,
@@ -753,5 +934,558 @@ fn clip_loop_resize_publishes_native_pcm_with_retained_preview_root_and_exact_hi
         h.applied(applied);
         assert_eq!(redone.state.project, resized.state.project);
         assert!(h.publication_refusals.is_empty());
+    }
+}
+
+#[test]
+fn copied_frame_groups_share_audio_under_tight_admission_and_survive_history_reopen() {
+    let _native = native_fixture();
+    let files = Files::new();
+    let mut h = ResidentHarness::with_frame_limit(256);
+    assert!(h.next().error.is_none());
+    let (mut applied, _) = h.applied(0);
+    let imported = h.run(Request::Import(files.wav(48_000, 16)));
+    let track = imported.state.project.tracks()[0].id();
+    let first = imported.state.project.tracks()[0].clips()[0].id();
+    (applied, _) = h.applied(applied);
+    let duplicated = h.run(Request::Edit(Command::DuplicateClip(first)));
+    let Some(Created::Clip(second)) = duplicated.created else {
+        panic!("duplicate");
+    };
+    (applied, _) = h.applied(applied);
+    h.run(Request::Edit(Command::GroupClips(vec![first, second])));
+    (applied, _) = h.applied(applied);
+    h.run(Request::CopyTimeRange(
+        hex_project::TimeRange::new(vec![track], 0, 32).unwrap(),
+    ));
+    for index in 1..=8 {
+        h.run(Request::PasteTimeRange {
+            track,
+            frame: index * 32,
+        });
+        (applied, _) = h.applied(applied);
+    }
+    for (command, frames) in [
+        (None, 288),
+        (Some(Request::Undo), 256),
+        (Some(Request::Redo), 288),
+    ] {
+        if let Some(command) = command {
+            h.run(command);
+            (applied, _) = h.applied(applied);
+        }
+        h.audio
+            .as_mut()
+            .unwrap()
+            .control
+            .command(PlaybackCommand::Play)
+            .unwrap();
+        let pcm: Vec<_> = (0..5).flat_map(|_| h.render()).collect();
+        assert!(pcm[..frames].iter().all(|frame| *frame == [0.25; 2]));
+        assert!(pcm[frames..].iter().all(|frame| *frame == [0.0; 2]));
+        h.audio
+            .as_mut()
+            .unwrap()
+            .control
+            .command(PlaybackCommand::Stop)
+            .unwrap();
+        h.render();
+    }
+    let path = files.0.join("shared-clips.hex");
+    let saved = h.run(Request::SaveNew(path.clone()));
+    assert_eq!(hex_storage::load(&path).unwrap(), *saved.state.project);
+    assert!(h.publication_refusals.is_empty());
+    drop(h);
+    let mut reopened = ResidentHarness::with_frame_limit(256);
+    assert!(reopened.next().error.is_none());
+    reopened.applied(0);
+    let old_output = reopened
+        .audio
+        .as_ref()
+        .unwrap()
+        .control
+        .output_identity()
+        .unwrap();
+    let opened = reopened.run(Request::Open(path));
+    assert_eq!(opened.state.project, saved.state.project);
+    super::resident_lifecycle::finish_replacement(&mut reopened, &opened, old_output);
+    reopened
+        .audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    let pcm: Vec<_> = (0..5).flat_map(|_| reopened.render()).collect();
+    assert!(pcm[..288].iter().all(|frame| *frame == [0.25; 2]));
+    assert!(pcm[288..].iter().all(|frame| *frame == [0.0; 2]));
+    // The actual worker publishes all candidates before canonical commit;
+    // every render also checks zero total and signed-net callback allocations.
+}
+
+#[test]
+fn history_refused_while_edit_publication_pending_keeps_both_stacks_and_pcm() {
+    use hex_engine::SamplerParameter::Gain;
+    use hex_session::service::{SamplerEdit, SamplerParameterEdit};
+    let _native = native_fixture();
+    let SamplerNote {
+        mut h,
+        _files,
+        notes,
+        track,
+        sampler,
+        mut applied,
+    } = sampler_note_fixture();
+    let device = sampler.id();
+    let mut request_id = 100;
+    pcm_at_cursor(&mut h, &notes, &mut applied, &mut request_id, 0.25);
+    let gain = h.run(Request::SamplerEdit(SamplerEdit::Parameter(
+        SamplerParameterEdit {
+            request_id: 2,
+            project_generation: 0,
+            revision: notes.state.revision,
+            owner: hex_session::service::SamplerParameterOwner::Track(track),
+            device,
+            parameter: Gain,
+            value: 0.5,
+            cancel: Arc::new(AtomicBool::new(false)),
+        },
+    )));
+    assert_eq!(gain.sampler_edit_complete, Some(2));
+    // One resident publication may be pending: history is refused, not queued or lost.
+    let refuse = |h: &mut ResidentHarness, request: Request, current: &Event| {
+        h.service.submit(request).unwrap();
+        let refused = h.next();
+        assert_eq!(
+            refused.error.as_deref(),
+            Some("playback publication already pending")
+        );
+        assert_eq!(refused.state.revision, current.state.revision);
+        assert_eq!(refused.state.project, current.state.project);
+        refused
+    };
+    assert!(refuse(&mut h, Request::Undo, &gain).state.can_undo);
+    (applied, _) = h.applied(applied);
+    let undone = h.run(Request::Undo);
+    assert_eq!(undone.state.project, notes.state.project);
+    assert!(refuse(&mut h, Request::Redo, &undone).state.can_redo);
+    (applied, _) = h.applied(applied);
+    let redone = h.run(Request::Redo);
+    assert_eq!(redone.state.project, gain.state.project);
+    (applied, _) = h.applied(applied);
+    pcm_at_cursor(&mut h, &redone, &mut applied, &mut request_id, 0.125);
+}
+
+/// Field report (Pulse #3770): editing a sampler note sounding under the
+/// cursor refused with `MutableInstrumentChase`, leaving audio on the old
+/// revision. The live publication now restarts audio at the cursor, so the
+/// edit and later edits apply, paused or playing, without Stop.
+#[test]
+fn editing_a_sounding_sampler_note_applies_while_paused_or_playing() {
+    let _native = native_fixture();
+    for paused in [true, false] {
+        let file = Files::new();
+        let mut h = ResidentHarness::with_frame_limit(32_768);
+        assert!(h.next().error.is_none());
+        let (mut applied, _) = h.applied(0);
+        let added = h.run(Request::Edit(Command::AddMidiTrack {
+            name: "sampler".into(),
+        }));
+        let Some(Created::Track(track)) = added.created else {
+            panic!("track");
+        };
+        (applied, _) = h.applied(applied);
+        h.run(Request::LoadFirstSampler {
+            request_id: 1,
+            project_generation: 0,
+            revision: added.state.revision,
+            track,
+            slot: hex_session::service::SamplerLoadSlot::New(
+                hex_project::InstrumentLoadPlacement::First,
+            ),
+            path: file.wav(48_000, 8192),
+            cancel: Arc::new(AtomicBool::new(false)),
+        });
+        (applied, _) = h.applied(applied);
+        let placed = h.run(Request::Edit(Command::PlaceMidiClip {
+            track,
+            start: BeatTime::ZERO,
+            length: BeatTime::from_quarters(4).unwrap(),
+        }));
+        let Some(Created::Clip(clip)) = placed.created else {
+            panic!("clip");
+        };
+        (applied, _) = h.applied(applied);
+        let with_note = h.run(Request::Edit(Command::AddMidiNote {
+            clip,
+            start: BeatTime::ZERO,
+            duration: BeatTime::from_quarters(4).unwrap(),
+            pitch: 60,
+            channel: 0,
+            velocity: 127,
+        }));
+        let note = with_note.state.project.track(track).unwrap().midi_clips()[0].notes()[0].id();
+        (applied, _) = h.applied(applied);
+        let control = |h: &mut ResidentHarness, command| {
+            h.audio.as_mut().unwrap().control.command(command).unwrap();
+        };
+        control(&mut h, hex_engine::playback::PlaybackCommand::Play);
+        assert!(h.render().iter().flatten().any(|sample| *sample != 0.0));
+        if paused {
+            control(&mut h, hex_engine::playback::PlaybackCommand::Pause);
+            h.render();
+        }
+        h.run(Request::Edit(Command::UpdateMidiNote {
+            note,
+            start: BeatTime::ZERO,
+            duration: BeatTime::from_quarters(4).unwrap(),
+            pitch: 64,
+            channel: 0,
+            velocity: 127,
+        }));
+        (applied, _) = h.applied(applied);
+        h.run(Request::Edit(Command::MasterGain { gain: 0.5 }));
+        h.applied(applied);
+        let status = h.audio.as_ref().unwrap().status().unwrap();
+        assert_eq!(status.playing.load(Acquire), !paused, "paused={paused}");
+        if paused {
+            control(&mut h, hex_engine::playback::PlaybackCommand::Play);
+        }
+        assert!(
+            (0..4).any(|_| h.render().iter().flatten().any(|sample| *sample != 0.0)),
+            "edited note sounds after the restart; paused={paused}"
+        );
+    }
+}
+
+/// Audit (Pulse #3792): the running restart excludes private sampler scopes.
+/// A resident sampler revision carries only the ordinary device resource
+/// scope, so adding a latency device while its note sounds restarts audio at
+/// the cursor instead of refusing.
+#[test]
+fn adding_a_latency_device_while_a_sampler_plays_applies_without_refusal() {
+    let _native = native_fixture();
+    let file = Files::new();
+    let mut h = ResidentHarness::with_frame_limit(32_768);
+    assert!(h.next().error.is_none());
+    let (mut applied, _) = h.applied(0);
+    let added = h.run(Request::Edit(Command::AddMidiTrack {
+        name: "sampler".into(),
+    }));
+    let Some(Created::Track(track)) = added.created else {
+        panic!("track");
+    };
+    (applied, _) = h.applied(applied);
+    h.run(Request::LoadFirstSampler {
+        request_id: 1,
+        project_generation: 0,
+        revision: added.state.revision,
+        track,
+        slot: hex_session::service::SamplerLoadSlot::New(
+            hex_project::InstrumentLoadPlacement::First,
+        ),
+        path: file.wav(48_000, 8192),
+        cancel: Arc::new(AtomicBool::new(false)),
+    });
+    (applied, _) = h.applied(applied);
+    let placed = h.run(Request::Edit(Command::PlaceMidiClip {
+        track,
+        start: BeatTime::ZERO,
+        length: BeatTime::from_quarters(4).unwrap(),
+    }));
+    let Some(Created::Clip(clip)) = placed.created else {
+        panic!("clip");
+    };
+    (applied, _) = h.applied(applied);
+    h.run(Request::Edit(Command::AddMidiNote {
+        clip,
+        start: BeatTime::ZERO,
+        duration: BeatTime::from_quarters(4).unwrap(),
+        pitch: 60,
+        channel: 0,
+        velocity: 127,
+    }));
+    (applied, _) = h.applied(applied);
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(hex_engine::playback::PlaybackCommand::Play)
+        .unwrap();
+    assert!(h.render().iter().flatten().any(|sample| *sample != 0.0));
+    // Lookahead latency changes the compensated layout under a sounding voice.
+    let limited = h.run(Request::AddNativeDevice {
+        track,
+        class: hex_engine::NativeDeviceClass::Effect,
+        type_id: Box::new(hex_engine::DeviceTypeId::from_static("hex.limiter")),
+        before: None,
+    });
+    assert_eq!(
+        limited.state.project.track(track).unwrap().devices().len(),
+        1
+    );
+    // `applied` panics on any callback rejection of the new revision.
+    h.applied(applied);
+    let status = h.audio.as_ref().unwrap().status().unwrap();
+    assert!(status.playing.load(Acquire), "the transport keeps running");
+    assert!(
+        (0..4).any(|_| h.render().iter().flatten().any(|sample| *sample != 0.0)),
+        "the sampler sounds after the restart"
+    );
+}
+
+#[test]
+fn running_tempo_edit_with_latency_keeps_the_audio_graph_playing() {
+    let _native = native_fixture();
+    for (compensated, partition, looped) in [
+        (false, 1, false),
+        (false, 257, false),
+        (true, 1, false),
+        (true, 257, false),
+        (false, 1, true),
+        (false, 257, true),
+        (true, 1, true),
+        (true, 257, true),
+    ] {
+        let files = Files::new();
+        let mut h = ResidentHarness::with_frame_limit(32_768);
+        assert!(h.next().error.is_none());
+        let (mut applied, _) = h.applied(0);
+        let imported = h.run(Request::Import(files.wav(48_000, 8192)));
+        (applied, _) = h.applied(applied);
+        let track = imported.state.project.tracks()[0].id();
+        if compensated {
+            h.run(Request::AddNativeDevice {
+                track,
+                class: hex_engine::NativeDeviceClass::Effect,
+                type_id: Box::new(hex_engine::DeviceTypeId::from_static("hex.limiter")),
+                before: None,
+            });
+            (applied, _) = h.applied(applied);
+        }
+        if looped {
+            h.run(Request::Edit(Command::SetLoopRegion {
+                start: 128,
+                // At 90 BPM this becomes a 128-frame loop, so a 257-frame
+                // publication callback necessarily crosses at least one seam.
+                end: 224,
+                enabled: true,
+            }));
+            (applied, _) = h.applied(applied);
+        }
+        let latency = h
+            .submitted_observation()
+            .and_then(|observation| observation.track_latency(track))
+            .map_or(0, |latency| latency.local_frames);
+        assert_eq!(latency > 0, compensated, "actual applied track latency");
+        h.audio
+            .as_mut()
+            .unwrap()
+            .control
+            .command(hex_engine::playback::PlaybackCommand::Play)
+            .unwrap();
+        for _ in 0..8 {
+            h.render();
+        }
+        let old_tempo = imported.state.project.tempo_map().clone();
+        h.service
+            .submit(Request::Edit(Command::SetProjectTempo {
+                tempo: hex_project::Tempo::new(90_000_000).unwrap(),
+            }))
+            .unwrap();
+        let until = Instant::now() + Duration::from_secs(5);
+        let mut edited = None;
+        let mut cut = None;
+        while edited.is_none() || cut.is_none() {
+            h.pump();
+            if let Ok(event) = h.service.try_event() {
+                edited = Some(event);
+            }
+            let status = h.audio.as_ref().unwrap().status().unwrap();
+            let before_revision = status.applied_revision.load(Acquire);
+            let before_position = status.position.load(Acquire);
+            let mut frames = [[0.0; 2]; 257];
+            let mut callback = h.callback.lock().unwrap();
+            let measured = allocation_counter::measure(|| {
+                callback
+                    .as_mut()
+                    .unwrap()
+                    .render(&mut frames[..partition])
+                    .unwrap();
+            });
+            assert_eq!(
+                (
+                    measured.count_total,
+                    measured.bytes_total,
+                    measured.count_current,
+                    measured.bytes_current
+                ),
+                (0, 0, 0, 0)
+            );
+            drop(callback);
+            let status = h.audio.as_ref().unwrap().status().unwrap();
+            if before_revision == applied && status.applied_revision.load(Acquire) > applied {
+                cut = Some((before_position, status.position.load(Acquire)));
+            }
+            assert!(Instant::now() < until, "tempo edit did not publish");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let edited = edited.unwrap();
+        assert!(
+            edited.error.is_none(),
+            "compensated={compensated}: {:?}",
+            edited.error
+        );
+        let (before_position, after_position) = cut.unwrap();
+        let beat = old_tempo.frame_to_beat(before_position).unwrap();
+        let relocated = edited
+            .state
+            .project
+            .tempo_map()
+            .beat_to_frame(beat)
+            .unwrap();
+        let advanced = relocated + partition as u64;
+        let expected_position = match edited.state.project.loop_region() {
+            Some(region) if region.enabled() && advanced >= region.end() => {
+                if partition == 257 {
+                    assert!(relocated >= region.start() && relocated < region.end());
+                    assert!(partition as u64 > region.end() - region.start());
+                }
+                region.start() + (advanced - region.start()) % (region.end() - region.start())
+            }
+            _ => advanced,
+        };
+        assert_eq!(
+            after_position, expected_position,
+            "tempo publication must preserve its beat; compensated={compensated}, partition={partition}, looped={looped}, cut={before_position}"
+        );
+        let status = h.audio.as_ref().unwrap().status().unwrap();
+        assert!(status.playing.load(Acquire));
+        assert!(status.rejected_revision().is_none());
+        assert!(
+            (0..16).any(|_| h.render().iter().flatten().any(|sample| *sample != 0.0)),
+            "audio must continue after the tempo edit; compensated={compensated}"
+        );
+    }
+}
+
+#[test]
+fn running_tempo_edit_with_streamed_audio_and_latency_preserves_position() {
+    let _native = native_fixture();
+    for partition in [1, 257] {
+        let files = Files::new();
+        // Force this ordinary document's import through its file-backed source path.
+        let mut h = ResidentHarness::with_frame_limit(4);
+        assert!(h.next().error.is_none());
+        let (mut applied, _) = h.applied(0);
+        let imported = h.run(Request::Import(files.wav(48_000, 32_768)));
+        (applied, _) = h.applied(applied);
+        assert!(
+            imported
+                .state
+                .canonical_audio_source
+                .as_ref()
+                .unwrap()
+                .sources()
+                .values()
+                .any(|source| matches!(source, hex_session::AudioSourceBinding::VerifiedFile(_)))
+        );
+        let track = imported.state.project.tracks()[0].id();
+        h.run(Request::AddNativeDevice {
+            track,
+            class: hex_engine::NativeDeviceClass::Effect,
+            type_id: Box::new(hex_engine::DeviceTypeId::from_static("hex.limiter")),
+            before: None,
+        });
+        (applied, _) = h.applied(applied);
+        assert!(
+            h.submitted_observation()
+                .unwrap()
+                .track_latency(track)
+                .unwrap()
+                .local_frames
+                > 0
+        );
+        h.audio
+            .as_mut()
+            .unwrap()
+            .control
+            .command(PlaybackCommand::Play)
+            .unwrap();
+        let ready = Instant::now() + Duration::from_secs(2);
+        while !h.render().iter().flatten().any(|sample| *sample != 0.0) {
+            assert!(Instant::now() < ready, "streamed audio did not start");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let old_tempo = imported.state.project.tempo_map().clone();
+        h.service
+            .submit(Request::Edit(Command::SetProjectTempo {
+                tempo: hex_project::Tempo::new(90_000_000).unwrap(),
+            }))
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut edited = None;
+        let mut cut = None;
+        while edited.is_none() || cut.is_none() {
+            h.pump();
+            if let Ok(event) = h.service.try_event() {
+                assert!(event.error.is_none(), "{:?}", event.error);
+                edited = Some(event);
+            }
+            let status = h.audio.as_ref().unwrap().status().unwrap();
+            let before_revision = status.applied_revision.load(Acquire);
+            let before_position = status.position.load(Acquire);
+            let mut frames = [[0.0; 2]; 257];
+            let mut callback = h.callback.lock().unwrap();
+            let allocations = allocation_counter::measure(|| {
+                callback
+                    .as_mut()
+                    .unwrap()
+                    .render(&mut frames[..partition])
+                    .unwrap();
+            });
+            assert_eq!(
+                (
+                    allocations.count_total,
+                    allocations.bytes_total,
+                    allocations.count_current,
+                    allocations.bytes_current
+                ),
+                (0, 0, 0, 0)
+            );
+            drop(callback);
+            let status = h.audio.as_ref().unwrap().status().unwrap();
+            if before_revision == applied && status.applied_revision.load(Acquire) > applied {
+                cut = Some((before_position, status.position.load(Acquire)));
+            }
+            assert!(
+                Instant::now() < deadline,
+                "streamed tempo edit did not publish"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let (before, after) = cut.unwrap();
+        let beat = old_tempo.frame_to_beat(before).unwrap();
+        let relocated = edited
+            .unwrap()
+            .state
+            .project
+            .tempo_map()
+            .beat_to_frame(beat)
+            .unwrap();
+        assert_eq!(after, relocated + partition as u64, "partition={partition}");
+        let status = h.audio.as_ref().unwrap().status().unwrap();
+        assert!(status.playing.load(Acquire));
+        assert!(status.rejected_revision().is_none());
+        // Drain more than the Limiter's 288-frame delay before checking that
+        // the new graph is still producing streamed audio.
+        for _ in 0..8 {
+            h.render();
+        }
+        let ready = Instant::now() + Duration::from_secs(2);
+        while !h.render().iter().flatten().any(|sample| *sample != 0.0) {
+            assert!(Instant::now() < ready, "streamed audio did not resume");
+            std::thread::sleep(Duration::from_millis(1));
+        }
     }
 }

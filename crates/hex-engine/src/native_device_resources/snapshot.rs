@@ -9,6 +9,8 @@ use hex_project::{DeviceId, TrackId};
 struct Configuration {
     track: TrackId,
     device: DeviceId,
+    /// Any sampler-supported saved version; the runtime was prepared from it.
+    state_version: u32,
     payload: Vec<u8>,
     references: Vec<DeviceAssetReference>,
     input: u32,
@@ -64,18 +66,7 @@ impl ControlSamplerSources {
             metadata_bytes,
             max_scan_frames,
             cancel,
-            |asset| {
-                if stage.staged.asset.0 == asset {
-                    Some(&stage.staged.asset.1)
-                } else {
-                    stage
-                        .store
-                        .assets
-                        .iter()
-                        .find(|(id, _)| *id == asset)
-                        .map(|(_, source)| source)
-                }
-            },
+            |asset| stage.loan(asset),
         )
     }
     fn prepare_with_source_on_control<'a>(
@@ -93,6 +84,7 @@ impl ControlSamplerSources {
         let count = project
             .tracks()
             .iter()
+            .filter(|track| track.receives_source_audio())
             .filter(|t| {
                 t.instrument()
                     .is_some_and(|d| hex_devices::sampler::state::requires_source(d.state()))
@@ -108,6 +100,7 @@ impl ControlSamplerSources {
         for device in project
             .tracks()
             .iter()
+            .filter(|track| track.receives_source_audio())
             .filter_map(|t| t.instrument())
             .filter(|d| hex_devices::sampler::state::requires_source(d.state()))
         {
@@ -147,7 +140,11 @@ impl ControlSamplerSources {
             return Err(ResourcePreparationError::MetadataCapacity);
         }
         let mut scan = max_scan_frames;
-        for track in project.tracks() {
+        for track in project
+            .tracks()
+            .iter()
+            .filter(|track| track.receives_source_audio())
+        {
             let Some(device) = track
                 .instrument()
                 .filter(|d| hex_devices::sampler::state::requires_source(d.state()))
@@ -200,6 +197,7 @@ impl ControlSamplerSources {
             configurations.push(Configuration {
                 track: track.id(),
                 device: device.id(),
+                state_version: state.state_version(),
                 payload,
                 references: copied_references,
                 input: state.input_gain_db().to_bits(),
@@ -232,7 +230,11 @@ impl ControlSamplerSources {
         project: &hex_project::Project,
     ) -> Result<(), crate::Invalid> {
         let mut count = 0usize;
-        for track in project.tracks() {
+        for track in project
+            .tracks()
+            .iter()
+            .filter(|track| track.receives_source_audio())
+        {
             let Some(device) = track
                 .instrument()
                 .filter(|d| hex_devices::sampler::state::requires_source(d.state()))
@@ -271,7 +273,7 @@ impl ControlSamplerSources {
             .find(|c| c.device == device)
             .ok_or(crate::Invalid("sampler configuration scope is unavailable"))?;
         if state.type_id() != hex_devices::sampler::state::TYPE_ID
-            || state.state_version() != hex_devices::sampler::state::STATE_VERSION
+            || state.state_version() != c.state_version
             || state.payload() != c.payload
             || state.asset_references() != c.references
             || state.input_gain_db().to_bits() != c.input
@@ -285,7 +287,7 @@ impl ControlSamplerSources {
         }
         Ok(Box::new(
             hex_devices::sampler::catalog::PreparedSamplerInstrument::from_runtime_on_control(
-                c.prepared.clone(),
+                c.prepared.clone().with_sample_rate_gain(),
             ),
         ))
     }
@@ -338,12 +340,17 @@ impl ControlSamplerSources {
         Ok(frames)
     }
     pub fn compiler_factory_allowance(&self) -> Result<usize, ResourcePreparationError> {
+        // A future generic factory also owns its exact-target scalar proof;
+        // the closed constructor may conservatively omit that capability.
+        let per_factory = std::mem::size_of::<hex_devices::sampler::PreparedSamplerRuntime>()
+            .checked_add(
+                hex_devices::sampler::PreparedSamplerRuntime::history_retarget_inline_bound(),
+            )
+            .ok_or(AudioStorageError::Overflow)?;
         self.data
             .configurations
             .len()
-            .checked_mul(std::mem::size_of::<
-                hex_devices::sampler::PreparedSamplerRuntime,
-            >())
+            .checked_mul(per_factory)
             .ok_or(AudioStorageError::Overflow.into())
     }
     /// A sealed outer handle, not a source owner projection. The complete union

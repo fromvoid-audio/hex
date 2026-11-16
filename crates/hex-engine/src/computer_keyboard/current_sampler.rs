@@ -54,6 +54,7 @@ impl ComputerKeyboardRuntime {
             supported,
             context: None,
             mutable: Some(mutable),
+            source_input: None,
             retarget: None,
             tuning_family: None,
             tuning_preservation: false,
@@ -69,8 +70,8 @@ impl ComputerKeyboardRuntime {
             scratch_next_id: 0,
             age: 0,
             scratch_age: 0,
-            audition_start: None,
-            scratch_audition_start: None,
+            audition_gate: AuditionGate::default(),
+            scratch_audition_gate: AuditionGate::default(),
             monitor_anchor: None,
             scratch_monitor_anchor: None,
             boundary: false,
@@ -96,6 +97,7 @@ impl ComputerKeyboardRuntime {
             || !self.samplers.is_empty()
             || self.samplers.capacity() != 0
             || self.context.is_some()
+            || self.source_input.is_some()
             || self.retarget.is_some()
             || self.expression.is_some()
             || self.tuning_family.is_some()

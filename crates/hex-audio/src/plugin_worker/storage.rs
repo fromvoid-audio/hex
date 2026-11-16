@@ -5,13 +5,14 @@ use crate::native_callback_owner::{ChannelStorage, Guard};
 
 pub(super) fn reserved_backing(
     guard: &Guard<State>,
-    completed: &Arc<AtomicU64>,
+    completed: &Arc<Signal>,
 ) -> Option<ChannelStorage> {
     let state = guard.owner_ref()?;
     let processor_bytes = match state.processor.as_ref()? {
         Processor::Function(process) => std::mem::size_of_val(process.as_ref()),
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-        Processor::Native(instance) => std::mem::size_of_val(instance.as_ref()),
+        Processor::Native(instance) => std::mem::size_of_val(instance.as_ref())
+            .checked_add(capture::MAX_RETAINED_PAYLOAD_BYTES)?,
     };
     Some(ChannelStorage {
         data_bytes: std::mem::size_of_val(state)
@@ -49,19 +50,53 @@ impl NativeWorker {
     /// are already present; their enclosing Box is additional here. Failure
     /// diagnostics, opaque std thread/allocator resources and transient exchange
     /// costs remain separate, so this is not complete Root eligibility.
+    #[cfg(test)]
     pub(crate) fn preconstruction_data_bytes_on_control(
         instance: &hex_plugin_host::native::Prepared,
     ) -> Option<usize> {
-        fn capture_bytes<R>(_: fn(Guard<State>, Arc<AtomicU64>) -> R) -> usize {
+        Self::preconstruction_data_bytes_for_source_on_control(
+            instance.retained_storage_on_control()?,
+        )
+    }
+
+    pub(crate) fn preconstruction_data_bytes_for_source_on_control(
+        source: hex_plugin_host::native::PreparedStorage,
+    ) -> Option<usize> {
+        Self::preconstruction_with_channel(source, channel_storage_bound()?)
+    }
+
+    /// Known constructor DATA for the exact dense effect queue profile.
+    pub fn preconstruction_dense_effect_data_bytes_on_control(
+        instance: &hex_plugin_host::native::Prepared,
+    ) -> Option<usize> {
+        if instance.configuration().input_channels != 2 {
+            return None;
+        }
+        Self::preconstruction_dense_effect_for_source_on_control(
+            instance.retained_storage_on_control()?,
+        )
+    }
+
+    pub(crate) fn preconstruction_dense_effect_for_source_on_control(
+        source: hex_plugin_host::native::PreparedStorage,
+    ) -> Option<usize> {
+        Self::preconstruction_with_channel(source, dense_channel_storage_bound()?)
+    }
+
+    fn preconstruction_with_channel(
+        source: hex_plugin_host::native::PreparedStorage,
+        channel: ConstructorStorage,
+    ) -> Option<usize> {
+        fn capture_bytes<R>(_: fn(Guard<State>, Arc<Signal>) -> R) -> usize {
             std::mem::size_of::<R>()
         }
-        instance
-            .retained_storage_on_control()?
+        source
             .data_bytes
-            .checked_add(channel_storage_bound()?.data_bytes)?
+            .checked_add(channel.data_bytes)?
             .checked_add(ChannelStorage::owner_reservation::<State>()?.data_bytes)?
             .checked_add(std::mem::size_of::<hex_plugin_host::native::Prepared>())?
-            .checked_add(std::mem::size_of::<AtomicU64>())?
+            .checked_add(std::mem::size_of::<Signal>())?
+            .checked_add(capture::MAX_RETAINED_PAYLOAD_BYTES)?
             .checked_add(capture_bytes(transport_runner))?
             .checked_add(std::mem::size_of::<Completion>())
     }
@@ -75,6 +110,25 @@ impl NativeWorker {
     ) -> Option<NativeWorkerStorage> {
         let transport = self.transport_storage_on_control(callback)?;
         let source = self.retained_source_storage_on_control(callback)?;
+        self.constructor_storage_for(transport, source)
+    }
+
+    /// Constructor-owned backing of the exact reserved effect pair, including
+    /// the independent dense ring and its control-owned staging storage.
+    pub fn constructor_dense_effect_storage_on_control(
+        &self,
+        callback: &DenseEffectCallback,
+    ) -> Option<NativeWorkerStorage> {
+        let transport = callback.constructor_storage_on_control(&self.reaper.control)?;
+        let source = self.source_storage?;
+        self.constructor_storage_for(transport, source)
+    }
+
+    fn constructor_storage_for(
+        &self,
+        transport: ConstructorStorage,
+        source: hex_plugin_host::native::PreparedStorage,
+    ) -> Option<NativeWorkerStorage> {
         let worker = self.reaper.storage?;
         Some(NativeWorkerStorage {
             data_bytes: transport
@@ -112,7 +166,9 @@ pub struct NativeWorkerResourceBound {
 impl NativeWorker {
     pub(crate) fn resource_bound_on_control() -> Option<NativeWorkerResourceBound> {
         let source = hex_plugin_host::native::PreparationResourceBound::ordinary_instance();
-        let channel = channel_storage_bound()?;
+        // Root reserves the largest admitted copied-channel profile before
+        // any individual source chooses its actual ordinary or dense pair.
+        let channel = dense_channel_storage_bound()?;
         let terminal = ChannelStorage::owner_reservation::<State>()?;
         Some(NativeWorkerResourceBound {
             source,

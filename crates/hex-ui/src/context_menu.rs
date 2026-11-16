@@ -20,8 +20,9 @@ pub(crate) struct MenuItem<A> {
 }
 
 pub(crate) struct PopupMenu<A> {
+    pub scroll: gpui::ScrollHandle,
     pub position: Point<Pixels>,
-    // Item zero and any items after the glyph catalog are full-width actions.
+    // Item zero and any items after the icon catalog are full-width actions.
     pub icon_grid: Option<Vec<&'static str>>,
     pub items: Vec<MenuItem<A>>,
     pub selected: usize,
@@ -59,6 +60,21 @@ pub(crate) fn popup<T: 'static, A: Clone + 'static>(
     dismiss: Dismiss<T>,
     navigate: Navigate<T>,
 ) -> Div {
+    popup_with_labels(menu, window, cx, select, dismiss, navigate, |item| {
+        item.label.into()
+    })
+}
+
+/// Owners may supply real instance/parameter names without leaking static strings.
+pub(crate) fn popup_with_labels<T: 'static, A: Clone + 'static>(
+    menu: &PopupMenu<A>,
+    window: &Window,
+    cx: &mut Context<T>,
+    select: Select<T, A>,
+    dismiss: Dismiss<T>,
+    navigate: Navigate<T>,
+    label_for: fn(&MenuItem<A>) -> gpui::SharedString,
+) -> Div {
     let grid = menu.icon_grid.as_ref();
     let (width, height) = if grid.is_some() {
         (
@@ -70,6 +86,7 @@ pub(crate) fn popup<T: 'static, A: Clone + 'static>(
     } else {
         (WIDTH, menu.items.len() as f32 * ROW_HEIGHT + 6.0)
     };
+    let height = height.min((f32::from(window.bounds().size.height) - 2.0 * EDGE).max(ROW_HEIGHT));
     let position = clamped_position(menu.position, window.bounds().size, height, width);
     let selected_action = menu
         .items
@@ -82,6 +99,11 @@ pub(crate) fn popup<T: 'static, A: Clone + 'static>(
         .left(position.x)
         .top(position.y)
         .w(px(width))
+        .flex()
+        .flex_col()
+        .max_h(px(height))
+        .overflow_y_scroll()
+        .track_scroll(&menu.scroll)
         .py(px(2.0))
         .border_1()
         .border_color(rgb(theme::color(theme::PaletteRole::Muted)))
@@ -100,7 +122,9 @@ pub(crate) fn popup<T: 'static, A: Clone + 'static>(
     let mut trailing = Vec::new();
     for (index, item) in menu.items.iter().enumerate() {
         let action = item.action.clone();
-        let label = item.label;
+        let label = label_for(item);
+        let tooltip_label = label.clone();
+        let swatch_label = label.clone();
         let glyph = grid
             .and_then(|icons| index.checked_sub(1).and_then(|index| icons.get(index)))
             .copied();
@@ -119,6 +143,7 @@ pub(crate) fn popup<T: 'static, A: Clone + 'static>(
                 "context-menu-item".into()
             }
         })
+        .flex_shrink_0()
         .h(px(if glyph.is_some() {
             ICON_CELL
         } else {
@@ -135,7 +160,12 @@ pub(crate) fn popup<T: 'static, A: Clone + 'static>(
                 })))
         })
         .when(glyph.is_none(), |row| row.w_full().px(px(10.0)))
-        .tooltip(move |_, cx| cx.new(|_| MenuTooltip { label }).into())
+        .tooltip(move |_, cx| {
+            cx.new(|_| MenuTooltip {
+                label: tooltip_label.clone(),
+            })
+            .into()
+        })
         .flex()
         .items_center()
         .cursor_pointer()
@@ -146,7 +176,7 @@ pub(crate) fn popup<T: 'static, A: Clone + 'static>(
         }))
         .children(item.swatch.map(|color| {
             div()
-                .debug_selector(move || format!("context-menu-swatch-{label}"))
+                .debug_selector(move || format!("context-menu-swatch-{swatch_label}"))
                 .w(px(12.0))
                 .h(px(12.0))
                 .mr(px(8.0))
@@ -154,7 +184,18 @@ pub(crate) fn popup<T: 'static, A: Clone + 'static>(
                 .border_color(rgb(theme::color(theme::PaletteRole::Muted)))
                 .bg(rgb(color))
         }))
-        .child(theme::text(glyph.unwrap_or(item.label)))
+        .children(glyph.map(|path| {
+            gpui::svg()
+                .path(path)
+                .size(px(14.0))
+                .text_color(rgb(theme::color(theme::PaletteRole::Text)))
+        }))
+        .children(glyph.is_none().then(|| {
+            div()
+                .min_w_0()
+                .truncate()
+                .child(theme::text(label.as_ref()))
+        }))
         .children(item.checked.then(|| {
             div()
                 .debug_selector(move || format!("context-menu-current-{index}"))
@@ -256,7 +297,7 @@ pub(crate) fn popup<T: 'static, A: Clone + 'static>(
 }
 
 struct MenuTooltip {
-    label: &'static str,
+    label: gpui::SharedString,
 }
 impl gpui::Render for MenuTooltip {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
@@ -269,11 +310,11 @@ impl gpui::Render for MenuTooltip {
             .font_family(theme::FONT_FAMILY)
             .text_xs()
             .text_color(rgb(theme::color(theme::PaletteRole::Text)))
-            .child(theme::text(self.label))
+            .child(theme::text(&self.label))
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "ui-test-support")))]
 mod tests {
     use super::*;
     #[test]

@@ -3,6 +3,8 @@
 //! Providers receive only borrowed inventories. Runtime leases are created on control and move
 //! with their runtime, including into an outgoing tail; configuration equality never rebinds a
 //! carried voice. The revision carries a nonowning set identity, not a source owner.
+//! A retained source contributes one configuration at its explicit audio receiver;
+//! contributor tracks borrow its provider and never create a second resource lease.
 use super::{resident::NativeBankLoan, *};
 use crate::{AudioRootStorageLedger, owned_shared::OwnedShared};
 use hex_lattice::{DevicePreparationContext, NativeInstrumentRegistry, PreparedNativeInstrument};
@@ -138,18 +140,7 @@ impl PreparedDeviceResources {
         metadata_bytes: usize,
         cancel: &AtomicBool,
     ) -> Result<Self, ResourcePreparationError> {
-        Self::prepare_with_sources(project, metadata_bytes, cancel, |asset| {
-            if stage.staged.asset.0 == asset {
-                Some(&stage.staged.asset.1)
-            } else {
-                stage
-                    .store
-                    .assets
-                    .iter()
-                    .find(|(id, _)| *id == asset)
-                    .map(|(_, source)| source)
-            }
-        })
+        Self::prepare_with_sources(project, metadata_bytes, cancel, |asset| stage.loan(asset))
     }
     fn prepare_with_sources<'a>(
         project: &Project,
@@ -161,12 +152,16 @@ impl PreparedDeviceResources {
         let registry = hex_devices::native_instrument_registry()
             .map_err(|_| ResourcePreparationError::InvalidScope)?;
         let devices = || {
-            project.tracks().iter().filter_map(|track| {
-                track
-                    .instrument()
-                    .filter(|device| !device.state().asset_references().is_empty())
-                    .map(|device| (track.id(), device))
-            })
+            project
+                .tracks()
+                .iter()
+                .filter(|track| track.receives_source_audio())
+                .filter_map(|track| {
+                    track
+                        .instrument()
+                        .filter(|device| !device.state().asset_references().is_empty())
+                        .map(|device| (track.id(), device))
+                })
         };
         let count = devices().count();
         let (configuration_bytes, overhead) = OwnedShared::<Configuration>::declared_parts()
@@ -375,8 +370,9 @@ impl PreparedDeviceResources {
             .map(|configuration| configuration.factory_inline_bound)
     }
     /// Finite compiler scratch overlap from each resource definition's inline-only factory bound.
-    /// Registry preparation and its mutable-factory copy may coexist; retained factories are
-    /// separately selected from the actual compiled revision in the same control union.
+    /// Registry preparation, its mutable-factory copy and the audited sampler
+    /// proof may coexist. Retained owners are selected separately from the
+    /// actual compiled revision in the same control union.
     pub fn compiler_construction_allowance_bytes(&self) -> Result<usize, ResourcePreparationError> {
         self.configurations
             .iter()
@@ -386,6 +382,11 @@ impl PreparedDeviceResources {
                         configuration
                             .factory_inline_bound
                             .checked_mul(2)
+                            .and_then(|bytes| bytes.checked_add(
+                                if configuration.type_id == hex_devices::sampler::state::TYPE_ID {
+                                    hex_devices::sampler::PreparedSamplerRuntime::history_retarget_inline_bound()
+                                } else { 0 }
+                            ))
                             .ok_or(AudioStorageError::Overflow)?,
                     )
                     .ok_or(AudioStorageError::Overflow.into())
@@ -430,7 +431,11 @@ impl PreparedDeviceResources {
             ));
         }
         let mut count = 0usize;
-        for track in project.tracks() {
+        for track in project
+            .tracks()
+            .iter()
+            .filter(|track| track.receives_source_audio())
+        {
             let Some(device) = track
                 .instrument()
                 .filter(|device| !device.state().asset_references().is_empty())
@@ -705,6 +710,7 @@ pub struct DeviceResourceAdmission<'a> {
     playback: Option<&'a crate::playback::Playback>,
     playback_resources: Option<&'a PreparedDeviceResources>,
     batch: Option<&'a DeviceResourcePublicationBatch>,
+    repitch_requirements: Option<&'a crate::audio_transform::StreamedRepitchRequirements>,
 }
 impl<'a> DeviceResourceAdmission<'a> {
     pub fn new(
@@ -721,6 +727,7 @@ impl<'a> DeviceResourceAdmission<'a> {
             playback: None,
             playback_resources: None,
             batch: None,
+            repitch_requirements: None,
         }
     }
     /// Borrow actual unpublished worker-owned runtime leases while an output is unavailable or
@@ -740,6 +747,15 @@ impl<'a> DeviceResourceAdmission<'a> {
     /// both current/export aliases. Ordinary non-resource factory contracts remain unchanged.
     pub fn with_prepared_revisions(mut self, revisions: &'a [&'a crate::PreparedRevision]) -> Self {
         self.revisions = revisions;
+        self
+    }
+    /// Include a control-owned requirement set in the same native storage ledger.
+    /// Repeated shared maps are counted once; this grants no publication authority.
+    pub fn with_repitch_requirements(
+        mut self,
+        requirements: &'a crate::audio_transform::StreamedRepitchRequirements,
+    ) -> Self {
+        self.repitch_requirements = Some(requirements);
         self
     }
     /// One actual captured set and its exact compiled revision, suitable for a bounded worker
@@ -792,6 +808,9 @@ impl<'a> DeviceResourceAdmission<'a> {
         ledger: &mut AudioRootStorageLedger<'a>,
     ) -> Result<u64, AudioStorageError> {
         let mut frames = 0u64;
+        if let Some(requirements) = self.repitch_requirements {
+            requirements.visit(ledger)?;
+        }
         for set in self.sets.iter().copied().chain(self.set) {
             frames = frames
                 .checked_add(set.visit(ledger)?)
@@ -831,6 +850,14 @@ impl<'a> DeviceResourceAdmission<'a> {
         }
         if let Some(playback) = self.playback {
             ledger.root(playback, crate::AudioStorageRole::Caller)?;
+            let continuation_bytes = playback.foreign_continuation_metadata_bytes_on_control()?;
+            if continuation_bytes != 0 {
+                ledger.bytes(
+                    crate::audio_storage::Owner::exclusive(playback),
+                    crate::audio_storage::Location("unpublished-foreign-continuation", 0),
+                    continuation_bytes,
+                )?;
+            }
             if let Some(resources) = self.playback_resources {
                 let revision = playback
                     .prepared_revision()

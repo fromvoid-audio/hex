@@ -156,6 +156,9 @@ fn fixture_with_options(feeds: bool, automation: bool) -> Fixture {
     let id = snapshot.next_id;
     snapshot.next_id += 1;
     snapshot.tracks[0].devices.push(DeviceSnapshot {
+        modulation: Default::default(),
+        parent: None,
+        automation: Vec::new(),
         comparison: None,
         id,
         bypassed: false,
@@ -537,14 +540,14 @@ fn ordinary_exact_demand_covers_return_feed_render_and_keeps_resident_pcm_and_cl
     }
     struct Protected<'a> {
         pages: &'a mut Pages,
-        extents: &'a [hex_engine::StreamPageExtent],
+        extents: &'a [hex_engine::StreamResourceExtent],
     }
     impl MediaPages for Protected<'_> {
         fn page(&mut self, key: StreamSourceKey, index: u64) -> Option<BorrowedMediaPage<'_>> {
             assert!(
                 self.extents
                     .iter()
-                    .any(|extent| extent.source == key && extent.page_index == index),
+                    .any(|extent| extent.source == key.into() && extent.page_index == index),
                 "render read outside actual engine demand"
             );
             self.pages.page(key, index)

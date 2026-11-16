@@ -69,6 +69,26 @@ fn browser_drag_fixture(
     (handle, editor, tracks[0], directory, path)
 }
 
+#[gpui::test]
+fn consumed_browser_search_key_is_redacted_from_action_diagnostics(cx: &mut TestAppContext) {
+    let (handle, editor, _, directory, _) = browser_drag_fixture(cx);
+    let mut log = hex_diagnostics::SessionLog::start(directory.0.join("diagnostics")).unwrap();
+    cx.update(|cx| {
+        crate::diagnostics::install_session_log(cx, Ok(log.handle()));
+        crate::diagnostics::install_action_diagnostics(cx, true);
+    });
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.update(|window, cx| editor.read(cx).browser.search.read(cx).focus(window));
+    visual.simulate_keystrokes("q->密");
+    editor.read_with(&visual, |view, cx| {
+        assert_eq!(view.browser.search.read(cx).text(), "密");
+    });
+    log.shutdown().unwrap();
+    let contents = std::fs::read_to_string(log.path()).unwrap();
+    assert!(contents.contains("stage=key key=\\\"redacted\\\""));
+    assert!(!contents.contains("密"));
+}
+
 fn browser_drag_fixture_with_tracks(
     cx: &mut TestAppContext,
     names: &[&str],
@@ -104,6 +124,9 @@ fn browser_drag_fixture_with_tracks(
                 EditorView::new(window, cx, service, Err("offline ui test".into()))
             });
             editor.update(cx, |view, cx| {
+                // Fixed geometry for pointer/drop tests; the normal navigation
+                // allowance is tested by the arranger navigation regressions.
+                view.viewport = Some(super::super::viewport::Viewport::fit(384_000));
                 view.state = Some(Arc::new(ViewState {
                     canonical_audio_source: None,
                     comparison_audio: None,
@@ -146,6 +169,587 @@ fn browser_drag_fixture_with_tracks(
         })
         .expect("editor window");
     (handle, editor, tracks, directory, path)
+}
+
+fn windowed_audition_matches_resident_pcm(cx: &mut TestAppContext, rate: u32, fraction: f64) {
+    use hex_audio::sample_preview::Phase;
+    use std::sync::atomic::AtomicBool;
+
+    let _serial = hex_audio::worker_fixture::serial_output();
+    let (mut output, mut backend) =
+        hex_audio::worker_fixture::open_after_retirement(rate, false).unwrap();
+    let (handle, editor, _, _directory, path) = browser_drag_fixture(cx);
+    std::fs::write(&path, mono_pcm_wav(20_000)).unwrap();
+    let expected = hex_session::service::PreviewSources::default()
+        .prepare_playback(&path, rate, &AtomicBool::new(false))
+        .unwrap();
+    let start = super::audition_geometry::frame_at_fraction(expected.frames().len(), fraction);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    // Finish startup preference/scan callbacks before installing the test output.
+    visual.run_until_parked();
+    let client = output.take_client().unwrap();
+    let replay_path = path.clone();
+    editor.update(&mut visual, |view, cx| {
+        view.audio = Some(crate::editor_backend::EditorAudio {
+            control: client,
+            sample_rate: rate,
+            label: "test output".into(),
+            spectrum_error: None,
+            mode: hex_session::DocumentAudioMode::Resident,
+        });
+        view.document_audio_mode = hex_session::DocumentAudioMode::Resident;
+        view.browser.section = BrowserSection::Samples;
+        view.browser.loading = false;
+        view.browser.error = None;
+        view.play_browser_sample_from(path, fraction, cx);
+        assert!(
+            view.browser.playback_in_flight.is_some(),
+            "request not started: {} {:?}",
+            view.status,
+            view.error
+        );
+    });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
+    let first = loop {
+        visual.run_until_parked();
+        let mut frame = [[0.0; 2]; 1];
+        backend.render(&mut frame).unwrap();
+        let playing = editor.read_with(&visual, |view, _| {
+            view.audio
+                .as_ref()
+                .unwrap()
+                .control
+                .preview_snapshot()
+                .unwrap()
+                .phase
+                == Phase::Playing
+        });
+        if playing {
+            break frame[0];
+        }
+        if std::time::Instant::now() >= deadline {
+            let detail = editor.read_with(&visual, |view, _| {
+                format!(
+                    "status={} error={:?} in_flight={} snapshot={:?}",
+                    view.status,
+                    view.error,
+                    view.browser.playback_in_flight.is_some(),
+                    view.audio
+                        .as_ref()
+                        .and_then(|audio| audio.control.preview_snapshot())
+                )
+            });
+            editor.update(&mut visual, |view, _| {
+                view.cancel_browser_sample_playback();
+                view.audio.take().unwrap().control.close();
+            });
+            backend.close();
+            drop(output);
+            panic!("first window did not play: {detail}");
+        }
+        visual
+            .executor()
+            .advance_clock(std::time::Duration::from_millis(5));
+    };
+    assert_eq!(first, expected.frames()[start]);
+    assert!(
+        editor.read_with(&visual, |view, _| view.browser.playback_in_flight.is_some()),
+        "continuation remains active after the first window starts"
+    );
+    let mut position = start + 1;
+    while position < expected.frames().len() {
+        visual
+            .executor()
+            .advance_clock(std::time::Duration::from_millis(5));
+        visual.run_until_parked();
+        let count = (expected.frames().len() - position).min(128);
+        let mut rendered = vec![[0.0; 2]; count];
+        backend.render(&mut rendered).unwrap();
+        assert_eq!(
+            rendered,
+            expected.frames()[position..position + count],
+            "gap at {position}"
+        );
+        position += count;
+    }
+    let snapshot = editor.read_with(&visual, |view, _| {
+        view.audio
+            .as_ref()
+            .unwrap()
+            .control
+            .preview_snapshot()
+            .unwrap()
+    });
+    assert_eq!(
+        (snapshot.phase, snapshot.frame),
+        (Phase::Finished, expected.frames().len() as u64)
+    );
+    editor.update(&mut visual, |view, cx| {
+        view.play_browser_sample_from(replay_path, fraction, cx);
+    });
+    let replay_deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
+    loop {
+        visual.run_until_parked();
+        let mut frame = [[0.0; 2]; 1];
+        backend.render(&mut frame).unwrap();
+        let playing = editor.read_with(&visual, |view, _| {
+            view.audio
+                .as_ref()
+                .unwrap()
+                .control
+                .preview_snapshot()
+                .unwrap()
+                .phase
+                == Phase::Playing
+        });
+        if playing {
+            assert_eq!(frame[0], expected.frames()[start]);
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < replay_deadline,
+            "warm replay did not start"
+        );
+        visual
+            .executor()
+            .advance_clock(std::time::Duration::from_millis(5));
+    }
+    editor.update(&mut visual, |view, _| {
+        view.cancel_browser_sample_playback();
+        view.audio.take().unwrap().control.close();
+    });
+    backend.close();
+    drop(output);
+}
+
+#[gpui::test]
+fn browser_windowed_audition_matches_pcm_at_output_rate(cx: &mut TestAppContext) {
+    windowed_audition_matches_resident_pcm(cx, 48_000, 0.0);
+}
+
+#[gpui::test]
+fn browser_windowed_audition_matches_resampled_scrub_pcm(cx: &mut TestAppContext) {
+    windowed_audition_matches_resident_pcm(cx, 44_100, 0.25);
+}
+
+#[gpui::test]
+fn browser_windowed_audition_supersession_and_stop_silence_the_old_source(cx: &mut TestAppContext) {
+    use hex_audio::sample_preview::Phase;
+    let _serial = hex_audio::worker_fixture::serial_output();
+    let (mut output, mut backend) =
+        hex_audio::worker_fixture::open_after_retirement(48_000, false).unwrap();
+    let (handle, editor, _, directory, first) = browser_drag_fixture(cx);
+    std::fs::write(&first, mono_pcm_wav(20_000)).unwrap();
+    let second = directory.0.join("second.wav");
+    let mut bytes = mono_pcm_wav(20_000);
+    for sample in bytes[44..].chunks_exact_mut(2) {
+        sample.copy_from_slice(&8_000_i16.to_le_bytes());
+    }
+    std::fs::write(&second, bytes).unwrap();
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let client = output.take_client().unwrap();
+    editor.update(&mut visual, |view, cx| {
+        view.audio = Some(crate::editor_backend::EditorAudio {
+            control: client,
+            sample_rate: 48_000,
+            label: "test output".into(),
+            spectrum_error: None,
+            mode: hex_session::DocumentAudioMode::Resident,
+        });
+        view.document_audio_mode = hex_session::DocumentAudioMode::Resident;
+        view.browser.section = BrowserSection::Samples;
+        view.play_browser_sample_from(first, 0.0, cx);
+    });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
+    loop {
+        visual.run_until_parked();
+        let mut frame = [[0.0; 2]; 1];
+        backend.render(&mut frame).unwrap();
+        if frame == [[4_000.0 / 32_768.0; 2]; 1] {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "first source did not start"
+        );
+        visual
+            .executor()
+            .advance_clock(std::time::Duration::from_millis(5));
+    }
+    editor.update(&mut visual, |view, cx| {
+        view.play_browser_sample_from(second, 0.0, cx)
+    });
+    loop {
+        visual.run_until_parked();
+        let mut frame = [[0.0; 2]; 1];
+        backend.render(&mut frame).unwrap();
+        assert!(
+            frame == [[0.0; 2]; 1] || frame == [[8_000.0 / 32_768.0; 2]; 1],
+            "old source returned after supersession"
+        );
+        let playing = editor.read_with(&visual, |view, _| {
+            view.audio
+                .as_ref()
+                .unwrap()
+                .control
+                .preview_snapshot()
+                .unwrap()
+                .phase
+                == Phase::Playing
+        });
+        if playing {
+            assert_eq!(frame, [[8_000.0 / 32_768.0; 2]; 1]);
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "replacement source did not start"
+        );
+        visual
+            .executor()
+            .advance_clock(std::time::Duration::from_millis(5));
+    }
+    editor.update(&mut visual, |view, _| view.cancel_browser_sample_playback());
+    let mut frame = [[1.0; 2]; 1];
+    backend.render(&mut frame).unwrap();
+    assert_eq!(frame, [[0.0; 2]; 1]);
+    editor.update(&mut visual, |view, _| {
+        view.audio.take().unwrap().control.close()
+    });
+    backend.close();
+    drop(output);
+}
+
+#[gpui::test]
+fn browser_windowed_audition_reports_source_change_and_stops(cx: &mut TestAppContext) {
+    let _serial = hex_audio::worker_fixture::serial_output();
+    let (mut output, mut backend) =
+        hex_audio::worker_fixture::open_after_retirement(48_000, false).unwrap();
+    let (handle, editor, _, _directory, path) = browser_drag_fixture(cx);
+    std::fs::write(&path, mono_pcm_wav(20_000)).unwrap();
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let client = output.take_client().unwrap();
+    editor.update(&mut visual, |view, cx| {
+        view.audio = Some(crate::editor_backend::EditorAudio {
+            control: client,
+            sample_rate: 48_000,
+            label: "test output".into(),
+            spectrum_error: None,
+            mode: hex_session::DocumentAudioMode::Resident,
+        });
+        view.document_audio_mode = hex_session::DocumentAudioMode::Resident;
+        view.browser.section = BrowserSection::Samples;
+        view.play_browser_sample_from(path.clone(), 0.0, cx);
+    });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
+    loop {
+        visual.run_until_parked();
+        let mut frame = [[0.0; 2]; 1];
+        backend.render(&mut frame).unwrap();
+        if frame == [[4_000.0 / 32_768.0; 2]; 1] {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "source did not start");
+        visual
+            .executor()
+            .advance_clock(std::time::Duration::from_millis(5));
+    }
+    std::fs::write(&path, mono_pcm_wav(20_001)).unwrap();
+    loop {
+        visual
+            .executor()
+            .advance_clock(std::time::Duration::from_millis(5));
+        visual.run_until_parked();
+        let mut frames = [[0.0; 2]; 128];
+        backend.render(&mut frames).unwrap();
+        let error = editor.read_with(&visual, |view, _| {
+            view.error
+                .as_ref()
+                .is_some_and(|error| error.contains("audio file changed"))
+        });
+        if error {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "changed source was not reported"
+        );
+    }
+    let mut frame = [[1.0; 2]; 1];
+    backend.render(&mut frame).unwrap();
+    assert_eq!(frame, [[0.0; 2]; 1]);
+    editor.update(&mut visual, |view, _| {
+        view.audio.take().unwrap().control.close()
+    });
+    backend.close();
+    drop(output);
+}
+
+#[gpui::test]
+fn browser_adpcm_audition_keeps_resident_fallback(cx: &mut TestAppContext) {
+    use hex_audio::sample_preview::Phase;
+    use std::sync::atomic::AtomicBool;
+    let _serial = hex_audio::worker_fixture::serial_output();
+    let (mut output, mut backend) =
+        hex_audio::worker_fixture::open_after_retirement(48_000, false).unwrap();
+    let (handle, editor, _, _directory, path) = browser_drag_fixture(cx);
+    std::fs::write(
+        &path,
+        include_bytes!("../../../hex-media/tests/fixtures/adpcm_ima_wav-1.wav"),
+    )
+    .unwrap();
+    assert!(
+        hex_session::service::PreviewWindowSource::open(&path, 48_000, &AtomicBool::new(false))
+            .is_err()
+    );
+    let expected = hex_session::service::PreviewSources::default()
+        .prepare_playback(&path, 48_000, &AtomicBool::new(false))
+        .unwrap();
+    assert!(!expected.frames().is_empty());
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let client = output.take_client().unwrap();
+    editor.update(&mut visual, |view, cx| {
+        view.audio = Some(crate::editor_backend::EditorAudio {
+            control: client,
+            sample_rate: 48_000,
+            label: "test output".into(),
+            spectrum_error: None,
+            mode: hex_session::DocumentAudioMode::Resident,
+        });
+        view.document_audio_mode = hex_session::DocumentAudioMode::Resident;
+        view.browser.section = BrowserSection::Samples;
+        view.play_browser_sample_from(path, 0.0, cx);
+    });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
+    loop {
+        visual.run_until_parked();
+        let mut frame = [[0.0; 2]; 1];
+        backend.render(&mut frame).unwrap();
+        let playing = editor.read_with(&visual, |view, _| {
+            view.audio
+                .as_ref()
+                .unwrap()
+                .control
+                .preview_snapshot()
+                .unwrap()
+                .phase
+                == Phase::Playing
+        });
+        if playing {
+            assert_eq!(frame[0], expected.frames()[0]);
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "resident fallback did not play"
+        );
+        visual
+            .executor()
+            .advance_clock(std::time::Duration::from_millis(5));
+    }
+    editor.update(&mut visual, |view, _| {
+        view.cancel_browser_sample_playback();
+        view.audio.take().unwrap().control.close();
+    });
+    backend.close();
+    drop(output);
+}
+
+#[gpui::test]
+fn stale_browser_audition_cannot_cancel_a_replacement_output_or_request(cx: &mut TestAppContext) {
+    use hex_audio::sample_preview::Phase;
+    let _serial = hex_audio::worker_fixture::serial_output();
+    let (mut output, mut backend) =
+        hex_audio::worker_fixture::open_after_retirement(48_000, false).unwrap();
+    let (handle, editor, _, _directory, path) = browser_drag_fixture(cx);
+    std::fs::write(&path, mono_pcm_wav(20_000)).unwrap();
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let mut client = output.take_client().unwrap();
+    let identity = client.output_identity().unwrap();
+    let first = client.preview_request().unwrap();
+    client
+        .preview_publish(
+            first,
+            hex_engine::Audio::new(48_000, vec![[0.5; 2]; 16]).unwrap(),
+        )
+        .unwrap();
+    editor.update(&mut visual, |view, _| {
+        view.audio = Some(crate::editor_backend::EditorAudio {
+            control: client,
+            sample_rate: 48_000,
+            label: "test output".into(),
+            spectrum_error: None,
+            mode: hex_session::DocumentAudioMode::Resident,
+        });
+        view.browser.playback_output = Some((identity.wrapping_add(1), first));
+        view.browser.playback_phase = Phase::Playing;
+        assert!(view.poll_browser_sample_playback());
+    });
+    let mut frame = [[0.0; 2]; 1];
+    backend.render(&mut frame).unwrap();
+    assert_eq!(
+        frame, [[0.5; 2]; 1],
+        "old output identity canceled the new output"
+    );
+    editor.update(&mut visual, |view, _| {
+        let audio = view.audio.as_mut().unwrap();
+        let second = audio.control.preview_request().unwrap();
+        audio
+            .control
+            .preview_publish(
+                second,
+                hex_engine::Audio::new(48_000, vec![[0.75; 2]; 16]).unwrap(),
+            )
+            .unwrap();
+        view.browser.playback_output = Some((identity, first));
+        view.browser.playback_phase = Phase::Playing;
+        assert!(view.poll_browser_sample_playback());
+    });
+    backend.render(&mut frame).unwrap();
+    assert_eq!(
+        frame, [[0.75; 2]; 1],
+        "old generation canceled a newer preview"
+    );
+    editor.update(&mut visual, |view, cx| {
+        view.document_audio_mode = hex_session::DocumentAudioMode::Resident;
+        view.browser.section = BrowserSection::Samples;
+        view.play_browser_sample_from(path, 0.0, cx);
+    });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
+    loop {
+        visual.run_until_parked();
+        backend.render(&mut frame).unwrap();
+        if frame == [[4_000.0 / 32_768.0; 2]; 1] {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "windowed source did not start"
+        );
+        visual
+            .executor()
+            .advance_clock(std::time::Duration::from_millis(5));
+    }
+    editor.update(&mut visual, |view, _| {
+        let control = &mut view.audio.as_mut().unwrap().control;
+        let token = control.preview_request().unwrap();
+        control
+            .preview_publish(
+                token,
+                hex_engine::Audio::new(48_000, vec![[0.875; 2]; 64]).unwrap(),
+            )
+            .unwrap();
+    });
+    let mut replacement_started = false;
+    for _ in 0..8 {
+        visual
+            .executor()
+            .advance_clock(std::time::Duration::from_millis(5));
+        visual.run_until_parked();
+        backend.render(&mut frame).unwrap();
+        if frame == [[0.875; 2]; 1] {
+            replacement_started = true;
+        } else {
+            assert!(
+                !replacement_started && frame == [[0.0; 2]; 1],
+                "old window producer canceled the newer request"
+            );
+        }
+    }
+    assert!(replacement_started, "replacement preview did not start");
+    editor.update(&mut visual, |view, _| {
+        view.audio.take().unwrap().control.close()
+    });
+    backend.close();
+    drop(output);
+}
+
+#[gpui::test]
+fn windowed_browser_audition_handles_device_fault_and_output_replacement(cx: &mut TestAppContext) {
+    let _serial = hex_audio::worker_fixture::serial_output();
+    let (mut output, mut backend) =
+        hex_audio::worker_fixture::open_after_retirement(48_000, false).unwrap();
+    let (handle, editor, _, _directory, path) = browser_drag_fixture(cx);
+    std::fs::write(&path, mono_pcm_wav(20_000)).unwrap();
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let client = output.take_client().unwrap();
+    editor.update(&mut visual, |view, cx| {
+        view.audio = Some(crate::editor_backend::EditorAudio {
+            control: client,
+            sample_rate: 48_000,
+            label: "test output".into(),
+            spectrum_error: None,
+            mode: hex_session::DocumentAudioMode::Resident,
+        });
+        view.document_audio_mode = hex_session::DocumentAudioMode::Resident;
+        view.browser.section = BrowserSection::Samples;
+        view.play_browser_sample_from(path.clone(), 0.0, cx);
+    });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
+    loop {
+        visual.run_until_parked();
+        let mut frame = [[0.0; 2]; 1];
+        backend.render(&mut frame).unwrap();
+        if frame == [[4_000.0 / 32_768.0; 2]; 1] {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "source did not start");
+        visual
+            .executor()
+            .advance_clock(std::time::Duration::from_millis(5));
+    }
+    backend.report_device_error().unwrap();
+    editor.update(&mut visual, |view, _| {
+        assert!(view.poll_browser_sample_playback());
+        assert_eq!(
+            view.browser.playback_phase,
+            hex_audio::sample_preview::Phase::Unavailable
+        );
+        view.audio.take().unwrap().control.close();
+    });
+    backend.close();
+    drop(output);
+    let (mut replacement, mut replacement_backend) =
+        hex_audio::worker_fixture::open_after_retirement(48_000, false).unwrap();
+    let mut client = replacement.take_client().unwrap();
+    let token = client.preview_request().unwrap();
+    client
+        .preview_publish(
+            token,
+            hex_engine::Audio::new(48_000, vec![[0.625; 2]; 64]).unwrap(),
+        )
+        .unwrap();
+    editor.update(&mut visual, |view, _| {
+        view.audio = Some(crate::editor_backend::EditorAudio {
+            control: client,
+            sample_rate: 48_000,
+            label: "replacement".into(),
+            spectrum_error: None,
+            mode: hex_session::DocumentAudioMode::Resident,
+        });
+    });
+    for _ in 0..8 {
+        visual
+            .executor()
+            .advance_clock(std::time::Duration::from_millis(5));
+        visual.run_until_parked();
+        let mut frame = [[0.0; 2]; 1];
+        replacement_backend.render(&mut frame).unwrap();
+        assert_eq!(
+            frame, [[0.625; 2]; 1],
+            "old browser task affected replacement output"
+        );
+    }
+    editor.update(&mut visual, |view, _| {
+        view.audio.take().unwrap().control.close()
+    });
+    replacement_backend.close();
+    drop(replacement);
 }
 
 #[gpui::test]
@@ -312,6 +916,8 @@ fn command_f_caret_movement_preserves_result_scroll(cx: &mut TestAppContext) {
         cx.notify();
     });
     visual.run_until_parked();
+    let first_device = "browser-device-instrument-hex.instrument.sampler";
+    assert!(visual.debug_bounds(first_device).is_none());
     assert!(visual.debug_bounds("browser-entry-20").is_some());
     assert!(visual.debug_bounds("browser-entry-0").is_none());
     visual.simulate_keystrokes("left shift-left");
@@ -324,8 +930,8 @@ fn command_f_caret_movement_preserves_result_scroll(cx: &mut TestAppContext) {
     visual.simulate_keystrokes("end backspace");
     visual.run_until_parked();
     assert!(
-        visual.debug_bounds("browser-entry-0").is_some(),
-        "changed query reveals its first result"
+        visual.debug_bounds(first_device).is_some(),
+        "changed query reveals its first device result"
     );
     editor.read_with(visual, |view, cx| {
         assert_eq!(view.browser.search.read(cx).text(), "sampl");
@@ -351,7 +957,7 @@ fn command_f_device_highlight_waits_for_result_focus(cx: &mut TestAppContext) {
     visual.run_until_parked();
     assert_eq!(
         visual.rendered_background(selector),
-        Some(gpui::rgb(theme::color(theme::PaletteRole::Hover)).into())
+        Some(gpui::rgb(theme::color(theme::PaletteRole::Secondary)).into())
     );
 }
 
@@ -433,9 +1039,12 @@ fn command_f_escape_keeps_navigation_until_explicit_text_entry(cx: &mut TestAppC
             );
         });
     });
-    visual.simulate_input("ignored");
+    // Unbound printable keys leave result navigation untouched. `r` now has
+    // its explicit random-sample action in this context.
+    visual.simulate_input("text");
     editor.read_with(visual, |view, cx| {
-        assert!(view.browser.search.read(cx).text().is_empty())
+        assert!(view.browser.search.read(cx).text().is_empty());
+        assert_eq!(view.browser.playback_generation, generation);
     });
     let field = visual.debug_bounds("browser-search").unwrap();
     visual.simulate_click(field.center(), Modifiers::default());
@@ -496,7 +1105,7 @@ fn command_f_scan_completion_preserves_selected_device(cx: &mut TestAppContext) 
             "utility",
             "late files must not retarget device selection"
         );
-        assert_eq!(view.browser.selected_index, 1);
+        assert_eq!(view.browser.selected_index, 0);
     });
     cx.simulate_keystrokes(handle, "enter");
     editor.read_with(cx, |view, _| {
@@ -920,13 +1529,13 @@ fn browser_right_edge_drag_resizes_and_release_stops_resizing(cx: &mut TestAppCo
         MouseButton::Left,
         Modifiers::default(),
     );
-    editor.read_with(cx, |view, _| assert_eq!(view.browser.width, 310.0));
+    editor.read_with(cx, |view, _| assert_eq!(view.browser.width, 306.0));
     visual.simulate_mouse_move(
         point(px(240.0), px(200.0)),
         MouseButton::Left,
         Modifiers::default(),
     );
-    editor.read_with(cx, |view, _| assert_eq!(view.browser.width, 240.0));
+    editor.read_with(cx, |view, _| assert_eq!(view.browser.width, 236.0));
     visual.simulate_mouse_up(
         point(px(240.0), px(200.0)),
         MouseButton::Left,
@@ -935,7 +1544,7 @@ fn browser_right_edge_drag_resizes_and_release_stops_resizing(cx: &mut TestAppCo
     visual.simulate_mouse_move(point(px(300.0), px(200.0)), None, Modifiers::default());
     editor.read_with(cx, |view, _| {
         assert!(!view.browser.resizing);
-        assert_eq!(view.browser.width, 240.0);
+        assert_eq!(view.browser.width, 236.0);
     });
 }
 
@@ -969,6 +1578,18 @@ fn browser_audio_drag_floats_outside_lanes_locks_preview_and_imports_exact_candi
         .debug_bounds("browser-audio-floating-preview")
         .expect("outside-lane drag has cursor ghost");
     assert!(f32::from(floating.size.width) > 100.0);
+    crate::editor::clip_boundary::tests::assert_open_upper_right(
+        &mut visual,
+        "browser-audio-floating-preview",
+        "browser-audio-floating-preview-trailing",
+        Some("browser-drag-name"),
+    );
+    let title = visual.debug_bounds("browser-drag-name").unwrap();
+    assert_eq!(
+        title.size.height,
+        px(crate::editor::clip_name::CLIP_NAME_HEIGHT)
+    );
+
     editor.read_with(cx, |view, _| {
         let drag = view
             .active_browser_audio_drag
@@ -1030,6 +1651,12 @@ fn browser_audio_drag_floats_outside_lanes_locks_preview_and_imports_exact_candi
         preview.start_frame
     });
     assert!(visual.debug_bounds("clip-drop-preview").is_some());
+    crate::editor::clip_boundary::tests::assert_open_upper_right(
+        &mut visual,
+        "clip-drop-preview",
+        "clip-drop-preview-trailing",
+        None,
+    );
 
     // Moving back out of the lane restores the cursor ghost and clears the target.
     visual.simulate_mouse_move(outside, MouseButton::Left, Modifiers::default());
@@ -1232,7 +1859,7 @@ fn browser_sample_drop_between_tracks_shows_only_insertion_line_and_keeps_snappe
     assert_eq!(first.origin.x, body.origin.x);
     assert_eq!(
         first.size.width,
-        body.size.width - px(super::super::tracks::TRACK_HEADER_WIDTH)
+        body.size.width - editor.read_with(cx, |view, _| px(view.track_header_width()))
     );
     let pointer_start = (((f32::from(target.x) - f32::from(first.origin.x))
         / f32::from(first.size.width))
@@ -1435,7 +2062,7 @@ fn browser_sample_drop_below_last_track_appends_with_line_and_locked_ghost(
             .clone()
             .expect("prepared sample duration");
         let viewport = view.visible_viewport(384_000);
-        let timeline_width = body.size.width - px(super::super::tracks::TRACK_HEADER_WIDTH);
+        let timeline_width = body.size.width - px(view.track_header_width());
         let left = body.origin.x
             + px(
                 (start.saturating_sub(viewport.start) as f64 / viewport.length as f64
@@ -1526,16 +2153,30 @@ fn browser_sample_drop_in_empty_arrangement_creates_bottom_track(cx: &mut TestAp
     assert!(
         (ghost.origin.x
             - body.origin.x
-            - px((start as f64 / 384_000.0 * f64::from(body.size.width - px(176.0))) as f32))
+            - px((start as f64 / 384_000.0
+                * f64::from(
+                    body.size.width - editor.read_with(cx, |view, _| px(view.track_header_width()))
+                )) as f32))
         .abs()
             <= px(1.0)
     );
     assert!((ghost.origin.y - body.origin.y).abs() <= px(1.0));
+    // The pointer-down audition is still playing when the sample lands.
+    editor.update(cx, |view, _| {
+        view.browser.playback_phase = hex_audio::sample_preview::Phase::Playing;
+        view.browser.playback_output = Some((1, 1));
+        view.browser.playback_path = Some(path.clone());
+    });
     visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
     editor.read_with(cx, |view, _| {
         assert_eq!(
             view.last_enqueued_import_to_new_track,
             Some((path.clone(), None, start))
+        );
+        assert!(view.browser.playback_output.is_none(), "drop stops preview");
+        assert_eq!(
+            view.browser.playback_phase,
+            hex_audio::sample_preview::Phase::Idle
         );
     });
     visual.run_until_parked();
@@ -1661,7 +2302,10 @@ fn arrangement_wheel_zoom_is_pointer_anchored_and_does_not_escape_its_timeline(
         .debug_bounds("arrangement-grid-line-0")
         .expect("grid starts at the visible timeline origin");
     assert_eq!(grid.origin.x, body.origin.x);
-    assert_eq!(grid.size.width + px(176.0), body.size.width);
+    assert_eq!(
+        grid.size.width + editor.read_with(cx, |view, _| px(view.track_header_width())),
+        body.size.width
+    );
     assert_eq!(first_grid_line.origin.x, ruler.origin.x);
     let pointer = point(
         ruler.origin.x + ruler.size.width * 0.37,
@@ -1847,62 +2491,9 @@ fn arrangement_wheel_zoom_is_pointer_anchored_and_does_not_escape_its_timeline(
     assert_eq!(after_browser_wheel, before_browser_wheel);
 }
 
-#[test]
-fn physical_wheel_delta_normalizes_pixels_and_lines_without_mutating_raw_delta() {
-    let cases = [
-        (
-            gpui::ScrollDelta::Pixels(point(px(12.0), px(24.0))),
-            false,
-            (12.0, 24.0),
-        ),
-        (
-            gpui::ScrollDelta::Pixels(point(px(12.0), px(24.0))),
-            true,
-            (-12.0, -24.0),
-        ),
-        (
-            gpui::ScrollDelta::Lines(point(2.0, -3.0)),
-            false,
-            (2.0, -3.0),
-        ),
-        (
-            gpui::ScrollDelta::Lines(point(2.0, -3.0)),
-            true,
-            (-2.0, 3.0),
-        ),
-    ];
-    for (raw, inverted, (expected_x, expected_y)) in cases {
-        let event = gpui::ScrollWheelEvent {
-            delta: raw,
-            direction_inverted_from_device: inverted,
-            ..Default::default()
-        };
-        match event.physical_delta() {
-            gpui::ScrollDelta::Pixels(delta) => {
-                assert_eq!(f32::from(delta.x), expected_x);
-                assert_eq!(f32::from(delta.y), expected_y);
-            }
-            gpui::ScrollDelta::Lines(delta) => {
-                assert_eq!(delta.x, expected_x);
-                assert_eq!(delta.y, expected_y);
-            }
-        }
-        match (raw, event.delta) {
-            (gpui::ScrollDelta::Pixels(before), gpui::ScrollDelta::Pixels(after)) => {
-                assert_eq!(before, after);
-            }
-            (gpui::ScrollDelta::Lines(before), gpui::ScrollDelta::Lines(after)) => {
-                assert_eq!(before.x, after.x);
-                assert_eq!(before.y, after.y);
-            }
-            _ => panic!("raw scroll delta variant changed"),
-        }
-    }
-}
-
 #[gpui::test]
 fn empty_arrangement_keeps_the_grid_aligned_with_the_ruler(cx: &mut TestAppContext) {
-    let (handle, _editor, tracks, _directory, _) = browser_drag_fixture_with_tracks(cx, &[]);
+    let (handle, editor, tracks, _directory, _) = browser_drag_fixture_with_tracks(cx, &[]);
     assert!(tracks.is_empty());
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
@@ -1923,50 +2514,11 @@ fn empty_arrangement_keeps_the_grid_aligned_with_the_ruler(cx: &mut TestAppConte
         "four-adaptive-unit shading spans the empty Arrangement timeline"
     );
     assert_eq!(grid.origin.x, body.origin.x);
-    assert_eq!(grid.size.width + px(176.0), body.size.width);
-    assert_eq!(line.origin.x, ruler.origin.x);
-}
-
-#[gpui::test]
-fn arrangement_overview_shows_the_project_and_click_centers_a_clamped_viewport(
-    cx: &mut TestAppContext,
-) {
-    let (handle, editor, _, _directory, _) = browser_drag_fixture(cx);
-    editor.update(cx, |view, _| {
-        view.viewport = Some(super::super::viewport::Viewport {
-            start: 0,
-            length: 96_000,
-        });
-    });
-    let mut visual = VisualTestContext::from_window(handle, cx);
-    visual.run_until_parked();
-    let overview = visual
-        .debug_bounds("arrangement-overview-map")
-        .expect("compact project overview above the ruler");
-    let ruler = visual
-        .debug_bounds("timeline-ruler")
-        .expect("Arrangement ruler");
-    assert_eq!(overview.origin.x, ruler.origin.x);
-    assert_eq!(overview.size.width, ruler.size.width);
-    assert!(overview.size.height >= px(20.0));
-    let before = editor.read_with(cx, |view, _| {
-        let state = view.state.as_ref().expect("project");
-        view.visible_viewport(state.timeline_frames)
-    });
-    assert_eq!(before.start, 0);
-    let click = point(
-        overview.origin.x + overview.size.width * 0.99,
-        overview.origin.y + overview.size.height / 2.0,
+    assert_eq!(
+        grid.size.width + editor.read_with(cx, |view, _| px(view.track_header_width())),
+        body.size.width
     );
-    visual.simulate_mouse_down(click, MouseButton::Left, Modifiers::default());
-    visual.run_until_parked();
-    let after = editor.read_with(cx, |view, _| {
-        let state = view.state.as_ref().expect("project");
-        view.visible_viewport(state.timeline_frames)
-    });
-    assert_eq!(after.length, 96_000);
-    assert_eq!(after.end(), Some(384_000));
-    assert!(after.start > before.start);
+    assert_eq!(line.origin.x, ruler.origin.x);
 }
 
 #[gpui::test]
@@ -2009,7 +2561,8 @@ fn middle_drag_pans_both_arrangement_axes_until_release(cx: &mut TestAppContext)
             view.track_scroll.max_offset(),
         )
     });
-    let timeline_width = f32::from(body.size.width - px(176.0));
+    let timeline_width =
+        f32::from(body.size.width - editor.read_with(cx, |view, _| px(view.track_header_width())));
     let expected_delta = (90.0 * initial.length as f64 / f64::from(timeline_width)).round() as i128;
     assert_eq!(
         panned,
@@ -2112,9 +2665,10 @@ fn browser_audio_drag_rejects_changed_snap_or_viewport(cx: &mut TestAppContext) 
         let viewport = view.visible_viewport(state.timeline_frames);
         view.snap_grid = super::super::musical_time::SnapGrid::Quarter;
         let payload = BrowserAudioDrag {
+            project_asset: None,
             project_generation: view.project_generation,
             revision: state.revision,
-            browser_generation: view.browser.scan_generation(),
+            browser_generation: Some(view.browser.scan_generation()),
             sample_rate: state.project.sample_rate(),
             path,
             label: "loop.wav".into(),
@@ -2196,9 +2750,10 @@ fn clip_and_sample_drags_clear_unavailable_targets_and_recover_from_invalid_poin
         }));
         let viewport = view.visible_viewport(current.timeline_frames);
         let browser_drag = BrowserAudioDrag {
+            project_asset: None,
             project_generation: view.project_generation,
             revision: current.revision.saturating_add(1),
-            browser_generation: view.browser.scan_generation(),
+            browser_generation: Some(view.browser.scan_generation()),
             sample_rate: current.project.sample_rate(),
             path,
             label: "loop.wav".into(),
@@ -2243,6 +2798,8 @@ fn clip_and_sample_drags_clear_unavailable_targets_and_recover_from_invalid_poin
                 length: clip.length(),
             },
             grab_offset: Rc::new(Cell::new(Some(0))),
+            snap_edge: Rc::new(Cell::new(Some(super::drag::ClipSnapEdge::Leading))),
+            source_span: Default::default(),
             capture: Rc::new(Cell::new(None)),
             viewport_start: viewport.start,
             viewport_length: viewport.length,
@@ -2338,7 +2895,7 @@ fn clip_and_sample_drags_clear_unavailable_targets_and_recover_from_invalid_poin
                     assert!(clip_drag.insertion_line_y.get().is_some());
                 }
                 clip_drag.capture.set(origin.and_then(|x| {
-                    hex_widgets::RectangleCapture::begin(
+                    super::drag::PointerDown::begin(
                         super::drag::ClipPointerKey {
                             generation: clip_drag.project_generation,
                             clip: clip_drag.clip,
@@ -2479,6 +3036,60 @@ fn browser_preferences_coalesce_background_saves_and_preserve_corrupt_files(
         std::fs::read(&preferences_path).expect("corrupt file remains"),
         corrupt
     );
+}
+
+#[gpui::test]
+fn browser_places_failed_save_survives_a_later_queued_success(cx: &mut TestAppContext) {
+    use gpui::VisualTestContext;
+    let directory = PreferencesTestDirectory::new();
+    let corrupt_path = directory.0.join("corrupt.json");
+    let good_path = directory.0.join("browser.json");
+    let bootstrap = cx.add_window(|_, _| Empty);
+    let handle = *bootstrap;
+    let editor = cx
+        .update_window(handle, |_, window, cx| {
+            let service = Service::new(48_000, 32, 8_000_000).expect("test service");
+            window.replace_root(cx, |window, cx| {
+                EditorView::new_for_test(
+                    window,
+                    cx,
+                    service,
+                    Err("offline test".into()),
+                    corrupt_path.clone(),
+                    directory.0.join("recent-projects.json"),
+                )
+            })
+        })
+        .expect("editor window");
+    let visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    // Corrupt preferences are preserved, so the first save fails.
+    std::fs::write(&corrupt_path, b"not valid browser preferences").expect("corrupt fixture");
+    let first = directory.0.join("first-folder");
+    let second = directory.0.join("second-folder");
+    editor.update(cx, |view, cx| {
+        view.browser.places.push(first.clone());
+        view.queue_browser_places_save(cx);
+        // The queued save targets a writable file and succeeds.
+        view.browser.set_test_preferences_path(good_path.clone());
+        view.browser.places.push(second.clone());
+        view.queue_browser_places_save(cx);
+    });
+    visual.run_until_parked();
+    assert_eq!(
+        hex_preferences::load(&good_path)
+            .expect("queued save")
+            .additional(),
+        &[first, second]
+    );
+    editor.read_with(cx, |view, _| {
+        let status = view.browser.places_status.as_deref().unwrap_or_default();
+        assert!(
+            status.contains("could not save browser places")
+                && status.contains("a later save succeeded"),
+            "earlier failure must stay visible after a queued success: {status:?}"
+        );
+    });
 }
 
 #[gpui::test]
@@ -2647,14 +3258,60 @@ fn browser_right_opens_selected_folder_without_sample_or_project_commands(cx: &m
         }];
         cx.notify();
     });
+    visual.run_until_parked();
+    let disclosure = visual.debug_bounds("browser-disclosure-0").unwrap();
+    assert_eq!(
+        editor.read_with(visual, |view, _| view.browser.tree.disclosure(&folder)),
+        super::tree::Disclosure::Collapsed
+    );
+    struct RestoreTheme(hex_preferences::ThemePreferences);
+    impl Drop for RestoreTheme {
+        fn drop(&mut self) {
+            crate::theme::apply_preferences(self.0);
+        }
+    }
+    let original = crate::theme::preferences();
+    let _restore = RestoreTheme(original);
+    for (background, text) in [(0x20, 0xe0), (0xe0, 0x20)] {
+        let mut preferences = original;
+        preferences.background = hex_preferences::RgbColor::new(background, background, background);
+        preferences.text = hex_preferences::RgbColor::new(text, text, text);
+        crate::theme::apply_preferences(preferences);
+        editor.update(visual, |_, cx| cx.notify());
+        visual.run_until_parked();
+        let expected = gpui::Hsla::from(gpui::rgb(crate::theme::color(
+            crate::theme::PaletteRole::Muted,
+        )));
+        assert!(
+            visual
+                .rendered_monochrome_colors("browser-disclosure-0")
+                .contains(&expected)
+        );
+        assert_eq!(
+            visual.debug_bounds("browser-disclosure-0"),
+            Some(disclosure)
+        );
+    }
     let row = visual.debug_bounds("browser-entry-0").unwrap();
     visual.simulate_mouse_down(row.center(), MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_up(row.center(), MouseButton::Left, Modifiers::default());
     visual.simulate_keystrokes("right");
     visual.run_until_parked();
+    assert!(
+        !visual
+            .rendered_monochrome_colors("browser-disclosure-0")
+            .is_empty()
+    );
+    assert_eq!(
+        visual.debug_bounds("browser-disclosure-0"),
+        Some(disclosure)
+    );
     editor.read_with(visual, |view, cx| {
         assert_eq!(view.browser.directory, directory.0);
-        assert_eq!(view.browser.tree.icon(&folder), "▾");
+        assert_eq!(
+            view.browser.tree.disclosure(&folder),
+            super::tree::Disclosure::Expanded
+        );
         assert_eq!(view.browser_visible_entries(cx)[1].path, child);
         assert_eq!(view.browser.playback_generation, 0);
         assert!(view.pending_requests.is_empty());
@@ -2748,7 +3405,7 @@ fn split_browser_keeps_results_between_sidebar_tags_and_preview(cx: &mut TestApp
         .expect("resized outer divider");
     assert!((resized.left() - target.x).abs() < px(1.0));
     editor.update(visual, |view, cx| {
-        view.browser.width = super::MIN_WIDTH;
+        view.browser.width = super::geometry::MIN_WIDTH;
         cx.notify();
     });
     visual.run_until_parked();
@@ -2945,7 +3602,9 @@ fn all_search_unions_samples_folder_and_devices_and_preserves_identity_on_refres
             .position(|(_, entry)| entry.name.to_lowercase() == "utility")
             .unwrap();
         let identity = (devices[device_index].0, devices[device_index].1.type_id);
-        view.browser.selected_index = entries.len() + device_index;
+        view.browser.selected_index = view
+            .browser_history_index(&super::BrowserItemKey::Device(identity.0, identity.1), cx)
+            .unwrap();
         view.browser.results_focused = true;
         cx.notify();
         identity
@@ -3031,14 +3690,67 @@ fn browser_audition_strip_is_one_bounded_row(cx: &mut TestAppContext) {
         let waveform = visual
             .debug_bounds("browser-audition-waveform")
             .expect("tiny waveform");
+        let volume = visual
+            .debug_bounds("browser-audition-volume")
+            .expect("volume slider");
         assert_eq!(row.size.height, px(22.0));
         assert!(row.top() >= preview.top() && row.bottom() <= preview.bottom());
         assert!(auto.right() <= transport.left() && transport.right() <= waveform.left());
-        assert!(auto.left() >= row.left() && waveform.right() <= row.right());
-        for control in [auto, transport, waveform] {
+        assert!(waveform.right() <= volume.left());
+        assert_eq!(volume.right(), row.right());
+        assert!(auto.left() >= row.left());
+        for control in [auto, transport, waveform, volume] {
             assert!(control.top() >= row.top() && control.bottom() <= row.bottom());
         }
     }
+}
+
+#[gpui::test]
+fn browser_audition_volume_drag_preserves_playback_position_and_selection_level(
+    cx: &mut TestAppContext,
+) {
+    let (handle, editor, _, directory, _) = browser_drag_fixture(cx);
+    std::fs::write(directory.0.join("next.wav"), mono_pcm_wav(16)).unwrap();
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    editor.update(&mut visual, |view, cx| {
+        view.browser.auto_audition = false;
+        view.refresh_browser_tree(cx);
+        view.browser.playback_fraction = 0.25;
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let volume = visual.debug_bounds("browser-audition-volume").unwrap();
+    assert_eq!(
+        visual.debug_bounds("browser-audition-volume-fill"),
+        Some(volume)
+    );
+    let down = volume.center();
+    let quieter = down + point(px(0.0), px(11.0));
+    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(quieter, Some(MouseButton::Left), Modifiers::default());
+    visual.run_until_parked();
+    let fill = visual.debug_bounds("browser-audition-volume-fill").unwrap();
+    assert_eq!(fill.left(), volume.left());
+    assert_eq!(fill.right(), volume.right());
+    assert_eq!(fill.bottom(), volume.bottom());
+    assert_eq!(fill.size.height, volume.size.height / 2.0);
+    visual.simulate_mouse_up(quieter, MouseButton::Left, Modifiers::default());
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(view.browser.audition_gain, 0.5);
+        assert_eq!(view.browser.playback_generation, 0);
+        assert_eq!(view.browser.playback_fraction, 0.25);
+        assert!(!view.browser.audition_gain_dragging);
+    });
+
+    let next = visual.debug_bounds("browser-entry-1").unwrap().center();
+    visual.simulate_mouse_down(next, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(next, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(view.browser.selected_index, 1);
+        assert_eq!(view.browser.audition_gain, 0.5);
+        assert_eq!(view.browser.playback_generation, 0);
+    });
 }
 
 #[gpui::test]
@@ -3244,6 +3956,67 @@ fn browser_result_reset_cancels_preparing_and_playing_audition(cx: &mut TestAppC
 }
 
 #[gpui::test]
+fn browser_superseded_preview_preparations_are_cancelled(cx: &mut TestAppContext) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let (handle, editor, _, directory, _) = browser_drag_fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    std::fs::write(directory.0.join("second.wav"), mono_pcm_wav(16)).unwrap();
+    editor.update(&mut visual, |view, cx| {
+        view.refresh_browser_tree(cx);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    editor.update(&mut visual, |view, cx| {
+        // An audition still decoding when the selection moves on is cancelled.
+        let audition = Arc::new(AtomicBool::new(false));
+        view.browser.playback_in_flight = Some(Arc::clone(&audition));
+        view.browser.results_focused = false;
+        view.browser.selected_index = 0;
+        view.move_browser_selection(true, cx);
+        assert!(audition.load(Ordering::Relaxed), "new selection cancels it");
+        let stopped = Arc::new(AtomicBool::new(false));
+        view.browser.playback_in_flight = Some(Arc::clone(&stopped));
+        view.cancel_browser_sample_playback();
+        assert!(stopped.load(Ordering::Relaxed), "stop cancels it");
+        view.browser.playback_in_flight = None;
+
+        let key = |name: &str| super::PreviewKey {
+            path: directory.0.join(name),
+            sample_rate: 48_000,
+        };
+        let job = |key| super::PreviewRequest {
+            key,
+            slot: super::PreviewSlot::default(),
+            cancel: Arc::new(AtomicBool::new(false)),
+        };
+        let selected = job(key("selected.wav"));
+        view.browser.preview_selected = Some(selected.key.clone());
+        view.browser.preview_in_flight = Some(selected.clone());
+        view.queue_browser_audio_preview(key("hovered.wav"), super::PreviewSlot::default(), cx);
+        assert!(
+            !selected.cancel.load(Ordering::Relaxed),
+            "the selected row keeps its waveform job"
+        );
+        let hovered = job(key("hovered.wav"));
+        view.browser.preview_in_flight = Some(hovered.clone());
+        view.queue_browser_audio_preview(key("later.wav"), super::PreviewSlot::default(), cx);
+        assert!(
+            hovered.cancel.load(Ordering::Relaxed),
+            "a superseded hover waveform job is cancelled"
+        );
+        assert_eq!(
+            view.browser
+                .preview_pending
+                .as_ref()
+                .map(|pending| &pending.key),
+            Some(&key("later.wav"))
+        );
+        view.browser.preview_in_flight = None;
+        view.browser.preview_pending = None;
+    });
+}
+
+#[gpui::test]
 fn browser_hover_and_selection_keep_selected_waveform_and_surroundings_stable(
     cx: &mut TestAppContext,
 ) {
@@ -3255,7 +4028,11 @@ fn browser_hover_and_selection_keep_selected_waveform_and_surroundings_stable(
         )
         .unwrap();
     }
-    let metadata = Rc::new(hex_session::service::prepare_audio_preview(&path, 48_000).unwrap());
+    let metadata = Rc::new(
+        hex_session::service::PreviewSources::default()
+            .prepare_waveform(&path, 48_000, &std::sync::atomic::AtomicBool::new(false))
+            .unwrap(),
+    );
     let mut visual = VisualTestContext::from_window(handle, cx);
     editor.update(&mut visual, |view, cx| {
         view.browser.auto_audition = false;
@@ -3526,7 +4303,7 @@ fn browser_source_groups_have_exactly_one_persistent_selected_row(cx: &mut TestA
         "browser-place-0",
         "browser-collection-0",
     ];
-    let selected = gpui::rgb(crate::theme::color(crate::theme::PaletteRole::Hover)).into();
+    let selected = gpui::rgb(crate::theme::color(crate::theme::PaletteRole::Secondary)).into();
     let idle = gpui::rgb(crate::theme::color(crate::theme::PaletteRole::Surface)).into();
     let minimum = f32::from(visual.debug_bounds("browser-control-⚙").unwrap().size.width) + 1.0;
     let places = editor.read_with(&visual, |view, _| view.browser.places.clone());
@@ -3791,7 +4568,7 @@ fn browser_picker_glyph_alignment_and_continuous_minimum_geometry(cx: &mut TestA
             assert!(row.contains(&glyph.origin));
             assert!(glyph.right() <= row.right());
             assert!(row.size.width >= control.size.width);
-            assert!(row.size.height >= control.size.height);
+            assert_eq!(row.size.height, px(18.0));
         }
     }
 }
@@ -3923,6 +4700,95 @@ fn browser_folder_double_click_expands_inline_without_replacing_surrounding_rows
 }
 
 #[gpui::test]
+fn browser_folder_expansion_preserves_its_position_when_an_earlier_branch_closes(
+    cx: &mut TestAppContext,
+) {
+    let (handle, editor, _, directory, _) = browser_drag_fixture(cx);
+    let previous = directory.0.join("a");
+    let target = directory.0.join("c");
+    for folder in [&previous, &target] {
+        std::fs::create_dir(folder).unwrap();
+        for index in 0..80 {
+            std::fs::write(folder.join(format!("{index:02}.hex")), []).unwrap();
+        }
+    }
+    for index in 0..12 {
+        std::fs::create_dir(directory.0.join(format!("b{index:02}"))).unwrap();
+    }
+    for index in 0..60 {
+        std::fs::write(directory.0.join(format!("tail-{index:02}.hex")), []).unwrap();
+    }
+    editor.update(cx, |view, cx| {
+        view.browser.auto_audition = false;
+        view.request_browser_scan(directory.0.clone(), cx);
+    });
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let disclosure = |index| {
+        let selector = format!("browser-disclosure-{index}");
+        Box::leak(selector.into_boxed_str()) as &'static str
+    };
+    let at = visual.debug_bounds(disclosure(0)).unwrap().center();
+    visual.simulate_click(at, Modifiers::default());
+    visual.run_until_parked();
+    let target_index = |visual: &VisualTestContext| {
+        editor.read_with(visual, |view, cx| {
+            view.browser_visible_entries(cx)
+                .iter()
+                .position(|entry| entry.path == target)
+                .unwrap()
+        })
+    };
+    let old_index = target_index(&visual);
+    assert_eq!(old_index, 93);
+    editor.update(&mut visual, |view, cx| {
+        view.browser.scroll.0.borrow().base_handle.set_offset(point(
+            px(0.0),
+            -px((old_index - 3) as f32 * super::ROW_HEIGHT + 5.0),
+        ));
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let before = visual.debug_bounds(disclosure(old_index)).unwrap();
+    let gate = editor.update(&mut visual, |view, _| {
+        view.browser.tree.test_gate_next_scan()
+    });
+    visual.simulate_click(before.center(), Modifiers::default());
+    visual.run_until_parked();
+    assert!(gate.reached.load(std::sync::atomic::Ordering::Acquire));
+    let new_index = target_index(&visual);
+    assert_eq!(
+        new_index, 13,
+        "the earlier branch closed on normal expansion"
+    );
+    let loading = visual.debug_bounds(disclosure(new_index));
+    gate.release();
+    visual.run_until_parked();
+
+    editor.read_with(&visual, |view, cx| {
+        let entries = view.browser_visible_entries(cx);
+        assert_eq!(entries[new_index + 1].path, target.join("00.hex"));
+        assert!(!view.browser.tree.test_worker_busy());
+    });
+    let expanded = visual.debug_bounds(disclosure(new_index));
+    assert_eq!(
+        expanded.map(|bounds| bounds.top()),
+        Some(before.top()),
+        "expanding a long folder must keep its disclosure in view"
+    );
+    assert_eq!(
+        loading.map(|bounds| bounds.top()),
+        Some(before.top()),
+        "the disclosure must also stay put while its children are loading"
+    );
+    assert_eq!(
+        visual.debug_bounds("browser-entry-14").unwrap().top(),
+        before.bottom(),
+        "the first child is painted immediately below its folder"
+    );
+}
+
+#[gpui::test]
 fn browser_inline_tree_nested_keyboard_refresh_and_hover_retain_identity(cx: &mut TestAppContext) {
     cx.update(super::super::bind_editor_keys);
     let (handle, editor, _, directory, _) = browser_drag_fixture(cx);
@@ -4018,7 +4884,7 @@ fn browser_inline_tree_nested_keyboard_refresh_and_hover_retain_identity(cx: &mu
             output_generation: 1,
             output_identity: 1,
             start_fraction: 0.5,
-            path: sample.clone(),
+            source: super::BrowserPlaybackSource::File(sample.clone()),
             sample_rate: 48_000,
         });
     });
@@ -4477,8 +5343,14 @@ fn browser_place_icons_input_persistence_identity_fallback_and_geometry(cx: &mut
     let visual = &mut VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
     editor.read_with(visual, |view, _| {
-        assert_eq!(view.browser_place_glyph(&first), "□");
-        assert_eq!(view.browser_place_glyph(&unknown), "□");
+        assert_eq!(
+            view.browser_place_icon_path(&first),
+            "icons/browser-place/folder.svg"
+        );
+        assert_eq!(
+            view.browser_place_icon_path(&unknown),
+            "icons/browser-place/folder.svg"
+        );
         assert!(
             view.browser
                 .places_status
@@ -4510,7 +5382,10 @@ fn browser_place_icons_input_persistence_identity_fallback_and_geometry(cx: &mut
                     .focus_handle()
                     .is_focused(window)
             );
-            assert_eq!(view.browser_place_glyph(&first), "♫");
+            assert_eq!(
+                view.browser_place_icon_path(&first),
+                "icons/browser-place/samples.svg"
+            );
             assert_eq!(view.browser.section, BrowserSection::All);
             assert_eq!(view.browser.playback_generation, generation);
             assert!(view.pending_requests.is_empty());
@@ -4541,7 +5416,11 @@ fn browser_place_icons_input_persistence_identity_fallback_and_geometry(cx: &mut
     visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
     let control = visual.debug_bounds("browser-control-⚙").unwrap();
-    for (index, expected) in [(2, "□"), (3, "♫"), (4, "♫")] {
+    for (index, expected) in [
+        (2, "icons/browser-place/folder.svg"),
+        (3, "icons/browser-place/samples.svg"),
+        (4, "icons/browser-place/samples.svg"),
+    ] {
         let row = visual
             .debug_bounds(Box::leak(format!("browser-place-{index}").into_boxed_str()))
             .unwrap();
@@ -4554,7 +5433,7 @@ fn browser_place_icons_input_persistence_identity_fallback_and_geometry(cx: &mut
         assert!(glyph.left() >= row.left() && glyph.right() <= row.right());
         editor.read_with(visual, |view, _| {
             assert_eq!(
-                view.browser_place_glyph(&view.browser.places[index]),
+                view.browser_place_icon_path(&view.browser.places[index]),
                 expected
             )
         });
@@ -4578,9 +5457,18 @@ fn browser_place_icons_input_persistence_identity_fallback_and_geometry(cx: &mut
     let reopened_visual = &mut VisualTestContext::from_window(reopened_handle, cx);
     reopened_visual.run_until_parked();
     reopened.read_with(reopened_visual, |view, _| {
-        assert_eq!(view.browser_place_glyph(&first), "♫");
-        assert_eq!(view.browser_place_glyph(&second), "♫");
-        assert_eq!(view.browser_place_glyph(&unknown), "□");
+        assert_eq!(
+            view.browser_place_icon_path(&first),
+            "icons/browser-place/samples.svg"
+        );
+        assert_eq!(
+            view.browser_place_icon_path(&second),
+            "icons/browser-place/samples.svg"
+        );
+        assert_eq!(
+            view.browser_place_icon_path(&unknown),
+            "icons/browser-place/folder.svg"
+        );
         assert_eq!(
             view.browser.place_icons.get(&unknown).map(String::as_str),
             Some("future-icon")
@@ -4723,7 +5611,10 @@ fn browser_place_icons_catalog_uses_same_bounds_expanded_and_collapsed(cx: &mut 
                 view.browser
                     .place_icons
                     .insert(path.clone(), "samples".into());
-                assert_eq!(view.browser_place_glyph(&path), "□");
+                assert_eq!(
+                    view.browser_place_icon_path(&path),
+                    "icons/browser-place/folder.svg"
+                );
                 view.open_browser_place_icons(path, point(px(0.0), px(0.0)), window, cx);
                 assert!(
                     view.context_menu.is_none(),
@@ -4747,13 +5638,13 @@ fn browser_place_icons_catalog_uses_same_bounds_expanded_and_collapsed(cx: &mut 
         visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
         visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
         for (index, (id, glyph)) in [
-            (None, "□"),
-            (Some("samples"), "♫"),
-            (Some("devices"), "⌘"),
-            (Some("projects"), "▤"),
-            (Some("collection"), "◈"),
-            (Some("waveform"), "≋"),
-            (Some("search"), "⌕"),
+            (None, "icons/browser-place/folder.svg"),
+            (Some("samples"), "icons/browser-place/samples.svg"),
+            (Some("devices"), "icons/browser-place/devices.svg"),
+            (Some("projects"), "icons/browser-place/projects.svg"),
+            (Some("collection"), "icons/browser-place/collection.svg"),
+            (Some("waveform"), "icons/browser-place/waveform.svg"),
+            (Some("search"), "icons/browser-place/search.svg"),
         ]
         .into_iter()
         .enumerate()
@@ -4775,7 +5666,7 @@ fn browser_place_icons_catalog_uses_same_bounds_expanded_and_collapsed(cx: &mut 
             assert!(bounds.left() >= row.left() && bounds.right() <= row.right());
             assert!(f32::from(bounds.center().y - row.center().y).abs() <= 0.5);
             editor.read_with(visual, |view, _| {
-                assert_eq!(view.browser_place_glyph(&directory.0), glyph)
+                assert_eq!(view.browser_place_icon_path(&directory.0), glyph)
             });
             assert_eq!(
                 hex_preferences::load(&directory.0.join("icon-preferences.json"))
@@ -4973,8 +5864,14 @@ fn browser_place_icon_grid_uses_clicked_row_reset_and_reopens(cx: &mut TestAppCo
     let visual = &mut VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
     reopened.read_with(visual, |view, _| {
-        assert_eq!(view.browser_place_glyph(&first), "□");
-        assert_eq!(view.browser_place_glyph(&second), "≋");
+        assert_eq!(
+            view.browser_place_icon_path(&first),
+            "icons/browser-place/folder.svg"
+        );
+        assert_eq!(
+            view.browser_place_icon_path(&second),
+            "icons/browser-place/waveform.svg"
+        );
     });
 }
 
@@ -5096,7 +5993,10 @@ fn unhighlighted_arrow_action(cx: &mut TestAppContext, sample: bool, escape: boo
             visual.simulate_keystrokes("right");
             visual.run_until_parked();
             editor.read_with(&visual, |v, _| {
-                assert!((v.browser.tree.icon(&samples.join("a")) == "▾"))
+                assert!(
+                    (v.browser.tree.disclosure(&samples.join("a"))
+                        == super::tree::Disclosure::Expanded)
+                )
             });
         }
         visual.simulate_keystrokes("escape");
@@ -5112,14 +6012,14 @@ fn unhighlighted_arrow_action(cx: &mut TestAppContext, sample: bool, escape: boo
     let before = editor.read_with(&visual, |v, _| {
         (
             v.browser.playback_generation,
-            v.browser.tree.icon(&samples.join("a")),
+            v.browser.tree.disclosure(&samples.join("a")),
             v.browser.tree.requests_started,
         )
     });
     visual.simulate_keystrokes(if left { "left" } else { "right" });
     visual.run_until_parked();
     editor.read_with(&visual, |v, _| {
-        let after = (v.browser.playback_generation, v.browser.tree.icon(&samples.join("a")), v.browser.tree.requests_started);
+        let after = (v.browser.playback_generation, v.browser.tree.disclosure(&samples.join("a")), v.browser.tree.requests_started);
         eprintln!("ACTUAL_UNHIGHLIGHTED_ROW sample={sample} escape={escape} left={left} before={before:?} after={after:?}");
         assert_eq!(after, before, "unhighlighted navigation must not dispatch a row action");
         assert!(v.pending_requests.is_empty() && v.pending_audio_commands.is_empty());
@@ -5178,13 +6078,19 @@ fn browser_arrows_selected_controls(cx: &mut TestAppContext) {
             if sample {
                 assert!(v.browser.playback_generation > before);
             } else {
-                assert_eq!(v.browser.tree.icon(&samples.join("a")), "▾");
+                assert_eq!(
+                    v.browser.tree.disclosure(&samples.join("a")),
+                    super::tree::Disclosure::Expanded
+                );
             }
         });
         if !sample {
             visual.simulate_keystrokes("left");
             editor.read_with(&visual, |v, _| {
-                assert_ne!(v.browser.tree.icon(&samples.join("a")), "▾")
+                assert_ne!(
+                    v.browser.tree.disclosure(&samples.join("a")),
+                    super::tree::Disclosure::Expanded
+                )
             });
         }
     }
@@ -5240,6 +6146,9 @@ mod divider_paint;
 
 #[path = "browser_instrument_enter_ui_test.rs"]
 mod instrument_enter;
+
+#[path = "browser_sampler_drop_ui_test.rs"]
+mod sampler_drop;
 
 #[gpui::test]
 fn sampler_menu_captures_stale_target_and_correlates_cancel_without_duplicate_load(
@@ -5310,10 +6219,8 @@ fn sampler_menu_captures_stale_target_and_correlates_cancel_without_duplicate_lo
                 "load into sampler"
             );
             assert!(
-                target
-                    .replacement
-                    .as_ref()
-                    .is_some_and(|(_, state)| hex_engine::is_empty_sampler_state_on_control(state))
+                matches!(target.slot, hex_session::service::SamplerLoadSlot::Existing { ref expected_state, .. }
+                    if hex_engine::is_empty_sampler_state_on_control(expected_state))
             );
             assert!(
                 !view.first_sampler_current(),
@@ -5372,3 +6279,142 @@ mod plugin_browser;
 
 #[path = "browser_reveal_ui_test.rs"]
 mod reveal;
+
+#[gpui::test]
+fn browser_file_result_vectors_paint_in_light_and_dark_themes(cx: &mut TestAppContext) {
+    let (handle, editor, _, _directory, _) = browser_drag_fixture(cx);
+    editor.update(cx, |view, cx| {
+        view.browser.open = true;
+        view.browser
+            .listing
+            .as_mut()
+            .unwrap()
+            .entries
+            .push(LibraryEntry {
+                name: "project.hex".into(),
+                path: view.browser.directory.join("project.hex"),
+                kind: EntryKind::Project,
+            });
+        view.browser.samples.invalidate_listing();
+        view.browser.tree.source_changed();
+        cx.notify();
+    });
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let bounds = [
+        visual.debug_bounds("browser-file-icon-0").unwrap(),
+        visual.debug_bounds("browser-file-icon-1").unwrap(),
+    ];
+    struct RestoreTheme(hex_preferences::ThemePreferences);
+    impl Drop for RestoreTheme {
+        fn drop(&mut self) {
+            crate::theme::apply_preferences(self.0);
+        }
+    }
+    let original = crate::theme::preferences();
+    let _restore = RestoreTheme(original);
+    for (background, text) in [(0x20, 0xe0), (0xe0, 0x20)] {
+        let mut preferences = original;
+        preferences.background = hex_preferences::RgbColor::new(background, background, background);
+        preferences.text = hex_preferences::RgbColor::new(text, text, text);
+        crate::theme::apply_preferences(preferences);
+        editor.update(cx, |_, cx| cx.notify());
+        visual.run_until_parked();
+        let expected = gpui::Hsla::from(gpui::rgb(crate::theme::color(
+            crate::theme::PaletteRole::Muted,
+        )));
+        for (index, selector) in ["browser-file-icon-0", "browser-file-icon-1"]
+            .into_iter()
+            .enumerate()
+        {
+            assert_eq!(visual.debug_bounds(selector), Some(bounds[index]));
+            assert!(
+                visual
+                    .rendered_monochrome_colors(selector)
+                    .contains(&expected)
+            );
+        }
+    }
+}
+
+#[path = "browser_random_ui_test.rs"]
+mod random_ui_tests;
+#[path = "browser_scrollbar_ui_test.rs"]
+mod scrollbar_ui_tests;
+
+#[gpui::test]
+fn collections_stay_below_scrollable_sources_in_both_picker_sizes(cx: &mut TestAppContext) {
+    let (handle, editor, _, _directory, _) = browser_drag_fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    let before = editor.read_with(&visual, |view, _| view.state.as_ref().unwrap().clone());
+    visual.run_until_parked();
+    let pinned = visual.debug_bounds("browser-collections").unwrap();
+    let gear = visual.debug_bounds("browser-control-⚙").unwrap().center();
+    visual.simulate_click(gear, Modifiers::default());
+    assert_eq!(visual.debug_bounds("browser-collections").unwrap(), pinned);
+    for window_size in [(880.0, 540.0), (1440.0, 800.0)] {
+        visual.simulate_resize(gpui::size(px(window_size.0), px(window_size.1)));
+        for width in [23.0, 124.0] {
+            let sources = visual.debug_bounds("browser-sidebar-sources").unwrap();
+            visual.simulate_event(gpui::ScrollWheelEvent {
+                position: sources.center(),
+                delta: gpui::ScrollDelta::Pixels(point(px(0.0), px(500.0))),
+                ..Default::default()
+            });
+            let sidebar = visual.debug_bounds("browser-sidebar").unwrap();
+            let divider = visual
+                .debug_bounds("browser-sidebar-resize")
+                .unwrap()
+                .center();
+            let target = divider + point(px(width) - sidebar.size.width, px(0.0));
+            visual.simulate_mouse_down(divider, MouseButton::Left, Modifiers::default());
+            visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
+            visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+            let sidebar = visual.debug_bounds("browser-sidebar").unwrap();
+            let sources = visual.debug_bounds("browser-sidebar-sources").unwrap();
+            let collections = visual.debug_bounds("browser-collections").unwrap();
+            let library = visual
+                .debug_bounds("browser-picker-heading-library")
+                .unwrap();
+            assert_eq!(sidebar.size.width, px(width));
+            assert_eq!(library.top(), sidebar.top());
+            assert_eq!(sources.bottom(), collections.top());
+            assert_eq!(collections.bottom(), sidebar.bottom());
+            let first = visual.debug_bounds("browser-collection-0").unwrap();
+            assert!(first.top() >= collections.top() && first.bottom() <= collections.bottom());
+            visual.simulate_click(first.center(), Modifiers::default());
+            visual.update(|window, cx| {
+                editor.read_with(cx, |view, _| {
+                    assert_eq!(view.browser.section, BrowserSection::Collection(0));
+                    assert!(view.browser.results_focus.is_focused(window));
+                })
+            });
+            let all = visual.debug_bounds("browser-section-all").unwrap().center();
+            visual.simulate_click(all, Modifiers::default());
+            visual.simulate_event(gpui::ScrollWheelEvent {
+                position: sources.center(),
+                delta: gpui::ScrollDelta::Pixels(point(px(0.0), px(-500.0))),
+                ..Default::default()
+            });
+            assert_eq!(
+                visual.debug_bounds("browser-collections").unwrap(),
+                collections
+            );
+            if window_size.1 == 540.0 {
+                assert!(
+                    visual
+                        .debug_bounds("browser-picker-heading-library")
+                        .unwrap()
+                        .top()
+                        < library.top(),
+                    "the upper sources must actually scroll while collections stay fixed"
+                );
+            }
+            editor.read_with(&visual, |view, _| {
+                assert_eq!(view.state.as_ref().unwrap().project, before.project);
+                assert_eq!(view.state.as_ref().unwrap().revision, before.revision);
+                assert!(view.pending_requests.is_empty());
+            });
+        }
+    }
+}

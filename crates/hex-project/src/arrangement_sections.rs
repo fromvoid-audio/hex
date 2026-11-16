@@ -19,8 +19,23 @@
 //! beat interval. Authored tempo/meter points remain present even when their
 //! values match neighbors. Synthetic meter anchors are added only where the
 //! effective signature changes; equal-meter section seams do not restart bars.
-//! The session/transport owner excludes active playback/recording
-//! and pending commits before canonical preparation.
+//! Copies draw a semantic color with reuse allowed. Preview and publication agree
+//! for the same candidate identity; history and storage retain the chosen color.
+//! Appended copies use an absolute final beat beyond the last marker; one
+//! nonempty gap marker and the musical copy share a single candidate/history edge.
+//! Replacement removes the target interval, then moves or copies source content
+//! into its former slot. The target identity retires; source name/color follow
+//! the result. Copies get a fresh ID, moves retain source ID and close its old
+//! interval. Self replacement is a no-op. All other music follows the established
+//! cut/insert law. Metadata-only previews use zero IDs for unpublished markers.
+//! Beyond-end moves preserve the source identity and close its original interval.
+//! The gap starts at the remaining final marker (or zero for a sole section);
+//! it may cover unmarked music, which is retained by the same ripple law.
+//! Destination copies compose the adjacent-copy and stable-ID reorder laws in
+//! one private candidate; display previews compose only markers and tempo.
+//! The session/transport owner fences structural publication. Reorders/copies
+//! may preserve active playback; resizing/deleting retain their stopped rules.
+//! Recording and pending commits remain excluded before canonical preparation.
 //! Audio sample intervals use the exact integer-frame cut/insert permutation.
 //! Musical audio retains its full original processing context, with at most one
 //! sample of explicit placement residual for nearest-frame tempo-prefix phase.
@@ -28,9 +43,11 @@
 //! require rebasing these roots refuse explicitly. Uncut MIDI retains source
 //! and loop metadata; boundary crossings reuse the finite canonical split law,
 //! including retriggered carried gates and materialized source-beat volume.
-//! Original source loops are supported. The separate outer Once/Repeat view
-//! placement capability refuses until its engine occurrence path can preserve
-//! the complete song edit; it is never silently flattened or partly moved.
+//! Original source loops and finite outer Once/Repeat views retain their full
+//! processing clock, crop, phase and silent tails. Musical outer views translate
+//! the old integer-frame projection to their new onset, including internal repeat
+//! and directed-read seams; splits trim that same saved clock before relocation.
+//! Later global tempo replacement returns warped roots to live processing.
 //! Every fragment is planned from the original state; Editor owns one atomic
 //! preparation/history transition and preserves the original on any failure.
 use crate::{BeatTime, Command, Created, ElementColor, Invalid, Project, SectionId};
@@ -188,6 +205,58 @@ impl Project {
             .iter()
             .find(|section| section.id == id)
     }
+    /// True when `other` differs from `self` only in section markers and the
+    /// ID allocator they advance. No playback input reads either, so a prepared
+    /// audio graph for `self` also renders `other`. Every other field is compared
+    /// by an exhaustive destructure: adding a project field must decide here.
+    pub fn differs_only_in_arrangement_sections(&self, other: &Project) -> bool {
+        let Project {
+            aliases,
+            native_sources,
+            arrangement_sections: _,
+            arrangement_locators,
+            tuning,
+            routing,
+            audio_feeds,
+            midi_routes,
+            sidechains,
+            import_provenance,
+            sample_rate,
+            sample_rate_mode,
+            next_id: _,
+            assets,
+            offline_assets,
+            tracks,
+            returns,
+            session,
+            loop_region,
+            master_gain,
+            main_devices,
+            tempo_map,
+            meter_map,
+        } = self;
+        *sample_rate == other.sample_rate
+            && *sample_rate_mode == other.sample_rate_mode
+            && master_gain.to_bits() == other.master_gain.to_bits()
+            && *loop_region == other.loop_region
+            && *tempo_map == other.tempo_map
+            && *meter_map == other.meter_map
+            && *tuning == other.tuning
+            && *arrangement_locators == other.arrangement_locators
+            && *aliases == other.aliases
+            && *native_sources == other.native_sources
+            && *routing == other.routing
+            && *audio_feeds == other.audio_feeds
+            && *midi_routes == other.midi_routes
+            && *sidechains == other.sidechains
+            && *import_provenance == other.import_provenance
+            && *assets == other.assets
+            && *offline_assets == other.offline_assets
+            && *returns == other.returns
+            && *session == other.session
+            && *main_devices == other.main_devices
+            && *tracks == other.tracks
+    }
     pub fn preview_section_reorder(
         &self,
         section: SectionId,
@@ -227,40 +296,56 @@ impl Project {
         source: &ArrangementSection,
         insertion: BeatTime,
     ) -> Result<SectionReorderPreview, Invalid> {
-        let destination = if insertion >= source.end {
-            BeatTime::from_raw(insertion.raw() - (source.end.raw() - source.start.raw()))
-        } else {
-            insertion
-        };
-        let mut result = SectionReorderPreview {
-            source_start: source.start,
-            source_end: source.end,
-            insertion_beat: insertion,
-            destination_start: destination,
-            sections: Vec::new(),
-            tempo_map: self.tempo_map.clone(),
-        };
-        result
-            .sections
-            .try_reserve_exact(self.arrangement_sections.len())
-            .map_err(|_| Invalid("could not reserve arrangement section preview"))?;
-        for old in &self.arrangement_sections {
-            let mut new = old.clone();
-            new.start = result.map_beat(old.start)?;
-            new.end = BeatTime::from_raw(
-                new.start
-                    .raw()
-                    .checked_add(old.end.raw() - old.start.raw())
-                    .ok_or(Invalid("section end overflow"))?,
-            );
-            result.sections.push(new);
-        }
-        result.sections.sort_by_key(|s| s.start);
-        result.tempo_map = reorder::tempo_map(self.tempo_map(), &result)?;
-        validate(&result.sections, &result.tempo_map)?;
-        Ok(result)
+        preview_reorder_at(
+            source,
+            insertion,
+            &self.arrangement_sections,
+            &self.tempo_map,
+        )
     }
 }
+// Metadata-only composition also serves copy insertion; no project/PCM clone
+// or audio preparation belongs in a pointer preview.
+fn preview_reorder_at(
+    source: &ArrangementSection,
+    insertion: BeatTime,
+    sections: &[ArrangementSection],
+    tempo: &crate::TempoMap,
+) -> Result<SectionReorderPreview, Invalid> {
+    let destination = if insertion >= source.end {
+        BeatTime::from_raw(insertion.raw() - (source.end.raw() - source.start.raw()))
+    } else {
+        insertion
+    };
+    let mut result = SectionReorderPreview {
+        source_start: source.start,
+        source_end: source.end,
+        insertion_beat: insertion,
+        destination_start: destination,
+        sections: Vec::new(),
+        tempo_map: tempo.clone(),
+    };
+    result
+        .sections
+        .try_reserve_exact(sections.len())
+        .map_err(|_| Invalid("could not reserve arrangement section preview"))?;
+    for old in sections {
+        let mut new = old.clone();
+        new.start = result.map_beat(old.start)?;
+        new.end = BeatTime::from_raw(
+            new.start
+                .raw()
+                .checked_add(old.end.raw() - old.start.raw())
+                .ok_or(Invalid("section end overflow"))?,
+        );
+        result.sections.push(new);
+    }
+    result.sections.sort_by_key(|s| s.start);
+    result.tempo_map = reorder::tempo_map(tempo, &result)?;
+    validate(&result.sections, &result.tempo_map)?;
+    Ok(result)
+}
+
 pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, Invalid> {
     match command {
         Command::AddArrangementSection {
@@ -313,6 +398,28 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
         } => splice::resize_isolated(project, section, edge, boundary),
         Command::DeleteArrangementSection(section) => splice::delete(project, section),
         Command::DuplicateArrangementSection(section) => splice::duplicate(project, section),
+        Command::DuplicateArrangementSectionAt {
+            section,
+            target,
+            after,
+        } => splice::duplicate_at(project, section, target, after),
+        Command::AppendArrangementSectionCopy {
+            section,
+            start,
+            gap_name,
+            gap_color,
+        } => append::apply(project, section, start, gap_name, gap_color),
+        Command::MoveArrangementSectionBeyondEnd {
+            section,
+            start,
+            gap_name,
+            gap_color,
+        } => move_beyond_end::apply(project, section, start, gap_name, gap_color),
+        Command::ReplaceArrangementSection {
+            source,
+            target,
+            copy,
+        } => replace::apply(project, source, target, copy),
         Command::SplitArrangementSection { section, at } => {
             let (right, mut sections) = project.preview_section_split(section, at)?;
             let id = SectionId(project.allocate_id()?);
@@ -363,8 +470,14 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
         }
     }
 }
+mod append;
+mod color;
 mod meter;
+mod move_beyond_end;
 mod reorder;
+mod replace;
+#[cfg(test)]
+mod test_support;
 use reorder::{reorder, reorder_after};
 
 mod marker_move;
@@ -407,6 +520,28 @@ impl Project {
             Command::DuplicateArrangementSection(section) => {
                 splice::preview_duplicate(self, *section)
             }
+            Command::DuplicateArrangementSectionAt {
+                section,
+                target,
+                after,
+            } => splice::preview_duplicate_at(self, *section, *target, *after),
+            Command::AppendArrangementSectionCopy {
+                section,
+                start,
+                gap_name,
+                gap_color,
+            } => append::preview(self, *section, *start, gap_name, *gap_color),
+            Command::MoveArrangementSectionBeyondEnd {
+                section,
+                start,
+                gap_name,
+                gap_color,
+            } => move_beyond_end::preview(self, *section, *start, gap_name, *gap_color),
+            Command::ReplaceArrangementSection {
+                source,
+                target,
+                copy,
+            } => replace::preview(self, *source, *target, *copy),
             Command::SplitArrangementSection { section, at } => {
                 let (_, sections) = self.preview_section_split(*section, *at)?;
                 Ok(SectionSplicePreview {
@@ -417,6 +552,21 @@ impl Project {
             Command::MergeArrangementSections(selected) => self.preview_section_merge(selected),
             _ => Err(Invalid("command has no section splice preview")),
         }
+    }
+    /// Display-only clip layout for a structural section command, built once
+    /// per submitted command. It applies the same candidate edit canonical
+    /// history applies, without commit validation, history, audio preparation
+    /// or source custody; the canonical result may still refuse or differ.
+    pub fn preview_section_layout(&self, command: &Command) -> Result<Project, Invalid> {
+        if !command.requires_section_publication() {
+            return Err(Invalid("command has no section clip layout preview"));
+        }
+        let mut command = command.clone();
+        let alias = crate::clip_alias_edit::Plan::capture(self, &mut command)?;
+        let mut candidate = self.clone();
+        candidate.apply(command)?;
+        alias.finish(&mut candidate)?;
+        Ok(candidate)
     }
     // Preview uses the same zero-ID convention as copied marker previews. The
     // fresh identity is allocated only by the canonical candidate, never input.

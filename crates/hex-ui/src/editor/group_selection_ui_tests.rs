@@ -1,6 +1,6 @@
 //! Rendered G grouping dispatches one canonical MIDI clip edit.
 use super::super::drag::group_drag_ui_test::{click, fixture, pump};
-use gpui::{TestAppContext, VisualTestContext};
+use gpui::{Modifiers, MouseButton, TestAppContext, VisualTestContext, point, px};
 use hex_project::{BeatTime, Command};
 use hex_session::service::Request;
 
@@ -232,6 +232,62 @@ fn g_does_not_group_arrangement_selection_under_another_focus_owner(cx: &mut Tes
 }
 
 #[gpui::test]
+fn dragging_an_empty_lane_range_then_g_creates_a_blank_clip(cx: &mut TestAppContext) {
+    let (_files, handle, editor, _) = fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let track = editor.read_with(&visual, |view, _| {
+        view.state.as_ref().unwrap().project.tracks()[0].id()
+    });
+    let before = editor.read_with(&visual, |view, _| {
+        view.state.as_ref().unwrap().project.snapshot()
+    });
+    let lane = visual
+        .debug_bounds(Box::leak(
+            format!("arrangement-lane-{}", track.value()).into_boxed_str(),
+        ))
+        .unwrap();
+    let viewport = editor.read_with(&visual, |view, _| {
+        view.visible_viewport(view.state.as_ref().unwrap().timeline_frames)
+    });
+    let y = lane.origin.y + px(22.0);
+    let start = point(lane.origin.x + px(1.0), y);
+    let end = point(
+        lane.origin.x + lane.size.width * viewport.fraction(24_000).unwrap(),
+        y,
+    );
+    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+    let range = editor.read_with(&visual, |view, _| view.normalized_time_selection().unwrap());
+    visual.simulate_keystrokes("g");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |view, _| {
+        assert!(view.error.is_none(), "{:?}", view.error);
+        let project = &view.state.as_ref().unwrap().project;
+        let [clip] = project.track(track).unwrap().midi_clips() else {
+            panic!("blank clip");
+        };
+        let tempo = project.tempo_map();
+        assert_eq!(tempo.beat_to_frame(clip.start()).unwrap(), range.start());
+        assert_eq!(
+            tempo
+                .beat_to_frame(BeatTime::from_raw(clip.start().raw() + clip.length().raw()))
+                .unwrap(),
+            range.end()
+        );
+        assert!(clip.notes().is_empty());
+    });
+    visual.simulate_keystrokes("cmd-z");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |view, _| {
+        let mut restored = view.state.as_ref().unwrap().project.snapshot();
+        restored.next_id = before.next_id;
+        assert_eq!(restored, before);
+    });
+}
+
+#[gpui::test]
 fn g_time_selection_cuts_boundary_clips_and_overrides_retained_clip_selection(
     cx: &mut TestAppContext,
 ) {
@@ -241,8 +297,8 @@ fn g_time_selection_cuts_boundary_clips_and_overrides_retained_clip_selection(
     let before = editor.update(&mut visual, |v, _| {
         let track = v.state.as_ref().unwrap().project.tracks()[0].id();
         v.time_selection = Some(super::super::time_selection::TimeSelection {
-            anchor_track: track,
-            end_track: track,
+            anchor_track: Some(track),
+            end_track: Some(track),
             anchor_frame: 60_000,
             end_frame: 108_000,
         });
@@ -277,8 +333,8 @@ fn g_time_selection_keeps_empty_margins_and_original_event_timing(cx: &mut TestA
     editor.update(&mut visual, |v, _| {
         let track = v.state.as_ref().unwrap().project.tracks()[0].id();
         v.time_selection = Some(super::super::time_selection::TimeSelection {
-            anchor_track: track,
-            end_track: track,
+            anchor_track: Some(track),
+            end_track: Some(track),
             anchor_frame: 36_000,
             end_frame: 132_000,
         });
@@ -302,5 +358,83 @@ fn g_time_selection_keeps_empty_margins_and_original_event_timing(cx: &mut TestA
         );
         assert_eq!(p.clip(clips[2]).unwrap().start(), 144_000);
         assert_eq!(p.tracks()[0].clips().len(), 2);
+    });
+}
+
+#[gpui::test]
+fn g_retains_a_repeated_audio_group_and_selects_its_one_result(cx: &mut TestAppContext) {
+    let (_files, handle, editor, clips) = fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    editor.update(&mut visual, |view, _| {
+        assert!(view.enqueue(Request::Edit(Command::GroupClips(clips[..2].to_vec()))));
+    });
+    pump(&editor, &mut visual);
+    let group = editor.read_with(&visual, |view, _| {
+        view.state.as_ref().unwrap().project.tracks()[0]
+            .clips()
+            .iter()
+            .find(|c| c.has_retained_audio_roots())
+            .unwrap()
+            .id()
+    });
+    editor.update(&mut visual, |view, _| {
+        assert!(view.enqueue(Request::Edit(Command::ResizeAudioClipView {
+            clip: group,
+            operation: hex_project::AudioViewResizeOperation::RepeatOuterEnd {
+                project_frame: 140_000
+            },
+        })));
+    });
+    pump(&editor, &mut visual);
+    click(&mut visual, group, false);
+    click(&mut visual, clips[2], true);
+    let before = editor.read_with(&visual, |view, _| {
+        view.state.as_ref().unwrap().project.snapshot()
+    });
+    visual.update(|window, cx| editor.read_with(cx, |view, _| view.focus.focus(window)));
+    visual.simulate_keystrokes("g");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |view, _| {
+        assert!(view.error.is_none(), "{:?}", view.error);
+        let project = &view.state.as_ref().unwrap().project;
+        let selected = view.selected_clip.unwrap();
+        assert_eq!(project.tracks()[0].clips().len(), 1);
+        assert_eq!(view.selected_clip_ids(), vec![selected]);
+        assert!(
+            project
+                .clip(selected)
+                .unwrap()
+                .audio_events()
+                .sources
+                .iter()
+                .any(|root| root.clip.has_retained_audio_roots())
+        );
+        assert!(!project.clip(selected).unwrap().looping());
+        assert!(view.bounce_control.is_none());
+    });
+    editor.update(&mut visual, |view, _| assert!(view.enqueue(Request::Undo)));
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |view, _| {
+        let restored = view.state.as_ref().unwrap().project.snapshot();
+        let mut expected = before;
+        expected.next_id = restored.next_id;
+        assert_eq!(restored, expected);
+        let mut selected = vec![group, clips[2]];
+        selected.sort();
+        assert_eq!(view.selected_clip_ids(), selected);
+    });
+    editor.update(&mut visual, |view, _| assert!(view.enqueue(Request::Redo)));
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |view, _| {
+        let selected = view.selected_clip.unwrap();
+        assert_eq!(view.selected_clip_ids(), vec![selected]);
+        assert!(
+            view.state
+                .as_ref()
+                .unwrap()
+                .project
+                .clip(selected)
+                .is_some()
+        );
     });
 }

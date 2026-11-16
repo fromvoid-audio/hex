@@ -1,6 +1,6 @@
 //! Pitch-synchronous and deterministic textured granulation. Beats owns its plan.
 use super::{
-    resample::{BANK_BYTES, Bandlimited},
+    resample::{Bandlimited, FrameCache, bank_bytes},
     *,
 };
 
@@ -121,12 +121,29 @@ pub(super) fn grains(
         (u64::from(request.input.sample_rate) * u64::from(grain_ms) / 1_000).max(16) as usize;
     let half_limit = nominal;
     let hop = (nominal / 4).max(1);
-    let mut accumulator = Accumulator::new(
-        request.output_frames,
-        half_limit * 2 + hop + 4,
-        work,
-        BANK_BYTES + 202 * 8,
-    )?;
+    let ring = half_limit * 2 + hop + 4;
+    let baseline_extra = bank_bytes(work.resampler) + 202 * 8;
+    let cache_fits = |bytes: usize| {
+        ring.checked_mul(24)
+            .and_then(|n| n.checked_add(baseline_extra))
+            .and_then(|n| n.checked_add(work.base_scratch))
+            .and_then(|n| n.checked_add(bytes))
+            .is_some_and(|n| n <= MAX_SCRATCH_BYTES)
+    };
+    // The cache is optional: preserve admission and rendering when the original
+    // scratch budget fits but the cache does not, or its allocation fails.
+    let mut frame_cache = if cache_fits(FrameCache::minimum_bytes()) {
+        FrameCache::try_new(request.input)
+            .filter(|cache| cache.allocated_bytes().is_some_and(cache_fits))
+    } else {
+        None
+    };
+    let extra = baseline_extra
+        + frame_cache
+            .as_ref()
+            .and_then(FrameCache::allocated_bytes)
+            .unwrap_or(0);
+    let mut accumulator = Accumulator::new(request.output_frames, ring, work, extra)?;
     let bank = Bandlimited::new(pitch, work)?;
     let channel = request.input.reference_channel();
     let mut center = -(half_limit as i128);
@@ -177,7 +194,11 @@ pub(super) fn grains(
             let window = 0.5
                 - 0.5 * (2.0 * std::f64::consts::PI * offset as f64 / (length - 1) as f64).cos();
             let position = anchor + (frame - center) as f64 * pitch;
-            accumulator.add(frame, bank.sample_float(request.input, position), window)?;
+            let sample = match frame_cache.as_mut() {
+                Some(cache) => bank.sample_float_cached(position, cache),
+                None => bank.sample_float(request.input, position),
+            };
+            accumulator.add(frame, sample, window)?;
         }
         center += hop as i128;
         grain_index = grain_index.wrapping_add(1);
@@ -190,6 +211,67 @@ pub(super) fn grains(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn cache_falls_back_when_original_scratch_budget_is_full() {
+        let frames: Vec<_> = (0..256)
+            .map(|i| [i as f32 / 256.0, -(i as f32) / 256.0])
+            .collect();
+        let input = Input {
+            frames: &frames,
+            sample_rate: 8000,
+            region_start: 0,
+            region_length: 256,
+            phase: 0,
+            looping: false,
+            envelope: &[],
+        };
+        let map = TimeMap::new(
+            vec![MapSegment {
+                output_start: 0,
+                output_end: 256,
+                source_start_q32: 0,
+                source_end_q32: 256 * Q32,
+            }],
+            256,
+        )
+        .unwrap();
+        let request = Request {
+            attacks: &[],
+            input,
+            map: &map,
+            output_frames: 256,
+            pitch_cents: 0,
+            mode: Mode::Texture {
+                grain_ms: 20,
+                fluctuation: 10,
+                seed: 4,
+            },
+        };
+        let baseline = (160 * 2 + 40 + 4) * 24 + bank_bytes(Resampler::V1) + 202 * 8;
+        let mut cancel = || false;
+        let mut cached = Work {
+            cancel: &mut cancel,
+            used: 0,
+            limit: MAX_WORK_UNITS,
+            scratch: 0,
+            base_scratch: 0,
+            resampler: Resampler::V1,
+        };
+        let expected = grains(&request, 1.0, &mut cached).unwrap();
+        let mut cancel = || false;
+        let mut fallback = Work {
+            cancel: &mut cancel,
+            used: 0,
+            limit: MAX_WORK_UNITS,
+            scratch: 0,
+            base_scratch: MAX_SCRATCH_BYTES - baseline,
+            resampler: Resampler::V1,
+        };
+        let actual = grains(&request, 1.0, &mut fallback).unwrap();
+        assert_eq!(actual, expected);
+        assert_eq!(cached.used, fallback.used);
+        assert_eq!(fallback.scratch, MAX_SCRATCH_BYTES);
+    }
     #[test]
     fn period_analysis_tracks_pitch_without_cancelling_antiphase_stereo() {
         for frequency in [220.0, 880.0] {
@@ -213,8 +295,10 @@ mod tests {
             let mut work = Work {
                 cancel: &mut cancel,
                 used: 0,
+                limit: MAX_WORK_UNITS,
                 scratch: 0,
                 base_scratch: 0,
+                resampler: Resampler::V1,
             };
             let measured = period(input, 2_000.0, input.reference_channel(), &mut work)
                 .unwrap()

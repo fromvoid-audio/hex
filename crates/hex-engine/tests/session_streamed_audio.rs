@@ -21,16 +21,22 @@ const BED_TRACK: u64 = 5;
 const BED_ASSET: u64 = 7;
 
 fn project(source_start: u64, source_end: u64) -> Project {
-    Project::from_snapshot(Snapshot {
+    Project::from_legacy_snapshot(Snapshot {
+        automatic_track_names: Vec::new(),
+        retained_source_paths: Vec::new(),
+        aliases: Default::default(),
         native_sources: Vec::new(),
         arrangement_sections: Vec::new(),
+        arrangement_locators: Vec::new(),
         main_devices: Vec::new(),
         tuning: Default::default(),
         return_feeds: Vec::new(),
         audio_feeds: Vec::new(),
         midi_routes: Vec::new(),
+        sidechains: Vec::new(),
         import_provenance: None,
         sample_rate: RATE,
+        sample_rate_mode: Default::default(),
         next_id: 10,
         assets: vec![
             AssetSnapshot {
@@ -63,6 +69,8 @@ fn project(source_start: u64, source_end: u64) -> Project {
         ],
         tracks: vec![
             TrackSnapshot {
+                group_output_mutes: Vec::new(),
+                tags: Vec::new(),
                 kind: hex_project::TrackKind::Ordinary,
                 parent_group: None,
                 color: hex_project::ElementColor::default(),
@@ -82,6 +90,8 @@ fn project(source_start: u64, source_end: u64) -> Project {
                 sends: Vec::new(),
             },
             TrackSnapshot {
+                group_output_mutes: Vec::new(),
+                tags: Vec::new(),
                 kind: hex_project::TrackKind::Ordinary,
                 parent_group: None,
                 color: hex_project::ElementColor::default(),
@@ -125,6 +135,7 @@ fn project(source_start: u64, source_end: u64) -> Project {
                 track: SESSION_TRACK,
                 scene: SCENE,
                 content: SessionCellContentSnapshot::Audio(SessionAudioClipSnapshot {
+                    loop_range: None,
                     active: true,
                     flavor: hex_project::ClipFlavor::default(),
                     gain: hex_project::ClipGain::UNITY,
@@ -895,11 +906,16 @@ fn streamed_session_audio_remains_frame_anchored_across_arrangement_loop_wrap() 
     for (offset, frame) in across_wrap.iter().enumerate() {
         let mut expected = sample(4_094 + offset as u64);
         if offset >= 2 {
+            // The wrapped Arrangement bed retains its full attack; the
+            // Session clip continues on its independent frame clock.
             let bed = sample((offset - 2) as u64 + 2);
             expected[0] += bed[0];
             expected[1] += bed[1];
         }
-        assert_eq!(*frame, expected, "loop-crossing frame {offset}");
+        assert!(
+            (frame[0] - expected[0]).abs() < 1e-6 && (frame[1] - expected[1]).abs() < 1e-6,
+            "loop-crossing frame {offset}: {frame:?} != {expected:?}"
+        );
     }
     assert_eq!(playback.position(), 8);
     assert_eq!(playback.performance_frame(), 96_008);
@@ -948,6 +964,11 @@ fn finite_playback_keeps_streamed_arrangement_loop_segments_and_wraps() {
         let bed = sample(timeline_frame + 2);
         expected[0] += bed[0];
         expected[1] += bed[1];
+        // A three-frame loop has a one-frame end fade. Both Arrangement
+        // sources fade together; source offsets and page requests stay put.
+        if timeline_frame == 3 {
+            expected = [0.0; 2];
+        }
         assert_eq!(*frame, expected, "looped finite Playback frame {index}");
     }
     assert!(pages.requests.is_empty());
@@ -975,7 +996,7 @@ fn finite_playback_keeps_streamed_arrangement_loop_segments_and_wraps() {
     assert_eq!(
         extents
             .iter()
-            .find(|e| e.source == source_key)
+            .find(|e| e.source == source_key.into())
             .unwrap()
             .start,
         4_093
@@ -1241,7 +1262,7 @@ fn session_gain_resident_streamed_and_replacement_keep_one_shot_anchor() {
 
 #[test]
 fn exact_engine_stream_demand_is_pure_across_pending_play_page_edges_and_handoff_retry() {
-    use hex_engine::{SessionPlayback, SessionPlaybackCommand, StreamPageExtent};
+    use hex_engine::{SessionPlayback, SessionPlaybackCommand, StreamResourceExtent};
     let project = project(4094, 4105);
     let source = metadata(&project, 51, [0x71; 32]);
     let key = source.key();
@@ -1278,14 +1299,14 @@ fn exact_engine_stream_demand_is_pure_across_pending_play_page_edges_and_handoff
     assert_eq!(
         extents,
         vec![
-            StreamPageExtent {
-                source: key,
+            StreamResourceExtent {
+                source: key.into(),
                 page_index: 0,
                 start: 4094,
                 end: 4096
             },
-            StreamPageExtent {
-                source: key,
+            StreamResourceExtent {
+                source: key.into(),
                 page_index: 1,
                 start: 0,
                 end: 6
@@ -1359,8 +1380,8 @@ fn exact_engine_stream_demand_is_pure_across_pending_play_page_edges_and_handoff
     assert_eq!(actual, planned);
     assert_eq!(
         actual,
-        vec![StreamPageExtent {
-            source: key,
+        vec![StreamResourceExtent {
+            source: key.into(),
             page_index: 1,
             start: 2,
             end: 6
@@ -1440,4 +1461,245 @@ fn inactive_audio_retains_inventory_but_never_reads_pages_or_requests_demand() {
     assert!(pages.requests.is_empty());
     let expected = (0..12).map(|i| sample(i + 2)).collect::<Vec<_>>();
     assert_eq!(output.as_slice(), expected.as_slice());
+}
+
+#[test]
+fn console_audio_streamed_cycles_match_resident_and_demand_every_wrapped_page() {
+    use hex_engine::{SessionPlayback, SessionPlaybackCommand};
+    let mut snapshot = project(4094, 4110).snapshot();
+    let SessionCellContentSnapshot::Audio(clip) = &mut snapshot.session.cells[0].content else {
+        panic!("audio")
+    };
+    clip.loop_range = Some(hex_project::SessionAudioLoop::new(4095, 4099).unwrap());
+    let project = Project::from_snapshot(snapshot).unwrap();
+    let source_key = StreamSourceKey::new(71, project.assets().next().unwrap().id());
+    let revision = prepared(&project, 71, [3; 32]);
+    let mut resident_sources = sources(&project, metadata(&project, 71, [3; 32]));
+    resident_sources.insert(
+        project.assets().next().unwrap().id(),
+        PreparedAudioSource::Resident(Audio::new(RATE, (0..8192).map(sample).collect()).unwrap()),
+    );
+    let resident = Arc::new(
+        PreparedRevision::prepare_with_prepared_audio_sources(
+            &project,
+            &resident_sources,
+            71,
+            Arc::new(SineTable::new()),
+            None,
+        )
+        .unwrap(),
+    );
+    let clip = revision.session().audio_clips()[0].id;
+    for block in [1, 3, 17, 64] {
+        let mut streamed = Playback::try_from_prepared_with_session(Arc::clone(&revision)).unwrap();
+        let mut reference =
+            Playback::try_from_prepared_with_session(Arc::clone(&resident)).unwrap();
+        launch_and_play(&mut streamed);
+        launch_and_play(&mut reference);
+        let mut pages = MemoryPages::with_source(source_key);
+        let mut actual = vec![[0.0; 2]; 97];
+        let mut expected = actual.clone();
+        for chunk in actual.chunks_mut(block) {
+            streamed.render_with_pages(chunk, &mut pages).unwrap();
+        }
+        for chunk in expected.chunks_mut(block) {
+            reference.render(chunk).unwrap();
+        }
+        assert_eq!(actual, expected, "block {block}");
+        for (i, frame) in actual.iter().enumerate() {
+            let pos = if i < 5 { 4094 + i } else { 4095 + (i - 5) % 4 };
+            let mut expected = sample(pos as u64);
+            if i < 12 {
+                let bed = sample(i as u64 + 2);
+                expected[0] += bed[0];
+                expected[1] += bed[1];
+            }
+            assert_eq!(*frame, expected);
+        }
+    }
+    let mut playback = SessionPlayback::new(revision).unwrap();
+    playback
+        .apply(SessionPlaybackCommand::LaunchClip {
+            clip,
+            quantization: hex_engine::LaunchQuantization::Immediate,
+        })
+        .unwrap();
+    let mut extents = Vec::new();
+    playback
+        .visit_next_stream_chunk(17, Some(true), &mut |e| {
+            extents.push(e);
+            Ok(())
+        })
+        .unwrap();
+    // Intro suffix and one complete cycle cover all repeatedly touched pages.
+    assert_eq!(extents.iter().map(|e| e.end - e.start).sum::<usize>(), 9);
+    assert_eq!(
+        extents.iter().map(|e| e.page_index).collect::<Vec<_>>(),
+        vec![0, 1, 0, 1]
+    );
+}
+
+#[test]
+fn arrangement_crossfade_demands_both_pages_and_matches_resident_audio() {
+    let mut editor = Editor::new(Project::new(RATE).unwrap(), 16).unwrap();
+    let Created::Imported {
+        track,
+        clip: left,
+        asset,
+    } = editor
+        .execute(Command::ImportAudioTrack {
+            name: "crossfade".into(),
+            path: "streamed-crossfade.wav".into(),
+            sample_rate: RATE,
+            frames: 8_192,
+        })
+        .unwrap()
+    else {
+        panic!("fixture import")
+    };
+    editor
+        .execute(Command::SetClipLooping {
+            clip: left,
+            looping: true,
+        })
+        .unwrap();
+    editor
+        .execute(Command::SetClipSourcePhase {
+            clip: left,
+            phase: 2_000,
+        })
+        .unwrap();
+    editor
+        .execute(Command::TrimClipEdge {
+            clip: left,
+            edge: hex_project::TrimEdge::Right,
+            frame: 4_096,
+        })
+        .unwrap();
+    let Created::Clip(right) = editor
+        .execute(Command::CopyClipTo {
+            clip: left,
+            track,
+            start: 4_096,
+        })
+        .unwrap()
+    else {
+        panic!("fixture copy")
+    };
+    editor
+        .execute(Command::SetClipSourcePhase {
+            clip: right,
+            phase: 997,
+        })
+        .unwrap();
+    for clip in [left, right] {
+        editor
+            .execute(Command::SetClipFades {
+                clip,
+                fade_in: 0,
+                fade_out: 0,
+            })
+            .unwrap();
+    }
+    editor
+        .execute(Command::CreateArrangementFades {
+            range: hex_project::TimeRange::new(vec![track], 3_596, 4_596).unwrap(),
+        })
+        .unwrap();
+    let project = editor.project();
+    let generation = 891;
+    let key = StreamSourceKey::new(generation, asset);
+    let streamed_metadata = StreamedSourceMetadata::new(
+        key,
+        RATE,
+        RATE,
+        8_192,
+        8_192,
+        hex_project::IDENTITY_CONVERSION,
+        [17; 32],
+    )
+    .unwrap();
+    let make = |source| {
+        Arc::new(
+            PreparedRevision::prepare_with_prepared_audio_sources(
+                project,
+                &BTreeMap::from([(asset, source)]),
+                generation,
+                Arc::new(SineTable::new()),
+                None,
+            )
+            .unwrap(),
+        )
+    };
+    let streamed = make(PreparedAudioSource::Streamed(Arc::new(streamed_metadata)));
+    let resident = make(PreparedAudioSource::Resident(
+        Audio::new(RATE, (0..8_192).map(sample).collect()).unwrap(),
+    ));
+    let mut demand = hex_engine::SessionPlayback::new(Arc::clone(&streamed)).unwrap();
+    demand
+        .apply(hex_engine::SessionPlaybackCommand::Seek(3_596))
+        .unwrap();
+    demand
+        .apply(hex_engine::SessionPlaybackCommand::Play)
+        .unwrap();
+    let mut extents = Vec::new();
+    let window = demand
+        .visit_next_stream_chunk(1_000, None, &mut |extent| {
+            extents.push(extent);
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(window.arrangement_frame, 3_596);
+    assert!(
+        window.frames > 0 && window.frames <= 1_000,
+        "the existing demand owner may bound a render quantum"
+    );
+    assert!(
+        extents
+            .iter()
+            .any(|e| e.source == key.into() && e.page_index == 0),
+        "incoming source requires page0"
+    );
+    assert!(
+        extents
+            .iter()
+            .any(|e| e.source == key.into() && e.page_index == 1),
+        "outgoing source requires page1"
+    );
+    for block in [1, 17, 257] {
+        let mut a = Playback::try_from_prepared_with_session(Arc::clone(&streamed)).unwrap();
+        let mut b = Playback::try_from_prepared_with_session(Arc::clone(&resident)).unwrap();
+        a.apply(PlaybackCommand::Play);
+        b.apply(PlaybackCommand::Play);
+        let mut pages = MemoryPages::with_source(key);
+        let mut actual = vec![[0.0; 2]; 8_192];
+        let mut expected = actual.clone();
+        for output in actual.chunks_mut(block) {
+            a.render_with_pages(output, &mut pages).unwrap();
+        }
+        for output in expected.chunks_mut(block) {
+            b.render(output).unwrap();
+        }
+        assert_eq!(actual, expected, "crossfade block={block}");
+        assert!(pages.requests.is_empty());
+    }
+    // Missing the incoming page keeps the independently available outgoing
+    // voice audible; there is no track-wide silence or fabricated resident data.
+    let mut pages = MemoryPages::with_source(key);
+    pages.pages.remove(&(key, 0));
+    let mut output = vec![[0.0; 2]; 1_000];
+    let mut cold = Playback::try_from_prepared_with_session(Arc::clone(&streamed)).unwrap();
+    cold.apply(PlaybackCommand::Seek(3_596));
+    cold.apply(PlaybackCommand::Play);
+    cold.render_with_pages(&mut output, &mut pages).unwrap();
+    for (offset, actual) in output.iter().enumerate() {
+        let source = sample(5_596 + offset as u64);
+        // Selection-fitted crossfades use the default centered S curve.
+        let progress = offset as f64 / 999.0;
+        let gain = (1.0 - progress * progress * (3.0 - 2.0 * progress)) as f32;
+        for channel in 0..2 {
+            assert!((actual[channel] - source[channel] * gain).abs() < 1e-7);
+        }
+    }
+    assert!(pages.requests.contains(&(key, 0)));
 }

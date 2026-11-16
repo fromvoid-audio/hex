@@ -113,6 +113,15 @@ fn actual_four_terminal_factory_cleans_graph_without_client_poll_but_keeps_lease
             .ok()
             .unwrap();
         assert!(client.preview_request().is_err());
+        assert!(client.preview_begin_windows(1, 0, 1).is_err());
+        let pcm = hex_engine::Audio::new(48_000, vec![[0.25; 2]]).unwrap();
+        let owner = pcm.frames().as_ptr();
+        let refused = client.preview_publish_window(1, 0, pcm).unwrap_err();
+        assert_eq!(
+            refused.reason,
+            crate::sample_preview::WindowRefusalReason::Invalid
+        );
+        assert_eq!(refused.audio.frames().as_ptr(), owner);
         let root_identity = Arc::new(hex_engine::Project::new(48000, vec![]).unwrap());
         let rejected = client
             .forward_resident_publication(
@@ -264,20 +273,11 @@ fn publication_destructor_failure_keeps_other_actual_endpoint_and_first_payload_
         .unwrap();
     assert_eq!(first.downcast_ref::<u64>(), Some(&1234));
     assert_eq!(calls.load(SeqCst), 1);
-    assert!(
-        retirement
-            .terminals
-            .as_mut()
-            .unwrap()
-            .endpoints
-            .as_mut()
-            .unwrap()
-            .client
-            .ready()
-    );
+    // All returned Boxes are secured before any destructor can unwind.
+    assert!(retirement.client.is_some());
     assert!(retirement.advance().is_err());
     assert_eq!(calls.load(SeqCst), 1);
-    assert!(retirement.data.is_none()); // exact callback Boxes still retained by terminals
+    assert!(retirement.data.is_some()); // exact callback Boxes retained in persistent custody
     // Fixture teardown is explicit and never asserted as successful disposal.
     wait(|| !retirement.root.cleanup_scheduled());
     drop(first);

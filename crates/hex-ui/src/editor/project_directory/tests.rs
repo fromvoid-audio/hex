@@ -69,7 +69,7 @@ fn pump(
     cx: &mut TestAppContext,
     done: impl Fn(&EditorView) -> bool,
 ) {
-    let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let until = crate::test_wait::hang_deadline();
     loop {
         editor.update(cx, |view, cx| {
             view.tick(cx);
@@ -98,7 +98,7 @@ fn flush(editor: &gpui::Entity<EditorView>, cx: &mut TestAppContext) {
 fn open(visual: &mut VisualTestContext, editor: &gpui::Entity<EditorView>) {
     editor.update_in(visual, |view, window, _| view.focus.focus(window));
     visual.dispatch_action(OpenProject);
-    let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let until = crate::test_wait::hang_deadline();
     loop {
         visual.run_until_parked();
         if visual.pending_open_directory().is_some() {
@@ -137,7 +137,7 @@ fn save_as(visual: &mut VisualTestContext, editor: &gpui::Entity<EditorView>, or
     } else {
         visual.dispatch_action(SaveAsProject);
     }
-    let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let until = crate::test_wait::hang_deadline();
     loop {
         visual.run_until_parked();
         if visual.pending_save_options().is_some() {
@@ -166,7 +166,7 @@ fn saved(
     });
 }
 fn service_state(service: &Service) -> Arc<hex_session::service::ViewState> {
-    let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let until = crate::test_wait::hang_deadline();
     loop {
         if let Ok(event) = service.try_event() {
             assert!(event.error.is_none(), "{:?}", event.error);
@@ -203,16 +203,24 @@ fn project_directory_successful_save_open_and_restart_share_one_native_folder(
         cx.pending_save_options(),
         Some((PathBuf::from("."), Some("untitled.hex".into())))
     );
-    let first = save_folder.join("First Take.hex");
+    let first = save_folder.join("First Take/First Take.hex");
+    let project_folder = first.parent().unwrap().to_path_buf();
     cx.simulate_new_path_selection(|_| Some(save_folder.join("First Take")));
     saved(&mut visual, &editor, &first);
+    assert!(project_folder.join("samples").is_dir());
+    let version = project_folder.join("Version 2.hex");
+    save_as(&mut visual, &editor, false);
+    cx.simulate_new_path_selection(|_| Some(version.clone()));
+    saved(&mut visual, &editor, &version);
+    assert!(first.is_file() && version.is_file());
+    assert!(!project_folder.join("Version 2").exists());
     flush(&editor, &mut visual);
     assert_eq!(
         hex_preferences::load_project_directory(&owned.preferences()).unwrap(),
-        Some(save_folder.clone())
+        Some(project_folder.clone())
     );
     open(&mut visual, &editor);
-    assert_eq!(cx.pending_open_directory(), Some(Some(save_folder)));
+    assert_eq!(cx.pending_open_directory(), Some(Some(project_folder)));
     cx.simulate_paths_selection(Some(vec![target.clone()]));
     pump(&editor, &mut visual, |view| {
         settled(view)
@@ -344,10 +352,13 @@ fn project_directory_dirty_open_cancel_save_as_cancel_and_dont_save_failure_keep
     visual.run_until_parked();
     cx.simulate_prompt_answer("save");
     pump(&editor, &mut visual, |view| view.save_dialog_open);
-    let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let until = crate::test_wait::hang_deadline();
     while cx.pending_save_options().is_none() {
         visual.run_until_parked();
-        assert!(std::time::Instant::now() < until);
+        assert!(
+            std::time::Instant::now() < until,
+            "project_directory_dirty_open_cancel_save_as_cancel_and_dont_save_failure_keep_folder: hang guard expired"
+        );
         std::thread::sleep(std::time::Duration::from_millis(1));
     }
     assert_eq!(cx.pending_save_options().unwrap().0, folder);
@@ -420,7 +431,8 @@ fn project_directory_invalid_preferences_still_open_default_and_preserve_bytes(
     let destination = owned.folder("Actual Successful Save").join("Take.hex");
     save_as(&mut visual, &editor, true);
     cx.simulate_new_path_selection(|_| Some(destination.clone()));
-    saved(&mut visual, &editor, &destination);
+    let project = destination.with_extension("").join("Take.hex");
+    saved(&mut visual, &editor, &project);
     flush(&editor, &mut visual);
     assert_eq!(
         std::fs::read(owned.preferences()).unwrap(),
@@ -485,19 +497,24 @@ fn project_directory_owned_writer_persists_latest_success_after_view_drop(cx: &m
     });
     save_as(&mut visual, &editor, true);
     cx.simulate_new_path_selection(|_| Some(first.clone()));
-    saved(&mut visual, &editor, &first);
+    saved(
+        &mut visual,
+        &editor,
+        &first.with_extension("").join("One.hex"),
+    );
     pump(&editor, &mut visual, |_| {
         gate.reached.load(Ordering::Acquire)
     });
     save_as(&mut visual, &editor, false);
     cx.simulate_new_path_selection(|_| Some(latest.clone()));
+    let latest = latest.with_extension("").join("Two.hex");
     saved(&mut visual, &editor, &latest);
     let writes = editor.read_with(&visual, |view, _| {
         Arc::clone(&view.project_directory.writes)
     });
     close(visual, editor);
     gate.release();
-    let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let until = crate::test_wait::hang_deadline();
     loop {
         cx.run_until_parked();
         if !writes.lock().unwrap().running {
@@ -841,7 +858,7 @@ fn named_startup_success(
     });
 }
 fn finish_startup_jobs(cx: &mut TestAppContext, gate: &TestGate, writes: &Arc<Mutex<Writes>>) {
-    let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let until = crate::test_wait::hang_deadline();
     while !gate.finished.load(Ordering::Acquire) || writes.lock().unwrap().running {
         cx.run_until_parked();
         assert!(

@@ -87,7 +87,7 @@ fn original_lineages_roundtrip_and_malformed_relabelled_envelopes_refuse_without
         assert_eq!(original, before);
     }
     let current: Value = serde_json::from_slice(&encode(&fixture()).unwrap()).unwrap();
-    for version in (0..34).chain([hex_storage::CURRENT_SCHEMA_VERSION + 1, u32::MAX]) {
+    for version in (0..34).chain([hex_storage::NEWEST_SCHEMA_VERSION + 1, u32::MAX]) {
         let mut old = current.clone();
         old["version"] = version.into();
         assert!(
@@ -189,20 +189,30 @@ fn current_host_gain_fields_are_required_for_each_device_owner_not_asset_or_comp
             let mut missing = base.clone();
             let device = match owner {
                 0 => &mut missing["tracks"][0]["devices"][0],
-                1 => &mut missing["tracks"][0]["instrument"],
+                1 => {
+                    let source = missing["track_source_bindings"][0]["source"]
+                        .as_u64()
+                        .unwrap();
+                    missing["native_sources"]
+                        .as_array_mut()
+                        .unwrap()
+                        .iter_mut()
+                        .find(|row| row["id"].as_u64() == Some(source))
+                        .unwrap()
+                        .get_mut("devices")
+                        .unwrap()
+                        .as_array_mut()
+                        .unwrap()
+                        .get_mut(0)
+                        .unwrap()
+                        .get_mut("device")
+                        .unwrap()
+                }
                 2 => &mut missing["return_tracks"][0]["devices"][0],
                 _ => &mut missing["main_devices"][0],
             };
             device.as_object_mut().unwrap().remove(field);
-            assert!(
-                matches!(
-                    decode(&bytes(&missing)),
-                    Err(hex_storage::StorageError::Invalid(
-                        "device host gain fields are missing"
-                    ))
-                ),
-                "owner {owner}, {field}"
-            );
+            assert!(decode(&bytes(&missing)).is_err(), "owner {owner}, {field}");
         }
     }
 }

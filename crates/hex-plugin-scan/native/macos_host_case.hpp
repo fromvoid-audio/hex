@@ -9,6 +9,7 @@ struct HostEvidence {
     int scenario=-1, callback=0, message=0, unknown=0, graph=0, known=0;
     int disposition=0, enqueued=0, dispatched=0, received=0, violations=-1;
     int processing_callback=0, processing_message=0, worker_dispatch=0;
+    int edit_count=0,edit_order=0,edit_backpressure=0;
     uint64_t before_revision=0, after_revision=0, first_sequence=0, last_sequence=0;
     double before_value=0, after_value=0;
     uint32_t refusals=0;
@@ -21,12 +22,13 @@ static bool host_case(CFBundleRef bundle,Steinberg::IPluginFactory* factory) {
     auto configure=reinterpret_cast<bool(*)()>(CFBundleGetFunctionPointerForName(bundle,CFSTR("HexHostConfigure")));
     auto action=reinterpret_cast<int(*)(int,int)>(CFBundleGetFunctionPointerForName(bundle,CFSTR("HexHostAction")));
     auto messages=reinterpret_cast<int(*)(int)>(CFBundleGetFunctionPointerForName(bundle,CFSTR("HexHostMessages")));
+    auto edit=reinterpret_cast<int(*)(int,uint32,double)>(CFBundleGetFunctionPointerForName(bundle,CFSTR("HexHostEdit")));
     auto observe=reinterpret_cast<int(*)(int*,int)>(CFBundleGetFunctionPointerForName(bundle,CFSTR("HexLifecycleObservation")));
-    if (!configure || !action || !messages || !observe || !configure()) return false;
+    if (!configure || !action || !messages || !edit || !observe || !configure()) return false;
     auto& e=host_evidence;
     hex_instance::Instance instance;
     PClassInfo info{};
-    if (factory->getClassInfo(0,&info)!=kResultOk || !instance.open(factory,info.cid) || !instance.configure_stereo(48000,64,false)) {
+    if (factory->getClassInfo(0,&info)!=kResultOk || !instance.open(factory,info.cid,e.scenario==0) || !instance.configure_stereo(48000,64,false)) {
         lifecycle_evidence.closed=instance.close(); return false;
     }
     const bool baseline=action(0,hex_instance::Host::supported_restarts)==kResultOk &&
@@ -35,7 +37,7 @@ static bool host_case(CFBundleRef bundle,Steinberg::IPluginFactory* factory) {
     if (!baseline || !initial || initial->count!=2) { lifecycle_evidence.closed=instance.close(); return false; }
     e.before_revision=initial->revision; e.before_value=initial->parameters[0].value;
     if (e.scenario==10) action(3,0);
-    std::mutex mutex; std::condition_variable changed; bool reached=false, resume=false;
+    std::mutex mutex; std::condition_variable changed; bool reached=false, resume=false,edits_drained=false,second_ready=false;
     bool started=false, stopped=false, processed=true;
     std::thread worker([&] {
         std::array<float,64> left{},right{},out_left{},out_right{};
@@ -56,6 +58,25 @@ static bool host_case(CFBundleRef bundle,Steinberg::IPluginFactory* factory) {
                 if (e.scenario==10) e.worker_dispatch=static_cast<int>(instance.dispatch_host_callbacks().disposition);
                 std::unique_lock<std::mutex> lock(mutex);
                 reached=true; changed.notify_all(); changed.wait(lock,[&] { return resume; });
+                if(e.scenario==13 || e.scenario==15) {
+                    lock.unlock();e.edit_order=1;
+                    for(int wave=0;wave<2;++wave) {
+                        for(int n=0;n<8;++n) {
+                            hex_instance::EditEvent event{};
+                            if(!instance.peek_parameter_edit(event)) {e.edit_order=0;continue;}
+                            instance.consume_parameter_edit();++e.edit_count;
+                            const uint64 expected=2+static_cast<uint64>(wave*8+n);
+                            const uint32 kind=n==0?hex_instance::Begin:(n==7?hex_instance::End:hex_instance::Perform);
+                            if(event.sequence!=expected || event.gesture!=2+static_cast<uint64>(wave*8) ||
+                                event.id!=static_cast<uint32>(wave?11:7) || event.kind!=kind ||
+                                (kind==hex_instance::Perform && event.normalized!=0.75)) e.edit_order=0;
+                        }
+                        if(!wave) {
+                            std::unique_lock<std::mutex> again(mutex);edits_drained=true;changed.notify_all();
+                            changed.wait(again,[&]{return second_ready;});
+                        }
+                    }
+                }
             }
         }
         if (started) stopped=instance.stop_processing();
@@ -76,6 +97,36 @@ static bool host_case(CFBundleRef bundle,Steinberg::IPluginFactory* factory) {
     } else if (e.scenario==10) {
         e.processing_callback=action(4,0); e.processing_message=action(7,0);
     } else if (e.scenario==11) e.message=messages(1);
+    else if(e.scenario==14) {
+        // Independent of both the main thread and the original PCM reader.
+        std::thread background([&] {e.message=messages(2);});
+        background.join();
+    }
+    else if(e.scenario==13 || e.scenario==15) {
+        const auto wave=[&](uint32 id) {
+            bool ok=edit(1,id,0)==kResultOk;
+            for(int n=0;n<6;++n) ok=edit(2,id,0.75)==kResultOk && ok;
+            return edit(3,id,0)==kResultOk && ok;
+        };
+        e.callback=wave(7)?kResultOk:kResultFalse;
+        for(int n=0;n<8;++n) if(instance.dispatch_host_callbacks().disposition==hex_instance::HostDisposition::EditQueued) ++e.enqueued;
+        e.callback=wave(11) && e.callback==kResultOk?kResultOk:kResultFalse;
+        if(e.scenario==15) {
+            // The actual SDK controller has admitted two complete gestures.
+            // Sealing must not disturb the queued second one or poison Host.
+            e.known=instance.seal_editor_edits_on_control();
+            e.unknown=edit(1,7,0);
+            e.message=instance.pending_parameter_edits();
+        }
+        const auto pending=instance.dispatch_host_callbacks();
+        e.edit_backpressure=pending.disposition==hex_instance::HostDisposition::Pending && pending.sequence==10;
+        {
+            std::unique_lock<std::mutex> lock(mutex);resume=true;changed.notify_all();
+            changed.wait(lock,[&]{return edits_drained;});
+        }
+        for(int n=0;n<8;++n) if(instance.dispatch_host_callbacks().disposition==hex_instance::HostDisposition::EditQueued) ++e.enqueued;
+        {std::lock_guard<std::mutex> lock(mutex);second_ready=true;changed.notify_all();}
+    }
     for (int n=0;n<8;++n) {
         const auto result=instance.dispatch_host_callbacks();
         if (result.disposition==hex_instance::HostDisposition::Idle) break;
@@ -89,11 +140,22 @@ static bool host_case(CFBundleRef bundle,Steinberg::IPluginFactory* factory) {
     { std::lock_guard<std::mutex> lock(mutex); resume=true; changed.notify_all(); }
     worker.join();
     e.pcm=e.pcm && processed && stopped;
+    const auto* trace=instance.message_diagnostics_on_control();
+    // Scenario zero exercises accepted, oversized, missing and off-lane
+    // binary calls while PCM is active. Scenario 14 uses the disabled path.
+    const bool diagnostics=e.scenario==0?
+        trace && trace->messages==18 && trace->binary_attempts==5 && trace->binary_writes==3 &&
+        trace->max_binary_bytes==32769 && trace->binary_oversize==1 && trace->binary_reads==3 &&
+        trace->binary_misses==1 && trace->wrong_thread_reads==3:
+        trace && trace->messages==0 && trace->binary_attempts==0 && trace->binary_reads==0;
     e.closed=instance.close(); lifecycle_evidence.closed=e.closed;
     int observation[135]{};
     const int size=observe(observation,135);
     if (size>=7) e.violations=observation[0];
-    return e.pcm && e.violations==0;
+    return diagnostics && e.pcm && e.violations==0 &&
+        ((e.scenario!=13 && e.scenario!=15) ||
+            (e.edit_count==16 && e.edit_order && e.edit_backpressure && e.enqueued==16 && e.callback==kResultOk)) &&
+        (e.scenario!=15 || (e.known && e.unknown==kResultFalse && e.message==16 && !e.refusals));
 }
 static void print_host() {
     const auto& e=host_evidence;
@@ -101,10 +163,11 @@ static void print_host() {
         "\"callback\":%d,\"message\":%d,\"unknown\":%d,\"graph\":%d,\"known\":%d,"
         "\"disposition\":%d,\"enqueued\":%d,\"dispatched\":%d,\"received\":%d,\"violations\":%d,"
         "\"processing_callback\":%d,\"processing_message\":%d,\"worker_dispatch\":%d,"
+        "\"edit_count\":%d,\"edit_order\":%d,\"edit_backpressure\":%d,"
         "\"before_revision\":%llu,\"after_revision\":%llu,\"first_sequence\":%llu,\"last_sequence\":%llu,"
         "\"before_value\":%.17g,\"after_value\":%.17g,\"refusals\":%u,\"pcm\":%s,\"closed\":%s,\"unloaded\":%s}\n",
         e.scenario,e.callback,e.message,e.unknown,e.graph,e.known,e.disposition,e.enqueued,e.dispatched,e.received,e.violations,
-        e.processing_callback,e.processing_message,e.worker_dispatch,
+        e.processing_callback,e.processing_message,e.worker_dispatch,e.edit_count,e.edit_order,e.edit_backpressure,
         static_cast<unsigned long long>(e.before_revision),static_cast<unsigned long long>(e.after_revision),
         static_cast<unsigned long long>(e.first_sequence),static_cast<unsigned long long>(e.last_sequence),
         e.before_value,e.after_value,e.refusals,e.pcm?"true":"false",e.closed?"true":"false",lifecycle_evidence.unloaded?"true":"false");

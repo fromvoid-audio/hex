@@ -5,65 +5,6 @@ use super::{
 };
 use gpui::{TestAppContext, VisualTestContext};
 
-#[test]
-fn split_midi_trim_preview_keeps_the_retained_source_window() {
-    use hex_project::{BeatTime, Command, Created, Editor, Project, TimeRange, TrimEdge};
-    let b = |n| BeatTime::from_quarters(n).unwrap();
-    let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
-    let Created::Track(track) = editor
-        .execute(Command::AddMidiTrack {
-            name: "midi".into(),
-        })
-        .unwrap()
-    else {
-        panic!("track")
-    };
-    let Created::Clip(clip) = editor
-        .execute(Command::PlaceMidiClip {
-            track,
-            start: b(0),
-            length: b(12),
-        })
-        .unwrap()
-    else {
-        panic!("clip")
-    };
-    editor
-        .execute(Command::SetMidiClipSource {
-            clip,
-            source_length: b(4),
-            source_start: b(0),
-            loop_start: b(1),
-            loop_end: b(4),
-            looping: true,
-            length: b(12),
-        })
-        .unwrap();
-    editor
-        .execute(Command::AddMidiNote {
-            clip,
-            start: b(2),
-            duration: b(2),
-            pitch: 60,
-            channel: 0,
-            velocity: 100,
-        })
-        .unwrap();
-    editor
-        .execute(Command::SetTimeRangeActive {
-            range: TimeRange::new(vec![track], 72_000, 192_000).unwrap(),
-            active: false,
-        })
-        .unwrap();
-    let project = editor.project();
-    let tail = &project.track(track).unwrap().midi_clips()[2];
-    let trim = tail.preview_edge_trim(TrimEdge::Right, b(12)).unwrap();
-    assert_eq!(
-        super::tracks::midi_trim_note_shapes(project, tail, trim, 192_000, 288_000),
-        vec![(0.0, 0.5, 60), (0.75, 0.25, 60)]
-    );
-}
-
 #[gpui::test]
 fn activation_c_and_zero_toggle_mixed_clips_atomically_with_history(cx: &mut TestAppContext) {
     let (handle, editor, audio, midi, _files) = fixture(cx);
@@ -85,8 +26,27 @@ fn activation_c_and_zero_toggle_mixed_clips_atomically_with_history(cx: &mut Tes
         );
     });
     for (key, expected) in [("c", false), ("0", true)] {
+        let headers = [audio, midi].map(|clip| {
+            let selector: &'static str =
+                Box::leak(format!("clip-name-{}", clip.value()).into_boxed_str());
+            (selector, visual.rendered_background(selector).unwrap())
+        });
         visual.simulate_keystrokes(key);
+        visual.run_until_parked();
+        editor.read_with(&visual, |v, _| {
+            let p = &v.state.as_ref().unwrap().project;
+            assert_eq!(p.clip_active(audio), Some(!expected));
+            assert_eq!(p.clip_active(midi), Some(!expected));
+        });
+        let pending = headers.map(|(selector, before)| {
+            let after = visual.rendered_background(selector).unwrap();
+            assert_ne!(after, before);
+            (selector, after)
+        });
         pump(&editor, &mut visual);
+        for (selector, background) in pending {
+            assert_eq!(visual.rendered_background(selector), Some(background));
+        }
         editor.read_with(&visual, |v, _| {
             assert!(!v.automation_view.enabled);
             let p = &v.state.as_ref().unwrap().project;
@@ -119,8 +79,8 @@ fn activation_time_span_splits_only_inside_and_header_focus_targets_track(cx: &m
     let track = editor.update(&mut visual, |v, _| {
         let track = v.state.as_ref().unwrap().project.tracks()[0].id();
         v.time_selection = Some(TimeSelection {
-            anchor_track: track,
-            end_track: track,
+            anchor_track: Some(track),
+            end_track: Some(track),
             anchor_frame: 12_000,
             end_frame: 36_000,
         });
@@ -202,6 +162,16 @@ fn activation_session_cells_and_typing_focus_do_not_fall_back_to_track(cx: &mut 
             cx.notify();
             clip
         });
+        let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
+        visual.simulate_keystrokes("a");
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
+            assert!(
+                !v.automation_view.enabled,
+                "console focus does not toggle arranger mode"
+            );
+        });
         visual.simulate_keystrokes("c");
         pump(&editor, &mut visual);
         editor.read_with(&visual, |v, _| {
@@ -222,6 +192,108 @@ fn activation_session_cells_and_typing_focus_do_not_fall_back_to_track(cx: &mut 
     });
     visual.run_until_parked();
     visual.simulate_keystrokes("a c 0");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before)
+    });
+}
+
+#[gpui::test]
+fn activation_header_mute_applies_selection_atomically_and_rejects_deselected_focus(
+    cx: &mut TestAppContext,
+) {
+    use gpui::Modifiers;
+    use hex_project::Command;
+    use hex_session::service::Request;
+    let (handle, editor, _, _, _files) = fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    editor.update(&mut visual, |v, _| {
+        assert!(v.enqueue(Request::Edit(Command::AddTrack {
+            name: "empty".into()
+        })));
+    });
+    pump(&editor, &mut visual);
+    let tracks = editor.read_with(&visual, |v, _| {
+        v.state
+            .as_ref()
+            .unwrap()
+            .project
+            .tracks()
+            .iter()
+            .map(|t| t.id())
+            .collect::<Vec<_>>()
+    });
+    editor.update(&mut visual, |v, _| {
+        assert!(v.enqueue(Request::Edit(Command::Mute {
+            track: tracks[2],
+            muted: true
+        })));
+    });
+    pump(&editor, &mut visual);
+    let names = [tracks[0], tracks[2]]
+        .map(|id| Box::leak(format!("track-name-{}", id.value()).into_boxed_str()) as &'static str);
+    let first = visual.debug_bounds(names[0]).unwrap().center();
+    let last = visual.debug_bounds(names[1]).unwrap().center();
+    visual.simulate_click(first, Modifiers::default());
+    visual.simulate_click(
+        last,
+        Modifiers {
+            platform: true,
+            ..Modifiers::default()
+        },
+    );
+    visual.run_until_parked();
+    let before = editor.read_with(&visual, |v, _| {
+        assert_eq!(v.selected_track_ids(), [tracks[0], tracks[2]]);
+        v.state.as_ref().unwrap().project.snapshot()
+    });
+    visual.simulate_keystrokes("c");
+    pump(&editor, &mut visual);
+    let muted = editor.read_with(&visual, |v, _| {
+        let p = &v.state.as_ref().unwrap().project;
+        assert!(p.track(tracks[0]).unwrap().muted());
+        assert!(!p.track(tracks[1]).unwrap().muted());
+        assert!(p.track(tracks[2]).unwrap().muted());
+        p.snapshot()
+    });
+    visual.simulate_keystrokes("cmd-z");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before)
+    });
+    visual.simulate_keystrokes("cmd-shift-z");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.state.as_ref().unwrap().project.snapshot(), muted)
+    });
+    visual.simulate_keystrokes("0");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        assert!(
+            v.state
+                .as_ref()
+                .unwrap()
+                .project
+                .tracks()
+                .iter()
+                .all(|t| !t.muted())
+        )
+    });
+    // Command-click leaves keyboard focus on a header excluded from membership.
+    visual.simulate_click(
+        last,
+        Modifiers {
+            platform: true,
+            ..Modifiers::default()
+        },
+    );
+    visual.run_until_parked();
+    let before = editor.read_with(&visual, |v, _| {
+        assert_eq!(v.selected_track_ids(), [tracks[0]]);
+        v.state.as_ref().unwrap().project.snapshot()
+    });
+    visual.simulate_keystrokes("c");
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
         assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before)

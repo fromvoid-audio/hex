@@ -551,8 +551,10 @@ impl BladeRenderer {
     }
 
     #[cfg(target_os = "macos")]
-    pub fn layer(&self) -> metal::MetalLayer {
-        unsafe { foreign_types::ForeignType::from_ptr(self.layer_ptr()) }
+    pub fn layer(&self) -> &metal::MetalLayerRef {
+        // SAFETY: Surface retains this CAMetalLayer for the lifetime of self.
+        // The pointer does not transfer ownership to the caller.
+        unsafe { foreign_types::ForeignTypeRef::from_ptr(self.layer_ptr()) }
     }
 
     #[cfg(target_os = "macos")]

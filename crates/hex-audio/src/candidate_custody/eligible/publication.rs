@@ -24,7 +24,7 @@ mod streaming;
 use resources::RootResourceWitness;
 pub(super) use resources::remaining_handle_reservation;
 pub(in crate::candidate_custody) use streaming::OrdinaryReservation;
-pub(crate) use streaming::{ActiveView, OrdinaryStreams};
+pub(crate) use streaming::{ActiveView, OrdinaryStreams, QuantumFailure, QuantumPins};
 pub(crate) use streaming::{StageAction, StreamInstall, StreamOutcome, StreamProgress};
 mod preparation;
 use preparation::PreparationExecution;
@@ -272,6 +272,10 @@ impl Queued {
     }
 }
 impl Bank {
+    pub(super) fn cleanup_failed(&self) -> bool {
+        self.slots.iter().any(|s| s.phase == Phase::Failed)
+    }
+
     pub(in crate::candidate_custody) fn backing_quote(
         reservation: AudioCandidatePublicationReservation,
     ) -> Result<usize, &'static str> {
@@ -694,6 +698,20 @@ impl super::Custody {
         }
         let mut used = [false; 2];
         for source in owner.streamed_sources() {
+            // Both publication classes route callback demand by typed key.
+            // Exact membership elsewhere cannot authorize ambiguous facts in
+            // another retained domain selected for this same graph.
+            if domains.iter().any(|token| {
+                bank.domains[token.slot]
+                    .owner
+                    .as_ref()
+                    .is_some_and(|domain| {
+                        domain.covers_resource_key(source.key().into())
+                            && !domain.covers_source(source)
+                    })
+            }) {
+                return Err("constructor stream source key has conflicting domain facts");
+            }
             let Some(index) = domains.iter().position(|token| {
                 bank.domains[token.slot]
                     .owner
@@ -746,9 +764,15 @@ impl super::Custody {
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         let native_refs = bank.sources.graph_references(owner, source_work)?;
         #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+        // Original closed native graph/history allocations are already sealed
+        // by the constructor ledger on every supported layout. Only external
+        // foreign nodes need the platform endpoint/source witness; native
+        // Return/Main routing alone cannot manufacture such an obligation.
         if owner
-            .requires_effect_graph_custody_on_control()
+            .foreign_nodes_on_control()
             .map_err(|_| "foreign constructor query refused")?
+            .next()
+            .is_some()
         {
             return Err("effect graph source and runtime witness is not sealed");
         }
@@ -812,15 +836,14 @@ impl super::Custody {
                 .position(|slot| slot.phase == Phase::Vacant)
                 .ok_or("constructor runtime cells are full")?
         };
-        if let Some(pending) = bank.publication.slots[index].preparation_reservation {
-            if summary.member_rows > pending.member_rows
+        if let Some(pending) = bank.publication.slots[index].preparation_reservation
+            && (summary.member_rows > pending.member_rows
                 || summary.transfer_rows > pending.transfer_rows
                 || summary.shared_resource_handles > pending.handle_rows
                 || retained > bank.publication.slots[index].retained
-                || peak > bank.publication.slots[index].peak
-            {
-                return Err("candidate exceeded its construction reservation");
-            }
+                || peak > bank.publication.slots[index].peak)
+        {
+            return Err("candidate exceeded its construction reservation");
         }
         let runtime_storage = bank.publication.slots[index]
             .streaming

@@ -29,6 +29,35 @@ pub(super) fn warp_command(
         command(&state.project, clip, Action::Warp)
     }
 }
+/// A numeric pitch draft preserves the former relative selected-clip semantics.
+/// Project/session retain canonical validation and audio preparation; this UI
+/// constructs their existing commands without owning a separate pitch model.
+pub(super) fn pitch_command(
+    project: &hex_project::Project,
+    clip: ClipId,
+    value: f64,
+    multiple: bool,
+) -> Result<hex_project::Command, hex_project::Invalid> {
+    if !value.is_finite() || value.fract() != 0. || !(-4800.0..=4800.0).contains(&value) {
+        return Err(hex_project::Invalid(
+            "pitch must be whole cents between -4800 and 4800",
+        ));
+    }
+    let source = project
+        .clip(clip)
+        .ok_or(hex_project::Invalid("audio clip no longer exists"))?;
+    let current = source.audio_edit().map_or(0, |e| e.domain.pitch_cents);
+    let delta = (value as i16)
+        .checked_sub(current)
+        .ok_or(hex_project::Invalid(
+            "pitch change is outside the supported range",
+        ))?;
+    if multiple {
+        actions::selection_command(project, clip, Action::Pitch(delta))
+    } else {
+        command(project, clip, Action::Pitch(delta))
+    }
+}
 /// Selected-clip stretch controls stay above the scrollable source fields.
 pub(super) fn warp_header(
     view: &mut EditorView,
@@ -111,20 +140,11 @@ pub(super) fn view(view: &EditorView, clip_id: ClipId, cx: &mut Context<EditorVi
     };
     let edit = clip.audio_edit();
     let domain = edit.map(|e| e.domain.as_ref());
-    let pitch = domain.map_or(0, |d| d.pitch_cents);
     let active = domain.is_some_and(|d| d.warp_enabled);
     let mode = domain
         .and_then(|d| d.warp.as_ref())
         .map_or(modes()[0], |w| w.mode);
     controls = controls.child(musical_control_label("musical audio"));
-    controls = controls.child(musical_control_row(
-        capture,
-        format!("pitch {pitch:+} ct"),
-        Action::Pitch(-100),
-        Action::Pitch(100),
-        active && mode == WarpMode::RePitch,
-        cx,
-    ));
     controls = controls.child(button(
         capture,
         if edit.is_some_and(|e| e.live_musical_start().is_some()) {
@@ -572,7 +592,7 @@ fn action_key(action: Action) -> String {
         ),
     }
 }
-#[cfg(test)]
+#[cfg(all(test, not(feature = "ui-test-support")))]
 mod tests;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod ui_tests;

@@ -1,5 +1,6 @@
 //! Immutable control-side inventory of every canonical Session cell.
 pub(crate) mod audio_assembly;
+mod instrument_automation;
 mod routed_midi;
 use crate::prepared_tempo::{PreparedPeriodicSessionTempo, PreparedTempoError, SessionTimingView};
 use crate::{
@@ -20,9 +21,19 @@ use std::{collections::BTreeMap, sync::Arc};
 
 use crate::compile::{PreparedAudioSourceRef, resolve_prepared, resolve_resident};
 
+fn requires_shared_source_admission(
+    receiver: Option<TrackId>,
+    contributors: impl IntoIterator<Item = TrackId>,
+) -> bool {
+    receiver.is_some_and(|receiver| contributors.into_iter().any(|track| track != receiver))
+}
+
 struct PreparedTrackInstrumentConfig {
+    automation: Option<instrument_automation::Program>,
     track: TrackId,
-    config: Option<Box<dyn PreparedNativeInstrument>>,
+    config: Option<Arc<dyn PreparedNativeInstrument>>,
+    mutable_limits: Option<crate::midi_compile::MutableInstrumentLimits>,
+    foreign_events: bool,
     device_id: Option<DeviceId>,
     tuning_identity: crate::shared_analytic::TuningIdentity,
     state: Option<hex_lattice_contract::NativeDeviceState>,
@@ -34,12 +45,48 @@ struct PreparedTrackInstrumentConfig {
     history_retarget_requires_quiescence: bool,
 }
 
+impl PreparedTrackInstrumentConfig {
+    fn instrument_enabled(&self) -> bool {
+        !self.bypassed && (self.config.is_some() || self.foreign_events)
+    }
+
+    fn clip_instrument_enabled(&self, clip: &hex_project::SessionMidiClip) -> bool {
+        clip.active()
+            && self.instrument_enabled()
+            && (!self.foreign_events || clip.volume().is_unity())
+    }
+}
+
 struct PreparedMutableTrackInstrument {
+    automation: Option<instrument_automation::Program>,
     track: TrackId,
     factory: Box<dyn PreparedMutableInstrumentRuntime>,
     resource_factory_inline_bound: Option<usize>,
     history_retarget_target: Option<Box<dyn PreparedInstrumentHistoryRetarget>>,
     history_retarget_requires_quiescence: bool,
+}
+
+/// Resource proofs need an audited actual ownership shape, rather than trusting
+/// the provider's byte declaration. CURRENT's exact-target scalar proof owns no
+/// PCM, source lease or child allocation; arbitrary resource proofs still refuse.
+fn resource_retarget_inline_bytes(
+    entry: &PreparedMutableTrackInstrument,
+) -> Result<usize, crate::AudioStorageError> {
+    let Some(proof) = entry.history_retarget_target.as_deref() else {
+        return Ok(0);
+    };
+    if !entry
+        .factory
+        .as_any()
+        .is::<hex_devices::sampler::PreparedSamplerRuntime>()
+    {
+        return Err(crate::AudioStorageError::UnknownStorage);
+    }
+    hex_devices::sampler::PreparedSamplerRuntime::history_retarget_inline_bytes(proof)
+        .filter(|bytes| {
+            *bytes > 0 && *bytes <= crate::mutable_instrument::MAX_INSTRUMENT_RETARGET_PROOF_BYTES
+        })
+        .ok_or(crate::AudioStorageError::UnknownStorage)
 }
 
 /// Structural work envelope. Guard ceilings are not physical CPU budgets.
@@ -152,7 +199,7 @@ pub struct PreparedSessionMidiClip {
     pub work: SessionWorkEnvelope,
 }
 
-/// Prepared frame-anchored Session one-shot retaining resident PCM or a
+/// Prepared frame-anchored Session source retaining its validated cycle and a
 /// generation-validated streamed source binding.
 #[derive(Clone)]
 pub struct PreparedSessionAudioClip {
@@ -166,6 +213,7 @@ pub struct PreparedSessionAudioClip {
     pub asset: AssetId,
     pub source_start: u64,
     pub source_end: u64,
+    pub loop_range: Option<hex_project::SessionAudioLoop>,
     pub(crate) gain: f32,
     source: PreparedAudioSource,
 }
@@ -183,6 +231,20 @@ impl std::fmt::Debug for PreparedSessionAudioClip {
     }
 }
 impl PreparedSessionAudioClip {
+    /// Constant-work source mapping; loops reduce elapsed before addition so a
+    /// long-running cell cannot overflow or walk every intervening cycle.
+    pub(crate) fn source_frame(&self, elapsed: u64) -> Option<u64> {
+        hex_project::session_audio_source_frame(
+            self.source_start,
+            self.source_end,
+            self.loop_range,
+            elapsed,
+        )
+    }
+    pub(crate) fn playback_end(&self) -> u64 {
+        self.loop_range.map_or(self.source_end, |range| range.end())
+    }
+
     pub fn source(&self) -> &PreparedAudioSource {
         &self.source
     }
@@ -197,8 +259,8 @@ impl PreparedSessionAudioClip {
             other.active,
             other.track,
             other.asset,
-            other.source_start,
-            other.source_end,
+            other.source_start..other.source_end,
+            other.loop_range,
             &other.source,
         )
     }
@@ -208,15 +270,16 @@ impl PreparedSessionAudioClip {
         active: bool,
         track: TrackId,
         asset: AssetId,
-        source_start: u64,
-        source_end: u64,
+        source_window: std::ops::Range<u64>,
+        loop_range: Option<hex_project::SessionAudioLoop>,
         source: &PreparedAudioSource,
     ) -> bool {
         self.active == active
             && self.track == track
             && self.asset == asset
-            && self.source_start == source_start
-            && self.source_end == source_end
+            && self.source_start == source_window.start
+            && self.source_end == source_window.end
+            && self.loop_range == loop_range
             && match (&self.source, source) {
                 (PreparedAudioSource::Resident(old), PreparedAudioSource::Resident(new)) => {
                     old.shares_pcm_with(new)
@@ -316,6 +379,9 @@ pub struct PreparedSessionInventory {
     midi_source_roots: Vec<(TrackId, TrackId)>,
     mutable_instruments: Vec<PreparedMutableTrackInstrument>,
     mutable_history_retarget_storage_bytes: usize,
+    instrument_automation_storage_bytes: usize,
+    instrument_automation_indices: [Option<u16>; hex_project::MAX_TRACKS],
+    armed_instrument_index: Option<usize>,
     audio_clips: Vec<PreparedSessionAudioClip>,
     work: SessionWorkEnvelope,
     contains_streamed_sources: bool,
@@ -445,6 +511,7 @@ impl PreparedSessionInventory {
         instruments: &hex_lattice::NativeInstrumentRegistry<'_>,
         shared_contexts: Arc<crate::shared_analytic::SharedAnalyticContextTable>,
         samplers: Option<&dyn crate::native_device_resources::InstrumentResourcePreparation>,
+        native_input: Option<crate::NativeParameterInputTarget>,
     ) -> Result<Self, crate::Invalid> {
         Self::prepare_with_resolver_scoped(
             project,
@@ -454,6 +521,7 @@ impl PreparedSessionInventory {
             Some(shared_contexts),
             |asset, rate| sources.resolve(asset, rate),
             samplers,
+            native_input,
         )
     }
 
@@ -476,6 +544,7 @@ impl PreparedSessionInventory {
             shared_contexts,
             resolve_source,
             None,
+            None,
         )
     }
 
@@ -491,8 +560,11 @@ impl PreparedSessionInventory {
             u32,
         ) -> Result<PreparedAudioSourceRef<'a>, crate::Invalid>,
         samplers: Option<&dyn crate::native_device_resources::InstrumentResourcePreparation>,
+        native_input: Option<crate::NativeParameterInputTarget>,
     ) -> Result<Self, crate::Invalid> {
+        crate::device_automation::validate_project(project)?;
         crate::gain_envelope::validate_project(project)?;
+        crate::compile::validate_source_midi_roots(project)?;
         let routed_plan = RoutedMidiPlan::prepare(project)?;
         crate::return_feed_plan::ReturnFeedPlan::validate_admission(project)?;
         let shared_contexts = match shared_contexts {
@@ -521,43 +593,63 @@ impl PreparedSessionInventory {
         instrument_configs
             .try_reserve_exact(project.tracks().len())
             .map_err(|_| crate::Invalid("could not reserve Session instrument configuration"))?;
+        let mut source_instruments = crate::compile::prepare_source_instruments(
+            project,
+            instrument_registry,
+            &shared_contexts,
+            samplers,
+        )?;
         let mut instrument_track_indices = BTreeMap::new();
-        for track in project.tracks() {
+        let mut instrument_automation_storage_bytes = 0;
+        let mut armed_instrument_index = None;
+        for (index, track) in project.tracks().iter().enumerate() {
             let slot = track.instrument();
-            let config = slot
-                .map(|device| {
-                    crate::native_device_resources::prepare_instrument(
-                        instrument_registry,
-                        device.id(),
-                        device.state(),
-                        &hex_lattice::DevicePreparationContext {
-                            sample_rate: project.sample_rate(),
-                            tuning: shared_contexts.tuning(),
-                            resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
-                        },
-                        samplers,
-                    )
-                    .map_err(|_| crate::Invalid("track instrument state is unsupported"))
-                })
-                .transpose()?;
-            let mutable_runtime = if slot.is_some_and(|device| !device.bypassed()) {
-                config
-                    .as_deref()
-                    .map(|prepared| {
-                        if slot.is_some_and(|device| {
-                            shared_contexts.requires_mutable_continuation(track.id(), device.id())
-                        }) {
-                            prepared.prepare_mutable_continuation_runtime()
-                        } else {
-                            prepared.prepare_mutable_runtime()
-                        }
-                    })
-                    .transpose()
-                    .map_err(|_| crate::Invalid("mutable instrument runtime is unsupported"))?
+            let source_config = slot.and_then(|device| source_instruments.get_mut(&device.id()));
+            let has_receiver = track
+                .source_id()
+                .and_then(|id| project.native_source(id))
+                .and_then(hex_project::NativeSource::receiver)
+                .is_some();
+            let config = source_config
+                .as_ref()
+                .filter(|_| has_receiver)
+                .map(|prepared| Arc::clone(&prepared.config));
+            let foreign_events = slot.is_some_and(|device| {
+                !device.bypassed() && crate::compile::is_vst3_instrument(device)
+            });
+            let mutable_limits = source_config
+                .as_ref()
+                .and_then(|prepared| prepared.mutable_limits)
+                .or_else(|| {
+                    foreign_events
+                        .then_some(crate::mutable_instrument::authored_gate::FOREIGN_GATE_LIMITS)
+                });
+            let mutable_runtime = source_config.and_then(|prepared| {
+                track
+                    .receives_source_audio()
+                    .then(|| prepared.mutable_runtime.take())
                     .flatten()
-            } else {
-                None
-            };
+            });
+            let automation = instrument_automation::prepare_for_receiver(
+                project,
+                track,
+                mutable_runtime.as_deref(),
+                instrument_registry,
+                native_input,
+                &mut instrument_automation_storage_bytes,
+            )?;
+            if let Some(target) = native_input
+                && let Some(program) = automation.as_ref()
+                && program.device == target.device()
+                && program.values.input_target() == Some(target.target())
+                && matches!(
+                    target.identity().owner(),
+                    hex_lattice::ProcessorChainOwner::Source(owner)
+                        if track.source_id().is_some_and(|source| source.value() == owner)
+                )
+            {
+                armed_instrument_index = Some(index);
+            }
             let resource_factory_inline_bound = if samplers
                 .is_some_and(|sources| sources.device_scope().is_some())
                 && slot.is_some_and(|device| !device.state().asset_references().is_empty())
@@ -596,8 +688,11 @@ impl PreparedSessionInventory {
                     InstrumentHistoryRetargetPreparation::RequiresQuiescence => (None, true),
                 };
             instrument_configs.push(PreparedTrackInstrumentConfig {
+                automation,
                 track: track.id(),
                 config,
+                mutable_limits,
+                foreign_events,
                 device_id: slot.map(|device| device.id()),
                 tuning_identity: shared_contexts.tuning_identity(),
                 state: slot.map(|device| device.state().clone().without_host_gains()),
@@ -646,7 +741,7 @@ impl PreparedSessionInventory {
             let config = instrument_configs
                 .get(track_index)
                 .ok_or(crate::Invalid("Session MIDI instrument is missing"))?;
-            let enabled = clip.active() && config.config.is_some() && !config.bypassed;
+            let enabled = config.clip_instrument_enabled(clip);
             let shared_context = config.device_id.and_then(|device| {
                 shared_contexts
                     .index_for_device(device)
@@ -803,7 +898,7 @@ impl PreparedSessionInventory {
             .zip(note_keys_by_track)
             .enumerate()
         {
-            let enabled = config.config.is_some() && !config.bypassed;
+            let enabled = config.instrument_enabled();
             if unchanged_sources
                 .get(index)
                 .copied()
@@ -831,7 +926,7 @@ impl PreparedSessionInventory {
                 );
                 continue;
             }
-            if keys.is_empty() || config.mutable_runtime.is_some() {
+            if keys.is_empty() || config.mutable_limits.is_some() {
                 config.note_bank = Some(crate::midi_note_bank::PreparedMidiNoteBank::empty());
                 continue;
             }
@@ -988,7 +1083,8 @@ impl PreparedSessionInventory {
                                 false,
                             )
                         }
-                        PreparedAudioSourceRef::Streamed(source) => (
+                        PreparedAudioSourceRef::Streamed(source)
+                        | PreparedAudioSourceRef::StreamedWithPitch(source, _) => (
                             PreparedAudioSource::Streamed(Arc::clone(source)),
                             source.playback_frames(),
                             true,
@@ -1009,8 +1105,8 @@ impl PreparedSessionInventory {
                                 clip.active(),
                                 cell.track(),
                                 clip.asset(),
-                                clip.source_start(),
-                                clip.source_end(),
+                                clip.source_start()..clip.source_end(),
+                                clip.loop_range(),
                                 &source,
                             )
                         });
@@ -1025,6 +1121,7 @@ impl PreparedSessionInventory {
                         asset: clip.asset(),
                         source_start: clip.source_start(),
                         source_end: clip.source_end(),
+                        loop_range: clip.loop_range(),
                         gain: clip.gain().linear(),
                         source: retained_source,
                     };
@@ -1119,6 +1216,62 @@ impl PreparedSessionInventory {
         for track in &tracks {
             work = work.checked_sum(track.work)?;
         }
+        // Any one Console cell may run on each contributor. Sum their maxima
+        // per source before admitting one shared mutable/analytic voice owner.
+        for source in project
+            .native_sources()
+            .iter()
+            .filter(|source| source.receiver().is_some())
+        {
+            if !requires_shared_source_admission(
+                source.receiver(),
+                project
+                    .source_contributors(source.id())
+                    .map(|track| track.id()),
+            ) {
+                continue;
+            }
+            let mut source_work = SessionWorkEnvelope::default();
+            let mut source_events = 0usize;
+            let mut limits = None;
+            for contributor in project.source_contributors(source.id()) {
+                let index = *instrument_track_indices
+                    .get(&contributor.id())
+                    .ok_or(crate::Invalid("shared session contributor is missing"))?;
+                source_work = source_work.checked_sum(tracks[index].work)?;
+                let selected = if routed_plan
+                    .destinations
+                    .iter()
+                    .any(|&(track, _)| track == contributor.id())
+                {
+                    &routed_midi_clips
+                } else {
+                    &midi_clips
+                };
+                let events = selected
+                    .iter()
+                    .filter(|clip| clip.track == contributor.id() && clip.instrument_enabled)
+                    .map(|clip| clip.source.max_query_edges())
+                    .max()
+                    .unwrap_or(0);
+                source_events = source_events.checked_add(events).ok_or(crate::Invalid(
+                    "shared session source event capacity overflow",
+                ))?;
+                limits = limits.or(instrument_configs[index].mutable_limits);
+            }
+            let max_voices = limits.map_or(
+                crate::midi_compile::MAX_SIMULTANEOUS_VOICES_PER_TRACK,
+                |limits| limits.max_active_occurrences,
+            );
+            if source_work.active_voices > max_voices
+                || source_work.query_onsets > crate::midi_compile::MAX_ONSETS_PER_WINDOW
+                || limits.is_some_and(|limits| source_events > limits.max_events_per_query)
+            {
+                return Err(crate::Invalid(
+                    "shared session source exceeds its aggregate work capacity",
+                ));
+            }
+        }
         let mutable_count = instrument_configs
             .iter()
             .filter(|config| config.mutable_runtime.is_some())
@@ -1128,7 +1281,8 @@ impl PreparedSessionInventory {
             .try_reserve_exact(mutable_count)
             .map_err(|_| crate::Invalid("could not reserve mutable instrument factories"))?;
         let mut mutable_history_retarget_storage_bytes = 0usize;
-        for config in &mut instrument_configs {
+        let mut instrument_automation_indices = [None; hex_project::MAX_TRACKS];
+        for (index, config) in instrument_configs.iter_mut().enumerate() {
             if let Some(factory) = config.mutable_runtime.take() {
                 let proof = config.history_retarget_target.take();
                 if let Some(proof) = proof.as_deref() {
@@ -1146,7 +1300,19 @@ impl PreparedSessionInventory {
                             "mutable instrument retarget proof exceeds its bounded storage",
                         ))?;
                 }
+                if config.automation.is_some() {
+                    let slot =
+                        instrument_automation_indices
+                            .get_mut(index)
+                            .ok_or(crate::Invalid(
+                                "instrument program track index exceeds capacity",
+                            ))?;
+                    *slot = Some(u16::try_from(mutable_instruments.len()).map_err(|_| {
+                        crate::Invalid("instrument program index exceeds capacity")
+                    })?);
+                }
                 mutable_instruments.push(PreparedMutableTrackInstrument {
+                    automation: config.automation.take(),
                     track: config.track,
                     factory,
                     resource_factory_inline_bound: config.resource_factory_inline_bound,
@@ -1173,6 +1339,9 @@ impl PreparedSessionInventory {
             midi_source_roots: routed_plan.destinations,
             mutable_instruments,
             mutable_history_retarget_storage_bytes,
+            instrument_automation_storage_bytes,
+            instrument_automation_indices,
+            armed_instrument_index,
             audio_clips,
             work,
             contains_streamed_sources,
@@ -1212,6 +1381,111 @@ impl PreparedSessionInventory {
         &self.scenes
     }
 
+    /// Finite ordinary source-program allowance for one immutable revision.
+    /// Each distinct program visits one root and four vector DATA rows, even
+    /// when a vector is empty. This does not widen restricted graph admission.
+    pub fn instrument_automation_reservation() -> crate::AudioStorageLedgerReservation {
+        instrument_automation::reservation()
+    }
+
+    pub(crate) fn instrument_automation_construction_bytes(
+        project: &Project,
+        native_input: Option<crate::NativeParameterInputTarget>,
+    ) -> Result<usize, crate::Invalid> {
+        instrument_automation::construction_bytes(project, native_input)
+    }
+
+    /// Program backing only; this does not audit the complete native graph.
+    pub fn visit_instrument_automation_storage<'a>(
+        &'a self,
+        ledger: &mut crate::AudioRootStorageLedger<'a>,
+    ) -> Result<(), crate::AudioStorageError> {
+        for entry in &self.mutable_instruments {
+            if let Some(program) = &entry.automation {
+                program.visit(ledger)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Retained canonical source program bytes, excluding provider factories.
+    pub fn instrument_automation_storage_bytes(&self) -> usize {
+        self.instrument_automation_storage_bytes
+    }
+
+    pub(crate) fn instrument_modulation(
+        &self,
+        receiver: TrackId,
+    ) -> Option<&hex_lattice::PreparedModulationState> {
+        self.mutable_instruments
+            .iter()
+            .find(|entry| entry.track == receiver)?
+            .automation
+            .as_ref()?
+            .modulation
+            .as_ref()
+    }
+
+    /// Borrow one receiving source's program; contributors never own copies.
+    pub fn instrument_automation(
+        &self,
+        receiver: TrackId,
+        device: DeviceId,
+    ) -> Option<&hex_lattice::PreparedParameterAutomation> {
+        self.mutable_instruments
+            .iter()
+            .find(|entry| entry.track == receiver)?
+            .automation
+            .as_ref()
+            .filter(|program| program.device == device)
+            .map(|program| &program.values)
+    }
+
+    /// The receiver's prepared program is the authority for stage ownership.
+    pub(crate) fn has_instrument_output_modulation_at(
+        &self,
+        index: usize,
+        device: DeviceId,
+    ) -> bool {
+        self.instrument_program_at(index)
+            .filter(|program| program.device == device)
+            .and_then(|program| program.modulation.as_ref())
+            .is_some_and(|modulation| modulation.program().host_output_gain_base().is_some())
+    }
+
+    fn instrument_program_at(&self, index: usize) -> Option<&instrument_automation::Program> {
+        let slot = self
+            .instrument_automation_indices
+            .get(index)
+            .copied()
+            .flatten()?;
+        let entry = self.mutable_instruments.get(usize::from(slot))?;
+        if self.tracks.get(index)?.id != entry.track {
+            return None;
+        }
+        entry.automation.as_ref()
+    }
+
+    /// Constant-time receiving-track view for per-frame compensated generation.
+    /// The fixed index owns no program and is populated only on control.
+    pub(crate) fn instrument_automation_at(
+        &self,
+        index: usize,
+        device: DeviceId,
+    ) -> Option<&hex_lattice::PreparedParameterAutomation> {
+        self.instrument_program_at(index)
+            .filter(|program| program.device == device)
+            .map(|program| &program.values)
+    }
+
+    /// The exact receiving program chosen during control-side preparation.
+    pub(crate) fn armed_instrument_automation(
+        &self,
+        target: crate::NativeParameterInputTarget,
+    ) -> Option<&hex_lattice::PreparedParameterAutomation> {
+        self.instrument_automation_at(self.armed_instrument_index?, target.device())
+    }
+
     pub(crate) fn resource_factory_inline_bytes(&self) -> Result<usize, crate::AudioStorageError> {
         self.mutable_instruments
             .iter()
@@ -1223,23 +1497,24 @@ impl PreparedSessionInventory {
                     entry.factory.as_ref(),
                     bound,
                 )?;
-                if entry.history_retarget_target.is_some() {
-                    return Err(crate::AudioStorageError::UnknownStorage);
-                }
+                let proof = resource_retarget_inline_bytes(entry)?;
                 bytes
                     .checked_add(actual)
+                    .and_then(|bytes| bytes.checked_add(proof))
                     .ok_or(crate::AudioStorageError::Overflow)
             })
     }
 
     /// Actual inline-only resource factory backing. The module declares heap absence and the
     /// host validates the dynamic payload size against its pre-allocation definition bound.
-    /// Resource factory heap/proof owners remain unsupported without an actual ownership visitor.
+    /// Only the audited scalar sampler retarget proof is admitted alongside its
+    /// factory. Other resource-factory proof/heap owners still refuse.
     pub(crate) fn visit_device_resource_factories<'a>(
         &'a self,
         ledger: &mut crate::AudioRootStorageLedger<'a>,
         resources: &crate::native_device_resources::PreparedDeviceResources,
     ) -> Result<(), crate::AudioStorageError> {
+        self.visit_instrument_automation_storage(ledger)?;
         if !ledger.native_payload_once(self)? {
             return Ok(());
         }
@@ -1252,14 +1527,19 @@ impl PreparedSessionInventory {
                 factory.factory.as_ref(),
                 bound,
             )?;
-            if factory.history_retarget_target.is_some() {
-                return Err(crate::AudioStorageError::UnknownStorage);
-            }
+            let proof_bytes = resource_retarget_inline_bytes(factory)?;
             ledger.bytes(
                 crate::audio_storage::Owner::exclusive(&factory.factory),
                 crate::audio_storage::Location("registered-resource-factory-inline", 0),
                 bytes,
             )?;
+            if let Some(proof) = &factory.history_retarget_target {
+                ledger.bytes(
+                    crate::audio_storage::Owner::exclusive(proof),
+                    crate::audio_storage::Location("registered-resource-retarget-inline", 0),
+                    proof_bytes,
+                )?;
+            }
         }
         Ok(())
     }
@@ -1270,6 +1550,7 @@ impl PreparedSessionInventory {
         ledger: &mut crate::AudioRootStorageLedger<'a>,
         sources: &crate::native_device_resources::ControlSamplerSources,
     ) -> Result<(), crate::AudioStorageError> {
+        self.visit_instrument_automation_storage(ledger)?;
         if !ledger.native_payload_once(self)? {
             return Ok(());
         }
@@ -1291,6 +1572,14 @@ impl PreparedSessionInventory {
                 crate::audio_storage::Location("control-sampler-factory", 0),
                 std::mem::size_of_val(factory.factory.as_ref()),
             )?;
+            let proof_bytes = resource_retarget_inline_bytes(factory)?;
+            if let Some(proof) = &factory.history_retarget_target {
+                ledger.bytes(
+                    crate::audio_storage::Owner::exclusive(proof),
+                    crate::audio_storage::Location("control-sampler-retarget-inline", 0),
+                    proof_bytes,
+                )?;
+            }
         }
         Ok(())
     }
@@ -1403,6 +1692,110 @@ impl PreparedSessionInventory {
         self.work
     }
 
+    /// Admit independently selectable Arrangement/Console contributors against
+    /// one shared source owner. Each contributor is charged its larger voice,
+    /// onset and edge envelope; note intervals include release tails. Live input
+    /// and detached transition tails still require bounded runtime admission.
+    /// Temporary sorted edge lists are control-only and are not retained.
+    pub(crate) fn validate_shared_source_capacity(
+        &self,
+        canonical: &Project,
+        arrangement: &crate::Project,
+    ) -> Result<(), crate::Invalid> {
+        for source in canonical
+            .native_sources()
+            .iter()
+            .filter(|source| source.receiver().is_some() && !source.instrument().bypassed())
+        {
+            if !requires_shared_source_admission(
+                source.receiver(),
+                canonical
+                    .source_contributors(source.id())
+                    .map(|track| track.id()),
+            ) {
+                continue;
+            }
+            let limits = self
+                .mutable_instruments
+                .iter()
+                .find(|instrument| Some(instrument.track) == source.receiver())
+                .map(|instrument| {
+                    crate::midi_compile::MutableInstrumentLimits::from_factory(
+                        instrument.factory.as_ref(),
+                    )
+                })
+                .transpose()?;
+            let mut voices = 0usize;
+            let mut onsets = 0usize;
+            let mut edges = 0usize;
+            for contributor in canonical.source_contributors(source.id()) {
+                let track = arrangement
+                    .tracks
+                    .iter()
+                    .find(|track| track.canonical_track_id() == Some(contributor.id()))
+                    .ok_or(crate::Invalid("shared arrangement contributor is missing"))?;
+                let (arrangement_voices, arrangement_onsets, arrangement_edges) =
+                    arrangement_midi_envelope(track)?;
+                let session = self
+                    .tracks
+                    .iter()
+                    .find(|track| track.id == contributor.id())
+                    .ok_or(crate::Invalid("shared console contributor is missing"))?;
+                let clips = if self
+                    .midi_source_roots
+                    .binary_search_by_key(&contributor.id(), |&(track, _)| track)
+                    .is_ok()
+                {
+                    &self.routed_midi_clips
+                } else {
+                    &self.midi_clips
+                };
+                let console_edges = clips
+                    .iter()
+                    .filter(|clip| clip.track == contributor.id() && clip.instrument_enabled)
+                    .map(|clip| clip.source.max_query_edges())
+                    .max()
+                    .unwrap_or(0);
+                voices = voices
+                    .checked_add(arrangement_voices.max(session.work.active_voices))
+                    .ok_or(crate::Invalid("shared source voice capacity overflow"))?;
+                onsets = onsets
+                    .checked_add(arrangement_onsets.max(session.work.query_onsets))
+                    .ok_or(crate::Invalid("shared source onset capacity overflow"))?;
+                edges = edges
+                    .checked_add(arrangement_edges.max(console_edges))
+                    .ok_or(crate::Invalid("shared source event capacity overflow"))?;
+            }
+            let max_voices = limits.map_or(
+                crate::midi_compile::MAX_SIMULTANEOUS_VOICES_PER_TRACK,
+                |limits| limits.max_active_occurrences,
+            );
+            if voices > max_voices
+                || onsets > crate::midi_compile::MAX_ONSETS_PER_WINDOW
+                || limits.is_some_and(|limits| edges > limits.max_events_per_query)
+            {
+                return Err(crate::Invalid(
+                    "shared source exceeds its combined arrangement and console capacity",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn contributor_voice_envelope(
+        &self,
+        id: TrackId,
+        arrangement: &crate::Track,
+    ) -> Result<(usize, usize), crate::Invalid> {
+        let (voices, _, _) = arrangement_midi_envelope(arrangement)?;
+        let session = self
+            .tracks
+            .iter()
+            .find(|track| track.id == id)
+            .ok_or(crate::Invalid("shared contributor inventory is missing"))?;
+        Ok((voices, voices.max(session.work.active_voices)))
+    }
+
     pub fn contains_streamed_sources(&self) -> bool {
         self.contains_streamed_sources
     }
@@ -1453,6 +1846,69 @@ impl PreparedSessionInventory {
     }
 }
 
+/// Largest simultaneous sounding interval and half-open 256-frame edge windows
+/// for one compiled contributor. Arrangement span ends already include release.
+fn arrangement_midi_envelope(
+    track: &crate::Track,
+) -> Result<(usize, usize, usize), crate::Invalid> {
+    let Some(instrument) = &track.instrument else {
+        return Ok((0, 0, 0));
+    };
+    let edge_count = instrument
+        .spans
+        .len()
+        .checked_mul(2)
+        .ok_or(crate::Invalid("shared arrangement edge count overflow"))?;
+    let mut voices = Vec::new();
+    let mut onsets = Vec::new();
+    let mut events = Vec::new();
+    voices
+        .try_reserve_exact(edge_count)
+        .map_err(|_| crate::Invalid("could not reserve shared arrangement voice envelope"))?;
+    onsets
+        .try_reserve_exact(instrument.spans.len())
+        .map_err(|_| crate::Invalid("could not reserve shared arrangement onset envelope"))?;
+    events
+        .try_reserve_exact(edge_count)
+        .map_err(|_| crate::Invalid("could not reserve shared arrangement event envelope"))?;
+    for span in &instrument.spans {
+        voices.push((span.start, true));
+        voices.push((span.end, false));
+        onsets.push(span.start);
+        events.push(span.start);
+        events.push(span.gate_end);
+    }
+    voices.sort_unstable();
+    let mut active = 0usize;
+    let mut max_active = 0usize;
+    for (_, starts) in voices {
+        if starts {
+            active += 1;
+            max_active = max_active.max(active);
+        } else {
+            active = active.checked_sub(1).ok_or(crate::Invalid(
+                "shared arrangement voice interval is invalid",
+            ))?;
+        }
+    }
+    fn window_max(frames: &mut [u64]) -> Result<usize, crate::Invalid> {
+        frames.sort_unstable();
+        let mut max = 0;
+        for (index, frame) in frames.iter().enumerate() {
+            let end = frame
+                .checked_add(crate::midi_compile::RENDER_QUERY_FRAMES)
+                .ok_or(crate::Invalid("shared arrangement event window overflow"))?;
+            max = max.max(frames.partition_point(|frame| *frame < end) - index);
+        }
+        Ok(max)
+    }
+    Ok((
+        max_active,
+        window_max(&mut onsets)?,
+        window_max(&mut events)?,
+    ))
+}
+
 fn work_for(
     source: &PreparedMidiSourceTemplate,
     instrument: &PreparedMidiInstrumentTemplate,
@@ -1495,7 +1951,13 @@ fn template_error(error: MidiTemplateError) -> crate::Invalid {
         MidiTemplateError::Allocation => {
             crate::Invalid("could not reserve Session MIDI template storage")
         }
-        _ => crate::Invalid("Session MIDI source failed template admission"),
+        MidiTemplateError::GateTooShortForAdmission => crate::Invalid(
+            "session midi note gate is too short to guarantee one frame at the admitted tempo; lengthen the note or reduce tempo",
+        ),
+        MidiTemplateError::LoopPeriodTooShortForAdmission => crate::Invalid(
+            "session midi loop is too short to guarantee one frame at the admitted tempo; lengthen the loop or reduce tempo",
+        ),
+        _ => crate::Invalid(error.diagnostic_message()),
     }
 }
 
@@ -1564,6 +2026,82 @@ mod tests {
                 velocity: 100,
             })
             .expect("add MIDI note");
+    }
+
+    #[test]
+    fn remote_single_contributor_requires_shared_source_admission() {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let receiver = add_track(&mut editor, "receiver");
+        let contributor = add_track(&mut editor, "contributor");
+        assert!(!requires_shared_source_admission(Some(receiver), []));
+        assert!(!requires_shared_source_admission(
+            Some(receiver),
+            [receiver]
+        ));
+        assert!(requires_shared_source_admission(
+            Some(receiver),
+            [contributor]
+        ));
+        assert!(requires_shared_source_admission(
+            Some(receiver),
+            [receiver, contributor]
+        ));
+        assert!(!requires_shared_source_admission(None, [contributor]));
+    }
+
+    #[test]
+    fn shared_source_retains_independent_console_cells_and_bounds_combined_voices() {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 128).unwrap();
+        let first = add_track(&mut editor, "receiver");
+        let second = add_track(&mut editor, "contributor");
+        editor
+            .execute(Command::InsertInstrument {
+                track: first,
+                state: hex_project::default_instrument_state().unwrap(),
+            })
+            .unwrap();
+        let source = editor.project().track(first).unwrap().source_id().unwrap();
+        editor
+            .execute(Command::BindTrackSource {
+                track: second,
+                source: Some(source),
+            })
+            .unwrap();
+        let scene = add_scene(&mut editor, "scene");
+        let first_clip = add_cell(&mut editor, first, scene, "first");
+        let second_clip = add_cell(&mut editor, second, scene, "second");
+        add_note(&mut editor, first_clip, 60);
+        add_note(&mut editor, second_clip, 67);
+        let inventory =
+            PreparedSessionInventory::prepare(editor.project(), Arc::new(SineTable::new()), None)
+                .unwrap();
+        assert_eq!(inventory.midi_clip(first_clip).unwrap().track, first);
+        assert_eq!(inventory.midi_clip(second_clip).unwrap().track, second);
+        assert!(
+            inventory
+                .midi_clip(first_clip)
+                .unwrap()
+                .instrument_enabled()
+        );
+        assert!(
+            inventory
+                .midi_clip(second_clip)
+                .unwrap()
+                .instrument_enabled()
+        );
+        assert_eq!(inventory.work().active_voices, 2);
+        for pitch in 0..32 {
+            add_note(&mut editor, first_clip, pitch);
+            add_note(&mut editor, second_clip, pitch + 32);
+        }
+        let rejected =
+            PreparedSessionInventory::prepare(editor.project(), Arc::new(SineTable::new()), None);
+        assert!(matches!(
+            rejected,
+            Err(crate::Invalid(
+                "shared session source exceeds its aggregate work capacity"
+            ))
+        ));
     }
 
     #[test]
@@ -1825,5 +2363,78 @@ mod tests {
             changed_timing.midi_clip(first).unwrap().source_template(),
             different_kernel.midi_clip(first).unwrap().source_template()
         ));
+    }
+    #[test]
+    fn indexed_program_query_checks_receiver_device_and_bounds() {
+        use hex_lattice_contract::NativeDeviceMetadata;
+        let mut editor = Editor::new(Project::new(48000).unwrap(), 16).unwrap();
+        let state = hex_devices::fm4::device::FM4_DEFINITION
+            .default_state()
+            .unwrap();
+        let first = add_track(&mut editor, "first");
+        let second = add_track(&mut editor, "second");
+        for track in [first, second] {
+            editor
+                .execute(Command::InsertInstrument {
+                    track,
+                    state: state.clone(),
+                })
+                .unwrap();
+        }
+        let device = editor
+            .project()
+            .track(first)
+            .unwrap()
+            .instrument()
+            .unwrap()
+            .id();
+        let other = editor
+            .project()
+            .track(second)
+            .unwrap()
+            .instrument()
+            .unwrap()
+            .id();
+        let mut inventory =
+            PreparedSessionInventory::prepare(editor.project(), Arc::new(SineTable::new()), None)
+                .unwrap();
+        editor
+            .execute(Command::ReplaceDeviceAutomation {
+                device,
+                parameter: hex_devices::fm4::device::parameter::carrier(1),
+                points: vec![hex_project::AutomationPoint {
+                    beat: BeatTime::ZERO,
+                    value: hex_project::AutomationValue::new(0.25).unwrap(),
+                    outgoing: hex_project::AutomationInterpolation::Step,
+                }],
+            })
+            .unwrap();
+        let program = instrument_automation::prepare(
+            editor.project().device(device).unwrap(),
+            &hex_devices::fm4::device::FM4_DEFINITION,
+            inventory.mutable_instruments[0].factory.as_ref(),
+        )
+        .unwrap();
+        inventory.instrument_automation_storage_bytes = program
+            .as_ref()
+            .and_then(|program| program.values.storage_bytes())
+            .unwrap();
+        inventory.mutable_instruments[0].automation = program;
+        inventory.instrument_automation_indices[0] = Some(0);
+        assert!(std::ptr::eq(
+            inventory.instrument_automation_at(0, device).unwrap(),
+            inventory.instrument_automation(first, device).unwrap(),
+        ));
+        assert!(inventory.instrument_automation_at(0, other).is_none());
+        assert!(
+            inventory
+                .instrument_automation_at(usize::MAX, device)
+                .is_none()
+        );
+        inventory.instrument_automation_indices[1] = Some(0);
+        assert!(
+            inventory.instrument_automation_at(1, device).is_none(),
+            "misbound receiver index refuses"
+        );
     }
 }

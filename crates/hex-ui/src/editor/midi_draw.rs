@@ -1,11 +1,12 @@
-//! GPUI-independent MIDI draw stroke admission and coordinate mapping.
+//! Control-side MIDI draw stroke admission and coordinate mapping.
+//! Pure resolution and accepted display custody retain their existing owners.
 use super::{EditorView, midi_drag};
 use super::{midi_stroke, midi_stroke::StrokeContext};
-use gpui::Window;
-#[cfg(test)]
-use hex_project::BeatTime;
+use gpui::{Context, Window};
+
+#[path = "midi_draw_pointer.rs"]
+mod pointer;
 use hex_project::{ClipId, MidiNote, NoteId};
-use hex_session::service::Request;
 use std::sync::Arc;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -31,6 +32,7 @@ impl EditorView {
         hit: Option<NoteId>,
         modifiers: StrokeModifiers,
         window: &mut Window,
+        cx: &Context<Self>,
     ) -> bool {
         let Some(context) = self.current_stroke_context(rendered.bounds, modifiers) else {
             return false;
@@ -38,6 +40,7 @@ impl EditorView {
         if !same_rendered_frame(context, rendered)
             || !self.midi_draw_mode
             || self.edit_pending()
+            || self.midi_stroke.is_some()
             || self.project_generation != rendered.generation
         {
             return false;
@@ -77,6 +80,9 @@ impl EditorView {
             hit,
         ) {
             Ok(stroke) => {
+                if !self.capture_midi_draw_pointer(&stroke, window, cx) {
+                    return false;
+                }
                 self.midi_note_gesture = None;
                 self.midi_group_gesture = None;
                 self.cancel_all_midi_marquees();
@@ -149,9 +155,16 @@ impl EditorView {
             stroke.cancel();
             return true;
         }
+        // finish retires the working stroke and clears its own preview. Keep
+        // the final shared geometry before that, then transfer only on admission.
+        let preview = stroke.shared_preview();
         match stroke.finish(context, pending) {
             Ok(Some(command)) => {
-                self.enqueue(Request::Edit(command));
+                self.submit_midi_drag_preview(
+                    context.clip,
+                    super::midi_pending_drag::Frozen::Stroke(preview),
+                    command,
+                );
             }
             Ok(None) => {}
             Err(error) => self.error = Some(stroke_error(error).into()),
@@ -186,7 +199,7 @@ impl EditorView {
             effective_grid: midi_drag::effective_grid(self.midi_snap_grid, modifiers.snap),
             snap_modifier: modifiers.snap,
             pitch_modifier: modifiers.pitch,
-            view_start: self.piano_beat_start.raw(),
+            view_start: self.piano_beat_start,
             view_span: self.piano_beat_span.raw(),
             pitch_low: self.piano_pitch_low,
             pitch_rows: self.piano_pitch_rows,
@@ -244,7 +257,7 @@ fn stroke_point(
     }
     let fraction = f64::from(local_x / bounds.width);
     let offset = (fraction * context.view_span as f64) as u64;
-    let beat_raw = context.view_start.checked_add(offset)?;
+    let beat_raw = u64::try_from(context.view_start.checked_add(i128::from(offset))?).ok()?;
     let length = context.authoring_length()?;
     let beat_raw = if clamp_to_bounds {
         beat_raw.min(length.checked_sub(1)?)
@@ -308,10 +321,10 @@ pub(super) fn created_range_ids(
     Ok(Some(created))
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "ui-test-support")))]
 mod tests {
     use super::*;
-    use hex_project::{Command, Created, Editor, Project};
+    use hex_project::{BeatTime, Command, Created, Editor, Project};
 
     #[test]
     fn draw_coordinate_mapping_clamps_during_motion_and_rejects_offroll_release() {
@@ -389,6 +402,7 @@ mod tests {
         let mut insert = Vec::new();
         for pitch in [60, 61, 62] {
             insert.push(hex_project::MidiNoteInsert {
+                active: true,
                 start: BeatTime::from_quarters(pitch as u64 - 60).unwrap(),
                 duration: BeatTime::ONE,
                 pitch,

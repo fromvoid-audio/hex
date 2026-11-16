@@ -1,13 +1,30 @@
 //! Control-side compilation of a canonical edit snapshot into offline playback.
 //! This allocates and retains PCM references; it must never run in a callback.
-use crate::{Audio, Invalid, Project, StreamedSourceMetadata, Track};
-use hex_project::{Asset, AssetId};
+use crate::{
+    Audio, Invalid, Project, StreamedSourceMetadata, Track, serial_effect_power::EffectPower,
+};
+use hex_project::{Asset, AssetId, DeviceId};
 use std::{collections::BTreeMap, sync::Arc};
 
 pub use crate::midi_compile::midi_events;
 
+/// Unit admission uses the caller's actual effect registry. Live revisions
+/// compile Arrangement and Session together before canonical publication.
+fn validate_serial_effect_units(
+    project: &hex_project::Project,
+    registry: &hex_lattice::NativeDeviceRegistry<'_>,
+) -> Result<(), Invalid> {
+    if crate::device_automation::effect_devices(project).any(|device| {
+        device.parent().is_some() && registry.definition(device.state().type_id()).is_none()
+    }) {
+        return Err(Invalid("serial child is not a supported effect"));
+    }
+    Ok(())
+}
+
 /// One prepared Arrangement audio dependency. Streamed entries must come from
 /// the caller's verified catalog for the requested project-open generation.
+/// Asset-keyed bindings describe the original source, not derived pitch pages.
 #[derive(Clone, Debug)]
 pub enum PreparedAudioSource {
     Resident(Audio),
@@ -20,6 +37,11 @@ pub enum PreparedAudioSource {
 pub(crate) enum SourceBank<'a> {
     Resident(&'a BTreeMap<AssetId, Audio>),
     Mixed(&'a BTreeMap<AssetId, PreparedAudioSource>, u64),
+    MixedWithPitch(
+        &'a BTreeMap<AssetId, PreparedAudioSource>,
+        &'a BTreeMap<crate::StreamSourceKey, Arc<StreamedSourceMetadata>>,
+        u64,
+    ),
 }
 impl<'a> SourceBank<'a> {
     pub(crate) fn resolve(
@@ -30,8 +52,198 @@ impl<'a> SourceBank<'a> {
         match self {
             Self::Resident(media) => resolve_resident(asset, rate, media),
             Self::Mixed(sources, generation) => resolve_prepared(asset, rate, sources, generation),
+            Self::MixedWithPitch(sources, pitched, generation) => {
+                match resolve_prepared(asset, rate, sources, generation)? {
+                    PreparedAudioSourceRef::Streamed(raw) => {
+                        Ok(PreparedAudioSourceRef::StreamedWithPitch(raw, pitched))
+                    }
+                    resident => Ok(resident),
+                }
+            }
         }
     }
+}
+
+/// One source provider and mutable factory per preparation pass. Contributor
+/// tracks borrow this configuration; only the selected receiver takes custody
+/// of the factory. This temporary map never enters callback ownership.
+pub(crate) struct PreparedSourceInstrument {
+    pub(crate) config: Arc<dyn hex_lattice::PreparedNativeInstrument>,
+    pub(crate) mutable_runtime: Option<Box<dyn hex_lattice::PreparedMutableInstrumentRuntime>>,
+    pub(crate) mutable_limits: Option<crate::midi_compile::MutableInstrumentLimits>,
+    latency: Option<u32>,
+    runtime_latency: Option<u32>,
+}
+
+pub(crate) fn prepare_source_instruments(
+    project: &hex_project::Project,
+    registry: &hex_lattice::NativeInstrumentRegistry<'_>,
+    contexts: &crate::shared_analytic::SharedAnalyticContextTable,
+    samplers: Option<&dyn crate::native_device_resources::InstrumentResourcePreparation>,
+) -> Result<BTreeMap<DeviceId, PreparedSourceInstrument>, Invalid> {
+    let mut instruments = BTreeMap::new();
+    for track in project.tracks() {
+        let Some(device) = track.instrument() else {
+            continue;
+        };
+        if is_vst3_instrument(device) {
+            continue;
+        }
+        if instruments.contains_key(&device.id()) {
+            continue;
+        }
+        let receiver = track
+            .source_id()
+            .and_then(|id| project.native_source(id))
+            .and_then(hex_project::NativeSource::receiver);
+        if receiver.is_none() {
+            // A retained but disconnected source has no generator or resource
+            // lease. Validate its state without demanding playable resources.
+            registry
+                .migrate_state(device.state())
+                .map_err(|_| Invalid("disconnected native source state is invalid"))?;
+            continue;
+        }
+        let config: Arc<dyn hex_lattice::PreparedNativeInstrument> =
+            Arc::from(crate::native_device_resources::prepare_instrument(
+                registry,
+                device.id(),
+                device.state(),
+                &hex_lattice::DevicePreparationContext {
+                    sample_rate: project.sample_rate(),
+                    tuning: contexts.tuning(),
+                    resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+                },
+                samplers,
+            )?);
+        let enabled = !device.bypassed();
+        let latency = if enabled {
+            config.algorithmic_latency_frames()
+        } else {
+            Some(0)
+        };
+        let pressure = crate::device_modulation::prepare_voice_pressure(device, registry)?;
+        let mutable_runtime = if let Some(receiver) = receiver.filter(|_| enabled) {
+            if let Some(pressure) = pressure {
+                config
+                    .prepare_mutable_note_pressure(pressure.source, pressure.route)
+                    .map(Some)
+            } else if contexts.requires_mutable_continuation(receiver, device.id()) {
+                config.prepare_mutable_continuation_runtime()
+            } else {
+                config.prepare_mutable_runtime()
+            }
+            .map_err(|_| Invalid("mutable instrument runtime is unsupported"))?
+        } else {
+            None
+        };
+        let runtime_latency = mutable_runtime
+            .as_deref()
+            .map_or(latency, |factory| factory.algorithmic_latency_frames());
+        let mutable_limits = mutable_runtime
+            .as_deref()
+            .map(crate::midi_compile::MutableInstrumentLimits::from_factory)
+            .transpose()?;
+        instruments.insert(
+            device.id(),
+            PreparedSourceInstrument {
+                config,
+                mutable_runtime,
+                mutable_limits,
+                latency,
+                runtime_latency,
+            },
+        );
+    }
+    Ok(instruments)
+}
+
+pub(crate) fn is_vst3_instrument(device: &hex_project::Device) -> bool {
+    device.state().type_id() == hex_lattice_contract::DeviceTypeId::from_static("hex.vst3")
+}
+
+fn prepare_foreign_instrument(
+    track: &hex_project::Track,
+    arrangement: &hex_project::Project,
+    registry: &hex_lattice::NativeDeviceRegistry<'_>,
+    context: &hex_lattice::DevicePreparationContext<'_>,
+) -> Result<Option<hex_lattice::PreparedRuntimeInstance>, Invalid> {
+    let Some(device) = track
+        .instrument()
+        .filter(|device| is_vst3_instrument(device))
+    else {
+        return Ok(None);
+    };
+    if !track.receives_source_audio() {
+        return Ok(None);
+    }
+    let owner = hex_lattice::ProcessorChainOwner::Track(track.id().value());
+    let identity = hex_lattice::ProcessorInstanceIdentity::new(owner, device.id().value())
+        .map_err(|_| Invalid("invalid vst3 instrument identity"))?;
+    let migrated = registry
+        .prepare_instance_state(identity, device.state(), context)
+        .map_err(|_| Invalid("vst3 instrument state is unsupported or malformed"))?;
+    let prepared = registry
+        .prepare_runtime_instance(identity, &migrated, context)
+        .map_err(|_| Invalid("vst3 instrument source could not be prepared"))?;
+    let facts = match prepared.processor {
+        Some(hex_lattice::PreparedProcessorFactory::Foreign(facts)) => facts,
+        None if prepared.matrix.is_identity() => return Ok(None),
+        _ => return Err(Invalid("vst3 instrument has no foreign worker")),
+    };
+    if !prepared.matrix.is_identity()
+        || !facts.is_instrument_profile()
+        || facts
+            .binding()
+            .is_none_or(|binding| binding.instance != device.id().value())
+    {
+        return Err(Invalid(
+            "vst3 instrument worker binding or processing role differs",
+        ));
+    }
+    let automation = crate::foreign_automation::candidate::prepare_device(
+        device,
+        identity,
+        registry,
+        facts,
+        arrangement.tempo_map(),
+        arrangement.loop_region(),
+    )?
+    .map_or_else(
+        hex_lattice::PreparedParameterAutomation::default,
+        hex_lattice::PreparedParameterAutomation::for_foreign,
+    );
+    Ok(Some(hex_lattice::PreparedRuntimeInstance {
+        modulation: None,
+        automation,
+        meter: Default::default(),
+        owner,
+        device_id: device.id().value(),
+        device_type: migrated.type_id(),
+        matrix: prepared.matrix,
+        bypassed: device.bypassed(),
+        sample_rate: context.sample_rate,
+        configuration: Some(Arc::new(migrated)),
+        definition: Some(hex_lattice::PreparedProcessorFactory::Foreign(facts)),
+    }))
+}
+
+/// Refuse the same selected MIDI root entering one source twice. Its independent
+/// route identities cannot currently distinguish an intentional duplicate stream.
+pub(crate) fn validate_source_midi_roots(project: &hex_project::Project) -> Result<(), Invalid> {
+    for source in project
+        .native_sources()
+        .iter()
+        .filter(|source| source.receiver().is_some())
+    {
+        let mut roots = std::collections::BTreeSet::new();
+        for track in project.source_contributors(source.id()) {
+            if !roots.insert(project.midi_source_track(track.id())) {
+                return Err(Invalid("shared source has ambiguous duplicate midi roots"));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// A decoded media bank is separate from editable metadata and undo history.
@@ -119,6 +331,36 @@ pub fn project_with_prepared_audio_sources(
     .map(|(project, _)| project)
 }
 
+/// Compile Arrangement with separately admitted full-source pitch streams.
+/// The caller supplies metadata from its verified worker catalog; this does not
+/// itself admit pages or establish their lifetime. Raw asset bindings remain
+/// separate and are used by unpitched clips.
+pub fn project_with_prepared_pitch_sources(
+    snapshot: &hex_project::Project,
+    sources: &BTreeMap<AssetId, PreparedAudioSource>,
+    pitched: &BTreeMap<crate::StreamSourceKey, Arc<StreamedSourceMetadata>>,
+    generation: u64,
+) -> Result<Project, Invalid> {
+    if generation == 0 {
+        return Err(Invalid("stream source generation must be positive"));
+    }
+    let registry = hex_devices::native_registry()
+        .map_err(|_| Invalid("invalid built-in native device registry"))?;
+    let instruments = hex_devices::native_instrument_registry()
+        .map_err(|_| Invalid("invalid built-in native instrument registry"))?;
+    compile_project(
+        snapshot,
+        |asset, rate| SourceBank::MixedWithPitch(sources, pitched, generation).resolve(asset, rate),
+        None,
+        None,
+        &registry,
+        &instruments,
+        None,
+        None,
+    )
+    .map(|(project, _)| project)
+}
+
 /// Compile Arrangement playback and MIDI preview from one mixed source map,
 /// retaining the caller's immutable instrument table when supplied.
 pub fn project_with_prepared_audio_sources_and_midi_preview_and_table(
@@ -140,6 +382,26 @@ pub(crate) fn project_with_prepared_audio_sources_and_midi_preview_and_contexts(
     shared_contexts: Option<Arc<crate::shared_analytic::SharedAnalyticContextTable>>,
     transforms: Option<&crate::audio_transform::AudioTransformPreparation>,
 ) -> Result<(Project, crate::MidiArrangementPreview), Invalid> {
+    project_with_pitch_sources_and_midi_preview_and_contexts(
+        snapshot,
+        sources,
+        &BTreeMap::new(),
+        generation,
+        sine_table,
+        shared_contexts,
+        transforms,
+    )
+}
+
+pub(crate) fn project_with_pitch_sources_and_midi_preview_and_contexts(
+    snapshot: &hex_project::Project,
+    sources: &BTreeMap<AssetId, PreparedAudioSource>,
+    pitched: &BTreeMap<crate::StreamSourceKey, Arc<StreamedSourceMetadata>>,
+    generation: u64,
+    sine_table: Option<Arc<hex_devices::SineTable>>,
+    shared_contexts: Option<Arc<crate::shared_analytic::SharedAnalyticContextTable>>,
+    transforms: Option<&crate::audio_transform::AudioTransformPreparation>,
+) -> Result<(Project, crate::MidiArrangementPreview), Invalid> {
     if generation == 0 {
         return Err(Invalid("stream source generation must be positive"));
     }
@@ -149,7 +411,14 @@ pub(crate) fn project_with_prepared_audio_sources_and_midi_preview_and_contexts(
         .map_err(|_| Invalid("invalid built-in native instrument registry"))?;
     compile_with_midi_preview(
         snapshot,
-        |asset, project_rate| resolve_prepared(asset, project_rate, sources, generation),
+        |asset, project_rate| {
+            if pitched.is_empty() {
+                resolve_prepared(asset, project_rate, sources, generation)
+            } else {
+                SourceBank::MixedWithPitch(sources, pitched, generation)
+                    .resolve(asset, project_rate)
+            }
+        },
         sine_table,
         &registry,
         &instruments,
@@ -246,6 +515,8 @@ fn compile_with_midi_preview<'a>(
         shared_contexts,
         transforms,
         None,
+        None,
+        &[],
     )
 }
 
@@ -259,6 +530,8 @@ fn compile_with_midi_preview_scoped<'a>(
     shared_contexts: Option<Arc<crate::shared_analytic::SharedAnalyticContextTable>>,
     transforms: Option<&crate::audio_transform::AudioTransformPreparation>,
     samplers: Option<&dyn crate::native_device_resources::InstrumentResourcePreparation>,
+    native_input: Option<crate::device_automation::NativeParameterInputTarget>,
+    external_inputs: &[crate::device_automation::NativeParameterInputTarget],
 ) -> Result<(Project, crate::MidiArrangementPreview), Invalid> {
     let mut previews = Vec::new();
     let clip_count = snapshot
@@ -283,6 +556,8 @@ fn compile_with_midi_preview_scoped<'a>(
         shared_contexts,
         transforms,
         samplers,
+        native_input,
+        external_inputs,
     )?;
     compiled_previews.sort_unstable_by_key(|clip| clip.clip_id);
     Ok((
@@ -312,6 +587,8 @@ fn compile_project<'a>(
         shared_contexts,
         transforms,
         None,
+        None,
+        &[],
     )
 }
 
@@ -326,6 +603,8 @@ fn compile_project_scoped<'a>(
     shared_contexts: Option<Arc<crate::shared_analytic::SharedAnalyticContextTable>>,
     transforms: Option<&crate::audio_transform::AudioTransformPreparation>,
     samplers: Option<&dyn crate::native_device_resources::InstrumentResourcePreparation>,
+    native_input: Option<crate::device_automation::NativeParameterInputTarget>,
+    external_inputs: &[crate::device_automation::NativeParameterInputTarget],
 ) -> Result<(Project, Vec<crate::MidiClipPreview>), Invalid> {
     let fallback = crate::audio_transform::AudioTransformPreparation::default();
     let transforms = transforms.unwrap_or(&fallback);
@@ -340,6 +619,8 @@ fn compile_project_scoped<'a>(
             shared_contexts,
             transforms,
             samplers,
+            native_input,
+            external_inputs,
         )
     })
 }
@@ -355,13 +636,22 @@ fn compile_project_inner<'a>(
     shared_contexts: Option<Arc<crate::shared_analytic::SharedAnalyticContextTable>>,
     transforms: &crate::audio_transform::AudioTransformPreparation,
     samplers: Option<&dyn crate::native_device_resources::InstrumentResourcePreparation>,
+    native_input: Option<crate::device_automation::NativeParameterInputTarget>,
+    external_inputs: &[crate::device_automation::NativeParameterInputTarget],
 ) -> Result<(Project, Vec<crate::MidiClipPreview>), Invalid> {
-    if snapshot.has_group_tracks() {
-        return Err(Invalid("group track playback is not prepared"));
-    }
     // #2740 supplies the pitch-aware runtime. Refuse until then rather than
     // accepting a saved tuned project and silently playing equal temperament.
+    validate_serial_effect_units(snapshot, registry)?;
+    crate::device_automation::validate_project_with_registry(snapshot, registry)?;
+    let (foreign_bytes, _) = crate::foreign_automation::candidate::quote_ordinary(snapshot)
+        .map_err(|_| Invalid("authored vst3 project exceeds its preparation bounds"))?;
+    if foreign_bytes > hex_lattice::MAX_PROCESSOR_BANK_RUNTIME_BYTES {
+        return Err(Invalid(
+            "authored vst3 project exceeds its preparation bounds",
+        ));
+    }
     crate::gain_envelope::validate_project(snapshot)?;
+    validate_source_midi_roots(snapshot)?;
     let return_feed_plan = crate::return_feed_plan::ReturnFeedPlan::prepare(snapshot)?;
     crate::midi_compile::count_project_occurrences(snapshot)?;
     // Fanout is real work: bound expanded destination occurrences before note-bank allocation.
@@ -372,7 +662,7 @@ fn compile_project_inner<'a>(
             .track(root)
             .ok_or(Invalid("midi source root is missing"))?;
         for clip in source.midi_clips().iter().filter(|clip| clip.active()) {
-            for note in clip.notes() {
+            for note in clip.notes().iter().filter(|note| note.active()) {
                 let n = clip
                     .source_playback()
                     .map_err(|error| Invalid(error.0))?
@@ -403,8 +693,11 @@ fn compile_project_inner<'a>(
         tuning: shared_contexts.tuning(),
         resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
     };
+    let source_instruments =
+        prepare_source_instruments(snapshot, instrument_registry, &shared_contexts, samplers)?;
     let mut audio_clip_views = Vec::new();
-    let any_soloed = snapshot.tracks().iter().any(|track| track.soloed());
+    let solo = crate::TrackSoloSelection::prepare(snapshot);
+    let any_soloed = solo.any;
     let mut tracks = Vec::new();
     tracks
         .try_reserve_exact(snapshot.tracks().len())
@@ -421,65 +714,66 @@ fn compile_project_inner<'a>(
             .position(|track| track.id() == source_id)
             .ok_or(Invalid("midi source root is missing"))?;
         let midi_source = &snapshot.tracks()[source_index];
-        // Validate a present slot even when it is bypassed or has no current
-        // MIDI clips; unknown/future definitions must refuse graph publication.
-        let instrument_config = track
+        let source_config = track
             .instrument()
-            .map(|slot| {
-                crate::native_device_resources::prepare_instrument(
-                    instrument_registry,
-                    slot.id(),
-                    slot.state(),
-                    &device_context,
-                    samplers,
-                )
-            })
-            .transpose()?;
-        let instrument_latency = track
-            .instrument()
-            .filter(|device| !device.bypassed())
-            .and(instrument_config.as_deref())
-            .map_or(Some(0), |instrument| {
-                instrument.algorithmic_latency_frames()
-            });
-        let mut instrument_runtime_latency = instrument_latency;
-        let mutable_limits = if let Some(instrument) = track
-            .instrument()
-            .filter(|device| !device.bypassed())
-            .and(instrument_config.as_ref())
-        {
-            (if track.instrument().is_some_and(|device| {
-                shared_contexts.requires_mutable_continuation(track.id(), device.id())
-            }) {
-                instrument.prepare_mutable_continuation_runtime()
-            } else {
-                instrument.prepare_mutable_runtime()
-            })
-            .map_err(|_| Invalid("mutable instrument runtime is unsupported"))?
-            .map(|factory| {
-                instrument_runtime_latency = factory.algorithmic_latency_frames();
-                crate::midi_compile::MutableInstrumentLimits::from_factory(factory.as_ref())
-            })
-            .transpose()?
+            .and_then(|device| source_instruments.get(&device.id()));
+        let has_receiver = track
+            .source_id()
+            .and_then(|id| snapshot.native_source(id))
+            .and_then(hex_project::NativeSource::receiver)
+            .is_some();
+        let instrument_config = source_config
+            .filter(|_| has_receiver)
+            .map(|prepared| &prepared.config);
+        let foreign_instrument =
+            prepare_foreign_instrument(track, snapshot, registry, &device_context)?;
+        let instrument_latency = if let Some(node) = &foreign_instrument {
+            node.algorithmic_latency_frames()
+        } else if track.receives_source_audio() {
+            source_config.map_or(Some(0), |prepared| prepared.latency)
         } else {
-            None
+            Some(0)
         };
+        let instrument_runtime_latency = if foreign_instrument.is_some() {
+            instrument_latency
+        } else if track.receives_source_audio() {
+            source_config.map_or(Some(0), |prepared| prepared.runtime_latency)
+        } else {
+            Some(0)
+        };
+        let built_in_limits = source_config.and_then(|prepared| prepared.mutable_limits);
+        let foreign_limits = foreign_instrument
+            .as_ref()
+            .filter(|node| !node.bypassed)
+            .map(|_| crate::mutable_instrument::authored_gate::FOREIGN_GATE_LIMITS);
+        let mutable_limits = built_in_limits.or(foreign_limits);
         if mutable_limits.is_some()
-            && let Some(instrument) = instrument_config.as_deref()
+            && let Some(instrument) = instrument_config.map(Arc::as_ref)
         {
             for clip in midi_source.midi_clips().iter().filter(|clip| clip.active()) {
-                for note in clip.source().notes() {
+                for note in clip.source().notes().iter().filter(|note| note.active()) {
                     instrument
                         .validate_event_note(note.pitch(), note.velocity())
                         .map_err(|_| Invalid("mutable instrument note is unsupported"))?;
                 }
             }
         }
-        let mutable_looping_source = midi_source
-            .midi_clips()
-            .iter()
-            .any(|clip| clip.active() && clip.source().looping());
-        let mutable_instrument = mutable_limits.is_some();
+        let mutable_looping_source = if track.receives_source_audio() {
+            track.source_id().is_some_and(|source| {
+                snapshot.source_contributors(source).any(|contributor| {
+                    snapshot
+                        .track(snapshot.midi_source_track(contributor.id()))
+                        .is_some_and(|root| {
+                            root.midi_clips()
+                                .iter()
+                                .any(|clip| clip.active() && clip.source().looping())
+                        })
+                })
+            })
+        } else {
+            false
+        };
+        let mutable_instrument = built_in_limits.is_some();
         let clips = track
             .clips()
             .iter()
@@ -487,6 +781,15 @@ fn compile_project_inner<'a>(
                 let asset = snapshot
                     .asset(clip.asset())
                     .ok_or(Invalid("project asset missing"))?;
+                // Offline media (missing at open) compiles to no playback: the clip
+                // stays in the project and renders silence with no callback work.
+                if snapshot.asset_offline(asset.id())
+                    || clip
+                        .retained_audio_roots()
+                        .any(|root| snapshot.asset_offline(root.clip.asset()))
+                {
+                    return Ok(None);
+                }
                 let mut compiled = if let Some(events) = clip.audio_edit()
                     .and_then(|edit| edit.domain.events.as_ref())
                     .filter(|events| !events.sources.is_empty())
@@ -494,7 +797,9 @@ fn compile_project_inner<'a>(
                     let mut sources = Vec::new();
                     sources.try_reserve_exact(events.sources.len())
                         .map_err(|_| Invalid("grouped audio dependency allocation failed"))?;
-                    for root in &events.sources {
+                    for root in clip.retained_audio_roots() {
+                        sources.try_reserve(1)
+                            .map_err(|_| Invalid("grouped audio dependency allocation failed"))?;
                         let asset = snapshot.asset(root.clip.asset())
                             .ok_or(Invalid("grouped audio source asset missing"))?;
                         let PreparedAudioSourceRef::Resident(audio) = resolve_source(asset, snapshot.sample_rate())? else {
@@ -502,7 +807,7 @@ fn compile_project_inner<'a>(
                         };
                         sources.push(crate::audio_transform::GroupSource { root, asset, audio });
                     }
-                    Some(transforms.compile_group(clip, &sources)?)
+                    Some(transforms.compile_arrangement_group(clip, &sources)?)
                 } else {
                     let source = resolve_source(asset, snapshot.sample_rate())?;
                     transforms.compile_clip(snapshot, clip, asset, source)?
@@ -522,6 +827,14 @@ fn compile_project_inner<'a>(
                         audio: audio.clone(),
                         offset: compiled.source_offset as u64,
                         length: compiled.end - compiled.start,
+                        sparse: compiled.metadata.as_deref().and_then(|m| m.sparse.clone()),
+                        repeat: compiled.looping.then(|| crate::PreparedAudioRepeat {
+                            period: compiled.source_length as u64,
+                            phase: compiled
+                                .metadata
+                                .as_deref()
+                                .map_or(0, |metadata| metadata.source_phase),
+                        }),
                     });
                 }
                 Ok::<_, Invalid>(compiled)
@@ -530,7 +843,24 @@ fn compile_project_inner<'a>(
             .into_iter()
             .flatten()
             .collect();
-        let muted = track.muted() || (any_soloed && !track.soloed());
+        let input_muted = solo.muted(track_index, track)?;
+        let shared_source = track.source_id().filter(|source| {
+            snapshot.source_contributors(*source).count() > 1
+                || snapshot
+                    .native_source(*source)
+                    .and_then(|definition| definition.receiver())
+                    .and_then(|receiver| snapshot.track(receiver))
+                    .is_some_and(hex_project::Track::retained_source_path)
+        });
+        let muted = if track.receives_source_audio()
+            && let Some(source) = shared_source
+        {
+            (track.muted() && !track.soloed())
+                || (any_soloed && !solo.source_selected(snapshot, source)?)
+        } else {
+            input_muted
+        };
+        let local_content_enabled = shared_source.is_none() || !input_muted;
         if source_index != track_index && previews.is_some() && !track.midi_clips().is_empty() {
             // Authored preview remains on its canonical owner even when that owner's
             // instrument listens to a different root.
@@ -550,7 +880,7 @@ fn compile_project_inner<'a>(
             let prepared_instrument = track
                 .instrument()
                 .filter(|device| !device.bypassed())
-                .and_then(|_| instrument_config.as_ref().map(Box::as_ref));
+                .and_then(|_| instrument_config.map(Arc::as_ref));
             Some(
                 crate::midi_compile::compile_instrument_track(
                     snapshot,
@@ -584,7 +914,14 @@ fn compile_project_inner<'a>(
                 crate::midi_note_bank::MAX_ARRANGEMENT_NOTE_BANK_REFERENCES,
             )?;
         }
-        let effect_plan = compile_device_effects(track, registry, &device_context)?;
+        let effect_plan = compile_device_effects(
+            track,
+            snapshot,
+            registry,
+            &device_context,
+            native_input,
+            external_inputs,
+        )?;
         let device_chain = effect_plan.device_chain;
         for device in &device_chain {
             if let Some(definition) = &device.definition {
@@ -636,11 +973,33 @@ fn compile_project_inner<'a>(
                 device_chain,
             )?
             .with_track_id(track.id())
+            .with_source_audio_receiver(track.receives_source_audio())
+            .with_source_mix_scope(
+                local_content_enabled && !track.retained_source_path(),
+                local_content_enabled,
+            )
+            .with_source_binding(
+                track.source_id(),
+                track
+                    .source_id()
+                    .and_then(|source| snapshot.native_source(source))
+                    .and_then(hex_project::NativeSource::receiver)
+                    .and_then(|receiver| {
+                        snapshot
+                            .tracks()
+                            .iter()
+                            .position(|track| track.id() == receiver)
+                    }),
+            )
             .with_midi_source_index((source_index != track_index).then_some(source_index))
-            .with_instrument_config(track.instrument())
+            .with_instrument_config(track.instrument().filter(|_| track.receives_source_audio()))
             .with_tuning_identity(shared_contexts.tuning_identity())
             .with_instrument_latency(instrument_latency, instrument_runtime_latency)
-            .with_mutable_instrument(mutable_instrument, mutable_looping_source)
+            .with_mutable_instrument(
+                mutable_instrument && track.receives_source_audio(),
+                mutable_looping_source,
+            )
+            .with_foreign_instrument(foreign_instrument)
             .with_sends(sends)
             .with_gain_envelope(
                 track.gain_lane(),
@@ -650,17 +1009,20 @@ fn compile_project_inner<'a>(
             )?,
         );
     }
+    validate_shared_arrangement_density(snapshot, &tracks, &source_instruments)?;
     let mut return_buses = Vec::new();
     return_buses
         .try_reserve_exact(snapshot.return_tracks().len())
         .map_err(|_| Invalid("could not reserve compiled return tracks"))?;
     for return_track in snapshot.return_tracks() {
         let effect_plan = compile_effect_devices(
-            return_track.devices(),
+            EffectPower::new(return_track.devices())?,
             hex_lattice::ProcessorChainOwner::Return(return_track.id().value()),
-            0,
+            snapshot,
             &device_context,
             registry,
+            native_input,
+            external_inputs,
         )?;
         for device in &effect_plan.device_chain {
             if let Some(definition) = &device.definition {
@@ -689,14 +1051,17 @@ fn compile_project_inner<'a>(
             muted: return_track.muted(),
             matrix: effect_plan.fused,
             device_chain: std::sync::Arc::from(effect_plan.device_chain),
+            output_meter: Default::default(),
         });
     }
     let main_plan = compile_effect_devices(
-        snapshot.main_devices(),
+        EffectPower::new(snapshot.main_devices())?,
         hex_lattice::ProcessorChainOwner::Main,
-        0,
+        snapshot,
         &device_context,
         registry,
+        native_input,
+        external_inputs,
     )?;
     for device in &main_plan.device_chain {
         if let Some(definition) = &device.definition {
@@ -757,6 +1122,14 @@ fn compile_project_inner<'a>(
         .map(|route| (route.source(), route.destination()))
         .collect();
     project.midi_routing.sort_unstable();
+    project.source_effects = {
+        let context = hex_lattice::DevicePreparationContext {
+            sample_rate: project.sample_rate(),
+            tuning: project.shared_contexts().tuning(),
+            resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+        };
+        prepare_source_effect_recipes(&project, snapshot, registry, &context, native_input)?
+    };
     project.signal_graph = crate::signal_graph::SignalGraph::prepare(&project, &feeds, snapshot)?;
     project.main_output_latency_frames = crate::main_chain::output_latency(
         project
@@ -768,13 +1141,97 @@ fn compile_project_inner<'a>(
     if project
         .signal_graph
         .as_ref()
-        .is_some_and(|graph| graph.needs_runtime())
+        .is_some_and(|graph| graph.needs_upstream_frame_routing())
     {
         for track in &mut project.tracks {
             track.source_mix = crate::PreparedTrackMix::identity();
         }
     }
     Ok((project, previews.map(std::mem::take).unwrap_or_default()))
+}
+
+/// Independently valid contributor spans share one voice/event owner. Sweep
+/// their combined intervals without moving or rewriting canonical clip IDs.
+fn validate_shared_arrangement_density(
+    snapshot: &hex_project::Project,
+    tracks: &[Track],
+    sources: &BTreeMap<DeviceId, PreparedSourceInstrument>,
+) -> Result<(), Invalid> {
+    for source in snapshot
+        .native_sources()
+        .iter()
+        .filter(|source| source.receiver().is_some())
+    {
+        if snapshot.source_contributors(source.id()).count() < 2 {
+            continue;
+        }
+        let limits = sources
+            .get(&source.instrument().id())
+            .and_then(|prepared| prepared.mutable_limits);
+        let mut onsets = Vec::new();
+        let mut ends = Vec::new();
+        let mut events = Vec::new();
+        for (canonical, track) in snapshot.tracks().iter().zip(tracks) {
+            if canonical.source_id() != Some(source.id()) {
+                continue;
+            }
+            if let Some(instrument) = &track.instrument {
+                onsets
+                    .try_reserve(instrument.spans.len())
+                    .map_err(|_| Invalid("could not reserve shared source onsets"))?;
+                ends.try_reserve(instrument.spans.len() * 2)
+                    .map_err(|_| Invalid("could not reserve shared source voices"))?;
+                events
+                    .try_reserve(instrument.spans.len() * 2)
+                    .map_err(|_| Invalid("could not reserve shared source events"))?;
+                for span in &instrument.spans {
+                    onsets.push(span.start);
+                    ends.push((span.start, true));
+                    ends.push((span.end, false));
+                    events.push(span.start);
+                    events.push(span.gate_end);
+                }
+            }
+        }
+        let max_voices = limits.map_or(
+            crate::midi_compile::MAX_SIMULTANEOUS_VOICES_PER_TRACK,
+            |limits| limits.max_active_occurrences,
+        );
+        ends.sort_unstable();
+        let mut active = 0usize;
+        for (_, starts) in ends {
+            if starts {
+                active += 1;
+            } else {
+                active = active.saturating_sub(1);
+            }
+            if active > max_voices {
+                return Err(Invalid(
+                    "shared source exceeds its aggregate voice capacity",
+                ));
+            }
+        }
+        onsets.sort_unstable();
+        validate_shared_windows(&onsets, crate::midi_compile::MAX_ONSETS_PER_WINDOW)?;
+        if let Some(limits) = limits {
+            events.sort_unstable();
+            validate_shared_windows(&events, limits.max_events_per_query)?;
+        }
+    }
+    Ok(())
+}
+fn validate_shared_windows(frames: &[u64], max: usize) -> Result<(), Invalid> {
+    for (index, frame) in frames.iter().enumerate() {
+        let end = frame
+            .checked_add(crate::midi_compile::RENDER_QUERY_FRAMES)
+            .ok_or(Invalid("shared source event window exceeds frame range"))?;
+        if frames.partition_point(|frame| *frame < end) - index > max {
+            return Err(Invalid(
+                "shared source exceeds its aggregate event capacity",
+            ));
+        }
+    }
+    Ok(())
 }
 
 struct CompiledEffectPlan {
@@ -786,44 +1243,251 @@ struct CompiledEffectPlan {
 
 fn compile_device_effects(
     track: &hex_project::Track,
+    arrangement: &hex_project::Project,
     registry: &hex_lattice::NativeDeviceRegistry<'_>,
     context: &hex_lattice::DevicePreparationContext<'_>,
+    native_input: Option<crate::device_automation::NativeParameterInputTarget>,
+    external_inputs: &[crate::device_automation::NativeParameterInputTarget],
 ) -> Result<CompiledEffectPlan, Invalid> {
     compile_effect_devices(
-        track.devices(),
+        EffectPower::new(track.devices())?,
         hex_lattice::ProcessorChainOwner::Track(track.id().value()),
-        track.instrument_position().unwrap_or(0),
+        arrangement,
         context,
         registry,
+        native_input,
+        external_inputs,
     )
 }
 
+/// Build at most one source-owned recipe per compiled receiver. Definitions
+/// without a current receiver do not acquire DSP or resource custody.
+pub(crate) fn prepare_source_effect_recipes(
+    compiled: &Project,
+    arrangement: &hex_project::Project,
+    registry: &hex_lattice::NativeDeviceRegistry<'_>,
+    context: &hex_lattice::DevicePreparationContext<'_>,
+    native_input: Option<crate::NativeParameterInputTarget>,
+) -> Result<Vec<crate::source_effect_stage::PreparedSourceEffects>, Invalid> {
+    let count = compiled
+        .tracks
+        .iter()
+        .filter(|track| {
+            track
+                .source_id()
+                .filter(|_| track.receives_source_audio())
+                .and_then(|source| arrangement.native_source(source))
+                .is_some_and(|definition| !definition.post_instrument_effects().is_empty())
+        })
+        .count();
+    let mut recipes = Vec::new();
+    recipes
+        .try_reserve_exact(count)
+        .map_err(|_| Invalid("could not reserve prepared source recipe"))?;
+    for (receiver, track) in compiled.tracks.iter().enumerate() {
+        let Some(source) = track.source_id().filter(|_| track.receives_source_audio()) else {
+            continue;
+        };
+        let definition = arrangement
+            .native_source(source)
+            .ok_or(Invalid("compiled receiver source no longer exists"))?;
+        if definition.instrument_index() == 0 && definition.post_instrument_effects().is_empty() {
+            continue;
+        }
+        use crate::source_effect_stage::metadata;
+        let suffix = definition.post_instrument_effects();
+        for device in suffix {
+            metadata::validate_authored(device.state(), registry)?;
+        }
+        let input = native_input.filter(|input| {
+            input.source_effect_receiver().is_some_and(|receiver| {
+                definition
+                    .receiver()
+                    .is_some_and(|bound| bound.value() == receiver.get())
+            })
+        });
+        let instances =
+            prepare_source_effect_suffix_with_input(arrangement, source, registry, context, input)?;
+        let factory_bytes = instances.iter().try_fold(0usize, |bytes, instance| {
+            bytes
+                .checked_add(metadata::factory_bytes(instance, registry)?)
+                .ok_or(Invalid("source effect factory byte count overflow"))
+        })?;
+        recipes.push(crate::source_effect_stage::PreparedSourceEffects {
+            source,
+            receiver,
+            instances: Arc::from(instances),
+            factory_bytes,
+        });
+    }
+    crate::source_effect_stage::SourceEffectStages::validate_preparation(compiled, &recipes)?;
+    Ok(recipes)
+}
+
+/// Prepare an ordered native source suffix for control-side use. Retained
+/// definitions remain inert unless explicitly prepared. This does not bind a
+/// source or admit its runtime into the live graph.
+pub fn prepare_source_effect_suffix(
+    arrangement: &hex_project::Project,
+    source_id: hex_project::SourceId,
+    registry: &hex_lattice::NativeDeviceRegistry<'_>,
+    context: &hex_lattice::DevicePreparationContext<'_>,
+) -> Result<Vec<hex_lattice::PreparedRuntimeInstance>, Invalid> {
+    prepare_source_effect_suffix_with_input(arrangement, source_id, registry, context, None)
+}
+
+fn prepare_source_effect_suffix_with_input(
+    arrangement: &hex_project::Project,
+    source_id: hex_project::SourceId,
+    registry: &hex_lattice::NativeDeviceRegistry<'_>,
+    context: &hex_lattice::DevicePreparationContext<'_>,
+    native_input: Option<crate::NativeParameterInputTarget>,
+) -> Result<Vec<hex_lattice::PreparedRuntimeInstance>, Invalid> {
+    let source = arrangement
+        .native_source(source_id)
+        .ok_or(Invalid("native source no longer exists"))?;
+    if source.instrument_index() != 0 {
+        return Err(Invalid(
+            "source effects before the instrument are not supported",
+        ));
+    }
+    if context.sample_rate != arrangement.sample_rate() {
+        return Err(Invalid(
+            "source effect preparation rate differs from the project",
+        ));
+    }
+    let suffix = source.post_instrument_effects();
+    if suffix.iter().any(is_vst3_instrument) {
+        return Err(Invalid("foreign source effects are not supported"));
+    }
+    if source.receiver().is_none() && suffix.iter().any(|device| !device.automation().is_empty()) {
+        return Err(Invalid(
+            "source effect automation requires a bound receiver",
+        ));
+    }
+    let plan = compile_effect_devices(
+        EffectPower::after_instrument(suffix, source.instrument())?,
+        hex_lattice::ProcessorChainOwner::Source(source_id.value()),
+        arrangement,
+        context,
+        registry,
+        native_input,
+        &[],
+    )?;
+    if !plan
+        .device_chain
+        .iter()
+        .all(crate::source_effect_stage::native_zero_latency)
+    {
+        return Err(Invalid(
+            "source effects require native zero-latency processors",
+        ));
+    }
+    Ok(plan.device_chain)
+}
+
 fn compile_effect_devices(
-    source_devices: &[hex_project::Device],
+    source_devices: EffectPower<'_>,
     owner: hex_lattice::ProcessorChainOwner,
-    _split: usize,
+    arrangement: &hex_project::Project,
     context: &hex_lattice::DevicePreparationContext<'_>,
     registry: &hex_lattice::NativeDeviceRegistry<'_>,
+    native_input: Option<crate::device_automation::NativeParameterInputTarget>,
+    external_inputs: &[crate::device_automation::NativeParameterInputTarget],
 ) -> Result<CompiledEffectPlan, Invalid> {
     let sample_rate = context.sample_rate;
     let mut devices = Vec::new();
     devices
-        .try_reserve_exact(source_devices.len())
+        .try_reserve_exact(source_devices.remaining())
         .map_err(|_| Invalid("could not reserve prepared device chain"))?;
 
     let mut admission_matrix = hex_lattice::StereoMatrix::identity();
-    for device in source_devices {
+    for entry in source_devices {
+        let (device, bypassed) = entry?;
         let identity = hex_lattice::ProcessorInstanceIdentity::new(owner, device.id().value())
             .map_err(|_| Invalid("invalid prepared device identity"))?;
         let migrated = registry
-            .migrate_state(device.state())
+            .prepare_instance_state(identity, device.state(), context)
             .map_err(|_| Invalid("native device state is unsupported or malformed"))?;
+        let has_vst3_lane = device.automation().iter().any(|lane| {
+            matches!(
+                lane.target,
+                hex_lattice_contract::DeviceAutomationTarget::Vst3 { .. }
+            )
+        });
+        let mut automation = if has_vst3_lane {
+            if external_inputs
+                .iter()
+                .any(|target| target.device() == device.id())
+            {
+                return Err(Invalid(
+                    "recorded native automation cannot target a foreign effect",
+                ));
+            }
+            crate::device_automation::prepare_closed_effect(device, registry, native_input)?
+        } else {
+            crate::device_automation::prepare_with_registry_inputs_and_external(
+                device,
+                registry,
+                native_input,
+                external_inputs,
+            )?
+        };
+        let modulation = crate::device_modulation::EffectModulation::plan(
+            device,
+            Some(arrangement),
+            sample_rate,
+            automation.parameter_ids(),
+        )?;
+        let parameters = modulation
+            .as_ref()
+            .map_or_else(|| automation.parameter_ids(), |plan| plan.parameter_ids());
         let prepared_device = registry
-            .prepare_runtime_instance(identity, &migrated, context)
-            .map_err(|_| Invalid("native device state could not be prepared"))?;
+            .prepare_runtime_instance_with_automation(identity, &migrated, context, parameters)
+            .map_err(|_| Invalid("native device state or automation could not be prepared"))?;
         let processor = prepared_device.processor;
+        let modulation = match (modulation, processor.as_ref()) {
+            (Some(plan), Some(hex_lattice::PreparedProcessorFactory::Foreign(facts))) => {
+                plan.prepare_foreign(device, identity, registry, *facts, sample_rate)?
+            }
+            (Some(_), None) if migrated.type_id() == hex_lattice_contract::VST3_DEVICE_TYPE_ID => {
+                // Unavailable admitted VST3 metadata keeps its authored bank in
+                // the document for later restoration without a runtime lane.
+                None
+            }
+            (Some(plan), _) => {
+                let definition = registry
+                    .definition(migrated.type_id())
+                    .ok_or(Invalid("modulation requires a native effect provider"))?;
+                Some(plan.prepare(&migrated, definition, processor.as_ref())?)
+            }
+            (None, _) => None,
+        };
+        // An explicitly admitted unavailable effect has no factory. Keep its
+        // canonical lanes through document staging; the restored foreign
+        // worker must still prove its exact metadata before any playback.
+        if let Some(hex_lattice::PreparedProcessorFactory::Foreign(facts)) = processor.as_ref() {
+            if let Some(program) = crate::foreign_automation::candidate::prepare_device(
+                device,
+                identity,
+                registry,
+                *facts,
+                arrangement.tempo_map(),
+                arrangement.loop_region(),
+            )? {
+                if !automation.is_empty() {
+                    return Err(Invalid(
+                        "vst3 playback does not support native parameter automation",
+                    ));
+                }
+                automation = hex_lattice::PreparedParameterAutomation::for_foreign(program);
+            }
+        } else if processor.is_some() && crate::foreign_automation::candidate::has_authored(device)
+        {
+            return Err(Invalid("authored vst3 source metadata is unavailable"));
+        }
 
-        let prepared = if device.bypassed() {
+        let prepared = if bypassed {
             hex_lattice::StereoMatrix::identity()
         } else {
             prepared_device.matrix
@@ -833,7 +1497,7 @@ fn compile_effect_devices(
         admission_matrix = admission_matrix
             .then(prepared)
             .map_err(|error| Invalid(error.0))?;
-        if !device.bypassed() {
+        if !bypassed {
             let gain = migrated.output_gain_linear() * migrated.input_gain_linear();
             let trim = hex_lattice::StereoMatrix::new([[gain, 0.0], [0.0, gain]])
                 .map_err(|error| Invalid(error.0))?;
@@ -842,12 +1506,14 @@ fn compile_effect_devices(
                 .map_err(|error| Invalid(error.0))?;
         }
         devices.push(hex_lattice::PreparedRuntimeInstance {
+            modulation,
+            automation,
             meter: Default::default(),
             owner,
             device_id: device.id().value(),
             device_type: migrated.type_id(),
             matrix: prepared,
-            bypassed: device.bypassed(),
+            bypassed,
             sample_rate,
             configuration: Some(std::sync::Arc::new(migrated)),
             definition: processor,
@@ -864,6 +1530,10 @@ fn compile_effect_devices(
 pub(crate) enum PreparedAudioSourceRef<'a> {
     Resident(&'a Audio),
     Streamed(&'a Arc<StreamedSourceMetadata>),
+    StreamedWithPitch(
+        &'a Arc<StreamedSourceMetadata>,
+        &'a BTreeMap<crate::StreamSourceKey, Arc<StreamedSourceMetadata>>,
+    ),
 }
 
 pub(crate) fn resolve_resident<'a>(
@@ -893,7 +1563,8 @@ pub(crate) fn resolve_prepared<'a>(
             Ok(PreparedAudioSourceRef::Resident(audio))
         }
         PreparedAudioSource::Streamed(source) => {
-            if source.key().generation() != generation
+            if !source.key().is_raw()
+                || source.key().generation() != generation
                 || source.key().asset() != asset.id()
                 || source.source_rate() != asset.source_sample_rate()
                 || source.source_frames() != asset.source_frames()
@@ -926,6 +1597,8 @@ pub(crate) fn project_with_source_bank<'a>(
     shared_contexts: Option<Arc<crate::shared_analytic::SharedAnalyticContextTable>>,
     transforms: Option<&crate::audio_transform::AudioTransformPreparation>,
     samplers: Option<&dyn crate::native_device_resources::InstrumentResourcePreparation>,
+    native_input: Option<crate::device_automation::NativeParameterInputTarget>,
+    external_inputs: &[crate::device_automation::NativeParameterInputTarget],
 ) -> Result<(Project, crate::MidiArrangementPreview), Invalid> {
     compile_with_midi_preview_scoped(
         snapshot,
@@ -936,5 +1609,160 @@ pub(crate) fn project_with_source_bank<'a>(
         shared_contexts,
         transforms,
         samplers,
+        native_input,
+        external_inputs,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hex_project::{Command, Created, Editor, Project as CanonicalProject, WarpResampler};
+
+    #[test]
+    fn long_pitch_uses_its_own_pages_without_changing_the_raw_clip() {
+        const FRAMES: u64 = 20_000_000;
+        let mut editor = Editor::new(CanonicalProject::new(48_000).unwrap(), 8).unwrap();
+        let Created::Imported { clip, asset, .. } = editor
+            .execute(Command::ImportAudioTrack {
+                name: "long".into(),
+                path: "long.wav".into(),
+                sample_rate: 48_000,
+                frames: FRAMES,
+            })
+            .unwrap()
+        else {
+            panic!("audio fixture")
+        };
+        editor
+            .execute(Command::SetClipFades {
+                clip,
+                fade_in: 0,
+                fade_out: 0,
+            })
+            .unwrap();
+        let Created::Clip(pitched_clip) = editor.execute(Command::DuplicateClip(clip)).unwrap()
+        else {
+            panic!("duplicate fixture")
+        };
+        editor
+            .execute(Command::SetAudioClipPitch {
+                clip: pitched_clip,
+                cents: 700,
+            })
+            .unwrap();
+        let raw = Arc::new(
+            StreamedSourceMetadata::new(
+                crate::StreamSourceKey::new(7, asset),
+                48_000,
+                48_000,
+                FRAMES,
+                FRAMES,
+                hex_project::IDENTITY_CONVERSION,
+                [7; 32],
+            )
+            .unwrap(),
+        );
+        let derived = Arc::new(raw.with_plain_pitch(700, WarpResampler::V2).unwrap());
+        let sources = BTreeMap::from([(asset, PreparedAudioSource::Streamed(Arc::clone(&raw)))]);
+        assert!(project_with_prepared_audio_sources(editor.project(), &sources, 7).is_err());
+        assert!(
+            project_with_prepared_pitch_sources(editor.project(), &sources, &BTreeMap::new(), 7)
+                .is_err()
+        );
+        let other = StreamedSourceMetadata::new(
+            raw.key(),
+            48_000,
+            48_000,
+            FRAMES,
+            FRAMES,
+            hex_project::IDENTITY_CONVERSION,
+            [8; 32],
+        )
+        .unwrap()
+        .with_plain_pitch(700, WarpResampler::V2)
+        .unwrap();
+        let wrong = BTreeMap::from([(derived.key(), Arc::new(other))]);
+        assert!(
+            project_with_prepared_pitch_sources(editor.project(), &sources, &wrong, 7).is_err()
+        );
+        let catalog = BTreeMap::from([(derived.key(), Arc::clone(&derived))]);
+        let project =
+            project_with_prepared_pitch_sources(editor.project(), &sources, &catalog, 7).unwrap();
+        struct Pages {
+            raw: crate::StreamSourceKey,
+            pitched: crate::StreamSourceKey,
+            frames: [[f32; 2]; crate::STREAM_PAGE_FRAMES],
+        }
+        impl crate::MediaPages for Pages {
+            fn page(
+                &mut self,
+                key: crate::StreamSourceKey,
+                page_index: u64,
+            ) -> Option<crate::BorrowedMediaPage<'_>> {
+                let value = if key == self.raw {
+                    0.25
+                } else if key == self.pitched {
+                    0.75
+                } else {
+                    return None;
+                };
+                self.frames.fill([value; 2]);
+                Some(crate::BorrowedMediaPage {
+                    page_index,
+                    frames: &self.frames,
+                })
+            }
+            fn request_page(&mut self, _: crate::StreamSourceKey, _: u64) {
+                panic!("pages are available")
+            }
+        }
+        let mut pages = Pages {
+            raw: raw.key(),
+            pitched: derived.key(),
+            frames: [[0.0; 2]; crate::STREAM_PAGE_FRAMES],
+        };
+        let mut renderer = crate::Renderer::new(&project);
+        renderer.play();
+        let mut output = [[0.0; 2]; 128];
+        renderer.render_with_pages(&mut output, &mut pages).unwrap();
+        assert!(output.iter().all(|frame| *frame == [0.25; 2]));
+        renderer.seek(FRAMES);
+        renderer.render_with_pages(&mut output, &mut pages).unwrap();
+        assert!(output.iter().all(|frame| *frame == [0.75; 2]));
+    }
+
+    #[test]
+    fn raw_asset_compilation_refuses_derived_pitch_pages() {
+        let mut editor = Editor::new(CanonicalProject::new(48_000).unwrap(), 4).unwrap();
+        let Created::Imported { asset, .. } = editor
+            .execute(Command::ImportAudioTrack {
+                name: "plain".into(),
+                path: "plain.wav".into(),
+                sample_rate: 48_000,
+                frames: 4096,
+            })
+            .unwrap()
+        else {
+            panic!("audio fixture")
+        };
+        let raw = StreamedSourceMetadata::new(
+            crate::StreamSourceKey::new(7, asset),
+            48_000,
+            48_000,
+            4096,
+            4096,
+            hex_project::IDENTITY_CONVERSION,
+            [7; 32],
+        )
+        .unwrap();
+        let pitched = raw.with_plain_pitch(700, WarpResampler::V2).unwrap();
+        let sources = BTreeMap::from([(asset, PreparedAudioSource::Streamed(Arc::new(raw)))]);
+        assert!(project_with_prepared_audio_sources(editor.project(), &sources, 7).is_ok());
+        let sources = BTreeMap::from([(asset, PreparedAudioSource::Streamed(Arc::new(pitched)))]);
+        assert!(
+            project_with_prepared_audio_sources(editor.project(), &sources, 7).is_err(),
+            "a raw clip must never consume pitched pages"
+        );
+    }
 }

@@ -5,6 +5,7 @@ use crate::{
     AudioRootStorageLedger, AudioStorageError,
     audio_storage::{Location, Owner},
 };
+mod modulation;
 impl SessionPlayback {
     pub(crate) fn visit_fresh_candidate_storage<'a>(
         &'a self,
@@ -19,28 +20,47 @@ impl SessionPlayback {
             capture_runtime: _,
             capture_epoch: _,
             gain_recording_override: _,
+            live_gain: _,
+            live_gain_scratch: _,
+            native_parameter_state,
             compensation,
             device_metering: _,
+            render_work: _, // inline scalar timing scratch, charged by size_of::<Self>()
             revision,
             transient_loop: _,
+            browser_audition: _,
             midi_admission,
             periodic_tempo: _,
             anchor: _,
+            interactive_start_frame: _,
+            pending_shared_chase: _, // inline and charged by size_of::<Self>()
+            pending_shared_live: _,
             historical_floor: _,
             route_historical_floors: _,
+            source_voice_envelopes: _,
+            stream_miss_fades: _,
             routes,
             route_scratch,
+            track_faders: _,
+            track_fader_scratch: _,
+            source_effects,
             device_chains,
             return_chains,
             main_chain,
             return_scratch,
+            resident_source_scratch,
+            meter_cells,
             return_effect_tails,
             mutable_instruments,
+            foreign_arrangement,
             mutable_onsets,
             mutable_events,
             current_route_cut_scratch,
             tail_groups,
             tail_track_ids: _,
+            tail_route_sends: _,
+            has_tail_route_sends: _,
+            tail_proven_grouped: _,
             tail_mutable_instruments,
             tail_mixes,
             tail_suffix_starts,
@@ -64,16 +84,23 @@ impl SessionPlayback {
             arrangement_frame: _,
             arrangement_loop_pass: _,
             playing: _,
+            monitor_source_releases: _,
             linear_arrangement_export,
             current_sampler_console: _,
             route_state_generation: _,
             candidate_admission_open,
+            live_restart: _,
+            foreign_continuation,
         } = self;
-        if midi_admission.is_some()
+        // The closed owner has no source effect lease or backing quote yet.
+        if !source_effects.is_empty()
+            || !foreign_arrangement.is_empty()
+            || midi_admission.is_some()
             || live_expression.is_some()
             || computer_keyboard.is_some()
             || *linear_arrangement_export
             || !candidate_admission_open
+            || foreign_continuation.is_some()
             || mutable_instruments
                 .iter()
                 .flatten()
@@ -94,16 +121,45 @@ impl SessionPlayback {
         {
             return Err(AudioStorageError::UnsupportedGraph);
         }
+        // Ordinary scalar preparation has not acquired this closed constructor's
+        // source obligations. It must use ordinary publication with exact catalogs.
+        if native_parameter_state
+            .as_deref()
+            .is_some_and(|state| state.scalar.is_some())
+            || revision.scalar_automation.is_some()
+        {
+            return Err(AudioStorageError::UnsupportedGraph);
+        }
+        if native_parameter_state.is_some() != revision.native_parameter_input_target().is_some() {
+            return Err(AudioStorageError::SourceMismatch);
+        }
+        if let Some(state) = native_parameter_state.as_deref() {
+            if !state.is_empty() {
+                return Err(AudioStorageError::UnsupportedGraph);
+            }
+            l.bytes(
+                Owner::exclusive(state),
+                Location("native-parameter-input-state", 0),
+                Self::native_parameter_input_state_bytes(),
+            )?;
+        }
         l.existing_shared(
             revision,
             Owner::exclusive(revision),
             Location("session-revision", 0),
+        )?;
+        l.bytes(
+            Owner::exclusive(spans.as_ref()),
+            Location("session-midi-span-buffer", 0),
+            std::mem::size_of::<MidiSpanBuffer>(),
         )?;
         l.vec(routes)?;
         l.vec(route_scratch)?;
         l.vec(device_chains)?;
         l.vec(return_chains)?;
         l.vec(return_scratch)?;
+        l.vec(resident_source_scratch)?;
+        l.vec(meter_cells)?;
         return_effect_tails.visit_empty_candidate_storage(l)?;
         l.vec(mutable_instruments)?;
         for (index, runtime) in mutable_instruments.iter().enumerate() {
@@ -189,38 +245,73 @@ fn chain_storage<'a>(
         return Err(AudioStorageError::SourceMismatch);
     }
     for (index, (entry, prepared)) in view.entries().zip(prepared).enumerate() {
+        if let Some(program) = entry.automation().foreign() {
+            let expected = prepared
+                .automation
+                .foreign()
+                .ok_or(AudioStorageError::SourceMismatch)?;
+            crate::foreign_automation::storage::runtime(program, expected, l)?;
+        }
+        let (ids, lanes, points) = entry.automation().storage_vectors();
+        l.vec(ids)?;
+        l.vec(lanes)?;
+        l.vec(points)?;
+        l.vec(entry.automation().touch_storage())?;
         let foreign = match &prepared.definition {
             Some(hex_lattice::PreparedProcessorFactory::Foreign(facts)) => Some(*facts),
             _ => None,
         };
-        if (foreign.is_none() && prepared.device_type != hex_devices::utility::UTILITY_TYPE_ID)
+        if (foreign.is_none()
+            && !crate::native_effect_storage::is_closed_type(prepared.device_type))
             || entry.foreign_processor() != foreign
             || !entry.matches_prepared_runtime_storage(prepared)
         {
             return Err(AudioStorageError::UnsupportedGraph);
         }
-        let (primary, scratch) = (entry.primary_payload_bytes(), entry.scratch_payload_bytes());
-        match (primary, scratch, prepared.definition.is_some()) {
-            (None, None, true) if foreign.is_some() => {}
-            (Some(primary), Some(scratch), true) if foreign.is_none() => {
-                if !entry
-                    .runtime_types_are::<hex_devices::utility_filters::UtilityFilterProcessor>()
-                {
-                    return Err(AudioStorageError::UnsupportedGraph);
+        modulation::visit(&entry, prepared, chain, index, l)?;
+        if let Some((primary, scratch)) = entry.runtime_pair::<hex_devices::reverb::ReverbRuntime>()
+        {
+            for (runtime, object_tag, ring_tag) in [
+                (primary, "runtime-primary", "reverb-primary-ring"),
+                (scratch, "runtime-scratch", "reverb-scratch-ring"),
+            ] {
+                let storage = runtime
+                    .control_storage()
+                    .ok_or(AudioStorageError::UnknownStorage)?;
+                l.bytes(
+                    Owner::exclusive(chain),
+                    Location(object_tag, index),
+                    storage.inline_bytes,
+                )?;
+                for (ring, bytes) in storage.heap_bytes.into_iter().enumerate() {
+                    let key = index
+                        .checked_mul(hex_devices::reverb::RUNTIME_HEAP_ALLOCATIONS)
+                        .and_then(|n| n.checked_add(ring))
+                        .ok_or(AudioStorageError::Overflow)?;
+                    l.bytes(Owner::exclusive(chain), Location(ring_tag, key), bytes)?;
                 }
-                l.bytes(
-                    Owner::exclusive(chain),
-                    Location("runtime-primary", index),
-                    primary,
-                )?;
-                l.bytes(
-                    Owner::exclusive(chain),
-                    Location("runtime-scratch", index),
-                    scratch,
-                )?;
             }
-            (None, None, false) => {}
-            _ => return Err(AudioStorageError::UnknownStorage),
+        } else {
+            match (
+                crate::native_effect_storage::pair_bytes(&entry)?,
+                prepared.definition.is_some(),
+            ) {
+                (None, true) if foreign.is_some() => {}
+                (Some((primary, scratch)), true) if foreign.is_none() => {
+                    l.bytes(
+                        Owner::exclusive(chain),
+                        Location("runtime-primary", index),
+                        primary,
+                    )?;
+                    l.bytes(
+                        Owner::exclusive(chain),
+                        Location("runtime-scratch", index),
+                        scratch,
+                    )?;
+                }
+                (None, false) => {}
+                _ => return Err(AudioStorageError::UnknownStorage),
+            }
         }
         l.existing_shared(
             &prepared.meter,

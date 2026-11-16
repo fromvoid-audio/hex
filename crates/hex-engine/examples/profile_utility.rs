@@ -36,6 +36,8 @@ fn fixture(count: usize) -> Result<Project, Box<dyn Error>> {
     snapshot.tracks = (0..TRACKS)
         .map(|track| -> Result<TrackSnapshot, hex_project::Invalid> {
             Ok(TrackSnapshot {
+                group_output_mutes: Vec::new(),
+                tags: Vec::new(),
                 kind: hex_project::TrackKind::Ordinary,
                 parent_group: None,
                 color: hex_project::ElementColor::default(),
@@ -50,6 +52,9 @@ fn fixture(count: usize) -> Result<Project, Box<dyn Error>> {
                 soloed: false,
                 devices: (0..count)
                     .map(|device| DeviceSnapshot {
+                        modulation: Default::default(),
+                        parent: None,
+                        automation: Vec::new(),
                         comparison: None,
                         id: 300 + (track * count + device) as u64,
                         bypassed: false,

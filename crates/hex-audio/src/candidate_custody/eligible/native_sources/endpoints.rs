@@ -38,6 +38,73 @@ pub(crate) struct NativeEndpointBank {
     ordinary_requirements: bool,
 }
 impl NativeEndpointBank {
+    /// Borrow only the currently installed exact pair. An observed return
+    /// request, stale input, revocation or contention refuses. A return request
+    /// may race this observation; it does not authorize a commit.
+    pub(crate) fn reserve_observed_parameter_input(
+        &self,
+        binding: Binding,
+        source: &hex_plugin_host::transport::ParameterInputSource,
+    ) -> Option<(
+        hex_plugin_host::transport::ParameterInputFence<'_>,
+        EndpointReturnFence<'_>,
+    )> {
+        if self.cycle.revoked() {
+            return None;
+        }
+        let position = self.routing[..self.routing_len]
+            .binary_search_by_key(&Some(binding), |slot| {
+                self.entries[*slot].as_ref().map(|entry| entry.0.binding)
+            })
+            .ok()?;
+        let envelope = self.entries[self.routing[position]].as_ref()?;
+        if envelope.return_requested() || !envelope.0.signal.installed.load(Ordering::Acquire) {
+            return None;
+        }
+        let return_fence = envelope.0.signal.reserve()?;
+        let input_fence = envelope
+            .0
+            .callback
+            .as_ref()?
+            .callback()
+            .reserve_observed_parameter_input(source)?;
+        Some((input_fence, return_fence))
+    }
+
+    pub(crate) fn take_accepted_editor_quantum(
+        &mut self,
+        binding: Binding,
+    ) -> Result<
+        Option<hex_plugin_host::transport::AcceptedEditorQuantum>,
+        hex_plugin_host::transport::Fault,
+    > {
+        use hex_plugin_host::transport::Fault;
+        let index = self.routing[..self.routing_len]
+            .binary_search_by_key(&Some(binding), |slot| {
+                self.entries[*slot].as_ref().map(|entry| entry.0.binding)
+            })
+            .map_err(|_| Fault::Revoked)?;
+        let entry = self.entries[self.routing[index]]
+            .as_mut()
+            .and_then(|entry| entry.0.callback.as_mut())
+            .filter(|entry| entry.transport_is_live())
+            .ok_or(Fault::Revoked)?;
+        Ok(entry.take_accepted_editor_quantum())
+    }
+
+    pub(crate) fn take_accepted_manual_parameter(
+        &mut self,
+        binding: Binding,
+    ) -> Option<hex_plugin_host::transport::AcceptedManualParameter> {
+        self.entries
+            .iter_mut()
+            .flatten()
+            .find(|entry| entry.0.binding == binding)?
+            .0
+            .callback
+            .as_mut()?
+            .take_accepted_manual_parameter()
+    }
     /// Headless control-side progress only. Compare each original installed
     /// endpoint's committed request prefix with its matching actual worker;
     /// source swaps, idle sources and new epochs have independent prefixes.
@@ -53,6 +120,18 @@ impl NativeEndpointBank {
             }
         }
         Some(true)
+    }
+    #[cfg(feature = "allocation-probe")]
+    pub(crate) fn single_worker_phase_for_test(&self) -> Option<usize> {
+        let mut endpoints = self.entries.iter().flatten();
+        let callback = endpoints.next()?.0.callback.as_ref()?;
+        if endpoints.next().is_some() {
+            return None;
+        }
+        Some(
+            (callback.committed_frames_for_test()
+                % u64::try_from(callback.quantum_frames()).ok()?) as usize,
+        )
     }
     pub(crate) fn runtime_transports_are_live(
         &self,
@@ -152,6 +231,20 @@ impl NativeEndpointBank {
             .capacity()
             .checked_mul(std::mem::size_of::<Option<NativeEndpointEnvelope>>())
     }
+    #[cfg(test)]
+    pub(crate) fn install_for_test(
+        &mut self,
+        callback: crate::plugin_effects::NativeEffectCallback,
+    ) {
+        let binding = callback.binding();
+        let endpoint = NativeEndpointEnvelope(Box::new(Endpoint {
+            slot: 0,
+            binding,
+            callback: Some(NativeEffectEntry::new(callback)),
+            signal: Arc::new(EndpointSignal::new()),
+        }));
+        assert!(self.install(binding.root, endpoint).is_ok());
+    }
     pub(crate) fn install(
         &mut self,
         root: u64,
@@ -233,7 +326,7 @@ impl NativeEndpointBank {
     pub(crate) fn request_epoch_return(&mut self) {
         self.reject_rendering();
         for endpoint in self.entries.iter().flatten() {
-            endpoint.0.signal.store(true, Ordering::Release);
+            endpoint.0.signal.request_return();
         }
         self.epoch_returned = true;
     }
@@ -357,7 +450,7 @@ impl Custody {
         slot.endpoint_loaned = loaned;
         if loaned {
             if slot.retiring {
-                signal.store(true, Ordering::Release);
+                signal.request_return();
             }
             slot.endpoint_return = Some(signal);
         }
@@ -479,6 +572,145 @@ mod tests {
     }
     #[test]
     #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+    fn actual_root_edit_receipts_follow_original_loan_and_terminal() {
+        use hex_lattice::{ForeignProcessorNode, ForeignProcessors};
+        use hex_plugin_host::protocol::ParameterEditKind;
+        use std::time::{Duration, Instant};
+        if std::env::var_os("HEX_ROOT_EDIT_CHILD").is_none() {
+            let dir = std::env::temp_dir().join(format!("hex-root-edits-{}", std::process::id()));
+            std::fs::create_dir(&dir).unwrap();
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    std::thread::current().name().unwrap(),
+                    "--ignored",
+                    "--nocapture",
+                ])
+                .env("HEX_ROOT_EDIT_CHILD", "1")
+                .env("HEX_ORIGINAL_INSTANCE_VARIANT", "85")
+                .env("HEX_ORIGINAL_INSTANCE_TRACE", dir.join("trace"))
+                .env("HEX_ORIGINAL_INSTANCE_RELEASE", dir.join("release"))
+                .output()
+                .unwrap();
+            std::fs::remove_dir_all(dir).unwrap();
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+            return;
+        }
+        let root = root();
+        let binding = ready(&root);
+        let confirmed = root.native_source_prepared_state(binding).unwrap();
+        let (identity, prepared, configuration) = {
+            let work = lock(&root.work);
+            let Some(Owner::Effect(owner)) = work.sources.cells[0].owner.as_ref() else {
+                panic!("actual effect")
+            };
+            (
+                owner.identity(),
+                owner.prepared(),
+                owner.configuration().clone(),
+            )
+        };
+        let loan = root.loan_native_endpoint(binding).unwrap();
+        let mut bank = NativeEndpointBank::new().unwrap();
+        assert!(bank.install(binding.root, loan).is_ok());
+        assert!(
+            root.native_parameter_edits(Binding {
+                epoch: binding.epoch + 1,
+                ..binding
+            })
+            .is_err()
+        );
+        {
+            let _work = lock(&root.work);
+            assert!(matches!(
+                root.native_parameter_edits(binding),
+                Err("native preparation is busy")
+            ));
+        }
+        std::fs::write(
+            std::env::var_os("HEX_ORIGINAL_INSTANCE_RELEASE").unwrap(),
+            b"release",
+        )
+        .unwrap();
+        let mut edits = Vec::new();
+        let until = Instant::now() + Duration::from_secs(3);
+        loop {
+            match root.native_parameter_edits(binding) {
+                Ok(Some(batch)) => {
+                    edits.extend_from_slice(batch.as_slice());
+                    if batch.ready > 0 && edits.len() == 1 {
+                        break;
+                    }
+                }
+                Ok(None) | Err("native edit observation is busy") => {}
+                Err(error) => panic!("original edit observation: {error}"),
+            }
+            assert!(Instant::now() < until);
+            std::thread::yield_now();
+        }
+        assert_eq!(edits.len(), 1);
+        let node = ForeignProcessorNode {
+            owner: identity.owner(),
+            device_id: identity.device_id(),
+            device_type: configuration.type_id(),
+            sample_rate: 48_000,
+            configuration: &configuration,
+            prepared,
+            automation: None,
+            bypassed: false,
+            input_gain: 1.0,
+            output_gain: 1.0,
+        };
+        let mut frames = [[0.5, -0.25]; 8];
+        bank.begin_rendering(8).unwrap();
+        bank.process_segment(node, 0, &mut frames, None).unwrap();
+        bank.finish_rendering(true).unwrap();
+        assert_eq!(frames, [[0.0; 2]; 8]); // declared pipeline warmup
+        let until = Instant::now() + Duration::from_secs(3);
+        while edits.len() < 3 {
+            match root.native_parameter_edits(binding) {
+                Ok(Some(batch)) => edits.extend_from_slice(batch.as_slice()),
+                Ok(None) | Err("native edit observation is busy") => {}
+                Err(error) => panic!("original applied observation: {error}"),
+            }
+            assert!(Instant::now() < until);
+            std::thread::yield_now();
+        }
+        assert_eq!(
+            edits
+                .iter()
+                .map(|edit| (edit.sequence, edit.gesture, edit.id, edit.kind))
+                .collect::<Vec<_>>(),
+            [
+                (1, 1, 7, ParameterEditKind::Begin),
+                (2, 1, 7, ParameterEditKind::Perform),
+                (3, 1, 7, ParameterEditKind::End)
+            ]
+        );
+        assert_eq!((edits[1].normalized, edits[1].first_frame), (0.75, 0));
+        assert_eq!(root.native_source_prepared_state(binding), Some(confirmed));
+        bank.request_epoch_return();
+        assert!(
+            root.ingest_native_endpoint(bank.take_requested(0).unwrap())
+                .is_ok()
+        );
+        root.close();
+        assert!(root.native_parameter_edits(binding).is_err());
+        dispose(&root, binding);
+        let returned = root.recover_native_source(binding).unwrap();
+        assert!(returned.error.is_none() && returned.cleanup_error.is_none());
+        assert!(
+            matches!(returned.disposal, PreparationDisposal::Reaped(retired) if retired.status.success() && retired.terminal.is_some_and(|terminal| terminal.blocks == 1 && terminal.frames == 8))
+        );
+    }
+    #[test]
+    #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
     fn equal_binding_and_state_cannot_return_another_original_endpoint() {
         let first = root();
         let second = root();
@@ -492,13 +724,20 @@ mod tests {
             first.native_source_prepared_state(a),
             second.native_source_prepared_state(b)
         );
+        let copied = first.native_source_metadata(a).unwrap();
         let endpoint_a = first.loan_native_endpoint(a).unwrap();
         let endpoint_b = second.loan_native_endpoint(b).unwrap();
+        assert_eq!(
+            copied,
+            first.native_source_metadata(a).unwrap(),
+            "metadata stays with original control custody while its actual endpoint is loaned"
+        );
         let endpoint_a = second
             .ingest_native_endpoint(endpoint_a)
             .expect_err("different original source");
         assert!(second.ingest_native_endpoint(endpoint_b).is_ok());
         assert!(first.ingest_native_endpoint(endpoint_a).is_ok());
+        assert_eq!(copied, first.native_source_metadata(a).unwrap());
         for owner in [&first, &second] {
             assert!(owner.retire_native_source(a));
             dispose(owner, a);
@@ -506,5 +745,199 @@ mod tests {
             assert!(matches!(returned.disposal, PreparationDisposal::Reaped(_)));
             assert!(returned.error.is_none() && returned.cleanup_error.is_none());
         }
+    }
+    #[test]
+    #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+    fn actual_root_parameter_segments_and_feedback_keep_original_loan_and_final_acceptance() {
+        use hex_lattice::{ForeignProcessorNode, ForeignProcessors};
+        use hex_lattice_contract::ForeignParameterPoint;
+        use std::time::{Duration, Instant};
+        if std::env::var_os("HEX_ROOT_GRAPH_PARAMETERS").is_none() {
+            let name = std::thread::current().name().unwrap().to_owned();
+            for variant in ["37", "80"] {
+                let result = std::process::Command::new(std::env::current_exe().unwrap())
+                    .args([
+                        "--exact",
+                        &name,
+                        "--ignored",
+                        "--test-threads=1",
+                        "--nocapture",
+                    ])
+                    .env("HEX_ROOT_GRAPH_PARAMETERS", variant)
+                    .env("HEX_ORIGINAL_INSTANCE_VARIANT", variant)
+                    .output()
+                    .unwrap();
+                assert!(
+                    result.status.success(),
+                    "{}\n{}",
+                    String::from_utf8_lossy(&result.stdout),
+                    String::from_utf8_lossy(&result.stderr)
+                );
+                assert!(String::from_utf8_lossy(&result.stdout).contains("1 passed"));
+            }
+            return;
+        }
+        let parameter_id = if std::env::var("HEX_ROOT_GRAPH_PARAMETERS").unwrap() == "80" {
+            0
+        } else {
+            7
+        };
+        let root = root();
+        let binding = ready(&root);
+        let (identity, prepared, configuration) = {
+            let work = lock(&root.work);
+            let Some(Owner::Effect(owner)) = work.sources.cells[0].owner.as_ref() else {
+                panic!("actual effect")
+            };
+            (
+                owner.identity(),
+                owner.prepared(),
+                owner.configuration().clone(),
+            )
+        };
+        assert!(
+            root.native_parameter_values(binding)
+                .unwrap()
+                .as_slice()
+                .is_empty()
+        );
+        let loan = root.loan_native_endpoint(binding).unwrap();
+        assert!(
+            root.native_parameter_values(binding)
+                .unwrap()
+                .as_slice()
+                .is_empty()
+        );
+        let mut bank = NativeEndpointBank::new().unwrap();
+        assert!(bank.install(binding.root, loan).is_ok());
+        let node = ForeignProcessorNode {
+            owner: identity.owner(),
+            device_id: identity.device_id(),
+            device_type: configuration.type_id(),
+            sample_rate: 48_000,
+            configuration: &configuration,
+            prepared,
+            automation: None,
+            bypassed: false,
+            input_gain: 1.0,
+            output_gain: 1.0,
+        };
+        for block in 0..4_u64 {
+            let mut frames = [[0.5, -0.25]; 8];
+            let points = [ForeignParameterPoint {
+                frame: 2,
+                id: parameter_id,
+                normalized: (block + 1) as f64 / 8.0,
+            }];
+            let render = || {
+                bank.begin_rendering(8).unwrap();
+                bank.process_segment_with_parameters(node, 0, &mut frames[..3], &points, None)
+                    .unwrap();
+                bank.process_segment_with_parameters(node, 3, &mut frames[3..], &[], None)
+                    .unwrap();
+                bank.finish_rendering(true).unwrap();
+            };
+            #[cfg(feature = "allocation-probe")]
+            {
+                let measured = allocation_counter::measure(render);
+                assert_eq!(
+                    (
+                        measured.count_total,
+                        measured.bytes_total,
+                        measured.count_current,
+                        measured.bytes_current
+                    ),
+                    (0, 0, 0, 0)
+                );
+            }
+            #[cfg(not(feature = "allocation-probe"))]
+            {
+                let mut render = render;
+                render();
+            }
+            for (frame, actual) in frames.iter().enumerate() {
+                let normalized = if block < 2 {
+                    0.0
+                } else {
+                    let source = block - 2;
+                    let end = (source + 1) as f64 / 8.0;
+                    let before = if source == 0 {
+                        0.25
+                    } else {
+                        source as f64 / 8.0
+                    };
+                    before + (end - before) * (frame + 1).min(3) as f64 / 3.0
+                };
+                let gain = normalized * 4.0 * (0.5 + block.saturating_sub(2) as f64 * 0.125);
+                for (channel, sample) in actual.iter().enumerate() {
+                    let input = if channel == 0 { 0.5 } else { -0.25 };
+                    assert!(
+                        (f64::from(*sample) - input * gain).abs() < 1e-6,
+                        "block{block}/frame{frame}/channel{channel}"
+                    );
+                }
+            }
+            let until = Instant::now() + Duration::from_secs(2);
+            loop {
+                if let Ok(values) = root.native_parameter_values(binding)
+                    && values.completed_blocks() == block + 1
+                {
+                    assert_eq!(
+                        values.as_slice(),
+                        &[crate::plugin_worker::NativeParameterValue {
+                            id: parameter_id,
+                            normalized: (block + 1) as f64 / 8.0
+                        }]
+                    );
+                    break;
+                }
+                assert!(Instant::now() < until, "actual original worker feedback");
+                std::thread::yield_now();
+            }
+        }
+        assert!(
+            root.native_parameter_values(Binding {
+                epoch: binding.epoch + 1,
+                ..binding
+            })
+            .is_err()
+        );
+        {
+            let _work = lock(&root.work);
+            assert!(matches!(
+                root.native_parameter_values(binding),
+                Err("native preparation is busy")
+            ));
+        }
+        bank.begin_rendering(8).unwrap();
+        let mut refused = [[0.5, -0.25]; 8];
+        bank.process_segment_with_parameters(
+            node,
+            0,
+            &mut refused,
+            &[ForeignParameterPoint {
+                frame: 0,
+                id: parameter_id,
+                normalized: 0.875,
+            }],
+            None,
+        )
+        .unwrap();
+        assert!(bank.finish_rendering(false).is_err());
+        assert!(
+            root.native_parameter_values(binding).is_err(),
+            "rejected epoch cannot provide live observations"
+        );
+        bank.request_epoch_return();
+        let returned = bank.take_requested(0).unwrap();
+        assert!(root.ingest_native_endpoint(returned).is_ok());
+        assert!(root.native_parameter_values(binding).is_err());
+        assert!(root.retire_native_source(binding));
+        dispose(&root, binding);
+        let returned = root.recover_native_source(binding).unwrap();
+        assert!(returned.error.is_none() && returned.cleanup_error.is_none());
+        assert!(
+            matches!(returned.disposal,PreparationDisposal::Reaped(retired) if retired.status.success() && retired.terminal.is_some_and(|terminal| terminal.blocks==4 && terminal.frames==32))
+        );
     }
 }

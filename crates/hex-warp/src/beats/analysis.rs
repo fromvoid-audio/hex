@@ -55,7 +55,7 @@ pub(super) fn prepare(
     let separation = u64::from((rate / 1000).max(1));
     let mut starts = Vec::new();
     starts
-        .try_reserve_exact(MAX_POINTS)
+        .try_reserve_exact(MAX_DETECTED_TRANSIENTS)
         .map_err(|_| Error::Allocation)?;
     starts.push(0_u64);
     let warmup = request
@@ -80,7 +80,7 @@ pub(super) fn prepare(
         let x = request.input.frame(i128::from(i));
         let energy = x[0] * x[0] + x[1] * x[1];
         if last.is_none_or(|last| i >= last + separation) && energy > 1e-12 && energy > slow * 8.0 {
-            if starts.len() == MAX_POINTS {
+            if starts.len() == MAX_DETECTED_TRANSIENTS {
                 return Err(Error::Invalid("transients exceed bounded source plan"));
             }
             if i != 0 {
@@ -92,7 +92,12 @@ pub(super) fn prepare(
     }
     onsets::detect(request.input, &mut starts, work)?;
     let first = request.map.segments()[0].source_start_q32;
-    let end = request.map.segments().last().unwrap().source_end_q32;
+    let end = request
+        .map
+        .segments()
+        .last()
+        .expect("segments()[0] indexed above")
+        .source_end_q32;
     let region = i128::from(request.input.region_length);
     let first_cycle = first.div_euclid(Q32).div_euclid(region);
     let first_cycle = if request.input.looping {
@@ -165,7 +170,7 @@ pub(super) fn prepare(
             .unwrap_or(0);
         let next = (i + 1..anchors.len())
             .find(|j| anchors[*j].attack || *j == anchors.len() - 1)
-            .unwrap();
+            .expect("the final anchor always terminates the search");
         let before = if i == 0 {
             0
         } else {

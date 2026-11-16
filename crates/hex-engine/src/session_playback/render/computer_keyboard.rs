@@ -2,6 +2,67 @@
 use super::*;
 
 impl SessionPlayback {
+    pub(crate) fn prepare_foreign_keyboard(
+        &mut self,
+        track: hex_project::TrackId,
+        input: Arc<crate::computer_keyboard::ComputerKeyboardInput>,
+    ) -> Result<(), crate::Invalid> {
+        if self.computer_keyboard.is_some() {
+            return Err(crate::Invalid("a computer keyboard is already prepared"));
+        }
+        self.foreign_arrangement.attach_keyboard(track, input)?;
+        if self.validate_candidate_runtime_storage(0).is_err() {
+            self.foreign_arrangement.remove_keyboard_on_control();
+            return Err(crate::Invalid(
+                "computer keyboard exceeds graph storage budget",
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn shares_foreign_keyboard(&self, previous: &Self) -> bool {
+        self.foreign_arrangement
+            .shares_keyboard(&previous.foreign_arrangement)
+    }
+
+    pub(crate) fn detach_foreign_keyboard(&mut self) {
+        self.foreign_arrangement.detach_keyboard();
+    }
+
+    pub(crate) fn cancel_foreign_keyboard(
+        &self,
+        priority_stop: Option<&crate::computer_keyboard::KeyboardActivationClock>,
+    ) {
+        self.foreign_arrangement.cancel_keyboard(priority_stop);
+    }
+
+    pub(super) fn render_stopped_main_tails(
+        &mut self,
+        output: &mut [Frame],
+        foreign: &mut dyn hex_lattice::ForeignProcessors,
+    ) -> Result<(), SessionPlaybackError> {
+        self.return_effect_tails.begin_block();
+        let clock = crate::effect_clock::ArrangementEffectClock::session(
+            self.revision.session().timing(),
+            self.arrangement_frame,
+            self.performance_frame,
+            self.arrangement_loop_pass,
+            false,
+        );
+        let step = if self.compensation.is_some() { 1 } else { 256 };
+        for (index, chunk) in output.chunks_mut(step).enumerate() {
+            self.return_effect_tails.render_main_chunk(
+                chunk,
+                self.compensation.as_ref(),
+                &clock,
+                index * step,
+                foreign,
+            )?;
+        }
+        self.return_effect_tails.commit_block();
+        self.revision.arrangement().master_mix().apply(output);
+        Ok(())
+    }
     pub(crate) fn cancel_current_sampler_keyboard(&mut self) {
         self.current_sampler_keyboard_revoked = self
             .current_sampler_keyboard_revoked
@@ -55,17 +116,64 @@ impl SessionPlayback {
         sources: Option<crate::native_device_resources::SamplerSourcesRef<'_>>,
         foreign: &mut dyn hex_lattice::ForeignProcessors,
     ) -> Result<(), SessionPlaybackError> {
+        for runtime in self.mutable_instruments.iter_mut().flatten() {
+            runtime.begin_block();
+        }
+        self.release_scratch.clear();
+        self.release_scratch.extend(
+            self.releases
+                .iter()
+                .copied()
+                .filter(|entry| entry.end_frame() > self.performance_frame),
+        );
+        for release in &self.release_scratch {
+            release
+                .monitor_offset
+                .checked_add(output.len() as u64)
+                .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
+        }
+        for tail in self.tail_mutable_instruments.iter_mut().flatten() {
+            tail.runtime.begin_block();
+        }
+        for chain in self.tail_groups.iter_mut().flatten() {
+            chain.begin_block();
+        }
+        self.tail_output_scratch
+            .copy_from_slice(&self.tail_output_active);
+
         for chain in &mut self.device_chains {
+            chain.begin_block();
+        }
+        for chain in self.source_effects.chains_mut() {
             chain.begin_block();
         }
         for chain in &mut self.return_chains {
             chain.begin_block();
         }
         self.main_chain.begin_block();
+        // A state replacement can introduce a retained bus/Main suffix while
+        // transport is already stopped. Its real zero-input completion still
+        // owns the original endpoint; monitoring must drain that suffix too.
+        // An explicit Stop separately resets these tails in the command owner.
+        let drain_edit_tails = self.performance_frame == 0 && self.arrangement_frame == 0;
+        if drain_edit_tails {
+            self.return_effect_tails.begin_block();
+        }
         self.route_scratch.copy_from_slice(&self.routes);
-        let step = if self.compensation.is_some() { 1 } else { 256 };
-        for (chunk_index, chunk) in output.chunks_mut(step).enumerate() {
-            let offset = chunk_index * step;
+        let mut offset = 0usize;
+        while offset < output.len() {
+            let max_frames =
+                (output.len() - offset).min(if self.compensation.is_some() { 1 } else { 256 });
+            let count = self
+                .computer_keyboard
+                .as_ref()
+                .map_or(max_frames, |keyboard| {
+                    keyboard.source_input_span(max_frames)
+                });
+            let end = offset
+                .checked_add(count)
+                .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
+            let chunk = &mut output[offset..end];
             if self.compensation.is_some() {
                 self.render_compensated_route_frame::<dyn MediaPages>(
                     self.performance_frame,
@@ -76,11 +184,18 @@ impl SessionPlayback {
                     offset,
                     observer,
                     capture,
-                    None,
+                    sources,
                     foreign,
+                    None,
+                    None,
+                    None,
                 )?;
+                if drain_edit_tails {
+                    self.return_effect_tails
+                        .render_chunk(chunk, offset, capture, foreign)?;
+                }
                 self.compensation
-                    .as_ref()
+                    .as_mut()
                     .ok_or(SessionPlaybackError::DeviceRuntime)?
                     .process_main_with_foreign(
                         &mut self.main_chain,
@@ -88,8 +203,28 @@ impl SessionPlayback {
                         offset,
                         foreign,
                         observer,
+                        None,
+                        None,
                     )
                     .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
+                let tail_clock = crate::effect_clock::ArrangementEffectClock::session(
+                    self.revision.session().timing(),
+                    self.arrangement_frame,
+                    self.performance_frame,
+                    self.arrangement_loop_pass,
+                    false,
+                );
+                if drain_edit_tails {
+                    self.return_effect_tails.render_main_chunk(
+                        chunk,
+                        self.compensation.as_ref(),
+                        &tail_clock,
+                        offset,
+                        foreign,
+                    )?;
+                }
+                self.advance_paused_analytic_releases(count)?;
+                offset = end;
                 continue;
             }
             for frames in &mut self.return_scratch {
@@ -100,11 +235,84 @@ impl SessionPlayback {
             for (index, track) in self.revision.arrangement().tracks().iter().enumerate() {
                 let mut frames = [[0.0; 2]; 256];
                 let frames = &mut frames[..chunk.len()];
-                if let Some(keyboard) = self
-                    .computer_keyboard
+                if self.source_input_receiver() == Some(index) {
+                    let parameter_context = instrument_automation::SourceAutomation::new(
+                        &self.revision,
+                        index,
+                        instrument_automation::Origin {
+                            arrangement: Some(self.arrangement_frame),
+                            performance: self.performance_frame,
+                            pass: self.arrangement_loop_pass,
+                            running: false,
+                        },
+                        frames.len(),
+                    )?;
+                    let parameter_block = parameter_context.block();
+                    source_live::render_source_live_input(
+                        &self.revision,
+                        self.computer_keyboard.as_mut().map(Box::as_mut),
+                        self.mutable_instruments[index].as_mut(),
+                        &mut self.mutable_onsets,
+                        &mut self.mutable_events,
+                        0,
+                        self.performance_frame,
+                        frames,
+                        &timing,
+                        false,
+                        parameter_block
+                            .as_ref()
+                            .map(|values| values as &dyn hex_lattice::NativeParameterAutomation),
+                        None,
+                    )?;
+                } else if let Some(runtime) = self.mutable_instruments[index]
                     .as_mut()
-                    .filter(|keyboard| Some(keyboard.track()) == track.canonical_track_id())
+                    .filter(|runtime| runtime.is_source_owner())
                 {
+                    self.mutable_onsets.clear();
+                    let source_clock = runtime
+                        .source_monitor_clock(
+                            timing
+                                .frame_to_beat(self.performance_frame)
+                                .map_err(|_| SessionPlaybackError::TempoConversion)?
+                                .raw(),
+                            timing
+                                .tempo_micro_bpm_at_frame(self.performance_frame)
+                                .ok_or(SessionPlaybackError::TempoConversion)?,
+                            timing.sample_rate(),
+                        )
+                        .map_err(|error| error.render_error())?;
+                    let parameter_context = instrument_automation::SourceAutomation::new(
+                        &self.revision,
+                        index,
+                        instrument_automation::Origin {
+                            arrangement: Some(self.arrangement_frame),
+                            performance: self.performance_frame,
+                            pass: self.arrangement_loop_pass,
+                            running: false,
+                        },
+                        frames.len(),
+                    )?;
+                    let parameter_block = parameter_context.block();
+                    runtime
+                        .process_source_segment(
+                            self.performance_frame,
+                            frames,
+                            &mut self.mutable_onsets,
+                            &[],
+                            &mut self.mutable_events,
+                            Some(&source_clock),
+                            &hex_lattice::EMPTY_DEVICE_RESOURCES,
+                            None,
+                            parameter_block.as_ref().map(|values| {
+                                values as &dyn hex_lattice::NativeParameterAutomation
+                            }),
+                        )
+                        .map_err(|error| error.render_error())?;
+                }
+                if let Some(keyboard) = self.computer_keyboard.as_mut().filter(|keyboard| {
+                    !keyboard.is_source_input()
+                        && Some(keyboard.track()) == track.canonical_track_id()
+                }) {
                     let clock = keyboard
                         .musical_clock(&timing, self.performance_frame, false)
                         .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
@@ -124,6 +332,33 @@ impl SessionPlayback {
                     keyboard
                         .render_with_resources(frames, None, &resources)
                         .map_err(|e| SessionPlaybackError::Arrangement(e.0))?;
+                }
+                for release in self.release_scratch.iter().filter(|release| {
+                    release.location.track_index() == index
+                        && release.location.tail_group().is_none()
+                }) {
+                    render_release_raw(
+                        release,
+                        self.revision.session().sine_table(),
+                        self.revision.arrangement().shared_contexts(),
+                        &self.retained_contexts,
+                        &self.analytic_continuations,
+                        self.performance_frame,
+                        self.playing,
+                        frames,
+                    )?;
+                }
+                if self.source_effects.has_chain(index) {
+                    let clock = crate::effect_clock::ArrangementEffectClock::session(
+                        self.revision.session().timing(),
+                        self.arrangement_frame,
+                        self.performance_frame,
+                        self.arrangement_loop_pass,
+                        false,
+                    );
+                    self.source_effects
+                        .process_with_clock(index, frames, &clock)
+                        .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
                 }
                 track.apply_instrument_output_gain(frames);
                 let chain = &mut self.device_chains[index];
@@ -151,7 +386,15 @@ impl SessionPlayback {
                         .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
                 }
                 for (frame_index, frame) in frames.iter_mut().enumerate() {
-                    let mixed = track.mix_at(self.arrangement_frame).apply_frame(*frame);
+                    let mix = track.mix_at(self.arrangement_frame);
+                    let fader = &mut self.track_fader_scratch[index];
+                    let mix = if track.has_gain_automation() {
+                        fader.follow(mix.channel_gain());
+                        mix
+                    } else {
+                        mix.with_channel_gain(fader.next())
+                    };
+                    let mixed = mix.apply_frame(*frame);
                     *frame = mixed;
                     chunk[frame_index][0] += mixed[0];
                     chunk[frame_index][1] += mixed[1];
@@ -175,7 +418,23 @@ impl SessionPlayback {
                 observer,
                 capture,
                 &mut hex_lattice::RefuseForeign,
+                None,
             )?;
+            if drain_edit_tails {
+                self.return_effect_tails
+                    .render_chunk(chunk, offset, capture, foreign)?;
+            }
+            self.render_detached_tails(
+                self.performance_frame,
+                chunk,
+                offset,
+                capture,
+                None,
+                None,
+                foreign,
+            )?;
+            self.advance_paused_analytic_releases(count)?;
+            offset = end;
         }
         if self.compensation.is_none() {
             let main_clock = crate::effect_clock::ArrangementEffectClock::session(
@@ -193,10 +452,37 @@ impl SessionPlayback {
                 observer,
             )
             .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
+            if drain_edit_tails {
+                for (index, chunk) in output.chunks_mut(256).enumerate() {
+                    self.return_effect_tails.render_main_chunk(
+                        chunk,
+                        None,
+                        &main_clock,
+                        index * 256,
+                        foreign,
+                    )?;
+                }
+            }
         }
+        for runtime in self.mutable_instruments.iter_mut().flatten() {
+            runtime.commit_block();
+        }
+        for tail in self.tail_mutable_instruments.iter_mut().flatten() {
+            tail.runtime.commit_block();
+        }
+        for chain in self.tail_groups.iter_mut().flatten() {
+            chain.commit_block();
+        }
+
         self.main_chain.commit_block();
+        if drain_edit_tails {
+            self.return_effect_tails.commit_block();
+        }
         self.revision.arrangement().master_mix().apply(output);
         for chain in &mut self.device_chains {
+            chain.commit_block();
+        }
+        for chain in self.source_effects.chains_mut() {
             chain.commit_block();
         }
         for chain in &mut self.return_chains {

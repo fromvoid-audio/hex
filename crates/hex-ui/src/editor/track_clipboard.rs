@@ -31,11 +31,27 @@ pub(super) struct Completion {
 }
 impl EditorView {
     pub(super) fn track_membership(&self, target: Option<TrackId>) -> Option<TrackSelectionIds> {
-        let ids = match target {
+        TrackSelectionIds::new(&self.track_members(target)).ok()
+    }
+
+    pub(super) fn track_group_membership(
+        &self,
+        target: Option<TrackId>,
+    ) -> Option<TrackSelectionIds> {
+        let mut ids = self.track_members(target);
+        // The active selected track supplies the group destination. A
+        // deselected active track falls back to the last remaining row.
+        if let Some(index) = ids.iter().position(|id| Some(*id) == self.selected_track) {
+            ids[index..].rotate_left(1);
+        }
+        TrackSelectionIds::new(&ids).ok()
+    }
+
+    fn track_members(&self, target: Option<TrackId>) -> Vec<TrackId> {
+        match target {
             Some(id) if !self.track_selection.contains(id) => vec![id],
             _ => self.selected_track_ids(),
-        };
-        TrackSelectionIds::new(&ids).ok()
+        }
     }
     pub(super) fn track_paste_anchor(&self) -> Option<TrackId> {
         let state = self.state.as_ref()?;
@@ -221,7 +237,6 @@ impl EditorView {
         self.track_selection.replace(&ids);
         self.selected_track = ids.first().copied();
         self.selected_clip = None;
-        self.retained_clip_detail = None;
         self.selected_cell = None;
         self.selected_scene = None;
         self.focused_return = None;

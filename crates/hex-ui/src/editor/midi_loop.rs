@@ -4,26 +4,26 @@
 //! body drags preserve length, constrained by the existing source and playback start.
 use super::*;
 
-fn x_at(start: u64, span: u64, bounds: CanvasBounds, beat: u64) -> Option<f32> {
-    let offset = beat.checked_sub(start)?;
-    (span > 0 && offset <= span)
+fn x_at(start: i128, span: u64, bounds: CanvasBounds, beat: u64) -> Option<f32> {
+    let offset = i128::from(beat).checked_sub(start)?;
+    (span > 0 && offset >= 0 && offset <= i128::from(span))
         .then(|| bounds.x + (offset as f64 / span as f64) as f32 * bounds.width)
 }
 fn interval(
-    start: u64,
+    start: i128,
     span: u64,
     bounds: CanvasBounds,
     values: SourceValues,
 ) -> Option<(f32, f32)> {
-    let end = start.checked_add(span)?;
-    let first = values.loop_start.max(start);
-    let last = values.loop_end.min(end);
+    let end = start.checked_add(i128::from(span))?;
+    let first = i128::from(values.loop_start).max(start);
+    let last = i128::from(values.loop_end).min(end);
     if first >= last {
         return None;
     }
     Some((
-        x_at(start, span, bounds, first)?,
-        x_at(start, span, bounds, last)?,
+        x_at(start, span, bounds, u64::try_from(first).ok()?)?,
+        x_at(start, span, bounds, u64::try_from(last).ok()?)?,
     ))
 }
 fn hit(context: Context, x: f32) -> Option<Handle> {
@@ -78,6 +78,10 @@ impl EditorView {
             .gesture
             .map(|gesture| gesture.preview)
             .or_else(|| {
+                self.detail_clip_id()
+                    .and_then(|id| self.pending_clip_loop_midi(id))
+            })
+            .or_else(|| {
                 self.midi_clip().map(|source| {
                     SourceValues::from_source(source, 0, source.source_length().raw())
                 })
@@ -85,7 +89,7 @@ impl EditorView {
         let Some(values) = values else {
             return div();
         };
-        let start = self.piano_beat_start.raw();
+        let start = self.piano_beat_start;
         let span = self.piano_beat_span.raw();
         let active = self
             .midi_ruler
@@ -121,17 +125,18 @@ impl EditorView {
             theme::PaletteRole::Muted
         });
         let entity = cx.entity();
-        let brace = div()
+        let brace = super::super::timeline_strip::loop_surface()
             .id("midi-loop-ruler")
             .debug_selector(|| "midi-loop-ruler".into())
-            .relative()
             .h_full()
             .flex_1()
             .min_w_0()
-            .overflow_hidden()
-            .border_1()
-            .border_color(rgb(theme::color(theme::PaletteRole::Border)))
-            .bg(rgb(theme::color(theme::PaletteRole::Raised)))
+            .children(super::super::timeline_strip::loop_range(
+                ((i128::from(values.loop_start) - start) as f64) / span.max(1) as f64,
+                ((i128::from(values.loop_end) - start) as f64) / span.max(1) as f64,
+                values.looping,
+                ["midi-loop-start-marker", "midi-loop-end-marker"],
+            ))
             .track_focus(&self.midi_focus)
             .key_context("hex_midi")
             .child(
@@ -148,30 +153,10 @@ impl EditorView {
             .child(
                 canvas(
                     |bounds, window, _| window.insert_hitbox(bounds, gpui::HitboxBehavior::Normal),
-                    move |bounds, hitbox, window, _| {
+                    move |bounds, hitbox, window, cx| {
                         let b = bounds_of(bounds);
                         if !b.is_valid() || span == 0 {
                             return;
-                        }
-                        if let Some((first, last)) = interval(start, span, b, values) {
-                            window.paint_quad(fill(
-                                Bounds::new(
-                                    point(px(first), bounds.origin.y + px(10.0)),
-                                    size(px(last - first), px(3.0)),
-                                ),
-                                rgb(color),
-                            ));
-                        }
-                        for marker in [values.loop_start, values.loop_end] {
-                            if let Some(x) = x_at(start, span, b, marker) {
-                                window.paint_quad(fill(
-                                    Bounds::new(
-                                        point(px(x - 1.5), bounds.origin.y + px(4.0)),
-                                        size(px(3.0), px(9.0)),
-                                    ),
-                                    rgb(color),
-                                ));
-                            }
                         }
                         let target = active.map(|gesture| gesture.handle).or_else(|| {
                             hitbox
@@ -205,6 +190,9 @@ impl EditorView {
                                 &hitbox,
                             );
                         }
+                        entity
+                            .read(cx)
+                            .renew_midi_ruler_capture(b, entity.entity_id(), window);
                         let down_entity = entity.clone();
                         window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
                             if !phase.bubble()
@@ -223,58 +211,11 @@ impl EditorView {
                                         context,
                                         f32::from(event.position.x),
                                         handle,
+                                        window,
+                                        cx,
                                     )
                                 {
                                     view.midi_focus.focus(window);
-                                    cx.notify();
-                                    cx.stop_propagation();
-                                }
-                            });
-                        });
-                        let move_entity = entity.clone();
-                        window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
-                            if !phase.bubble() {
-                                return;
-                            }
-                            move_entity.update(cx, |view, cx| {
-                                if view
-                                    .midi_ruler
-                                    .gesture
-                                    .is_none_or(|gesture| gesture.handle == Handle::Start)
-                                {
-                                    return;
-                                }
-                                let changed = if event.pressed_button == Some(MouseButton::Left) {
-                                    view.update_midi_ruler(
-                                        b,
-                                        f32::from(event.position.x),
-                                        event.modifiers.platform,
-                                    )
-                                } else {
-                                    view.midi_ruler.cancel()
-                                };
-                                if changed {
-                                    cx.notify();
-                                }
-                                cx.stop_propagation();
-                            });
-                        });
-                        let up_entity = entity.clone();
-                        window.on_mouse_event(move |event: &MouseUpEvent, phase, _, cx| {
-                            if !phase.bubble() || event.button != MouseButton::Left {
-                                return;
-                            }
-                            up_entity.update(cx, |view, cx| {
-                                if view
-                                    .midi_ruler
-                                    .gesture
-                                    .is_some_and(|gesture| gesture.handle != Handle::Start)
-                                {
-                                    view.finish_midi_ruler(
-                                        b,
-                                        f32::from(event.position.x),
-                                        event.modifiers.platform,
-                                    );
                                     cx.notify();
                                     cx.stop_propagation();
                                 }
@@ -302,7 +243,7 @@ impl EditorView {
                 .size_full(),
             );
         div()
-            .h(px(16.0))
+            .h(px(super::super::timeline_strip::LOOP_HEIGHT))
             .flex_shrink_0()
             .flex()
             .child(
@@ -345,7 +286,7 @@ impl EditorView {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "ui-test-support")))]
 mod tests {
     use super::*;
     #[test]
@@ -372,7 +313,7 @@ mod tests {
         assert_eq!(hit(c, 300.0), Some(Handle::LoopBody));
         assert_eq!(hit(c, 100.0), None);
         let clipped = Context {
-            start: 2 * beat,
+            start: i128::from(2 * beat),
             span: 2 * beat,
             ..c
         };

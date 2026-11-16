@@ -24,7 +24,7 @@ fn middle_drag_moves_both_axes_without_editing_and_ack_keeps_blank_space(cx: &mu
     visual.simulate_mouse_move(end, Some(MouseButton::Middle), Modifiers::default());
     editor.read_with(&visual, |v, _| {
         assert!(
-            v.piano_beat_start.raw() > 0,
+            v.piano_beat_start > 0,
             "middle move must pan; captured={}",
             v.midi_pan.gesture.is_some()
         )
@@ -33,9 +33,7 @@ fn middle_drag_moves_both_axes_without_editing_and_ack_keeps_blank_space(cx: &mu
     visual.simulate_mouse_up(end, MouseButton::Middle, Modifiers::default());
     visual.run_until_parked();
     let viewport = editor.read_with(&visual, |v, _| {
-        assert!(
-            (v.piano_beat_start.raw() as f64 / BeatTime::ONE.raw() as f64 - 3.0).abs() < 0.000001
-        );
+        assert!((v.piano_beat_start as f64 / BeatTime::ONE.raw() as f64 - 3.0).abs() < 0.000001);
         assert_eq!((v.piano_pitch_low, v.piano_pitch_rows), (54, 24));
         let s = v.state.as_ref().unwrap();
         assert_eq!(
@@ -106,15 +104,28 @@ fn pan_mode_intercepts_drawing_and_cancelled_creation_never_commits(cx: &mut Tes
     let roll = visual.debug_bounds("midi-note-roll").unwrap();
     double_down(&mut visual, roll.center(), Modifiers::default());
     editor.read_with(&visual, |v, _| assert!(v.midi_creation.is_some()));
-    // A middle press retires an already captured edit before any movement.
+    // Creation now owns its held left press; a secondary middle press cannot
+    // preempt it. End that gesture before starting fresh middle navigation.
     visual.simulate_mouse_down(roll.center(), MouseButton::Middle, Modifiers::default());
+    editor.read_with(&visual, |v, _| {
+        assert!(v.midi_creation.is_some());
+        assert!(v.midi_pan.gesture.is_none());
+        assert!(!v.edit_pending());
+    });
+    visual.simulate_mouse_up(roll.center(), MouseButton::Middle, Modifiers::default());
+    visual.simulate_keystrokes("escape");
+    visual.simulate_mouse_up(roll.center(), MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_down(roll.center(), MouseButton::Middle, Modifiers::default());
+    editor.read_with(&visual, |v, _| {
+        assert!(v.midi_creation.is_none());
+        assert!(v.midi_pan.gesture.is_some());
+    });
     visual.simulate_mouse_move(
         point(roll.center().x - px(20.0), roll.center().y),
         Some(MouseButton::Middle),
         Modifiers::default(),
     );
     visual.simulate_mouse_up(roll.center(), MouseButton::Middle, Modifiers::default());
-    visual.simulate_mouse_up(roll.center(), MouseButton::Left, Modifiers::default());
     pump(&editor, &mut visual);
     let toggle = visual
         .debug_bounds("toggle pan mode · drag to move time and pitch · middle-drag always pans")
@@ -167,23 +178,28 @@ fn pan_bounds_and_focus_cancel_are_view_only_at_pitch_and_time_extremes(cx: &mut
     ] {
         editor.update(&mut visual, |v, cx| {
             v.piano_beat_span = BeatTime::from_raw(span);
-            v.piano_beat_start = BeatTime::ZERO;
+            v.piano_beat_start = 0;
             v.piano_pitch_low = 0;
             v.piano_pitch_rows = rows;
             cx.notify();
         });
         visual.run_until_parked();
         for (delta, expected_low, expected_start) in [
-            (1_000_000.0, 128 - rows, 0),
-            (-1_000_000.0, 0, 16 * BeatTime::ONE.raw() - span),
+            (1.0e30, 128 - rows, -i128::from(u64::MAX)),
+            (-1.0e30, 0, i128::from(u64::MAX - span)),
         ] {
+            editor.update(&mut visual, |v, cx| {
+                v.piano_beat_start = 0;
+                cx.notify();
+            });
+            visual.run_until_parked();
             visual.simulate_mouse_down(roll.center(), MouseButton::Middle, Modifiers::default());
             let end = roll.center() + point(px(delta), px(delta));
             visual.simulate_mouse_move(end, Some(MouseButton::Middle), Modifiers::default());
             visual.run_until_parked();
             editor.read_with(&visual, |v, _| {
                 assert_eq!(v.piano_pitch_low, expected_low);
-                assert_eq!(v.piano_beat_start.raw(), expected_start);
+                assert_eq!(v.piano_beat_start, expected_start);
             });
             visual.simulate_mouse_up(end, MouseButton::Middle, Modifiers::default());
             visual.run_until_parked();
@@ -284,7 +300,7 @@ fn panned_note_and_velocity_hits_align_and_draw_can_grow_a_fully_blank_view(
             .midi_source(clip)
             .unwrap()
             .source_length();
-        assert!(v.piano_beat_start >= length);
+        assert!(v.piano_beat_start >= i128::from(length.raw()));
         length
     });
     visual.simulate_mouse_down(roll.center(), MouseButton::Left, Modifiers::default());

@@ -34,9 +34,10 @@ impl AudioTransformPreparation {
             ));
         };
         let tempo = self.shared_tempo(tempo_map)?;
-        if let Some(audio)=self.lookup_key(source,asset,|key|matches!(key,EntryKey::View {edit:retained,tempo,start,duration}
-            if retained==edit&&tempo.as_ref()==tempo_map&&*start==clip.start()&&*duration==clip.duration()))? {
-            return super::view::placed_clip(audio,clip);
+        if let Some(audio) = self.lookup_key(source, asset, |key| {
+            key.matches_view(edit, tempo_map, clip.start(), clip.duration())
+        })? {
+            return super::view::placed_clip(audio, clip);
         }
         let musical = matches!(edit.domain.clock, AudioDomainClock::Beats(_));
         let map_bytes = (2 * hex_project::MAX_TEMPO_POINTS + 2)
@@ -50,14 +51,18 @@ impl AudioTransformPreparation {
         if musical {
             read_map::base_bounds(&projection, edit)?;
         }
+        let admitted_projection = if musical {
+            projection.full_content_projection()?.0
+        } else {
+            projection
+        };
         let mut segments = 0usize;
         let mut filter_work = 0u64;
         let mut work = 0_u64;
-        for i in 0..projection.occurrence_count() {
-            let occurrence = projection.occurrence(i)?;
+        for i in 0..admitted_projection.occurrence_count() {
+            let occurrence = admitted_projection.occurrence(i)?;
             if musical
-                && let Some(span) =
-                    read_map::prepare(&projection, edit, clip, tempo_map, occurrence)?
+                && let Some(span) = read_map::prepare(&admitted_projection, edit, occurrence)?
             {
                 segments = segments
                     .checked_add(span.map.segments().len())
@@ -136,7 +141,6 @@ impl AudioTransformPreparation {
             source_rate: asset.source_sample_rate(),
             prepared: audio.clone(),
             bytes,
-            source_bytes: std::mem::size_of_val(source.frames()),
         })?;
         super::view::placed_clip(audio, clip)
     }
@@ -282,7 +286,11 @@ impl AudioTransformPreparation {
 
     /// Assemble the actual finite outer content once. Adjacent occurrence PCM
     /// supplies sinc context across internal Repeat/crop/tempo seams; only the
-    /// true finite base edges use the kernel's zero-padding policy.
+    /// true finite base edges use the kernel's zero-padding policy. Always render
+    /// the complete directed map before cropping its integer output. Rebuilding
+    /// interpolation/filter rates at a crop boundary would alter retained PCM.
+    /// Whole windows render directly; cropped windows charge one bounded full
+    /// output scratch buffer to the existing control-side preparation budget.
     fn render_musical_content(
         &self,
         tempo_map: &hex_project::TempoMap,
@@ -294,10 +302,33 @@ impl AudioTransformPreparation {
         let edit = clip
             .audio_edit()
             .ok_or(Invalid("directed audio edit missing"))?;
-        let view = edit
-            .content_view
-            .ok_or(Invalid("directed audio view missing"))?;
-        let projection = AudioViewProjection::new(clip, tempo_map)?;
+        let (projection, crop) =
+            AudioViewProjection::new(clip, tempo_map)?.full_content_projection()?;
+        let (output_start, output_end) = projection.outer_frame_bounds();
+        let output_len = usize::try_from(output_end - output_start)
+            .map_err(|_| Invalid("directed full output size overflow"))?;
+        let cropped = crop.start != 0 || crop.end != output_len as u64;
+        let output_bytes = output_len
+            .checked_mul(std::mem::size_of::<crate::Frame>())
+            .ok_or(Invalid("directed full output bytes overflow"))?;
+        let _output_reservation = if cropped {
+            Some(self.reserve_with_eviction(output_bytes)?)
+        } else {
+            None
+        };
+        let mut scratch = Vec::new();
+        if cropped {
+            scratch
+                .try_reserve_exact(output_len)
+                .map_err(|_| Invalid("directed full output allocation failed"))?;
+            scratch.resize(output_len, [0.0; 2]);
+        }
+        let output = if cropped {
+            scratch.as_mut_slice()
+        } else {
+            &mut *frames
+        };
+
         let (base_start, base_end) = read_map::base_bounds(&projection, edit)?;
         let length = usize::try_from(base_end - base_start)
             .map_err(|_| Invalid("directed filter context size overflow"))?;
@@ -347,7 +378,11 @@ impl AudioTransformPreparation {
             }
             output.copy_from_slice(input);
         }
-        if view.window.reversed {
+        if projection
+            .content_window()
+            .ok_or(Invalid("directed audio view missing"))?
+            .reversed
+        {
             for i in 0..base.len() / 2 {
                 if i % 1024 == 0 && self.cancelled() {
                     return Err(Invalid("audio preparation cancelled"));
@@ -357,26 +392,34 @@ impl AudioTransformPreparation {
             }
         }
         let base = Audio::from_derived(source.sample_rate(), base, reservation)?;
+        let law = super::warp_law(
+            edit.content_view
+                .ok_or(Invalid("directed audio view missing"))?
+                .read_resampler,
+        );
         for i in 0..projection.occurrence_count() {
             if self.cancelled() {
                 return Err(Invalid("audio preparation cancelled"));
             }
-            if let Some(span) = read_map::prepare(
-                &projection,
-                edit,
-                clip,
-                tempo_map,
-                projection.occurrence(i)?,
-            )? {
-                let destination = frames
+            if let Some(span) = read_map::prepare(&projection, edit, projection.occurrence(i)?)? {
+                let destination = output
                     .get_mut(
-                        (span.first - clip.start()) as usize..(span.last - clip.start()) as usize,
+                        (span.first - output_start) as usize..(span.last - output_start) as usize,
                     )
                     .ok_or(Invalid(
                         "directed filtered destination exceeds admitted pcm",
                     ))?;
-                self.render_content_span(&base, &span.map, destination)?;
+                self.render_content_span(&base, &span.map, law, destination)?;
             }
+        }
+        if cropped {
+            let retained = scratch
+                .get(crop.start as usize..crop.end as usize)
+                .ok_or(Invalid("directed crop exceeds prepared output"))?;
+            if retained.len() != frames.len() {
+                return Err(Invalid("directed crop differs from destination"));
+            }
+            frames.copy_from_slice(retained);
         }
         Ok(())
     }
@@ -384,6 +427,7 @@ impl AudioTransformPreparation {
         &self,
         root: &Audio,
         map: &hex_warp::TimeMap,
+        law: hex_warp::Resampler,
         destination: &mut [crate::Frame],
     ) -> Result<(), Invalid> {
         const Q32: i128 = 1_i128 << 32;
@@ -435,7 +479,10 @@ impl AudioTransformPreparation {
             pitch_cents: 0,
             mode: hex_warp::Mode::RePitch,
         };
-        let rendered = hex_warp::render(&request, &mut || self.cancelled()).map_err(warp_error)?;
+        // The view's own read law, independent of the root content's law: saved
+        // musical views migrate to the frozen v1 reconstruction, new ones use v2.
+        let rendered = hex_warp::render_with_resampler(&request, law, &mut || self.cancelled())
+            .map_err(warp_error)?;
         if rendered.frames.len() != destination.len() {
             return Err(Invalid(
                 "directed filtered output differs from admitted span",

@@ -6,8 +6,71 @@
 //! prevalidates every affected role before the nonfallible commit. Stale epochs/windows and
 //! capacity refusal leave active protection intact. Native callers buffer only the uncommitted
 //! remainder on missing readiness; already committed chunks and their clocks remain authoritative.
+//! Complete pages for a pending intent are held separately from installed-role protection until
+//! its atomic receipt or cancellation; a partially arrived set is never exposed as ready.
 use super::*;
-use crate::StreamPageExtent;
+use crate::{StreamPageExtent, StreamResourceExtent};
+use hex_engine::StreamResourceKey;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+// Issued on control and never reused within this process, including after
+// domain destruction. Exhaustion fails closed rather than recycling identity.
+static NEXT_READINESS_ID: AtomicU64 = AtomicU64::new(1);
+
+#[derive(Clone, Copy)]
+enum ExtentSlice<'a> {
+    Audio(&'a [StreamPageExtent]),
+    Resources(&'a [StreamResourceExtent]),
+}
+impl ExtentSlice<'_> {
+    fn len(self) -> usize {
+        match self {
+            Self::Audio(s) => s.len(),
+            Self::Resources(s) => s.len(),
+        }
+    }
+    fn is_empty(self) -> bool {
+        self.len() == 0
+    }
+    fn get(self, index: usize) -> Option<StreamResourceExtent> {
+        match self {
+            Self::Audio(s) => s.get(index).copied().map(Into::into),
+            Self::Resources(s) => s.get(index).copied(),
+        }
+    }
+    fn iter(self) -> impl Iterator<Item = StreamResourceExtent> {
+        (0..self.len()).filter_map(move |index| self.get(index))
+    }
+}
+fn extent_eq(actual: &[StreamResourceExtent], expected: ExtentSlice<'_>) -> bool {
+    actual.iter().copied().eq(expected.iter())
+}
+
+fn slices_fit_pool<const N: usize>(slices: [ExtentSlice<'_>; N], capacity: usize) -> bool {
+    let mut cursors = [0usize; N];
+    let mut count = 0usize;
+    while let Some(key) = slices
+        .iter()
+        .zip(cursors)
+        .filter_map(|(slice, cursor)| slice.get(cursor))
+        .map(|extent| (extent.source, extent.page_index))
+        .min()
+    {
+        count += 1;
+        if count > capacity {
+            return false;
+        }
+        for (slice, cursor) in slices.iter().zip(&mut cursors) {
+            while slice
+                .get(*cursor)
+                .is_some_and(|extent| (extent.source, extent.page_index) == key)
+            {
+                *cursor += 1;
+            }
+        }
+    }
+    true
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProtectionRole {
@@ -25,6 +88,9 @@ impl ProtectionRole {
     }
     fn mask(self) -> u8 {
         1 << self.index()
+    }
+    fn pending_mask(self) -> u8 {
+        1 << (self.index() + 4)
     }
 }
 /// Nonowning identity for page-intent correlation. Neither variant grants graph,
@@ -74,6 +140,23 @@ pub enum ReadinessProgress {
     Pending,
     InstalledProtected,
 }
+/// Move-only correlation for a current-quantum reservation on one exact loan.
+/// It does not own pages; callers must release it before returning the loan.
+#[must_use]
+pub struct CurrentQuantumReservation {
+    readiness_id: u64,
+    epoch: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CurrentQuantumRefusal {
+    Busy,
+    InvalidExtents,
+    NotResident,
+    Capacity,
+    EpochExhausted,
+}
+
 /// Finite caller reservation, bounded further by the actual endpoint cache.
 #[derive(Clone, Copy, Debug)]
 pub struct StreamReadinessReservation {
@@ -81,8 +164,8 @@ pub struct StreamReadinessReservation {
 }
 #[derive(Default)]
 struct Role {
-    wanted: Vec<StreamPageExtent>,
-    protected: Vec<StreamPageExtent>,
+    wanted: Vec<StreamResourceExtent>,
+    protected: Vec<StreamResourceExtent>,
     pending: Option<ReadinessStamp>,
     installed: Option<ReadinessStamp>,
     unread: bool,
@@ -90,6 +173,10 @@ struct Role {
 pub(super) struct PreparedReadiness {
     catalog: CatalogLease,
     roles: [Role; 3],
+    current_quantum: Vec<StreamResourceExtent>,
+    current_quantum_epoch: Option<u64>,
+    readiness_id: u64,
+    quantum_epoch: u64,
     limit: usize,
     epoch: u64,
 }
@@ -116,23 +203,41 @@ impl PreparedReadiness {
                 .try_reserve_exact(reservation.extents_per_role)
                 .map_err(|_| AudioStreamStorageError::Capacity)?;
         }
+        let mut current_quantum = Vec::new();
+        current_quantum
+            .try_reserve_exact(reservation.extents_per_role)
+            .map_err(|_| AudioStreamStorageError::Capacity)?;
+        let readiness_id = NEXT_READINESS_ID
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+            .map_err(|_| AudioStreamStorageError::Overflow)?;
         Ok(Self {
             catalog: catalog.clone(),
             roles,
+            current_quantum,
+            current_quantum_epoch: None,
+            readiness_id,
+            quantum_epoch: 0,
             limit: reservation.extents_per_role,
             epoch: 0,
         })
     }
     pub(super) fn backing_bytes(&self) -> Option<usize> {
-        self.roles.iter().try_fold(0usize, |bytes, role| {
+        let bytes = self
+            .current_quantum
+            .capacity()
+            .checked_mul(std::mem::size_of::<StreamResourceExtent>())?;
+        self.roles.iter().try_fold(bytes, |bytes, role| {
             role.wanted
                 .capacity()
                 .checked_add(role.protected.capacity())?
-                .checked_mul(std::mem::size_of::<StreamPageExtent>())?
+                .checked_mul(std::mem::size_of::<StreamResourceExtent>())?
                 .checked_add(bytes)
         })
     }
-    fn valid(&self, stamp: ReadinessStamp, extents: &[StreamPageExtent]) -> bool {
+    pub(super) fn has_current_quantum(&self) -> bool {
+        self.current_quantum_epoch.is_some()
+    }
+    fn valid(&self, stamp: ReadinessStamp, extents: ExtentSlice<'_>) -> bool {
         if !stamp.artifact.valid()
             || stamp.predecessor.is_some_and(|identity| !identity.valid())
             || stamp.request_epoch == 0
@@ -151,84 +256,106 @@ impl PreparedReadiness {
             || (stamp.window.frames == 0 && !extents.is_empty())
             || extents.len() > self.limit
             || extents
-                .windows(2)
-                .any(|w| (w[0].source, w[0].page_index) >= (w[1].source, w[1].page_index))
+                .iter()
+                .zip(extents.iter().skip(1))
+                .any(|(a, b)| (a.source, a.page_index) >= (b.source, b.page_index))
         {
             return false;
         }
         extents.iter().all(|extent| {
-            self.catalog
-                .catalog
-                .sources
-                .binary_search_by_key(&extent.source, hex_engine::StreamedSourceMetadata::key)
-                .ok()
-                .and_then(|index| self.catalog.catalog.sources.get(index))
-                .is_some_and(|source| {
-                    extent.start < extent.end
-                        && extent.end <= hex_engine::STREAM_PAGE_FRAMES
-                        && source.project_rate() == stamp.device_rate
-                        && extent
-                            .page_index
-                            .checked_mul(hex_engine::STREAM_PAGE_FRAMES as u64)
-                            .and_then(|start| start.checked_add(extent.end as u64))
-                            .is_some_and(|end| end <= source.playback_frames())
-                })
+            let frame_end = extent
+                .page_index
+                .checked_mul(hex_engine::STREAM_PAGE_FRAMES as u64)
+                .and_then(|start| start.checked_add(extent.end as u64));
+            let frame_start = extent
+                .page_index
+                .checked_mul(hex_engine::STREAM_PAGE_FRAMES as u64)
+                .and_then(|start| start.checked_add(extent.start as u64));
+            let metadata = match extent.source {
+                StreamResourceKey::Audio(key) => self
+                    .catalog
+                    .catalog
+                    .sources
+                    .binary_search_by_key(&key, hex_engine::StreamedSourceMetadata::key)
+                    .ok()
+                    .and_then(|index| self.catalog.catalog.sources.get(index))
+                    .map(|source| (source.project_rate(), 0, source.playback_frames())),
+                StreamResourceKey::Scalar(key) => self
+                    .catalog
+                    .catalog
+                    .scalar_sources
+                    .binary_search_by_key(&key, hex_engine::ScalarSourceMetadata::key)
+                    .ok()
+                    .and_then(|index| self.catalog.catalog.scalar_sources.get(index))
+                    .map(|source| {
+                        (
+                            source.project_rate(),
+                            source.start_frame(),
+                            source.end_frame(),
+                        )
+                    }),
+            };
+            metadata.is_some_and(|(rate, start, end)| {
+                extent.start < extent.end
+                    && extent.end <= hex_engine::STREAM_PAGE_FRAMES
+                    && rate == stamp.device_rate
+                    && frame_start.is_some_and(|value| value >= start)
+                    && frame_end.is_some_and(|value| value <= end)
+            })
         })
     }
     /// Count distinct pages among retained protections and outstanding intents,
     /// including the new request. No allocation or synthetic pool enlargement.
-    fn fits_pool(&self, replacement: usize, extents: &[StreamPageExtent], capacity: usize) -> bool {
-        let slices = [
-            self.roles[0].protected.as_slice(),
-            self.roles[1].protected.as_slice(),
-            self.roles[2].protected.as_slice(),
+    fn fits_pool(&self, replacement: usize, extents: ExtentSlice<'_>, capacity: usize) -> bool {
+        let roles = [
+            ExtentSlice::Resources(self.roles[0].protected.as_slice()),
+            ExtentSlice::Resources(self.roles[1].protected.as_slice()),
+            ExtentSlice::Resources(self.roles[2].protected.as_slice()),
             if replacement == 0 {
-                &[]
+                ExtentSlice::Resources(&[])
             } else {
-                self.roles[0].wanted.as_slice()
+                ExtentSlice::Resources(self.roles[0].wanted.as_slice())
             },
             if replacement == 1 {
-                &[]
+                ExtentSlice::Resources(&[])
             } else {
-                self.roles[1].wanted.as_slice()
+                ExtentSlice::Resources(self.roles[1].wanted.as_slice())
             },
             if replacement == 2 {
-                &[]
+                ExtentSlice::Resources(&[])
             } else {
-                self.roles[2].wanted.as_slice()
+                ExtentSlice::Resources(self.roles[2].wanted.as_slice())
             },
-            extents,
         ];
-        let mut cursors = [0usize; 7];
-        let mut count = 0usize;
-        while let Some(key) = slices
-            .iter()
-            .zip(cursors)
-            .filter_map(|(slice, cursor)| slice.get(cursor))
-            .map(|extent| (extent.source, extent.page_index))
-            .min()
-        {
-            count += 1;
-            if count > capacity {
-                return false;
-            }
-            for (slice, cursor) in slices.iter().zip(&mut cursors) {
-                while slice
-                    .get(*cursor)
-                    .is_some_and(|extent| (extent.source, extent.page_index) == key)
-                {
-                    *cursor += 1;
-                }
-            }
+        if replacement == 3 || self.current_quantum.is_empty() {
+            slices_fit_pool(
+                [
+                    roles[0], roles[1], roles[2], roles[3], roles[4], roles[5], extents,
+                ],
+                capacity,
+            )
+        } else {
+            slices_fit_pool(
+                [
+                    roles[0],
+                    roles[1],
+                    roles[2],
+                    roles[3],
+                    roles[4],
+                    roles[5],
+                    ExtentSlice::Resources(&self.current_quantum),
+                    extents,
+                ],
+                capacity,
+            )
         }
-        true
     }
-    pub(super) fn submit(
+    fn submit(
         &mut self,
         pages: &StreamCallbackPages,
         role: ProtectionRole,
         stamp: ReadinessStamp,
-        extents: &[StreamPageExtent],
+        extents: ExtentSlice<'_>,
     ) -> Result<(), ReadinessRefusal> {
         if !pages.matches_catalog(&self.catalog) {
             return Err(ReadinessRefusal::WrongPair);
@@ -242,7 +369,7 @@ impl PreparedReadiness {
             return Err(ReadinessRefusal::ReceiptPending);
         }
         if let Some(old) = slot.pending {
-            return if old == stamp && slot.wanted == extents {
+            return if old == stamp && extent_eq(&slot.wanted, extents) {
                 Ok(())
             } else {
                 Err(ReadinessRefusal::IntentPending)
@@ -256,7 +383,7 @@ impl PreparedReadiness {
         }
         let slot = &mut self.roles[index];
         slot.wanted.clear();
-        slot.wanted.extend_from_slice(extents);
+        slot.wanted.extend(extents.iter());
         slot.pending = Some(stamp);
         self.epoch = stamp.request_epoch;
         Ok(())
@@ -272,18 +399,61 @@ impl PreparedReadiness {
         if !pages.matches_catalog(&self.catalog) {
             return Err(ReadinessRefusal::WrongPair);
         }
-        let slot = &mut self.roles[role.index()];
-        if slot.pending != Some(stamp) {
+        if self.roles[role.index()].pending != Some(stamp) {
             return Err(ReadinessRefusal::StaleWindow);
         }
-        pages.pump_ready(pump_limit);
+        // Pending pins protect only complete extents already present. They do
+        // not publish a receipt or replace any installed role. Mark new pages
+        // during the same bounded pump, before a later insertion can evict them.
+        let roles = [
+            ProtectionRole::Active,
+            ProtectionRole::Candidate,
+            ProtectionRole::Transition,
+        ];
+        for current in roles {
+            let slot = &self.roles[current.index()];
+            if slot.pending.is_some() {
+                pages
+                    .endpoint
+                    .protect_present(current.pending_mask(), &slot.wanted);
+            }
+        }
+        let pending = roles.map(|current| {
+            let slot = &self.roles[current.index()];
+            (
+                current.pending_mask(),
+                if slot.pending.is_some() {
+                    slot.wanted.as_slice()
+                } else {
+                    &[]
+                },
+            )
+        });
+        pages
+            .endpoint
+            .pump_ready_for_pending(pump_limit.min(pages.max_ready_pages_per_pump), &pending);
+        let slot = &mut self.roles[role.index()];
+        let missing = slot
+            .wanted
+            .iter()
+            .filter(|extent| !pages.endpoint.has_extent(**extent))
+            .count();
+        // A full cache otherwise feeds the worker one returned page per pump.
+        // Release only stale, unprotected victims before submitting demand.
+        pages.endpoint.reclaim_for_missing(missing, request_limit);
         let mut requests = 0;
         let mut complete = true;
         for extent in &slot.wanted {
             if !pages.endpoint.has_extent(*extent) {
                 complete = false;
                 if requests < request_limit {
-                    pages.request_page(extent.source, extent.page_index);
+                    pages.endpoint.queue_readiness_demand(
+                        crate::ResourcePageKey {
+                            source: extent.source,
+                            page_index: extent.page_index,
+                        },
+                        role.pending_mask(),
+                    );
                     requests += 1;
                 }
             }
@@ -294,6 +464,7 @@ impl PreparedReadiness {
         // All validation precedes the role mask/backing/stamp commit. Other role
         // protections survive this replacement, including overlapping pages.
         pages.endpoint.replace_protection(role.mask(), &slot.wanted);
+        pages.endpoint.replace_protection(role.pending_mask(), &[]);
         slot.protected.clear();
         slot.protected.extend_from_slice(&slot.wanted);
         slot.installed = Some(stamp);
@@ -301,34 +472,34 @@ impl PreparedReadiness {
         slot.unread = true;
         Ok(ReadinessProgress::InstalledProtected)
     }
-    pub(super) fn acknowledge(
+    fn acknowledge(
         &mut self,
         role: ProtectionRole,
         stamp: ReadinessStamp,
-        extents: &[StreamPageExtent],
+        extents: ExtentSlice<'_>,
     ) -> bool {
         let slot = &mut self.roles[role.index()];
-        if !slot.unread || slot.installed != Some(stamp) || slot.protected != extents {
+        if !slot.unread || slot.installed != Some(stamp) || !extent_eq(&slot.protected, extents) {
             return false;
         }
         slot.unread = false;
         true
     }
-    pub(super) fn installed(
+    fn installed(
         &self,
         pages: &StreamCallbackPages,
         role: ProtectionRole,
         stamp: ReadinessStamp,
-        extents: &[StreamPageExtent],
+        extents: ExtentSlice<'_>,
     ) -> bool {
         let slot = &self.roles[role.index()];
         pages.matches_catalog(&self.catalog)
             && !slot.unread
             && slot.installed == Some(stamp)
-            && slot.protected == extents
+            && extent_eq(&slot.protected, extents)
             && extents
                 .iter()
-                .all(|extent| pages.endpoint.has_extent(*extent))
+                .all(|extent| pages.endpoint.has_extent(extent))
     }
     pub(super) fn cancel(
         &mut self,
@@ -350,6 +521,8 @@ impl PreparedReadiness {
         slot.wanted.clear();
         slot.protected.clear();
         pages.endpoint.replace_protection(role.mask(), &[]);
+        pages.endpoint.replace_protection(role.pending_mask(), &[]);
+        pages.endpoint.cancel_readiness_demand(role.pending_mask());
         true
     }
 }
@@ -366,7 +539,7 @@ pub struct ConstructorPageLoan {
 /// scheduling, catalog clone or disposal operation is exposed.
 pub struct ProtectedStreamPages<'a> {
     pages: &'a mut StreamCallbackPages,
-    extents: &'a [StreamPageExtent],
+    extents: &'a [StreamResourceExtent],
 }
 impl MediaPages for ProtectedStreamPages<'_> {
     fn page(
@@ -376,13 +549,35 @@ impl MediaPages for ProtectedStreamPages<'_> {
     ) -> Option<hex_engine::BorrowedMediaPage<'_>> {
         self.extents
             .iter()
-            .any(|extent| extent.source == key && extent.page_index == index)
+            .any(|extent| {
+                extent.source == StreamResourceKey::Audio(key) && extent.page_index == index
+            })
             .then_some(())?;
         self.pages.page(key, index)
     }
+    fn scalar_page(
+        &mut self,
+        key: hex_engine::ScalarSourceKey,
+        index: u64,
+    ) -> Option<hex_engine::BorrowedScalarPage<'_>> {
+        self.extents
+            .iter()
+            .any(|extent| {
+                extent.source == StreamResourceKey::Scalar(key) && extent.page_index == index
+            })
+            .then_some(())?;
+        self.pages.scalar_page(key, index)
+    }
+    fn request_scalar_page(&mut self, _key: hex_engine::ScalarSourceKey, _index: u64) {}
     fn request_page(&mut self, _key: StreamSourceKey, _index: u64) {
         // This borrow contains already protected pages only. Actual missing
         // demand must return to readiness service, never schedule from render.
+    }
+    fn prefetch_page(&mut self, key: StreamSourceKey, index: u64) {
+        // Bounded speculative lookahead only (`Endpoint::prefetch`): it never
+        // pins, never satisfies or changes readiness, and the page it may
+        // load stays evictable, so readiness keeps sole custody of demand.
+        self.pages.prefetch_page(key, index);
     }
 }
 /// Exclusive borrowed promotion prepared against exact held protection. It
@@ -404,11 +599,248 @@ impl PreparedRolePromotion<'_> {
     }
 }
 impl ConstructorPageLoan {
+    /// Reserve exactly these already-complete resident extents for a current
+    /// quantum. Refusal preserves all existing roles and the cache. Admission
+    /// counts the distinct union of installed, pending and current pages.
+    /// This does not establish readiness or grant page/callback custody.
+    pub fn reserve_current_quantum(
+        &mut self,
+        extents: &[StreamResourceExtent],
+    ) -> Result<CurrentQuantumReservation, CurrentQuantumRefusal> {
+        self.reserve_quantum_resident_subset(extents, false)
+            .map(|(reservation, _)| reservation)
+    }
+
+    /// Reserve the already-complete resident subset of an exact current demand.
+    /// The boolean reports whether every requested extent was resident; neither
+    /// result establishes readiness. A successful empty subset still requires
+    /// release or cancellation before returning the loan.
+    pub fn reserve_resident_current_quantum(
+        &mut self,
+        extents: &[StreamResourceExtent],
+    ) -> Result<(CurrentQuantumReservation, bool), CurrentQuantumRefusal> {
+        self.reserve_quantum_resident_subset(extents, true)
+    }
+
+    fn reserve_quantum_resident_subset(
+        &mut self,
+        extents: &[StreamResourceExtent],
+        allow_incomplete: bool,
+    ) -> Result<(CurrentQuantumReservation, bool), CurrentQuantumRefusal> {
+        if self.readiness.current_quantum_epoch.is_some() {
+            return Err(CurrentQuantumRefusal::Busy);
+        }
+        if extents.len() > self.readiness.limit
+            || extents.windows(2).any(|pair| {
+                (pair[0].source, pair[0].page_index) >= (pair[1].source, pair[1].page_index)
+            })
+            || extents.iter().any(|extent| extent.start >= extent.end)
+            || (allow_incomplete
+                && extents
+                    .iter()
+                    .any(|extent| extent.end > hex_engine::STREAM_PAGE_FRAMES))
+        {
+            return Err(CurrentQuantumRefusal::InvalidExtents);
+        }
+        let mut complete = true;
+        self.readiness.current_quantum.clear();
+        for extent in extents {
+            if self.pages.endpoint.has_extent(*extent) {
+                self.readiness.current_quantum.push(*extent);
+            } else {
+                complete = false;
+            }
+        }
+        if !complete && !allow_incomplete {
+            self.readiness.current_quantum.clear();
+            return Err(CurrentQuantumRefusal::NotResident);
+        }
+        if !self.readiness.fits_pool(
+            3,
+            ExtentSlice::Resources(&self.readiness.current_quantum),
+            self.pages.endpoint.cache_capacity(),
+        ) {
+            self.readiness.current_quantum.clear();
+            return Err(CurrentQuantumRefusal::Capacity);
+        }
+        let Some(epoch) = self.readiness.quantum_epoch.checked_add(1) else {
+            self.readiness.current_quantum.clear();
+            return Err(CurrentQuantumRefusal::EpochExhausted);
+        };
+        self.pages.endpoint.replace_protection(
+            crate::endpoint::CURRENT_QUANTUM_PIN,
+            &self.readiness.current_quantum,
+        );
+        self.readiness.quantum_epoch = epoch;
+        self.readiness.current_quantum_epoch = Some(epoch);
+        Ok((
+            CurrentQuantumReservation {
+                readiness_id: self.readiness.readiness_id,
+                epoch,
+            },
+            complete,
+        ))
+    }
+
+    /// Release only the exact reservation returned by this loan. A wrong or
+    /// stale token leaves the current reservation and every role unchanged.
+    pub fn release_current_quantum(&mut self, reservation: &CurrentQuantumReservation) -> bool {
+        if reservation.readiness_id != self.readiness.readiness_id
+            || self.readiness.current_quantum_epoch != Some(reservation.epoch)
+        {
+            return false;
+        }
+        self.cancel_current_quantum()
+    }
+
+    /// Cancel this loan's current reservation, for example on priority Stop.
+    /// Any previously issued token becomes stale. No role or page is moved.
+    pub fn cancel_current_quantum(&mut self) -> bool {
+        if self.readiness.current_quantum_epoch.is_none() {
+            return false;
+        }
+        self.pages
+            .endpoint
+            .replace_protection(crate::endpoint::CURRENT_QUANTUM_PIN, &[]);
+        self.readiness.current_quantum.clear();
+        self.readiness.current_quantum_epoch = None;
+        true
+    }
+
     pub fn submit(
         &mut self,
         role: ProtectionRole,
         stamp: ReadinessStamp,
         extents: &[StreamPageExtent],
+    ) -> Result<(), ReadinessRefusal> {
+        self.submit_view(role, stamp, ExtentSlice::Audio(extents))
+    }
+    pub fn submit_resources(
+        &mut self,
+        role: ProtectionRole,
+        stamp: ReadinessStamp,
+        extents: &[StreamResourceExtent],
+    ) -> Result<(), ReadinessRefusal> {
+        self.submit_view(role, stamp, ExtentSlice::Resources(extents))
+    }
+    pub fn acknowledge(
+        &mut self,
+        role: ProtectionRole,
+        stamp: ReadinessStamp,
+        extents: &[StreamPageExtent],
+    ) -> bool {
+        self.acknowledge_view(role, stamp, ExtentSlice::Audio(extents))
+    }
+    pub fn acknowledge_resources(
+        &mut self,
+        role: ProtectionRole,
+        stamp: ReadinessStamp,
+        extents: &[StreamResourceExtent],
+    ) -> bool {
+        self.acknowledge_view(role, stamp, ExtentSlice::Resources(extents))
+    }
+    pub fn protected_pages(
+        &mut self,
+        role: ProtectionRole,
+        stamp: ReadinessStamp,
+        extents: &[StreamPageExtent],
+    ) -> Option<ProtectedStreamPages<'_>> {
+        self.protected_pages_view(role, stamp, ExtentSlice::Audio(extents))
+    }
+    pub fn protected_resource_pages(
+        &mut self,
+        role: ProtectionRole,
+        stamp: ReadinessStamp,
+        extents: &[StreamResourceExtent],
+    ) -> Option<ProtectedStreamPages<'_>> {
+        self.protected_pages_view(role, stamp, ExtentSlice::Resources(extents))
+    }
+    pub fn matches_intent(
+        &self,
+        role: ProtectionRole,
+        stamp: ReadinessStamp,
+        extents: &[StreamPageExtent],
+    ) -> bool {
+        self.matches_intent_view(role, stamp, ExtentSlice::Audio(extents))
+    }
+    pub fn matches_resource_intent(
+        &self,
+        role: ProtectionRole,
+        stamp: ReadinessStamp,
+        extents: &[StreamResourceExtent],
+    ) -> bool {
+        self.matches_intent_view(role, stamp, ExtentSlice::Resources(extents))
+    }
+    pub fn is_protected(
+        &self,
+        role: ProtectionRole,
+        stamp: ReadinessStamp,
+        extents: &[StreamPageExtent],
+    ) -> bool {
+        self.is_protected_view(role, stamp, ExtentSlice::Audio(extents))
+    }
+    pub fn is_resource_protected(
+        &self,
+        role: ProtectionRole,
+        stamp: ReadinessStamp,
+        extents: &[StreamResourceExtent],
+    ) -> bool {
+        self.is_protected_view(role, stamp, ExtentSlice::Resources(extents))
+    }
+    pub fn can_promote(
+        &self,
+        from: ProtectionRole,
+        stamp: ReadinessStamp,
+        extents: &[StreamPageExtent],
+    ) -> bool {
+        self.can_promote_view(from, stamp, ExtentSlice::Audio(extents))
+    }
+    pub fn can_promote_resources(
+        &self,
+        from: ProtectionRole,
+        stamp: ReadinessStamp,
+        extents: &[StreamResourceExtent],
+    ) -> bool {
+        self.can_promote_view(from, stamp, ExtentSlice::Resources(extents))
+    }
+    pub fn prepare_promotion(
+        &mut self,
+        from: ProtectionRole,
+        stamp: ReadinessStamp,
+        extents: &[StreamPageExtent],
+    ) -> Option<PreparedRolePromotion<'_>> {
+        self.prepare_promotion_view(from, stamp, ExtentSlice::Audio(extents))
+    }
+    pub fn prepare_resource_promotion(
+        &mut self,
+        from: ProtectionRole,
+        stamp: ReadinessStamp,
+        extents: &[StreamResourceExtent],
+    ) -> Option<PreparedRolePromotion<'_>> {
+        self.prepare_promotion_view(from, stamp, ExtentSlice::Resources(extents))
+    }
+    pub fn promote_to_active(
+        &mut self,
+        from: ProtectionRole,
+        stamp: ReadinessStamp,
+        extents: &[StreamPageExtent],
+    ) -> bool {
+        self.promote_to_active_view(from, stamp, ExtentSlice::Audio(extents))
+    }
+    pub fn promote_resources_to_active(
+        &mut self,
+        from: ProtectionRole,
+        stamp: ReadinessStamp,
+        extents: &[StreamResourceExtent],
+    ) -> bool {
+        self.promote_to_active_view(from, stamp, ExtentSlice::Resources(extents))
+    }
+
+    fn submit_view(
+        &mut self,
+        role: ProtectionRole,
+        stamp: ReadinessStamp,
+        extents: ExtentSlice<'_>,
     ) -> Result<(), ReadinessRefusal> {
         self.readiness.submit(&self.pages, role, stamp, extents)
     }
@@ -422,19 +854,50 @@ impl ConstructorPageLoan {
         self.readiness
             .service(&mut self.pages, role, stamp, pump_limit, request_limit)
     }
-    pub fn acknowledge(
+    /// Test-only observation of a resident extent; it does not grant protection.
+    #[cfg(feature = "test-support")]
+    pub fn test_has_resource_extent(&self, extent: StreamResourceExtent) -> bool {
+        self.pages.endpoint.has_extent(extent)
+    }
+
+    /// Test-only observation that a role has no pending or installed custody.
+    #[cfg(feature = "test-support")]
+    pub fn test_role_is_idle(&self, role: ProtectionRole) -> bool {
+        let slot = &self.readiness.roles[role.index()];
+        slot.pending.is_none()
+            && slot.installed.is_none()
+            && !slot.unread
+            && slot.wanted.is_empty()
+            && slot.protected.is_empty()
+    }
+    /// Test-only observation of a speculative request coalesced with readiness.
+    #[cfg(feature = "test-support")]
+    pub fn test_coalesced_prefetch(&self, key: crate::ResourcePageKey) -> bool {
+        self.pages.endpoint.test_coalesced_prefetch(key)
+    }
+    /// Test-only observation of the next worker-ready page; it grants no custody.
+    #[cfg(feature = "test-support")]
+    pub fn test_ready_page(&self, key: crate::ResourcePageKey) -> bool {
+        self.pages.endpoint.test_ready_page(key)
+    }
+    /// Test fixture only: queue the normal speculative path without pumping.
+    #[cfg(feature = "test-support")]
+    pub fn test_prefetch_audio_page(&mut self, key: StreamSourceKey, index: u64) {
+        self.pages.prefetch_page(key, index);
+    }
+    fn acknowledge_view(
         &mut self,
         role: ProtectionRole,
         stamp: ReadinessStamp,
-        extents: &[StreamPageExtent],
+        extents: ExtentSlice<'_>,
     ) -> bool {
         self.readiness.acknowledge(role, stamp, extents)
     }
-    pub fn protected_pages(
+    fn protected_pages_view(
         &mut self,
         role: ProtectionRole,
         stamp: ReadinessStamp,
-        extents: &[StreamPageExtent],
+        extents: ExtentSlice<'_>,
     ) -> Option<ProtectedStreamPages<'_>> {
         self.readiness
             .installed(&self.pages, role, stamp, extents)
@@ -445,56 +908,56 @@ impl ConstructorPageLoan {
         })
     }
     /// Pure exact intent observation; neither a receipt nor engine demand proof.
-    pub fn matches_intent(
+    fn matches_intent_view(
         &self,
         role: ProtectionRole,
         stamp: ReadinessStamp,
-        extents: &[StreamPageExtent],
+        extents: ExtentSlice<'_>,
     ) -> bool {
         let slot = &self.readiness.roles[role.index()];
-        (slot.pending == Some(stamp) && slot.wanted == extents)
-            || (slot.installed == Some(stamp) && slot.protected == extents)
+        (slot.pending == Some(stamp) && extent_eq(&slot.wanted, extents))
+            || (slot.installed == Some(stamp) && extent_eq(&slot.protected, extents))
     }
-    pub fn is_protected(
+    fn is_protected_view(
         &self,
         role: ProtectionRole,
         stamp: ReadinessStamp,
-        extents: &[StreamPageExtent],
+        extents: ExtentSlice<'_>,
     ) -> bool {
         self.readiness.installed(&self.pages, role, stamp, extents)
     }
     /// After the host's actual musical commit, move an already acknowledged
     /// held role to Active without allocating, cloning or scheduling. A host
     /// with multiple domains prevalidates every can_promote before any commit.
-    pub fn can_promote(
+    fn can_promote_view(
         &self,
         from: ProtectionRole,
         stamp: ReadinessStamp,
-        extents: &[StreamPageExtent],
+        extents: ExtentSlice<'_>,
     ) -> bool {
         from != ProtectionRole::Active
-            && self.is_protected(from, stamp, extents)
+            && self.is_protected_view(from, stamp, extents)
             && self.readiness.roles[ProtectionRole::Active.index()]
                 .pending
                 .is_none()
             && !self.readiness.roles[ProtectionRole::Active.index()].unread
     }
-    pub fn prepare_promotion(
+    fn prepare_promotion_view(
         &mut self,
         from: ProtectionRole,
         stamp: ReadinessStamp,
-        extents: &[StreamPageExtent],
+        extents: ExtentSlice<'_>,
     ) -> Option<PreparedRolePromotion<'_>> {
-        self.can_promote(from, stamp, extents).then_some(())?;
+        self.can_promote_view(from, stamp, extents).then_some(())?;
         Some(PreparedRolePromotion { loan: self, from })
     }
-    pub fn promote_to_active(
+    fn promote_to_active_view(
         &mut self,
         from: ProtectionRole,
         stamp: ReadinessStamp,
-        extents: &[StreamPageExtent],
+        extents: ExtentSlice<'_>,
     ) -> bool {
-        let Some(prepared) = self.prepare_promotion(from, stamp, extents) else {
+        let Some(prepared) = self.prepare_promotion_view(from, stamp, extents) else {
             return false;
         };
         prepared.commit();
@@ -518,6 +981,18 @@ impl ConstructorPageLoan {
     }
     /// Catalog membership only. The native host separately validates exact
     /// metadata through the actual retained constructor domain before splitting.
+    pub fn covers_resource_key(&self, key: StreamResourceKey) -> bool {
+        match key {
+            StreamResourceKey::Audio(key) => self.covers_key(key),
+            StreamResourceKey::Scalar(key) => self
+                .readiness
+                .catalog
+                .catalog
+                .scalar_sources
+                .binary_search_by_key(&key, hex_engine::ScalarSourceMetadata::key)
+                .is_ok(),
+        }
+    }
     pub fn covers_key(&self, key: StreamSourceKey) -> bool {
         self.readiness
             .catalog
@@ -525,6 +1000,9 @@ impl ConstructorPageLoan {
             .sources
             .binary_search_by_key(&key, hex_engine::StreamedSourceMetadata::key)
             .is_ok()
+    }
+    pub fn covers_scalar_source(&self, source: &hex_engine::ScalarSourceMetadata) -> bool {
+        self.readiness.catalog.covers_scalar_source(source)
     }
     pub fn cancel(&mut self, role: ProtectionRole, epoch: u64) -> bool {
         self.readiness.cancel(&mut self.pages, role, epoch)

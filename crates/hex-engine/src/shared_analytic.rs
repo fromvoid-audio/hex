@@ -5,7 +5,7 @@ use hex_lattice::{
     PreparedSharedAnalyticContext,
 };
 use hex_lattice_contract::{DeviceTypeId, NativeDeviceState};
-use hex_project::{DeviceId, Project, TrackId};
+use hex_project::{DeviceId, Project, SourceId, TrackId};
 use std::sync::{
     Arc,
     atomic::{AtomicU64, Ordering},
@@ -95,7 +95,7 @@ static NEXT_CONTEXT_ID: AtomicU64 = AtomicU64::new(1);
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct SharedContextIdentity {
     tuning: TuningIdentity,
-    track: TrackId,
+    source: SourceId,
     device: DeviceId,
     device_type: DeviceTypeId,
     state: NativeDeviceState,
@@ -172,7 +172,7 @@ impl SharedContextOwner {
         if self.id == previous.id {
             return Ok(transition);
         }
-        if self.identity.track != previous.identity.track
+        if self.identity.source != previous.identity.source
             || self.identity.device != previous.identity.device
             || self.identity.device_type != previous.identity.device_type
             || self.identity.sample_rate != previous.identity.sample_rate
@@ -248,7 +248,7 @@ impl SharedContextOwner {
 /// Sorted-by-device table shared by Arrangement and Session banks in one
 /// prepared revision. Note entries store a checked u16 index into this table;
 /// callback sampling is O(1) and does not clone an Arc.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(crate) struct SharedAnalyticContextTable {
     tuning: hex_lattice::TuningTable,
     tuning_identity: TuningIdentity,
@@ -256,6 +256,23 @@ pub(crate) struct SharedAnalyticContextTable {
     ids: Vec<(SharedContextId, u16)>,
     payload_bytes: usize,
     mutable_continuations: Vec<(TrackId, DeviceId)>,
+    // Current receiver aliases follow sorted owner indices without becoming
+    // part of immutable source identity or allocating another lookup owner.
+    receivers: [Option<TrackId>; hex_project::MAX_TRACKS],
+}
+
+impl Default for SharedAnalyticContextTable {
+    fn default() -> Self {
+        Self {
+            tuning: Default::default(),
+            tuning_identity: Default::default(),
+            owners: Vec::new(),
+            ids: Vec::new(),
+            payload_bytes: 0,
+            mutable_continuations: Vec::new(),
+            receivers: [None; hex_project::MAX_TRACKS],
+        }
+    }
 }
 
 impl SharedAnalyticContextTable {
@@ -288,6 +305,7 @@ impl SharedAnalyticContextTable {
             ids,
             payload_bytes,
             mutable_continuations,
+            receivers,
         } = self;
         let _: &[f64; 128] = tuning.frequencies();
         let _: u64 = tuning_identity.0;
@@ -298,6 +316,7 @@ impl SharedAnalyticContextTable {
             || *payload_bytes != 0
             || !mutable_continuations.is_empty()
             || mutable_continuations.capacity() != 0
+            || receivers.iter().any(Option::is_some)
         {
             return Err(crate::AudioStorageError::UnknownStorage);
         }
@@ -345,10 +364,17 @@ impl SharedAnalyticContextTable {
             .try_reserve_exact(project.tracks().len())
             .map_err(|_| Invalid("could not reserve instrument continuation identities"))?;
 
-        for track in project.tracks() {
+        for track in project
+            .tracks()
+            .iter()
+            .filter(|track| track.receives_source_audio())
+        {
             let Some(device) = track.instrument().filter(|device| !device.bypassed()) else {
                 continue;
             };
+            if crate::compile::is_vst3_instrument(device) {
+                continue;
+            }
             let prepared = crate::native_device_resources::prepare_instrument(
                 registry,
                 device.id(),
@@ -364,7 +390,8 @@ impl SharedAnalyticContextTable {
             if prepared.prefers_mutable_continuation()
                 || previous.is_some_and(|old| {
                     old.mutable_continuations
-                        .contains(&(track.id(), device.id()))
+                        .iter()
+                        .any(|(_, old_device)| *old_device == device.id())
                 })
             {
                 if prepared
@@ -387,7 +414,9 @@ impl SharedAnalyticContextTable {
             };
             let identity = SharedContextIdentity {
                 tuning: tuning_identity,
-                track: track.id(),
+                source: track
+                    .source_id()
+                    .ok_or(Invalid("shared instrument source binding is missing"))?,
                 device: device.id(),
                 device_type: device.state().type_id(),
                 state: device.state().clone().without_host_gains(),
@@ -443,10 +472,19 @@ impl SharedAnalyticContextTable {
             ));
         }
         owners.sort_unstable_by_key(|owner| owner.identity.device);
+        let mut receivers = [None; hex_project::MAX_TRACKS];
         let mut ids = Vec::new();
         ids.try_reserve_exact(owners.len())
             .map_err(|_| Invalid("could not reserve shared instrument context index"))?;
         for (index, owner) in owners.iter().enumerate() {
+            receivers[index] = project
+                .tracks()
+                .iter()
+                .find(|track| {
+                    track.receives_source_audio()
+                        && track.source_id() == Some(owner.identity.source)
+                })
+                .map(hex_project::Track::id);
             ids.push((
                 owner.id,
                 u16::try_from(index)
@@ -461,6 +499,7 @@ impl SharedAnalyticContextTable {
             ids,
             payload_bytes,
             mutable_continuations,
+            receivers,
         }))
     }
 
@@ -483,10 +522,17 @@ impl SharedAnalyticContextTable {
         })
     }
 
-    pub(crate) fn index_for_track(&self, track: TrackId) -> Option<u16> {
+    pub(crate) fn index_for_source(&self, source: SourceId) -> Option<u16> {
         self.owners
             .iter()
-            .position(|owner| owner.identity.track == track)
+            .position(|owner| owner.identity.source == source)
+            .and_then(|index| u16::try_from(index).ok())
+    }
+
+    pub(crate) fn index_for_track(&self, track: TrackId) -> Option<u16> {
+        self.receivers
+            .iter()
+            .position(|receiver| *receiver == Some(track))
             .and_then(|index| u16::try_from(index).ok())
     }
 
@@ -684,8 +730,12 @@ mod tests {
         assert_eq!(owner_handles, 2_048);
         assert_eq!(id_index_entries, 4_096);
         // One table and scalar cache identity per revision, never per clip.
-        assert_eq!(table_header, 80 + 1024 + 8);
-        assert_eq!(owner_handles + id_index_entries + table_header, 7_256);
+        let receiver_aliases = std::mem::size_of::<[Option<TrackId>; hex_project::MAX_TRACKS]>();
+        assert_eq!(table_header, 80 + 1024 + 8 + receiver_aliases);
+        assert_eq!(
+            owner_handles + id_index_entries + table_header,
+            7_256 + receiver_aliases
+        );
     }
 
     #[test]
@@ -697,5 +747,57 @@ mod tests {
             preflight_context_lease_plan(&mut plan, &slots).unwrap();
             assert_eq!(plan[0].target, 0);
         }
+    }
+    #[test]
+    fn source_context_reuses_owner_across_receiver_reassignment() {
+        use hex_project::{Command, Created, Editor};
+        let mut editor = Editor::new(Project::new(8000).unwrap(), 16).unwrap();
+        let Created::Track(first) = editor
+            .execute(Command::AddMidiTrack {
+                name: "first".into(),
+            })
+            .unwrap()
+        else {
+            panic!("first")
+        };
+        let Created::Track(second) = editor
+            .execute(Command::AddMidiTrack {
+                name: "second".into(),
+            })
+            .unwrap()
+        else {
+            panic!("second")
+        };
+        let registry = hex_devices::native_instrument_registry().unwrap();
+        let state = crate::operator_legacy_test::legacy_operator_state();
+        editor
+            .execute(Command::InsertInstrument {
+                track: first,
+                state,
+            })
+            .unwrap();
+        let source = editor.project().track(first).unwrap().source_id().unwrap();
+        editor
+            .execute(Command::BindTrackSource {
+                track: second,
+                source: Some(source),
+            })
+            .unwrap();
+        let old = SharedAnalyticContextTable::prepare(editor.project(), &registry, None).unwrap();
+        let index = old
+            .index_for_source(source)
+            .expect("analytic operator context");
+        let owner = old.clone_owner(index).unwrap();
+        editor
+            .execute(Command::SetNativeSourceReceiver {
+                source,
+                track: Some(second),
+            })
+            .unwrap();
+        let next =
+            SharedAnalyticContextTable::prepare(editor.project(), &registry, Some(&old)).unwrap();
+        assert_eq!(next.index_for_track(first), None);
+        assert_eq!(next.index_for_track(second), Some(index));
+        assert!(Arc::ptr_eq(&owner, &next.clone_owner(index).unwrap()));
     }
 }

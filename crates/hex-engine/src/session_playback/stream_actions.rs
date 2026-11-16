@@ -3,7 +3,7 @@ use super::*;
 use crate::MidiTiming;
 use crate::{
     Invalid, PlaybackAction, PlaybackActionError, PlaybackCommand, StreamChunkWindow,
-    StreamPageExtent,
+    StreamResourceExtent,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -103,7 +103,7 @@ impl SessionPlayback {
         &self,
         prepared: &PreparedStreamAction,
     ) -> Result<(), SessionPlaybackError> {
-        if (!prepared.ordinary && (self.compensation.is_some() || self.computer_keyboard.is_some()))
+        if (!prepared.ordinary && !self.supports_closed_stream_demand())
             || prepared.expected != self.stream_action_expected()
         {
             return Err(SessionPlaybackError::InvalidCommand);
@@ -166,15 +166,15 @@ impl SessionPlayback {
         action: PlaybackAction,
         ordinary: bool,
     ) -> Result<PreparedStreamAction, SessionPlaybackError> {
-        if (!ordinary && (self.compensation.is_some() || self.computer_keyboard.is_some()))
-            || self.linear_arrangement_export
-        {
+        if (!ordinary && !self.supports_closed_stream_demand()) || self.linear_arrangement_export {
             return Err(SessionPlaybackError::InvalidCommand);
         }
         let resolved = match action {
-            PlaybackAction::Transport(
-                PlaybackCommand::Seek(frame) | PlaybackCommand::PlayFrom(frame),
-            )
+            PlaybackAction::Transport(PlaybackCommand::PlayFrom(frame)) => Resolved::Seek {
+                frame,
+                beat: self.play_from_coordinates(frame)?,
+            },
+            PlaybackAction::Transport(PlaybackCommand::Seek(frame))
             | PlaybackAction::Session(SessionPlaybackCommand::Seek(frame)) => Resolved::Seek {
                 frame,
                 beat: self.seek_coordinates(frame)?,
@@ -206,7 +206,7 @@ impl SessionPlayback {
         &mut self,
         prepared: &PreparedStreamAction,
         maximum_frames: usize,
-        visit: &mut impl FnMut(StreamPageExtent) -> Result<(), Invalid>,
+        visit: &mut impl FnMut(StreamResourceExtent) -> Result<(), Invalid>,
     ) -> Result<StreamChunkWindow, Invalid> {
         self.validate_stream_action(prepared)
             .map_err(|e| Invalid(e.diagnostic_message()))?;
@@ -258,7 +258,7 @@ impl SessionPlayback {
         if prepared.playing_after_commit() {
             self.project_due_stream_routes(performance, anchor)?;
         }
-        self.visit_stream_chunk_in_scope(
+        self.visit_stream_chunk_with_history(
             prepared.ordinary,
             &self.route_scratch,
             performance,
@@ -268,9 +268,17 @@ impl SessionPlayback {
             prepared.playing_after_commit(),
             maximum_frames,
             visit,
+            if matches!(&prepared.resolved, Resolved::Seek { .. }) {
+                super::stream_demand::ScalarOriginHistory::Empty
+            } else {
+                super::stream_demand::ScalarOriginHistory::Current(self)
+            },
         )
     }
-    fn project_stream_arrangement(&self, performance: u64) -> Result<(u64, u64), Invalid> {
+    pub(super) fn project_stream_arrangement(
+        &self,
+        performance: u64,
+    ) -> Result<(u64, u64), Invalid> {
         let delta = performance
             .checked_sub(self.performance_frame)
             .ok_or(Invalid("stream projection precedes current clock"))?;
@@ -306,20 +314,111 @@ impl SessionPlayback {
             } else {
                 pending.beat
             };
+            let previous = self.route_scratch[index].owner;
             self.route_scratch[index].owner = self
                 .owner_for_target(pending.target, beat, pending.frame)
                 .map_err(|e| Invalid(e.diagnostic_message()))?;
             self.route_scratch[index].pending = None;
+            let fade = self.audio_release_fade();
+            // Other tracks may have transitioned before the requested frontier;
+            // their releases start at their own due frames, not at this visit.
+            super::audio_release::begin(
+                &mut self.route_scratch[index],
+                previous,
+                pending.frame,
+                fade,
+            )
+            .map_err(|e| Invalid(e.diagnostic_message()))?;
         }
         Ok(())
     }
+    /// Visit every stream chunk in the next quantum of at most 256 frames.
+    /// The returned width is capped even when the caller asks for more; callers
+    /// must not treat it as coverage of a longer callback. Route planning uses
+    /// preallocated scratch and does not change committed clocks, routes or
+    /// owners. A failed visit leaves partial caller storage speculative.
+    pub(crate) fn visit_current_stream_quantum(
+        &mut self,
+        maximum_frames: usize,
+        playing: Option<bool>,
+        ordinary: bool,
+        visit: &mut impl FnMut(StreamResourceExtent) -> Result<(), Invalid>,
+    ) -> Result<usize, Invalid> {
+        self.visit_current_stream_quantum_at(0, maximum_frames, playing, ordinary, visit)
+            .map_err(Into::into)
+    }
+
+    /// Project a bounded window at an offset from the unmodified current clock.
+    pub(crate) fn visit_current_stream_quantum_at(
+        &mut self,
+        start_offset: u64,
+        maximum_frames: usize,
+        playing: Option<bool>,
+        ordinary: bool,
+        visit: &mut impl FnMut(StreamResourceExtent) -> Result<(), Invalid>,
+    ) -> Result<usize, crate::playback::StreamQuantumProjectionError> {
+        use crate::playback::StreamQuantumProjectionError as Error;
+        let ordinary = ordinary || self.linear_arrangement_export;
+        if !ordinary && !self.supports_closed_stream_demand() {
+            return Err(Error::Unsupported);
+        }
+        let frames = maximum_frames.min(256);
+        if frames == 0 || !playing.unwrap_or(self.playing) {
+            return Ok(0);
+        }
+        let start = self
+            .performance_frame
+            .checked_add(start_offset)
+            .filter(|start| start.checked_add(frames as u64).is_some())
+            .ok_or(Error::ClockOverflow)?;
+        let mut offset = 0usize;
+        while offset < frames {
+            let performance = start + offset as u64;
+            let (arrangement, pass) = self
+                .project_stream_arrangement(performance)
+                .map_err(Error::Projection)?;
+            self.route_scratch.copy_from_slice(&self.routes);
+            self.project_due_stream_routes(performance, self.anchor)
+                .map_err(Error::Projection)?;
+            let visitor_failed = std::cell::Cell::new(false);
+            let mut checked_visit =
+                |extent| visit(extent).inspect_err(|_| visitor_failed.set(true));
+            let window = self
+                .visit_stream_chunk_in_scope(
+                    ordinary,
+                    &self.route_scratch,
+                    performance,
+                    arrangement,
+                    self.route_state_generation,
+                    pass,
+                    true,
+                    frames - offset,
+                    &mut checked_visit,
+                )
+                .map_err(|error| {
+                    if visitor_failed.get() {
+                        Error::Visitor(error)
+                    } else {
+                        Error::Projection(error)
+                    }
+                })?;
+            if window.frames == 0 || window.frames > frames - offset {
+                return Err(Error::Projection(Invalid(
+                    "stream callback projection made no progress",
+                )));
+            }
+            offset += window.frames;
+        }
+        Ok(offset)
+    }
+
     /// Observe an already scheduled original due boundary, including loop wrap.
     /// Native prewarm is revocable; current due demand must still be validated.
     pub(crate) fn visit_pending_stream_chunk(
         &mut self,
         due: u64,
         maximum_frames: usize,
-        visit: &mut impl FnMut(StreamPageExtent) -> Result<(), Invalid>,
+        visit: &mut impl FnMut(StreamResourceExtent) -> Result<(), Invalid>,
     ) -> Result<StreamChunkWindow, Invalid> {
         self.visit_pending_stream_chunk_in_scope(due, maximum_frames, visit, false)
     }
@@ -327,10 +426,10 @@ impl SessionPlayback {
         &mut self,
         due: u64,
         maximum_frames: usize,
-        visit: &mut impl FnMut(StreamPageExtent) -> Result<(), Invalid>,
+        visit: &mut impl FnMut(StreamResourceExtent) -> Result<(), Invalid>,
         ordinary: bool,
     ) -> Result<StreamChunkWindow, Invalid> {
-        if (!ordinary && (self.compensation.is_some() || self.computer_keyboard.is_some()))
+        if (!ordinary && !self.supports_closed_stream_demand())
             || !self
                 .routes
                 .iter()
@@ -384,7 +483,7 @@ impl crate::playback::Playback {
         &mut self,
         due: u64,
         maximum_frames: usize,
-        visit: &mut impl FnMut(StreamPageExtent) -> Result<(), Invalid>,
+        visit: &mut impl FnMut(StreamResourceExtent) -> Result<(), Invalid>,
     ) -> Result<StreamChunkWindow, Invalid> {
         self.session_runtime_mut_for_stream_action()
             .map_err(|_| Invalid("stream session unavailable"))?
@@ -394,7 +493,7 @@ impl crate::playback::Playback {
         &mut self,
         prepared: &PreparedStreamAction,
         maximum_frames: usize,
-        visit: &mut impl FnMut(StreamPageExtent) -> Result<(), Invalid>,
+        visit: &mut impl FnMut(StreamResourceExtent) -> Result<(), Invalid>,
     ) -> Result<StreamChunkWindow, Invalid> {
         self.session_runtime_mut_for_stream_action()
             .map_err(|_| Invalid("stream session unavailable"))?
@@ -404,7 +503,7 @@ impl crate::playback::Playback {
         &mut self,
         due: u64,
         maximum_frames: usize,
-        visit: &mut impl FnMut(StreamPageExtent) -> Result<(), Invalid>,
+        visit: &mut impl FnMut(StreamResourceExtent) -> Result<(), Invalid>,
     ) -> Result<StreamChunkWindow, Invalid> {
         self.session_runtime_mut_for_stream_action()
             .map_err(|_| Invalid("stream session unavailable"))?

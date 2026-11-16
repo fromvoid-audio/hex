@@ -217,7 +217,10 @@ fn warmed_render_page_lookup_and_pending_request_coalescing_are_allocation_free(
     // Session uses the same warmed worker endpoint and source pages. Graph
     // preparation, commands' fixtures, oracles and reclamation stay outside
     // the measured callback scope; launching and rendering are measured.
-    {
+    for loop_range in [
+        None,
+        Some(hex_project::SessionAudioLoop::new(4095, 4100).unwrap()),
+    ] {
         let Created::Track(track) = editor
             .execute(Command::AddTrack {
                 name: "audio".into(),
@@ -247,9 +250,12 @@ fn warmed_render_page_lookup_and_pending_request_coalescing_are_allocation_free(
         else {
             panic!("clip result")
         };
+        editor
+            .execute(Command::SetSessionAudioClipLoop { clip, loop_range })
+            .unwrap();
         let bank = BTreeMap::from([(
             asset,
-            hex_engine::compile::PreparedAudioSource::Streamed(Arc::new(metadata)),
+            hex_engine::compile::PreparedAudioSource::Streamed(Arc::new(metadata.clone())),
         )]);
         let revision = Arc::new(
             PreparedRevision::prepare_with_prepared_audio_sources(
@@ -264,8 +270,14 @@ fn warmed_render_page_lookup_and_pending_request_coalescing_are_allocation_free(
         let mut session = SessionPlayback::new(revision).expect("Session runtime");
         session.apply(SessionPlaybackCommand::Play).expect("play");
         let mut expected = [[0.0; 2]; 31];
-        for (index, frame) in expected.iter_mut().take(20).enumerate() {
-            *frame = match (4090 + index) % 4 {
+        for (index, frame) in expected.iter_mut().enumerate() {
+            let source = match loop_range {
+                Some(_) if index >= 10 => 4095 + (index - 10) % 5,
+                Some(_) => 4090 + index,
+                None if index < 20 => 4090 + index,
+                None => continue,
+            };
+            *frame = match source % 4 {
                 0 => [0.25, -0.5],
                 1 => [-0.25, 0.75],
                 2 => [0.5, 0.125],

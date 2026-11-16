@@ -132,6 +132,6 @@ impl DocumentV18 {
         };
         let mut snapshot = DocumentV19::decode(&serde_json::to_vec(&base)?)?.snapshot();
         snapshot.import_provenance = provenance;
-        Project::from_snapshot(snapshot).map_err(|e| StorageError::Invalid(e.0))
+        Project::from_legacy_snapshot(snapshot).map_err(|e| StorageError::Invalid(e.0))
     }
 }

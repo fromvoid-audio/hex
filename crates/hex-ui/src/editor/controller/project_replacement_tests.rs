@@ -1,5 +1,6 @@
 //! GPUI production-event regressions for project replacement and publication policy.
 use super::*;
+use crate::editor::viewport::Viewport;
 use gpui::TestAppContext;
 use hex_engine::{PreparedRevision, SineTable};
 use hex_project::{Command, Editor, Project};
@@ -32,19 +33,26 @@ fn event(project: Arc<Project>, revision: u64, replaced: bool) -> Event {
         playback: Some(Playback::try_from_prepared_with_session(prepared).expect("playback")),
         status: None,
         error: None,
+        range_copy_source_unavailable: None,
         recovery_failure: None,
         request_complete: true,
         sampler_load_complete: None,
         sampler_edit_complete: None,
         plugin_effect_complete: Vec::new(),
+        plugin_parameter_observation: false,
+        plugin_parameters: None,
+        plugin_parameter_conversion: None,
         computer_keyboard_complete: None,
         midi_take_complete: None,
+        device_automation_take_complete: None,
         tuning_audition_complete: None,
         live_expression_complete: None,
         bounce_complete: None,
         audio_batch_complete: None,
         audio_batch_failure: None,
+        import_truncation: None,
         save_complete: false,
+        save_correlation: None,
         document_format_upgrade_required: false,
         save_confirmation_required: false,
         open_complete: replaced,
@@ -137,6 +145,46 @@ fn eq8_project() -> (
         device,
         other_track,
     )
+}
+
+#[gpui::test]
+fn audio_track_arm_clears_when_the_track_is_removed_or_project_replaced(cx: &mut TestAppContext) {
+    let window = cx.add_window(|window, cx| {
+        let service = Service::new(48_000, 8, 8_000_000).expect("test service");
+        EditorView::new(window, cx, service, Err("offline test".into()))
+    });
+    let (project, track, _, _) = eq8_project();
+    let mut edited = Editor::new((*project).clone(), 8).unwrap();
+    edited.execute(Command::RemoveTrack(track)).unwrap();
+    let without = Arc::new(edited.project().clone());
+    window
+        .update(cx, |view, _, _| {
+            view.receive(event(Arc::clone(&project), 1, true));
+            view.toggle_audio_arm(track, view.project_generation);
+            assert!(
+                view.audio_recorder
+                    .is_audio_armed(view.project_generation, track)
+            );
+            view.receive(event(without, 2, false));
+            assert!(
+                !view
+                    .audio_recorder
+                    .is_audio_armed(view.project_generation, track)
+            );
+            view.receive(event(Arc::clone(&project), 3, false));
+            view.toggle_audio_arm(track, view.project_generation);
+            assert!(
+                view.audio_recorder
+                    .is_audio_armed(view.project_generation, track)
+            );
+            view.receive(event(project, 4, true));
+            assert!(
+                !view
+                    .audio_recorder
+                    .is_audio_armed(view.project_generation, track)
+            );
+        })
+        .unwrap();
 }
 
 #[gpui::test]
@@ -236,10 +284,7 @@ fn spectrum_target_is_retired_when_detail_context_or_project_changes(cx: &mut Te
                             sample_rate_hz: target.sample_rate_hz,
                             applied_revision: target.activation_floor,
                         },
-                        frame: hex_audio::spectrum::SpectrumFrame {
-                            sample_rate_hz: target.sample_rate_hz,
-                            bins_dbfs: [-120.0; hex_audio::spectrum::SPECTRUM_BANDS],
-                        },
+                        frame: hex_audio::spectrum::SpectrumFrame::silent(target.sample_rate_hz),
                         captured_at: std::time::Instant::now(),
                         processed_at: std::time::Instant::now(),
                     },
@@ -327,7 +372,7 @@ fn worker_snapshots_and_undo_keep_the_last_user_detail_focus(cx: &mut TestAppCon
 }
 
 fn receive_worker_event(view: &mut EditorView) {
-    let deadline = Instant::now() + Duration::from_secs(2);
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         match view.service.try_event() {
             Ok(event) => {
@@ -452,6 +497,8 @@ fn arrangement_growth_keeps_auto_fit_span_and_explicit_fit_tracks_current_horizo
             receive_worker_event(view);
             assert_eq!(view.viewport, None, "the initial project remains auto-fit");
             let initial_horizon = view.state.as_ref().expect("initial state").timeline_frames;
+            let initial_view = view.visible_viewport(initial_horizon);
+            assert_eq!(initial_view, Viewport::fit(14 * 48_000));
 
             view.service
                 .submit(Request::Edit(Command::AddTrack {
@@ -485,23 +532,20 @@ fn arrangement_growth_keeps_auto_fit_span_and_explicit_fit_tracks_current_horizo
             receive_worker_event(view);
             let grown_horizon = view.state.as_ref().unwrap().timeline_frames;
             assert!(grown_horizon > initial_horizon);
-            assert_eq!(view.viewport, Some(Viewport::fit(initial_horizon)));
-            assert_eq!(
-                view.visible_viewport(grown_horizon),
-                Viewport::fit(initial_horizon)
-            );
+            assert_eq!(view.viewport, Some(initial_view));
+            assert_eq!(view.visible_viewport(grown_horizon), initial_view);
 
             view.service
                 .submit(Request::Edit(Command::Gain { track, gain: 0.5 }))
                 .expect("same-horizon edit");
             receive_worker_event(view);
-            assert_eq!(view.viewport, Some(Viewport::fit(initial_horizon)));
+            assert_eq!(view.viewport, Some(initial_view));
 
             view.fit_timeline();
             assert_eq!(view.viewport, None);
             assert_eq!(
                 view.visible_viewport(grown_horizon),
-                Viewport::fit(grown_horizon)
+                Viewport::fit(grown_horizon + 6 * 48_000)
             );
             view.zoom_timeline(true);
             let explicit_zoom = view.viewport.expect("explicit zoom");
@@ -541,7 +585,7 @@ fn arrangement_growth_keeps_auto_fit_span_and_explicit_fit_tracks_current_horizo
             let replacement_horizon = view.state.as_ref().unwrap().timeline_frames;
             assert_eq!(
                 view.visible_viewport(replacement_horizon),
-                Viewport::fit(replacement_horizon)
+                Viewport::fit(replacement_horizon + 6 * 48_000)
             );
         })
         .expect("run viewport growth assertions");
@@ -648,4 +692,193 @@ fn failed_batch_worker_event_displays_original_path_in_status_and_tooltip(cx: &m
         })
         .expect("deliver production batch failure");
     std::fs::remove_dir_all(directory).expect("remove fixture");
+}
+
+/// One fixture output for the held-endpoint protocol tests; the fixture lease
+/// is process-wide, so retry while another test still owns it.
+fn held_fixture_audio() -> (
+    crate::editor_backend::EditorAudio,
+    hex_audio::WorkerPreparedOutput,
+    hex_audio::worker_fixture::HeadlessBackend,
+) {
+    let deadline = crate::test_wait::hang_deadline();
+    let (mut output, backend) = loop {
+        match hex_audio::worker_fixture::open(48_000) {
+            Ok(output) => break output,
+            Err(error)
+                if error == "audio output is open or still shutting down"
+                    && Instant::now() < deadline =>
+            {
+                std::thread::yield_now()
+            }
+            Err(error) => panic!("{error}"),
+        }
+    };
+    let audio = crate::editor_backend::EditorAudio {
+        control: output.take_client().expect("fixture client"),
+        sample_rate: 48_000,
+        label: "held output".into(),
+        spectrum_error: None,
+        mode: hex_session::DocumentAudioMode::Resident,
+    };
+    (audio, output, backend)
+}
+
+fn held_identity(view: &EditorView) -> Option<u64> {
+    view.audio
+        .as_ref()
+        .and_then(|a| a.control.output_identity())
+}
+
+#[gpui::test]
+fn held_endpoint_follows_rebound_and_release_across_generations(cx: &mut TestAppContext) {
+    let _fixture =
+        crate::editor::device_panel::tests::eq_ui_tests::graph_layout_tests::status_fixture_guard();
+    let window = cx.add_window(|window, cx| {
+        let service = Service::new(48_000, 8, 8_000_000).expect("test service");
+        EditorView::new(window, cx, service, Err("offline test".into()))
+    });
+    let project = Arc::new(Project::new(48_000).expect("project"));
+    let (audio, _output, _backend) = held_fixture_audio();
+    let identity = audio.control.output_identity().expect("identity");
+    let (events, receiver) = std::sync::mpsc::sync_channel(4);
+    window
+        .update(cx, |view, _, cx| {
+            view.audio_events = receiver;
+            view.receive(event(Arc::clone(&project), 1, true));
+            let generation = view.project_generation;
+            view.audio = Some(audio);
+
+            // A rebind that overtakes its replacement waits for it and keeps
+            // the endpoint open meanwhile.
+            events
+                .send(crate::EditorAudioEvent::OutputRebound {
+                    project_generation: generation + 1,
+                    output_identity: identity,
+                })
+                .unwrap();
+            view.poll_editor_audio_events(cx);
+            assert_eq!(held_identity(view), Some(identity));
+            view.receive(event(Arc::clone(&project), 2, true));
+            assert_eq!(view.project_generation, generation + 1);
+            assert_eq!(
+                held_identity(view),
+                Some(identity),
+                "rebound kept the endpoint"
+            );
+            assert!(view.pending_audio_result.is_none());
+
+            // A stale rebind or release never touches the current endpoint.
+            for stale in [
+                crate::EditorAudioEvent::OutputRebound {
+                    project_generation: generation,
+                    output_identity: identity.wrapping_add(1),
+                },
+                crate::EditorAudioEvent::OutputReleased {
+                    project_generation: generation,
+                    old_output_identity: identity.wrapping_add(1),
+                },
+            ] {
+                events.send(stale).unwrap();
+                view.poll_editor_audio_events(cx);
+                assert_eq!(held_identity(view), Some(identity));
+            }
+
+            // A release that overtakes its replacement closes the endpoint at
+            // once, so the worker's fresh open is never blocked by this client.
+            events
+                .send(crate::EditorAudioEvent::OutputReleased {
+                    project_generation: generation + 2,
+                    old_output_identity: identity,
+                })
+                .unwrap();
+            view.poll_editor_audio_events(cx);
+            assert!(view.audio.is_none());
+            view.receive(event(Arc::clone(&project), 3, true));
+            assert!(view.audio.is_none());
+
+            // A kept output without a live client here falls back to a restart.
+            events
+                .send(crate::EditorAudioEvent::OutputRebound {
+                    project_generation: view.project_generation,
+                    output_identity: identity,
+                })
+                .unwrap();
+            view.poll_editor_audio_events(cx);
+            assert_eq!(
+                view.pending_restart_request
+                    .map(|(generation, _)| generation),
+                Some(view.project_generation)
+            );
+        })
+        .expect("held endpoint protocol");
+}
+
+#[gpui::test]
+fn delayed_release_closes_matching_endpoint_after_later_replacement(cx: &mut TestAppContext) {
+    let _fixture =
+        crate::editor::device_panel::tests::eq_ui_tests::graph_layout_tests::status_fixture_guard();
+    let window = cx.add_window(|window, cx| {
+        let service = Service::new(48_000, 8, 8_000_000).unwrap();
+        EditorView::new(window, cx, service, Err("offline test".into()))
+    });
+    let project = Arc::new(Project::new(48_000).unwrap());
+    let (audio, _output, _backend) = held_fixture_audio();
+    let identity = audio.control.output_identity().unwrap();
+    let (events, receiver) = std::sync::mpsc::sync_channel(4);
+    window
+        .update(cx, |view, _, cx| {
+            view.audio_events = receiver;
+            view.receive(event(Arc::clone(&project), 1, true));
+            let generation = view.project_generation;
+            view.audio = Some(audio);
+            view.receive(event(Arc::clone(&project), 2, true));
+            view.receive(event(Arc::clone(&project), 3, true));
+            assert_eq!(held_identity(view), Some(identity));
+            events
+                .send(crate::EditorAudioEvent::OutputReleased {
+                    project_generation: generation + 1,
+                    old_output_identity: identity,
+                })
+                .unwrap();
+            view.poll_editor_audio_events(cx);
+            assert!(view.audio.is_none());
+        })
+        .unwrap();
+}
+
+#[gpui::test]
+fn project_replacement_holds_resident_endpoint_until_released(cx: &mut TestAppContext) {
+    let _fixture =
+        crate::editor::device_panel::tests::eq_ui_tests::graph_layout_tests::status_fixture_guard();
+    let window = cx.add_window(|window, cx| {
+        let service = Service::new(48_000, 8, 8_000_000).expect("test service");
+        EditorView::new(window, cx, service, Err("offline test".into()))
+    });
+    let project = Arc::new(Project::new(48_000).expect("project"));
+    let (audio, _output, _backend) = held_fixture_audio();
+    let identity = audio.control.output_identity().expect("identity");
+    let (events, receiver) = std::sync::mpsc::sync_channel(4);
+    window
+        .update(cx, |view, _, cx| {
+            view.audio_events = receiver;
+            view.receive(event(Arc::clone(&project), 1, true));
+            view.audio = Some(audio);
+            view.receive(event(Arc::clone(&project), 2, true));
+            assert_eq!(
+                held_identity(view),
+                Some(identity),
+                "held across replacement"
+            );
+            events
+                .send(crate::EditorAudioEvent::OutputReleased {
+                    project_generation: view.project_generation,
+                    old_output_identity: identity,
+                })
+                .unwrap();
+            view.poll_editor_audio_events(cx);
+            assert!(view.audio.is_none());
+            assert_eq!(view.status, "preparing audio output");
+        })
+        .expect("held endpoint release");
 }

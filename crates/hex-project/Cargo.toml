@@ -11,3 +11,4 @@ workspace = true
 [dependencies]
 hex-tuning = { path = "../hex-tuning" }
 hex-lattice-contract = { path = "../hex-lattice-contract" }
+hex-plugin-state = { path = "../hex-plugin-state" }

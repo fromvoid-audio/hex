@@ -88,7 +88,7 @@ fn held_node_window(cx: &mut TestAppContext) -> Fixture {
         assert!(view.clip_view_open && view.device_panel_active)
     });
     let start = plot(&mut visual, device, 0.5, 0.5);
-    visual.simulate_click(start, Modifiers::default());
+    eq_double_click(&mut visual, start);
     pump_until(&editor, cx, |view| {
         settled(view) && read(view, device).nodes.len() == 1
     });
@@ -145,7 +145,7 @@ fn eq_held_node_position_survives_real_preview_ack_and_repeated_completed_frames
     visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
     // Release capture separately from display custody. Advance the real keyed
     // worker stream, but hold its exact Commit reply across completed frames.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = crate::test_wait::hang_deadline();
     let terminal = loop {
         let terminal = editor.update(&mut visual, |view, cx| {
             view.pump_device_gesture();
@@ -176,7 +176,10 @@ fn eq_held_node_position_survives_real_preview_ack_and_repeated_completed_frames
         if let Some(terminal) = terminal {
             break terminal;
         }
-        assert!(std::time::Instant::now() < deadline);
+        assert!(
+            std::time::Instant::now() < deadline,
+            "eq_held_node_position_survives_real_preview_ack_and_repeated_completed_frames: hang guard expired"
+        );
         std::thread::yield_now();
     };
     assert!(terminal.error.is_none());
@@ -308,7 +311,7 @@ pub(in crate::editor) fn attach_actual_output(
         });
         cx.notify();
     });
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         pump_output(editor, cx, &mut output, &mut backend);
         visual.run_until_parked();
@@ -329,7 +332,7 @@ pub(in crate::editor) fn attach_actual_output(
 }
 
 #[gpui::test]
-fn eq_held_node_space_reaches_real_prepared_output_and_callback_without_release(
+fn eq_held_node_space_starts_applied_preview_without_seek_worker_or_release(
     cx: &mut TestAppContext,
 ) {
     use std::sync::atomic::Ordering::Acquire;
@@ -358,7 +361,7 @@ fn eq_held_node_space_reaches_real_prepared_output_and_callback_without_release(
             visual.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
         }
         // Admit the real preview before asking for transport, keeping the mouse held.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let deadline = crate::test_wait::hang_deadline();
         pump_output(&editor, cx, &mut output, &mut backend);
         visual.run_until_parked();
         while editor.read_with(cx, |view, _| {
@@ -410,7 +413,13 @@ fn eq_held_node_space_reaches_real_prepared_output_and_callback_without_release(
             view.device_gesture.snapshot().map(|snapshot| snapshot.key)
         });
         visual.simulate_keystrokes("space");
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        editor.read_with(cx, |view, _| {
+            assert!(
+                view.prepared_seek.is_none() && view.latched_seek_intent.is_none(),
+                "Space must start the applied preview without a prepared seek worker"
+            );
+        });
+        let deadline = crate::test_wait::hang_deadline();
         while !backend.status().unwrap().playing.load(Acquire) {
             pump_output(&editor, cx, &mut output, &mut backend);
             visual.run_until_parked();
@@ -444,7 +453,7 @@ fn eq_held_node_space_reaches_real_prepared_output_and_callback_without_release(
         });
         graph.read_with(cx, |graph, _| assert_eq!(graph.is_dragging(), moving));
         visual.simulate_keystrokes("space");
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let deadline = crate::test_wait::hang_deadline();
         while backend.status().unwrap().playing.load(Acquire) {
             pump_output(&editor, cx, &mut output, &mut backend);
             visual.run_until_parked();
@@ -454,14 +463,17 @@ fn eq_held_node_space_reaches_real_prepared_output_and_callback_without_release(
             );
         }
         visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let deadline = crate::test_wait::hang_deadline();
         loop {
             pump_output(&editor, cx, &mut output, &mut backend);
             visual.run_until_parked();
             if editor.read_with(cx, |view, _| settled(view)) {
                 break;
             }
-            assert!(std::time::Instant::now() < deadline);
+            assert!(
+                std::time::Instant::now() < deadline,
+                "eq_held_node_space_starts_applied_preview_without_seek_worker_or_release: hang guard expired"
+            );
         }
     }
     editor.update(cx, |view, _| {
@@ -505,7 +517,7 @@ fn pump_actual_until(
     backend: &mut hex_audio::worker_fixture::HeadlessBackend,
     ready: impl Fn(&EditorView) -> bool,
 ) {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         pump_output(editor, cx, output, backend);
         visual.run_until_parked();
@@ -549,7 +561,7 @@ fn eq_held_node_seek_sequence_terminal_and_project_races_preserve_actual_callbac
                 &mut backend,
                 preview_is_applied,
             );
-            visual.simulate_keystrokes("space");
+            request_worker_seek(&editor, cx);
             let (request_id, identity) = editor.read_with(cx, |view, _| {
                 let pending = view.prepared_seek.as_ref().expect("actual seek admitted");
                 assert_eq!(pending.stage, SeekStage::Preparing);
@@ -561,7 +573,7 @@ fn eq_held_node_seek_sequence_terminal_and_project_races_preserve_actual_callbac
             if published {
                 // Run the real preparation/publication workers but deliberately
                 // withhold callback blocks until the exact revision is queued.
-                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+                let deadline = crate::test_wait::hang_deadline();
                 loop {
                     editor.update(cx, |view, cx| {
                         if view.tick(cx) {
@@ -594,6 +606,11 @@ fn eq_held_node_seek_sequence_terminal_and_project_races_preserve_actual_callbac
                 });
             }
             let generation = editor.read_with(cx, |view, _| view.project_generation);
+            let held_output = editor.read_with(cx, |view, _| {
+                view.audio
+                    .as_ref()
+                    .and_then(|a| a.control.output_identity())
+            });
             match action {
                 "sequence" => {
                     let next = plot(&mut visual, device, 0.71, 0.6);
@@ -657,11 +674,7 @@ fn eq_held_node_seek_sequence_terminal_and_project_races_preserve_actual_callbac
                         before,
                         "preview source metadata must not become canonical"
                     );
-                    assert_eq!(
-                        read(view, device),
-                        before,
-                        "no held edit committed by Space"
-                    );
+                    assert_eq!(read(view, device), before, "no held edit committed by seek");
                 });
                 visual.simulate_keystrokes("space");
                 visual.simulate_keystrokes("escape");
@@ -706,7 +719,14 @@ fn eq_held_node_seek_sequence_terminal_and_project_races_preserve_actual_callbac
                 if action == "commit" {
                     assert_ne!(read(view, device), before);
                 } else if action == "project" {
-                    assert!(view.audio.is_none());
+                    // This fixture worker never reports OutputReleased, so the
+                    // Resident endpoint stays held across the replacement.
+                    assert_eq!(
+                        view.audio
+                            .as_ref()
+                            .and_then(|a| a.control.output_identity()),
+                        held_output
+                    );
                     assert!(view.state.as_ref().unwrap().project.tracks().is_empty());
                     if let Some(pending) = view.pending_playback.as_ref() {
                         assert_eq!(pending.project_generation, view.project_generation);
@@ -774,8 +794,8 @@ fn eq_held_node_busy_seek_returns_exact_candidate_before_new_preview_replaces_it
         &mut backend,
         preview_is_applied,
     );
-    visual.simulate_keystrokes("space");
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    request_worker_seek(&editor, cx);
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         if editor.update(cx, |view, _| {
             view.tick_prepared_arrangement_seek();
@@ -785,7 +805,10 @@ fn eq_held_node_busy_seek_returns_exact_candidate_before_new_preview_replaces_it
         }) {
             break;
         }
-        assert!(std::time::Instant::now() < deadline);
+        assert!(
+            std::time::Instant::now() < deadline,
+            "eq_held_node_busy_seek_returns_exact_candidate_before_new_preview_replaces_it: hang guard expired"
+        );
         std::thread::yield_now();
     }
     let (id, root, previous_identity, blocker) = editor.update(cx, |view, cx| {
@@ -831,7 +854,7 @@ fn eq_held_node_busy_seek_returns_exact_candidate_before_new_preview_replaces_it
     });
     // Consume the ACTUAL Session preview event directly to observe receive's
     // replacement cutpoint before the later timer invalidation can mask it.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         let replaced = editor.update(cx, |view, _| {
             let Ok(event) = view.service.try_event() else {
@@ -943,15 +966,18 @@ fn eq_held_node_retirement_fallback_blocks_admission_and_retries_exact_runtime(
         &mut backend,
         preview_is_applied,
     );
-    visual.simulate_keystrokes("space");
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    request_worker_seek(&editor, cx);
+    let deadline = crate::test_wait::hang_deadline();
     while !editor.update(cx, |view, _| {
         view.tick_prepared_arrangement_seek();
         view.prepared_seek
             .as_ref()
             .is_some_and(|seek| seek.stage == SeekStage::CandidateReady)
     }) {
-        assert!(std::time::Instant::now() < deadline);
+        assert!(
+            std::time::Instant::now() < deadline,
+            "eq_held_node_retirement_fallback_blocks_admission_and_retries_exact_runtime: hang guard expired"
+        );
         std::thread::yield_now();
     }
     // Seed the existing UI fallback with the REAL completed runtime. This is
@@ -965,7 +991,7 @@ fn eq_held_node_retirement_fallback_blocks_admission_and_retries_exact_runtime(
         let root = Arc::as_ptr(seek.prepared_revision.as_ref().unwrap()) as usize;
         view.retired_seek_result = Some(hex_session::arrangement_seek::ArrangementSeekResult {
             request_id: id,
-            mode: seek.mode,
+            mode: seek.kind.mode(),
             generation: seek.project_generation,
             revision: seek.project_revision,
             prepared_revision: seek.prepared_revision.unwrap(),
@@ -1021,11 +1047,25 @@ fn eq_held_node_retirement_fallback_blocks_admission_and_retries_exact_runtime(
     drop(output);
 }
 
+// Space starts the applied runtime directly. These lifecycle races deliberately
+// request the existing guarded worker seek so candidate/publication custody is
+// still exercised independently of the immediate keyboard transport path.
+fn request_worker_seek(editor: &gpui::Entity<EditorView>, cx: &mut TestAppContext) {
+    editor.update(cx, |view, _| {
+        view.request_prepared_seek(0, true);
+        assert!(
+            view.prepared_seek.is_some(),
+            "worker seek admission: {:?}",
+            view.error
+        );
+    });
+}
+
 // Advance the real preparation worker without pumping a callback or the
 // resident-publication worker. This preserves the otherwise short race window.
 fn review_wait_seek_candidate(editor: &gpui::Entity<EditorView>, cx: &mut TestAppContext) {
     use crate::editor::arrangement_seek::SeekStage;
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         if editor.update(cx, |view, _| {
             view.tick_prepared_arrangement_seek();
@@ -1048,7 +1088,7 @@ fn review_receive_preview(
     cx: &mut TestAppContext,
     sequence: u64,
 ) {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         if editor.update(cx, |view, _| {
             let Ok(event) = view.service.try_event() else {
@@ -1073,7 +1113,7 @@ fn review_receive_preview(
 }
 
 #[gpui::test]
-fn eq_review_overtaken_preview_preserves_held_space_intent(cx: &mut TestAppContext) {
+fn eq_review_overtaken_preview_preserves_held_seek_intent(cx: &mut TestAppContext) {
     let _guard = graph_layout_tests::status_fixture_guard();
     let (handle, editor, _environment, device) = held_node_window(cx);
     let mut visual = VisualTestContext::from_window(handle, cx);
@@ -1090,7 +1130,7 @@ fn eq_review_overtaken_preview_preserves_held_space_intent(cx: &mut TestAppConte
         &mut backend,
         preview_is_applied,
     );
-    visual.simulate_keystrokes("space");
+    request_worker_seek(&editor, cx);
     review_wait_seek_candidate(&editor, cx);
     let second = plot(&mut visual, device, 0.68, 0.65);
     visual.simulate_mouse_move(second, Some(MouseButton::Left), Modifiers::default());
@@ -1110,7 +1150,7 @@ fn eq_review_overtaken_preview_preserves_held_space_intent(cx: &mut TestAppConte
             view.latched_seek_intent
                 .as_ref()
                 .is_some_and(|i| i.start_playing),
-            "intermediate same-owner preview must not erase held Space"
+            "intermediate same-owner preview must not erase the held seek"
         );
     });
     pump_actual_until(
@@ -1144,7 +1184,7 @@ fn eq_review_overtaken_preview_preserves_held_space_intent(cx: &mut TestAppConte
 }
 
 #[gpui::test]
-fn eq_review_publication_retirement_preserves_newer_held_space_intent(cx: &mut TestAppContext) {
+fn eq_review_publication_retirement_preserves_newer_held_seek_intent(cx: &mut TestAppContext) {
     use crate::editor::arrangement_seek::SeekStage;
     let _guard = graph_layout_tests::status_fixture_guard();
     let (handle, editor, _environment, device) = held_node_window(cx);
@@ -1162,7 +1202,7 @@ fn eq_review_publication_retirement_preserves_newer_held_space_intent(cx: &mut T
         &mut backend,
         preview_is_applied,
     );
-    visual.simulate_keystrokes("space");
+    request_worker_seek(&editor, cx);
     review_wait_seek_candidate(&editor, cx);
     editor.update(cx, |view, cx| {
         view.tick(cx);
@@ -1181,7 +1221,7 @@ fn eq_review_publication_retirement_preserves_newer_held_space_intent(cx: &mut T
     });
     let control = output.publication.control().unwrap();
     control.poll_resident_publication();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         if editor.update(cx, |view, cx| {
             view.tick(cx);
@@ -1193,7 +1233,10 @@ fn eq_review_publication_retirement_preserves_newer_held_space_intent(cx: &mut T
             break;
         }
         control.poll_resident_publication();
-        assert!(std::time::Instant::now() < deadline);
+        assert!(
+            std::time::Instant::now() < deadline,
+            "eq_review_publication_retirement_preserves_newer_held_seek_intent: hang guard expired"
+        );
         std::thread::yield_now();
     }
     editor.read_with(cx, |view, _| {
@@ -1254,9 +1297,9 @@ fn eq_review_completed_seek_cancel_reconciles_actual_callback_revision(cx: &mut 
         &mut backend,
         preview_is_applied,
     );
-    visual.simulate_keystrokes("space");
+    request_worker_seek(&editor, cx);
     review_wait_seek_candidate(&editor, cx);
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = crate::test_wait::hang_deadline();
     let revision = loop {
         editor.update(cx, |view, cx| {
             view.tick(cx);
@@ -1274,7 +1317,10 @@ fn eq_review_completed_seek_cancel_reconciles_actual_callback_revision(cx: &mut 
         }) {
             break revision;
         }
-        assert!(std::time::Instant::now() < deadline);
+        assert!(
+            std::time::Instant::now() < deadline,
+            "eq_review_completed_seek_cancel_reconciles_actual_callback_revision: hang guard expired"
+        );
         std::thread::yield_now();
     };
     backend.render(&mut [[0.0; 2]; 64]).unwrap();
@@ -1373,7 +1419,7 @@ fn eq_created_node_retains_released_position_through_exact_worker_terminal(
     });
     let start = plot(&mut visual, device, 0.8, 0.8);
     let end = plot(&mut visual, device, 0.72, 0.75);
-    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    eq_double_click_down(&mut visual, start);
     visual.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
     visual.run_until_parked();
     let held = graph.read_with(&visual, |graph, _| {
@@ -1381,7 +1427,7 @@ fn eq_created_node_retains_released_position_through_exact_worker_terminal(
     });
     visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
     // Advance the real keyed stream and hold only its exact Commit reply.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = crate::test_wait::hang_deadline();
     let terminal = loop {
         let terminal = editor.update(&mut visual, |view, cx| {
             view.pump_device_gesture();
@@ -1408,7 +1454,10 @@ fn eq_created_node_retains_released_position_through_exact_worker_terminal(
         if let Some(event) = terminal {
             break event;
         }
-        assert!(std::time::Instant::now() < deadline);
+        assert!(
+            std::time::Instant::now() < deadline,
+            "eq_created_node_retains_released_position_through_exact_worker_terminal: hang guard expired"
+        );
         std::thread::yield_now();
     };
     assert!(terminal.gesture_ack.as_ref().unwrap().accepted);
@@ -1458,7 +1507,7 @@ fn eq_new_node_reaches_worker_playback_preview_while_pointer_is_held(cx: &mut Te
     });
     let start = plot(&mut visual, device, 0.78, 0.8);
     let end = plot(&mut visual, device, 0.66, 0.75);
-    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    eq_double_click_down(&mut visual, start);
     visual.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
     pump_until(&editor, cx, |view| {
         view.resident_device_preview

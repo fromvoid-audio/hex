@@ -13,8 +13,17 @@ impl SessionPlayback {
             || binding.first_frame >= binding.end_frame
             || self.arrangement_frame < binding.first_frame
             || self.arrangement_frame >= binding.end_frame
-            || !self.capture_route_supported()
         {
+            return Err(Invalid(
+                "midi capture requires a playing resident nonlooping arrangement",
+            ));
+        }
+        let latency = u64::from(self.revision.arrangement().main_latency_frames());
+        binding
+            .end_frame
+            .checked_add(latency)
+            .ok_or(Invalid("midi capture latency exceeds frame range"))?;
+        if !self.capture_route_supported() {
             return Err(Invalid(
                 "midi capture requires a playing resident nonlooping arrangement",
             ));
@@ -31,7 +40,7 @@ impl SessionPlayback {
         self.computer_keyboard
             .as_mut()
             .ok_or(Invalid("midi recording input was not prepared"))?
-            .arm_capture(binding, clock, route)?;
+            .arm_capture(binding, clock, route, latency)?;
         Ok(MidiCaptureClock {
             content_frame: self.arrangement_frame,
             performance_frame: self.performance_frame,
@@ -43,7 +52,6 @@ impl SessionPlayback {
             && !self.current_sampler_console
             && !self.revision.contains_streamed_sources()
             && self.loop_region().is_none()
-            && self.computer_keyboard_latency_supported()
     }
     pub(super) fn begin_midi_capture_render(&mut self, frames: usize) {
         let supported = self.capture_route_supported();

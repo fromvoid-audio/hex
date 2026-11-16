@@ -4,7 +4,7 @@ use crate::{
     SceneId, SessionCellContent, Track, TrackContent, TrackId,
 };
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Location {
     Arrange {
         track: TrackId,
@@ -42,6 +42,10 @@ impl Location {
 }
 #[derive(Clone, Copy, Debug)]
 enum Notes {
+    Activation {
+        active: bool,
+        changed: usize,
+    },
     /// Existing identities only, with the exact collateral retirement count.
     /// A group may retire selected members after deterministic author priority;
     /// a single update additionally proves every victim's exact left prefix.
@@ -133,10 +137,12 @@ enum Kind {
 #[derive(Clone, Copy, Debug)]
 pub struct MidiHistoryEffect {
     kind: Kind,
+    alias_source: Option<crate::AliasSourceId>,
 }
 #[derive(Clone, Copy)]
 pub(crate) struct Plan {
     kind: Kind,
+    alias_source: Option<crate::AliasSourceId>,
 }
 
 impl Plan {
@@ -298,6 +304,39 @@ impl Plan {
                 source_length: None,
                 edit: Notes::authoring(source.next_id, 0, notes.len()),
             },
+            Command::SetMidiNotesActive {
+                clip,
+                notes,
+                active,
+            } => {
+                let source_notes = source.midi_source(*clip).ok_or(MISSING)?;
+                let indices = crate::midi::note_indices(source_notes, notes.iter().copied())?;
+                let changed = indices.iter().try_fold(0usize, |count, &index| {
+                    let note = source_notes.notes.get(index).ok_or(MISSING)?;
+                    Ok::<_, Invalid>(count + usize::from(note.active != *active))
+                })?;
+                Kind::Notes {
+                    location: location(*clip)?,
+                    source_length: None,
+                    volume_range: None,
+                    edit: Notes::Activation {
+                        active: *active,
+                        changed,
+                    },
+                }
+            }
+            Command::UpdateMidiNotesWithSourceExtent { clip, notes } => Kind::Notes {
+                volume_range: None,
+                location: location(*clip)?,
+                source_length: Some(crate::midi::extended_update_source_length(
+                    source.midi_source(*clip).ok_or(MISSING)?.source_length(),
+                    notes,
+                )?),
+                edit: Notes::OverwriteUpdate {
+                    only: None,
+                    removed: 0,
+                },
+            },
             Command::UpdateMidiNotes { clip, .. } => Kind::Notes {
                 volume_range: None,
                 location: location(*clip)?,
@@ -328,16 +367,27 @@ impl Plan {
                     },
                 }
             }
-            Command::ReplaceMidiClipVolume { clip, .. } => Kind::Volume {
-                location: location(*clip)?,
-            },
+            Command::ReplaceMidiClipVolume { clip, .. } | Command::SetMidiClipGain { clip, .. } => {
+                Kind::Volume {
+                    location: location(*clip)?,
+                }
+            }
             Command::SetMidiClipSource { clip, .. }
             | Command::SetSessionMidiClipSource { clip, .. } => Kind::Source {
                 location: location(*clip)?,
             },
             _ => return Ok(None),
         };
-        Ok(Some(Self { kind }))
+        let alias_source = match kind {
+            Kind::Notes { location, .. } | Kind::Source { location } => {
+                source.clip_alias(location.clip())
+            }
+            Kind::ArrangeDeath { clip, .. } | Kind::ConsoleDeath { clip, .. } => {
+                source.clip_alias(clip)
+            }
+            _ => None,
+        };
+        Ok(Some(Self { kind, alias_source }))
     }
     pub(crate) fn finish(
         mut self,
@@ -420,7 +470,10 @@ impl Plan {
             *removed = retired;
             *truncated = shortened;
         }
-        let effect = MidiHistoryEffect { kind: self.kind };
+        let effect = MidiHistoryEffect {
+            kind: self.kind,
+            alias_source: self.alias_source,
+        };
         effect.validates_forward(source, target).then_some(effect)
     }
 }
@@ -429,7 +482,7 @@ impl MidiHistoryEffect {
     /// Validate the original forward direction. Undo supplies (target,current),
     /// Redo supplies (current,target); canonical ID/epoch normalization is ignored.
     pub fn validates_forward(self, source: &Project, target: &Project) -> bool {
-        if !same_shell(source, target) {
+        if !same_shell(source, target, self.alias_source, self.kind) {
             return false;
         }
         let (arrange, console) = match self.kind {
@@ -447,16 +500,80 @@ impl MidiHistoryEffect {
             },
             Kind::AppendScene { .. } => (None, None),
         };
+        if let Some(group) = self.alias_source {
+            let initiating = match self.kind {
+                Kind::Notes { location, .. } | Kind::Source { location } => location.clip(),
+                Kind::ArrangeDeath { clip, .. } | Kind::ConsoleDeath { clip, .. } => clip,
+                _ => return false,
+            };
+            for (clip, source_id) in &source.aliases.members {
+                if *source_id != group {
+                    continue;
+                }
+                if matches!(self.kind, Kind::ArrangeDeath { clip: removed, .. } | Kind::ConsoleDeath { clip: removed, .. } if removed == *clip)
+                {
+                    continue;
+                }
+                let Some(location) = Location::find(source, *clip) else {
+                    return false;
+                };
+                if Location::find(target, *clip) != Some(location) {
+                    return false;
+                }
+                let Some((a, b)) = source.midi_source(*clip).zip(target.midi_source(*clip)) else {
+                    return false;
+                };
+                let Some(crate::clip_alias::Content::Midi(old_content)) =
+                    source.aliases.sources.get(&group)
+                else {
+                    return false;
+                };
+                let Some(crate::clip_alias::Content::Midi(new_content)) =
+                    target.aliases.sources.get(&group)
+                else {
+                    return false;
+                };
+                if !std::sync::Arc::ptr_eq(&a.content, old_content)
+                    || !std::sync::Arc::ptr_eq(&b.content, new_content)
+                {
+                    return false;
+                }
+                if *clip != initiating
+                    && (!matching_clip_shell(source, target, location, false, false)
+                        || (
+                            a.source_start,
+                            a.loop_start,
+                            a.loop_end,
+                            a.looping,
+                            a.one_shot_boundary,
+                        ) != (
+                            b.source_start,
+                            b.loop_start,
+                            b.loop_end,
+                            b.looping,
+                            b.one_shot_boundary,
+                        ))
+                {
+                    return false;
+                }
+            }
+        }
         for (a, b) in source.tracks.iter().zip(&target.tracks) {
             if a.content
                 .midi_clips
                 .iter()
-                .filter(|c| arrange != Some((a.id, c.id)))
-                .ne(b
-                    .content
-                    .midi_clips
-                    .iter()
-                    .filter(|c| arrange != Some((b.id, c.id))))
+                .filter(|c| {
+                    arrange != Some((a.id, c.id))
+                        && self
+                            .alias_source
+                            .is_none_or(|group| source.clip_alias(c.id) != Some(group))
+                })
+                .ne(b.content.midi_clips.iter().filter(|c| {
+                    arrange != Some((b.id, c.id))
+                        && self
+                            .alias_source
+                            .is_none_or(|group| target.clip_alias(c.id) != Some(group))
+                }))
             {
                 return false;
             }
@@ -465,12 +582,12 @@ impl MidiHistoryEffect {
             .session
             .cells
             .iter()
-            .filter(|c| console != Some((c.track, c.scene)))
+            .filter(|c| console != Some((c.track, c.scene)) && !self.alias_source.is_some_and(|group| matches!(&c.content, SessionCellContent::Midi(clip) if source.clip_alias(clip.id) == Some(group))))
             .ne(target
                 .session
                 .cells
                 .iter()
-                .filter(|c| console != Some((c.track, c.scene))))
+                .filter(|c| console != Some((c.track, c.scene)) && !self.alias_source.is_some_and(|group| matches!(&c.content, SessionCellContent::Midi(clip) if target.clip_alias(clip.id) == Some(group)))))
         {
             return false;
         }
@@ -585,7 +702,7 @@ impl MidiHistoryEffect {
 fn birth_volume(source: &Project, copied: Option<ClipId>, volume: &crate::MidiClipVolume) -> bool {
     match copied {
         Some(clip) => source.midi_clip_volume(clip) == Some(volume),
-        None => volume.points().is_empty(),
+        None => volume.is_unity(),
     }
 }
 fn source_shell_with_extent(a: &MidiSource, b: &MidiSource, length: Option<BeatTime>) -> bool {
@@ -604,16 +721,15 @@ fn source_shell_with_extent(a: &MidiSource, b: &MidiSource, length: Option<BeatT
 }
 fn source_shell(a: &MidiSource, b: &MidiSource) -> bool {
     let MidiSource {
-        source_length,
+        content,
         source_start,
         loop_start,
         loop_end,
         looping,
         one_shot_boundary,
-        notes: _,
     } = a;
     (
-        *source_length,
+        content.source_length,
         *source_start,
         *loop_start,
         *loop_end,
@@ -630,6 +746,30 @@ fn source_shell(a: &MidiSource, b: &MidiSource) -> bool {
 }
 fn notes_match(a: &MidiSource, b: &MidiSource, edit: Notes) -> bool {
     match edit {
+        Notes::Activation { active, changed } => {
+            if a.notes.len() != b.notes.len() {
+                return false;
+            }
+            let mut observed = 0usize;
+            for (old, new) in a.notes.iter().zip(&b.notes) {
+                if old.id != new.id
+                    || old.start != new.start
+                    || old.duration != new.duration
+                    || old.pitch != new.pitch
+                    || old.channel != new.channel
+                    || old.velocity != new.velocity
+                {
+                    return false;
+                }
+                if old.active != new.active {
+                    if new.active != active {
+                        return false;
+                    }
+                    observed += 1;
+                }
+            }
+            observed == changed
+        }
         Notes::AuthorEdit {
             first,
             inserted,
@@ -788,6 +928,7 @@ fn prefix_matches(old: &crate::MidiNote, new: &crate::MidiNote, gate: Option<Bea
         && old.pitch == new.pitch
         && old.channel == new.channel
         && old.velocity == new.velocity
+        && old.active == new.active
 }
 fn birth_source(
     project: &Project,
@@ -813,8 +954,11 @@ fn birth_source(
                         .checked_add(1)
                         .and_then(|n| n.checked_add(i as u64))
                         == Some(a.id.value())
-                        && (a.start, a.duration, a.pitch, a.channel, a.velocity)
-                            == (b.start, b.duration, b.pitch, b.channel, b.velocity)
+                        && (
+                            a.start, a.duration, a.pitch, a.channel, a.velocity, a.active,
+                        ) == (
+                            b.start, b.duration, b.pitch, b.channel, b.velocity, b.active,
+                        )
                 })
     } else {
         copied.is_none()
@@ -892,20 +1036,29 @@ fn matching_clip_shell(
         }
     }
 }
-fn same_shell(a: &Project, b: &Project) -> bool {
+fn same_shell(
+    a: &Project,
+    b: &Project,
+    alias_source: Option<crate::AliasSourceId>,
+    kind: Kind,
+) -> bool {
     let crate::SessionGrid {
         scenes: _,
         cells: _,
     } = &a.session;
     let Project {
+        aliases,
         native_sources,
         arrangement_sections,
+        arrangement_locators,
         tuning,
         routing,
         audio_feeds,
         midi_routes,
+        sidechains,
         import_provenance,
         sample_rate,
+        sample_rate_mode,
         next_id: _,
         assets,
         tracks,
@@ -916,15 +1069,61 @@ fn same_shell(a: &Project, b: &Project) -> bool {
         main_devices,
         tempo_map,
         meter_map,
+        offline_assets,
     } = a;
-    if native_sources != &b.native_sources
+    if offline_assets != &b.offline_assets {
+        return false;
+    }
+    let death = match kind {
+        Kind::ArrangeDeath { clip, .. } | Kind::ConsoleDeath { clip, .. } => Some(clip),
+        _ => None,
+    };
+    let aliases_match = if let (Some(changed), Some(removed)) = (alias_source, death) {
+        aliases
+            .members
+            .iter()
+            .filter(|(clip, _)| **clip != removed)
+            .eq(b.aliases.members.iter())
+            && aliases
+                .sources
+                .iter()
+                .filter(|(id, _)| {
+                    **id != changed || b.aliases.members.values().any(|source| *source == changed)
+                })
+                .eq(b.aliases.sources.iter())
+    } else if let Some(changed) = alias_source {
+        aliases.members == b.aliases.members
+            && aliases.sources.len() == b.aliases.sources.len()
+            && aliases.sources.iter().all(|(id, content)| {
+                b.aliases.sources.get(id).is_some_and(|other| {
+                    if *id == changed {
+                        matches!(
+                            (content, other),
+                            (
+                                crate::clip_alias::Content::Midi(_),
+                                crate::clip_alias::Content::Midi(_)
+                            )
+                        )
+                    } else {
+                        content == other
+                    }
+                })
+            })
+    } else {
+        aliases == &b.aliases
+    };
+    if !aliases_match
+        || native_sources != &b.native_sources
         || arrangement_sections != &b.arrangement_sections
+        || arrangement_locators != &b.arrangement_locators
         || tuning != &b.tuning
         || routing != &b.routing
         || audio_feeds != &b.audio_feeds
         || midi_routes != &b.midi_routes
+        || sidechains != &b.sidechains
         || import_provenance != &b.import_provenance
         || sample_rate != &b.sample_rate
+        || sample_rate_mode != &b.sample_rate_mode
         || assets != &b.assets
         || returns != &b.returns
         || loop_region != &b.loop_region
@@ -938,18 +1137,22 @@ fn same_shell(a: &Project, b: &Project) -> bool {
     }
     tracks.iter().zip(&b.tracks).all(|(a, b)| {
         let Track {
+            group_output_mutes,
+            tags,
             kind,
             parent_group,
             color,
             gain_lane,
             id,
             name,
+            automatic_name,
             gain,
             balance,
             muted,
             soloed,
             devices,
             instrument,
+            retained_source_path,
             instrument_position,
             content,
             sends,
@@ -967,13 +1170,17 @@ fn same_shell(a: &Project, b: &Project) -> bool {
             && parent_group == &b.parent_group
             && color == &b.color
             && id == &b.id
+            && tags == &b.tags
+            && group_output_mutes == &b.group_output_mutes
             && name == &b.name
+            && automatic_name == &b.automatic_name
             && gain == &b.gain
             && balance == &b.balance
             && muted == &b.muted
             && soloed == &b.soloed
             && devices == &b.devices
             && instrument == &b.instrument
+            && retained_source_path == &b.retained_source_path
             && instrument_position == &b.instrument_position
             && sends == &b.sends
             && base == &b.gain_lane.base

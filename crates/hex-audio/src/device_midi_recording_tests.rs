@@ -8,6 +8,16 @@ use hex_engine::{
 use hex_project::{BeatTime, Command, Created, Editor, Project};
 use std::{collections::BTreeMap, sync::atomic::Ordering::Acquire};
 
+#[path = "device_midi_seven_frame_fixture.rs"]
+mod seven_frame;
+
+#[derive(Clone, Copy)]
+enum TestLatency {
+    None,
+    Limiter,
+    SevenFrames,
+}
+
 fn counted<T>(action: impl FnOnce() -> T) -> T {
     #[cfg(feature = "allocation-probe")]
     {
@@ -53,6 +63,40 @@ fn fixture(
     Arc<ComputerKeyboardInput>,
     Target,
 ) {
+    let (control, callback, input, target, _) = fixture_with_latency(end, false);
+    (control, callback, input, target)
+}
+
+fn fixture_with_latency(
+    end: u64,
+    latency: bool,
+) -> (
+    prepared::Control,
+    prepared::Callback,
+    Arc<ComputerKeyboardInput>,
+    Target,
+    u64,
+) {
+    fixture_with_mode(
+        end,
+        if latency {
+            TestLatency::Limiter
+        } else {
+            TestLatency::None
+        },
+    )
+}
+
+fn fixture_with_mode(
+    end: u64,
+    latency: TestLatency,
+) -> (
+    prepared::Control,
+    prepared::Callback,
+    Arc<ComputerKeyboardInput>,
+    Target,
+    u64,
+) {
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
     let Created::Track(track) = editor
         .execute(Command::InsertTrackWithDevice {
@@ -72,6 +116,43 @@ fn fixture(
             length: BeatTime::from_quarters(4).unwrap(),
         })
         .unwrap();
+    let mut media = BTreeMap::new();
+    if let TestLatency::SevenFrames = latency {
+        let Created::Imported { asset, .. } = editor
+            .execute(Command::ImportPreparedAudioTrack {
+                name: "reference".into(),
+                path: "reference.wav".into(),
+                source_sample_rate: 48_000,
+                source_frames: 1024,
+                playback_frames: 1024,
+                conversion_version: hex_project::IDENTITY_CONVERSION,
+            })
+            .unwrap()
+        else {
+            panic!("reference track")
+        };
+        let mut reference = vec![[0.0; 2]; 1024];
+        reference[100] = [0.5, 0.5];
+        media.insert(asset, hex_engine::Audio::new(48_000, reference).unwrap());
+    }
+    if !matches!(latency, TestLatency::None) {
+        let effect = match latency {
+            TestLatency::Limiter => hex_engine::default_native_device_state_for_class(
+                hex_engine::NativeDeviceClass::Effect,
+                hex_engine::DeviceTypeId::from_static("hex.limiter"),
+            )
+            .unwrap(),
+            TestLatency::SevenFrames => seven_frame::state(7).unwrap(),
+            TestLatency::None => unreachable!(),
+        };
+        editor
+            .execute(Command::InsertDevice {
+                track,
+                before: None,
+                state: effect,
+            })
+            .unwrap();
+    }
     let (mut control, mut callback) = prepared::channel(48_000).unwrap();
     control
         .configure_device_resource_publication_on_control(
@@ -91,16 +172,23 @@ fn fixture(
             .with_recording_support()
             .unwrap(),
     );
-    let prepared = Arc::new(
-        PreparedRevision::prepare(
+    let prepared = Arc::new(if matches!(latency, TestLatency::SevenFrames) {
+        let definitions: [&dyn hex_lattice::NativeDeviceDefinition; 1] = [&seven_frame::Definition];
+        let effects = hex_lattice::NativeDeviceRegistry::new(&definitions).unwrap();
+        PreparedRevision::prepare_with_effect_registry(
             editor.project(),
-            &BTreeMap::new(),
+            &media,
             Arc::new(SineTable::new()),
             None,
+            &effects,
         )
-        .unwrap(),
-    );
+        .unwrap()
+    } else {
+        PreparedRevision::prepare(editor.project(), &media, Arc::new(SineTable::new()), None)
+            .unwrap()
+    });
     let mut graph = Playback::try_from_prepared_with_session(prepared).unwrap();
+    let output_latency = u64::from(graph.main_output_latency_frames());
     graph
         .prepare_computer_keyboard(editor.project(), track, Arc::clone(&input))
         .unwrap();
@@ -150,11 +238,169 @@ fn fixture(
         output_identity: actual.output_identity,
         transport_epoch: control.status.transport_epoch.load(Acquire),
     };
-    (control, callback, input, target)
+    (control, callback, input, target, output_latency)
+}
+
+#[test]
+fn seven_frame_reference_and_recorded_note_align_across_blocks() {
+    for partition in [1_usize, 7, 64] {
+        let (mut control, mut callback, input, target, latency) =
+            fixture_with_mode(48_000, TestLatency::SevenFrames);
+        assert_eq!(latency, 7);
+        while control.status.position.load(Acquire) < 107 {
+            let remaining = 107 - control.status.position.load(Acquire);
+            let size = partition.min(remaining as usize);
+            assert!(deliver(&mut callback, &mut vec![[0.0; 2]; size], 2));
+        }
+        control.midi_recording.begin(target).unwrap();
+        input.set_key(0, Some((60, 100, 1))).unwrap();
+        let mut audible = [[0.0; 2]; 1];
+        assert!(deliver(&mut callback, &mut audible, 2));
+        assert!(
+            audible[0].iter().any(|sample| sample.abs() > 0.1),
+            "reference at frame 100 was not heard at output frame 107: {audible:?}"
+        );
+        assert!(
+            receipts(&mut control)
+                .iter()
+                .any(|receipt| matches!(receipt,
+                    Receipt::Note { content_frame: 100, note, .. }
+                        if matches!(note.event, MidiCaptureEvent::On { pitch: 60, .. })
+                )),
+            "partition={partition}"
+        );
+    }
+}
+
+#[test]
+fn midi_recording_aligns_to_audible_position_with_device_latency() {
+    let (mut control, mut callback, input, target, latency) = fixture_with_latency(48_000, true);
+    let (mut direct_control, mut direct_callback, direct_input, direct_target, direct_latency) =
+        fixture_with_latency(48_000, false);
+    assert!(latency > 0);
+    assert_eq!(direct_latency, 0);
+    for _ in 0..4 {
+        assert!(deliver(&mut callback, &mut [[0.0; 2]; 64], 2));
+        assert!(deliver(&mut direct_callback, &mut [[0.0; 2]; 64], 2));
+    }
+    let cursor = control.status.position.load(Acquire);
+    assert_eq!(cursor, direct_control.status.position.load(Acquire));
+    control.midi_recording.begin(target).unwrap();
+    direct_control.midi_recording.begin(direct_target).unwrap();
+    input.set_key(0, Some((60, 100, 1))).unwrap();
+    direct_input.set_key(0, Some((60, 100, 1))).unwrap();
+    let mut delayed = Vec::new();
+    let mut direct = Vec::new();
+    for _ in 0..4 {
+        let mut delayed_block = [[0.0; 2]; 64];
+        let mut direct_block = [[0.0; 2]; 64];
+        assert!(deliver(&mut callback, &mut delayed_block, 2));
+        assert!(deliver(&mut direct_callback, &mut direct_block, 2));
+        delayed.extend_from_slice(&delayed_block);
+        direct.extend_from_slice(&direct_block);
+    }
+    let first_sound = |frames: &[[f32; 2]]| {
+        frames
+            .iter()
+            .position(|frame| frame.iter().any(|sample| sample.abs() > 1e-7))
+            .unwrap()
+    };
+    let measured_latency = (first_sound(&delayed) - first_sound(&direct)) as u64;
+    assert_eq!(latency, measured_latency);
+    let receipts = receipts(&mut control);
+    assert!(
+        receipts.iter().any(|receipt| matches!(
+            receipt,
+            Receipt::Note { content_frame, note, .. }
+                if matches!(note.event, MidiCaptureEvent::On { pitch: 60, .. })
+                    && *content_frame == cursor - measured_latency
+        )),
+        "expected audible-position note at {}, got {receipts:?}",
+        cursor - measured_latency
+    );
+}
+
+#[test]
+fn latency_corrected_capture_reaches_the_clip_end_across_partitions() {
+    for block in [1_usize, 7, 64] {
+        let (mut control, mut callback, input, target, latency) = fixture_with_latency(100, true);
+        assert!(latency > 0 && latency < 100);
+        control.midi_recording.begin(target).unwrap();
+        // Wait until the scheduled cursor is past the clip's uncorrected end,
+        // while its final latency-delayed samples are still being delivered.
+        while control.status.position.load(Acquire) < 110 {
+            assert!(deliver(&mut callback, &mut vec![[0.0; 2]; block], 2));
+        }
+        let cursor = control.status.position.load(Acquire);
+        assert!(cursor < target.capture.end_frame + latency);
+        input.set_key(0, Some((60, 100, 1))).unwrap();
+        assert!(deliver(&mut callback, &mut [[0.0; 2]; 1], 2));
+        let captured = receipts(&mut control);
+        let origin = captured
+            .iter()
+            .find_map(|receipt| match receipt {
+                Receipt::Armed { clock, .. } => Some(*clock),
+                _ => None,
+            })
+            .expect("arm receipt");
+        assert!(
+            captured.iter().any(|receipt| matches!(receipt,
+                Receipt::Note { content_frame, note, .. }
+                    if matches!(note.event, MidiCaptureEvent::On { pitch: 60, .. })
+                        && *content_frame == cursor - latency
+            )),
+            "block={block}, cursor={cursor}, receipts={captured:?}"
+        );
+        while control.status.position.load(Acquire) < target.capture.end_frame + latency {
+            assert!(deliver(&mut callback, &mut vec![[0.0; 2]; block], 2));
+        }
+        assert!(
+            receipts(&mut control).iter().any(|receipt| matches!(
+                receipt,
+                Receipt::Finished { clock: Some(clock), .. }
+                    if clock.content_frame == target.capture.end_frame + latency
+                        && clock.performance_frame - origin.performance_frame
+                            == clock.content_frame - origin.content_frame
+            )),
+            "block={block}"
+        );
+    }
 }
 fn receipts(control: &mut prepared::Control) -> Vec<Receipt> {
     std::iter::from_fn(|| control.midi_recording.try_receipt()).collect()
 }
+#[test]
+fn sample_recording_captures_the_live_instrument_during_midi_recording() {
+    use crate::sample_recording::{End, OutputCaptureId, Reader};
+    let (mut control, mut callback, input, target) = fixture(48_000);
+    let mut take = control
+        .sample_recording
+        .start(
+            target.project_generation,
+            &[OutputCaptureId::Track(target.capture.track)],
+            false,
+        )
+        .unwrap();
+    assert!(take.ready());
+    control.midi_recording.begin(target).unwrap();
+    input.set_key(0, Some((60, 100, 1))).unwrap();
+    let mut actual = [[0.0; 2]; 64];
+    assert!(deliver(&mut callback, &mut actual, 2));
+    assert!(actual.iter().flatten().any(|sample| *sample != 0.0));
+    control.sample_recording.stop();
+    assert!(deliver(&mut callback, &mut [[0.0; 2]; 64], 2));
+    let mut delivered = false;
+    assert_eq!(
+        take.drain(|frames, _, packet| {
+            assert!(!delivered);
+            assert_eq!(Reader::source_frames(packet, frames, 0), Some(&actual[..]));
+            delivered = true;
+        }),
+        Some(End::Stopped)
+    );
+    assert!(delivered);
+}
+
 #[test]
 fn midi_recording_confirms_short_notes_only_after_real_direct_conversion_and_stop_uses_delivered_clock()
  {
@@ -233,6 +479,26 @@ fn midi_recording_confirms_short_notes_only_after_real_direct_conversion_and_sto
     assert_eq!(control.status.position.load(Acquire), 0);
 }
 #[test]
+fn device_error_aborts_a_queued_midi_take_before_the_next_callback() {
+    let (mut control, mut callback, _input, target) = fixture(48_000);
+    control.midi_recording.begin(target).unwrap();
+    control
+        .status
+        .device_fault
+        .store(true, std::sync::atomic::Ordering::Release);
+    counted(|| callback.begin_block());
+    assert!(matches!(
+        receipts(&mut control).as_slice(),
+        [Receipt::Aborted {
+            reason: AbortReason::OutputFailed,
+            last_delivered: None,
+            ..
+        }]
+    ));
+    assert!(control.midi_recording.begin(target).is_err());
+}
+
+#[test]
 fn midi_recording_conversion_failure_aborts_without_publishing_armed_or_notes() {
     let (mut control, mut callback, input, target) = fixture(48_000);
     control.midi_recording.begin(target).unwrap();
@@ -280,6 +546,74 @@ fn midi_recording_stop_racing_render_retains_only_previously_delivered_prefix_on
         })
     ));
 }
+#[test]
+fn midi_receipt_pressure_preserves_delivered_prefix_and_terminal_through_stop() {
+    let (mut control, mut callback, input, target) = fixture(96_000);
+    control.midi_recording.begin(target).unwrap();
+    for event in 0..=1024_u64 {
+        if event % 2 == 0 {
+            input.set_key(0, Some((60, 100, event / 2 + 1))).unwrap();
+        } else {
+            input.set_key(0, None).unwrap();
+        }
+        assert!(deliver(&mut callback, &mut [[0.0; 2]; 1], 2));
+        if event % 2 == 1 {
+            // Allow released instrument voices to retire without draining the
+            // independent recording receipt queue.
+            for _ in 0..2 {
+                assert!(deliver(&mut callback, &mut [[0.0; 2]; 64], 2));
+            }
+        }
+    }
+    let next = Target {
+        capture: hex_engine::midi_capture::MidiCaptureBinding {
+            take_id: target.capture.take_id + 1,
+            ..target.capture
+        },
+        ..target
+    };
+    assert!(control.midi_recording.begin(next).is_err());
+    control.stop();
+    counted(|| callback.begin_block());
+    let all = receipts(&mut control);
+    assert!(matches!(all.first(), Some(Receipt::Armed { .. })));
+    assert_eq!(all.len(), 1026, "terminal: {:?}", all.last());
+    for (index, receipt) in all[1..1025].iter().enumerate() {
+        let Receipt::Note {
+            target: receipt_target,
+            note,
+            content_frame,
+        } = receipt
+        else {
+            panic!("unexpected receipt at {index}: {receipt:?}");
+        };
+        let expected = if index % 2 == 0 {
+            MidiCaptureEvent::On {
+                pitch: 60,
+                velocity: 100,
+            }
+        } else {
+            MidiCaptureEvent::Off
+        };
+        assert_eq!(*receipt_target, target);
+        assert_eq!(note.event, expected);
+        assert_eq!(*content_frame, 8 + index as u64 + 128 * (index as u64 / 2));
+        assert_eq!(note.performance_frame, *content_frame);
+        assert_eq!(note.occurrence_id, index as u64 / 2 + 1);
+    }
+    assert!(
+        matches!(
+            all.last(),
+            Some(Receipt::Aborted { reason: AbortReason::ReceiptPressure, last_delivered: Some(clock), .. })
+                if clock.content_frame == 8 + 1025 + 128 * 512
+                    && clock.performance_frame == clock.content_frame
+        ),
+        "terminal: {:?}",
+        all.last()
+    );
+    assert!(control.midi_recording.begin(next).is_ok());
+}
+
 #[test]
 fn midi_recording_overflow_racing_stop_aborts_and_explicit_cancel_cannot_become_finish() {
     for cancel in [false, true] {

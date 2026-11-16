@@ -4,6 +4,7 @@
 #include "pluginterfaces/vst/ivstaudioprocessor.h"
 #include "pluginterfaces/vst/ivstparameterchanges.h"
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <limits>
@@ -18,6 +19,7 @@ struct ProcessingConfiguration {
     int32 input_channels=2, output_channels=2;
     int32 precision=kSample32;
     bool input_enabled=true, output_enabled=true;
+    int32 process_mode=kRealtime;
 };
 enum class ConfigurationResult {
     Prepared, InvalidState, InvalidConfiguration, UnsupportedPrecision,
@@ -30,20 +32,66 @@ inline bool valid_configuration(const ProcessingConfiguration& c) {
     return std::isfinite(c.sample_rate) && c.sample_rate>0 && c.sample_rate<=768000 &&
         c.maximum_frames>=1 && c.maximum_frames<=8192 &&
         c.input_channels>=0 && c.input_channels<=2 && c.output_channels>=1 && c.output_channels<=2 &&
-        (c.input_channels!=0 || !c.input_enabled);
+        (c.input_channels!=0 || !c.input_enabled) &&
+        (c.process_mode==kRealtime || c.process_mode==kOffline);
 }
 inline SpeakerArrangement arrangement(int32 channels) {
     return channels==1?SpeakerArr::kMono:SpeakerArr::kStereo;
 }
-inline bool main_bus(IComponent* component,BusDirection direction,int32 channels,bool exact) {
-    const auto expected=channels?1:0;
-    if (component->getBusCount(kAudio,direction)!=expected) return false;
-    if (!expected) return true;
-    BusInfo info{};
-    return component->getBusInfo(kAudio,direction,0,info)==kResultOk && info.mediaType==kAudio &&
-        info.direction==direction && info.busType==kMain && info.channelCount>0 && info.channelCount<=64 &&
-        !(info.flags&BusInfo::kIsControlVoltage) && (!exact || info.channelCount==channels);
+inline bool audio_bus_info(IComponent* component,BusDirection direction,int32 index,BusInfo& info) {
+    return component->getBusInfo(kAudio,direction,index,info)==kResultOk && info.mediaType==kAudio &&
+        info.direction==direction && info.channelCount>0 && info.channelCount<=64 &&
+        !(info.flags&BusInfo::kIsControlVoltage);
 }
+inline bool audio_bus_info(IComponent* component,BusDirection direction,int32 index,BusType type,BusInfo& info) {
+    return audio_bus_info(component,direction,index,info) && info.busType==type;
+}
+// Effects accept one inactive trailing auxiliary input. A single silent
+// instrument input can itself be auxiliary. Neither becomes a graph route.
+inline bool audio_buses(IComponent* component,BusDirection direction,int32 count,int32 channels,
+                        bool exact,BusType first_type=kMain) {
+    if (count!=(channels?1:0) && !(direction==kInput && channels && count==2)) return false;
+    if (!count) return true;
+    BusInfo first{},aux{};
+    return audio_bus_info(component,direction,0,first_type,first) && (!exact || first.channelCount==channels) &&
+        (count==1 || audio_bus_info(component,direction,1,kAux,aux));
+}
+inline constexpr int32 max_instrument_outputs=16;
+using InstrumentOutputLayout=std::array<SpeakerArrangement,max_instrument_outputs>;
+
+// Preserve the SDK slots of disabled instrument outputs. Only bus zero has
+// PCM custody. The remaining slots have stable arrays of null sample pointers.
+class InactiveInstrumentOutputs {
+    int32 count=1;
+    std::array<AudioBusBuffers,max_instrument_outputs> buses{};
+    std::array<std::array<float*,64>,max_instrument_outputs-1> pointers{};
+    std::array<int32,max_instrument_outputs-1> channels{};
+public:
+    void prepare(int32 output_count,const InstrumentOutputLayout& layout) {
+        count=output_count;
+        for (int32 i=1;i<count;++i) {
+            channels[i-1]=SpeakerArr::getChannelCount(layout[i]);
+            buses[i].numChannels=channels[i-1];
+            buses[i].channelBuffers32=pointers[i-1].data();
+        }
+    }
+    void attach(ProcessData& data) {
+        if (count==1) return;
+        buses[0]=data.outputs[0];
+        for (int32 i=1;i<count;++i) buses[i].silenceFlags=0;
+        data.numOutputs=count;
+        data.outputs=buses.data();
+    }
+    bool unchanged() const {
+        for (int32 i=1;i<count;++i) {
+            if (buses[i].numChannels!=channels[i-1] ||
+                buses[i].channelBuffers32!=pointers[i-1].data() ||
+                std::any_of(pointers[i-1].begin(),pointers[i-1].begin()+channels[i-1],
+                    [](const float* sample) { return sample!=nullptr; })) return false;
+        }
+        return true;
+    }
+};
 inline bool bus_buffers(AudioBusBuffers* buses,int32 count,int32 channels,bool enabled) {
     if (!channels) return count==0;
     // The only supported bus is index zero. Only an inactive trailing bus may
@@ -65,7 +113,7 @@ inline bool partial_overlap(const float* a,const float* b,int32 frames) {
     return left<right+bytes && right<left+bytes;
 }
 inline bool processing_data(const ProcessingConfiguration& c,const ProcessData& data) {
-    if (data.processMode!=kRealtime || data.symbolicSampleSize!=kSample32 ||
+    if (data.processMode!=c.process_mode || data.symbolicSampleSize!=kSample32 ||
         data.numSamples<1 || data.numSamples>c.maximum_frames ||
         !bus_buffers(data.inputs,data.numInputs,c.input_channels,c.input_enabled) ||
         !bus_buffers(data.outputs,data.numOutputs,c.output_channels,c.output_enabled)) return false;
@@ -106,7 +154,10 @@ struct ProcessingShape {
     bool unchanged(const ProcessData& data) const {
         if (data.numSamples!=original.numSamples || data.processMode!=original.processMode ||
             data.symbolicSampleSize!=original.symbolicSampleSize || data.numInputs!=original.numInputs ||
-            data.numOutputs!=original.numOutputs || data.inputs!=original.inputs || data.outputs!=original.outputs)
+            data.numOutputs!=original.numOutputs || data.inputs!=original.inputs || data.outputs!=original.outputs ||
+            data.inputParameterChanges!=original.inputParameterChanges || data.outputParameterChanges!=original.outputParameterChanges ||
+            data.inputEvents!=original.inputEvents || data.outputEvents!=original.outputEvents ||
+            data.processContext!=original.processContext)
             return false;
         const auto matches=[](const AudioBusBuffers& current,const AudioBusBuffers& before,float* const* samples) {
             if (current.numChannels!=before.numChannels || current.channelBuffers32!=before.channelBuffers32) return false;

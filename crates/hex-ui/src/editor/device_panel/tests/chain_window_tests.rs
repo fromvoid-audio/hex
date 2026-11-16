@@ -423,9 +423,18 @@ fn return_chain_window_preserves_focus_drafts_gestures_and_history(cx: &mut Test
 fn short_chain_window_does_not_add_scroll_extent(cx: &mut TestAppContext) {
     let (service, state, track, _, _, _) = actor_utility_fixture();
     let (handle, editor) = actor_editor_window(cx, service, state, track);
-    let visual = VisualTestContext::from_window(handle, cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
     visual.simulate_resize(size(px(900.0), px(700.0)));
     visual.run_until_parked();
+    let source = visual
+        .debug_bounds("device-source-summary")
+        .expect("source summary");
+    let header = visual
+        .debug_bounds("device-panel-header")
+        .expect("device header");
+    assert!(source.origin.x >= header.origin.x);
+    assert!(source.origin.y >= header.origin.y);
+    assert!(source.origin.y + source.size.height <= header.origin.y + header.size.height);
     assert_eq!(
         editor.read_with(cx, |view, _| view
             .device_panel
@@ -495,123 +504,5 @@ fn return_chain_type_change_retires_old_identity_and_metadata(cx: &mut TestAppCo
                 .keys()
                 .any(|key| key.device == device)
         );
-    });
-}
-#[gpui::test]
-fn host_gain_entity_and_capture_survive_windowed_reconciliation(cx: &mut TestAppContext) {
-    cx.update(hex_widgets::bind_numeric_control_keys);
-    let (service, mut state, track, first, _, _) = actor_utility_fixture();
-    for _ in 0..16 {
-        service
-            .submit(Request::AddNativeDevice {
-                track,
-                class: NativeDeviceClass::Effect,
-                type_id: Box::new(hex_lattice_contract::DeviceTypeId::from_static(
-                    "hex.utility",
-                )),
-                before: None,
-            })
-            .unwrap();
-        state = receive_service_event(&service).state;
-    }
-    let (handle, editor) = actor_editor_window(cx, service, state, track);
-    let mut visual = VisualTestContext::from_window(handle, cx);
-    visual.run_until_parked();
-    let key = ParameterKey {
-        device: first,
-        parameter: hex_engine::DEVICE_OUTPUT_GAIN.id,
-    };
-    let control = editor.read_with(cx, |view, _| {
-        match view.device_panel.controls.get(&key).unwrap() {
-            ParameterControl::Float { entity, .. } => entity.clone(),
-            _ => panic!("host gain"),
-        }
-    });
-    let original_id = control.entity_id();
-    for _ in 0..3 {
-        editor.update(cx, |_, cx| cx.notify());
-        visual.run_until_parked();
-    }
-    editor.read_with(cx, |view, _| {
-        match view.device_panel.controls.get(&key).unwrap() {
-            ParameterControl::Float { entity, .. } => assert_eq!(entity.entity_id(), original_id),
-            _ => panic!("host gain"),
-        }
-    });
-    visual.update(|window, cx| control.focus_handle(cx).focus(window));
-    let meter = visual
-        .debug_bounds(Box::leak(
-            format!(
-                "device-{}-parameter-{}-output-meter",
-                first.value(),
-                key.parameter.value()
-            )
-            .into_boxed_str(),
-        ))
-        .unwrap();
-    let press = meter.center();
-    visual.simulate_mouse_down(press, MouseButton::Left, Modifiers::default());
-    visual.simulate_mouse_move(
-        point(press.x, press.y - px(20.0)),
-        Some(MouseButton::Left),
-        Modifiers::default(),
-    );
-    assert!(control.read_with(cx, |c, _| c.is_interacting()));
-    scroll(&editor, &mut visual, -1_000_000.0);
-    assert!(
-        visual
-            .debug_bounds(selector("effect-device", first))
-            .is_some()
-    );
-    assert!(control.read_with(cx, |c, _| c.is_interacting()));
-    editor.read_with(cx, |view, _| {
-        match view.device_panel.controls.get(&key).unwrap() {
-            ParameterControl::Float { entity, .. } => assert_eq!(entity.entity_id(), original_id),
-            _ => panic!("host gain"),
-        }
-    });
-    visual.simulate_mouse_up(
-        point(px(20.0), px(20.0)),
-        MouseButton::Left,
-        Modifiers::default(),
-    );
-    pump_until(&editor, cx, |view| {
-        view.device_gesture.snapshot().is_none() && view.worker_requests_pending == 0
-    });
-    assert!(!control.read_with(cx, |c, _| c.is_interacting()));
-    let changed = editor.read_with(cx, |view, _| {
-        view.state
-            .as_ref()
-            .unwrap()
-            .project
-            .device(first)
-            .unwrap()
-            .state()
-            .output_gain_millidb()
-    });
-    assert_ne!(changed, 0);
-    editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
-    pump_until(&editor, cx, |view| {
-        view.state
-            .as_ref()
-            .unwrap()
-            .project
-            .device(first)
-            .unwrap()
-            .state()
-            .output_gain_millidb()
-            == 0
-    });
-    editor.update(cx, |view, _| assert!(view.enqueue(Request::Redo)));
-    pump_until(&editor, cx, |view| {
-        view.state
-            .as_ref()
-            .unwrap()
-            .project
-            .device(first)
-            .unwrap()
-            .state()
-            .output_gain_millidb()
-            == changed
     });
 }

@@ -95,14 +95,19 @@ impl ArrangementRootAssembly {
     pub(super) fn main_quote(
         &self,
         project: &hex_project::Project,
+        native_input: Option<crate::device_automation::NativeParameterInputTarget>,
     ) -> Result<(usize, usize), AudioStorageError> {
-        self.main_custody
-            .quote(project.main_devices(), project.sample_rate())
+        self.main_custody.quote_with_input(
+            project.main_devices(),
+            project.sample_rate(),
+            native_input,
+        )
     }
     pub(super) fn reserve_main_carrier(
         &mut self,
         project: &hex_project::Project,
         effects: Option<&hex_lattice::NativeDeviceRegistry<'_>>,
+        native_input: Option<crate::device_automation::NativeParameterInputTarget>,
     ) -> Result<(), AudioStorageError> {
         if self.scalars.is_none() || self.project.is_some() {
             return Err(AudioStorageError::Capacity);
@@ -121,11 +126,13 @@ impl ArrangementRootAssembly {
         if self.main_chain.is_none() {
             self.main_handle = crate::audio_only_inputs::handle()?;
             self.main_disposal = Disposal::Unstarted;
-            let chain = self.main_custody.prepare_with_effects(
+            let chain = self.main_custody.prepare_with_effects_and_input(
                 project.main_devices(),
                 hex_lattice::ProcessorChainOwner::Main,
                 project.sample_rate(),
                 effects,
+                native_input,
+                Some(project),
             )?;
             let (chain, declaration) = chain.into_paired_parts_on_control();
             self.main_chain = Some(chain);
@@ -202,7 +209,7 @@ impl ArrangementRootAssembly {
                 .ok_or(AudioStorageError::Overflow)?;
             end = Some(end.map_or(value, |previous: u64| previous.max(value)));
         }
-        self.signal_reserved = effects.is_some();
+        self.signal_reserved = effects.is_some() || project.has_group_tracks();
         self.growth = 0;
         for (old, count, stride) in [
             (
@@ -422,6 +429,7 @@ impl ArrangementRootAssembly {
                 tempo_map: None,
                 tempo_max_micro_bpm: 0,
                 midi_routing: Vec::new(),
+                source_effects: Vec::new(),
                 sample_rate: scalars.sample_rate,
                 main_device_chain,
                 tracks: mem::take(&mut self.tracks),
@@ -431,6 +439,7 @@ impl ArrangementRootAssembly {
                 master_gain: scalars.master_gain,
                 audible_end_frame,
                 has_streamed_sources,
+                requires_scalar_automation: false,
                 shared_contexts: contexts,
             });
         }
@@ -459,6 +468,7 @@ impl ArrangementRootAssembly {
             tempo_map: _,
             tempo_max_micro_bpm: _,
             midi_routing: _,
+            source_effects: _,
             sample_rate: _,
             main_device_chain,
             tracks,
@@ -468,6 +478,7 @@ impl ArrangementRootAssembly {
             master_gain: _,
             audible_end_frame: _,
             has_streamed_sources: _,
+            requires_scalar_automation: _,
             shared_contexts,
         }) = self.project.take()
         {
@@ -600,13 +611,18 @@ impl ArrangementRootAssembly {
                 tempo_map: _,
                 tempo_max_micro_bpm: _,
                 midi_routing,
+                source_effects,
                 main_device_chain: _,
                 loop_region: _,
                 master_gain: _,
                 audible_end_frame: _,
                 has_streamed_sources: _,
+                requires_scalar_automation: _,
                 shared_contexts: _,
             } = project;
+            if !source_effects.is_empty() {
+                return Err(AudioStorageError::UnsupportedGraph);
+            }
             l.vec(audio_clip_views)?;
             l.vec(tracks)?;
             l.vec(return_buses)?;

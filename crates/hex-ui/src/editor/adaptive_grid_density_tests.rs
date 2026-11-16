@@ -1,5 +1,5 @@
 use super::*;
-use hex_project::{Editor, Tempo};
+use hex_project::{Command, Editor, Meter, Tempo};
 
 #[test]
 fn adaptive_density_presets_resolve_distinct_current_zoom_without_changing_default() {
@@ -95,17 +95,17 @@ fn adaptive_density_painted_snap_and_directional_landmarks_match_through_zoom_an
 }
 
 #[test]
-fn adaptive_density_bands_share_selected_four_unit_span_and_stay_bounded() {
+fn adaptive_density_bands_hold_at_least_four_units_and_stay_bounded() {
     let project = Project::new(48_000).unwrap();
     for density in AdaptiveGridDensity::ALL {
         let grid = SnapGrid::Adaptive.with_density(density);
         let viewport = Viewport::fit(288_000);
         let lines = grid_lines(&project, viewport, 640.0, grid);
         let bands = adaptive_grid_bands_for_grid(&project, viewport, 640.0, grid);
-        assert_eq!(
-            bands[0].end_frame - bands[0].start_frame,
-            (lines[1].frame - lines[0].frame) * 4
-        );
+        // Bands hold at least four grid units, widened to a musical level.
+        let span = bands[0].end_frame - bands[0].start_frame;
+        assert!(span >= (lines[1].frame - lines[0].frame) * 4);
+        assert!(span == 24_000 || span.is_multiple_of(96_000), "{span}");
         for length in [1, 72_000, u64::MAX / 2] {
             let viewport = Viewport::fit(length);
             assert!(grid_lines(&project, viewport, 100_000.0, grid).len() <= MAX_GRID_LINES);

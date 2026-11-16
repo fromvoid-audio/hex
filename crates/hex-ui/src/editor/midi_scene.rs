@@ -5,7 +5,7 @@
 use hex_project::{ClipId, MidiNote, MidiNoteInsert, NoteId};
 use std::{collections::HashMap, sync::Arc};
 
-/// Horizontal navigation may reveal space beyond short sources without editing them.
+/// Zoom span stays finite relative to the source. The viewport origin is independent.
 pub(super) fn zoom_limit(length: u64) -> u64 {
     length
         .saturating_mul(4)
@@ -64,19 +64,19 @@ pub(super) fn zoom_span(current: u64, clip_length: u64, beat: u64, inward: bool)
 /// Bounded wheel step in clip-local beat ticks, anchored at the pointer's beat.
 /// Integer ratios retain precision at large source coordinates.
 pub(super) fn wheel_zoom(
-    start: u64,
+    start: i128,
     span: u64,
     length: u64,
-    anchor: u64,
+    anchor: i128,
     inward: bool,
-) -> (u64, u64) {
+) -> (i128, u64) {
     if length == 0 {
         return (0, 0);
     }
     let minimum = (hex_project::BeatTime::ONE.raw() / 16).max(1).min(length);
     let span = span.clamp(minimum, zoom_limit(length));
-    let start = clamp_start(start, length, span);
-    let anchor = anchor.clamp(start, start + span);
+    let start = clamp_start(start, span);
+    let anchor = anchor.clamp(start, start + i128::from(span));
     let next_span = if inward {
         ((u128::from(span) * 4 / 5) as u64).max(minimum)
     } else {
@@ -84,15 +84,20 @@ pub(super) fn wheel_zoom(
             .div_ceil(4)
             .min(u128::from(zoom_limit(length))) as u64
     };
-    let offset = (u128::from(anchor - start) * u128::from(next_span) / u128::from(span)) as u64;
+    let offset = ((anchor - start) as u128 * u128::from(next_span) / u128::from(span)) as u64;
     (
-        clamp_start(anchor.saturating_sub(offset), length, next_span),
+        clamp_start(anchor - i128::from(offset), next_span),
         next_span,
     )
 }
 
-pub(super) fn clamp_start(start: u64, clip_length: u64, span: u64) -> u64 {
-    start.min(zoom_limit(clip_length).saturating_sub(span))
+/// Blank navigation never grows authored data. Only the checked viewport end
+/// limits its positive origin; rendering still visits a bounded grid and note set.
+pub(super) fn clamp_start(start: i128, span: u64) -> i128 {
+    start.clamp(
+        -i128::from(u64::MAX),
+        i128::from(u64::MAX) - i128::from(span),
+    )
 }
 
 pub(super) fn pixel_bounds(note: NoteGeometry, width: f32) -> Option<(f32, f32)> {
@@ -110,7 +115,7 @@ pub(super) struct SceneKey {
     pub(super) generation: u64,
     pub(super) revision: u64,
     pub(super) clip: ClipId,
-    pub(super) beat_start: u64,
+    pub(super) beat_start: i128,
     pub(super) beat_span: u64,
     pub(super) pitch_low: u8,
     pub(super) pitch_rows: u8,
@@ -118,6 +123,7 @@ pub(super) struct SceneKey {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct NoteGeometry {
+    pub(super) active: bool,
     pub(super) id: NoteId,
     pub(super) start: u64,
     pub(super) duration: u64,
@@ -171,16 +177,17 @@ impl MidiScene {
         let mut visible = Vec::with_capacity(notes.len());
         let mut rows = vec![Vec::new(); usize::from(key.pitch_rows)];
         let mut by_id = HashMap::with_capacity(notes.len());
-        let view_end = key.beat_start.checked_add(key.beat_span);
+        let view_end = key.beat_start.checked_add(i128::from(key.beat_span));
 
         if key.beat_span > 0
+            && key.beat_start == clamp_start(key.beat_start, key.beat_span)
             && valid_pitch_range(key.pitch_low, key.pitch_rows)
             && let Some(view_end) = view_end
         {
             for note in notes {
-                let start = note.start().raw();
+                let start = i128::from(note.start().raw());
                 let duration = note.duration().raw();
-                let Some(end) = start.checked_add(duration) else {
+                let Some(end) = start.checked_add(i128::from(duration)) else {
                     continue;
                 };
                 if end <= key.beat_start
@@ -197,11 +204,12 @@ impl MidiScene {
                 let width = (visible_end - visible_start) as f64 / key.beat_span as f64;
                 let item = NoteGeometry {
                     id: note.id(),
-                    start,
+                    start: note.start().raw(),
                     duration,
                     pitch: note.pitch(),
                     channel: note.channel(),
                     velocity: note.velocity(),
+                    active: note.active(),
                     x: x as f32,
                     y: row as f32 / f32::from(key.pitch_rows),
                     width: width as f32,
@@ -274,6 +282,28 @@ impl MidiScene {
         velocity: u8,
     ) -> Option<NoteGeometry> {
         geometry(self.key, id, start, duration, pitch, channel, velocity)
+    }
+
+    /// Render candidate storage coordinates against the same pre-ACK viewport.
+    /// Retained canonical notes still use the old scene; the exact terminal moves
+    /// the viewport by this same prefix when installing the new canonical source.
+    pub(super) fn rebased_preview_geometry(
+        &self,
+        id: NoteId,
+        preview: super::midi_drag::NotePreview,
+        prefix: u64,
+    ) -> Option<NoteGeometry> {
+        let mut key = self.key;
+        key.beat_start = key.beat_start.checked_add(i128::from(prefix))?;
+        geometry(
+            key,
+            id,
+            preview.start,
+            preview.duration,
+            preview.pitch,
+            0,
+            100,
+        )
     }
 
     pub(super) fn insert_geometry(&self, note: MidiNoteInsert) -> Option<InsertGeometry> {
@@ -386,6 +416,7 @@ fn geometry(
     let rect = insert_geometry(key, start, duration, pitch)?;
     Some(NoteGeometry {
         id,
+        active: true,
         start,
         duration,
         pitch,
@@ -394,16 +425,18 @@ fn geometry(
         x: rect.x,
         y: rect.y,
         width: rect.width,
-        leading_edge_visible: start >= key.beat_start,
-        trailing_edge_visible: start.checked_add(duration)?
-            <= key.beat_start.checked_add(key.beat_span)?,
+        leading_edge_visible: i128::from(start) >= key.beat_start,
+        trailing_edge_visible: i128::from(start).checked_add(i128::from(duration))?
+            <= key.beat_start.checked_add(i128::from(key.beat_span))?,
     })
 }
 
 fn insert_geometry(key: SceneKey, start: u64, duration: u64, pitch: u8) -> Option<InsertGeometry> {
-    let view_end = key.beat_start.checked_add(key.beat_span)?;
-    let end = start.checked_add(duration)?;
+    let view_end = key.beat_start.checked_add(i128::from(key.beat_span))?;
+    let start = i128::from(start);
+    let end = start.checked_add(i128::from(duration))?;
     if key.beat_span == 0
+        || key.beat_start != clamp_start(key.beat_start, key.beat_span)
         || !valid_pitch_range(key.pitch_low, key.pitch_rows)
         || duration == 0
         || pitch < key.pitch_low
@@ -423,7 +456,7 @@ fn insert_geometry(key: SceneKey, start: u64, duration: u64, pitch: u8) -> Optio
     })
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "ui-unit-tier"))]
 mod tests {
     use super::{
         HitCycle, MIN_HIT_WIDTH_PX, MidiScene, MidiSceneCache, SceneKey, clamp_start, fit_span,
@@ -481,6 +514,7 @@ mod tests {
             };
         midi_clip.notes = (0..count)
             .map(|index| MidiNoteSnapshot {
+                active: true,
                 id: first_note_id + index as u64,
                 start_raw: (index / 24) as u64 * gate
                     + if stagger { 0 } else { BeatTime::ONE.raw() / 4 },
@@ -594,7 +628,7 @@ mod tests {
                 ..original
             },
             SceneKey {
-                beat_start: BeatTime::ONE.raw(),
+                beat_start: i128::from(BeatTime::ONE.raw()),
                 ..original
             },
             SceneKey {
@@ -620,12 +654,48 @@ mod tests {
     }
 
     #[test]
+    fn signed_navigation_preserves_anchor_and_refuses_unrepresentable_endpoints() {
+        let beat = BeatTime::ONE.raw();
+        let start = -i128::from(beat * 3 / 2);
+        let (next, span) = super::wheel_zoom(start, 4 * beat, 4 * beat, 0, true);
+        // The source-zero anchor keeps its normalized pixel, to one Q32 tick.
+        assert!(
+            ((-next) * i128::from(4 * beat) - (-start) * i128::from(span)).abs()
+                <= i128::from(4 * beat)
+        );
+        assert_eq!(clamp_start(i128::MIN, beat), -i128::from(u64::MAX));
+        assert_eq!(clamp_start(i128::MAX, beat), i128::from(u64::MAX - beat));
+        let (project, clip) = fixture(1, false);
+        let mut k = key(clip);
+        k.beat_start = -i128::from(beat);
+        k.beat_span = 4 * beat;
+        let scene = MidiScene::build(k, project.midi_clip(clip).unwrap().notes());
+        let note = scene.notes()[0];
+        assert!(
+            (note.x - 5.0 / 16.0).abs() < 1e-6,
+            "the fixture note is at source beat one quarter"
+        );
+        k.beat_start = i128::from(u64::MAX);
+        assert!(
+            MidiScene::build(k, project.midi_clip(clip).unwrap().notes())
+                .notes()
+                .is_empty()
+        );
+        assert!(super::insert_geometry(k, 0, beat, 60).is_none());
+    }
+
+    #[test]
     fn wheel_zoom_preserves_anchor_and_bounds_at_small_and_large_coordinates() {
         let beat = BeatTime::ONE.raw();
-        let (start, span) =
-            super::wheel_zoom(100 * beat, 400 * beat, 2000 * beat, 400 * beat, true);
-        assert_eq!((start, span), (160 * beat, 320 * beat));
-        assert_eq!((400 * beat - start) * 4, span * 3);
+        let (start, span) = super::wheel_zoom(
+            i128::from(100 * beat),
+            400 * beat,
+            2000 * beat,
+            i128::from(400 * beat),
+            true,
+        );
+        assert_eq!((start, span), (i128::from(160 * beat), 320 * beat));
+        assert_eq!((i128::from(400 * beat) - start) * 4, i128::from(span * 3));
         let mut view = (0, 4 * BeatTime::ONE.raw());
         for _ in 0..256 {
             view = super::wheel_zoom(view.0, view.1, 4 * BeatTime::ONE.raw(), 0, true);
@@ -637,9 +707,15 @@ mod tests {
         assert_eq!(view, (0, super::zoom_limit(4 * BeatTime::ONE.raw())));
         assert_eq!(super::wheel_zoom(0, 1, 1, 1, true), (0, 1));
         assert_eq!(super::wheel_zoom(0, 0, 0, 0, false), (0, 0));
-        let view = super::wheel_zoom(u64::MAX - 400, 400, u64::MAX, u64::MAX - 100, false);
+        let view = super::wheel_zoom(
+            i128::from(u64::MAX - 400),
+            400,
+            u64::MAX,
+            i128::from(u64::MAX - 100),
+            false,
+        );
         assert!(view.1 > 0);
-        assert!(view.0.checked_add(view.1).is_some());
+        assert!(view.0.checked_add(i128::from(view.1)).is_some());
     }
 
     #[test]
@@ -696,7 +772,7 @@ mod tests {
     }
 
     #[test]
-    fn horizontal_zoom_and_pan_stay_inside_bounded_authoring_domain() {
+    fn zoom_span_is_bounded_but_horizontal_origin_only_has_numeric_limit() {
         let beat = BeatTime::ONE.raw();
         let length = 96 * beat;
         assert_eq!(fit_span(length, beat), 96 * beat);
@@ -708,8 +784,31 @@ mod tests {
         assert_eq!(zoom_span(beat / 8, length, beat, true), beat / 16);
         assert_eq!(fit_span(beat / 512, beat), beat / 512);
         assert_eq!(zoom_span(beat / 512, beat / 512, beat, true), beat / 512);
-        assert_eq!(clamp_start(100 * beat, length, 16 * beat), 100 * beat);
-        assert_eq!(clamp_start(4 * beat, 3 * beat, 4 * beat), 4 * beat);
+        assert_eq!(
+            clamp_start(i128::from(100 * beat), 16 * beat),
+            i128::from(100 * beat)
+        );
+        assert_eq!(
+            clamp_start(i128::from(4 * beat), 4 * beat),
+            i128::from(4 * beat)
+        );
+        assert_eq!(
+            clamp_start(i128::from(1024 * beat), 4 * beat),
+            i128::from(1024 * beat)
+        );
+        assert_eq!(
+            clamp_start(i128::from(u64::MAX), 4 * beat),
+            i128::from(u64::MAX - 4 * beat)
+        );
+        let view = super::wheel_zoom(
+            i128::from(u64::MAX - 4 * beat),
+            4 * beat,
+            beat,
+            i128::from(u64::MAX),
+            false,
+        );
+        assert!(view.0.checked_add(i128::from(view.1)).is_some());
+        assert!(view.0 > i128::from(1024 * beat));
     }
 
     #[test]
@@ -742,7 +841,7 @@ mod tests {
         let (project, clip) = fixture(600, true);
         let notes = project.midi_clip(clip).expect("clip").notes();
         let mut scene_key = key(clip);
-        scene_key.beat_start = BeatTime::ONE.raw() / 32;
+        scene_key.beat_start = i128::from(BeatTime::ONE.raw() / 32);
         let scene = MidiScene::build(scene_key, notes);
         let clipped = scene.note(notes[0].id()).unwrap();
         assert!(!clipped.leading_edge_visible);

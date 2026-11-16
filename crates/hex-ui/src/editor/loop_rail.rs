@@ -5,8 +5,7 @@ use gpui::{
     Bounds, Context, CursorStyle, Div, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent,
     MouseUpEvent, canvas, div, prelude::*, px, relative, rgb,
 };
-use hex_project::{Command, LoopRegion};
-use hex_session::service::Request;
+use hex_project::LoopRegion;
 
 mod pending;
 
@@ -14,11 +13,14 @@ mod pending;
 pub(super) struct PendingLoop {
     generation: u64,
     region: LoopRegion,
+    toggle: bool,
     remaining: Option<usize>,
+    // Selection intent for automatic focus after a successful section-loop ACK.
+    focus_intent: Option<u64>,
+    start_intent: Option<u64>,
+    launch: Option<hex_session::arrangement_seek::SectionLaunch>,
 }
 
-const RAIL_HEIGHT: f32 = 18.0;
-const BAR_INSET: f32 = 4.0;
 const EDGE_HIT_PIXELS: f32 = 6.0;
 
 #[derive(Clone, Copy, Debug)]
@@ -70,6 +72,7 @@ impl EditorView {
         if self.mode != EditorMode::Arrangement
             || self.edit_pending()
             || self.context_menu.is_some()
+            || super::device_panel::picker_is_open(self)
             || self.theme_settings.open
             || self.opening_project
             || self.close_prompt_open
@@ -169,6 +172,7 @@ impl EditorView {
             || modifiers.alt
             || modifiers.control
             || self.context_menu.is_some()
+            || super::device_panel::picker_is_open(self)
             || self.opening_project
             || self.close_prompt_open
             || !x.is_finite()
@@ -293,7 +297,7 @@ impl EditorView {
             return true;
         }
         if !gesture.click_disqualified && gesture.toggle_on_click && modifiers.platform {
-            let _ = self.enqueue(Request::Edit(Command::ToggleLoopRegion));
+            self.toggle_loop();
             return true;
         }
         if matches!(gesture.mode, EditMode::Move { .. }) && !gesture.moved {
@@ -342,6 +346,20 @@ impl EditorView {
     }
 }
 
+pub(super) fn displayed_region(view: &EditorView, state: &ViewState) -> Option<LoopRegion> {
+    let current_region = state.project.loop_region();
+    let gesture = view.loop_rail_gesture.filter(|gesture| {
+        gesture.generation == view.project_generation
+            && gesture.revision == state.revision
+            && gesture.loop_region == state.project.loop_region()
+            && view.mode == EditorMode::Arrangement
+    });
+    gesture
+        .and_then(|gesture| gesture.preview)
+        .or_else(|| view.pending_loop_region())
+        .or(current_region)
+}
+
 pub(super) fn view(
     view: &EditorView,
     state: &ViewState,
@@ -350,24 +368,10 @@ pub(super) fn view(
     cx: &mut Context<EditorView>,
 ) -> Div {
     let current_region = state.project.loop_region();
-    let gesture = view.loop_rail_gesture.filter(|gesture| {
-        gesture.generation == view.project_generation
-            && gesture.revision == state.revision
-            && gesture.loop_region == state.project.loop_region()
-            && view.mode == EditorMode::Arrangement
-    });
-    let shown_region = gesture
-        .and_then(|gesture| gesture.preview)
-        .or_else(|| view.pending_loop_region())
-        .or(current_region);
+    let shown_region = displayed_region(view, state);
     let entity = cx.entity();
-    let rail = div()
-        .h(px(RAIL_HEIGHT))
-        .flex_shrink_0()
+    let rail = super::timeline_strip::loop_surface()
         .flex()
-        .bg(rgb(theme::color(theme::PaletteRole::Background)))
-        .border_b_1()
-        .border_color(rgb(theme::color(theme::PaletteRole::Border)))
         .child(
             div()
                 .id("arrangement-loop-rail")
@@ -564,6 +568,7 @@ fn region_edit_mode(
     }
 }
 
+// Closed viewport edges retain point intersections for endpoint resize capture.
 fn visible_region_pixels(
     region: LoopRegion,
     viewport: Viewport,
@@ -576,7 +581,7 @@ fn visible_region_pixels(
     }
     let start = region.start().max(viewport.start);
     let end = region.end().min(viewport_end);
-    if start >= end {
+    if start > end {
         return None;
     }
     let start_x = left + ((start - viewport.start) as f64 / viewport.length as f64) as f32 * width;
@@ -626,37 +631,36 @@ fn loop_region_bar(
     }
     let start = region.start().max(viewport.start);
     let end = region.end().min(viewport_end);
-    if start >= end {
+    if start > end {
         return None;
     }
-    let left = (start - viewport.start) as f64 / viewport.length as f64;
-    let width = (end - start) as f64 / viewport.length as f64;
+    let raw_start =
+        ((i128::from(region.start()) - i128::from(viewport.start)) as f64) / viewport.length as f64;
+    let raw_end =
+        ((i128::from(region.end()) - i128::from(viewport.start)) as f64) / viewport.length as f64;
     Some(
-        div()
-            .debug_selector(|| "loop-rail-range".into())
-            .absolute()
-            .top(px(BAR_INSET))
-            .bottom(px(BAR_INSET))
-            .left(relative(left as f32))
-            .w(relative(width as f32))
-            .bg(rgb(theme::color(if region.enabled() {
-                theme::PaletteRole::Primary
-            } else {
-                theme::PaletteRole::Muted
-            })))
-            .opacity(if region.enabled() { 0.94 } else { 0.62 })
-            .children(
-                (region.start() >= viewport.start && binary_duration(project, region)).then(|| {
-                    div()
-                        .debug_selector(|| "loop-binary-length-marker".into())
-                        .absolute()
-                        .left_0()
-                        .top(px(2.0))
-                        .size(px(5.0))
-                        .rounded_full()
-                        .bg(rgb(theme::color(theme::PaletteRole::Background)))
-                }),
-            ),
+        super::timeline_strip::loop_range(
+            raw_start,
+            raw_end,
+            region.enabled(),
+            [
+                "arrangement-loop-start-marker",
+                "arrangement-loop-end-marker",
+            ],
+        )?
+        .debug_selector(|| "loop-rail-range".into())
+        .children(
+            (region.start() >= viewport.start && binary_duration(project, region)).then(|| {
+                div()
+                    .debug_selector(|| "loop-binary-length-marker".into())
+                    .absolute()
+                    .left(px(4.0))
+                    .top(px(-6.0))
+                    .size(px(5.0))
+                    .rounded_full()
+                    .bg(rgb(theme::color(theme::PaletteRole::Background)))
+            }),
+        ),
     )
 }
 
@@ -722,7 +726,7 @@ pub(super) fn cancel_stale(
     false
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "ui-test-support")))]
 mod tests {
     use super::{binary_duration, stepped_start, visible_region_pixels};
     use crate::editor::viewport::Viewport;
@@ -739,6 +743,50 @@ mod tests {
             visible_region_pixels(region, viewport, 10.0, 200.0),
             Some((10.0, 110.0))
         );
+    }
+
+    #[test]
+    fn edge_point_ranges_keep_the_existing_resize_owner() {
+        let viewport = Viewport {
+            start: 100,
+            length: 100,
+        };
+        let bounds = gpui::Bounds::new(
+            gpui::point(gpui::px(10.0), gpui::px(0.0)),
+            gpui::size(gpui::px(200.0), gpui::px(18.0)),
+        );
+        assert!(matches!(
+            super::region_edit_mode(
+                LoopRegion::new(50, 100, true).unwrap(),
+                viewport,
+                bounds,
+                12.0
+            ),
+            Some(super::EditMode::ResizeEnd {
+                fixed_start: 50,
+                ..
+            })
+        ));
+        assert!(matches!(
+            super::region_edit_mode(
+                LoopRegion::new(200, 250, true).unwrap(),
+                viewport,
+                bounds,
+                208.0
+            ),
+            Some(super::EditMode::ResizeStart { fixed_end: 250, .. })
+        ));
+        for (start, end) in [(50, 99), (201, 250)] {
+            assert!(
+                super::region_edit_mode(
+                    LoopRegion::new(start, end, true).unwrap(),
+                    viewport,
+                    bounds,
+                    12.0
+                )
+                .is_none()
+            );
+        }
     }
 
     #[test]
@@ -790,6 +838,50 @@ mod tests {
             project,
             LoopRegion::new(u64::MAX - 1, u64::MAX, false).unwrap()
         ));
+    }
+
+    #[test]
+    fn hit_budget_preserves_outside_capture_clipped_bodies_and_wide_edges() {
+        use super::{EditMode, region_edit_mode};
+        use gpui::{point, px};
+        let bounds = gpui::Bounds::new(point(px(100.0), px(0.0)), gpui::size(px(300.0), px(18.0)));
+        let viewport = Viewport {
+            start: 0,
+            length: 300,
+        };
+        let kind = |region, viewport, x| match region_edit_mode(region, viewport, bounds, x) {
+            Some(EditMode::Move { .. }) => "move",
+            Some(EditMode::ResizeStart { .. }) => "start",
+            Some(EditMode::ResizeEnd { .. }) => "end",
+            Some(EditMode::Paint { .. }) | None => "none",
+        };
+        for width in [1, 8, 12, 18, 48] {
+            let r = LoopRegion::new(100, 100 + width, true).unwrap();
+            assert_eq!(kind(r, viewport, 200.0), "start");
+            assert_eq!(kind(r, viewport, 200.0 + width as f32), "end");
+            assert_eq!(kind(r, viewport, 194.0), "start");
+            assert_eq!(kind(r, viewport, 193.9), "none");
+            assert_eq!(kind(r, viewport, 206.0 + width as f32), "end");
+            assert_eq!(kind(r, viewport, 206.1 + width as f32), "none");
+            assert_eq!(kind(r, viewport, 200.0 + width as f32 / 2.0), "move");
+        }
+        let wide = LoopRegion::new(100, 148, false).unwrap();
+        assert_eq!(kind(wide, viewport, 206.0), "start");
+        assert_eq!(kind(wide, viewport, 206.1), "move");
+        assert_eq!(kind(wide, viewport, 241.9), "move");
+        assert_eq!(kind(wide, viewport, 242.0), "end");
+        // A clipped-away start cannot steal the visible body, even when only 3px remain.
+        let clipped = Viewport {
+            start: 145,
+            length: 300,
+        };
+        assert_eq!(kind(wide, clipped, 100.0), "move");
+        assert_eq!(kind(wide, clipped, 103.0), "end");
+        let clipped_end = Viewport {
+            start: 0,
+            length: 110,
+        };
+        assert_eq!(kind(wide, clipped_end, 400.0), "move");
     }
 
     #[test]

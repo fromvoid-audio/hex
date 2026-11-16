@@ -20,7 +20,7 @@ fn pump(
     cx: &mut TestAppContext,
     done: impl Fn(&EditorView) -> bool,
 ) {
-    let until = Instant::now() + Duration::from_secs(5);
+    let until = crate::test_wait::hang_deadline();
     loop {
         editor.update(cx, |view, cx| {
             view.tick(cx);
@@ -62,9 +62,12 @@ fn fixture(
     fs::create_dir(root.join("samples")).unwrap();
     let path = root.join("My Original.hex");
     let service = Service::new(48_000, 16, 8_000_000).unwrap();
-    let until = Instant::now() + Duration::from_secs(5);
+    let until = crate::test_wait::hang_deadline();
     while service.try_event().is_err() {
-        assert!(Instant::now() < until);
+        assert!(
+            std::time::Instant::now() < until,
+            "fixture: hang guard expired"
+        );
         std::thread::sleep(Duration::from_millis(1));
     }
     service.submit(Request::SaveNew(path.clone())).unwrap();
@@ -73,7 +76,10 @@ fn fixture(
             assert!(event.error.is_none());
             break;
         }
-        assert!(Instant::now() < until);
+        assert!(
+            std::time::Instant::now() < until,
+            "fixture: hang guard expired"
+        );
         std::thread::sleep(Duration::from_millis(1));
     }
     // The historical schema36 tempo lineage has this same envelope without sections.
@@ -118,6 +124,40 @@ fn fixture(
         old.as_object_mut().unwrap().remove("native_sources"),
         Some(serde_json::json!([]))
     );
+    assert_eq!(
+        old.as_object_mut().unwrap().remove("track_source_bindings"),
+        Some(serde_json::json!([]))
+    );
+    assert_eq!(
+        old.as_object_mut().unwrap().remove("session_audio_cycles"),
+        Some(serde_json::json!([]))
+    );
+    assert_eq!(
+        old.as_object_mut().unwrap().remove("device_automation"),
+        Some(serde_json::json!([]))
+    );
+    for key in [
+        "alias_sources",
+        "alias_members",
+        "inactive_midi_notes",
+        "inactive_audio_events",
+        "nested_audio",
+        "audio_event_gains",
+        "midi_clip_gains",
+        "automatic_track_names",
+    ] {
+        assert_eq!(
+            old.as_object_mut().unwrap().remove(key),
+            Some(serde_json::json!([]))
+        );
+    }
+    // Schema53 host automation must be empty before comparing this old envelope.
+    assert_eq!(
+        old.get("host_automation"),
+        Some(&serde_json::json!([])),
+        "historical fixture cannot discard host automation"
+    );
+    old.as_object_mut().unwrap().remove("host_automation");
     old["version"] = 36.into();
     old.as_object_mut().unwrap().remove("arrangement_sections");
     let original = serde_json::to_vec(&old).unwrap();
@@ -153,7 +193,7 @@ fn save(editor: &gpui::Entity<EditorView>, visual: &mut VisualTestContext) {
     assert!(detail.contains("new or versioned name"));
 }
 fn wait_for_picker(editor: &gpui::Entity<EditorView>, visual: &mut VisualTestContext) {
-    let until = Instant::now() + Duration::from_secs(5);
+    let until = crate::test_wait::hang_deadline();
     loop {
         editor.update(visual, |view, cx| {
             view.tick(cx);
@@ -210,8 +250,8 @@ fn older_format_explicit_overwrite_warns_once_and_save_as_keeps_original(cx: &mu
     save(&editor, &mut visual);
     visual.simulate_prompt_answer("save as…");
     wait_for_picker(&editor, &mut visual);
-    let copy = files.0.join("My Original-v2.hex");
-    visual.simulate_new_path_selection(|_| Some(copy.clone()));
+    let copy = files.0.join("My Original-v2/My Original-v2.hex");
+    visual.simulate_new_path_selection(|_| Some(files.0.join("My Original-v2.hex")));
     pump(&editor, &mut visual, |view| {
         settled(view) && !view.document_format_upgrade_required
     });

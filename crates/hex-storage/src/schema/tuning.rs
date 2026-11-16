@@ -161,8 +161,14 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
 /// present inventories always pass their original strict parser.
 pub(crate) fn decode_version(bytes: &[u8], version: u32) -> Result<Project, StorageError> {
     // Preserve duplicate-field refusal before adapting the older strict envelope.
-    let _: super::audio_events::UniqueKeys = serde_json::from_slice(bytes)?;
-    let mut value: serde_json::Value = serde_json::from_slice(bytes)?;
+    decode_version_value(super::audio_events::parse_unique(bytes)?, version)
+}
+
+/// [`decode_version`] for an envelope an upper layer already parsed.
+pub(crate) fn decode_version_value(
+    mut value: serde_json::Value,
+    version: u32,
+) -> Result<Project, StorageError> {
     if (34..=36).contains(&version) {
         super::migrations::upgrade_nested(&mut value, version)?;
     }
@@ -220,7 +226,7 @@ pub(crate) fn decode_version(bytes: &[u8], version: u32) -> Result<Project, Stor
             .ok_or(StorageError::Invalid("asset source inventory is missing"))?,
     )?;
     object.insert("version".into(), 29.into());
-    let base = super::fade_shapes::DocumentV29::decode(&serde_json::to_vec(&value)?)?;
+    let base = super::fade_shapes::DocumentV29::decode_value(value)?;
     let mut snapshot = base.snapshot();
     snapshot.tuning = tuning;
     if let Some(sections) = sections {
@@ -236,7 +242,7 @@ pub(crate) fn decode_version(bytes: &[u8], version: u32) -> Result<Project, Stor
     if let Some(volumes) = volumes {
         volumes.apply(&mut snapshot)?;
     }
-    Project::from_snapshot(snapshot).map_err(|e| StorageError::Invalid(e.0))
+    Project::from_legacy_snapshot(snapshot).map_err(|e| StorageError::Invalid(e.0))
 }
 
 /// The private staging DTOs also serve old-shaped internal envelopes and default

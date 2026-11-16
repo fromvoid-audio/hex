@@ -24,6 +24,9 @@ fn device(next: &mut u64) -> DeviceSnapshot {
     let id = *next;
     *next += 1;
     DeviceSnapshot {
+        modulation: Default::default(),
+        parent: None,
+        automation: Vec::new(),
         comparison: None,
         id,
         bypassed: false,
@@ -88,7 +91,7 @@ fn fixture() -> Project {
     for bus in &mut s.return_tracks {
         bus.devices = vec![device(&mut s.next_id)];
     }
-    Project::from_snapshot(s).unwrap()
+    Project::from_legacy_snapshot(s).unwrap()
 }
 fn declared_graph(p: &Project) -> (Graph, BTreeMap<NodeKey, Fixed>) {
     let graph = Graph::from_project(p, &BTreeMap::new(), &[]).unwrap();

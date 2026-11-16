@@ -1,33 +1,66 @@
+pub(crate) mod alias_projection_v60;
 pub(crate) mod appearance;
+pub(crate) mod arrangement_locators;
 mod arrangement_sections;
+mod audio_alias_projection;
 pub(crate) mod audio_events;
+pub(crate) mod automation_read;
+pub(crate) mod bound_source_effects;
 pub(crate) mod branch_audio;
 pub(crate) mod clip_activation;
+pub(crate) mod clip_aliases;
 pub(crate) mod clip_names;
+pub(crate) mod coincident_automation;
 pub(crate) mod combined;
+pub(crate) mod content_view_resampler;
 pub(crate) mod content_views;
+pub(crate) mod conversion_v2;
+pub(crate) mod crossfades;
 pub(crate) mod device_assets;
+pub(crate) mod device_automation;
+pub(crate) mod device_automation_touch;
+pub(crate) mod device_modulation;
+pub(crate) mod event_activation;
 pub(crate) mod event_fades;
+pub(crate) mod event_gain;
 pub(crate) mod fade_curve_positions;
 pub(crate) mod fade_shapes;
 pub(crate) mod gain_envelopes;
 pub(crate) mod gain_touch;
+pub(crate) mod group_output_mute;
 pub(crate) mod grouped_audio;
 mod host_gain;
 pub(crate) mod legacy;
 pub(crate) mod legacy_early;
+pub(crate) mod long_pitch;
+pub(crate) mod long_reverse;
+pub(crate) mod midi_clip_gain;
 mod midi_clip_volume;
 pub(crate) mod midi_one_shot;
 mod migrations;
 pub(crate) mod musical_audio;
+pub(crate) mod musical_event_source;
 pub(crate) mod native_sources;
+pub(crate) mod nested_audio;
+pub(crate) mod note_activation;
 mod original_sources;
 pub(crate) mod playable_routing;
 pub(crate) mod provenance;
+pub(crate) mod retained_receiver;
 pub(crate) mod return_feeds;
 pub(crate) mod routing;
+pub(crate) mod s_curve_fades;
+pub(crate) mod sample_rate_mode;
+pub(crate) mod sampler_crossfade;
+pub(crate) mod serial_units;
+pub(crate) mod session_audio_loops;
+pub(crate) mod sidechain;
 pub(crate) mod track_groups;
+pub(crate) mod track_name_origin;
+pub(crate) mod track_tags;
 pub(crate) mod tuning;
+pub(crate) mod vst3_automation;
+pub(crate) mod warp_resampler;
 use crate::StorageError;
 use hex_project::{
     AssetSnapshot, BeatTime, ClipFade, ClipSnapshot, DeviceSnapshot, IDENTITY_CONVERSION, Meter,
@@ -791,7 +824,7 @@ impl DocumentV14 {
                 track.devices = devices.clone();
             }
         }
-        Project::from_snapshot(snapshot).map_err(|error| StorageError::Invalid(error.0))
+        Project::from_legacy_snapshot(snapshot).map_err(|error| StorageError::Invalid(error.0))
     }
 }
 
@@ -900,7 +933,7 @@ impl DocumentV15 {
                 .and_then(|(_, instrument)| instrument.clone());
             track.instrument_position = track.instrument.as_ref().map(|_| 0);
         }
-        Project::from_snapshot(snapshot).map_err(|error| StorageError::Invalid(error.0))
+        Project::from_legacy_snapshot(snapshot).map_err(|error| StorageError::Invalid(error.0))
     }
 }
 
@@ -998,7 +1031,7 @@ impl DocumentV16 {
         for (track, position) in snapshot.tracks.iter_mut().zip(positions) {
             track.instrument_position = position;
         }
-        Project::from_snapshot(snapshot).map_err(|error| StorageError::Invalid(error.0))
+        Project::from_legacy_snapshot(snapshot).map_err(|error| StorageError::Invalid(error.0))
     }
 }
 
@@ -1161,7 +1194,7 @@ impl DocumentV19 {
         for (track, position) in snapshot.tracks.iter_mut().zip(positions) {
             track.instrument_position = position;
         }
-        Project::from_snapshot(snapshot).map_err(|error| StorageError::Invalid(error.0))
+        Project::from_legacy_snapshot(snapshot).map_err(|error| StorageError::Invalid(error.0))
     }
 }
 
@@ -1197,6 +1230,9 @@ fn device_dto_into_snapshot(device: DeviceDtoV14) -> Result<DeviceSnapshot, Stor
         .with_output_gain_millidb(device.output_gain_millidb)
         .map_err(|_| StorageError::Invalid("invalid device output gain"))?;
     Ok(DeviceSnapshot {
+        modulation: Default::default(),
+        parent: None,
+        automation: Vec::new(),
         id: device.id,
         bypassed: device.bypassed,
         comparison: None,
@@ -1270,15 +1306,21 @@ impl DocumentV8 {
                 }
                 let sample_rate = document.sample_rate;
                 Snapshot {
+                    automatic_track_names: Vec::new(),
+                    retained_source_paths: Vec::new(),
+                    aliases: Default::default(),
                     native_sources: Vec::new(),
                     arrangement_sections: Vec::new(),
+                    arrangement_locators: Vec::new(),
                     main_devices: Vec::new(),
                     tuning: Default::default(),
                     return_feeds: Vec::new(),
                     audio_feeds: Vec::new(),
                     midi_routes: Vec::new(),
+                    sidechains: Vec::new(),
                     import_provenance: None,
                     sample_rate,
+                    sample_rate_mode: Default::default(),
                     next_id: document.next_id,
                     assets: document
                         .assets
@@ -1310,15 +1352,21 @@ impl DocumentV8 {
                     ));
                 }
                 Snapshot {
+                    automatic_track_names: Vec::new(),
+                    retained_source_paths: Vec::new(),
+                    aliases: Default::default(),
                     native_sources: Vec::new(),
                     arrangement_sections: Vec::new(),
+                    arrangement_locators: Vec::new(),
                     main_devices: Vec::new(),
                     tuning: Default::default(),
                     return_feeds: Vec::new(),
                     audio_feeds: Vec::new(),
                     midi_routes: Vec::new(),
+                    sidechains: Vec::new(),
                     import_provenance: None,
                     sample_rate: document.sample_rate,
+                    sample_rate_mode: Default::default(),
                     next_id: document.next_id,
                     assets: document
                         .assets
@@ -1350,15 +1398,21 @@ impl DocumentV8 {
                     ));
                 }
                 Snapshot {
+                    automatic_track_names: Vec::new(),
+                    retained_source_paths: Vec::new(),
+                    aliases: Default::default(),
                     native_sources: Vec::new(),
                     arrangement_sections: Vec::new(),
+                    arrangement_locators: Vec::new(),
                     main_devices: Vec::new(),
                     tuning: Default::default(),
                     return_feeds: Vec::new(),
                     audio_feeds: Vec::new(),
                     midi_routes: Vec::new(),
+                    sidechains: Vec::new(),
                     import_provenance: None,
                     sample_rate: document.sample_rate,
+                    sample_rate_mode: Default::default(),
                     next_id: document.next_id,
                     assets: document
                         .assets
@@ -1397,15 +1451,21 @@ impl DocumentV8 {
                     })
                     .transpose()?;
                 Snapshot {
+                    automatic_track_names: Vec::new(),
+                    retained_source_paths: Vec::new(),
+                    aliases: Default::default(),
                     native_sources: Vec::new(),
                     arrangement_sections: Vec::new(),
+                    arrangement_locators: Vec::new(),
                     main_devices: Vec::new(),
                     tuning: Default::default(),
                     return_feeds: Vec::new(),
                     audio_feeds: Vec::new(),
                     midi_routes: Vec::new(),
+                    sidechains: Vec::new(),
                     import_provenance: None,
                     sample_rate: document.sample_rate,
+                    sample_rate_mode: Default::default(),
                     next_id: document.next_id,
                     assets: document
                         .assets
@@ -1444,15 +1504,21 @@ impl DocumentV8 {
                     })
                     .transpose()?;
                 Snapshot {
+                    automatic_track_names: Vec::new(),
+                    retained_source_paths: Vec::new(),
+                    aliases: Default::default(),
                     native_sources: Vec::new(),
                     arrangement_sections: Vec::new(),
+                    arrangement_locators: Vec::new(),
                     main_devices: Vec::new(),
                     tuning: Default::default(),
                     return_feeds: Vec::new(),
                     audio_feeds: Vec::new(),
                     midi_routes: Vec::new(),
+                    sidechains: Vec::new(),
                     import_provenance: None,
                     sample_rate: document.sample_rate,
+                    sample_rate_mode: Default::default(),
                     next_id: document.next_id,
                     assets: document
                         .assets
@@ -1491,15 +1557,21 @@ impl DocumentV8 {
                     })
                     .transpose()?;
                 Snapshot {
+                    automatic_track_names: Vec::new(),
+                    retained_source_paths: Vec::new(),
+                    aliases: Default::default(),
                     native_sources: Vec::new(),
                     arrangement_sections: Vec::new(),
+                    arrangement_locators: Vec::new(),
                     main_devices: Vec::new(),
                     tuning: Default::default(),
                     return_feeds: Vec::new(),
                     audio_feeds: Vec::new(),
                     midi_routes: Vec::new(),
+                    sidechains: Vec::new(),
                     import_provenance: None,
                     sample_rate: document.sample_rate,
+                    sample_rate_mode: Default::default(),
                     next_id: document.next_id,
                     assets: document
                         .assets
@@ -1538,15 +1610,21 @@ impl DocumentV8 {
                     })
                     .transpose()?;
                 Snapshot {
+                    automatic_track_names: Vec::new(),
+                    retained_source_paths: Vec::new(),
+                    aliases: Default::default(),
                     native_sources: Vec::new(),
                     arrangement_sections: Vec::new(),
+                    arrangement_locators: Vec::new(),
                     main_devices: Vec::new(),
                     tuning: Default::default(),
                     return_feeds: Vec::new(),
                     audio_feeds: Vec::new(),
                     midi_routes: Vec::new(),
+                    sidechains: Vec::new(),
                     import_provenance: None,
                     sample_rate: document.sample_rate,
+                    sample_rate_mode: Default::default(),
                     next_id: document.next_id,
                     assets: document
                         .assets
@@ -1603,15 +1681,21 @@ impl DocumentV8 {
                     })
                     .collect::<Result<Vec<_>, StorageError>>()?;
                 Snapshot {
+                    automatic_track_names: Vec::new(),
+                    retained_source_paths: Vec::new(),
+                    aliases: Default::default(),
                     native_sources: Vec::new(),
                     arrangement_sections: Vec::new(),
+                    arrangement_locators: Vec::new(),
                     main_devices: Vec::new(),
                     tuning: Default::default(),
                     return_feeds: Vec::new(),
                     audio_feeds: Vec::new(),
                     midi_routes: Vec::new(),
+                    sidechains: Vec::new(),
                     import_provenance: None,
                     sample_rate: document.sample_rate,
+                    sample_rate_mode: Default::default(),
                     next_id: document.next_id,
                     assets: document
                         .assets
@@ -1641,7 +1725,7 @@ impl DocumentV8 {
                 ));
             }
         };
-        Project::from_snapshot(snapshot).map_err(|error| StorageError::Invalid(error.0))
+        Project::from_legacy_snapshot(snapshot).map_err(|error| StorageError::Invalid(error.0))
     }
 }
 
@@ -1854,6 +1938,7 @@ impl DocumentV12 {
                         SessionContentDtoV12::Stop => SessionCellContentSnapshot::Stop,
                         SessionContentDtoV12::Audio { clip } => SessionCellContentSnapshot::Audio(
                             hex_project::SessionAudioClipSnapshot {
+                                loop_range: None,
                                 active: true,
                                 flavor: hex_project::ClipFlavor::default(),
                                 gain: hex_project::ClipGain::UNITY,
@@ -1884,6 +1969,7 @@ impl DocumentV12 {
                                         .notes
                                         .into_iter()
                                         .map(|note| MidiNoteSnapshot {
+                                            active: true,
                                             id: note.id,
                                             start_raw: note.start_raw,
                                             duration_raw: note.duration_raw,
@@ -1899,7 +1985,7 @@ impl DocumentV12 {
                 })
                 .collect(),
         };
-        Project::from_snapshot(snapshot).map_err(|error| StorageError::Invalid(error.0))
+        Project::from_legacy_snapshot(snapshot).map_err(|error| StorageError::Invalid(error.0))
     }
 }
 
@@ -2019,6 +2105,8 @@ impl DocumentV13 {
             .into_iter()
             .map(|track| {
                 Ok(TrackSnapshot {
+                    group_output_mutes: Vec::new(),
+                    tags: Vec::new(),
                     kind: hex_project::TrackKind::Ordinary,
                     parent_group: None,
                     color: hex_project::ElementColor::default(),
@@ -2047,15 +2135,21 @@ impl DocumentV13 {
             })
             .collect::<Result<Vec<_>, StorageError>>()?;
         let snapshot = Snapshot {
+            automatic_track_names: Vec::new(),
+            retained_source_paths: Vec::new(),
+            aliases: Default::default(),
             native_sources: Vec::new(),
             arrangement_sections: Vec::new(),
+            arrangement_locators: Vec::new(),
             main_devices: Vec::new(),
             tuning: Default::default(),
             return_feeds: Vec::new(),
             audio_feeds: Vec::new(),
             midi_routes: Vec::new(),
+            sidechains: Vec::new(),
             import_provenance: None,
             sample_rate: doc.sample_rate,
+            sample_rate_mode: Default::default(),
             next_id: doc.next_id,
             assets: doc
                 .assets
@@ -2078,7 +2172,7 @@ impl DocumentV13 {
             meter_points,
             return_tracks: Vec::new(),
         };
-        Project::from_snapshot(snapshot).map_err(|error| StorageError::Invalid(error.0))
+        Project::from_legacy_snapshot(snapshot).map_err(|error| StorageError::Invalid(error.0))
     }
 }
 
@@ -2284,6 +2378,7 @@ impl DocumentV11 {
                                         .notes
                                         .into_iter()
                                         .map(|note| MidiNoteSnapshot {
+                                            active: true,
                                             id: note.id,
                                             start_raw: note.start_raw,
                                             duration_raw: note.duration_raw,
@@ -2299,7 +2394,7 @@ impl DocumentV11 {
                 })
                 .collect(),
         };
-        Project::from_snapshot(snapshot).map_err(|error| StorageError::Invalid(error.0))
+        Project::from_legacy_snapshot(snapshot).map_err(|error| StorageError::Invalid(error.0))
     }
 }
 
@@ -2374,6 +2469,7 @@ impl DocumentV10 {
                                             .notes
                                             .into_iter()
                                             .map(|n| MidiNoteSnapshot {
+                                                active: true,
                                                 id: n.id,
                                                 start_raw: n.start_raw,
                                                 duration_raw: n.duration_raw,
@@ -2387,6 +2483,8 @@ impl DocumentV10 {
                             ),
                         };
                         Ok(TrackSnapshot {
+                            group_output_mutes: Vec::new(),
+                            tags: Vec::new(),
                             kind: hex_project::TrackKind::Ordinary,
                             parent_group: None,
                             color: hex_project::ElementColor::default(),
@@ -2408,15 +2506,21 @@ impl DocumentV10 {
                     })
                     .collect::<Result<Vec<_>, StorageError>>()?;
                 let snapshot = Snapshot {
+                    automatic_track_names: Vec::new(),
+                    retained_source_paths: Vec::new(),
+                    aliases: Default::default(),
                     native_sources: Vec::new(),
                     arrangement_sections: Vec::new(),
+                    arrangement_locators: Vec::new(),
                     main_devices: Vec::new(),
                     tuning: Default::default(),
                     return_feeds: Vec::new(),
                     audio_feeds: Vec::new(),
                     midi_routes: Vec::new(),
+                    sidechains: Vec::new(),
                     import_provenance: None,
                     sample_rate: doc.sample_rate,
+                    sample_rate_mode: Default::default(),
                     next_id: doc.next_id,
                     assets: doc
                         .assets
@@ -2439,7 +2543,7 @@ impl DocumentV10 {
                     meter_points,
                     return_tracks: Vec::new(),
                 };
-                Project::from_snapshot(snapshot).map_err(|e| StorageError::Invalid(e.0))
+                Project::from_legacy_snapshot(snapshot).map_err(|e| StorageError::Invalid(e.0))
             }
             _ => DocumentV9::decode(bytes),
         }
@@ -2521,6 +2625,7 @@ impl DocumentV9 {
                                         .notes
                                         .into_iter()
                                         .map(|n| MidiNoteSnapshot {
+                                            active: true,
                                             id: n.id,
                                             start_raw: n.start_raw,
                                             duration_raw: n.duration_raw,
@@ -2535,6 +2640,8 @@ impl DocumentV9 {
                     }
                 };
                 Ok(TrackSnapshot {
+                    group_output_mutes: Vec::new(),
+                    tags: Vec::new(),
                     kind: hex_project::TrackKind::Ordinary,
                     parent_group: None,
                     color: hex_project::ElementColor::default(),
@@ -2556,15 +2663,21 @@ impl DocumentV9 {
             })
             .collect::<Result<Vec<_>, StorageError>>()?;
         let snapshot = Snapshot {
+            automatic_track_names: Vec::new(),
+            retained_source_paths: Vec::new(),
+            aliases: Default::default(),
             native_sources: Vec::new(),
             arrangement_sections: Vec::new(),
+            arrangement_locators: Vec::new(),
             main_devices: Vec::new(),
             tuning: Default::default(),
             return_feeds: Vec::new(),
             audio_feeds: Vec::new(),
             midi_routes: Vec::new(),
+            sidechains: Vec::new(),
             import_provenance: None,
             sample_rate: doc.sample_rate,
+            sample_rate_mode: Default::default(),
             next_id: doc.next_id,
             assets: doc
                 .assets
@@ -2587,7 +2700,7 @@ impl DocumentV9 {
             meter_points,
             return_tracks: Vec::new(),
         };
-        Project::from_snapshot(snapshot).map_err(|e| StorageError::Invalid(e.0))
+        Project::from_legacy_snapshot(snapshot).map_err(|e| StorageError::Invalid(e.0))
     }
 }
 
@@ -2637,6 +2750,7 @@ fn midi_v10_into_snapshot(clip: MidiClipDtoV10) -> MidiClipSnapshot {
             .notes
             .into_iter()
             .map(|note| MidiNoteSnapshot {
+                active: true,
                 id: note.id,
                 start_raw: note.start_raw,
                 duration_raw: note.duration_raw,
@@ -2727,6 +2841,7 @@ fn session_v12_into_snapshot(session: SessionDtoV12) -> SessionSnapshot {
                     SessionContentDtoV12::Stop => SessionCellContentSnapshot::Stop,
                     SessionContentDtoV12::Audio { clip } => {
                         SessionCellContentSnapshot::Audio(hex_project::SessionAudioClipSnapshot {
+                            loop_range: None,
                             active: true,
                             flavor: hex_project::ClipFlavor::default(),
                             gain: hex_project::ClipGain::UNITY,
@@ -2757,6 +2872,7 @@ fn session_v12_into_snapshot(session: SessionDtoV12) -> SessionSnapshot {
                                     .notes
                                     .into_iter()
                                     .map(|note| MidiNoteSnapshot {
+                                        active: true,
                                         id: note.id,
                                         start_raw: note.start_raw,
                                         duration_raw: note.duration_raw,
@@ -2844,6 +2960,8 @@ fn tracks_legacy_into_snapshot(
         .into_iter()
         .map(|track| {
             Ok(TrackSnapshot {
+                group_output_mutes: Vec::new(),
+                tags: Vec::new(),
                 kind: hex_project::TrackKind::Ordinary,
                 parent_group: None,
                 color: hex_project::ElementColor::default(),
@@ -2871,6 +2989,8 @@ fn tracks_v3_into_snapshot(tracks: Vec<TrackV3>) -> Result<Vec<TrackSnapshot>, S
         .into_iter()
         .map(|track| {
             Ok(TrackSnapshot {
+                group_output_mutes: Vec::new(),
+                tags: Vec::new(),
                 kind: hex_project::TrackKind::Ordinary,
                 parent_group: None,
                 color: hex_project::ElementColor::default(),
@@ -2898,6 +3018,8 @@ fn tracks_v4_into_snapshot(tracks: Vec<TrackV4>) -> Result<Vec<TrackSnapshot>, S
         .into_iter()
         .map(|track| {
             Ok(TrackSnapshot {
+                group_output_mutes: Vec::new(),
+                tags: Vec::new(),
                 kind: hex_project::TrackKind::Ordinary,
                 parent_group: None,
                 color: hex_project::ElementColor::default(),
@@ -2954,6 +3076,8 @@ fn tracks_v6_into_snapshot(tracks: Vec<TrackV6>) -> Result<Vec<TrackSnapshot>, S
                 })
                 .collect::<Result<Vec<_>, StorageError>>()?;
             Ok(TrackSnapshot {
+                group_output_mutes: Vec::new(),
+                tags: Vec::new(),
                 kind: hex_project::TrackKind::Ordinary,
                 parent_group: None,
                 color: hex_project::ElementColor::default(),
@@ -3010,6 +3134,8 @@ fn tracks_v7_into_snapshot(tracks: Vec<TrackV7>) -> Result<Vec<TrackSnapshot>, S
                 })
                 .collect::<Result<Vec<_>, StorageError>>()?;
             Ok(TrackSnapshot {
+                group_output_mutes: Vec::new(),
+                tags: Vec::new(),
                 kind: hex_project::TrackKind::Ordinary,
                 parent_group: None,
                 color: hex_project::ElementColor::default(),
@@ -3057,3 +3183,5 @@ fn clips_into_snapshot(clips: Vec<Clip>) -> Result<Vec<ClipSnapshot>, StorageErr
         })
         .collect()
 }
+
+pub(crate) mod host_automation;

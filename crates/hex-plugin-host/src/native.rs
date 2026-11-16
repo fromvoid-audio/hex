@@ -1,7 +1,11 @@
 //! Actual Mac child control/worker custody. No process-global signal changes or
 //! numeric PID signalling. The helper's pre-SDK guardian owns self-cancellation.
+mod edits;
 mod epoch;
+mod live_capture;
+mod parameter_page;
 pub use epoch::Quiescent;
+pub use parameter_page::{AuthoredParameterExtensionProgress, AuthoredParameterMetadata};
 mod preparation_failure;
 pub use preparation_failure::{PreparationDisposal, PreparationFailure};
 mod storage;
@@ -38,6 +42,7 @@ pub struct Source {
     bundle: Bundle,
     executable: Executable,
     identity: Identity,
+    grouped_editor_callbacks: bool,
 }
 impl Source {
     pub fn inspect_on_control(path: &Path, executable: &str, class: ClassId) -> Result<Self> {
@@ -54,7 +59,14 @@ impl Source {
             bundle,
             executable,
             identity,
+            grouped_editor_callbacks: false,
         })
+    }
+    /// Explicit opt-in on the exact inspected source before the SDK creates
+    /// its component handler. This enables callbacks, not recording custody.
+    pub fn with_grouped_editor_callbacks(mut self) -> Self {
+        self.grouped_editor_callbacks = true;
+        self
     }
     pub fn identity(&self) -> Identity {
         self.identity
@@ -172,6 +184,12 @@ pub struct Retirement {
     pub status: ExitStatus,
     pub terminal: Option<Terminal>,
 }
+#[derive(Clone, Copy)]
+enum EditorTouchMode<'a> {
+    Single(protocol::EditorTouchPlan),
+    Group(&'a protocol::EditorTouchPlanSet),
+}
+
 /// Unique actual child. Move this into the existing joining worker, never into
 /// the callback. Drop may wait for actual process retirement on that lane.
 pub struct Prepared {
@@ -183,6 +201,19 @@ pub struct Prepared {
     packet: Packet,
     retired: Option<Retirement>,
     faulted: bool,
+    live_capture: Option<live_capture::PendingCapture>,
+    live_capture_sequence: u64,
+    edit_query_sequence: u64,
+    idle_flush_sequence: u64,
+    last_edit_sequence: u64,
+    last_pcm_edit_sequence: u64,
+    last_pcm_restoration_sequence: u64,
+    last_edit_frame: u64,
+    parameter_page: Option<parameter_page::PendingPage>,
+    parameter_page_sequence: u64,
+    authored_parameter_metadata: Option<AuthoredParameterMetadata>,
+    grouped_editor_callbacks: bool,
+    offline: bool,
 }
 /// Source-bound configured component awaiting actual graph presentation facts.
 /// No processing/state capture or canonical/audio acceptance has occurred. Keep
@@ -196,6 +227,7 @@ pub struct Pending {
     packet: Packet,
     source: Source,
     build: InstanceBuild,
+    offline: bool,
 }
 impl Pending {
     /// Preserve actual failed-construction custody for the host's already
@@ -255,6 +287,31 @@ impl Pending {
             cancellation,
             |_| {},
         )
+    }
+    /// Configure a new source in the SDK's offline mode from confirmed state.
+    /// The caller owns it independently of any live processor or output.
+    pub fn prepare_offline_restored_on_control(
+        build: &InstanceBuild,
+        source: Source,
+        preparation: Preparation,
+        state: NativeDeviceState,
+        cancellation: PreparationCancellation,
+        _trust: TrustUserCode,
+    ) -> Result<Self> {
+        Self::prepare_with_restore(
+            build,
+            source,
+            preparation,
+            Some(state),
+            cancellation,
+            |command| {
+                command.arg("--offline");
+            },
+        )
+        .map(|mut pending| {
+            pending.offline = true;
+            pending
+        })
     }
     fn prepare(
         build: &InstanceBuild,
@@ -362,12 +419,16 @@ impl Pending {
             receiver: child_cancel,
         } = cancellation;
         let channel = Channel::new(data).map_err(PreparationFailure::before_native)?;
+        let mut packet = Packet::new().map_err(PreparationFailure::before_native)?;
         let mut command = Command::new(build.helper());
         command
             .arg("--supervised")
             .stdin(Stdio::from(OwnedFd::from(child_data)))
             .stdout(Stdio::from(OwnedFd::from(child_cancel)))
             .stderr(Stdio::null());
+        if source.grouped_editor_callbacks {
+            command.arg("--test-grouped-editor");
+        }
         setup(&mut command);
         let child = command
             .spawn()
@@ -385,7 +446,6 @@ impl Pending {
             #[cfg(test)]
             reap_probe: None,
         };
-        let mut packet = Packet::new();
         let token = pending.cancellation.clone();
         let prepared = (|| {
             let until = end_after(options.limits.startup)?;
@@ -404,7 +464,7 @@ impl Pending {
                     config.binding,
                 )?));
             }
-            if packet.magic() != b"HXVIFA03" {
+            if packet.magic() != b"HXVIFA04" {
                 return Err(Error::Protocol("worker did not report preparation facts"));
             }
             let facts = Facts::decode(packet.body()?, &config)?;
@@ -435,6 +495,7 @@ impl Pending {
             packet,
             source,
             build: owned_build,
+            offline: false,
         })
     }
     pub fn facts(&self) -> Facts {
@@ -474,25 +535,28 @@ impl Pending {
         self,
         presentation: Option<PresentationLatency>,
     ) -> Result<Prepared> {
+        self.complete_with_plan_on_control(presentation.into())
+    }
+    pub fn complete_with_plan_on_control(
+        self,
+        presentation: protocol::PresentationPlan,
+    ) -> Result<Prepared> {
         self.complete_retained_on_control(presentation)
             .map_err(PreparationFailure::finish_on_control)
     }
     /// Completion errors retain the same actual child for Root's independent
-    /// cleanup observation. Failure cannot create a reusable prepared source.
+    /// cleanup observation. Callers can explicitly allow unknown presentation.
     pub fn complete_retained_on_control(
         mut self,
-        presentation: Option<PresentationLatency>,
+        presentation: impl Into<protocol::PresentationPlan>,
     ) -> std::result::Result<Prepared, PreparationFailure> {
+        let presentation = presentation.into();
         let token = self.lease.cancellation.clone();
         let result = (|| {
             token.check()?;
             self.source.unchanged()?;
             self.build.unchanged().map_err(Error::Validation)?;
-            if self.facts.presentation_available && presentation.is_none() {
-                return Err(Error::Protocol(
-                    "actual presentation contributions are unavailable",
-                ));
-            }
+            let expected = presentation.expected(self.facts.presentation_available)?;
             let until = end_after(self.limits.startup)?;
             let request = protocol::presentation_request(self.config.binding, presentation)?;
             self.lease
@@ -507,7 +571,7 @@ impl Pending {
                     self.config.binding,
                 )?));
             }
-            if self.packet.magic() != b"HXVIRD04" {
+            if self.packet.magic() != b"HXVIRD05" {
                 return Err(Error::Protocol(
                     "missing final prepared instance acknowledgement",
                 ));
@@ -516,8 +580,7 @@ impl Pending {
             if ready.restored != self.facts.restored
                 || ready.algorithmic_latency_frames != self.facts.algorithmic_latency_frames
                 || ready.tail_frames != self.facts.tail_frames
-                || (ready.presentation == protocol::Presentation::Applied)
-                    != self.facts.presentation_available
+                || ready.presentation != expected
             {
                 return Err(Error::Protocol(
                     "prepared facts changed before final acknowledgement",
@@ -550,11 +613,29 @@ impl Pending {
             packet: self.packet,
             retired: None,
             faulted: false,
+            live_capture: None,
+            live_capture_sequence: 0,
+            edit_query_sequence: 0,
+            idle_flush_sequence: 0,
+            last_edit_sequence: 0,
+            last_pcm_edit_sequence: 0,
+            last_pcm_restoration_sequence: 0,
+            last_edit_frame: 0,
+            parameter_page: None,
+            parameter_page_sequence: 0,
+            authored_parameter_metadata: None,
+            grouped_editor_callbacks: self.source.grouped_editor_callbacks,
+            offline: self.offline,
         })
     }
 }
 
 impl Prepared {
+    /// The original helper was started in SDK offline processing mode.
+    pub const fn is_offline_on_control(&self) -> bool {
+        self.offline
+    }
+
     /// Cancel an instance still held by control during host preparation and
     /// retain its actual lease for independent, nonblocking disposal observation.
     /// This neither returns any callback endpoint nor grants graph admission.
@@ -586,6 +667,9 @@ impl Prepared {
     pub fn completed_blocks_on_control(&self) -> u64 {
         self.sequence
     }
+    pub fn grouped_editor_callbacks_enabled(&self) -> bool {
+        self.grouped_editor_callbacks
+    }
     pub fn ready(&self) -> &Ready {
         &self.ready
     }
@@ -604,26 +688,373 @@ impl Prepared {
     /// Only on the existing joining transport worker. A failed operation
     /// permanently faults this lease; no foreign DSP retry/replay is possible.
     pub fn exchange_on_worker(&mut self, block: Block) -> Result<Block> {
+        self.exchange_on_worker_with_metadata(block, None, None, false, None, None)
+            .map(|reply| reply.block)
+    }
+
+    /// Opt this exchange into facts about the effective editor input. This
+    /// does not drain or acknowledge the ordered editor receipt reader.
+    pub fn exchange_editor_on_worker(&mut self, block: Block) -> Result<protocol::EditorPcm> {
+        self.exchange_on_worker_with_metadata(block, None, None, true, None, None)
+    }
+    /// Apply an eligible unlaned editor touch with the original normalized base.
+    /// The caller must bind this plan to the actual canonical source.
+    pub fn exchange_editor_touch_on_worker(
+        &mut self,
+        block: Block,
+        plan: protocol::EditorTouchPlan,
+    ) -> Result<protocol::EditorPcm> {
+        if !self.has_armed_authored_parameter(plan.parameter) || plan.reading {
+            return Err(Error::Protocol(
+                "editor touch requires an exact writable unlaned target",
+            ));
+        }
+        self.exchange_on_worker_with_metadata(
+            block,
+            None,
+            None,
+            true,
+            Some(EditorTouchMode::Single(plan)),
+            None,
+        )
+    }
+
+    /// Deliver one authored input block to the same lease that observed the
+    /// selected parameters. The SDK processing snapshot rechecks eligibility
+    /// and steps before entering DSP. Normalized feedback cannot stale them.
+    pub fn exchange_authored_on_worker(
+        &mut self,
+        block: Block,
+        metadata: &AuthoredParameterMetadata,
+    ) -> Result<Block> {
+        self.exchange_authored_with_manual_on_worker(block, metadata, None, false, None)
+            .map(|reply| reply.block)
+    }
+
+    /// Deliver one dense authored lane using metadata from this exact lease.
+    /// The worker rechecks the raw ID and SDK step count before applying it.
+    pub fn exchange_dense_authored_on_worker(
+        &mut self,
+        block: Block,
+        metadata: &AuthoredParameterMetadata,
+        dense: crate::transport::DenseParameterLane<'_>,
+    ) -> Result<Block> {
+        if !metadata.matches(self) {
+            return Err(Error::Protocol("authored parameter source differs"));
+        }
+        self.exchange_on_worker_with_metadata(block, Some(metadata), None, false, None, Some(dense))
+            .map(|reply| reply.block)
+    }
+
+    /// The prepared callback sidecar uses the metadata retained by its own
+    /// armed lease. An editor touch plan is a separate ownership admission.
+    pub fn exchange_armed_dense_on_worker(
+        &mut self,
+        block: Block,
+        dense: crate::transport::DenseParameterLane<'_>,
+        manual_parameter: Option<crate::transport::ParameterPoint>,
+        observe_editor: bool,
+    ) -> Result<protocol::EditorPcm> {
+        let metadata = self
+            .authored_parameter_metadata
+            .take()
+            .ok_or(Error::Protocol("dense parameter metadata is not armed"))?;
+        let result = if metadata.matches(self) {
+            self.exchange_on_worker_with_metadata(
+                block,
+                Some(&metadata),
+                manual_parameter,
+                observe_editor,
+                None,
+                Some(dense),
+            )
+        } else {
+            Err(Error::Protocol("authored parameter source differs"))
+        };
+        self.authored_parameter_metadata = Some(metadata);
+        result
+    }
+
+    fn exchange_authored_with_manual_on_worker(
+        &mut self,
+        block: Block,
+        metadata: &AuthoredParameterMetadata,
+        manual_parameter: Option<crate::transport::ParameterPoint>,
+        observe_editor: bool,
+        editor_touch: Option<EditorTouchMode<'_>>,
+    ) -> Result<protocol::EditorPcm> {
+        if !metadata.matches(self) {
+            return Err(Error::Protocol("authored parameter source differs"));
+        }
+        self.exchange_on_worker_with_metadata(
+            block,
+            Some(metadata),
+            manual_parameter,
+            observe_editor,
+            editor_touch,
+            None,
+        )
+    }
+    /// Retain the exact capability observation with the lease that will run
+    /// authored requests. Admission and endpoint construction remain with
+    /// the caller. A renewed epoch must install a new observation.
+    pub fn arm_authored_parameter_metadata_on_control(
+        &mut self,
+        mut metadata: AuthoredParameterMetadata,
+    ) -> Result<()> {
+        self.require_live_epoch()?;
+        if !metadata.matches(self) {
+            return Err(Error::Protocol("authored parameter source differs"));
+        }
+        metadata.retain_reserved_capacity(self.authored_parameter_metadata.as_ref())?;
+        self.authored_parameter_metadata = Some(metadata);
+        Ok(())
+    }
+
+    /// Used only by the original joining worker when admitting a live hold.
+    pub fn has_armed_authored_parameter(&self, id: u32) -> bool {
+        self.authored_parameter_metadata
+            .as_ref()
+            .is_some_and(|metadata| metadata.matches(self) && metadata.step_count(id).is_some())
+    }
+
+    pub fn exchange_armed_authored_on_worker(&mut self, block: Block) -> Result<Block> {
+        self.exchange_armed_authored_with_manual_on_worker(block, None)
+    }
+
+    /// On the joining worker, distinguish its one newly admitted manual input
+    /// from prepared authored points. Native SDK metadata validates both kinds.
+    pub fn exchange_armed_authored_with_manual_on_worker(
+        &mut self,
+        block: Block,
+        manual_parameter: Option<crate::transport::ParameterPoint>,
+    ) -> Result<Block> {
+        self.exchange_armed_with_mode(block, manual_parameter, false, None)
+            .map(|reply| reply.block)
+    }
+
+    /// Observe editor input alongside the exact source-bound authored quantum.
+    pub fn exchange_armed_authored_with_editor_on_worker(
+        &mut self,
+        block: Block,
+        manual_parameter: Option<crate::transport::ParameterPoint>,
+    ) -> Result<protocol::EditorPcm> {
+        self.exchange_armed_with_mode(block, manual_parameter, true, None)
+    }
+
+    /// A scoped editor gesture may temporarily replace one authored parameter.
+    /// Other authored values retain their existing per-sample SDK contract.
+    pub fn exchange_armed_authored_with_editor_touch_on_worker(
+        &mut self,
+        block: Block,
+        plan: protocol::EditorTouchPlan,
+        manual: Option<crate::transport::ParameterPoint>,
+    ) -> Result<protocol::EditorPcm> {
+        if !self.has_armed_authored_parameter(plan.parameter)
+            || manual.is_some_and(|point| point.id == plan.parameter)
+        {
+            return Err(Error::Protocol(
+                "editor touch requires an exact writable target",
+            ));
+        }
+        let points = block.parameters.as_slice();
+        let has_target = points.iter().any(|point| point.id == plan.parameter);
+        if (plan.reading
+            && !points
+                .iter()
+                .any(|point| point.id == plan.parameter && point.frame == 0))
+            || (!plan.reading
+                && (has_target || points.len() == crate::transport::MAX_PARAMETER_POINTS))
+        {
+            return Err(Error::Protocol(
+                "editor touch cannot reserve its exact restoration",
+            ));
+        }
+        self.exchange_armed_with_mode(block, manual, true, Some(EditorTouchMode::Single(plan)))
+    }
+
+    /// Exact grouped unlaned takeover on the original prepared SDK worker.
+    pub fn exchange_editor_group_touch_on_worker(
+        &mut self,
+        block: Block,
+        plan: &protocol::EditorTouchPlanSet,
+    ) -> Result<protocol::EditorPcm> {
+        self.validate_editor_group(&block, plan, None)?;
+        if plan.targets().iter().any(|target| target.reading) {
+            return Err(Error::Protocol("unlaned group cannot read authored input"));
+        }
+        self.exchange_on_worker_with_metadata(
+            block,
+            None,
+            None,
+            true,
+            Some(EditorTouchMode::Group(plan)),
+            None,
+        )
+    }
+
+    /// Exact grouped takeover with authored input and per-target restoration.
+    pub fn exchange_armed_authored_with_editor_group_touch_on_worker(
+        &mut self,
+        block: Block,
+        plan: &protocol::EditorTouchPlanSet,
+        manual: Option<crate::transport::ParameterPoint>,
+    ) -> Result<protocol::EditorPcm> {
+        self.validate_editor_group(&block, plan, manual)?;
+        self.exchange_armed_with_mode(block, manual, true, Some(EditorTouchMode::Group(plan)))
+    }
+
+    fn validate_editor_group(
+        &self,
+        block: &Block,
+        plan: &protocol::EditorTouchPlanSet,
+        manual: Option<crate::transport::ParameterPoint>,
+    ) -> Result<()> {
+        let points = block.parameters.as_slice();
+        let mut reserved = points.len() + usize::from(manual.is_some());
+        for target in plan.targets() {
+            let id = target.parameter;
+            if !self.has_armed_authored_parameter(id) || manual.is_some_and(|point| point.id == id)
+            {
+                return Err(Error::Protocol(
+                    "editor group requires exact writable targets",
+                ));
+            }
+            if target.reading {
+                if !points
+                    .iter()
+                    .any(|point| point.id == id && point.frame == 0)
+                {
+                    return Err(Error::Protocol(
+                        "editor group is missing its authored restoration",
+                    ));
+                }
+            } else {
+                if points.iter().any(|point| point.id == id) {
+                    return Err(Error::Protocol("unlaned group target has authored input"));
+                }
+                reserved += 1;
+            }
+        }
+        if reserved > crate::transport::MAX_PARAMETER_POINTS {
+            return Err(Error::Protocol(
+                "editor group cannot reserve its exact restorations",
+            ));
+        }
+        Ok(())
+    }
+
+    fn exchange_armed_with_mode(
+        &mut self,
+        block: Block,
+        manual_parameter: Option<crate::transport::ParameterPoint>,
+        observe_editor: bool,
+        editor_touch: Option<EditorTouchMode<'_>>,
+    ) -> Result<protocol::EditorPcm> {
+        let metadata = self
+            .authored_parameter_metadata
+            .take()
+            .ok_or(Error::Protocol(
+                "authored parameter capability is not armed",
+            ))?;
+        let result = self.exchange_authored_with_manual_on_worker(
+            block,
+            &metadata,
+            manual_parameter,
+            observe_editor,
+            editor_touch,
+        );
+        self.authored_parameter_metadata = Some(metadata);
+        result
+    }
+
+    fn exchange_on_worker_with_metadata(
+        &mut self,
+        block: Block,
+        metadata: Option<&AuthoredParameterMetadata>,
+        manual_parameter: Option<crate::transport::ParameterPoint>,
+        observe_editor: bool,
+        editor_touch: Option<EditorTouchMode<'_>>,
+        dense: Option<crate::transport::DenseParameterLane<'_>>,
+    ) -> Result<protocol::EditorPcm> {
         if self.faulted || self.retired.is_some() {
             return Err(Error::Protocol("instance lease is retired or faulted"));
         }
-        let result = self.exchange(block);
+        let result = self.exchange(
+            block,
+            metadata,
+            manual_parameter,
+            observe_editor,
+            editor_touch,
+            dense,
+        );
         if result.is_err() {
             self.faulted = true;
             self.lease.cancel_native();
         }
         result
     }
-    fn exchange(&mut self, block: Block) -> Result<Block> {
+    fn exchange(
+        &mut self,
+        block: Block,
+        metadata: Option<&AuthoredParameterMetadata>,
+        manual_parameter: Option<crate::transport::ParameterPoint>,
+        observe_editor: bool,
+        editor_touch: Option<EditorTouchMode<'_>>,
+        dense: Option<crate::transport::DenseParameterLane<'_>>,
+    ) -> Result<protocol::EditorPcm> {
+        self.check_live_capture_deadline()?;
+        self.check_parameter_page_deadline()?;
         self.config.validate_block(&block, self.sequence)?;
         let next = self
             .sequence
             .checked_add(1)
             .ok_or(Error::Protocol("instance sequence exhausted"))?;
-        let mut bytes = [0; crate::transport::wire::MAX_PACKET_BYTES];
+        let mut bytes = [0; crate::transport::wire::MAX_DENSE_PACKET_BYTES
+            + protocol::EditorTouchPlanSet::WIRE_BYTES];
         let mut cursor = Cursor::new(bytes.as_mut_slice());
-        crate::transport::wire::write(&mut cursor, &block).map_err(Error::Io)?;
-        let length = cursor.position() as usize;
+        match (metadata, dense) {
+            (Some(metadata), Some(dense)) => crate::transport::wire::write_dense_authored(
+                &mut cursor,
+                &block,
+                dense,
+                manual_parameter,
+                &|id| metadata.step_count(id),
+            ),
+            (Some(metadata), None) => crate::transport::wire::write_authored(
+                &mut cursor,
+                &block,
+                manual_parameter,
+                &|id| metadata.step_count(id),
+            ),
+            (None, None) => crate::transport::wire::write(&mut cursor, &block),
+            (None, Some(_)) => return Err(Error::Protocol("dense parameter metadata is missing")),
+        }
+        .map_err(Error::Io)?;
+        let mut length = cursor.position() as usize;
+        if let Some(plan) = editor_touch {
+            let mut append = |plan: &[u8], bit: u16| -> Result<()> {
+                let end = length + plan.len();
+                bytes
+                    .get_mut(length..end)
+                    .ok_or(Error::Protocol(
+                        "editor touch packet extent exceeds its bound",
+                    ))?
+                    .copy_from_slice(plan);
+                length = end;
+                bytes[5] |= (bit >> 8) as u8;
+                Ok(())
+            };
+            match plan {
+                EditorTouchMode::Single(plan) => append(&plan.wire()?, protocol::EDITOR_TOUCH_BIT)?,
+                EditorTouchMode::Group(plan) => {
+                    append(&plan.wire(), protocol::EDITOR_GROUP_TOUCH_BIT)?
+                }
+            }
+        }
+        if observe_editor {
+            bytes[5] |= (protocol::EDITOR_PCM_BIT >> 8) as u8;
+        }
         let until = end_after(self.limits.exchange)?;
         let token = self.lease.cancellation.clone();
         self.lease
@@ -638,12 +1069,55 @@ impl Prepared {
                 self.config.binding,
             )?));
         }
-        let output = protocol::pcm(self.packet.data(), &self.config, self.sequence)?;
+        let output = if let Some(EditorTouchMode::Single(plan)) = editor_touch {
+            protocol::editor_touch_pcm(
+                self.packet.data(),
+                &self.config,
+                self.sequence,
+                self.last_pcm_edit_sequence,
+                plan,
+                self.last_pcm_restoration_sequence,
+            )?
+        } else if let Some(EditorTouchMode::Group(plan)) = editor_touch {
+            protocol::editor_group_touch_pcm(
+                self.packet.data(),
+                &self.config,
+                self.sequence,
+                self.last_pcm_edit_sequence,
+                plan,
+                self.last_pcm_restoration_sequence,
+            )?
+        } else if observe_editor {
+            protocol::editor_pcm(
+                self.packet.data(),
+                &self.config,
+                self.sequence,
+                self.last_pcm_edit_sequence,
+            )?
+        } else {
+            protocol::EditorPcm {
+                block: protocol::pcm(self.packet.data(), &self.config, self.sequence)?,
+                performs: protocol::EditorPerforms::default(),
+                restorations: Default::default(),
+            }
+        };
         token.check()?;
+        if let Some(last) = output.performs.as_slice().last() {
+            self.last_pcm_edit_sequence = last.sequence;
+        }
+        if let Some(restored) = output.restorations.as_slice().last() {
+            self.last_pcm_restoration_sequence = restored.sequence;
+        }
         self.sequence = next;
         Ok(output)
     }
     pub fn stop_and_reap_on_control(&mut self) -> Result<Retirement> {
+        if self.parameter_page.is_some() {
+            return Err(Error::Protocol("controller page is still pending"));
+        }
+        if self.live_capture.is_some() {
+            return Err(Error::Protocol("native capture is still pending"));
+        }
         if self.faulted {
             return Err(Error::Protocol("faulted instance requires cancellation"));
         }
@@ -677,9 +1151,10 @@ impl Prepared {
             self.retired = Some(retired);
             token.check()?;
             self.lease.channel.reject_queued_after_reap()?;
+            // A clean process-only stop can leave the module mapped until
+            // the OS reclaims it. Require the same terminal and reaped status.
             if terminal.failure != 0
                 || !terminal.closed
-                || !terminal.unloaded
                 || terminal.blocks != self.sequence
                 || terminal.frames != frames
                 || !status.success()

@@ -72,6 +72,33 @@ impl ComputerKeyboardRuntime {
                         .copied()
                 })
                 .flatten();
+            // If preview voices fill the native pool, let them release and
+            // keep the hardware onset at the head of its ordered queue. Its
+            // activation must never be faulted because a preview took a slot.
+            let live = if matches!(live, Some(LiveNoteEvent::NoteOn { .. }))
+                && self.scratch.iter().flatten().count() >= self.voice_capacity()
+                && self
+                    .scratch
+                    .iter()
+                    .flatten()
+                    .any(|voice| voice.source == VoiceSource::Audition)
+            {
+                if self.scratch_audition_gate.active() {
+                    self.scratch_audition_gate.finish();
+                    self.desired.fill(0);
+                }
+                if self
+                    .scratch
+                    .iter()
+                    .flatten()
+                    .any(|voice| voice.source == VoiceSource::Audition && voice.gate.is_none())
+                {
+                    self.boundary = true;
+                }
+                None
+            } else {
+                live
+            };
             let key = self
                 .capture
                 .as_ref()
@@ -153,10 +180,7 @@ impl ComputerKeyboardRuntime {
         let pitch = ((event.word & 255) - 1) as u8;
         let velocity = ((event.word >> 8) & 255) as u8;
         let sampler = self.input.sampler_index(event.key, pitch, velocity)?;
-        let capacity = self
-            .mutable
-            .as_ref()
-            .map_or(VOICES, NativeInstrumentRuntimePair::max_active_occurrences);
+        let capacity = self.voice_capacity();
         if !self.supported.get(sampler).copied().unwrap_or(false)
             || self.scratch.iter().flatten().count() >= capacity
         {
@@ -195,6 +219,7 @@ impl ComputerKeyboardRuntime {
             age: 0,
             gate: None,
             id: next,
+            muted_source_onset: false,
         });
         self.scratch_next_id = next;
         events[*len] = NativeInstrumentEvent::NoteOn {
@@ -214,7 +239,7 @@ impl ComputerKeyboardRuntime {
         len: &mut usize,
     ) {
         for voice in self.scratch.iter_mut().flatten() {
-            if voice.source != VoiceSource::Physical
+            if matches!(voice.source, VoiceSource::Hardware { .. })
                 && voice.gate.is_none()
                 && source.is_none_or(|source| source == voice.source)
             {
@@ -248,15 +273,47 @@ impl ComputerKeyboardRuntime {
                 pitch,
                 velocity,
             } => (channel, pitch, velocity),
+            LiveNoteEvent::PolyPressure {
+                channel,
+                pitch,
+                value,
+            } => {
+                let supported = self.source_input.as_ref().map_or_else(
+                    || {
+                        self.mutable
+                            .as_ref()
+                            .is_some_and(NativeInstrumentRuntimePair::supports_note_pressure)
+                    },
+                    |source| source.note_pressure,
+                );
+                if supported {
+                    let source = VoiceSource::Hardware { channel, pitch };
+                    if let Some(occurrence_id) = self
+                        .scratch
+                        .iter()
+                        .flatten()
+                        .find(|voice| voice.source == source && voice.gate.is_none())
+                        .and_then(|voice| std::num::NonZeroU64::new(voice.id))
+                    {
+                        let slot = events
+                            .get_mut(*len)
+                            .ok_or(Invalid("live note event capacity is unavailable"))?;
+                        *slot = NativeInstrumentEvent::NotePressure {
+                            frame_offset: 0,
+                            occurrence_id,
+                            value,
+                        };
+                        *len += 1;
+                    }
+                }
+                return Ok(());
+            }
         };
         let source = VoiceSource::Hardware { channel, pitch };
         // Repeated same-key on releases the prior occurrence before retriggering.
         self.release_hardware(Some(source), events, len);
         let sampler = (usize::from(velocity) - 1) * 128 + usize::from(pitch);
-        let capacity = self
-            .mutable
-            .as_ref()
-            .map_or(VOICES, NativeInstrumentRuntimePair::max_active_occurrences);
+        let capacity = self.voice_capacity();
         if !self.supported.get(sampler).copied().unwrap_or(false)
             || self.scratch.iter().flatten().count() >= capacity
         {
@@ -265,10 +322,9 @@ impl ComputerKeyboardRuntime {
                 .input
                 .lease()
                 .and_then(|input| input.live_notes.as_ref())
+                && let Some(batch) = &self.live_batch
             {
-                if let Some(batch) = &self.live_batch {
-                    let _ = input.fail_activation(batch.activation);
-                }
+                let _ = input.fail_activation(batch.activation);
             }
             self.release_hardware(None, events, len);
             return Ok(());
@@ -291,6 +347,7 @@ impl ComputerKeyboardRuntime {
             age: 0,
             gate: None,
             id: self.scratch_next_id,
+            muted_source_onset: false,
         });
         events[*len] = NativeInstrumentEvent::NoteOn {
             frame_offset: 0,

@@ -10,6 +10,7 @@ struct Fixture {
     phases: [usize; 4],
     focus: FocusHandle,
     cancelled: Option<SplitterCancel>,
+    unrelated: usize,
 }
 impl Fixture {
     fn input(cx: &Context<Self>) -> SplitterInput<Self> {
@@ -68,6 +69,24 @@ impl Render for Fixture {
             .track_focus(&self.focus)
             .capture_key_down(input.escape_listener())
             .size_full()
+            .child(
+                div()
+                    .absolute()
+                    .left(px(240.))
+                    .top_0()
+                    .w(px(80.))
+                    .h(px(80.))
+                    .cursor(gpui::CursorStyle::Crosshair)
+                    .on_mouse_down(
+                        MouseButton::Right,
+                        cx.listener(|v, _, _, _| v.unrelated += 1),
+                    )
+                    .on_mouse_up(
+                        MouseButton::Left,
+                        cx.listener(|v, _, _, _| v.unrelated += 1),
+                    )
+                    .on_scroll_wheel(cx.listener(|v, _, _, _| v.unrelated += 1)),
+            )
             .child(handle)
             .child(input.pointer_layer())
     }
@@ -82,6 +101,7 @@ fn open(cx: &mut TestAppContext, axis: SplitterAxis) -> (VisualTestContext, Enti
         phases: [0; 4],
         focus: cx.focus_handle(),
         cancelled: None,
+        unrelated: 0,
     });
     let view = handle.root(cx).unwrap();
     let visual = VisualTestContext::from_window(*handle, cx);
@@ -135,7 +155,7 @@ fn axes_use_final_outside_release_and_emit_one_terminal_after_repaints(cx: &mut 
         visual.simulate_mouse_up(along(-40.0), MouseButton::Left, Modifiers::default());
         view.read_with(&visual, |v, _| {
             assert_eq!(v.value, 200.0);
-            assert_eq!(v.cancelled, Some(SplitterCancel::ButtonLost));
+            assert_eq!(v.cancelled, Some(SplitterCancel::CaptureLost));
             assert_eq!(v.phases, [3, 2, 1, 2]);
         });
     }
@@ -228,4 +248,107 @@ fn replacement_window_cancels_old_capture_without_a_late_commit(cx: &mut TestApp
         assert_eq!(v.cancelled, Some(SplitterCancel::WindowChanged));
         assert_eq!(v.phases, [1, 1, 0, 1]);
     });
+}
+
+#[gpui::test]
+fn held_splitter_isolates_unrelated_input_and_restores_cursor(cx: &mut TestAppContext) {
+    for axis in [SplitterAxis::Horizontal, SplitterAxis::Vertical] {
+        let (mut visual, view) = open(cx, axis);
+        let start = visual.debug_bounds("splitter").unwrap().center();
+        let other = point(px(270.), px(30.));
+        visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+        let stranger = visual.update(|_, cx| cx.new(|_| ()));
+        assert!(!visual.update(|w, cx| w.cancel_pointer_capture_for(stranger.entity_id(), cx)));
+        assert!(visual.update(|w, _| w.is_pointer_dragging()));
+        visual.simulate_mouse_down(other, MouseButton::Right, Modifiers::default());
+        visual.simulate_event(gpui::ScrollWheelEvent {
+            position: other,
+            delta: gpui::ScrollDelta::Lines(point(0., 1.)),
+            ..Default::default()
+        });
+        assert_eq!(view.read_with(&visual, |v, _| v.unrelated), 0);
+        visual.simulate_mouse_move(other, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        assert_eq!(
+            visual.rendered_cursor_style(),
+            Some(match axis {
+                SplitterAxis::Horizontal => gpui::CursorStyle::ResizeLeftRight,
+                SplitterAxis::Vertical => gpui::CursorStyle::ResizeUpDown,
+            })
+        );
+        visual.simulate_keystrokes("escape");
+        visual.simulate_mouse_up(other, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(other, MouseButton::Right, Modifiers::default());
+        visual.run_until_parked();
+        view.read_with(&visual, |v, _| {
+            assert_eq!(v.unrelated, 0);
+            assert_eq!(v.phases, [1, 1, 0, 1]);
+            assert_eq!(v.value, 80.);
+            assert_eq!(v.cancelled, Some(SplitterCancel::Escape));
+        });
+        assert_eq!(
+            visual.rendered_cursor_style(),
+            Some(gpui::CursorStyle::Crosshair)
+        );
+        // Rejected starts must leave neither a sizing snapshot nor an input lease.
+        view.update(&mut visual, |v, cx| {
+            v.enabled = false;
+            cx.notify();
+        });
+        visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+        assert!(!visual.update(|w, _| w.is_pointer_dragging()));
+        visual.simulate_mouse_up(other, MouseButton::Left, Modifiers::default());
+        assert_eq!(view.read_with(&visual, |v, _| v.phases), [1, 1, 0, 1]);
+    }
+}
+
+/// CPU input/paint comparison with the actual handle and host-owned snapshot.
+#[gpui::test]
+#[ignore = "manual optimized splitter profile; no native acceptance"]
+fn profile_splitter_pointer(cx: &mut TestAppContext) {
+    let smoke = std::env::var_os("HEX_SPLITTER_POINTER_PROFILE_SMOKE").is_some_and(|v| v == "1");
+    assert!(
+        !cfg!(debug_assertions) || smoke,
+        "timing requires --release; debug smoke must be explicit"
+    );
+    let warmup = if smoke { 1 } else { 16 };
+    let samples = if smoke { 4 } else { 128 };
+    for axis in [SplitterAxis::Horizontal, SplitterAxis::Vertical] {
+        let (mut visual, view) = open(cx, axis);
+        let start = visual.debug_bounds("splitter").unwrap().center();
+        let mut timings = Vec::with_capacity(samples);
+        for round in 0..warmup + samples {
+            visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+            visual.run_until_parked();
+            assert!(view.read_with(&visual, |v, _| v.gesture.is_some()));
+            let clock = std::time::Instant::now();
+            let mut at = start;
+            for step in 0..8 {
+                let displacement = px(((round + step) % 7) as f32 * 2. - 6.);
+                at = start
+                    + match axis {
+                        SplitterAxis::Horizontal => point(displacement, px(0.)),
+                        SplitterAxis::Vertical => point(px(0.), displacement),
+                    };
+                visual.simulate_mouse_move(at, MouseButton::Left, Modifiers::default());
+                visual.run_until_parked();
+            }
+            let elapsed = clock.elapsed().as_secs_f64() * 1_000_000.;
+            visual.simulate_mouse_up(at, MouseButton::Left, Modifiers::default());
+            visual.run_until_parked();
+            if round >= warmup {
+                timings.push(elapsed);
+            }
+        }
+        timings.sort_by(f64::total_cmp);
+        let percentile = |p: usize| timings[(timings.len() - 1) * p / 100];
+        let scale = visual.update(|w, _| w.scale_factor());
+        println!(
+            "SPLITTER_POINTER_PROFILE axis={axis:?} size=320x240 scale={scale} warmup={warmup} samples={samples} debug_smoke={smoke} completed_updates_per_sample=8 headless_cpu_only=true p50_us={:.3} p95_us={:.3} p99_us={:.3} max_us={:.3}",
+            percentile(50),
+            percentile(95),
+            percentile(99),
+            percentile(100)
+        );
+    }
 }

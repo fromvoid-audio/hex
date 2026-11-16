@@ -6,6 +6,16 @@
 use super::*;
 use view::Correlation;
 
+fn covers_resource(
+    owner: &hex_stream::ConstructorStreamDomain,
+    source: &hex_engine::StreamResourceMetadata,
+) -> bool {
+    match source {
+        hex_engine::StreamResourceMetadata::Audio(source) => owner.covers_source(source),
+        hex_engine::StreamResourceMetadata::Scalar(source) => owner.covers_scalar_source(source),
+    }
+}
+
 #[derive(Clone, Copy)]
 pub(in crate::candidate_custody) struct OrdinaryReservation {
     pub(in crate::candidate_custody) extents: usize,
@@ -18,8 +28,8 @@ impl OrdinaryReservation {
         }
         if self
             .extents
-            .checked_mul(2)
-            .and_then(|n| n.checked_mul(std::mem::size_of::<StreamPageExtent>()))
+            .checked_mul(4)
+            .and_then(|n| n.checked_mul(std::mem::size_of::<StreamResourceExtent>()))
             .and_then(|n| n.checked_add(std::mem::size_of::<OrdinaryStreams>()))
             .is_none_or(|n| n > self.metadata_bytes)
         {
@@ -36,6 +46,151 @@ pub(crate) struct OrdinaryStreams {
     workspace: Option<Workspace>,
 }
 impl OrdinaryStreams {
+    #[cfg(all(test, feature = "stream-test-support", feature = "allocation-probe"))]
+    pub(crate) fn test_loan_for<'a>(
+        &self,
+        domains: &'a mut [Option<DomainEnvelope>; 2],
+        source: hex_engine::StreamResourceKey,
+    ) -> Option<(&'a mut hex_stream::ConstructorPageLoan, &'a mut u64)> {
+        let token = self.refs.iter().flatten().copied().find(|token| {
+            domains
+                .get(token.slot)
+                .and_then(Option::as_ref)
+                .filter(|pages| pages.inner.token == *token)
+                .and_then(|pages| pages.inner.loan.as_ref())
+                .is_some_and(|loan| loan.covers_resource_key(source))
+        })?;
+        let pages = &mut super::demand::envelope(domains, token).ok()?.inner;
+        Some((pages.loan.as_mut()?, &mut pages.epoch))
+    }
+    #[cfg(all(test, feature = "stream-test-support", feature = "allocation-probe"))]
+    pub(crate) fn test_has_extent(
+        &self,
+        domains: &mut [Option<DomainEnvelope>; 2],
+        extent: StreamResourceExtent,
+    ) -> bool {
+        self.refs.iter().flatten().any(|token| {
+            super::demand::envelope(domains, *token)
+                .ok()
+                .and_then(|pages| pages.inner.loan.as_ref())
+                .is_some_and(|loan| loan.test_has_resource_extent(extent))
+        })
+    }
+    #[cfg(all(test, feature = "stream-test-support", feature = "allocation-probe"))]
+    pub(crate) fn test_ready_page(
+        &self,
+        domains: &mut [Option<DomainEnvelope>; 2],
+        key: hex_stream::ResourcePageKey,
+    ) -> bool {
+        self.refs.iter().flatten().any(|token| {
+            super::demand::envelope(domains, *token)
+                .ok()
+                .and_then(|pages| pages.inner.loan.as_ref())
+                .is_some_and(|loan| loan.test_ready_page(key))
+        })
+    }
+    pub(crate) fn has_install_pending(&self) -> bool {
+        self.workspace.as_ref().is_some_and(|workspace| {
+            workspace.role == Some(hex_stream::ProtectionRole::Candidate)
+                && workspace.stamps.iter().any(Option::is_some)
+        })
+    }
+    pub(crate) fn capacity_conflict(&self) -> bool {
+        self.workspace
+            .as_ref()
+            .is_some_and(|workspace| workspace.capacity_conflict)
+    }
+    pub(crate) fn retry_capacity_conflict(&mut self) -> bool {
+        self.workspace
+            .as_mut()
+            .is_some_and(Workspace::retry_capacity_conflict)
+    }
+    pub(crate) fn retry_candidate_capacity_conflict(&mut self) -> bool {
+        self.workspace
+            .as_mut()
+            .is_some_and(Workspace::retry_candidate_capacity_conflict)
+    }
+    #[cfg(all(test, feature = "stream-test-support", feature = "allocation-probe"))]
+    pub(crate) fn test_coalesced_prefetch(
+        &self,
+        domains: &mut [Option<DomainEnvelope>; 2],
+        key: hex_stream::ResourcePageKey,
+    ) -> bool {
+        self.refs.iter().flatten().any(|token| {
+            super::demand::envelope(domains, *token)
+                .ok()
+                .and_then(|pages| pages.inner.loan.as_ref())
+                .is_some_and(|loan| loan.test_coalesced_prefetch(key))
+        })
+    }
+    #[cfg(all(test, feature = "stream-test-support", feature = "allocation-probe"))]
+    pub(crate) fn test_domain_cached(
+        &self,
+        domains: &mut [Option<DomainEnvelope>; 2],
+        source: hex_engine::StreamResourceKey,
+    ) -> bool {
+        let Some(workspace) = self.workspace.as_ref() else {
+            return false;
+        };
+        self.refs.iter().flatten().any(|token| {
+            let rows = &workspace.extents[token.slot];
+            super::demand::envelope(domains, *token)
+                .ok()
+                .and_then(|pages| pages.inner.loan.as_ref())
+                .is_some_and(|loan| {
+                    rows.iter()
+                        .any(|row| row.source == source && loan.test_has_resource_extent(*row))
+                })
+        })
+    }
+    #[cfg(all(test, feature = "stream-test-support", feature = "allocation-probe"))]
+    pub(crate) fn test_candidate_role_idle(
+        &self,
+        domains: &mut [Option<DomainEnvelope>; 2],
+        source: hex_engine::StreamResourceKey,
+    ) -> bool {
+        self.refs.iter().flatten().any(|token| {
+            super::demand::envelope(domains, *token)
+                .ok()
+                .and_then(|pages| pages.inner.loan.as_ref())
+                .is_some_and(|loan| {
+                    loan.covers_resource_key(source)
+                        && loan.test_role_is_idle(hex_stream::ProtectionRole::Candidate)
+                })
+        })
+    }
+    #[cfg(all(test, feature = "stream-test-support", feature = "allocation-probe"))]
+    pub(crate) fn test_domain_protected(
+        &self,
+        domains: &mut [Option<DomainEnvelope>; 2],
+        source: hex_engine::StreamResourceKey,
+    ) -> bool {
+        let Some(workspace) = self.workspace.as_ref() else {
+            return false;
+        };
+        let Some(role) = workspace.role else {
+            return false;
+        };
+        self.refs.iter().flatten().any(|token| {
+            let Some(stamp) = workspace.stamps[token.slot] else {
+                return false;
+            };
+            let rows = &workspace.extents[token.slot];
+            rows.iter().any(|row| row.source == source)
+                && super::demand::envelope(domains, *token)
+                    .ok()
+                    .and_then(|pages| pages.inner.loan.as_ref())
+                    .is_some_and(|loan| loan.is_resource_protected(role, stamp, rows))
+        })
+    }
+    pub(crate) fn take_handoff_diagnostic(&mut self) -> Option<hex_engine::PlaybackHandoffError> {
+        self.workspace.as_mut()?.handoff_diagnostic.take()
+    }
+    pub(crate) fn take_source_changed(&mut self) -> bool {
+        self.workspace
+            .as_mut()
+            .is_some_and(|workspace| std::mem::take(&mut workspace.source_changed))
+    }
     pub(crate) fn view<'a>(
         &'a mut self,
         playback: &'a mut hex_engine::playback::Playback,
@@ -68,6 +223,8 @@ impl OrdinaryStreams {
         pending_play: bool,
         prefix: u64,
         frames: usize,
+        fenced_restart: bool,
+        foreign_continuation: bool,
     ) -> Result<Option<hex_engine::StreamChunkWindow>, hex_engine::Invalid> {
         let mut empty = None;
         let mut old = previous.map(|(runtime, context, revision)| StateView {
@@ -89,6 +246,8 @@ impl OrdinaryStreams {
                 pending_play,
                 command_prefix: prefix,
                 frames,
+                fenced_restart,
+                foreign_continuation,
             },
             hex_stream::ProtectionRole::Candidate,
         )
@@ -154,6 +313,21 @@ impl Custody {
         &self,
         reservation: OrdinaryReservation,
     ) -> Result<(), &'static str> {
+        self.configure_ordinary_streams_for_owner(reservation, false)
+    }
+
+    pub(in crate::candidate_custody) fn configure_combined_ordinary_streams(
+        &self,
+        reservation: OrdinaryReservation,
+    ) -> Result<(), &'static str> {
+        self.configure_ordinary_streams_for_owner(reservation, true)
+    }
+
+    fn configure_ordinary_streams_for_owner(
+        &self,
+        reservation: OrdinaryReservation,
+        combined: bool,
+    ) -> Result<(), &'static str> {
         let reservation = reservation.validate_requested()?;
         let workspace = Workspace::prepare(reservation.extents)?;
         if workspace
@@ -167,7 +341,7 @@ impl Custody {
         if !self.enabled()
             || bank.closing
             || bank.ordinary.is_some()
-            || bank.publication.reservation.is_some()
+            || (bank.publication.reservation.is_some() != combined)
             || bank.domains.iter().any(|d| d.phase != Phase::Vacant)
         {
             return Err("ordinary streams require a vacant source root");
@@ -205,7 +379,7 @@ impl Custody {
         }
         let mut refs = [None; 2];
         for source in playback
-            .streamed_sources_on_control()
+            .stream_resources_on_control()
             .map_err(|_| "ordinary prepared source inventory unavailable")?
         {
             let index = bank
@@ -218,7 +392,7 @@ impl Custody {
                         && slot
                             .owner
                             .as_ref()
-                            .is_some_and(|owner| owner.covers_source(source))
+                            .is_some_and(|owner| covers_resource(owner, &source))
                 })
                 .ok_or("ordinary graph lacks its actual retained source catalog")?;
             let slot = &bank.domains[index];
@@ -230,6 +404,24 @@ impl Custody {
                 slot: index,
                 incarnation: slot.incarnation,
             });
+        }
+        // Callback demand routes by typed key within these retained domains.
+        // An exact match in one domain cannot authorize a conflicting match
+        // under the same key in another selected domain.
+        for source in playback
+            .stream_resources_on_control()
+            .map_err(|_| "ordinary prepared source inventory unavailable")?
+        {
+            for token in refs.iter().flatten() {
+                let owner = bank
+                    .domains
+                    .get(token.slot)
+                    .and_then(|slot| slot.owner.as_ref())
+                    .ok_or("ordinary retained source catalog is unavailable")?;
+                if owner.covers_resource_key(source.key()) && !covers_resource(owner, &source) {
+                    return Err("ordinary stream source key has conflicting domain facts");
+                }
+            }
         }
         // Every fallible check precedes use-count changes; the move-only private
         // carrier is created only here and remains in its graph publication.

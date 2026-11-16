@@ -1,5 +1,6 @@
 use hex_project::{
-    BeatTime, ClipId, Command, Created, Editor, Invalid, MidiNoteInsert, MidiNoteUpdate, Project,
+    BeatTime, ClipId, Command, Created, Editor, Invalid, MidiNoteInsert, MidiNoteOverwriteGeometry,
+    MidiNoteUpdate, Project,
 };
 
 fn beat(value: u64) -> BeatTime {
@@ -8,6 +9,7 @@ fn beat(value: u64) -> BeatTime {
 
 fn note(start: u64, duration: u64, pitch: u8, channel: u8) -> MidiNoteInsert {
     MidiNoteInsert {
+        active: true,
         start: beat(start),
         duration: beat(duration),
         pitch,
@@ -240,6 +242,7 @@ fn interval_query_matches_independent_destructive_sequence_oracle() {
                             ));
                         }
                         let plan = source.preview_note_overwrite(&[], &input).unwrap();
+                        let geometry = MidiNoteOverwriteGeometry::new(&input).unwrap();
                         for (index, old) in source.notes().iter().enumerate() {
                             let actual = match plan.existing_change(old.id()) {
                                 None => Some(old.duration()),
@@ -251,6 +254,15 @@ fn interval_query_matches_independent_destructive_sequence_oracle() {
                                 .find(|n| n.0 == index)
                                 .map(|n| BeatTime::from_raw(n.2));
                             assert_eq!(actual, expected, "{input:?} existing {index}");
+                            assert_eq!(
+                                geometry.retained_duration(
+                                    old.pitch(),
+                                    old.start(),
+                                    old.duration()
+                                ),
+                                expected,
+                                "{input:?} painted existing {index}"
+                            );
                         }
                         for index in 0..input.len() {
                             let expected = expected
@@ -262,12 +274,65 @@ fn interval_query_matches_independent_destructive_sequence_oracle() {
                                 expected,
                                 "{input:?} author {index}"
                             );
+                            assert_eq!(geometry.authored_duration(index), expected);
                         }
                     }
                 }
             }
         }
     }
+}
+
+#[test]
+#[ignore = "opt-in release measurement of a zoomed piano-roll move"]
+fn dense_note_move_visible_geometry_profile() {
+    use std::{hint::black_box, time::Instant};
+
+    let (mut editor, clip) = fixture(false);
+    let count = 32_768;
+    editor
+        .execute(Command::EditMidiNotesWithSourceExtent {
+            clip,
+            remove: Vec::new(),
+            insert: (0..count).map(|index| note(20 + index, 1, 60, 1)).collect(),
+        })
+        .unwrap();
+    let source = editor.project().midi_source(clip).unwrap();
+    let moved = source.notes()[1].id();
+    let visible = &source.notes()[..8];
+    let authored = [note(2, 1, 60, 1)];
+    let full = || {
+        let result = source.preview_note_overwrite(&[moved], &authored).unwrap();
+        for note in visible {
+            black_box(result.existing_change(note.id()));
+        }
+    };
+    let viewport = || {
+        let result = MidiNoteOverwriteGeometry::new(&authored).unwrap();
+        for note in visible.iter().filter(|note| note.id() != moved) {
+            black_box(result.retained_duration(note.pitch(), note.start(), note.duration()));
+        }
+    };
+    let measure = |f: &dyn Fn()| {
+        for _ in 0..16 {
+            f();
+        }
+        let mut samples = Vec::with_capacity(128);
+        for _ in 0..128 {
+            let start = Instant::now();
+            f();
+            samples.push(start.elapsed().as_nanos());
+        }
+        samples.sort_unstable();
+        (samples[64], samples[121])
+    };
+    let (full_p50, full_p95) = measure(&full);
+    let (visible_p50, visible_p95) = measure(&viewport);
+    println!(
+        "source_notes={} visible_notes={} authored_notes=1 warmup=16 samples=128 full_p50_ns={full_p50} full_p95_ns={full_p95} visible_p50_ns={visible_p50} visible_p95_ns={visible_p95}",
+        source.notes().len(),
+        visible.len(),
+    );
 }
 
 #[test]
@@ -449,6 +514,7 @@ fn overwrite_at_full_note_capacity_charges_only_the_actual_final_set() {
     };
     midi_clips[0].notes = (0..MAX_NOTES)
         .map(|index| MidiNoteSnapshot {
+            active: true,
             id: first + index as u64,
             start_raw: index as u64,
             duration_raw: 1,

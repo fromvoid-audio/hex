@@ -47,6 +47,9 @@ impl SessionAssembly {
             midi_clips,
             mutable_instruments,
             mutable_history_retarget_storage_bytes: _,
+            instrument_automation_storage_bytes: _,
+            instrument_automation_indices: _,
+            armed_instrument_index: _,
             audio_clips,
             work: _,
             contains_streamed_sources: _,
@@ -155,6 +158,7 @@ impl SessionAssembly {
                 asset: _,
                 source_start: _,
                 source_end: _,
+                loop_range: _,
                 gain: _,
                 source,
             }) = clip

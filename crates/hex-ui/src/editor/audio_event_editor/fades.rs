@@ -8,9 +8,12 @@ use crate::{
 };
 use gpui::{
     Context, IntoElement, MouseButton, PathBuilder, Point, Window, canvas, div, point, prelude::*,
-    px, relative, rgb,
+    px, rgb,
 };
 use hex_project::{AudioEventFade, ClipFade, TempoMap};
+use std::ops::Range;
+
+pub(super) const CONTENT_TOP: f32 = 16.0;
 
 #[derive(Clone, Copy)]
 pub(super) struct FadeGesture {
@@ -19,8 +22,18 @@ pub(super) struct FadeGesture {
     original: ClipFade,
     source_frame_start: u64,
     pointer_source_frame: f64,
+    // Source-frame displacement between the authored knot and its shown handle.
+    source_adjustment: i128,
     origin_y: f32,
     pub(super) last_y: f32,
+}
+impl FadeGesture {
+    pub(super) fn pointer_cursor(self) -> gpui::CursorStyle {
+        gpui::CursorStyle::Arrow
+    }
+    pub(super) fn identity(self) -> (u64, Handle) {
+        (self.event.id, self.handle)
+    }
 }
 fn source_window(root: &AudioClipEdit, event: AudioEvent, tempo: &TempoMap) -> Option<(u64, u64)> {
     let start = root
@@ -35,17 +48,65 @@ fn source_window(root: &AudioClipEdit, event: AudioEvent, tempo: &TempoMap) -> O
         .ok()?;
     (start < end).then_some((start, end))
 }
-fn local_shape(root: &AudioClipEdit, event: AudioEvent, tempo: &TempoMap) -> Option<ClipFade> {
-    let (start, end) = source_window(root, event, tempo)?;
+// Cropping retains the authored envelope domain. F only exposes controls; it
+// must not implicitly reanchor the envelope or use a different drag baseline.
+fn projected_fade(
+    root: &AudioClipEdit,
+    event: AudioEvent,
+    tempo: &TempoMap,
+) -> Option<AudioEventFade> {
     if let Some(fade) = event.fade {
         fade.reproject(|at| root.event_source_frame_at(event.source, at, tempo))
-            .ok()?
-            .shape()
-            .reanchor(end - start)
             .ok()
     } else {
-        ClipFade::neutral(end - start).ok()
+        let (start, end) = source_window(root, event, tempo)?;
+        AudioEventFade::new(start, ClipFade::neutral(end - start).ok()?).ok()
     }
+}
+// Frame projection is lossy for fractional beats. Editing one endpoint must
+// not quantize the other authored knots (or a bend-only edit quantize all four).
+fn retain_unchanged_knots(
+    original: ClipFade,
+    projected: ClipFade,
+    edited: ClipFade,
+    canonical: ClipFade,
+) -> Option<ClipFade> {
+    let knots = |shape: ClipFade| {
+        [
+            shape.in_start(),
+            shape.in_start() + shape.fade_in(),
+            shape.span() - shape.out_end_offset() - shape.fade_out(),
+            shape.span() - shape.out_end_offset(),
+        ]
+    };
+    let mut result = knots(canonical);
+    for ((result, original), (before, after)) in result
+        .iter_mut()
+        .zip(knots(original))
+        .zip(knots(projected).into_iter().zip(knots(edited)))
+    {
+        if before == after {
+            *result = original;
+        }
+    }
+    let [in_start, in_end, out_start, out_end] = result;
+    ClipFade::new(
+        canonical.span(),
+        0,
+        in_end.checked_sub(in_start)?,
+        out_end.checked_sub(out_start)?,
+    )
+    .ok()?
+    .with_shape(
+        in_start,
+        canonical.span().checked_sub(out_end)?,
+        edited.in_curve(),
+        edited.out_curve(),
+    )
+    .ok()?
+    .with_curve_positions(edited.in_position(), edited.out_position())
+    .ok()
+    .map(|fade| fade.with_curve_laws(edited.curve_laws()))
 }
 fn destination_frame(
     root: &AudioClipEdit,
@@ -200,13 +261,9 @@ impl EditorView {
         if !x.is_finite() || !width.is_finite() || width <= 0.0 {
             return None;
         }
-        let local = self.event_viewport(root);
+        let local = self.event_root_window(root)?;
         let tempo = self.state.as_ref()?.project.tempo_map();
-        let first = root
-            .root_frame_at(root.view_start, tempo)
-            .ok()?
-            .checked_add(local.start)?;
-        let frame = first as f64
+        let frame = local.start as f64
             + (f64::from(x) - f64::from(f32::from(bounds.left()))) / width * local.length as f64;
         let raw = clock_coordinate(root, frame, tempo)?
             + (i128::from(event.source_start) - i128::from(event.start)) as f64;
@@ -267,6 +324,7 @@ impl EditorView {
                     return;
                 };
                 let frame = (i128::from(fade.source_frame_start) + i128::from(relative))
+                    .saturating_add(fade.source_adjustment)
                     .saturating_add(delta.round() as i128)
                     .clamp(0, i128::from(last_frame)) as u64;
                 let Some(raw) = root
@@ -277,8 +335,10 @@ impl EditorView {
                 };
                 let at = (i128::from(fade.event.start) + i128::from(raw)
                     - i128::from(fade.event.source_start))
-                .clamp(i128::from(root.view_start), i128::from(root.view_end))
-                    as u64;
+                .clamp(
+                    i128::from(editor_bounds(&root).0),
+                    i128::from(editor_bounds(&root).1),
+                ) as u64;
                 let at = if platform {
                     self.event_snap_position(at, self.audio_event_editor.grid == SnapGrid::Off)
                         .unwrap_or(at)
@@ -299,27 +359,55 @@ impl EditorView {
                 )
             }
         } else {
+            let delta = if delta.round() != 0.0 {
+                delta + fade.source_adjustment as f64
+            } else {
+                delta
+            };
             let next = fade_handles::edited_fade(fade.original, fade.handle, delta, bend);
             next.filter(|next| *next != fade.original).and_then(|next| {
-                let (first, end) = source_window(&root, fade.event, state.project.tempo_map())?;
-                let source_end = fade.event.source_start.checked_add(fade.event.length())?;
-                let canonical = AudioEventFade::new(first, next)
+                let tempo = state.project.tempo_map();
+                let (first, end) = if let Some(original) = fade.event.fade {
+                    (
+                        original.source_start(),
+                        original
+                            .source_start()
+                            .checked_add(original.shape().span())?,
+                    )
+                } else {
+                    (
+                        fade.event.source_start,
+                        fade.event.source_start.checked_add(fade.event.length())?,
+                    )
+                };
+                let frame_end = fade.source_frame_start.checked_add(next.span())?;
+                let canonical = AudioEventFade::new(fade.source_frame_start, next)
                     .ok()?
                     .reproject(|at| {
-                        if at == first {
-                            Ok(fade.event.source_start)
-                        } else if at == end {
-                            Ok(source_end)
+                        if at == fade.source_frame_start {
+                            Ok(first)
+                        } else if at == frame_end {
+                            Ok(end)
                         } else {
-                            root.event_source_position_at(
-                                fade.event.source,
-                                at,
-                                state.project.tempo_map(),
-                            )
-                            .map(|p| p.clamp(fade.event.source_start, source_end))
+                            root.event_source_position_at(fade.event.source, at, tempo)
+                                .map(|p| p.clamp(first, end))
                         }
                     })
                     .ok()?;
+                let canonical = if let Some(original) = fade.event.fade {
+                    AudioEventFade::new(
+                        canonical.source_start(),
+                        retain_unchanged_knots(
+                            original.shape(),
+                            fade.original,
+                            next,
+                            canonical.shape(),
+                        )?,
+                    )
+                    .ok()?
+                } else {
+                    canonical
+                };
                 Some(AudioEventEdit::SetFade {
                     event: fade.event.id,
                     fade: (!canonical.shape().is_neutral()).then_some(canonical),
@@ -366,12 +454,16 @@ impl EditorView {
         if !self.update_audio_event_fade_pointer(position, platform, window, cx) {
             return false;
         }
-        if let Some(gesture) = self.audio_event_editor.gesture.take()
-            && gesture.moved
-            && let Some(operation) = gesture.operation
+        if let Some(operation) = self
+            .audio_event_editor
+            .gesture
+            .as_ref()
+            .filter(|gesture| gesture.moved)
+            .and_then(|gesture| gesture.operation.clone())
         {
             self.event_commit(operation);
         }
+        self.audio_event_editor.gesture = None;
         cx.notify();
         true
     }
@@ -379,18 +471,30 @@ impl EditorView {
         &self,
         root: &AudioClipEdit,
         event: AudioEvent,
-        visible_start: u64,
-        visible_end: u64,
+        event_frames: Range<u64>,
+        visible: Range<u64>,
         viewport_length: u64,
         cx: &mut Context<Self>,
     ) -> Vec<gpui::AnyElement> {
         let held = self.audio_event_editor.fade_key_held;
-        let active = self
+        let captured = self
             .audio_event_editor
             .gesture
             .as_ref()
-            .is_some_and(|g| matches!(g.kind,Kind::Fade(f) if f.event.id==event.id));
-        if !held && !active && event.fade.is_none_or(|fade| fade.shape().is_neutral()) {
+            .and_then(|g| match g.kind {
+                Kind::Fade(f) => Some(f.identity()),
+                _ => None,
+            })
+            .or_else(|| {
+                self.audio_event_editor
+                    .pending
+                    .as_ref()
+                    .filter(|p| Some(p.owner) == self.audio_event_editor.owner)
+                    .and_then(|p| p.fade_handle)
+            });
+        let active = captured.is_some_and(|(id, _)| id == event.id);
+        let hovered = self.audio_event_editor.fade_hover == Some(event.id);
+        if !held && !active && !hovered && event.fade.is_none_or(|fade| fade.shape().is_neutral()) {
             return Vec::new();
         }
         let Some(state) = self.state.as_ref() else {
@@ -399,7 +503,7 @@ impl EditorView {
         let Some(bounds) = self.audio_event_editor.bounds else {
             return Vec::new();
         };
-        let Some(original) = local_shape(root, event, state.project.tempo_map()) else {
+        let Some(geometry) = projected_fade(root, event, state.project.tempo_map()) else {
             return Vec::new();
         };
         let Some((source_start, source_end)) =
@@ -407,23 +511,17 @@ impl EditorView {
         else {
             return Vec::new();
         };
+        let visible_start = visible.start;
+        let visible_end = visible.end;
         let width = f32::from(bounds.size.width) * (visible_end - visible_start) as f32
             / viewport_length.max(1) as f32;
         let height = f32::from(bounds.size.height) - 28.0;
         if !width.is_finite() || !height.is_finite() || width <= 0.0 || height <= 16.0 {
             return Vec::new();
         }
-        let projected = event.fade.and_then(|f| {
-            f.reproject(|at| {
-                root.event_source_frame_at(event.source, at, state.project.tempo_map())
-            })
-            .ok()
-        });
-        let (controls, origin) = if held || active {
-            (original, source_start)
-        } else {
-            projected.map_or((original, source_start), |f| (f.shape(), f.source_start()))
-        };
+        let projected = event.fade.map(|_| geometry);
+        let controls = geometry.shape();
+        let origin = geometry.source_start();
         // Capture only a bounded curve for paint, never a project clone per event.
         let count = (width.ceil() as usize).clamp(2, 96);
         let mut gains = [1.0; 96];
@@ -472,80 +570,131 @@ impl EditorView {
                 },
             )
             .absolute()
-            .top(px(16.0))
+            .top(px(CONTENT_TOP))
             .bottom_0()
             .left_0()
             .right_0()
             .into_any_element(),
         ];
-        for (handle, (position, subframe), gain) in fade_handles::knots(controls) {
-            if matches!(handle, Handle::InCurve) && controls.fade_in() < 3
-                || matches!(handle, Handle::OutCurve) && controls.fade_out() < 3
-            {
-                continue;
-            }
-            let Some(source) = origin.checked_add(position) else {
-                continue;
+        // The event has a one-pixel border. Fit hit boxes to its inner width,
+        // even when a short event is zoomed out.
+        let inner_width = (width - 2.0).max(0.0);
+        let size = inner_width.min(8.0);
+        if size == 0.0 {
+            return elements;
+        }
+        let inset = size / 2.0;
+        let tempo = state.project.tempo_map();
+        let placed = fade_handles::knots(controls).map(|(handle, (position, subframe), gain)| {
+            let source = origin.checked_add(position)?;
+            let (displayed_source, frame) = match handle {
+                Handle::InBottom => (source_start, event_frames.start),
+                Handle::OutBottom => (source_end - 1, event_frames.end - 1),
+                Handle::InTop if controls.fade_in() == 0 || source < source_start => {
+                    (source_start, event_frames.start)
+                }
+                Handle::OutTop if controls.fade_out() == 0 || source >= source_end => {
+                    (source_end - 1, event_frames.end - 1)
+                }
+                Handle::InTop if source >= source_end => (source_end - 1, event_frames.end - 1),
+                Handle::OutTop if source < source_start => (source_start, event_frames.start),
+                _ => {
+                    if source < source_start
+                        || source >= source_end
+                        || matches!(handle, Handle::InCurve) && controls.fade_in() < 3
+                        || matches!(handle, Handle::OutCurve) && controls.fade_out() < 3
+                    {
+                        return None;
+                    }
+                    let frame = destination_frame(root, event, tempo, source, subframe)?;
+                    (
+                        source,
+                        frame.clamp(event_frames.start, event_frames.end - 1),
+                    )
+                }
             };
-            if source < source_start || source >= source_end {
-                continue;
+            if !visible.contains(&frame) {
+                return None;
             }
-            let Some(frame) =
-                destination_frame(root, event, state.project.tempo_map(), source, subframe)
-            else {
-                continue;
-            };
-            if frame < visible_start || frame >= visible_end {
-                continue;
-            }
-            let inset = 4.0_f32.min(width / 2.0);
             let x = (((frame - visible_start) as f32
                 / (visible_end - visible_start).saturating_sub(1).max(1) as f32)
-                * width)
-                .clamp(inset, width - inset)
-                / width;
-            let narrow = width < 16.0 || controls.span() == 1;
+                * inner_width)
+                .clamp(inset, inner_width - inset);
+            let adjustment = i128::from(displayed_source) - i128::from(source);
+            Some((handle, x, gain, adjustment))
+        });
+        let [in_top, _, _, out_top, _, _] = placed;
+        let top_overlap = in_top
+            .zip(out_top)
+            .is_some_and(|((_, in_x, _, _), (_, out_x, _, _))| (in_x - out_x).abs() < size);
+        let narrow = width < 16.0 || controls.span() == 1;
+        for (handle, x, gain, source_adjustment) in placed.into_iter().flatten() {
             let y = match handle {
                 Handle::InTop => 20.0,
-                Handle::OutTop => {
-                    if narrow {
-                        28.0
-                    } else {
-                        20.0
-                    }
-                }
-                Handle::InBottom => height - 4.0,
-                Handle::OutBottom => height - if narrow { 12.0 } else { 4.0 },
+                Handle::OutTop if top_overlap => 28.0,
+                Handle::OutTop => 20.0,
+                Handle::InBottom => height - inset - 2.0,
+                Handle::OutBottom if narrow => height - inset - 10.0,
+                Handle::OutBottom => height - inset - 2.0,
                 _ => 16.0 + (height - 16.0) * (1.0 - gain).clamp(0.1, 0.9),
             }
-            .clamp(4.0, height - 4.0);
+            .clamp(inset, height - inset - 2.0);
             let selector = format!("audio-event-{}-{}", handle.name(), event.id);
+            let paint_state = if captured == Some((event.id, handle)) {
+                theme::FadeHandleState::Active
+            } else if captured.is_none()
+                && self.audio_event_editor.fade_handle_hover == Some((event.id, handle))
+            {
+                theme::FadeHandleState::Hover
+            } else {
+                theme::FadeHandleState::Idle
+            };
+            let owner = self.audio_event_editor.owner;
+            let revision = self.audio_event_editor.revision;
             elements.push(
                 div()
                     .id((handle.name(), event.id))
                     .debug_selector(move || selector.clone())
                     .absolute()
-                    .left(relative(x))
-                    .top(px(y))
-                    .ml(px(-4.0))
-                    .mt(px(-4.0))
-                    .w(px(8.0))
-                    .h(px(8.0))
+                    .left(px(x - inset))
+                    .top(px(y - inset))
+                    .w(px(size))
+                    .h(px(size))
                     .children([fade_handles::handle_shape(
                         matches!(handle, Handle::InCurve | Handle::OutCurve),
-                        active,
+                        paint_state,
                     )])
-                    .cursor(if matches!(handle, Handle::InCurve | Handle::OutCurve) {
-                        gpui::CursorStyle::Crosshair
-                    } else {
-                        gpui::CursorStyle::ResizeLeftRight
-                    })
+                    .cursor(gpui::CursorStyle::Arrow)
+                    .on_hover(cx.listener(move |view, hovered: &bool, _, cx| {
+                        let state = &mut view.audio_event_editor;
+                        if state.owner != owner || state.revision != revision {
+                            return;
+                        }
+                        let target = (event.id, handle);
+                        let next = if *hovered {
+                            Some(target)
+                        } else {
+                            state.fade_handle_hover.filter(|current| *current != target)
+                        };
+                        if next != state.fade_handle_hover {
+                            state.fade_handle_hover = next;
+                            cx.notify();
+                        }
+                    }))
                     .tooltip(move |_, cx| {
                         cx.new(|_| crate::editor::waveform::ClipTooltip {
                             kind: crate::tooltips::Kind::control(handle.name().replace('-', " ")),
                             name: format!(
-                                "{} · double click to reset event fades",
-                                handle.name().replace('-', " ")
+                                "{} · double click to {}",
+                                handle.name().replace('-', " "),
+                                if handle.curve_side().is_some_and(|out| {
+                                    controls.curve_laws()[usize::from(out)]
+                                        == ClipFade::DEFAULT_S_CURVE
+                                }) {
+                                    "straighten"
+                                } else {
+                                    "reset event fades"
+                                }
                             ),
                         })
                         .into()
@@ -564,9 +713,19 @@ impl EditorView {
                                 v.audio_event_editor.selected = Some(event.id);
                                 v.audio_event_editor.range = None;
                                 if e.click_count >= 2 {
+                                    let straightened = event.fade.and_then(|fade| {
+                                        let out = handle.curve_side()?;
+                                        let shape = fade.shape();
+                                        if shape.curve_laws()[usize::from(out)]
+                                            != ClipFade::DEFAULT_S_CURVE
+                                        {
+                                            return None;
+                                        }
+                                        Some(fade.straighten_ramp(out))
+                                    });
                                     v.event_commit(AudioEventEdit::SetFade {
                                         event: event.id,
-                                        fade: None,
+                                        fade: straightened,
                                     });
                                 } else if let Some((_, root, _)) = v.event_context()
                                     && let Some(anchor) = v.fade_pointer_source_frame(
@@ -575,20 +734,28 @@ impl EditorView {
                                         f32::from(e.position.x),
                                     )
                                 {
+                                    let fade = FadeGesture {
+                                        event,
+                                        handle,
+                                        original: controls,
+                                        source_frame_start: origin,
+                                        pointer_source_frame: anchor,
+                                        source_adjustment,
+                                        origin_y: f32::from(e.position.y),
+                                        last_y: f32::from(e.position.y),
+                                    };
+                                    if !v.capture_audio_event_pointer(Kind::Fade(fade), window, cx)
+                                    {
+                                        return;
+                                    }
+                                    v.audio_event_editor.fade_hover = None;
                                     v.audio_event_editor.gesture = Some(Gesture {
                                         anchor: 0,
                                         pointer_x: f32::from(e.position.x),
                                         origin_x: f32::from(e.position.x),
                                         moved: false,
-                                        kind: Kind::Fade(FadeGesture {
-                                            event,
-                                            handle,
-                                            original,
-                                            source_frame_start: source_start,
-                                            pointer_source_frame: anchor,
-                                            origin_y: f32::from(e.position.y),
-                                            last_y: f32::from(e.position.y),
-                                        }),
+                                        kind: Kind::Fade(fade),
+                                        placement: None,
                                         operation: None,
                                     });
                                 }

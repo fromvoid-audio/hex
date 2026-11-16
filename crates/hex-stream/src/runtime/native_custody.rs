@@ -12,6 +12,7 @@ pub struct StreamDomainConstructorSummary {
     pub listed_data_bytes: usize,
     pub listed_construction_peak_bytes: usize,
     pub pool_pcm_bytes: usize,
+    pub pool_scalar_bytes: usize,
     /// Listed backing plus the actual prepared cleanup capsule capacity. Inline
     /// Self storage belongs to the host cell; opaque resources remain separate.
     pub retained_data_bytes: usize,
@@ -177,6 +178,10 @@ impl ConstructorStreamDomain {
         let shared_handle_bound = 19usize
             .checked_add(if readiness.is_some() { 3 } else { 0 })
             .and_then(|handles| handles.checked_add(data.worker.kernel_handles))
+            .and_then(|handles| {
+                handles.checked_add(data.worker.scalar_source_handles.checked_mul(2)?)
+            })
+            .and_then(|handles| handles.checked_add(data.worker.scalar_cursor_handle_bound))
             .ok_or(AudioStreamStorageError::Overflow)?;
         if shared_handle_bound > max_shared_handle_bound {
             return Err(AudioStreamStorageError::ReservationExceeded);
@@ -188,9 +193,9 @@ impl ConstructorStreamDomain {
             {
                 reservation
                     .extents_per_role
-                    .checked_mul(6)
+                    .checked_mul(7)
                     .and_then(|count| {
-                        count.checked_mul(std::mem::size_of::<crate::StreamPageExtent>())
+                        count.checked_mul(std::mem::size_of::<crate::StreamResourceExtent>())
                     })
                     .ok_or(AudioStreamStorageError::Overflow)?
             }
@@ -270,6 +275,11 @@ impl ConstructorStreamDomain {
             listed_data_bytes,
             listed_construction_peak_bytes,
             pool_pcm_bytes,
+            pool_scalar_bytes: data
+                .transport
+                .scalar_boxes
+                .checked_add(data.transport.scalar_coverage_boxes)
+                .ok_or(AudioStreamStorageError::Overflow)?,
             retained_data_bytes,
             construction_peak_data_bytes,
             shared_handle_bound,
@@ -339,6 +349,12 @@ impl ConstructorStreamDomain {
         {
             return Err(AudioStreamStorageError::PairMismatch);
         }
+        if loan
+            .as_ref()
+            .is_some_and(|loan| loan.readiness.has_current_quantum())
+        {
+            return Err(AudioStreamStorageError::UnresolvedObligations);
+        }
         // Every destination/association is validated before either owner moves.
         match (loan.take(), self.loaned_control.take()) {
             (Some(ConstructorPageLoan { pages, readiness }), Some(control)) => {
@@ -358,9 +374,26 @@ impl ConstructorStreamDomain {
     }
     /// Coverage is always evaluated against the actual retained lease. A host
     /// token must additionally name this exact private cell/incarnation.
+    pub fn covers_scalar_source(&self, source: &hex_engine::ScalarSourceMetadata) -> bool {
+        self.phase == Phase::Prepared
+            && self
+                .lease
+                .as_ref()
+                .is_some_and(|lease| lease.covers_scalar_source(source))
+    }
     pub fn covers_source(&self, source: &hex_engine::StreamedSourceMetadata) -> bool {
         self.phase == Phase::Prepared
-            && self.lease.as_ref().is_some_and(|l| l.covers_source(source))
+            && self
+                .lease
+                .as_ref()
+                .is_some_and(|lease| lease.covers_source(source))
+    }
+    pub fn covers_resource_key(&self, key: hex_engine::StreamResourceKey) -> bool {
+        self.phase == Phase::Prepared
+            && self
+                .lease
+                .as_ref()
+                .is_some_and(|lease| lease.covers_resource_key(key))
     }
     /// Reserved backing stays charged through a loan and report consumption.
     /// The host additionally charges the loan's actual inline destination.

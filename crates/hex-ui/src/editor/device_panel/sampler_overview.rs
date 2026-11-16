@@ -15,7 +15,7 @@ pub(in crate::editor) use boundary::{
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct SourceTarget {
     generation: u64,
-    track: TrackId,
+    owner: hex_session::service::SamplerParameterOwner,
     device: DeviceId,
     asset: hex_project::AssetId,
     content: hex_project::OriginalSourceFacts,
@@ -24,14 +24,26 @@ struct SourceTarget {
 }
 
 impl SourceTarget {
-    fn resolve(view: &EditorView, track: TrackId, device: DeviceId) -> Option<Self> {
-        if view.selected_track != Some(track)
-            || view.device_panel.owner != Some(DevicePanelOwner::Track(track))
-        {
-            return None;
-        }
+    fn resolve(
+        view: &EditorView,
+        owner: hex_session::service::SamplerParameterOwner,
+        device: DeviceId,
+    ) -> Option<Self> {
         let state = view.state.as_ref()?;
-        let instrument = state.project.track(track)?.instrument()?;
+        let instrument = match owner {
+            hex_session::service::SamplerParameterOwner::Track(track)
+                if view.selected_track == Some(track)
+                    && view.device_panel.owner == Some(DevicePanelOwner::Track(track)) =>
+            {
+                state.project.track(track)?.instrument()?
+            }
+            hex_session::service::SamplerParameterOwner::Source(source)
+                if super::source_owner_current(view, source) =>
+            {
+                state.project.native_source(source)?.instrument()
+            }
+            _ => return None,
+        };
         if instrument.id() != device
             || instrument.state().type_id().as_str().ok() != Some("hex.instrument.sampler")
         {
@@ -48,7 +60,7 @@ impl SourceTarget {
         let overview = view.sampler_source_overview(asset)?;
         (overview.source_frames() > 0 && overview.sample_rate() > 0).then_some(Self {
             generation: view.project_generation,
-            track,
+            owner,
             device,
             asset: asset.id(),
             content: overview.content(),
@@ -58,7 +70,7 @@ impl SourceTarget {
     }
 
     fn current(self, view: &EditorView) -> bool {
-        Self::resolve(view, self.track, self.device) == Some(self)
+        Self::resolve(view, self.owner, self.device) == Some(self)
     }
 }
 
@@ -89,7 +101,7 @@ fn frame_at_x(x: f32, width: f32, frames: u64) -> Option<u64> {
 
 pub(super) fn render(
     view: &EditorView,
-    track: TrackId,
+    owner: hex_session::service::SamplerParameterOwner,
     device: &hex_project::Device,
     name: &str,
     cx: &mut Context<EditorView>,
@@ -128,7 +140,7 @@ pub(super) fn render(
     if frames == 0 {
         return shell.child(theme::text("source overview extent unavailable"));
     }
-    let parameter = |p| view.sampler_display_value(track, device, p, cx).ok();
+    let parameter = |p| view.sampler_display_value(owner, device, p, cx).ok();
     let Some(start) = parameter(hex_engine::SamplerParameter::StartFrame) else {
         return shell.child(theme::text("source region unavailable"));
     };
@@ -145,17 +157,7 @@ pub(super) fn render(
     );
     let table = state.source_overviews.clone();
     let asset_id = asset.id();
-    let target = (view.selected_track == Some(track)
-        && view.device_panel.owner == Some(DevicePanelOwner::Track(track)))
-    .then_some(SourceTarget {
-        generation: view.project_generation,
-        track,
-        device: device.id(),
-        asset: asset_id,
-        content: overview.content(),
-        frames,
-        rate: overview.sample_rate(),
-    });
+    let target = SourceTarget::resolve(view, owner, device.id());
     let cursor = view
         .device_panel
         .sampler_cursor
@@ -164,8 +166,7 @@ pub(super) fn render(
         .map(|(_, frame)| frame);
     let hit_bounds = Rc::new(Cell::new(None::<Bounds<Pixels>>));
     let measured_bounds = Rc::clone(&hit_bounds);
-    let move_entity = cx.entity();
-    let up_entity = cx.entity();
+    let pointer_entity = cx.entity();
     let waveform = div()
         .relative()
         .w_full()
@@ -186,7 +187,7 @@ pub(super) fn render(
                 if !bounds.contains(&event.position) {
                     return;
                 }
-                if boundary::begin(view, target, bounds, event.position, cx) {
+                if boundary::begin(view, target, bounds, event.position, window, cx) {
                     view.focus.focus(window);
                     window.prevent_default();
                     cx.stop_propagation();
@@ -293,29 +294,13 @@ pub(super) fn render(
                 move |bounds, _, _| {
                     measured_bounds.set(Some(bounds));
                 },
-                move |bounds, _, window, _| {
-                    let entity = move_entity.clone();
-                    window.on_mouse_event(move |event: &gpui::MouseMoveEvent, phase, _, cx| {
-                        if phase.capture() {
-                            entity.update(cx, |view, cx| {
-                                if boundary::move_pointer(view, bounds, event, cx) {
-                                    cx.stop_propagation();
-                                    cx.notify();
-                                }
-                            });
-                        }
-                    });
-                    let entity = up_entity.clone();
-                    window.on_mouse_event(move |event: &gpui::MouseUpEvent, phase, _, cx| {
-                        if phase.capture() && event.button == MouseButton::Left {
-                            entity.update(cx, |view, cx| {
-                                if boundary::release(view, bounds, event.position, cx) {
-                                    cx.stop_propagation();
-                                    cx.notify();
-                                }
-                            });
-                        }
-                    });
+                move |bounds, _, window, cx| {
+                    boundary::renew(
+                        pointer_entity.read(cx),
+                        bounds,
+                        pointer_entity.entity_id(),
+                        window,
+                    );
                 },
             )
             .absolute()
@@ -385,6 +370,6 @@ fn source_marker(selector: &'static str, fraction: f64, color: theme::PaletteRol
         .debug_selector(move || selector.into())
 }
 
-#[cfg(all(test, feature = "ui-test-support"))]
+#[cfg(test)]
 #[path = "sampler_cursor_tests.rs"]
 mod tests;

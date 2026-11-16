@@ -180,6 +180,7 @@ fn track_clipboard_full_midi_copy_renders_both_independent_instruments_across_no
             revision: initial.state.revision,
             class: hex_engine::NativeDeviceClass::Instrument,
             type_id: hex_lattice_contract::DeviceTypeId::from_static("hex.instrument.sine"),
+            new_track_gain: None,
         },
     );
     let track = inserted.state.project.tracks()[0].id();
@@ -234,7 +235,7 @@ fn track_clipboard_full_midi_copy_renders_both_independent_instruments_across_no
 }
 
 #[test]
-fn group_preparation_refusal_preserves_canonical_ids_revision_and_history() {
+fn grouping_commits_and_undo_redo_preserve_canonical_hierarchy() {
     let service = Service::new(48_000, 16, 8_000_000).unwrap();
     next_event(&service);
     let added = run(
@@ -244,26 +245,22 @@ fn group_preparation_refusal_preserves_canonical_ids_revision_and_history() {
         }),
     );
     let track = added.state.project.tracks()[0].id();
-    service
-        .submit(Request::Edit(Command::GroupTracks {
+    let grouped = run(
+        &service,
+        Request::Edit(Command::GroupTracks {
             tracks: TrackSelectionIds::new(&[track]).unwrap(),
             name: "group".into(),
-        }))
-        .unwrap();
-    let refused = next_event(&service);
-    assert!(refused.error.is_some());
-    assert_eq!(refused.state.revision, added.state.revision);
-    assert_eq!(
-        refused.state.project.snapshot(),
-        added.state.project.snapshot()
+        }),
     );
-    assert_eq!(refused.state.can_undo, added.state.can_undo);
-    assert_eq!(refused.state.can_redo, added.state.can_redo);
+    assert!(grouped.state.project.has_group_tracks());
     let undone = run(&service, Request::Undo);
-    assert!(undone.state.project.tracks().is_empty());
+    let mut before = added.state.project.snapshot();
+    // Undo preserves the monotonic identity high-water mark.
+    before.next_id = grouped.state.project.snapshot().next_id;
+    assert_eq!(undone.state.project.snapshot(), before);
     let redone = run(&service, Request::Redo);
     assert_eq!(
         redone.state.project.snapshot(),
-        added.state.project.snapshot()
+        grouped.state.project.snapshot()
     );
 }

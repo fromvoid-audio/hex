@@ -52,6 +52,7 @@ fn replacement(
         .with_asset_references(references)
         .unwrap();
     Command::ReplaceDeviceStateWithIdentityReservation {
+        automation: None,
         device,
         expected_state,
         expected_variant: editor.project().device(device).unwrap().active_variant(),
@@ -190,6 +191,22 @@ fn device_asset_manifest_rejects_incomplete_duplicate_unknown_and_unbounded_bind
     let (mut editor, device, asset) = fixture();
     editor
         .execute(replacement(&editor, device, vec![reference(asset)]))
+        .unwrap();
+    let track = editor.project().tracks()[0].id();
+    let effect = NativeDeviceState::new(
+        hex_lattice_contract::DeviceTypeId::new("test.asset-effect").unwrap(),
+        7,
+        vec![1],
+    )
+    .unwrap()
+    .with_asset_references(vec![reference(asset)])
+    .unwrap();
+    editor
+        .execute(Command::InsertDevice {
+            track,
+            before: None,
+            state: effect,
+        })
         .unwrap();
     let bytes = hex_storage::encode(editor.project()).unwrap();
     let source: serde_json::Value = serde_json::from_slice(&bytes).unwrap();

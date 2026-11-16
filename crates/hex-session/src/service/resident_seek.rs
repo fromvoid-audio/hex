@@ -5,7 +5,32 @@ use super::*;
 use crate::arrangement_seek::{ArrangementSeekMode, ArrangementSeekSpec, MAX_RESIDENT_SEEK_JOBS};
 use hex_engine::native_device_resources::DeviceResourceAdmission;
 
-/// Scalar UI intent; prepared graphs, original PCM and runtime owners stay worker-private.
+/// Explicit native control intent. Ordinary UI requests keep Fresh; Preserve
+/// reconstructs bounded linear history and refuses sections/transport loops.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ResidentSeekHistory {
+    #[default]
+    Fresh,
+    Preserve,
+}
+
+fn preparation_mode(
+    history: ResidentSeekHistory,
+    section: Option<crate::arrangement_seek::SectionLaunch>,
+) -> Result<ArrangementSeekMode, String> {
+    match (history, section) {
+        (ResidentSeekHistory::Preserve, Some(_)) => {
+            Err("history-preserving sections are not supported".into())
+        }
+        (ResidentSeekHistory::Preserve, None) => {
+            Ok(ArrangementSeekMode::HistoryPreservingInteractive)
+        }
+        (ResidentSeekHistory::Fresh, Some(section)) => Ok(section.mode()),
+        (ResidentSeekHistory::Fresh, None) => Ok(ArrangementSeekMode::Interactive),
+    }
+}
+
+/// Scalar control intent; prepared graphs, original PCM and runtime owners stay worker-private.
 #[derive(Clone, Debug)]
 pub struct ResidentArrangementSeekIntent {
     pub request_id: u64,
@@ -13,7 +38,11 @@ pub struct ResidentArrangementSeekIntent {
     pub project_revision: u64,
     pub destination_frame: u64,
     pub start_playing: bool,
+    pub history: ResidentSeekHistory,
     pub section: Option<crate::arrangement_seek::SectionLaunch>,
+    /// An ordinary playing seek with no section loop edit. Section launches
+    /// carry their quantization in the section intent.
+    pub locator_quantization: Option<hex_engine::LaunchQuantization>,
     pub fence: ResidentFreshRuntimeFence,
     pub device_preview: Option<DevicePreviewIdentity>,
     pub tuning_preview: Option<TuningPreviewIdentity>,
@@ -51,6 +80,20 @@ fn selected_source<'a>(
         _ => Err("seek preview changed".into()),
     }
 }
+fn result_matches_intent(
+    result: &crate::arrangement_seek::ArrangementSeekResult,
+    intent: &ResidentArrangementSeekIntent,
+    prepared: &Arc<hex_engine::PreparedRevision>,
+) -> bool {
+    preparation_mode(intent.history, intent.section).is_ok_and(|mode| result.mode == mode)
+        && result.generation == intent.project_generation
+        && result.revision == intent.project_revision
+        && Arc::ptr_eq(&result.prepared_revision, prepared)
+        && result.destination_frame == intent.destination_frame
+        && result.work_budget_frames == crate::arrangement_seek::MAX_SEEK_WORK_FRAMES
+        && result.start_playing == intent.start_playing
+}
+
 struct Active {
     job: u64,
     intent: ResidentArrangementSeekIntent,
@@ -66,13 +109,15 @@ pub(crate) struct Lane {
     rejected: Option<ResidentArrangementSeekResult>,
 }
 impl Lane {
+    /// An admitted job or an undelivered rejection still needs worker polls.
+    pub(super) fn pending(&self) -> bool {
+        self.rejected.is_some() || self.active.iter().any(Option::is_some)
+    }
     pub(super) fn views(&self) -> impl Iterator<Item = DeviceResourceAdmission<'_>> {
-        self.active.iter().flatten().map(|job| {
-            DeviceResourceAdmission::prepared_on_control(
-                &job.snapshot.resources,
-                &job.snapshot.prepared,
-            )
-        })
+        self.active
+            .iter()
+            .flatten()
+            .map(|job| job.snapshot.admission())
     }
     pub(super) fn new(
         worker: ArrangementSeekWorker,
@@ -125,12 +170,20 @@ impl Lane {
             return Err("seek target changed or was cancelled".into());
         }
         if intent.section.is_some_and(|section| {
-            !section.region.enabled()
+            !section.matches_loop(session.project().loop_region())
                 || section.region.start() != intent.destination_frame
                 || !intent.start_playing
         }) {
-            return Err("section launch requires its exact enabled loop start".into());
+            return Err("section launch requires its exact start and loop state".into());
         }
+        if intent.locator_quantization.is_some()
+            && (intent.history != ResidentSeekHistory::Fresh
+                || intent.section.is_some()
+                || !intent.start_playing)
+        {
+            return Err("locator quantization requires an ordinary playing seek".into());
+        }
+        let mode = preparation_mode(intent.history, intent.section)?;
         let selected = selected_source(&intent, current, admission.preview)?;
         let files = selected
             .file_sources
@@ -154,8 +207,9 @@ impl Lane {
             .ok_or("resident resource reservation unavailable")?;
         let runtime = intent
             .section
+            .filter(|section| section.region.enabled())
             .map_or_else(
-                || hex_engine::SessionPlayback::linear_export_runtime_allowance(&selected.prepared),
+                || hex_engine::SessionPlayback::interactive_runtime_allowance(&selected.prepared),
                 |section| {
                     hex_engine::SessionPlayback::section_runtime_allowance(
                         &selected.prepared,
@@ -215,9 +269,10 @@ impl Lane {
             .checked_add(
                 intent
                     .section
+                    .filter(|section| section.region.enabled())
                     .map_or_else(
                         || {
-                            hex_engine::SessionPlayback::linear_export_runtime_allowance(
+                            hex_engine::SessionPlayback::interactive_runtime_allowance(
                                 &selected.prepared,
                             )
                         },
@@ -232,9 +287,11 @@ impl Lane {
             )
             .and_then(|bytes| bytes.checked_add(input_capture))
             .ok_or("seek storage allowance overflow")?;
-        let views = self.views().chain(std::iter::once(
-            DeviceResourceAdmission::prepared_on_control(&anchor, &selected.prepared),
-        ));
+        let views = self
+            .views()
+            .chain(std::iter::once(selected.include_file_sources(
+                DeviceResourceAdmission::prepared_on_control(&anchor, &selected.prepared),
+            )));
         let registered = admission
             .registered
             .iter()
@@ -262,11 +319,7 @@ impl Lane {
             .ok_or("seek worker unavailable")?
             .submit_resident(
                 ArrangementSeekSpec {
-                    mode: intent
-                        .section
-                        .map_or(ArrangementSeekMode::Interactive, |section| {
-                            ArrangementSeekMode::SectionLoop(section.region)
-                        }),
+                    mode,
                     generation: intent.project_generation,
                     revision: intent.project_revision,
                     prepared_revision: Arc::clone(&selected.prepared),
@@ -286,6 +339,9 @@ impl Lane {
             job,
             intent,
             snapshot: resident_audio::Snapshot {
+                source_origin: selected.source_origin,
+                prepared_context: selected.prepared_context,
+                submission: None,
                 file_sources: selected.file_sources.clone(),
                 prepared: Arc::clone(&selected.prepared),
                 resources: anchor,
@@ -328,10 +384,13 @@ impl Lane {
             && let Some(mut job) = self.active[index].take()
         {
             let accepted = (|| {
+                let identity_matches =
+                    result_matches_intent(&result, &job.intent, &job.snapshot.prepared);
                 let playback = result
                     .result
                     .map_err(|e| format!("seek preparation failed: {e:?}"))?;
-                if job.intent.cancelled.load(Ordering::Acquire)
+                if !identity_matches
+                    || job.intent.cancelled.load(Ordering::Acquire)
                     || context.project_generation != job.intent.project_generation
                     || context.editor_revision != job.intent.project_revision
                     || !playback
@@ -373,6 +432,8 @@ impl Lane {
                         sink,
                         admission,
                         ResidentPublicationMetadata {
+                            source_origin: crate::service::ResidentSourceOrigin::Unknown,
+                            clip_preview: None,
                             context,
                             device_preview: job.intent.device_preview,
                             tuning_preview: job.intent.tuning_preview,
@@ -385,13 +446,17 @@ impl Lane {
                                 .prepared
                                 .arrangement_seek_requires_preroll(),
                         },
-                        job.intent.section.map_or(
-                            ResidentPublicationPolicy::FreshIfUnchanged(job.intent.fence),
-                            |section| ResidentPublicationPolicy::SectionWhenReady {
-                                fence: job.intent.fence,
-                                quantization: section.quantization,
-                            },
-                        ),
+                        job.intent
+                            .section
+                            .map(|section| section.quantization)
+                            .or(job.intent.locator_quantization)
+                            .map_or(
+                                ResidentPublicationPolicy::FreshIfUnchanged(job.intent.fence),
+                                |quantization| ResidentPublicationPolicy::QuantizedSeekWhenReady {
+                                    fence: job.intent.fence,
+                                    quantization,
+                                },
+                            ),
                         &job.intent.cancelled,
                     )
                     .map_err(|e| e.to_string())
@@ -438,3 +503,6 @@ impl Drop for Lane {
         // Anchors outlive the joined worker's final resource/result destruction.
     }
 }
+
+#[cfg(test)]
+mod tests;

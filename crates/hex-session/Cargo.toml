@@ -11,6 +11,10 @@ workspace = true
 [features]
 # Peak-only construction/allocator probes; no native source authority.
 source-overview-test-support = []
+# Test-only, per-take writer failure injection; never enabled by default.
+recording-fault-test-support = []
+# Test-only checkpoint hold; never enabled by default.
+recovery-checkpoint-test-support = []
 
 [dependencies]
 hex-storage = { path = "../hex-storage" }
@@ -18,6 +22,8 @@ hex-engine = { path = "../hex-engine" }
 hex-media = { path = "../hex-media" }
 hex-project = { path = "../hex-project" }
 hex-lattice-contract = { path = "../hex-lattice-contract" }
+# Pure saved-envelope identity validation; no runtime/ABI or source custody.
+hex-plugin-state = { path = "../hex-plugin-state" }
 hex-export = { path = "../hex-export" }
 hex-tuning = { path = "../hex-tuning" }
 

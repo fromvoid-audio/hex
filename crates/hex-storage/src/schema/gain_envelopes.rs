@@ -245,6 +245,6 @@ impl DocumentV21 {
         for (track, points) in snapshot.tracks.iter_mut().zip(envelopes) {
             track.gain_envelope = points;
         }
-        Project::from_snapshot(snapshot).map_err(|e| StorageError::Invalid(e.0))
+        Project::from_legacy_snapshot(snapshot).map_err(|e| StorageError::Invalid(e.0))
     }
 }

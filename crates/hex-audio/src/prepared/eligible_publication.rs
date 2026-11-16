@@ -73,6 +73,23 @@ impl PublicationControl {
         self.candidate_root
             .begin_domain_preparation(config, definitions, readiness)
     }
+    /// Test-only source-worker hold through the same reserved domain custody.
+    #[cfg(feature = "stream-test-support")]
+    pub fn begin_audio_candidate_domain_preparation_with_gate(
+        &mut self,
+        config: hex_stream::StreamConfig,
+        definitions: Vec<hex_stream::SourceDefinition>,
+        readiness: hex_stream::StreamReadinessReservation,
+        gate: hex_stream::test_support::PageGate,
+    ) -> Result<crate::AudioCandidateDomainToken, crate::AudioCandidateDomainStartError> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err(crate::AudioCandidateDomainStartError::Busy(
+                "candidate native custody unavailable",
+            ));
+        }
+        self.candidate_root
+            .begin_domain_preparation_with_gate(config, definitions, readiness, gate)
+    }
     /// Poll on the publication worker. Reserve the actual queue entry before
     /// sealing; a ready endpoint cannot escape or be dropped on queue refusal.
     pub fn poll_audio_candidate_domain_preparation(
@@ -494,11 +511,74 @@ impl Callback {
         if self.active.is_some() && self.retired.is_full() {
             return;
         }
-        let decision = if self
+        let Some(next) = self.deferred_eligible.as_ref() else {
+            return;
+        };
+        let revision = next.revision();
+        let context = next.diagnostic_context();
+        let streaming_enabled = next.streaming_enabled();
+        let incompatible_active = self
             .active
             .as_ref()
-            .is_some_and(|active| !matches!(active, ActivePublication::Eligible(_)))
+            .is_some_and(|active| !matches!(active, ActivePublication::Eligible(_)));
+        let preflight_refusal = next.preflight_refusal(&self.candidate_root);
+        self.trace_audio(
+            AudioDiagnosticKind::PublicationAttempt,
+            revision,
+            context,
+            frames.unwrap_or(0),
+        );
+        if streaming_enabled
+            && !incompatible_active
+            && let Some(reason) = preflight_refusal
         {
+            self.reject_pending_eligible_successor(reason);
+            return;
+        }
+        if let Some(frames) = frames
+            && streaming_enabled
+            && !incompatible_active
+        {
+            let mut reservation = self.reserve_current_stream_window(frames);
+            if matches!(
+                reservation,
+                Err(crate::candidate_custody::QuantumFailure::Capacity)
+            ) {
+                if let Some(next) = self.deferred_eligible.as_mut() {
+                    next.cancel_stream_readiness(&mut self.domain_pages);
+                }
+                reservation = self.reserve_current_stream_window(frames);
+            }
+            match reservation {
+                Ok(Some(pins)) => {
+                    let complete = pins.complete();
+                    self.current_quantum_pins = Some(pins);
+                    if !complete {
+                        if let Some(next) = self.deferred_eligible.as_mut() {
+                            next.cancel_stream_readiness(&mut self.domain_pages);
+                        }
+                        return;
+                    }
+                }
+                Ok(None) => {}
+                Err(crate::candidate_custody::QuantumFailure::PendingAction) => return,
+                Err(crate::candidate_custody::QuantumFailure::Capacity) => {
+                    if !self.retry_pending_eligible_capacity() {
+                        self.reject_pending_eligible_successor(
+                            PlaybackHandoffRejection::StreamedPageCapacity,
+                        );
+                    }
+                    return;
+                }
+                Err(crate::candidate_custody::QuantumFailure::Invalid) => {
+                    self.reject_pending_eligible_successor(
+                        PlaybackHandoffRejection::StreamedPagesNotReady,
+                    );
+                    return;
+                }
+            }
+        }
+        let mut decision = if incompatible_active {
             InstallDecision::Refused(PlaybackHandoffRejection::ConstructorClaimsUnavailable)
         } else if let Some(next) = self.deferred_eligible.as_mut() {
             #[cfg(all(test, feature = "allocation-probe"))]
@@ -514,13 +594,42 @@ impl Callback {
                 pending_play: self.stream_pending_play.is_some(),
                 command_prefix: self.stream_prefix,
                 frames,
+                fenced_restart: false,
+                foreign_continuation: false,
             });
             next.prepare_install(previous, &self.candidate_root, request.as_mut())
         } else {
             return;
         };
+        if let Some(handoff) = self
+            .deferred_eligible
+            .as_mut()
+            .and_then(|next| next.take_handoff_diagnostic())
+        {
+            if matches!(
+                decision,
+                InstallDecision::Refused(PlaybackHandoffRejection::StreamedPagesNotReady)
+            ) {
+                decision = InstallDecision::Refused(PlaybackHandoffRejection::from_error(handoff));
+            }
+            self.trace_audio(
+                AudioDiagnosticKind::StreamPreflightFailed {
+                    detail: "stream handoff demand refused",
+                    handoff: Some(handoff),
+                },
+                revision,
+                context,
+                frames.unwrap_or(0),
+            );
+        }
         match decision {
             InstallDecision::Retry => {
+                self.trace_audio(
+                    AudioDiagnosticKind::PublicationWaiting,
+                    revision,
+                    context,
+                    frames.unwrap_or(0),
+                );
                 if self.active.is_some()
                     && let Some(next) = self.deferred_eligible.as_mut()
                 {
@@ -530,8 +639,7 @@ impl Callback {
             InstallDecision::Refused(reason) => {
                 if let Some(mut value) = self.deferred_eligible.take() {
                     value.cancel_stream_readiness(&mut self.domain_pages);
-                    self.status
-                        .publish_rejected_revision(value.revision(), reason);
+                    self.reject_publication(value.revision(), reason);
                     self.return_publication(ReturnedPublication::Eligible(
                         value.reject_before_install(),
                     ));
@@ -541,6 +649,12 @@ impl Callback {
                             ticket,
                             PlaybackActionRejection::SessionNotPrepared,
                         );
+                        self.stage_stream_outcome(
+                            ticket,
+                            action_outcomes::Outcome::Rejected(
+                                PlaybackActionRejection::SessionNotPrepared,
+                            ),
+                        );
                         self.status
                             .stream_applied_command_prefix
                             .store(self.stream_prefix, Release);
@@ -548,6 +662,12 @@ impl Callback {
                 }
             }
             InstallDecision::Ready => {
+                self.trace_audio(
+                    AudioDiagnosticKind::PublicationPrepared,
+                    revision,
+                    context,
+                    frames.unwrap_or(0),
+                );
                 // Every fallible operation happened while both State Boxes
                 // remained in their persistent callback slots. Fixed moves only.
                 if let Some(next) = self.deferred_eligible.take() {
@@ -555,6 +675,7 @@ impl Callback {
                     let previous = self
                         .active
                         .replace(ActivePublication::Eligible(next.into_active()));
+                    self.release_current_quantum_pins();
                     if let Some(ActivePublication::Eligible(mut previous)) = previous {
                         if let Some(ActivePublication::Eligible(active)) = self.active.as_mut()
                             && let Some(ticket) = active.inherit_schedule_observation(&mut previous)
@@ -571,9 +692,15 @@ impl Callback {
                     self.finish_pending_stream_play();
                     self.status.stream_buffering.store(false, Release);
                     self.publish_active_routes(true);
+                    self.recovery_seek_pending = None;
+                    if !self.status.device_fault.load(Acquire) {
+                        self.recovery_position_frozen = false;
+                    }
                     self.publish_transport();
                     self.status.render_fault_record.clear();
                     self.status.render_fault.store(false, Release);
+                    self.status.stream_source_changed.store(false, Release);
+                    self.status.stream_read_failed.store(false, Release);
                     self.status
                         .applied_source
                         .publish(match self.active.as_ref() {
@@ -583,6 +710,12 @@ impl Callback {
                             _ => None,
                         });
                     self.status.applied_revision.store(revision, Release);
+                    self.trace_audio(
+                        AudioDiagnosticKind::PublicationApplied,
+                        revision,
+                        context,
+                        frames.unwrap_or(0),
+                    );
                     self.status.publication_pending.store(false, Release);
                 }
             }

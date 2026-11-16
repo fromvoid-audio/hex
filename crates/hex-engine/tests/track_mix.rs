@@ -106,6 +106,7 @@ fn fixture(mute_audio: bool, solo_instrument: bool) -> PlaybackProject {
             clip: midi_clip,
             notes: vec![
                 hex_project::MidiNoteInsert {
+                    active: true,
                     start: BeatTime::from_ratio(1, 16).expect("note start"),
                     duration: BeatTime::from_ratio(1, 2).expect("note gate"),
                     pitch: 60,
@@ -113,6 +114,7 @@ fn fixture(mute_audio: bool, solo_instrument: bool) -> PlaybackProject {
                     velocity: 111,
                 },
                 hex_project::MidiNoteInsert {
+                    active: true,
                     start: BeatTime::from_ratio(1, 8).expect("note start"),
                     duration: BeatTime::from_ratio(1, 4).expect("note gate"),
                     pitch: 67,

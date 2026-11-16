@@ -56,7 +56,8 @@ impl LiveExpressionInput {
         if Snapshot::new(value.pressure, value.bend, value.wheel).is_some() {
             let word = u64::from(value.pressure)
                 | (u64::from(value.bend as u16) << 8)
-                | (u64::from(value.wheel) << 24);
+                | (u64::from(value.wheel) << 24)
+                | (1u64 << 32);
             self.packed.store(word, Release);
         }
     }
@@ -65,6 +66,20 @@ impl LiveExpressionInput {
     }
     pub fn is_cancelled(&self) -> bool {
         self.cancelled.load(Acquire)
+    }
+    /// A new or cancelled input has no source-global controller publication.
+    /// Keep this flag in the same atomic word as the value so an untouched
+    /// input cannot replace a shared source's last controller state with zero.
+    pub(crate) fn published_snapshot(&self) -> Option<Snapshot> {
+        let word = self.packed.load(Acquire);
+        if word & (1u64 << 32) == 0 || self.is_cancelled() {
+            return None;
+        }
+        Some(Snapshot {
+            pressure: word as u8,
+            bend: (word >> 8) as u16 as i16,
+            wheel: (word >> 24) as u8,
+        })
     }
     pub fn snapshot(&self) -> Snapshot {
         let word = self.packed.load(Acquire);

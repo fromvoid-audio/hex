@@ -1,7 +1,10 @@
 //! Control-side admission and construction of one finite Arrangement MIDI take.
 //!
 //! The input/audio owners supply completed note spans in the delivered output's
-//! content-frame clock. These scalars do not prove delivery or mint native audio
+//! scheduled content-frame clock and a source-bound output-latency correction.
+//! Take assembly maps confirmed notes and the final boundary to the audible
+//! Arrangement clock, clipping any pre-roll before the clip start. These scalars
+//! do not prove delivery or mint native audio
 //! ownership. The captured canonical binding refuses source/timing substitution;
 //! the ordinary service still owns prepare-before-commit and one history edit.
 //! Input journals, live monitoring and transport have other owners. A frozen
@@ -323,6 +326,7 @@ pub fn finish_take(
             .filter(|duration| *duration > 0)
             .ok_or("recorded midi note has no positive audible duration")?;
         insert.push(MidiNoteInsert {
+            active: true,
             start: BeatTime::from_raw(start),
             duration: BeatTime::from_raw(duration),
             pitch: note.pitch,

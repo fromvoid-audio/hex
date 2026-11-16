@@ -1,5 +1,5 @@
 //! Real loop-brace input, canonical ACK/history and saved prepared-repeat proof.
-use super::tests::{FileCustody, next, roundtrip};
+use super::tests::{FileCustody, content_bounds, next, roundtrip};
 use super::*;
 use crate::editor::midi_canvas::creation_tests::{fixture, pump};
 use gpui::{Modifiers, TestAppContext, VisualTestContext};
@@ -8,21 +8,22 @@ fn beat(n: u64) -> BeatTime {
     BeatTime::from_quarters(n).unwrap()
 }
 fn at(v: &mut VisualTestContext, fraction: f32) -> gpui::Point<gpui::Pixels> {
-    let b = v.debug_bounds("midi-loop-ruler").unwrap();
+    let b = content_bounds(v, "midi-loop-ruler");
     point(
-        (b.origin.x + px(1.0) + (b.size.width - px(2.0)) * fraction)
-            .min(b.bottom_right().x - px(2.0)),
+        (b.origin.x + b.size.width * fraction).min(b.bottom_right().x - px(1.0)),
         b.origin.y + px(11.0),
     )
 }
 fn assert_brace(v: &mut VisualTestContext, first: f32, last: f32, on: bool) {
-    let b = v.debug_bounds("midi-loop-ruler").unwrap();
-    let scale = gpui::ScaledPixels::from(v.update(|window, _| window.scale_factor()));
-    let color: gpui::Background = rgb(theme::color(if on {
-        theme::PaletteRole::Primary
+    let b = content_bounds(v, "midi-loop-ruler");
+    let scale_factor = v.update(|window, _| window.scale_factor());
+    let scale = gpui::ScaledPixels::from(scale_factor);
+    let color: gpui::Background = gpui::Hsla::from(rgb(theme::color(if on {
+        theme::PaletteRole::Text
     } else {
         theme::PaletteRole::Muted
-    }))
+    })))
+    .opacity(if on { 0.94 } else { 0.62 })
     .into();
     let bars: Vec<_> = v
         .rendered_filled_quads("midi-loop-ruler")
@@ -32,11 +33,15 @@ fn assert_brace(v: &mut VisualTestContext, first: f32, last: f32, on: bool) {
         })
         .collect();
     assert_eq!(bars.len(), 1);
-    let width = f32::from(b.size.width) - 2.0;
+    let width = f32::from(b.size.width);
+    // Both edges are rounded in physical pixels by layout and painting.
+    let pixel = 1.0 / scale_factor;
     assert!(
-        (bars[0].0.origin.x / scale - (f32::from(b.origin.x) + 1.0 + width * first)).abs() < 0.05
+        (bars[0].0.origin.x / scale - (f32::from(b.origin.x) + width * first)).abs() <= pixel,
+        "content={b:?} quad={:?} scale={scale:?} first={first}",
+        bars[0].0
     );
-    assert!((bars[0].0.size.width / scale - width * (last - first)).abs() < 0.05);
+    assert!((bars[0].0.size.width / scale - width * (last - first)).abs() <= pixel);
 }
 #[gpui::test]
 fn loop_endpoints_and_body_preview_then_ack_once_with_undo_redo_and_saved_repeats(
@@ -95,6 +100,21 @@ fn loop_endpoints_and_body_preview_then_ack_once_with_undo_redo_and_saved_repeat
         });
         assert_brace(&mut visual, first as f32 / 4.0, last as f32 / 4.0, false);
         visual.simulate_mouse_up(up, MouseButton::Left, Modifiers::default());
+        let terminal = crate::editor::clip_editor_loop_ui_tests::hold(&editor, &mut visual);
+        assert!(
+            terminal.request_complete && terminal.error.is_none(),
+            "{:?}",
+            terminal.error
+        );
+        for _ in 0..3 {
+            editor.update(&mut visual, |_, cx| cx.notify());
+            visual.run_until_parked();
+            assert_brace(&mut visual, first as f32 / 4.0, last as f32 / 4.0, false);
+        }
+        editor.update(&mut visual, |v, cx| {
+            v.receive(terminal);
+            cx.notify();
+        });
         pump(&editor, &mut visual);
         let after = editor.read_with(&visual, |v, _| {
             let s = v.state.as_ref().unwrap();

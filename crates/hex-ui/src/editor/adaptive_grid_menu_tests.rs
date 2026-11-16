@@ -198,6 +198,74 @@ fn adaptive_grid_menu_right_click_keyboard_choice_and_cancel_preserve_project_an
 }
 
 #[gpui::test]
+fn arrangement_waveform_scale_toggle_is_view_local_and_checked(cx: &mut TestAppContext) {
+    use super::super::super::waveform::WaveformAmplitudeScale;
+
+    let (project, _, _, _) = audio_project();
+    let (handle, editor, _directory) = editor_window(cx, project, Arc::default());
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    visual.update(|window, cx| {
+        editor.update(cx, |view, cx| {
+            let position = gpui::point(px(400.0), px(100.0));
+            let generation = view.project_generation;
+            assert_eq!(
+                view.waveform_geometry_cache.amplitude_scale(),
+                WaveformAmplitudeScale::Linear
+            );
+            view.open_arranger_grid_context_menu(position, window, cx);
+            let choice = view
+                .context_menu
+                .as_ref()
+                .unwrap()
+                .items
+                .iter()
+                .find(|item| matches!(item.action, EditorContextAction::WaveformDecibels { .. }))
+                .unwrap();
+            assert!(!choice.checked);
+            view.select_context_item(
+                EditorContextAction::WaveformDecibels {
+                    generation,
+                    enabled: true,
+                },
+                window,
+                cx,
+            );
+            assert_eq!(
+                view.waveform_geometry_cache.amplitude_scale(),
+                WaveformAmplitudeScale::Decibel
+            );
+            assert_eq!(
+                view.clip_waveform_geometry_cache.amplitude_scale(),
+                WaveformAmplitudeScale::Linear
+            );
+            view.open_arranger_grid_context_menu(position, window, cx);
+            let choice = view
+                .context_menu
+                .as_ref()
+                .unwrap()
+                .items
+                .iter()
+                .find(|item| matches!(item.action, EditorContextAction::WaveformDecibels { .. }))
+                .unwrap();
+            assert!(choice.checked);
+            view.select_context_item(
+                EditorContextAction::WaveformDecibels {
+                    generation,
+                    enabled: false,
+                },
+                window,
+                cx,
+            );
+            assert_eq!(
+                view.waveform_geometry_cache.amplitude_scale(),
+                WaveformAmplitudeScale::Linear
+            );
+        });
+    });
+}
+
+#[gpui::test]
 fn adaptive_grid_menu_disabled_choice_and_stale_project_refusal_are_ui_only(
     cx: &mut TestAppContext,
 ) {
@@ -303,10 +371,14 @@ fn adaptive_grid_menu_empty_arranger_choice_survives_keyboard_snap_toggle(cx: &m
     visual.simulate_mouse_up(body.center(), MouseButton::Right, Modifiers::default());
     editor.read_with(cx, |view, _| {
         let menu = view.context_menu.as_ref().unwrap();
-        assert_eq!(menu.items.len(), 6);
+        assert_eq!(menu.items.len(), 7);
         assert_eq!(menu.items[0].label, "insert track");
+        assert!(matches!(
+            menu.items.last().map(|item| &item.action),
+            Some(EditorContextAction::WaveformDecibels { enabled: true, .. })
+        ));
     });
-    visual.simulate_keystrokes("up enter");
+    visual.simulate_keystrokes("up up enter");
     assert_eq!(
         editor.read_with(cx, |view, _| view.snap_grid.density()),
         AdaptiveGridDensity::Coarse
@@ -402,7 +474,7 @@ fn grid_fixture_real_catalog_retains_one_root_after_view_and_caller_drop(cx: &mu
     assert!(gate.root_present_during_save.load(Ordering::Relaxed));
     visual.update(|_, _| {});
     assert!(weak.upgrade().is_none());
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = crate::test_wait::hang_deadline();
     while root.exists() {
         assert!(
             std::time::Instant::now() < deadline,

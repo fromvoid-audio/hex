@@ -11,6 +11,7 @@ fn cue_project() -> Project {
     };
     clip.source.notes.extend([
         MidiNoteSnapshot {
+            active: true,
             id: 1_000_008,
             start_raw: 10 * Q,
             duration_raw: Q,
@@ -19,6 +20,7 @@ fn cue_project() -> Project {
             velocity: 93,
         },
         MidiNoteSnapshot {
+            active: true,
             id: 1_000_009,
             start_raw: 11 * Q,
             duration_raw: Q / 2,
@@ -245,9 +247,13 @@ fn cue_after_tempo_handoff_uses_effective_clock_and_observation_anchor_then_surv
  {
     let project = cue_project();
     let mut old = runtime(&project);
+    let mut oracle_old = runtime(&project);
     let (track, clip) = launch(&mut old);
-    old.apply(SessionPlaybackCommand::Play).unwrap();
-    old.render(&mut [[0.0; 2]; 1000]).unwrap();
+    assert_eq!(launch(&mut oracle_old), (track, clip));
+    for runtime in [&mut old, &mut oracle_old] {
+        runtime.apply(SessionPlaybackCommand::Play).unwrap();
+        runtime.render(&mut [[0.0; 2]; 1000]).unwrap();
+    }
     let mut editor = Editor::new(project, 16).unwrap();
     editor
         .execute(Command::SetTempoPoint {
@@ -257,6 +263,9 @@ fn cue_after_tempo_handoff_uses_effective_clock_and_observation_anchor_then_surv
         .unwrap();
     let mut current = runtime(editor.project());
     current.try_inherit_state_from(&mut old).unwrap();
+    let mut oracle = runtime(editor.project());
+    oracle.try_inherit_state_from(&mut oracle_old).unwrap();
+    cue(&mut oracle, track, clip, beat(10)).unwrap();
     assert!(current.clock_anchor().is_some());
     cue(&mut current, track, clip, beat(10)).unwrap();
     let status = current.route_status(0).unwrap();
@@ -322,13 +331,16 @@ fn cue_after_tempo_handoff_uses_effective_clock_and_observation_anchor_then_surv
         assert_eq!(keys, [0, 1], "exact cued pitch64, no historical pitch60");
     }
     current.render(&mut [[0.0; 2]; 64]).unwrap();
+    oracle.render(&mut [[0.0; 2]; 64]).unwrap();
     let mut next = runtime(editor.project());
     next.try_inherit_state_from(&mut current).unwrap();
     assert_eq!(next.route_status(0).unwrap().active_origin, Some(origin));
     let mut actual = [[0.0; 2]; 256];
     let mut expected = [[0.0; 2]; 256];
     next.render(&mut actual).unwrap();
-    current.render(&mut expected).unwrap();
+    // Handoff moves captured suffix custody from current; compare against an
+    // independent owner rather than attempting to render the retired donor.
+    oracle.render(&mut expected).unwrap();
     assert_eq!(
         actual, expected,
         "later graph handoff retains cued source phase and effective global beat"

@@ -10,7 +10,9 @@
 use hex_engine::{
     BorrowedMediaPage, MediaPages, SessionPlayback, StreamPageExtent, StreamSourceKey,
 };
-use hex_export::{ExportControl, ExportError, ExportReport, PreparedExportPages};
+use hex_export::{
+    ExportControl, ExportError, ExportReport, ForeignBounceRenderer, PreparedExportPages,
+};
 use hex_session::{AudioSourceBinding, VerifiedAudioFile, service::StreamedExportRequest};
 use hex_stream::{
     PageKey, SourceDefinition, StreamConfig, StreamFailure, StreamFailureKind, StreamRuntime,
@@ -25,17 +27,51 @@ use std::{
 
 const PREPARATION_TIMEOUT: Duration = Duration::from_secs(60);
 const POLL: Duration = Duration::from_millis(5);
+// Page preparation runs on the offline worker, not the audio callback. Check
+// completed reads more promptly while retaining a bounded cancellation poll.
+const PAGE_POLL: Duration = Duration::from_millis(1);
 
-pub(super) fn render(request: &StreamedExportRequest<'_>) -> Result<ExportReport, String> {
-    render_with_config(request, StreamConfig::initial()).map_err(|error| error.to_string())
+pub(super) fn render(
+    request: &StreamedExportRequest<'_>,
+) -> Result<ExportReport, hex_session::service::ExportFailure> {
+    render_with_config(request, StreamConfig::initial()).map_err(Into::into)
 }
 
 pub(crate) fn render_with_config(
     request: &StreamedExportRequest<'_>,
     config: StreamConfig,
 ) -> Result<ExportReport, ExportError> {
+    render_with_config_and_foreign(request, config, request.take_foreign())
+}
+
+/// The job retains exclusive custody of the supplied offline processors; the
+/// independent verified page worker and WAV publisher retain their own owners.
+pub(crate) fn render_with_config_and_foreign(
+    request: &StreamedExportRequest<'_>,
+    config: StreamConfig,
+    foreign: Option<&mut dyn ForeignBounceRenderer>,
+) -> Result<ExportReport, ExportError> {
     check(request.control())?;
+    if foreign.is_some() && !matches!(request.signal(), hex_export::ExportSignal::Main) {
+        return Err(ExportError::Invalid(
+            "offline vst3 export supports main only",
+        ));
+    }
     let mut pages = VerifiedPages::capture(request, config)?;
+    if let Some(foreign) = foreign {
+        return hex_export::render_linear_main_with_foreign(
+            request.path(),
+            Arc::clone(request.prepared()),
+            request.resources(),
+            request.start(),
+            request.frames(),
+            request.format(),
+            request.control(),
+            request.publication(),
+            Some(&mut pages),
+            foreign,
+        );
+    }
     hex_export::render_prepared_with_pages_and_policy(
         request.path(),
         Arc::clone(request.prepared()),
@@ -43,9 +79,65 @@ pub(crate) fn render_with_config(
         request.start(),
         request.frames(),
         request.signal().clone(),
+        request.format(),
         request.control(),
         request.publication(),
         &mut pages,
+    )
+}
+/// [`hex_session::StreamedBouncer`]: one isolated bounce item through the same
+/// independent verification, bounded pool and joining worker as export. File
+/// facts come from the document's captured bindings; the worker is joined and
+/// every file re-hashed before the bounce file is published. Nothing native is
+/// borrowed, so a bounce never waits on or disturbs the playing transport.
+pub(super) fn bounce(
+    request: &hex_session::StreamedBounceRequest<'_>,
+    foreign: Option<&mut dyn ForeignBounceRenderer>,
+) -> Result<ExportReport, String> {
+    bounce_with_config(request, StreamConfig::initial(), foreign)
+        .map_err(|error| hex_session::service::export_error_text(&error))
+}
+
+pub(crate) fn bounce_with_config(
+    request: &hex_session::StreamedBounceRequest<'_>,
+    config: StreamConfig,
+    foreign: Option<&mut dyn ForeignBounceRenderer>,
+) -> Result<ExportReport, ExportError> {
+    check(request.control())?;
+    let mut pages = VerifiedPages::capture_files(
+        request.prepared(),
+        |key| {
+            request.file(key.asset()).ok_or(ExportError::Invalid(
+                "verified bounce source binding is missing",
+            ))
+        },
+        request.repitches(),
+        Some(request.path()),
+        config,
+        request.control(),
+    )?;
+    if let Some(foreign) = foreign {
+        return hex_export::render_arrangement_bounce_with_foreign(
+            request.path(),
+            Arc::clone(request.prepared()),
+            request.resources(),
+            request.start(),
+            request.frames(),
+            request.include_tails(),
+            request.control(),
+            Some(&mut pages),
+            foreign,
+        );
+    }
+    hex_export::render_arrangement_bounce_with_pages(
+        request.path(),
+        Arc::clone(request.prepared()),
+        request.resources(),
+        request.start(),
+        request.frames(),
+        request.include_tails(),
+        request.control(),
+        Some(&mut pages),
     )
 }
 trait Cancellation {
@@ -91,7 +183,165 @@ impl VerifiedPages {
                 "verified export source context differs",
             ));
         }
-        Self::capture_files(
+        // The snapshot is the canonical owner for offline export; retain only
+        // bounded exact maps while definitions are constructed. They are
+        // dropped before the independent worker starts.
+        let needed = |asset| {
+            request
+                .prepared()
+                .arrangement_stream_sources()
+                .any(|metadata| {
+                    metadata.key().asset() == asset && metadata.key().repitch_identity().is_some()
+                })
+        };
+        let count = request
+            .source()
+            .required_repitch_sources()
+            .filter(|(asset, _, _, _)| needed(*asset))
+            .count();
+        let mut requirements = Vec::new();
+        let mut keys = Vec::new();
+        let mut retained = 0usize;
+        let mut capture_config = config;
+        if count != 0 {
+            if config.max_sources == 0 || config.max_sources > StreamConfig::initial().max_sources {
+                return Err(ExportError::Invalid("invalid offline streaming bounds"));
+            }
+            let capacity = count.min(config.max_sources);
+            let mut handles = capacity
+                .checked_mul(
+                    std::mem::size_of::<hex_engine::audio_transform::StreamedRepitchRequirement>()
+                        + std::mem::size_of::<StreamSourceKey>(),
+                )
+                .and_then(|bytes| {
+                    bytes.checked_add(
+                        std::mem::size_of_val(&requirements) + std::mem::size_of_val(&keys),
+                    )
+                })
+                .ok_or(ExportError::Invalid(
+                    "repitch requirement reservation overflow",
+                ))?;
+            let workspace = hex_engine::audio_transform::native_metadata_workspace_bytes()
+                .ok_or(ExportError::Invalid("repitch workspace overflow"))?;
+            if handles
+                .checked_add(workspace)
+                .is_none_or(|bytes| bytes > config.max_kernel_table_bytes)
+            {
+                return Err(ExportError::Invalid("repitch map reservation exceeded"));
+            }
+            requirements.try_reserve_exact(capacity).map_err(media)?;
+            keys.try_reserve_exact(capacity).map_err(media)?;
+            handles = requirements
+                .capacity()
+                .checked_mul(std::mem::size_of::<
+                    hex_engine::audio_transform::StreamedRepitchRequirement,
+                >())
+                .and_then(|bytes| {
+                    keys.capacity()
+                        .checked_mul(std::mem::size_of::<StreamSourceKey>())
+                        .and_then(|keys| bytes.checked_add(keys))
+                })
+                .and_then(|bytes| {
+                    bytes.checked_add(
+                        std::mem::size_of_val(&requirements) + std::mem::size_of_val(&keys),
+                    )
+                })
+                .ok_or(ExportError::Invalid(
+                    "repitch requirement reservation overflow",
+                ))?;
+            for (asset, file, edit, tempo) in request
+                .source()
+                .required_repitch_sources()
+                .filter(|(asset, _, _, _)| needed(*asset))
+            {
+                check(request.control())?;
+                if handles
+                    .checked_add(retained)
+                    .and_then(|bytes| bytes.checked_add(workspace))
+                    .is_none_or(|bytes| bytes > config.max_kernel_table_bytes)
+                {
+                    return Err(ExportError::Invalid("repitch map reservation exceeded"));
+                }
+                let raw = file
+                    .source_metadata(asset, 1)
+                    .map_err(ExportError::Render)?;
+                let requirement = hex_engine::audio_transform::StreamedRepitchRequirement::new(
+                    &raw,
+                    edit,
+                    tempo,
+                    &AtomicBool::new(false),
+                )
+                .map_err(ExportError::Render)?;
+                check(request.control())?;
+                let key = requirement
+                    .metadata_for(&raw)
+                    .map_err(ExportError::Render)?
+                    .key();
+                let mut used = false;
+                for metadata in request.prepared().arrangement_stream_sources() {
+                    if metadata.key().asset() != asset
+                        || metadata.key().repitch_identity().is_none()
+                    {
+                        continue;
+                    }
+                    let source = file
+                        .source_metadata(asset, metadata.key().generation())
+                        .map_err(ExportError::Render)?;
+                    if requirement
+                        .metadata_for(&source)
+                        .is_ok_and(|expected| expected == *metadata)
+                    {
+                        used = true;
+                        break;
+                    }
+                }
+                if !used {
+                    continue;
+                }
+                if let Err(index) = keys.binary_search(&key) {
+                    if requirements.len() == capacity {
+                        return Err(ExportError::Invalid(
+                            "offline export source count exceeds its bound",
+                        ));
+                    }
+                    retained = retained
+                        .checked_add(
+                            requirement
+                                .retained_bytes()
+                                .ok_or(ExportError::Invalid("repitch map size overflow"))?,
+                        )
+                        .ok_or(ExportError::Invalid("repitch map size overflow"))?;
+                    if handles
+                        .checked_add(retained)
+                        .and_then(|bytes| bytes.checked_add(workspace))
+                        .is_none_or(|bytes| bytes > config.max_kernel_table_bytes)
+                    {
+                        return Err(ExportError::Invalid("repitch map reservation exceeded"));
+                    }
+                    keys.insert(index, key);
+                    requirements.push(requirement);
+                }
+            }
+            drop(keys);
+            let retained_handles = requirements
+                .capacity()
+                .checked_mul(std::mem::size_of::<
+                    hex_engine::audio_transform::StreamedRepitchRequirement,
+                >())
+                .and_then(|bytes| bytes.checked_add(std::mem::size_of_val(&requirements)))
+                .ok_or(ExportError::Invalid(
+                    "repitch requirement reservation overflow",
+                ))?;
+            capture_config.max_kernel_table_bytes = config
+                .max_kernel_table_bytes
+                .checked_sub(
+                    retained
+                        .checked_add(retained_handles)
+                        .ok_or(ExportError::Invalid("repitch map size overflow"))?,
+                )
+                .ok_or(ExportError::Invalid("repitch map reservation exceeded"))?;
+        }
+        let mut pages = Self::capture_files(
             request.prepared(),
             |key| match request.source().sources().get(&key.asset()) {
                 Some(AudioSourceBinding::VerifiedFile(file)) => Ok(file),
@@ -102,18 +352,28 @@ impl VerifiedPages {
                     "verified export source binding is missing",
                 )),
             },
+            &requirements,
             Some(request.path()),
-            config,
+            capture_config,
             request.control(),
-        )
+        )?;
+        drop(requirements);
+        pages.config = config;
+        Ok(pages)
     }
     fn capture_files<'a>(
         prepared: &hex_engine::PreparedRevision,
         mut file_for: impl FnMut(StreamSourceKey) -> Result<&'a VerifiedAudioFile, ExportError>,
+        repitches: &[hex_engine::audio_transform::StreamedRepitchRequirement],
         destination: Option<&std::path::Path>,
         config: StreamConfig,
         control: &impl Cancellation,
     ) -> Result<Self, ExportError> {
+        if prepared.scalar_automation_binding().is_some() {
+            return Err(ExportError::Invalid(
+                "offline scalar source capture is not prepared",
+            ));
+        }
         // These private composition inputs must be bounded before reserving Vecs.
         // The original stream constructor still validates its complete configuration.
         let maximum = StreamConfig::initial();
@@ -138,6 +398,7 @@ impl VerifiedPages {
             .try_reserve_exact(config.max_sources)
             .map_err(media)?;
         files.try_reserve_exact(config.max_sources).map_err(media)?;
+        let mut repitch_map_bytes = 0usize;
         for metadata in prepared.arrangement_stream_sources() {
             check(control)?;
             let file = file_for(metadata.key())?;
@@ -149,11 +410,35 @@ impl VerifiedPages {
                     ));
                 }
             }
-            if file
+            let original = file
                 .source_metadata(metadata.key().asset(), metadata.key().generation())
-                .map_err(ExportError::Render)?
-                != *metadata
-            {
+                .map_err(ExportError::Render)?;
+            let mut repitch = None;
+            let expected = match metadata.key().pitch() {
+                Some((cents, law)) => original
+                    .with_plain_pitch(cents, law)
+                    .map_err(ExportError::Render)?,
+                None if metadata.key().is_raw() => original.clone(),
+                None if metadata.key().repitch_identity().is_some() => {
+                    let requirement = repitches
+                        .iter()
+                        .find(|requirement| {
+                            requirement.asset() == metadata.key().asset()
+                                && requirement
+                                    .metadata_for(&original)
+                                    .is_ok_and(|expected| expected == *metadata)
+                        })
+                        .ok_or(ExportError::Invalid(
+                            "verified repitch requirement missing or differs",
+                        ))?;
+                    repitch = Some(requirement);
+                    requirement
+                        .metadata_for(&original)
+                        .map_err(ExportError::Render)?
+                }
+                None => return Err(ExportError::Invalid("unsupported derived export source")),
+            };
+            if expected != *metadata {
                 return Err(ExportError::Invalid(
                     "verified export file facts differ from compiled source",
                 ));
@@ -170,14 +455,36 @@ impl VerifiedPages {
                             "offline export source count exceeds its bound",
                         ));
                     }
-                    definitions.insert(
-                        index,
+                    let definition = if let Some(requirement) = repitch {
+                        repitch_map_bytes = repitch_map_bytes
+                            .checked_add(
+                                requirement
+                                    .map()
+                                    .backing_bytes()
+                                    .ok_or(ExportError::Invalid("repitch map size overflow"))?,
+                            )
+                            .ok_or(ExportError::Invalid("repitch map size overflow"))?;
+                        if repitch_map_bytes > config.max_kernel_table_bytes {
+                            return Err(ExportError::Invalid("repitch map reservation exceeded"));
+                        }
+                        let map = requirement.try_owned_map().map_err(ExportError::Render)?;
+                        check(control)?;
+                        SourceDefinition::new(
+                            file.path().to_path_buf(),
+                            original,
+                            file.reader_limits(),
+                        )
+                        .with_repitch(map, requirement.law())
+                        .map_err(ExportError::Render)?
+                    } else {
                         SourceDefinition::new(
                             file.path().to_path_buf(),
                             metadata.clone(),
                             file.reader_limits(),
-                        ),
-                    );
+                        )
+                    }
+                    .with_verified_manifest(file.verified_manifest().clone());
+                    definitions.insert(index, definition);
                     files.insert(index, (metadata.key(), file.clone()));
                 }
             }
@@ -215,10 +522,9 @@ impl VerifiedPages {
                 "offline media preparation exceeds its fixed resources"
             }
         };
-        match self
-            .files
-            .binary_search_by_key(&failure.key, |(key, _)| *key)
-        {
+        match self.files.binary_search_by_key(&failure.key, |(key, _)| {
+            hex_engine::StreamResourceKey::Audio(*key)
+        }) {
             Ok(index) => ExportError::Media(format!(
                 "{reason}: {}",
                 self.files[index].1.path().display()
@@ -264,7 +570,7 @@ impl VerifiedPages {
                     let key = self.keys.first().map(|key| key.source);
                     if let Some(key) = key {
                         let mut failures = [StreamFailure {
-                            key,
+                            key: key.into(),
                             page_index: 0,
                             kind,
                         }];
@@ -336,7 +642,18 @@ impl VerifiedPages {
         self.missed = false;
         let maximum = self.config.page_buffers;
         let extents = &mut self.extents;
-        let mut visit = |extent: StreamPageExtent| {
+        let mut visit = |extent: hex_engine::StreamResourceExtent| {
+            let hex_engine::StreamResourceKey::Audio(source) = extent.source else {
+                return Err(hex_engine::Invalid(
+                    "offline scalar source capture is not prepared",
+                ));
+            };
+            let extent = StreamPageExtent {
+                source,
+                page_index: extent.page_index,
+                start: extent.start,
+                end: extent.end,
+            };
             if control.is_cancelled() {
                 return Err(hex_engine::Invalid("export cancelled"));
             }
@@ -429,7 +746,7 @@ impl VerifiedPages {
             runtime.wake_worker();
             runtime.pump_ready(self.config.max_ready_pages_per_pump);
             let mut failures = [StreamFailure {
-                key: first_key.source,
+                key: first_key.source.into(),
                 page_index: 0,
                 kind: StreamFailureKind::Cancelled,
             }];
@@ -459,7 +776,7 @@ impl VerifiedPages {
                     "media pages timed out; check the source disk and retry".into(),
                 ));
             }
-            std::thread::sleep(POLL);
+            std::thread::sleep(PAGE_POLL);
         }
     }
 }
@@ -578,6 +895,7 @@ pub(super) fn resident_seek_storage_bytes(
                     "verified seek source binding is missing",
                 ))
         },
+        sources.repitches().requirements(),
         None,
         StreamConfig::initial(),
         &AtomicBool::new(false),
@@ -631,25 +949,10 @@ pub(super) fn resident_seek_storage_bytes(
 pub(super) fn prepare_resident_seek(
     request: hex_session::service::ResidentFileSeekRequest<'_>,
 ) -> Result<hex_engine::playback::Playback, hex_engine::ArrangementPrerollError> {
-    let spec = request.spec();
-    let cancelled = request.cancelled();
-    if request.sources().context().project_generation != spec.generation {
-        return Err(hex_engine::ArrangementPrerollError::MediaPreparation(
-            "file seek source context differs",
-        ));
-    }
-    check(cancelled).map_err(seek_error)?;
-    let section = match spec.mode {
-        hex_session::arrangement_seek::ArrangementSeekMode::SectionLoop(region) => Some(region),
-        hex_session::arrangement_seek::ArrangementSeekMode::Interactive => None,
-        _ => {
-            return Err(hex_engine::ArrangementPrerollError::MediaPreparation(
-                "ordinary seek requires interactive policy",
-            ));
-        }
-    };
-    let mut pages = VerifiedPages::capture_files(
-        &spec.prepared_revision,
+    let runtime = prepare_file_seek_runtime(
+        request.spec(),
+        request.resources(),
+        request.sources().context(),
         |key| {
             request
                 .sources()
@@ -661,24 +964,80 @@ pub(super) fn prepare_resident_seek(
                     "verified seek source binding is missing",
                 ))
         },
+        request.sources().repitches().requirements(),
+        request.cancelled(),
+    )?;
+    hex_engine::playback::Playback::from_interactive_arrangement_preroll(runtime)
+}
+
+// Borrowed factual inputs only: the request's canonical custody and native
+// publication remain with their owners. This helper joins all preparation pages.
+fn prepare_file_seek_runtime<'a>(
+    spec: &hex_session::arrangement_seek::ArrangementSeekSpec,
+    resources: &hex_engine::native_device_resources::PreparedDeviceResources,
+    context: hex_engine::AudioSourceContext,
+    resolve: impl FnMut(StreamSourceKey) -> Result<&'a VerifiedAudioFile, ExportError>,
+    repitches: &[hex_engine::audio_transform::StreamedRepitchRequirement],
+    cancelled: &AtomicBool,
+) -> Result<SessionPlayback, hex_engine::ArrangementPrerollError> {
+    if context.project_generation != spec.generation {
+        return Err(hex_engine::ArrangementPrerollError::MediaPreparation(
+            "file seek source context differs",
+        ));
+    }
+    check(cancelled).map_err(seek_error)?;
+    let section = match spec.mode {
+        hex_session::arrangement_seek::ArrangementSeekMode::SectionLoop(region) => Some(region),
+        hex_session::arrangement_seek::ArrangementSeekMode::Interactive
+        | hex_session::arrangement_seek::ArrangementSeekMode::SectionOnce(_)
+        | hex_session::arrangement_seek::ArrangementSeekMode::HistoryPreservingInteractive => None,
+        _ => {
+            return Err(hex_engine::ArrangementPrerollError::MediaPreparation(
+                "ordinary seek requires interactive policy",
+            ));
+        }
+    };
+    let mut pages = VerifiedPages::capture_files(
+        &spec.prepared_revision,
+        resolve,
+        repitches,
         None,
         StreamConfig::initial(),
         cancelled,
     )
     .map_err(seek_error)?;
-    let runtime = SessionPlayback::prepare_ordinary_arrangement_preroll_with_pages(
-        Arc::clone(&spec.prepared_revision),
-        request.resources(),
-        spec.destination_frame,
-        spec.work_budget_frames,
-        spec.start_playing,
-        section,
-        cancelled,
-        &mut pages,
-    )?;
+    let runtime = if spec.mode
+        == hex_session::arrangement_seek::ArrangementSeekMode::HistoryPreservingInteractive
+    {
+        SessionPlayback::prepare_history_preserving_arrangement_preroll_with_pages(
+            Arc::clone(&spec.prepared_revision),
+            Some(resources),
+            spec.destination_frame,
+            spec.work_budget_frames,
+            spec.start_playing,
+            cancelled,
+            &mut pages,
+        )?
+    } else {
+        SessionPlayback::prepare_ordinary_arrangement_preroll_with_pages(
+            Arc::clone(&spec.prepared_revision),
+            resources,
+            spec.destination_frame,
+            spec.work_budget_frames,
+            spec.start_playing,
+            section,
+            cancelled,
+            &mut pages,
+        )?
+    };
     pages.finish_pages(cancelled).map_err(seek_error)?;
-    hex_engine::playback::Playback::from_interactive_arrangement_preroll(runtime)
+    Ok(runtime)
 }
 
 #[cfg(all(test, feature = "allocation-probe"))]
+#[path = "streamed_export/test_support.rs"]
 pub(crate) mod test_support;
+
+#[cfg(test)]
+#[path = "streamed_export/tests.rs"]
+mod tests;

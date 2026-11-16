@@ -1,0 +1,550 @@
+//! One capture operation in the original completion allocation. Worker and
+//! joining control use try_lock only; no lock spans native socket/SDK I/O.
+//! The original immutable payload moves from the native host through the
+//! worker and slot to joining control. Only one result is retained at a time.
+//! Worker storage quotes that payload explicitly, separate from protocol
+//! construction temporaries. The audio callback cannot access this mailbox.
+use super::*;
+use hex_lattice_contract::NativeDeviceState;
+use hex_plugin_host::Error;
+use hex_plugin_host::protocol::StateCaptureRefusal;
+use std::sync::{TryLockError, Weak};
+use std::time::Instant;
+mod stopped;
+#[cfg(test)]
+mod tests;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    Live,
+    Stopped,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Phase {
+    Idle,
+    Requested,
+    Complete,
+}
+
+// Keep this reservation tied to the native codec, whose wire profile is still
+// narrower than the persisted project envelope.
+pub(super) const MAX_RETAINED_PAYLOAD_BYTES: usize = hex_plugin_state::MAX_ENVELOPE_BYTES;
+
+pub(super) struct Slot {
+    pub(super) parameter_change: super::parameter_change::Slot,
+    pub(super) controller: super::controller::Slot,
+    pub(super) parameters: super::parameters::NativeParameterValues,
+    pub(super) edits_pending: bool,
+    pub(super) recovery_edits: bool,
+    pub(super) flush_idle_edits: bool,
+    pub(super) edits_result: Option<hex_plugin_host::protocol::RecoveryEdits>,
+    ordinal: u64,
+    phase: Phase,
+    mode: Mode,
+    terminal: Option<Result<NativeDeviceState, StateCaptureRefusal>>,
+}
+impl Default for Slot {
+    fn default() -> Self {
+        Self {
+            parameter_change: super::parameter_change::Slot::default(),
+            controller: super::controller::Slot::default(),
+            parameters: super::parameters::NativeParameterValues::default(),
+            edits_pending: false,
+            recovery_edits: false,
+            flush_idle_edits: false,
+            edits_result: None,
+            ordinal: 0,
+            phase: Phase::Idle,
+            mode: Mode::Live,
+            terminal: None,
+        }
+    }
+}
+impl Slot {
+    /// Publish the worker's terminal for the requested `ordinal`: captured
+    /// bytes or a non-terminal helper refusal. Any other slot state is a
+    /// protocol fault.
+    fn complete(
+        &mut self,
+        ordinal: u64,
+        outcome: Result<NativeDeviceState, StateCaptureRefusal>,
+    ) -> Result<(), Error> {
+        if self.ordinal != ordinal || self.phase != Phase::Requested {
+            return Err(Error::Protocol("native capture operation changed"));
+        }
+        self.terminal = Some(outcome);
+        self.phase = Phase::Complete;
+        Ok(())
+    }
+
+    /// Consume a completed terminal and free the mailbox, or `None` while the
+    /// operation is still pending.
+    fn take_terminal(&mut self) -> Option<Result<NativeDeviceState, StateCaptureRefusal>> {
+        let terminal = self.terminal.take()?;
+        self.phase = Phase::Idle;
+        Some(terminal)
+    }
+}
+pub(super) struct Work {
+    ordinal: Option<u64>,
+    result: Option<Result<NativeDeviceState, StateCaptureRefusal>>,
+    poll_after: Instant,
+}
+impl Default for Work {
+    fn default() -> Self {
+        Self {
+            ordinal: None,
+            result: None,
+            poll_after: Instant::now(),
+        }
+    }
+}
+impl Work {
+    pub(super) fn between_polls(&self) -> bool {
+        self.is_in_flight() && Instant::now() < self.poll_after
+    }
+    pub(super) fn is_in_flight(&self) -> bool {
+        self.ordinal.is_some() && self.result.is_none()
+    }
+}
+
+/// How the worker acknowledged the input before this capture.
+/// An idle flush has no PCM sequence, frame, or output-delivery receipt.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NativeWorkerParameterApplication {
+    ProcessedPcm,
+    IdleFlushed,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct AppliedParameter {
+    ordinal: u64,
+    parameter: u32,
+    normalized_bits: u64,
+    application: NativeWorkerParameterApplication,
+}
+
+impl AppliedParameter {
+    fn current(self, slot: &super::parameter_change::Slot) -> bool {
+        let current = match self.application {
+            NativeWorkerParameterApplication::ProcessedPcm => slot.processed_parameter(),
+            NativeWorkerParameterApplication::IdleFlushed => slot.idle_flushed_parameter(),
+        };
+        current == Some((self.ordinal, self.parameter, self.normalized_bits))
+    }
+}
+
+/// Correlation with this exact joining worker's original shared cell, binding
+/// and operation. The weak anchor owns no processor, endpoint or native lease.
+/// Caller-owned token storage/weak alias is separate from constructor handles;
+/// retain at most the one current operation and retire it at its exact terminal.
+pub struct NativeWorkerCapture {
+    source: Weak<Signal>,
+    binding: Binding,
+    ordinal: u64,
+    mode: Mode,
+    after_parameter: Option<AppliedParameter>,
+}
+
+#[cfg(test)]
+impl NativeWorkerCapture {
+    pub(crate) fn original_worker_released_on_control(&self) -> bool {
+        self.source.upgrade().is_none()
+    }
+}
+
+/// State observed after one exact input on this worker, explicitly recording
+/// whether it was processed in PCM or acknowledged by an idle flush. This is
+/// an ordering fact, not PCM delivery, controller readback or graph authority.
+pub struct NativeWorkerStateAfterParameter {
+    state: NativeDeviceState,
+    source: Weak<Signal>,
+    binding: Binding,
+    parameter_ordinal: u64,
+    parameter: u32,
+    normalized_bits: u64,
+    application: NativeWorkerParameterApplication,
+}
+
+impl NativeWorkerStateAfterParameter {
+    pub fn state(&self) -> &NativeDeviceState {
+        &self.state
+    }
+
+    pub fn parameter(&self) -> u32 {
+        self.parameter
+    }
+
+    /// How this worker acknowledged the input; this never proves final output.
+    pub fn application(&self) -> NativeWorkerParameterApplication {
+        self.application
+    }
+
+    /// The value actually sent in the SDK input, not plugin readback.
+    pub fn normalized_input(&self) -> f64 {
+        f64::from_bits(self.normalized_bits)
+    }
+}
+
+#[allow(clippy::large_enum_variant)] // One bounded control-side result; keep capture transfer allocation-free.
+pub enum NativeWorkerSequencedCaptureProgress {
+    Pending,
+    Captured(NativeWorkerStateAfterParameter),
+    Failed,
+    Refused(StateCaptureRefusal),
+}
+/// Data/progress only, never a canonical edit, save or graph acknowledgement.
+#[derive(Debug)]
+pub enum NativeWorkerCaptureProgress {
+    Pending,
+    Captured(NativeDeviceState),
+    /// Original transport is revoked; its error/native lease remains in the
+    /// same worker terminal for joining control and independent disposal.
+    Failed,
+    /// The helper refused only this capture (state too large, or edits kept
+    /// arriving). The worker and its transport keep running; the mailbox is
+    /// free and a later capture may begin.
+    Refused(StateCaptureRefusal),
+}
+
+impl NativeWorker {
+    /// Reserve one current-state capture while the original callback may be
+    /// loaned. Live requests do no SDK/socket work here. The original worker
+    /// starts/polls them between PCM exchanges, at most one control exchange per
+    /// iteration and one status poll per millisecond. Full/contended admission
+    /// refuses without disturbing an existing capture or callback. After normal
+    /// transport revocation, joining control first observes the original thread's
+    /// terminal and services that same retained State/channel. This does not
+    /// revive transport, return a callback or grant graph publication.
+    pub fn begin_state_capture_on_control(&mut self) -> Result<NativeWorkerCapture, &'static str> {
+        self.begin_state_capture(None)
+    }
+
+    /// Capture after a successfully processed PCM input on this exact worker.
+    /// A newer input invalidates the ordering fact, even if it is withdrawn.
+    pub fn begin_state_capture_after_parameter_on_control(
+        &mut self,
+        input: &super::NativeWorkerParameterChange,
+    ) -> Result<NativeWorkerCapture, &'static str> {
+        self.require_parameter_change_source(input)?;
+        self.begin_state_capture(Some((
+            input,
+            NativeWorkerParameterApplication::ProcessedPcm,
+        )))
+    }
+
+    /// Capture after an idle flush on this exact live worker.
+    pub fn begin_state_capture_after_idle_parameter_on_control(
+        &mut self,
+        input: &super::NativeWorkerParameterChange,
+    ) -> Result<NativeWorkerCapture, &'static str> {
+        self.require_parameter_change_source(input)?;
+        self.begin_state_capture(Some((input, NativeWorkerParameterApplication::IdleFlushed)))
+    }
+
+    fn begin_state_capture(
+        &mut self,
+        input: Option<(
+            &super::NativeWorkerParameterChange,
+            NativeWorkerParameterApplication,
+        )>,
+    ) -> Result<NativeWorkerCapture, &'static str> {
+        if self.retirement_requested || !self.retains_original_source_on_control() {
+            return Err("native capture source is not live");
+        }
+        let mode = if self.transport_is_live_on_control() {
+            Mode::Live
+        } else {
+            if input.is_some() {
+                return Err("native sequenced capture requires a live source");
+            }
+            self.prepare_stopped_capture()?;
+            Mode::Stopped
+        };
+        let mut slot = self
+            .reaper
+            .completed
+            .capture
+            .try_lock()
+            .map_err(|_| "native capture mailbox is busy")?;
+        if slot.phase != Phase::Idle {
+            return Err("native capture is already pending");
+        }
+        let after_parameter = match input {
+            Some((input, application)) => {
+                let current = match application {
+                    NativeWorkerParameterApplication::ProcessedPcm
+                        if slot.parameter_change.is_processed(input) =>
+                    {
+                        slot.parameter_change.processed_parameter()
+                    }
+                    NativeWorkerParameterApplication::IdleFlushed
+                        if slot.parameter_change.is_idle_flushed(input) =>
+                    {
+                        slot.parameter_change.idle_flushed_parameter()
+                    }
+                    _ => None,
+                };
+                let (ordinal, parameter, normalized_bits) = current
+                    .ok_or("native parameter input was not the latest matching operation")?;
+                Some(AppliedParameter {
+                    ordinal,
+                    parameter,
+                    normalized_bits,
+                    application,
+                })
+            }
+            None => None,
+        };
+        let ordinal = slot
+            .ordinal
+            .checked_add(1)
+            .ok_or("native capture ordinal exhausted")?;
+        slot.ordinal = ordinal;
+        slot.phase = Phase::Requested;
+        slot.mode = mode;
+        self.reaper.completed.capture_requested.store(true, Release);
+        Ok(NativeWorkerCapture {
+            source: Arc::downgrade(&self.reaper.completed),
+            binding: self.binding,
+            ordinal,
+            mode,
+            after_parameter,
+        })
+    }
+
+    /// Poll exactly the admitted operation. A stale/foreign/consumed token
+    /// refuses without consuming the current result. Callback revocation wins
+    /// over a live token's completed result. A separately admitted stopped token
+    /// copies data only after the healthy original worker returns; neither mode
+    /// resurrects transport or a returned source.
+    /// The captured payload is transferred intact. Host gains and asset state
+    /// remain the canonical snapshot owner's responsibility.
+    /// Pending also includes shared-slot contention before its exact state check.
+    pub fn poll_state_capture_on_control(
+        &mut self,
+        request: &NativeWorkerCapture,
+    ) -> Result<NativeWorkerCaptureProgress, &'static str> {
+        if request.after_parameter.is_some() {
+            return Err("native sequenced capture requires its exact terminal");
+        }
+        self.poll_state_capture(request)
+    }
+
+    /// Return the captured data and original-worker ordering fact together.
+    /// A newer parameter operation is reported only after the capture terminal
+    /// has been drained, so the original mailbox cannot be stranded.
+    pub fn poll_state_capture_after_parameter_on_control(
+        &mut self,
+        request: &NativeWorkerCapture,
+    ) -> Result<NativeWorkerSequencedCaptureProgress, &'static str> {
+        let applied = request
+            .after_parameter
+            .ok_or("native sequenced capture differs")?;
+        match self.poll_state_capture(request)? {
+            NativeWorkerCaptureProgress::Pending => {
+                Ok(NativeWorkerSequencedCaptureProgress::Pending)
+            }
+            NativeWorkerCaptureProgress::Failed => Ok(NativeWorkerSequencedCaptureProgress::Failed),
+            NativeWorkerCaptureProgress::Refused(reason) => {
+                Ok(NativeWorkerSequencedCaptureProgress::Refused(reason))
+            }
+            NativeWorkerCaptureProgress::Captured(state) => {
+                let fact = NativeWorkerStateAfterParameter {
+                    state,
+                    source: Arc::downgrade(&self.reaper.completed),
+                    binding: self.binding,
+                    parameter_ordinal: applied.ordinal,
+                    parameter: applied.parameter,
+                    normalized_bits: applied.normalized_bits,
+                    application: applied.application,
+                };
+                Ok(NativeWorkerSequencedCaptureProgress::Captured(fact))
+            }
+        }
+    }
+
+    /// Revalidate the same original worker and latest matching acknowledged input. This
+    /// observation does not reserve the source against a subsequent change.
+    pub fn sequenced_capture_is_current_on_control(
+        &self,
+        fact: &NativeWorkerStateAfterParameter,
+    ) -> Result<bool, &'static str> {
+        if fact.binding != self.binding
+            || fact.source.as_ptr() != Arc::as_ptr(&self.reaper.completed)
+        {
+            return Ok(false);
+        }
+        if self.retirement_requested
+            || !self.transport_is_live_on_control()
+            || !self.retains_original_source_on_control()
+        {
+            return Ok(false);
+        }
+        let slot = match self.reaper.completed.capture.try_lock() {
+            Ok(slot) => slot,
+            Err(TryLockError::WouldBlock) => return Err("native capture mailbox is busy"),
+            Err(TryLockError::Poisoned(_)) => return Err("native capture mailbox failed"),
+        };
+        Ok(AppliedParameter {
+            ordinal: fact.parameter_ordinal,
+            parameter: fact.parameter,
+            normalized_bits: fact.normalized_bits,
+            application: fact.application,
+        }
+        .current(&slot.parameter_change))
+    }
+
+    /// Observe the paired input generation only after the original worker
+    /// acknowledged this exact captured input. This can become stale immediately;
+    /// it is neither a graph continuation nor permission to publish a candidate.
+    /// The returned weak source identity must be reclaimed on control.
+    pub fn observe_sequenced_capture_input_on_control(
+        &self,
+        fact: &NativeWorkerStateAfterParameter,
+    ) -> Result<Option<hex_plugin_host::transport::ParameterInputSource>, &'static str> {
+        if !self.sequenced_capture_is_current_on_control(fact)? {
+            return Ok(None);
+        }
+        let Some(ordinal) = std::num::NonZeroU64::new(fact.parameter_ordinal) else {
+            return Ok(None);
+        };
+        Ok(self
+            .reaper
+            .control
+            .observe_parameter_input_on_control(ordinal))
+    }
+
+    fn poll_state_capture(
+        &mut self,
+        request: &NativeWorkerCapture,
+    ) -> Result<NativeWorkerCaptureProgress, &'static str> {
+        if request.binding != self.binding
+            || request.source.as_ptr() != Arc::as_ptr(&self.reaper.completed)
+        {
+            return Err("native capture source differs");
+        }
+        if request.mode == Mode::Stopped {
+            // Validate before servicing: an old/foreign token must not advance
+            // another operation. The guard never spans native channel I/O.
+            match self.reaper.completed.capture.try_lock() {
+                Ok(slot)
+                    if slot.ordinal == request.ordinal
+                        && slot.phase != Phase::Idle
+                        && slot.mode == request.mode => {}
+                Ok(_) => return Err("native capture operation differs"),
+                Err(TryLockError::WouldBlock) => return Ok(NativeWorkerCaptureProgress::Pending),
+                Err(TryLockError::Poisoned(_)) => return Err("native capture mailbox failed"),
+            }
+            match self.service_stopped_capture() {
+                Ok(()) => {}
+                Err("native preparation is busy") => {
+                    return Ok(NativeWorkerCaptureProgress::Pending);
+                }
+                Err(_) => return Ok(NativeWorkerCaptureProgress::Failed),
+            }
+        }
+        let mut slot = match self.reaper.completed.capture.try_lock() {
+            Ok(slot) => slot,
+            Err(TryLockError::WouldBlock) => return Ok(NativeWorkerCaptureProgress::Pending),
+            Err(TryLockError::Poisoned(_)) => return Err("native capture mailbox failed"),
+        };
+        if slot.ordinal != request.ordinal || slot.phase == Phase::Idle || slot.mode != request.mode
+        {
+            return Err("native capture operation differs");
+        }
+        if request.mode == Mode::Live && !self.transport_is_live_on_control() {
+            return Ok(NativeWorkerCaptureProgress::Failed);
+        }
+        // Return ownership outside the shared slot. The next exact operation
+        // can start after this terminal has been consumed.
+        let Some(terminal) = slot.take_terminal() else {
+            return Ok(NativeWorkerCaptureProgress::Pending);
+        };
+        let superseded = request
+            .after_parameter
+            .is_some_and(|parameter| !parameter.current(&slot.parameter_change));
+        drop(slot);
+        if superseded {
+            return Err("native sequenced capture was superseded");
+        }
+        match terminal {
+            Ok(captured) => Ok(NativeWorkerCaptureProgress::Captured(captured)),
+            Err(refusal) => Ok(NativeWorkerCaptureProgress::Refused(refusal)),
+        }
+    }
+}
+
+impl State {
+    pub(super) fn advance_capture(&mut self, signal: &Signal) -> Result<(), Error> {
+        let Some(Processor::Native(instance)) = self.processor.as_mut() else {
+            return Ok(());
+        };
+        if self.capture.ordinal.is_none() {
+            if !signal.capture_requested.load(Acquire) {
+                return Ok(());
+            }
+            let slot = match signal.capture.try_lock() {
+                Ok(slot) => slot,
+                Err(TryLockError::WouldBlock) => return Ok(()),
+                Err(TryLockError::Poisoned(_)) => {
+                    return Err(Error::Protocol("native capture mailbox failed"));
+                }
+            };
+            if slot.phase != Phase::Requested {
+                return Ok(());
+            }
+            let ordinal = slot.ordinal;
+            drop(slot);
+            // A refusal retires only this operation; the lease keeps running.
+            match instance.begin_state_capture_on_worker() {
+                Ok(()) => {}
+                Err(Error::CaptureRefused(refusal)) => self.capture.result = Some(Err(refusal)),
+                Err(error) => return Err(error),
+            }
+            self.capture.ordinal = Some(ordinal);
+        } else if self.capture.result.is_none() {
+            if Instant::now() < self.capture.poll_after {
+                return Ok(());
+            }
+            match instance.poll_state_capture_on_worker() {
+                Ok(Some(state)) => {
+                    if state.type_id() != hex_plugin_state::TYPE_ID
+                        || state.state_version() != hex_plugin_state::STATE_VERSION
+                        || state.payload().len() > MAX_RETAINED_PAYLOAD_BYTES
+                    {
+                        return Err(Error::Protocol("native captured state profile differs"));
+                    }
+                    self.capture.result = Some(Ok(state));
+                }
+                Ok(None) => {}
+                Err(Error::CaptureRefused(refusal)) => self.capture.result = Some(Err(refusal)),
+                Err(error) => return Err(error),
+            }
+        }
+        self.capture.poll_after = Instant::now()
+            .checked_add(Duration::from_millis(1))
+            .ok_or(Error::Protocol("native capture poll time exhausted"))?;
+        if let Some(ordinal) = self.capture.ordinal
+            && self.capture.result.is_some()
+        {
+            let mut slot = match signal.capture.try_lock() {
+                Ok(slot) => slot,
+                Err(TryLockError::WouldBlock) => return Ok(()),
+                Err(TryLockError::Poisoned(_)) => {
+                    return Err(Error::Protocol("native capture mailbox failed"));
+                }
+            };
+            let outcome = self
+                .capture
+                .result
+                .take()
+                .ok_or(Error::Protocol("native capture result is missing"))?;
+            slot.complete(ordinal, outcome)?;
+            signal.capture_requested.store(false, Release);
+            self.capture.ordinal = None;
+        }
+        Ok(())
+    }
+}

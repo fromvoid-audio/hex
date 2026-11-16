@@ -183,7 +183,12 @@ impl SessionAssembly {
                 hex_devices::sampler::catalog::PreparedSamplerInstrument::from_runtime_on_control(
                     config.prepared.clone(),
                 );
-            for note in clip.source().notes().iter().filter(|_| clip.active()) {
+            for note in clip
+                .source()
+                .notes()
+                .iter()
+                .filter(|note| clip.active() && note.active())
+            {
                 prepared
                     .validate_event_note(note.pitch(), note.velocity())
                     .map_err(|_| AudioStorageError::UnsupportedGraph)?;

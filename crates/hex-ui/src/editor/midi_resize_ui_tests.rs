@@ -15,6 +15,7 @@ fn group_edges_anchor_each_opposite_edge_and_commit_once_after_release(cx: &mut 
                     notes: [(60, 1, 2), (64, 2, 1)]
                         .into_iter()
                         .map(|(pitch, start, halves)| MidiNoteInsert {
+                            active: true,
                             start: BeatTime::from_quarters(start).unwrap(),
                             duration: BeatTime::from_raw(BeatTime::ONE.raw() * halves / 2),
                             pitch,
@@ -63,9 +64,15 @@ fn group_edges_anchor_each_opposite_edge_and_commit_once_after_release(cx: &mut 
             assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before)
         });
         visual.update(|window, cx| editor.update(cx, |v, _| v.midi_focus.focus(window)));
+        // Trailing ends snap only while cmd is held; leading edges keep the grid.
+        let snap = if leading {
+            Modifiers::default()
+        } else {
+            Modifiers::command()
+        };
         visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
-        visual.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
-        visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(end, Some(MouseButton::Left), snap);
+        visual.simulate_mouse_up(end, MouseButton::Left, snap);
         pump(&editor, &mut visual);
         let after = editor.read_with(&visual, |v, _| {
             let notes = v
@@ -139,7 +146,7 @@ fn explicitly_selected_tiny_note_edges_resize_with_matching_hover_and_stable_id(
                     generation: v.project_generation,
                     revision: state.revision,
                     clip,
-                    beat_start: v.piano_beat_start.raw(),
+                    beat_start: v.piano_beat_start,
                     beat_span: v.piano_beat_span.raw(),
                     pitch_low: v.piano_pitch_low,
                     pitch_rows: v.piano_pitch_rows,
@@ -228,6 +235,7 @@ fn group_leading_resize_paints_and_commits_the_same_destructive_prefix(cx: &mut 
                 notes: [(0, 60), (1, 60), (2, 64)]
                     .into_iter()
                     .map(|(start, pitch)| MidiNoteInsert {
+                        active: true,
                         start: BeatTime::from_quarters(start).unwrap(),
                         duration: BeatTime::ONE,
                         pitch,

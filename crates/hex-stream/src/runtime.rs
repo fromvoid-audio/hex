@@ -1,8 +1,8 @@
 use crate::{
     endpoint::{Endpoint, EndpointQueues, PageBuffer},
     types::{
-        CatalogFootprint, SourceDefinition, StreamConfig, StreamFailure, StreamFailureKind,
-        StreamRuntimeError, VerifiedCatalog,
+        CatalogFootprint, ScalarSourceDefinition, SourceDefinition, StreamConfig, StreamFailure,
+        StreamFailureKind, StreamRuntimeError, VerifiedCatalog,
     },
     worker::{WorkerQueues, run_worker},
 };
@@ -26,9 +26,9 @@ pub use storage::{
 };
 mod readiness;
 pub use readiness::{
-    ConstructorPageLoan, PreparedRolePromotion, ProtectedStreamPages, ProtectionRole,
-    ReadinessArtifact, ReadinessProgress, ReadinessRefusal, ReadinessStamp,
-    StreamReadinessReservation,
+    ConstructorPageLoan, CurrentQuantumRefusal, CurrentQuantumReservation, PreparedRolePromotion,
+    ProtectedStreamPages, ProtectionRole, ReadinessArtifact, ReadinessProgress, ReadinessRefusal,
+    ReadinessStamp, StreamReadinessReservation,
 };
 mod native_custody;
 pub use native_custody::{
@@ -37,6 +37,8 @@ pub use native_custody::{
 mod pending;
 pub use pending::{PendingStreamDomain, StreamPreparationAllowance, StreamPreparationBound};
 mod disposal;
+#[cfg(test)]
+mod read_outcome_tests;
 pub use disposal::{PreparedStreamDisposal, StreamDisposalError, StreamDisposalPhase};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -117,8 +119,38 @@ impl CatalogLease {
             .is_some_and(|member| member == source)
     }
 
-    /// Distinguishes separate catalogs even when they reuse identical
-    /// generation, asset IDs, and source metadata.
+    /// Exact verified scalar facts, including content and projection identity.
+    pub fn covers_scalar_source(&self, source: &hex_engine::ScalarSourceMetadata) -> bool {
+        self.catalog
+            .scalar_sources
+            .binary_search_by_key(&source.key(), hex_engine::ScalarSourceMetadata::key)
+            .ok()
+            .and_then(|index| self.catalog.scalar_sources.get(index))
+            .is_some_and(|actual| actual == source)
+    }
+    pub fn scalar_sources(&self) -> &[hex_engine::ScalarSourceMetadata] {
+        &self.catalog.scalar_sources
+    }
+    pub fn scalar_shared_data(&self) -> &[crate::ScalarSharedData] {
+        &self.catalog.scalar_shared_data
+    }
+
+    /// Key membership for ambiguity checks after complete fact admission.
+    pub fn covers_resource_key(&self, key: hex_engine::StreamResourceKey) -> bool {
+        match key {
+            hex_engine::StreamResourceKey::Audio(key) => self
+                .catalog
+                .sources
+                .binary_search_by_key(&key, hex_engine::StreamedSourceMetadata::key)
+                .is_ok(),
+            hex_engine::StreamResourceKey::Scalar(key) => self
+                .catalog
+                .scalar_sources
+                .binary_search_by_key(&key, hex_engine::ScalarSourceMetadata::key)
+                .is_ok(),
+        }
+    }
+    /// Distinguishes actual catalogs even when all source facts are identical.
     pub fn same_catalog(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.owner, &other.owner) && Arc::ptr_eq(&self.pair_id, &other.pair_id)
     }
@@ -234,6 +266,24 @@ impl StreamRuntime {
             definitions,
             #[cfg(test)]
             None,
+            #[cfg(feature = "test-support")]
+            None,
+        )
+    }
+
+    /// Construct a real stream worker with one optional test-only page hold.
+    #[cfg(feature = "test-support")]
+    pub fn new_with_page_gate(
+        config: StreamConfig,
+        definitions: Vec<SourceDefinition>,
+        gate: crate::test_support::PageGate,
+    ) -> Result<Self, StreamRuntimeError> {
+        Self::new_inner(
+            config,
+            definitions,
+            #[cfg(test)]
+            None,
+            Some(gate),
         )
     }
 
@@ -241,6 +291,7 @@ impl StreamRuntime {
         config: StreamConfig,
         definitions: Vec<SourceDefinition>,
         #[cfg(test)] test_hooks: Option<crate::worker::TestWorkerHooks>,
+        #[cfg(feature = "test-support")] page_gate: Option<crate::test_support::PageGate>,
     ) -> Result<Self, StreamRuntimeError> {
         Self::new_factory(
             config,
@@ -248,6 +299,27 @@ impl StreamRuntime {
             false,
             #[cfg(test)]
             test_hooks,
+            #[cfg(feature = "test-support")]
+            page_gate,
+        )
+        .map(|(runtime, _)| runtime)
+    }
+    /// Mixed resources use the same worker, queues, fixed page pool and exact
+    /// pair disposal contract. Scalar readers/projections move to the worker.
+    pub fn spawn_with_scalar_sources(
+        config: StreamConfig,
+        definitions: Vec<SourceDefinition>,
+        scalar_definitions: Vec<ScalarSourceDefinition>,
+    ) -> Result<Self, StreamRuntimeError> {
+        Self::new_factory_with_scalar_sources(
+            config,
+            definitions,
+            scalar_definitions,
+            false,
+            #[cfg(test)]
+            None,
+            #[cfg(feature = "test-support")]
+            None,
         )
         .map(|(runtime, _)| runtime)
     }
@@ -256,21 +328,61 @@ impl StreamRuntime {
         definitions: Vec<SourceDefinition>,
         reserve_disposal: bool,
         #[cfg(test)] test_hooks: Option<crate::worker::TestWorkerHooks>,
+        #[cfg(feature = "test-support")] page_gate: Option<crate::test_support::PageGate>,
+    ) -> Result<(Self, Option<PreparedStreamDisposal>), StreamRuntimeError> {
+        Self::new_factory_with_scalar_sources(
+            config,
+            definitions,
+            Vec::new(),
+            reserve_disposal,
+            #[cfg(test)]
+            test_hooks,
+            #[cfg(feature = "test-support")]
+            page_gate,
+        )
+    }
+    fn new_factory_with_scalar_sources(
+        config: StreamConfig,
+        definitions: Vec<SourceDefinition>,
+        scalar_definitions: Vec<ScalarSourceDefinition>,
+        reserve_disposal: bool,
+        #[cfg(test)] test_hooks: Option<crate::worker::TestWorkerHooks>,
+        #[cfg(feature = "test-support")] page_gate: Option<crate::test_support::PageGate>,
     ) -> Result<(Self, Option<PreparedStreamDisposal>), StreamRuntimeError> {
         let config = config.validate()?;
-        if definitions.len() > config.max_sources {
+        if definitions
+            .len()
+            .checked_add(scalar_definitions.len())
+            .is_none_or(|count| count > config.max_sources)
+        {
             return Err(StreamRuntimeError::InvalidConfiguration);
         }
+        crate::worker::preparation_data_bound_with_scalar_sources(
+            config,
+            &definitions,
+            definitions.capacity(),
+            &scalar_definitions,
+            scalar_definitions.capacity(),
+        )
+        .ok_or(StreamRuntimeError::InvalidConfiguration)?;
         let mut source_keys = Vec::new();
         source_keys
-            .try_reserve_exact(definitions.len())
+            .try_reserve_exact(definitions.len() + scalar_definitions.len())
             .map_err(|_| StreamRuntimeError::AllocationFailed)?;
         for definition in &definitions {
-            if definition.key != definition.metadata.key() || source_keys.contains(&definition.key)
+            if definition.key != definition.metadata.key()
+                || source_keys.contains(&hex_engine::StreamResourceKey::from(definition.key))
             {
                 return Err(StreamRuntimeError::InvalidConfiguration);
             }
-            source_keys.push(definition.key);
+            source_keys.push(definition.key.into());
+        }
+        for definition in &scalar_definitions {
+            let key = hex_engine::StreamResourceKey::from(definition.metadata().key());
+            if source_keys.contains(&key) {
+                return Err(StreamRuntimeError::InvalidConfiguration);
+            }
+            source_keys.push(key);
         }
         source_keys.sort_unstable();
         let mut free_pages = Vec::new();
@@ -279,8 +391,9 @@ impl StreamRuntime {
             .map_err(|_| StreamRuntimeError::AllocationFailed)?;
         let mut transport_data = crate::TransportData::default();
         for _ in 0..config.page_buffers {
-            let (page, old_capacity) = PageBuffer::new_with_capacity()
-                .map_err(|_| StreamRuntimeError::AllocationFailed)?;
+            let (page, old_capacity) =
+                PageBuffer::new_with_capacity(!scalar_definitions.is_empty())
+                    .map_err(|_| StreamRuntimeError::AllocationFailed)?;
             transport_data.page_objects = crate::footprint::add(
                 transport_data.page_objects,
                 std::mem::size_of_val(page.as_ref()),
@@ -288,6 +401,8 @@ impl StreamRuntime {
             let PageBuffer {
                 key: _,
                 frames,
+                scalar_values,
+                scalar_coverage,
                 valid_frames: _,
             } = page.as_ref();
             transport_data.pcm_boxes = crate::footprint::add(
@@ -297,11 +412,22 @@ impl StreamRuntime {
                     .checked_mul(std::mem::size_of::<hex_engine::Frame>())
                     .ok_or(StreamRuntimeError::AllocationFailed)?,
             )?;
-            transport_data.page_boxing_overlap = transport_data.page_boxing_overlap.max(
-                old_capacity
-                    .checked_mul(std::mem::size_of::<hex_engine::Frame>())
+            transport_data.scalar_boxes = crate::footprint::add(
+                transport_data.scalar_boxes,
+                scalar_values
+                    .len()
+                    .checked_mul(std::mem::size_of::<f32>())
                     .ok_or(StreamRuntimeError::AllocationFailed)?,
-            );
+            )?;
+            transport_data.scalar_coverage_boxes = crate::footprint::add(
+                transport_data.scalar_coverage_boxes,
+                scalar_coverage
+                    .len()
+                    .checked_mul(std::mem::size_of::<u64>())
+                    .ok_or(StreamRuntimeError::AllocationFailed)?,
+            )?;
+            transport_data.page_boxing_overlap =
+                transport_data.page_boxing_overlap.max(old_capacity);
             free_pages.push(page);
         }
         let (request_tx, request_rx) = RingBuffer::new(config.request_capacity);
@@ -381,15 +507,23 @@ impl StreamRuntime {
             // Now validate the actual control-side capacities before a live
             // JoinHandle can exist. Worker payload is separately capped by its
             // exact source/manifest/kernel/scratch constructor limits.
-            let bound = PendingStreamDomain::preparation_bound(
+            let bound = PendingStreamDomain::preparation_bound_with_scalar_sources(
                 config,
                 &definitions,
                 definitions.capacity(),
+                &scalar_definitions,
+                scalar_definitions.capacity(),
                 None,
             )?;
             let (worker_data, worker_peak) =
-                crate::worker::preparation_data_bound(config, &definitions, definitions.capacity())
-                    .ok_or(StreamRuntimeError::InvalidConfiguration)?;
+                crate::worker::preparation_data_bound_with_scalar_sources(
+                    config,
+                    &definitions,
+                    definitions.capacity(),
+                    &scalar_definitions,
+                    scalar_definitions.capacity(),
+                )
+                .ok_or(StreamRuntimeError::InvalidConfiguration)?;
             let free_handles = free_pages
                 .capacity()
                 .checked_sub(config.page_buffers)
@@ -431,12 +565,15 @@ impl StreamRuntime {
                 let pages = run_worker(
                     config,
                     definitions,
+                    scalar_definitions,
                     free_pages,
                     worker_queues,
                     thread_stop,
                     catalog_sender,
                     #[cfg(test)]
                     test_hooks,
+                    #[cfg(feature = "test-support")]
+                    page_gate,
                 );
                 #[cfg(test)]
                 worker_finished_signal.store(true, Ordering::Release);
@@ -682,10 +819,10 @@ impl StreamControl {
             page_buffers: self.owner.config.page_buffers,
             page_bytes: self
                 .owner
-                .config
-                .page_buffers
-                .saturating_mul(hex_engine::STREAM_PAGE_FRAMES)
-                .saturating_mul(std::mem::size_of::<hex_engine::Frame>()),
+                .transport_data
+                .pcm_boxes
+                .saturating_add(self.owner.transport_data.scalar_boxes)
+                .saturating_add(self.owner.transport_data.scalar_coverage_boxes),
             cached_pages_returned,
             queued_pages_reclaimed,
             held_return_pages_reclaimed,
@@ -755,6 +892,20 @@ impl MediaPages for StreamCallbackPages {
     fn request_page(&mut self, key: StreamSourceKey, page_index: u64) {
         self.endpoint.request_page(key, page_index);
     }
+
+    fn prefetch_page(&mut self, key: StreamSourceKey, page_index: u64) {
+        self.endpoint.prefetch_page(key, page_index);
+    }
+    fn scalar_page(
+        &mut self,
+        key: hex_engine::ScalarSourceKey,
+        page_index: u64,
+    ) -> Option<hex_engine::BorrowedScalarPage<'_>> {
+        self.endpoint.scalar_page(key, page_index)
+    }
+    fn request_scalar_page(&mut self, key: hex_engine::ScalarSourceKey, page_index: u64) {
+        self.endpoint.request_scalar_page(key, page_index);
+    }
 }
 
 impl MediaPages for StreamRuntime {
@@ -769,6 +920,24 @@ impl MediaPages for StreamRuntime {
     fn request_page(&mut self, key: StreamSourceKey, page_index: u64) {
         if let Some(pages) = self.pages.as_mut() {
             pages.request_page(key, page_index);
+        }
+    }
+
+    fn prefetch_page(&mut self, key: StreamSourceKey, page_index: u64) {
+        if let Some(pages) = self.pages.as_mut() {
+            pages.prefetch_page(key, page_index);
+        }
+    }
+    fn scalar_page(
+        &mut self,
+        key: hex_engine::ScalarSourceKey,
+        page_index: u64,
+    ) -> Option<hex_engine::BorrowedScalarPage<'_>> {
+        self.pages.as_mut()?.scalar_page(key, page_index)
+    }
+    fn request_scalar_page(&mut self, key: hex_engine::ScalarSourceKey, page_index: u64) {
+        if let Some(pages) = self.pages.as_mut() {
+            pages.request_scalar_page(key, page_index);
         }
     }
 }
@@ -820,12 +989,20 @@ mod tests {
         let (release_tx, release_rx) = mpsc::sync_channel(1);
         let (publication_tx, publication_rx) = mpsc::sync_channel(2);
         let hooks = crate::worker::TestWorkerHooks {
+            read_gate: None,
+            scalar_steps: None,
             entered: entered_tx,
             release: release_rx,
             publications: publication_tx,
         };
-        let mut runtime =
-            StreamRuntime::new_inner(config, vec![definition], Some(hooks)).expect("runtime");
+        let mut runtime = StreamRuntime::new_inner(
+            config,
+            vec![definition],
+            Some(hooks),
+            #[cfg(feature = "test-support")]
+            None,
+        )
+        .expect("runtime");
         runtime
             .wait_until_ready(Duration::from_secs(3))
             .expect("catalog ready");
@@ -862,6 +1039,314 @@ mod tests {
         runtime
             .shutdown()
             .expect("shutdown joins the delayed worker")
+    }
+
+    #[test]
+    fn full_ready_queue_drains_held_real_worker_page_and_continues() {
+        use hex_engine::StreamedSourceMetadata;
+        use hex_media::{VerifiedWavReader, VerifiedWavReaderLimits, WavReaderLimits};
+        use hex_project::{Command, Created, Editor, Project};
+        use std::time::Instant;
+
+        let wav = crate::worker::tests::Fixture::pcm16_frames(12_001);
+        let limits = VerifiedWavReaderLimits::new(
+            WavReaderLimits::new(2 * 1024 * 1024, 12_001, 128, 32_768),
+            1024 * 1024,
+        );
+        let reader = VerifiedWavReader::open(&wav.0, limits).unwrap();
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 4).unwrap();
+        let Created::Asset(asset) = editor
+            .execute(Command::AddAsset {
+                path: "ready-queue-source.wav".into(),
+                sample_rate: 48_000,
+                frames: 12_001,
+            })
+            .unwrap()
+        else {
+            panic!("asset")
+        };
+        let key = StreamSourceKey::new(106, asset);
+        let metadata = StreamedSourceMetadata::new(
+            key,
+            48_000,
+            48_000,
+            12_001,
+            12_001,
+            hex_project::IDENTITY_CONVERSION,
+            *reader.fingerprint(),
+        )
+        .unwrap();
+        drop(reader);
+        let mut config = StreamConfig::with_pool_pages(4);
+        config.ready_capacity = 1;
+        config.max_ready_pages_per_pump = 1;
+        let (entered_tx, entered_rx) = mpsc::sync_channel(1);
+        let (release_tx, release_rx) = mpsc::sync_channel(1);
+        let (publication_tx, publication_rx) = mpsc::sync_channel(3);
+        let hooks = crate::worker::TestWorkerHooks {
+            read_gate: None,
+            entered: entered_tx,
+            release: release_rx,
+            publications: publication_tx,
+            scalar_steps: None,
+        };
+        let mut runtime = StreamRuntime::new_inner(
+            config,
+            vec![SourceDefinition::new(wav.0.clone(), metadata, limits)],
+            Some(hooks),
+            #[cfg(feature = "test-support")]
+            None,
+        )
+        .unwrap();
+        runtime.wait_until_ready(Duration::from_secs(2)).unwrap();
+        entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        #[cfg(feature = "allocation-probe")]
+        let initial_requests = allocation_counter::measure(|| {
+            runtime.request_page(key, 0);
+            runtime.request_page(key, 1);
+        });
+        #[cfg(not(feature = "allocation-probe"))]
+        {
+            runtime.request_page(key, 0);
+            runtime.request_page(key, 1);
+        }
+        #[cfg(feature = "allocation-probe")]
+        assert_eq!(
+            (
+                initial_requests.count_total,
+                initial_requests.count_current,
+                initial_requests.bytes_total,
+                initial_requests.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        release_tx.send(()).unwrap();
+        runtime.wake_worker();
+        assert_eq!(
+            publication_rx.recv_timeout(Duration::from_secs(2)).unwrap(),
+            0
+        );
+        assert_eq!(
+            publication_rx.recv_timeout(Duration::from_secs(2)).unwrap(),
+            1
+        );
+
+        // Pump and request are callback-side operations. Construction, waking,
+        // fixture verification and all destruction stay outside the probe.
+        let pump = |runtime: &mut StreamRuntime| {
+            let count = std::cell::Cell::new(0);
+            #[cfg(feature = "allocation-probe")]
+            let measured = allocation_counter::measure(|| count.set(runtime.pump_ready(1)));
+            #[cfg(not(feature = "allocation-probe"))]
+            {
+                count.set(runtime.pump_ready(1));
+            }
+            #[cfg(feature = "allocation-probe")]
+            assert_eq!(
+                (
+                    measured.count_total,
+                    measured.count_current,
+                    measured.bytes_total,
+                    measured.bytes_current
+                ),
+                (0, 0, 0, 0)
+            );
+            count.get()
+        };
+        assert_eq!(pump(&mut runtime), 1);
+        assert!(runtime.page(key, 0).is_some());
+        runtime.wake_worker();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while pump(&mut runtime) == 0 {
+            assert!(Instant::now() < deadline, "held ready page did not drain");
+            std::thread::yield_now();
+        }
+        assert!(runtime.page(key, 1).is_some());
+        #[cfg(feature = "allocation-probe")]
+        let measured = allocation_counter::measure(|| runtime.request_page(key, 2));
+        #[cfg(not(feature = "allocation-probe"))]
+        runtime.request_page(key, 2);
+        #[cfg(feature = "allocation-probe")]
+        assert_eq!(
+            (
+                measured.count_total,
+                measured.count_current,
+                measured.bytes_total,
+                measured.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        runtime.wake_worker();
+        assert_eq!(
+            publication_rx.recv_timeout(Duration::from_secs(2)).unwrap(),
+            0
+        );
+        assert_eq!(pump(&mut runtime), 1);
+        assert_eq!(pump(&mut runtime), 0);
+        for index in 0..3 {
+            let page = runtime.page(key, index).expect("each page arrives once");
+            let start = index as usize * hex_engine::STREAM_PAGE_FRAMES;
+            assert_eq!(
+                page.frames.len(),
+                (12_001 - start).min(hex_engine::STREAM_PAGE_FRAMES)
+            );
+            for (offset, frame) in page.frames.iter().enumerate() {
+                let sample = (start + offset) as f32 / 32768.0;
+                assert_eq!(*frame, [sample, -sample]);
+            }
+        }
+        let report = runtime.shutdown().unwrap();
+        assert!(report.worker_joined && report.accounting_complete);
+        assert_eq!(report.page_buffers, 4);
+        assert_eq!(
+            report.queued_pages_reclaimed
+                + report.held_return_pages_reclaimed
+                + report.worker_pages_reclaimed,
+            4
+        );
+    }
+
+    #[test]
+    fn full_request_queue_retries_with_real_worker_and_preserves_pcm_and_custody() {
+        use hex_engine::StreamedSourceMetadata;
+        use hex_media::{VerifiedWavReader, VerifiedWavReaderLimits, WavReaderLimits};
+        use hex_project::{Command, Created, Editor, Project};
+
+        let wav = crate::worker::tests::Fixture::pcm16_frames(12_001);
+        let limits = VerifiedWavReaderLimits::new(
+            WavReaderLimits::new(2 * 1024 * 1024, 12_001, 128, 32_768),
+            1024 * 1024,
+        );
+        let reader = VerifiedWavReader::open(&wav.0, limits).unwrap();
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 4).unwrap();
+        let Created::Asset(asset) = editor
+            .execute(Command::AddAsset {
+                path: "queue-source.wav".into(),
+                sample_rate: 48_000,
+                frames: 12_001,
+            })
+            .unwrap()
+        else {
+            panic!("asset")
+        };
+        let key = StreamSourceKey::new(105, asset);
+        let metadata = StreamedSourceMetadata::new(
+            key,
+            48_000,
+            48_000,
+            12_001,
+            12_001,
+            hex_project::IDENTITY_CONVERSION,
+            *reader.fingerprint(),
+        )
+        .unwrap();
+        drop(reader);
+        let mut config = StreamConfig::with_pool_pages(4);
+        config.request_capacity = 2;
+        let (entered_tx, entered_rx) = mpsc::sync_channel(1);
+        let (release_tx, release_rx) = mpsc::sync_channel(1);
+        let (publication_tx, publication_rx) = mpsc::sync_channel(3);
+        let hooks = crate::worker::TestWorkerHooks {
+            read_gate: None,
+            entered: entered_tx,
+            release: release_rx,
+            publications: publication_tx,
+            scalar_steps: None,
+        };
+        let mut runtime = StreamRuntime::new_inner(
+            config,
+            vec![SourceDefinition::new(wav.0.clone(), metadata, limits)],
+            Some(hooks),
+            #[cfg(feature = "test-support")]
+            None,
+        )
+        .unwrap();
+        runtime.wait_until_ready(Duration::from_secs(2)).unwrap();
+        entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+
+        // The worker cannot consume the queue until released. A rejected page
+        // must not acquire a pending entry or be mistaken for a coalesced one.
+        #[cfg(feature = "allocation-probe")]
+        let measured = allocation_counter::measure(|| {
+            runtime.request_page(key, 0);
+            runtime.request_page(key, 1);
+            runtime.request_page(key, 2);
+            runtime.request_page(key, 0);
+        });
+        #[cfg(not(feature = "allocation-probe"))]
+        {
+            runtime.request_page(key, 0);
+            runtime.request_page(key, 1);
+            runtime.request_page(key, 2);
+            runtime.request_page(key, 0);
+        }
+        #[cfg(feature = "allocation-probe")]
+        assert_eq!(
+            (
+                measured.count_total,
+                measured.count_current,
+                measured.bytes_total,
+                measured.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        let stats = runtime.stats();
+        assert_eq!(
+            (
+                stats.queued_requests,
+                stats.rejected_requests,
+                stats.coalesced_requests
+            ),
+            (2, 1, 1)
+        );
+        release_tx.send(()).unwrap();
+        runtime.wake_worker();
+        for _ in 0..2 {
+            assert_eq!(
+                publication_rx.recv_timeout(Duration::from_secs(2)).unwrap(),
+                0
+            );
+        }
+        assert_eq!(runtime.pump_ready(2), 2);
+        runtime.request_page(key, 2);
+        runtime.wake_worker();
+        assert_eq!(
+            publication_rx.recv_timeout(Duration::from_secs(2)).unwrap(),
+            0
+        );
+        assert_eq!(runtime.pump_ready(1), 1);
+        let stats = runtime.stats();
+        assert_eq!(
+            (
+                stats.queued_requests,
+                stats.rejected_requests,
+                stats.coalesced_requests
+            ),
+            (3, 1, 1)
+        );
+        for index in 0..3 {
+            let page = runtime.page(key, index).expect("accepted or retried page");
+            let start = index as usize * hex_engine::STREAM_PAGE_FRAMES;
+            for (offset, frame) in page.frames.iter().enumerate() {
+                let sample = (start + offset) as f32 / 32768.0;
+                assert_eq!(*frame, [sample, -sample]);
+            }
+            assert_eq!(
+                page.frames.len(),
+                (12_001 - start).min(hex_engine::STREAM_PAGE_FRAMES)
+            );
+        }
+        let report = runtime
+            .shutdown()
+            .expect("joined worker and recovered page pool");
+        assert!(report.worker_joined && report.accounting_complete);
+        assert_eq!(report.page_buffers, 4);
+        assert_eq!(
+            report.queued_pages_reclaimed
+                + report.held_return_pages_reclaimed
+                + report.worker_pages_reclaimed,
+            4
+        );
     }
 
     #[test]
@@ -911,3 +1396,6 @@ mod tests {
         assert!(worker_finished.load(Ordering::Acquire));
     }
 }
+
+#[cfg(test)]
+mod scalar_tests;

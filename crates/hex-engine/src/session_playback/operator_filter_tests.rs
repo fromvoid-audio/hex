@@ -29,13 +29,16 @@ fn fixture_duration(duration: u64) -> Project {
     let id = snapshot.next_id;
     snapshot.next_id += 1;
     snapshot.tracks[0].instrument = Some(DeviceSnapshot {
+        modulation: Default::default(),
+        parent: None,
+        automation: Vec::new(),
         comparison: None,
         id,
         bypassed: false,
         state,
     });
     snapshot.tracks[0].instrument_position = Some(0);
-    Project::from_snapshot(snapshot).unwrap()
+    Project::from_legacy_snapshot(snapshot).unwrap()
 }
 fn enable(source: &Project) -> Project {
     let mut editor = Editor::new(source.clone(), 16).unwrap();
@@ -211,7 +214,7 @@ fn operator_filter_imports_sounding_analytic_notes_without_retrigger_or_duplicat
 #[test]
 fn operator_filter_pause_seek_stop_and_saved_snapshot_preserve_expected_history() {
     let source = enable(&fixture());
-    let saved = Project::from_snapshot(source.snapshot()).unwrap();
+    let saved = Project::from_legacy_snapshot(source.snapshot()).unwrap();
     assert_eq!(source.snapshot(), saved.snapshot());
     let table = Arc::new(hex_devices::SineTable::new());
     let prepared = revision(&source, Arc::clone(&table));
@@ -223,9 +226,20 @@ fn operator_filter_pause_seek_stop_and_saved_snapshot_preserve_expected_history(
     }
     active.apply(SessionPlaybackCommand::Pause).unwrap();
     let at = active.performance_frame();
-    let mut silence = [[1.0; 2]; 128];
-    active.render(&mut silence).unwrap();
-    assert_eq!(silence, [[0.0; 2]; 128]);
+    continuous
+        .apply(SessionPlaybackCommand::StopTrack {
+            track: source.tracks()[0].id(),
+            quantization: LaunchQuantization::Immediate,
+        })
+        .unwrap();
+    let mut released = [[0.0; 2]; 128];
+    let mut expected_release = released;
+    active.render(&mut released).unwrap();
+    continuous.render(&mut expected_release).unwrap();
+    assert_eq!(
+        released, expected_release,
+        "Pause preserves the one native kernel while releasing authored gates"
+    );
     assert_eq!(active.performance_frame(), at);
     active.apply(SessionPlaybackCommand::Play).unwrap();
     assert_eq!(
@@ -263,7 +277,7 @@ fn operator_filter_refuses_ambiguous_reloaded_sounding_sources_without_changing_
         render_checkpoint_prefix(p, 128);
     }
     // Identical serialized notes have a new runtime source identity after reload.
-    let reloaded = Project::from_snapshot(enable(&source).snapshot()).unwrap();
+    let reloaded = Project::from_legacy_snapshot(enable(&source).snapshot()).unwrap();
     let candidate = Arc::new(
         PreparedRevision::prepare(&reloaded, &BTreeMap::new(), table, Some(prepared.session()))
             .unwrap(),

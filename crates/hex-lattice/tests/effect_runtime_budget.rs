@@ -72,7 +72,7 @@ fn instances(
 }
 #[test]
 fn exact_per_twin_and_aggregate_caps_preserve_count_and_twin_accounting() {
-    assert_eq!(MAX_PROCESSOR_RUNTIME_BYTES, 65_536);
+    assert_eq!(MAX_PROCESSOR_RUNTIME_BYTES, 256 * 1024);
     assert_eq!(MAX_PROCESSOR_BANK_RUNTIME_BYTES, 64 * 1024 * 1024);
     let factories = Arc::new(AtomicUsize::new(0));
     let accepted =
@@ -171,6 +171,8 @@ fn owned_pair_cap_is_distinct_from_legacy_and_aggregate_rejects_before_extra_fac
     let instances = |number, bytes| {
         (1..=number)
             .map(|id| PreparedRuntimeInstance {
+                modulation: None,
+                automation: Default::default(),
                 meter: Default::default(),
                 owner: ProcessorChainOwner::Track(1),
                 device_id: id,

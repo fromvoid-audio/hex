@@ -48,21 +48,8 @@ impl ReturnTrack {
 
 pub(crate) fn apply(project: &mut Project, command: Command) -> Result<crate::Created, Invalid> {
     match command {
-        Command::AddReturnTrack { name } => {
-            crate::edit::name_valid(&name)?;
-            if project.returns.len() >= MAX_RETURN_TRACKS {
-                return Err(Invalid("return track limit reached"));
-            }
-            let id = ReturnId(project.allocate_id()?);
-            project.returns.push(ReturnTrack {
-                id,
-                name,
-                gain: 1.0,
-                muted: false,
-                devices: Vec::new(),
-            });
-            Ok(crate::Created::ReturnTrack(id))
-        }
+        Command::AddReturnTrack { name } => add_return(project, name, 1.0),
+        Command::AddReturnTrackWithGain { name, gain } => add_return(project, name, gain),
         Command::RemoveReturnTrack(id) => {
             let index = project
                 .returns
@@ -154,6 +141,9 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<crate::Cr
             find_mut(project, return_track)?.devices.insert(
                 index,
                 Device {
+                    modulation: Default::default(),
+                    parent: None,
+                    automation: Vec::new(),
                     comparison: None,
                     id,
                     state,
@@ -195,16 +185,43 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<crate::Cr
                     if index == source_index {
                         return Err(Invalid("return device cannot be moved before itself"));
                     }
-                    index - usize::from(index > source_index)
+                    index
                 }
-                None => project.returns[source].devices.len().saturating_sub(1),
+                None => project.returns[source].devices.len(),
             };
-            let moving = project.returns[source].devices.remove(source_index);
-            project.returns[source].devices.insert(destination, moving);
+            let span = crate::device_inventory::serial_unit_span(
+                &project.returns[source].devices,
+                source_index,
+            )?;
+            if span.contains(&destination) {
+                return Err(Invalid("return device cannot be moved inside its unit"));
+            }
+            crate::device::move_serial_unit(
+                &mut project.returns[source].devices,
+                source_index,
+                destination,
+            )?;
             Ok(crate::Created::None)
         }
         _ => Err(Invalid("command is not a return-track edit")),
     }
+}
+
+fn add_return(project: &mut Project, name: String, gain: f32) -> Result<crate::Created, Invalid> {
+    validate_gain(gain)?;
+    crate::edit::name_valid(&name)?;
+    if project.returns.len() >= MAX_RETURN_TRACKS {
+        return Err(Invalid("return track limit reached"));
+    }
+    let id = ReturnId(project.allocate_id()?);
+    project.returns.push(ReturnTrack {
+        id,
+        name,
+        gain,
+        muted: false,
+        devices: Vec::new(),
+    });
+    Ok(crate::Created::ReturnTrack(id))
 }
 
 fn validate_gain(gain: f32) -> Result<(), Invalid> {
@@ -231,26 +248,7 @@ fn find_mut(project: &mut Project, id: ReturnId) -> Result<&mut ReturnTrack, Inv
 }
 
 pub(crate) fn device_count(project: &Project) -> Result<usize, Invalid> {
-    let regular = project
-        .tracks
-        .iter()
-        .try_fold(project.main_devices.len(), |count, track| {
-            count
-                .checked_add(track.devices.len())
-                .and_then(|sum| sum.checked_add(usize::from(track.instrument.is_some())))
-                .ok_or(Invalid("device count overflow"))
-        })?;
-    let regular = project
-        .native_sources
-        .iter()
-        .try_fold(regular, |count, source| {
-            count
-                .checked_add(source.devices.len())
-                .ok_or(Invalid("device count overflow"))
-        })?;
-    project.returns.iter().try_fold(regular, |count, track| {
-        count
-            .checked_add(track.devices.len())
-            .ok_or(Invalid("device count overflow"))
+    project.devices().try_fold(0usize, |count, _| {
+        count.checked_add(1).ok_or(Invalid("device count overflow"))
     })
 }

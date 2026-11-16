@@ -14,6 +14,8 @@
 //! playback always follows the existing loop interval. Source edits preserve that policy.
 //! Strict note edits remain inside the source; the explicit authoring command may grow
 //! extent to inserted note ends in the same transaction, without moving placement or loops.
+//! A split retains finite source windows when materializing a clipped sub-frame
+//! gate would lose its provenance; playable edges and authored notes remain intact.
 //! Copy-on-write identity tokens retain the actual source, preventing address reuse from making
 //! stale prepared artifacts appear current. The project Editor owns atomic history, not this view.
 use crate::edit::{Command, MidiNoteUpdate};
@@ -32,22 +34,52 @@ pub enum MidiOneShotBoundary {
     LoopEnd,
 }
 
-/// Independently-owned MIDI event source shared by Arrangement and Session clips.
+/// Authored notes and their finite source extent. Playback windows belong to
+/// `MidiSource`, so changing a window can retain this immutable content backing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MidiContent {
+    pub(crate) source_length: BeatTime,
+    pub(crate) notes: Vec<MidiNote>,
+}
+impl MidiContent {
+    pub fn source_length(&self) -> BeatTime {
+        self.source_length
+    }
+    pub fn notes(&self) -> &[MidiNote] {
+        &self.notes
+    }
+}
+
+/// Effective MIDI source: immutable content with independent playback markers.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MidiSource {
-    pub(crate) source_length: BeatTime,
+    pub(crate) content: Arc<MidiContent>,
     pub(crate) source_start: BeatTime,
     pub(crate) loop_start: BeatTime,
     pub(crate) loop_end: BeatTime,
     pub(crate) looping: bool,
     pub(crate) one_shot_boundary: MidiOneShotBoundary,
-    pub(crate) notes: Vec<MidiNote>,
+}
+
+impl std::ops::Deref for MidiSource {
+    type Target = MidiContent;
+    fn deref(&self) -> &Self::Target {
+        &self.content
+    }
+}
+impl std::ops::DerefMut for MidiSource {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        Arc::make_mut(&mut self.content)
+    }
 }
 
 /// Stable owning key for detecting an unchanged copy-on-write source.
 /// Holding the token prevents source-address reuse while cached artifacts use it.
 #[derive(Debug, Clone)]
 pub struct MidiSourceIdentity(Arc<MidiSource>);
+#[path = "midi_source_weak_identity.rs"]
+mod view_identity;
+pub use view_identity::MidiSourceWeakIdentity;
 impl MidiSourceIdentity {
     pub(crate) fn of(source: &Arc<MidiSource>) -> Self {
         Self(Arc::clone(source))
@@ -57,18 +89,26 @@ impl MidiSourceIdentity {
     /// PCM, allocation identity, exclusive ownership, or a closed-storage proof.
     pub fn retained_control_metadata_bytes(&self) -> Option<usize> {
         std::mem::size_of::<MidiSource>()
+            .checked_add(std::mem::size_of::<MidiContent>())?
             .checked_add(
                 self.0
                     .notes
                     .capacity()
                     .checked_mul(std::mem::size_of::<MidiNote>())?,
             )?
-            .checked_add(2usize.checked_mul(std::mem::size_of::<usize>())?)?
+            .checked_add(4usize.checked_mul(std::mem::size_of::<usize>())?)?
             .checked_add(
                 std::mem::align_of::<usize>()
                     .max(std::mem::align_of::<MidiSource>())
                     .checked_sub(1)?,
             )
+            .and_then(|bytes| {
+                bytes.checked_add(
+                    std::mem::align_of::<usize>()
+                        .max(std::mem::align_of::<MidiContent>())
+                        .checked_sub(1)?,
+                )
+            })
     }
 }
 impl PartialEq for MidiSourceIdentity {
@@ -133,13 +173,15 @@ impl MidiSource {
     }
     pub(crate) fn defaults(length: BeatTime) -> Self {
         Self {
-            source_length: length,
+            content: Arc::new(MidiContent {
+                source_length: length,
+                notes: Vec::new(),
+            }),
             source_start: BeatTime::ZERO,
             loop_start: BeatTime::ZERO,
             loop_end: length,
             looping: false,
             one_shot_boundary: MidiOneShotBoundary::SourceEnd,
-            notes: Vec::new(),
         }
     }
 }
@@ -464,6 +506,7 @@ impl std::ops::DerefMut for MidiClip {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MidiNote {
     pub(crate) id: NoteId,
+    pub(crate) active: bool,
     pub(crate) start: BeatTime,
     pub(crate) duration: BeatTime,
     pub(crate) pitch: u8,
@@ -473,6 +516,9 @@ pub struct MidiNote {
 impl MidiNote {
     pub fn id(&self) -> NoteId {
         self.id
+    }
+    pub fn active(&self) -> bool {
+        self.active
     }
     pub fn start(&self) -> BeatTime {
         self.start
@@ -556,6 +602,24 @@ pub(crate) fn validate_source_boundary(
     Ok(())
 }
 
+/// Bounded preflight shared with the history proof and sampler no-op gate.
+pub(crate) fn extended_update_source_length(
+    current: BeatTime,
+    updates: &[MidiNoteUpdate],
+) -> Result<BeatTime, Invalid> {
+    if updates.is_empty() || updates.len() > MAX_NOTES {
+        return Err(Invalid("invalid midi update batch size"));
+    }
+    updates.iter().try_fold(current, |length, update| {
+        let end = update
+            .start
+            .raw()
+            .checked_add(update.duration.raw())
+            .ok_or(Invalid("midi note end overflow"))?;
+        Ok(BeatTime::from_raw(length.raw().max(end)))
+    })
+}
+
 pub(crate) fn validate_note(
     start: BeatTime,
     duration: BeatTime,
@@ -587,6 +651,7 @@ pub(crate) fn validate_note(
 }
 
 pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, Invalid> {
+    let grow_source = matches!(&command, Command::UpdateMidiNotesWithSourceExtent { .. });
     match command {
         Command::ResizeMidiClipView { clip, operation } => {
             crate::midi_loop_resize::apply(project, clip, operation)
@@ -762,8 +827,34 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
                     let kept_start = absolute_start.max(beat.raw());
                     let kept_end = absolute_end.min(end);
                     if kept_start < kept_end {
+                        // Materializing a clipped carry as a new authored note
+                        // loses the fact that its gate was clipped. A positive
+                        // sub-frame fragment would then be rejected as an
+                        // unplayable authored note. Retain the existing finite
+                        // source window instead, so playback can distinguish
+                        // the clipped occurrence without dropping its data.
+                        let clipped = kept_end - kept_start < note.duration.raw();
+                        if note.active
+                            && clipped
+                            && project
+                                .tempo_map()
+                                .beat_to_frame(BeatTime::from_raw(kept_start))?
+                                == project
+                                    .tempo_map()
+                                    .beat_to_frame(BeatTime::from_raw(kept_end))?
+                        {
+                            let mut retained = original.clone();
+                            let window_start = retained.playback_offset.raw();
+                            let window_end = window_start
+                                .checked_add(retained.length.raw())
+                                .ok_or(Invalid("midi split source window overflow"))?;
+                            retained.content_view =
+                                Some(crate::ContentWindow::new(window_start, window_end, false)?);
+                            return crate::clip_reverse::split_midi(project, track, retained, beat);
+                        }
                         notes.push(MidiNote {
                             id: NoteId(0),
+                            active: note.active,
                             start: BeatTime::from_raw(kept_start - beat.raw()),
                             duration: BeatTime::from_raw(kept_end - kept_start),
                             pitch: note.pitch,
@@ -819,13 +910,15 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
                 length: right_length,
                 volume: right_volume,
                 source: Arc::new(MidiSource {
+                    content: std::sync::Arc::new(crate::MidiContent {
+                        source_length: right_length,
+                        notes,
+                    }),
                     one_shot_boundary: crate::MidiOneShotBoundary::SourceEnd,
-                    source_length: right_length,
                     source_start: BeatTime::ZERO,
                     loop_start: BeatTime::ZERO,
                     loop_end: right_length,
                     looping: false,
-                    notes,
                 }),
             };
             let clips = &mut project.track_mut(track)?.content.midi_clips;
@@ -871,7 +964,9 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
                 .map(|view| view.resized(0, length.raw()))
                 .transpose()?;
             target.length = length;
-            target.source_length = source_length;
+            if target.source_length != source_length {
+                target.source_length = source_length;
+            }
             target.source_start = source_start;
             target.loop_start = loop_start;
             target.loop_end = loop_end;
@@ -892,6 +987,7 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
                 clip,
                 Vec::new(),
                 vec![crate::MidiNoteInsert {
+                    active: true,
                     start,
                     duration,
                     pitch,
@@ -944,16 +1040,22 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
                 },
             )
         }
-        Command::UpdateMidiNotes { clip, notes } => {
+        Command::UpdateMidiNotes { clip, notes }
+        | Command::UpdateMidiNotesWithSourceExtent { clip, notes } => {
             let target = project
                 .midi_source(clip)
                 .ok_or(Invalid("midi clip no longer exists"))?;
+            let source_length = if grow_source {
+                extended_update_source_length(target.source_length(), &notes)?
+            } else {
+                target.source_length()
+            };
             let indices = note_indices(target, notes.iter().map(|update| update.note))?;
             for update in &notes {
                 validate_note(
                     update.start,
                     update.duration,
-                    target.source_length,
+                    source_length,
                     update.pitch,
                     update.channel,
                     update.velocity,
@@ -970,6 +1072,7 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
             for update in &notes {
                 removed.push(update.note);
                 authored.push(crate::MidiNoteInsert {
+                    active: true,
                     start: update.start,
                     duration: update.duration,
                     pitch: update.pitch,
@@ -986,6 +1089,7 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
                 *retained = *gate;
             }
             let target = project.midi_source_mut(clip)?;
+            target.source_length = source_length;
             for (index, update) in indices.into_iter().zip(notes) {
                 let note = target
                     .notes
@@ -994,6 +1098,25 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
                 apply_note_update(note, update);
             }
             crate::midi_note_overwrite::retain_gates(target, &plan.retained)?;
+            Ok(Created::None)
+        }
+        Command::SetMidiNotesActive {
+            clip,
+            notes,
+            active,
+        } => {
+            let source = project
+                .midi_source(clip)
+                .ok_or(Invalid("midi clip no longer exists"))?;
+            let indices = note_indices(source, notes.iter().copied())?;
+            let source = project.midi_source_mut(clip)?;
+            for index in indices {
+                let note = source
+                    .notes
+                    .get_mut(index)
+                    .ok_or(Invalid("midi note no longer exists"))?;
+                note.active = active;
+            }
             Ok(Created::None)
         }
         Command::RemoveMidiNote(note) => {
@@ -1016,13 +1139,19 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
             name,
             before_track,
             start,
+            initial_gain,
         } => {
             let length = project
                 .midi_clip(clip)
                 .ok_or(Invalid("midi clip no longer exists"))?
                 .length;
             validate_clip(start, length)?;
-            let track = super::edit::insert_track_before(project, name, before_track)?;
+            let track = super::edit::insert_track_before_with_gain(
+                project,
+                name,
+                before_track,
+                initial_gain,
+            )?;
             apply(project, Command::MoveMidiClip { clip, track, start })?;
             Ok(Created::Track(track))
         }
@@ -1156,7 +1285,7 @@ fn apply_note_update(note: &mut MidiNote, update: MidiNoteUpdate) {
     note.velocity = update.velocity;
 }
 
-fn clip_count(project: &Project) -> usize {
+pub(crate) fn clip_count(project: &Project) -> usize {
     project
         .tracks
         .iter()
@@ -1175,20 +1304,32 @@ fn clip_count(project: &Project) -> usize {
             .count()
 }
 pub(crate) fn note_count(project: &Project) -> usize {
-    project
-        .tracks
-        .iter()
-        .flat_map(Track::midi_clips)
-        .map(|c| c.source.notes.len())
-        .sum::<usize>()
+    let shared: usize = project
+        .aliases
+        .sources
+        .values()
+        .map(|content| match content {
+            crate::clip_alias::Content::Midi(content) => content.notes.len(),
+            _ => 0,
+        })
+        .sum();
+    shared
+        + project
+            .tracks
+            .iter()
+            .flat_map(Track::midi_clips)
+            .filter(|clip| project.clip_alias(clip.id).is_none())
+            .map(|clip| clip.notes().len())
+            .sum::<usize>()
         + project
             .session
             .cells
             .iter()
             .map(|cell| match &cell.content {
-                crate::SessionCellContent::Midi(clip) => clip.source.notes.len(),
-                crate::SessionCellContent::Audio(_) => 0,
-                crate::SessionCellContent::Stop => 0,
+                crate::SessionCellContent::Midi(clip) if project.clip_alias(clip.id).is_none() => {
+                    clip.source.notes.len()
+                }
+                _ => 0,
             })
             .sum::<usize>()
 }
@@ -1280,13 +1421,15 @@ fn materialize_overwrite_ranges_inner(
                 ),
             )?,
             source: Arc::new(MidiSource {
+                content: std::sync::Arc::new(crate::MidiContent {
+                    source_length: length,
+                    notes: Vec::new(),
+                }),
                 one_shot_boundary: crate::MidiOneShotBoundary::SourceEnd,
-                source_length: length,
                 source_start: BeatTime::ZERO,
                 loop_start: BeatTime::ZERO,
                 loop_end: length,
                 looping: false,
-                notes: Vec::new(),
             }),
         });
     }
@@ -1329,6 +1472,7 @@ fn materialize_overwrite_ranges_inner(
                         .map_err(|_| Invalid("could not reserve midi overwrite notes"))?;
                     source.notes.push(MidiNote {
                         id: NoteId(0),
+                        active: note.active,
                         start: BeatTime::from_raw(kept_start - start),
                         duration: BeatTime::from_raw(kept_end - kept_start),
                         pitch: note.pitch,
@@ -1393,3 +1537,7 @@ mod retained_metadata_tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "midi_content_tests.rs"]
+mod content_tests;

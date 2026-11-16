@@ -155,7 +155,12 @@ impl ClipEdit {
             Self::Active { .. } | Self::Flavor { .. } | Self::Rename { .. } | Self::Delete
         )
     }
-    fn command(&self, project: &Project, clip: ClipId, midi: bool) -> Result<Command, Invalid> {
+    pub(crate) fn command(
+        &self,
+        project: &Project,
+        clip: ClipId,
+        midi: bool,
+    ) -> Result<Command, Invalid> {
         Ok(match self {
             Self::Active { active } => Command::SetClipActive {
                 clip,
@@ -290,16 +295,13 @@ pub(crate) fn apply(
     let mut found = 0_usize;
     let mut audio = 0_usize;
     for track in project.tracks() {
-        audio += track
+        let audio_in_track = track
             .clips()
             .iter()
             .filter(|clip| selected.contains(&clip.id()))
             .count();
-        found += track
-            .clips()
-            .iter()
-            .filter(|clip| selected.contains(&clip.id()))
-            .count();
+        audio += audio_in_track;
+        found += audio_in_track;
         found += track
             .midi_clips()
             .iter()
@@ -311,6 +313,24 @@ pub(crate) fn apply(
     }
     if edit.audio_only() && audio == 0 {
         return Err(Invalid("clip property requires a selected audio clip"));
+    }
+
+    // The validated selection is complete. Activation is a placement flag,
+    // so it cannot change row geometry or shared source content.
+    if let ClipEdit::Active { active } = edit {
+        for track in &mut project.tracks {
+            for clip in &mut track.content.audio_clips {
+                if selected.contains(&clip.id()) {
+                    clip.active = active;
+                }
+            }
+            for clip in &mut track.content.midi_clips {
+                if selected.contains(&clip.id()) {
+                    clip.active = active;
+                }
+            }
+        }
+        return Ok(Created::None);
     }
 
     let mut candidate = project.clone();
@@ -383,7 +403,9 @@ pub(crate) fn apply(
     for (track, original) in candidate.tracks.iter_mut().zip(rows) {
         track.content = original;
     }
-    Project::from_snapshot(candidate.snapshot())?;
+    if candidate.aliases.sources.is_empty() {
+        Project::from_snapshot(candidate.snapshot())?;
+    }
     *project = candidate;
     Ok(Created::None)
 }
@@ -443,16 +465,22 @@ impl Command {
                 ClipCommandScope::FocusedSnapshot { clip: *clip }
             }
             Self::EditAudioEvents { clip, .. }
+            | Self::CreateAudioEventFades { clip, .. }
+            | Self::SetSessionAudioClipLoop { clip, .. }
             | Self::SetSessionAudioClipSource { clip, .. }
             | Self::SetSessionMidiClipSource { clip, .. }
             | Self::SetMidiClipSource { clip, .. }
             | Self::ReplaceMidiClipVolume { clip, .. }
+            | Self::SetMidiClipGain { clip, .. }
             | Self::AddMidiNote { clip, .. }
             | Self::AddMidiNotes { clip, .. }
+            | Self::SetMidiNotesActive { clip, .. }
             | Self::EditMidiNotes { clip, .. }
             | Self::EditMidiNotesWithSourceExtent { clip, .. }
             | Self::DuplicateMidiSourceRange { clip, .. }
             | Self::UpdateMidiNotes { clip, .. }
+            | Self::UpdateMidiNotesWithSourceExtent { clip, .. }
+            | Self::UpdateMidiNotesWithSourcePrefix { clip, .. }
             | Self::RemoveMidiNotes { clip, .. } => ClipCommandScope::FocusedSource { clip: *clip },
             Self::ConvertMidiClipToAudio { clip, .. }
             | Self::SplitClip { clip, .. }
@@ -504,13 +532,27 @@ impl Command {
             | Self::MoveTimeRange { .. }
             | Self::CopyTimeRangeTo { .. }
             | Self::SplitTracksAtFrame { .. }
+            | Self::SplitTimeRange { .. }
+            | Self::CreateArrangementFades { .. }
             | Self::MoveClipsWithOverwrite { .. }
             | Self::GroupAudioEventRange { .. }
             | Self::GroupTimeRange(_)
+            | Self::GroupTimeRangeOrCreate(_)
             | Self::GroupClips(_)
             | Self::DuplicateClips(_)
+            | Self::DuplicateAliasClips(_)
+            | Self::DuplicateAliasClipsAt { .. }
+            | Self::DuplicateAliasClipToNewTrack { .. }
+            | Self::MakeClipsUnique(_)
+            | Self::ApplyClipSettingsToAliases(_)
+            | Self::DuplicateSessionCell { .. }
             | Self::ReverseClips(_) => ClipCommandScope::Explicit,
-            Self::AddArrangementSection { .. }
+            Self::InitializeDevice(_)
+            | Self::AddArrangementLocator { .. }
+            | Self::MoveArrangementLocator { .. }
+            | Self::RenameArrangementLocator { .. }
+            | Self::RemoveArrangementLocator(_)
+            | Self::AddArrangementSection { .. }
             | Self::SetArrangementSectionRange { .. }
             | Self::MoveArrangementSectionMarker { .. }
             | Self::ResizeArrangementSectionMarker { .. }
@@ -524,11 +566,17 @@ impl Command {
             | Self::ResizeArrangementSectionBoundary { .. }
             | Self::DeleteArrangementSection(_)
             | Self::DuplicateArrangementSection(_)
+            | Self::DuplicateArrangementSectionAt { .. }
+            | Self::AppendArrangementSectionCopy { .. }
+            | Self::MoveArrangementSectionBeyondEnd { .. }
+            | Self::ReplaceArrangementSection { .. }
             | Self::SplitArrangementSection { .. }
             | Self::MergeArrangementSections(_)
             | Self::SetTuning(..)
             | Self::SetTrackColor { .. }
             | Self::InsertTrackWithDevice { .. }
+            | Self::InsertDefaultTrackWithDevice { .. }
+            | Self::InsertDefaultTrackWithDeviceAndGain { .. }
             | Self::SpliceGainTouch { .. }
             | Self::SpliceGainTouchBatch { .. }
             | Self::ReplaceTrackGainEnvelope { .. }
@@ -538,22 +586,38 @@ impl Command {
             | Self::ClearTrackGainEnvelope { .. }
             | Self::SetRouting(..)
             | Self::SetAudioFeed { .. }
+            | Self::SetSidechain { .. }
             | Self::SetMidiSource { .. }
             | Self::SetReturnFeed { .. }
             | Self::InsertMainDevice { .. }
             | Self::MoveMainDevice { .. }
             | Self::InsertDevice { .. }
             | Self::InsertInstrument { .. }
+            | Self::LoadInstrument { .. }
+            | Self::ReplaceTrackInstrument { .. }
             | Self::RemoveInstrument { .. }
             | Self::RemoveDevice(..)
             | Self::MoveDevice { .. }
             | Self::MoveTrackDevice { .. }
+            | Self::MoveNativeSourceDevice { .. }
+            | Self::ReparentDevice { .. }
+            | Self::InsertNestedDevice { .. }
+            | Self::SpliceDeviceAutomationTouch { .. }
+            | Self::SpliceVst3AutomationTouchGroup { .. }
+            | Self::ReplaceDeviceModulation { .. }
+            | Self::ReplaceDeviceAutomationTarget { .. }
+            | Self::ReplaceDeviceAutomation { .. }
+            | Self::ManualDeviceEdit { .. }
+            | Self::SetDeviceAutomationReadSelection { .. }
+            | Self::ReenableDeviceAutomation
             | Self::ReplaceDeviceState { .. }
             | Self::ReplaceDeviceStateWithIdentityReservation { .. }
             | Self::SetDeviceBypass { .. }
+            | Self::ToggleDeviceBypass { .. }
             | Self::CompareDevice { .. }
             | Self::ReplaceDeviceComparison { .. }
             | Self::AddReturnTrack { .. }
+            | Self::AddReturnTrackWithGain { .. }
             | Self::RemoveReturnTrack(..)
             | Self::RenameReturnTrack { .. }
             | Self::ReturnGain { .. }
@@ -567,9 +631,15 @@ impl Command {
             | Self::DuplicateTracks { .. }
             | Self::AddTrack { .. }
             | Self::InsertTrack { .. }
+            | Self::InsertDefaultTrack { .. }
+            | Self::InsertDefaultTrackWithGain { .. }
             | Self::MoveTrackBefore { .. }
             | Self::MoveTracksBefore { .. }
             | Self::PasteTracks { .. }
+            | Self::PasteDevices { .. }
+            | Self::RemoveDevices { .. }
+            | Self::MoveTrackDevices { .. }
+            | Self::ReorderDevices { .. }
             | Self::ImportAudioTrack { .. }
             | Self::CommitArrangementBounce { .. }
             | Self::ImportPreparedAudioTrack { .. }
@@ -577,10 +647,13 @@ impl Command {
             | Self::ImportPreparedAudioClip { .. }
             | Self::ImportPreparedAudioClipWithOverwrite { .. }
             | Self::ImportPreparedSessionAudioClip { .. }
+            | Self::ImportExistingAudio { .. }
             | Self::RemoveTrack(..)
             | Self::RemoveTracks(..)
+            | Self::SetTrackTags { .. }
             | Self::RenameTrack { .. }
             | Self::Gain { .. }
+            | Self::SetTrackGains { .. }
             | Self::Balance { .. }
             | Self::MasterGain { .. }
             | Self::SetProjectTempo { .. }
@@ -588,19 +661,22 @@ impl Command {
             | Self::SetMeterPoint { .. }
             | Self::Mute { .. }
             | Self::ToggleSolo { .. }
+            | Self::ToggleSoloTracks { .. }
             | Self::SetLoopRegion { .. }
             | Self::ToggleLoopRegion
             | Self::ClearLoopRegion
             | Self::AddAsset { .. }
             | Self::ImportDeviceAsset { .. }
-            | Self::ImportDeviceAssetIntoEmptyInstrument { .. }
+            | Self::ImportDeviceAssetIntoNewInstrument { .. }
             | Self::ImportDeviceAssetReplacingInstrument { .. }
             | Self::RemoveAsset(..)
+            | Self::RelinkAssets(..)
             | Self::PlaceClip { .. }
             | Self::GainBy { .. }
             | Self::BalanceBy { .. }
             | Self::MasterGainBy { .. }
             | Self::ToggleMute(..)
+            | Self::ToggleTracksMute(..)
             | Self::AddMidiTrack { .. }
             | Self::AddScene { .. }
             | Self::InsertScene { .. }
@@ -616,6 +692,8 @@ impl Command {
             | Self::ClearSessionCell { .. }
             | Self::SetSessionStopCell { .. }
             | Self::PlaceMidiClip { .. }
+            | Self::BindTrackSource { .. }
+            | Self::SetNativeSourceReceiver { .. }
             | Self::CreateNativeSource { .. }
             | Self::RenameNativeSource { .. }
             | Self::RemoveNativeSource(_)

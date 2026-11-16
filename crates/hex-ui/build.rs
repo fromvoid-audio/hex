@@ -56,16 +56,25 @@ fn main() {
                 "cargo:rustc-env=HEX_BUILD_IDENTITY={}{suffix}",
                 &parts[0][..8]
             );
+            println!("cargo:rustc-env=HEX_DIAGNOSTIC_SOURCE={source}");
             return;
         }
     }
     // Intentionally absent: refresh identity on every Cargo invocation, including
     // commits that change only another workspace crate or an untracked source.
     println!("cargo:rerun-if-changed=.hex-build-identity-refresh");
-    let revision = git(&["rev-parse", "--short=8", "HEAD"]).filter(|value| {
+    let revision = git(&["rev-parse", "HEAD"]).filter(|value| {
         value.len() >= 8 && value.len() <= 40 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
     });
     let status = git(&["status", "--porcelain", "--untracked-files=normal"]);
+    let diagnostic = match (&revision, &status) {
+        (Some(revision), Some(status)) => format!(
+            "{revision}:tree_digest_unavailable:{}",
+            if status.is_empty() { "clean" } else { "dirty" }
+        ),
+        _ => "unknown".into(),
+    };
+    println!("cargo:rustc-env=HEX_DIAGNOSTIC_SOURCE={diagnostic}");
     let identity = match (revision, status) {
         (Some(revision), Some(status)) if status.is_empty() => revision[..8].into(),
         (Some(revision), Some(_)) => format!("{} dirty", &revision[..8]),

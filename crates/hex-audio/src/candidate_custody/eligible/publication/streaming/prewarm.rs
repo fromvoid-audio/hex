@@ -58,6 +58,20 @@ impl ActiveView<'_> {
             scheduled.allow_prewarm = false;
         }
     }
+    #[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
+    /// A successor that abandoned its candidate role leaves the original
+    /// schedule authoritative. Let it request its own pages again; the
+    /// revoked page stamps must never be reused.
+    pub(crate) fn publication_abandoned(&mut self) {
+        if let Some(scheduled) = self
+            .state
+            .streaming
+            .as_mut()
+            .and_then(|workspace| workspace.scheduled.as_mut())
+        {
+            scheduled.allow_prewarm = true;
+        }
+    }
     pub(super) fn service_launch_prewarm(
         &mut self,
         domains: &mut [Option<DomainEnvelope>; 2],
@@ -96,6 +110,8 @@ impl ActiveView<'_> {
             pending_play: false,
             command_prefix: prefix,
             frames,
+            fenced_restart: false,
+            foreign_continuation: false,
         };
         if self
             .state
@@ -179,6 +195,18 @@ impl Active {
         domains: &mut [Option<DomainEnvelope>; 2],
         prefix: u64,
     ) -> bool {
+        self.stream_view()
+            .test_launch_prewarm_protected(domains, prefix)
+    }
+}
+
+#[cfg(all(test, feature = "allocation-probe"))]
+impl ActiveView<'_> {
+    pub(crate) fn test_launch_prewarm_protected(
+        &mut self,
+        domains: &mut [Option<DomainEnvelope>; 2],
+        prefix: u64,
+    ) -> bool {
         self.service_launch_prewarm(domains, prefix, 1);
         let Some(w) = self.state.streaming.as_ref() else {
             return false;
@@ -190,7 +218,7 @@ impl Active {
                         .ok()
                         .and_then(|p| p.inner.loan.as_ref())
                         .is_some_and(|loan| {
-                            loan.is_protected(
+                            loan.is_resource_protected(
                                 ProtectionRole::Candidate,
                                 stamp,
                                 &w.extents[token.slot],

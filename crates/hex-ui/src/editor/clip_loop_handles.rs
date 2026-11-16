@@ -1,10 +1,18 @@
 //! Shared painted/captured loop zones in outer clip pixels. Musical projection
 //! comes from project queries; ordinary trim/warp/fade policies stay with owners.
+//! First-boundary handles use horizontal arrows. Outer repeat-extend has no
+//! corner of its own: option-dragging the right header edge repeats the clip
+//! (Pulse #3796) and shows the circle cursor (`CursorStyle::Loop`, drawn from
+//! `assets/cursors/loop.svg`), on hover while option is held and for the drag.
+//! Edge trimming only starts in the clip's header rail
+//! ([`super::edge_trim_height`]); the lower edge belongs to the body and the
+//! fade handles, whose fade-out handle sits in the true bottom-right corner.
 use super::*;
 use crate::theme;
 use gpui::{CursorStyle, relative, rgb};
 
 pub(in crate::editor) const BOTTOM_RADIUS: f32 = 8.0;
+/// Width of the first-boundary hit box.
 const WIDTH: f32 = 8.0;
 
 #[derive(Clone, Copy)]
@@ -43,7 +51,6 @@ fn geometry(
     boundary: Option<u64>,
     lane: LaneBounds,
     viewport: Viewport,
-    minimum: f32,
 ) -> Option<LoopControls> {
     if viewport.length == 0
         || !lane.left.is_finite()
@@ -62,41 +69,25 @@ fn geometry(
     }
     let left =
         lane.left + lane.width * ((a - viewport.start) as f64 / viewport.length as f64) as f32;
-    let width = rendered_clip_width(lane.width, (b - a) as f64 / viewport.length as f64, minimum);
+    let width = rendered_clip_width(lane.width, (b - a) as f64 / viewport.length as f64);
     if !left.is_finite() || !width.is_finite() {
         return None;
     }
     let body_top = super::super::clip_name::CLIP_NAME_HEIGHT + 1.0;
     let mut handles = [None, None];
-    if width >= 24.0 && lane.height >= 10.0 {
-        if b == end {
-            handles[0] = Some(LoopControl {
-                kind: LoopHandleKind::Outer,
-                left: width - WIDTH,
-                top: lane.height - (lane.height * 0.35).clamp(6.0, 12.0),
-                height: (lane.height * 0.35).clamp(6.0, 12.0),
-            });
-        }
-        if lane.height - body_top >= 4.0
-            && let Some(frame) = boundary.filter(|frame| *frame > a && *frame < b)
-        {
-            handles[1] = Some(LoopControl {
-                kind: LoopHandleKind::FirstBoundary,
-                left: lane.width * ((frame - a) as f64 / viewport.length as f64) as f32
-                    - WIDTH / 2.0,
-                top: body_top,
-                height: (lane.height - body_top - 9.0).max(4.0),
-            });
-        }
-    }
-    // In a collapsed row both zones can share the small body band. The
-    // explicit corner wins if a first boundary is too close to that corner.
-    if let [Some(corner), Some(boundary)] = handles
-        && boundary.left < corner.left + WIDTH
-        && boundary.left + WIDTH > corner.left
-        && boundary.top + boundary.height > corner.top
+    // The first repeat boundary lives in the body below the header rail, away
+    // from the header-edge trim strips and the corner fade handles.
+    if width >= 24.0
+        && lane.height >= 10.0
+        && lane.height - body_top >= 4.0
+        && let Some(frame) = boundary.filter(|frame| *frame > a && *frame < b)
     {
-        handles[1] = None;
+        handles[1] = Some(LoopControl {
+            kind: LoopHandleKind::FirstBoundary,
+            left: lane.width * ((frame - a) as f64 / viewport.length as f64) as f32 - WIDTH / 2.0,
+            top: body_top,
+            height: (lane.height - body_top - 9.0).max(4.0),
+        });
     }
     Some(LoopControls {
         left,
@@ -105,6 +96,32 @@ fn geometry(
         height: lane.height,
         handles,
     })
+}
+
+/// Whether option-dragging the right header edge can repeat-extend this clip.
+pub(in crate::editor) fn audio_repeat_available(clip: &Clip, project: &Project) -> bool {
+    clip.start()
+        .checked_add(clip.duration())
+        .is_some_and(|end| {
+            hex_project::preview_view_resize(
+                clip,
+                project.tempo_map(),
+                hex_project::AudioViewResizeOperation::RepeatOuterEnd { project_frame: end },
+            )
+            .is_ok()
+        })
+}
+/// See [`audio_repeat_available`].
+pub(in crate::editor) fn midi_repeat_available(clip: &MidiClip) -> bool {
+    clip.start()
+        .raw()
+        .checked_add(clip.length().raw())
+        .is_some_and(|end| {
+            clip.preview_loop_resize(hex_project::MidiViewResizeOperation::RepeatOuterEnd {
+                beat: BeatTime::from_raw(end),
+            })
+            .is_ok()
+        })
 }
 
 pub(in crate::editor) fn audio_repeats(clip: &Clip) -> bool {
@@ -137,7 +154,7 @@ pub(in crate::editor) fn audio_controls(
     .then(|| hex_project::AudioViewProjection::new(clip, project.tempo_map()).ok())
     .flatten()
     .and_then(|p| u64::try_from(p.logical_first_boundary()).ok());
-    geometry(clip.start(), end, boundary, lane, viewport, 3.0)
+    geometry(clip.start(), end, boundary, lane, viewport)
 }
 pub(in crate::editor) fn midi_controls(
     clip: &MidiClip,
@@ -159,46 +176,81 @@ pub(in crate::editor) fn midi_controls(
             .and_then(|b| tempo.beat_to_frame(b).ok()),
         lane,
         viewport,
-        4.0,
     )
 }
 
-pub(super) fn base(edge: TrimEdge, width: f32, control: Option<LoopControl>) -> Div {
-    let Some(control) = control else {
-        return hex_widgets::rectangle_edge(
-            super::super::drag::rectangle_part(Some(edge)),
-            handle_width(width),
-            -1.0,
-        );
+pub(super) fn base(
+    edge: TrimEdge,
+    width: f32,
+    lane_height: f32,
+    control: Option<LoopControl>,
+    repeat_hover: bool,
+    scale: f32,
+) -> Div {
+    let border = hex_widgets::rectangle_border_width(width);
+    let left_border = if border > 0.0 {
+        1.0 / scale.max(1.0)
+    } else {
+        0.0
     };
-    // Absolute children start inside border_1; the shared hit zones use outer
-    // clip coordinates, so remove that border inset exactly once here.
+    let Some(control) = control else {
+        let part = super::super::drag::rectangle_part(Some(edge));
+        // Edge trimming is limited to the header rail, sharing its height with
+        // pointer arbitration in `clip_pointer_handles`.
+        return div()
+            .absolute()
+            .top(px(-border))
+            .h(px(super::edge_trim_height(lane_height)))
+            .w(px(handle_width(width)))
+            .cursor(if repeat_hover {
+                CursorStyle::Loop
+            } else {
+                part.cursor()
+            })
+            .when(edge == TrimEdge::Left, |d| d.left(px(-left_border)))
+            .when(edge == TrimEdge::Right, |d| d.right_0());
+    };
     div()
         .absolute()
-        .left(px(control.left - 1.0))
-        .top(px(control.top - 1.0))
+        .left(px(control.left - left_border))
+        .top(px(control.top - border))
         .w(px(WIDTH))
         .h(px(control.height))
-        .cursor(CursorStyle::Loop)
+        .cursor(match control.kind {
+            LoopHandleKind::FirstBoundary => CursorStyle::ResizeLeftRight,
+            LoopHandleKind::Outer => CursorStyle::Loop,
+        })
 }
 
-pub(super) fn decorate(surface: Stateful<Div>, control: Option<LoopControl>) -> Stateful<Div> {
-    let Some(control) = control else {
-        return surface;
-    };
+pub(super) fn decorate(
+    surface: Stateful<Div>,
+    control: Option<LoopControl>,
+    edge: TrimEdge,
+    repeat_available: bool,
+) -> Stateful<Div> {
+    if control.is_none() {
+        return surface.tooltip(move |_, cx| {
+            cx.new(|_| super::super::transport::MiniTooltip {
+                kind: crate::tooltips::Kind::control(match edge {
+                    TrimEdge::Left => "clip start",
+                    TrimEdge::Right => "clip end",
+                }),
+                description: if repeat_available {
+                    "drag: resize · shift: stretch · option: repeat · cmd: invert snapping"
+                } else {
+                    "drag: resize · shift: stretch · cmd: invert snapping"
+                }
+                .into(),
+            })
+            .into()
+        });
+    }
+    // Only the first-boundary control remains; outer repeat is option + edge.
     surface.tooltip(move |_, cx| {
         cx.new(|_| super::super::transport::MiniTooltip {
-            kind: crate::tooltips::Kind::control(if control.kind == LoopHandleKind::Outer {
-                "repeat clip"
-            } else {
-                "first repeat boundary"
-            }),
-            description: if control.kind == LoopHandleKind::Outer {
-                "drag to repeat clip · cmd: invert snapping"
-            } else {
-                "drag first repeat boundary · keep clip duration · cmd: invert snapping"
-            }
-            .into(),
+            kind: crate::tooltips::Kind::control("first repeat boundary"),
+            description: "drag first repeat boundary · keep clip duration · cmd: invert snapping"
+                .into(),
         })
         .into()
     })
@@ -344,7 +396,7 @@ pub(in crate::editor) fn midi_markers(
     )
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "ui-test-support")))]
 mod tests {
     use super::*;
     #[test]
