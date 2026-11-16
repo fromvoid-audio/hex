@@ -55,6 +55,7 @@ pub(crate) mod sampler_crossfade;
 pub(crate) mod serial_units;
 pub(crate) mod session_audio_loops;
 pub(crate) mod sidechain;
+pub(crate) mod silent_repeat;
 pub(crate) mod track_groups;
 pub(crate) mod track_name_origin;
 pub(crate) mod track_tags;

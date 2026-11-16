@@ -467,6 +467,11 @@ pub(crate) fn reset_region(
         .edit
         .clone()
         .ok_or(Invalid("audio domain is missing"))?;
+    if old.repeat_period.is_some() {
+        return Err(Invalid(
+            "source replacement cannot yet preserve a silent repeat gap",
+        ));
+    }
     let changed_source =
         source_offset != old.domain.source_offset || source_length != old.domain.source_length;
     if changed_source && old.domain.warp.is_some() {
@@ -626,7 +631,9 @@ fn preview_source_policy(
     let edit = Arc::make_mut(&mut owned_edit);
     if let (Some(placement), Some(looping)) = (&mut edit.placement, looping) {
         if looping {
-            placement.cycle_phase %= edit.view_end - edit.view_start;
+            placement.cycle_phase %= edit
+                .repeat_period
+                .unwrap_or(edit.view_end - edit.view_start);
         }
         placement.mode = if looping {
             AudioViewMode::Repeat

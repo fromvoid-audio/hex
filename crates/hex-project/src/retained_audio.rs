@@ -143,6 +143,11 @@ impl Project {
         }
         clip.fade.validate_segment(clip.duration)?;
         if let Some(edit) = clip.audio_edit() {
+            if edit.repeat_period.is_some() {
+                return Err(Invalid(
+                    "silent repeat gaps cannot yet be nested in grouped audio",
+                ));
+            }
             if edit.domain.clock.length() > crate::MAX_AUDIO_DOMAIN_FRAMES
                 && (edit.plain_frame_event_root()
                     || edit.is_plain_reversed_capture(clip)
