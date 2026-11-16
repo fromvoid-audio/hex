@@ -27,6 +27,9 @@ use std::{
 
 const PREPARATION_TIMEOUT: Duration = Duration::from_secs(60);
 const POLL: Duration = Duration::from_millis(5);
+// Page preparation runs on the offline worker, not the audio callback. Check
+// completed reads more promptly while retaining a bounded cancellation poll.
+const PAGE_POLL: Duration = Duration::from_millis(1);
 
 pub(super) fn render(
     request: &StreamedExportRequest<'_>,
@@ -773,7 +776,7 @@ impl VerifiedPages {
                     "media pages timed out; check the source disk and retry".into(),
                 ));
             }
-            std::thread::sleep(POLL);
+            std::thread::sleep(PAGE_POLL);
         }
     }
 }
