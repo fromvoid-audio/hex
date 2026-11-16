@@ -94,10 +94,19 @@ struct Preparation {
     built: bool,
     cancelling: bool,
 }
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+struct StoppedForeignHistory {
+    context: AudioSourceContext,
+    source: hex_audio::prepared::AppliedAudioSource,
+    fence: hex_audio::prepared::StoppedEditFence,
+}
+
 pub(super) struct NativeAudioSink {
     audio_diagnostics: hex_audio::audio_diagnostics::AudioDiagnosticsFlags,
     plugins: plugins::Plugins,
     request_cancellation: Option<hex_session::service::RequestCancellation>,
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    stopped_foreign_history: Option<StoppedForeignHistory>,
     #[cfg(all(test, feature = "allocation-probe"))]
     native_graph_gate: Option<(SyncSender<()>, mpsc::Receiver<()>)>,
     #[cfg(all(test, feature = "allocation-probe"))]
@@ -189,6 +198,8 @@ impl NativeAudioSink {
             audio_diagnostics: Default::default(),
             plugins: plugins::Plugins::default(),
             request_cancellation: None,
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            stopped_foreign_history: None,
             #[cfg(all(test, feature = "allocation-probe"))]
             native_graph_gate: None,
             #[cfg(all(test, feature = "allocation-probe"))]
@@ -1271,6 +1282,20 @@ impl WorkerAudioSink for NativeAudioSink {
         self.request_cancellation = Some(cancellation);
     }
     fn finish_resident_effect_edit(&mut self, context: AudioSourceContext, accepted: bool) {
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        if self
+            .stopped_foreign_history
+            .as_ref()
+            .is_some_and(|lease| lease.context == context)
+            && let Some(lease) = self.stopped_foreign_history.take()
+            && let Some(control) = self
+                .output
+                .as_mut()
+                .and_then(|output| output.publication.control())
+            && control.output_identity() == Some(lease.source.output_identity)
+        {
+            control.release_stopped_edit_fence(lease.fence);
+        }
         self.plugins.finish_edit(context, accepted);
     }
     fn plugin_state_restore_pending(&self, context: AudioSourceContext) -> bool {
@@ -1431,6 +1456,88 @@ impl WorkerAudioSink for NativeAudioSink {
         )
     }
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn begin_stopped_foreign_history(
+        &mut self,
+        predecessor: hex_session::service::ResidentGraphSubmission,
+        context: AudioSourceContext,
+    ) -> Result<bool, String> {
+        use hex_audio::prepared::StoppedEditFenceState;
+        if self.stopped_foreign_history.is_some() {
+            return Err("stopped vst3 history fence is already held".into());
+        }
+        let Some(control) = self
+            .output
+            .as_mut()
+            .and_then(|output| output.publication.control())
+        else {
+            return Ok(false);
+        };
+        let Some(source) = control.status.native_effect_source().filter(|source| {
+            source.output_identity == predecessor.output_identity
+                && source.audio_revision == predecessor.audio_revision
+                && source.context == predecessor.context
+                && !control.status.playing.load(Acquire)
+        }) else {
+            return Ok(false);
+        };
+        let fence = match control.request_native_epoch_fence(source) {
+            Ok(fence) => fence,
+            Err(_) => return Ok(false),
+        };
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(250);
+        loop {
+            if self
+                .request_cancellation
+                .as_ref()
+                .is_some_and(|cancel| cancel.is_cancelled())
+            {
+                control.release_stopped_edit_fence(fence);
+                return Err("stopped vst3 history cancelled".into());
+            }
+            match control.stopped_edit_fence_state(fence) {
+                StoppedEditFenceState::Ready => {
+                    self.stopped_foreign_history = Some(StoppedForeignHistory {
+                        context,
+                        source,
+                        fence,
+                    });
+                    return Ok(true);
+                }
+                StoppedEditFenceState::Refused => {
+                    control.release_stopped_edit_fence(fence);
+                    return Ok(false);
+                }
+                StoppedEditFenceState::Pending if std::time::Instant::now() < deadline => {
+                    control.reclaim();
+                    control.poll_resident_publication();
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+                StoppedEditFenceState::Pending => {
+                    control.release_stopped_edit_fence(fence);
+                    return Err("stopped vst3 history fence timed out".into());
+                }
+            }
+        }
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn confirm_stopped_foreign_history(
+        &mut self,
+        context: AudioSourceContext,
+        accepted: hex_session::service::ResidentPublicationAcceptance,
+    ) -> Result<(), String> {
+        if let Some(lease) = self.stopped_foreign_history.as_ref() {
+            if lease.context != context
+                || !matches!(accepted, hex_session::service::ResidentPublicationAcceptance::Submitted { output_identity, .. } if output_identity == lease.source.output_identity)
+            {
+                return Err("stopped vst3 history publication changed".into());
+            }
+            self.confirm_resident_edit_publication(context, accepted, "stopped vst3 history")?;
+        }
+        Ok(())
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     fn received_foreign_program_on_control(
         &mut self,
         binding: hex_audio::plugin_effects::EffectBinding,
@@ -1442,6 +1549,33 @@ impl WorkerAudioSink for NativeAudioSink {
         else {
             return hex_engine::ForeignProgramFrontier::Unknown;
         };
+        if let Some(lease) = self.stopped_foreign_history.as_ref() {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_millis(150);
+            loop {
+                if self
+                    .request_cancellation
+                    .as_ref()
+                    .is_some_and(|cancel| cancel.is_cancelled())
+                {
+                    return hex_engine::ForeignProgramFrontier::Unknown;
+                }
+                match control.try_fenced_native_program_frontier_on_control(
+                    lease.source,
+                    lease.fence,
+                    binding,
+                ) {
+                    Ok(frontier) => return frontier,
+                    Err("native preparation is busy" | "native source is busy")
+                        if std::time::Instant::now() < deadline =>
+                    {
+                        control.reclaim();
+                        control.poll_resident_publication();
+                        std::thread::sleep(std::time::Duration::from_millis(1));
+                    }
+                    _ => return hex_engine::ForeignProgramFrontier::Unknown,
+                }
+            }
+        }
         plugins::Plugins::received_foreign_program_on_control(
             control,
             binding,

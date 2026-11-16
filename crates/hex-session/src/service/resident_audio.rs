@@ -107,6 +107,7 @@ struct Inputs<'a> {
     plugin_effect: Option<&'a PluginEffectControl>,
     restoring_plugin_state: bool,
     preparing_edit: bool,
+    stopped_history: bool,
     admission: sampler_export::Admission<'a>,
     current: Option<&'a Snapshot>,
     predecessor: Option<&'a Session>,
@@ -553,6 +554,15 @@ impl Inputs<'_> {
                 .filter(|preview| preview.follows(current))
                 .map_or(current, |preview| &preview.snapshot)
         });
+        if self.stopped_history
+            && let Some(previous) = predecessor
+            && let Some(submission) = previous.submission
+            && prepared.needs_foreign_history_pruning_from(&previous.prepared)
+            && submission.matches_applied(sink.resident_publication_readiness())
+        {
+            sink.begin_stopped_foreign_history(submission, context)
+                .map_err(SessionError::NativeAudio)?;
+        }
         let prepared = match predecessor {
             Some(previous) => prepared
                 .with_foreign_program_history_from(&previous.prepared, |binding| {
@@ -1322,6 +1332,7 @@ pub(super) fn prepare_import_playback(
         plugin_effect: None,
         restoring_plugin_state: false,
         preparing_edit: false,
+        stopped_history: false,
         predecessor: None,
         native: NativeSamplerSources::Committed(input.native),
         limits: input.limits.ok_or(SessionError::Invalid(
@@ -1666,6 +1677,7 @@ impl Session {
                     plugin_effect: None,
                     restoring_plugin_state: false,
                     preparing_edit: false,
+                    stopped_history: false,
                     predecessor: None,
                     native: NativeSamplerSources::Staged(stage),
                     limits,
@@ -1695,6 +1707,7 @@ impl Session {
                     plugin_effect: None,
                     restoring_plugin_state: false,
                     preparing_edit: false,
+                    stopped_history: false,
                     predecessor: None,
                     native: NativeSamplerSources::Staged(stage),
                     limits,
@@ -1934,6 +1947,7 @@ impl Session {
             plugin_effect: None,
             restoring_plugin_state: false,
             preparing_edit: false,
+            stopped_history: false,
             predecessor: None,
             native: NativeSamplerSources::Committed(&self.native_assets),
             limits: self.native_reservation.ok_or(SessionError::Invalid(
@@ -2011,6 +2025,7 @@ impl Session {
             plugin_effect: None,
             restoring_plugin_state: false,
             preparing_edit: false,
+            stopped_history: false,
             native: NativeSamplerSources::Committed(&self.native_assets),
             limits: self.native_reservation.ok_or(SessionError::Invalid(
                 "resident resource reservation unavailable",
@@ -2041,6 +2056,7 @@ impl Session {
             plugin_effect: None,
             restoring_plugin_state: false,
             preparing_edit: false,
+            stopped_history: false,
             predecessor: None,
             native: NativeSamplerSources::Committed(&self.native_assets),
             limits: self.native_reservation.ok_or(SessionError::Invalid(
@@ -2351,6 +2367,7 @@ impl Session {
             plugin_effect: None,
             restoring_plugin_state: false,
             preparing_edit: false,
+            stopped_history: false,
             predecessor: None,
             native: NativeSamplerSources::Committed(&self.native_assets),
             limits: self.native_reservation.ok_or(SessionError::Invalid(
@@ -2577,6 +2594,7 @@ impl Session {
             plugin_effect: None,
             restoring_plugin_state: false,
             preparing_edit: false,
+            stopped_history: false,
             predecessor: None,
             native: NativeSamplerSources::Committed(&self.native_assets),
             limits: self.native_reservation.ok_or(SessionError::Invalid(
@@ -2694,6 +2712,11 @@ impl Session {
             plugin_effect: plugin_control.as_deref(),
             restoring_plugin_state: false,
             preparing_edit: !matches!(&transition, Transition::PluginEffect { .. }),
+            stopped_history: matches!(&transition, Transition::History { .. })
+                || matches!(&transition, Transition::Command(command)
+                if matches!(command.as_ref(), Command::ReplaceDeviceAutomationTarget {
+                    target: hex_project::DeviceAutomationTarget::Vst3 { .. }, ..
+                })),
             predecessor: None,
             native: NativeSamplerSources::Committed(&self.native_assets),
             limits: self.native_reservation.ok_or(SessionError::Invalid(
@@ -2818,6 +2841,8 @@ impl Session {
                     .map_err(SessionError::NativeAudio)?;
             } else {
                 let accepted = inputs.publish(&mut snapshot, project, sink, context)?;
+                sink.confirm_stopped_foreign_history(context, accepted)
+                    .map_err(SessionError::NativeAudio)?;
                 if plugin_parameter {
                     sink.confirm_plugin_parameter_publication(context, accepted)
                         .map_err(|error| match error {

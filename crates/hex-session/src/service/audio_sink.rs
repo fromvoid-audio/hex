@@ -776,6 +776,25 @@ pub trait WorkerAudioSink: Send {
     ) -> Result<Option<hex_engine::PreparedRevision>, String> {
         Ok(None)
     }
+    /// Optionally hold the exact stopped predecessor while a saturated history
+    /// is prepared. False preserves the ordinary conservative history path.
+    /// A successful lease must remain held through its publication terminal.
+    fn begin_stopped_foreign_history(
+        &mut self,
+        _predecessor: ResidentGraphSubmission,
+        _successor: hex_engine::AudioSourceContext,
+    ) -> Result<bool, String> {
+        Ok(false)
+    }
+    /// Confirm a leased successor before canonical history commits. Hosts with
+    /// no lease leave the existing publication path unchanged.
+    fn confirm_stopped_foreign_history(
+        &mut self,
+        _context: hex_engine::AudioSourceContext,
+        _accepted: ResidentPublicationAcceptance,
+    ) -> Result<(), String> {
+        Ok(())
+    }
     /// Actual original-worker pickup only, for bounded immutable program
     /// retention. Unknown/Empty retain existing history; only an actual empty
     /// worker receipt can qualify a first programme. Never synthesize this from
