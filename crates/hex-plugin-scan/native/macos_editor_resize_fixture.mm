@@ -233,6 +233,7 @@ static void check_keys() {
     const auto ups=view.key_ups;
     assert(!host.handle_key_event(up) && view.key_ups==ups);
     assert(!host.handle_key_event(down) && view.key_downs==calls+1);
+    assert(!host.handle_key_event(up));
     [window makeFirstResponder:nil];
     view.handles_keys=true;
     assert(host.handle_key_event(down));
@@ -324,9 +325,16 @@ static void check_printable_keys() {
     assert(!host.handle_key_event(down) && view.key_downs==after_tab);
     assert(!host.handle_key_event(tab) && view.key_downs==after_tab);
     [window makeFirstResponder:nil];
+    assert(!host.handle_key_event(repeat) && view.key_downs==after_tab);
+    assert(!host.handle_key_event(up));
+    assert(!host.handle_key_event(key_event(window,NSEventTypeKeyUp,'\t',48)));
     [text removeFromSuperview];[text release];
     assert(!host.handle_key_event(key_event(window,NSEventTypeKeyDown,'a',0,NSEventModifierFlagOption)));
+    assert(!host.handle_key_event(repeat));
+    assert(!host.handle_key_event(up));
     assert(!host.handle_key_event(key_event(window,NSEventTypeKeyDown,0x00e9,0)));
+    assert(!host.handle_key_event(repeat));
+    assert(!host.handle_key_event(up));
     assert(view.key_downs==after_tab);
     host.invalidate();
     [window release];
