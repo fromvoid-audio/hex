@@ -974,6 +974,12 @@ impl NativeWorker {
         self.reaper.completed.take_slow_exchange()
     }
 
+    pub(crate) fn take_concealed_output_on_control(
+        &self,
+    ) -> Option<hex_plugin_host::transport::ConcealedOutput> {
+        self.reaper.control.take_concealed_output()
+    }
+
     pub(crate) fn take_failure_diagnostic_on_control(&self) -> Option<String> {
         if let Some(diagnostic) = self
             .reaper

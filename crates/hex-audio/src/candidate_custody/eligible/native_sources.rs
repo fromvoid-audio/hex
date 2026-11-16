@@ -984,6 +984,14 @@ impl CandidateRoot {
             endpoint.take_slow_exchange_on_control()
         })?
     }
+    pub(crate) fn take_native_source_concealed_output(
+        &self,
+        binding: Binding,
+    ) -> Option<hex_plugin_host::transport::ConcealedOutput> {
+        self.with_native_source_endpoint(binding, |_, endpoint| {
+            endpoint.take_concealed_output_on_control()
+        })?
+    }
     fn with_native_source_endpoint<T>(
         &self,
         binding: Binding,
