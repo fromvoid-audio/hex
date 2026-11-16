@@ -7,6 +7,7 @@ use hex_engine::eq::{EQ_TYPE_ID, EqState, NodeParameter};
 use hex_lattice_contract::{DeviceTypeId, NativeDeviceState};
 use hex_project::{Device, DeviceAutomationReplacement, Invalid};
 
+#[path = "state_edit/legacy.rs"]
 mod legacy;
 
 const EQ8_TYPE_ID: DeviceTypeId = DeviceTypeId::from_static("hex.eq8");
@@ -74,7 +75,7 @@ pub(super) fn prepare(
     Ok((state, automation))
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "ui-unit-tier"))]
 mod tests {
     use super::*;
     use hex_engine::eq::{Node, NodeId, OUTPUT_GAIN};
@@ -277,5 +278,6 @@ mod tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "ui-unit-tier"))]
+#[path = "state_edit/legacy_tests.rs"]
 mod legacy_tests;

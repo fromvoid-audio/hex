@@ -7,10 +7,12 @@ use super::{
     pending_edit::{Disposition, Receipt},
 };
 use hex_project::{ClipId, Created, SceneId, SessionCellContent, TrackId};
-use hex_session::service::{Event, Request};
-use std::collections::VecDeque;
+use hex_session::service::{
+    ArrangementEditViewKind, ArrangementEditViewObservation, Event, Request, ViewState,
+};
+use std::{collections::VecDeque, sync::Arc};
 
-const MAX_QUEUED_REPEATS: u8 = 32;
+pub(super) const MAX_QUEUED_REPEATS: u8 = 32;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum DuplicateKind {
@@ -44,6 +46,7 @@ struct Pending {
     selection_epoch: u64,
     active: bool,
     receipt: Receipt,
+    display: Option<Arc<ViewState>>,
 }
 
 pub(super) struct Completion {
@@ -127,7 +130,7 @@ impl EditorView {
         self.duplicate_selected_with_kind(DuplicateKind::Independent);
     }
     pub(super) fn duplicate_selected_with_kind(&mut self, kind: DuplicateKind) {
-        if self.close_prompt_open {
+        if self.close_prompt_open || self.automation_close_preflight.frozen() {
             self.error = Some("finish the close action before editing".into());
             return;
         }
@@ -207,6 +210,7 @@ impl EditorView {
             selection_epoch,
             active: true,
             receipt: Receipt::new(self.project_generation),
+            display: None,
         });
         self.duplicate_intent.queued = queued;
         let accepted = if continuation {
@@ -300,6 +304,54 @@ impl EditorView {
             pending.receipt.submitted(self.worker_requests_pending);
         }
     }
+    /// Retain the worker's exact display for this admitted Arrangement copy.
+    /// Selection and edit admission still use the ordered terminal.
+    pub(super) fn observe_duplicate_view(
+        &mut self,
+        observation: ArrangementEditViewObservation,
+    ) -> bool {
+        let ArrangementEditViewKind::Duplicate(created) = observation.kind else {
+            return false;
+        };
+        if let Created::ArrangementSection(copy) = created {
+            return self.observe_section_copy_view(observation, copy);
+        }
+        if !matches!(created, Created::Clips { .. }) {
+            return false;
+        }
+        let Some(pending) = self.duplicate_intent.pending.as_mut() else {
+            return false;
+        };
+        if pending.receipt.is_queued()
+            || !matches!(pending.target, Target::Arrangement { .. })
+            || observation.project_generation != pending.generation
+            || observation.previous_revision != pending.revision
+        {
+            return false;
+        }
+        let Some(state) = observation.state.upgrade() else {
+            return false;
+        };
+        if pending.revision.checked_add(1) != Some(state.revision) {
+            return false;
+        }
+        pending.display = Some(state);
+        self.arrangement_duplicate_view().is_some()
+    }
+
+    pub(super) fn arrangement_duplicate_view(&self) -> Option<&Arc<ViewState>> {
+        let pending = self.duplicate_intent.pending.as_ref()?;
+        let current = self.state.as_ref()?;
+        if self.mode != EditorMode::Arrangement
+            || self.opening_project
+            || self.project_generation != pending.generation
+            || current.revision != pending.revision
+        {
+            return None;
+        }
+        pending.display.as_ref()
+    }
+
     pub(super) fn take_duplicate_completion(&mut self, event: &mut Event) -> Option<Completion> {
         let disposition = self.duplicate_intent.pending.as_mut()?.receipt.observe(
             self.project_generation,

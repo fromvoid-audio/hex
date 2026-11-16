@@ -22,6 +22,67 @@ impl RepeatBoundaryPlan {
     }
 }
 
+/// Read-only cycle geometry in audible elapsed order. Unlike the seam query,
+/// this also describes a single clipped cycle and its off-window phase.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RepeatCycles {
+    window: ContentWindow,
+    seams: Option<RepeatBoundaryPlan>,
+    first: u64,
+    period: u64,
+}
+
+impl RepeatCycles {
+    pub fn count(self) -> u64 {
+        1 + self.seams.map_or(0, RepeatBoundaryPlan::count)
+    }
+
+    pub fn seams(self) -> Option<RepeatBoundaryPlan> {
+        self.seams
+    }
+
+    /// The full cycle endpoints, possibly outside the retained window.
+    /// An initial lead-in before the loop start is included in the first pass.
+    pub fn full_bounds(self, index: u64) -> Option<(i128, i128)> {
+        if index >= self.count() {
+            return None;
+        }
+        let read = if self.window.reversed {
+            let right = self
+                .seams
+                .and_then(|seams| seams.boundary(index))
+                .unwrap_or(self.window.end - self.window.start);
+            self.window.end - right
+        } else {
+            self.window.start
+                + if index == 0 {
+                    0
+                } else {
+                    self.seams?.boundary(index - 1)?
+                }
+        };
+        let (start, end) = if read < self.first {
+            (
+                (i128::from(self.first) - i128::from(self.period)).min(0),
+                i128::from(self.first),
+            )
+        } else {
+            let start = i128::from(read - (read - self.first) % self.period);
+            (start, start + i128::from(self.period))
+        };
+        let anchor = i128::from(if self.window.reversed {
+            self.window.end
+        } else {
+            self.window.start
+        });
+        Some(if self.window.reversed {
+            (anchor - end, anchor - start)
+        } else {
+            (start - anchor, end - anchor)
+        })
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ContentWindow {
     pub start: u64,
@@ -85,6 +146,14 @@ impl ContentWindow {
             period,
             count: last - initial + 1,
         }))
+    }
+    pub fn repeat_cycles(self, first: u64, period: u64) -> Result<RepeatCycles, Invalid> {
+        Ok(RepeatCycles {
+            window: self,
+            seams: self.repeat_boundaries(first, period)?,
+            first,
+            period,
+        })
     }
     /// Map a half-open elapsed interval, retaining the same finite gate length.
     pub fn read_range(self, range: Range<u64>) -> Result<Range<u64>, Invalid> {
@@ -151,6 +220,27 @@ impl ContentWindow {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn repeat_cycles_expose_partial_and_reflected_phase_without_inventing_seams() {
+        let single = ContentWindow::new(3, 6, false)
+            .unwrap()
+            .repeat_cycles(8, 10)
+            .unwrap();
+        assert_eq!(single.count(), 1);
+        assert_eq!(single.seams(), None);
+        assert_eq!(single.full_bounds(0), Some((-5, 5)));
+
+        let cycles = ContentWindow::new(3, 24, true)
+            .unwrap()
+            .repeat_cycles(10, 10)
+            .unwrap();
+        let seams = cycles.seams().unwrap();
+        assert_eq!((seams.boundary(0), seams.boundary(1)), (Some(4), Some(14)));
+        assert_eq!(cycles.full_bounds(0), Some((-6, 4)));
+        assert_eq!(cycles.full_bounds(1), Some((4, 14)));
+        assert_eq!(cycles.full_bounds(2), Some((14, 24)));
+        assert_eq!(cycles.full_bounds(3), None);
+    }
     #[test]
     fn finite_reflection_preserves_gates_and_composes_with_crops() {
         let view = ContentWindow::new(7, 19, true).unwrap();

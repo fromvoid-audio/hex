@@ -1,13 +1,16 @@
 pub(crate) mod alias_projection_v60;
 pub(crate) mod appearance;
+pub(crate) mod arrangement_locators;
 mod arrangement_sections;
 mod audio_alias_projection;
 pub(crate) mod audio_events;
 pub(crate) mod automation_read;
+pub(crate) mod bound_source_effects;
 pub(crate) mod branch_audio;
 pub(crate) mod clip_activation;
 pub(crate) mod clip_aliases;
 pub(crate) mod clip_names;
+pub(crate) mod coincident_automation;
 pub(crate) mod combined;
 pub(crate) mod content_view_resampler;
 pub(crate) mod content_views;
@@ -16,6 +19,7 @@ pub(crate) mod crossfades;
 pub(crate) mod device_assets;
 pub(crate) mod device_automation;
 pub(crate) mod device_automation_touch;
+pub(crate) mod device_modulation;
 pub(crate) mod event_activation;
 pub(crate) mod event_fades;
 pub(crate) mod event_gain;
@@ -28,6 +32,8 @@ pub(crate) mod grouped_audio;
 mod host_gain;
 pub(crate) mod legacy;
 pub(crate) mod legacy_early;
+pub(crate) mod long_pitch;
+pub(crate) mod long_reverse;
 pub(crate) mod midi_clip_gain;
 mod midi_clip_volume;
 pub(crate) mod midi_one_shot;
@@ -43,6 +49,7 @@ pub(crate) mod provenance;
 pub(crate) mod retained_receiver;
 pub(crate) mod return_feeds;
 pub(crate) mod routing;
+pub(crate) mod s_curve_fades;
 pub(crate) mod sample_rate_mode;
 pub(crate) mod sampler_crossfade;
 pub(crate) mod serial_units;
@@ -1223,6 +1230,7 @@ fn device_dto_into_snapshot(device: DeviceDtoV14) -> Result<DeviceSnapshot, Stor
         .with_output_gain_millidb(device.output_gain_millidb)
         .map_err(|_| StorageError::Invalid("invalid device output gain"))?;
     Ok(DeviceSnapshot {
+        modulation: Default::default(),
         parent: None,
         automation: Vec::new(),
         id: device.id,
@@ -1303,6 +1311,7 @@ impl DocumentV8 {
                     aliases: Default::default(),
                     native_sources: Vec::new(),
                     arrangement_sections: Vec::new(),
+                    arrangement_locators: Vec::new(),
                     main_devices: Vec::new(),
                     tuning: Default::default(),
                     return_feeds: Vec::new(),
@@ -1348,6 +1357,7 @@ impl DocumentV8 {
                     aliases: Default::default(),
                     native_sources: Vec::new(),
                     arrangement_sections: Vec::new(),
+                    arrangement_locators: Vec::new(),
                     main_devices: Vec::new(),
                     tuning: Default::default(),
                     return_feeds: Vec::new(),
@@ -1393,6 +1403,7 @@ impl DocumentV8 {
                     aliases: Default::default(),
                     native_sources: Vec::new(),
                     arrangement_sections: Vec::new(),
+                    arrangement_locators: Vec::new(),
                     main_devices: Vec::new(),
                     tuning: Default::default(),
                     return_feeds: Vec::new(),
@@ -1445,6 +1456,7 @@ impl DocumentV8 {
                     aliases: Default::default(),
                     native_sources: Vec::new(),
                     arrangement_sections: Vec::new(),
+                    arrangement_locators: Vec::new(),
                     main_devices: Vec::new(),
                     tuning: Default::default(),
                     return_feeds: Vec::new(),
@@ -1497,6 +1509,7 @@ impl DocumentV8 {
                     aliases: Default::default(),
                     native_sources: Vec::new(),
                     arrangement_sections: Vec::new(),
+                    arrangement_locators: Vec::new(),
                     main_devices: Vec::new(),
                     tuning: Default::default(),
                     return_feeds: Vec::new(),
@@ -1549,6 +1562,7 @@ impl DocumentV8 {
                     aliases: Default::default(),
                     native_sources: Vec::new(),
                     arrangement_sections: Vec::new(),
+                    arrangement_locators: Vec::new(),
                     main_devices: Vec::new(),
                     tuning: Default::default(),
                     return_feeds: Vec::new(),
@@ -1601,6 +1615,7 @@ impl DocumentV8 {
                     aliases: Default::default(),
                     native_sources: Vec::new(),
                     arrangement_sections: Vec::new(),
+                    arrangement_locators: Vec::new(),
                     main_devices: Vec::new(),
                     tuning: Default::default(),
                     return_feeds: Vec::new(),
@@ -1671,6 +1686,7 @@ impl DocumentV8 {
                     aliases: Default::default(),
                     native_sources: Vec::new(),
                     arrangement_sections: Vec::new(),
+                    arrangement_locators: Vec::new(),
                     main_devices: Vec::new(),
                     tuning: Default::default(),
                     return_feeds: Vec::new(),
@@ -2124,6 +2140,7 @@ impl DocumentV13 {
             aliases: Default::default(),
             native_sources: Vec::new(),
             arrangement_sections: Vec::new(),
+            arrangement_locators: Vec::new(),
             main_devices: Vec::new(),
             tuning: Default::default(),
             return_feeds: Vec::new(),
@@ -2494,6 +2511,7 @@ impl DocumentV10 {
                     aliases: Default::default(),
                     native_sources: Vec::new(),
                     arrangement_sections: Vec::new(),
+                    arrangement_locators: Vec::new(),
                     main_devices: Vec::new(),
                     tuning: Default::default(),
                     return_feeds: Vec::new(),
@@ -2650,6 +2668,7 @@ impl DocumentV9 {
             aliases: Default::default(),
             native_sources: Vec::new(),
             arrangement_sections: Vec::new(),
+            arrangement_locators: Vec::new(),
             main_devices: Vec::new(),
             tuning: Default::default(),
             return_feeds: Vec::new(),

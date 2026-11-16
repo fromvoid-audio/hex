@@ -1312,7 +1312,7 @@ pub(super) fn filter_summary(
     row
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "ui-test-support")))]
 mod tests {
     use super::*;
 

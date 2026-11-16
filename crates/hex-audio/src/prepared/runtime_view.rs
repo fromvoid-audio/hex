@@ -88,6 +88,7 @@ impl RuntimeRef<'_> {
                 position: p.position(),
                 performance_frame: p.performance_frame(),
                 playing: p.playing(),
+                arrangement_loop_state: p.arrangement_loop_state(),
                 metronome_enabled: p.metronome_enabled(),
                 session_capability: p.session_capability_status(),
                 sampler_console: false,
@@ -98,11 +99,40 @@ impl RuntimeRef<'_> {
             }),
         }
     }
+    pub(super) fn transport(
+        &self,
+    ) -> Option<(
+        u64,
+        u64,
+        bool,
+        Option<hex_engine::session_playback::ArrangementLoopState>,
+    )> {
+        match self {
+            Self::Legacy(playback) => Some((
+                playback.position(),
+                playback.performance_frame(),
+                playback.playing(),
+                playback.arrangement_loop_state(),
+            )),
+            Self::Eligible(runtime) => runtime.status().map(|status| {
+                (
+                    status.position,
+                    status.performance_frame,
+                    status.playing,
+                    status.arrangement_loop_state,
+                )
+            }),
+        }
+    }
     pub(super) fn sample_rate(&self) -> u32 {
         match self {
             Self::Legacy(p) => p.sample_rate(),
             Self::Eligible(p) => p.sample_rate().unwrap_or(0),
         }
+    }
+    pub(super) fn main_output_latency_frames(&self) -> Option<u32> {
+        self.status()
+            .map(|status| status.main_output_latency_frames)
     }
     pub(super) fn position(&self) -> u64 {
         self.status().map_or(0, |s| s.position)
@@ -259,6 +289,11 @@ impl RuntimeMut<'_> {
     pub(super) fn position(&self) -> u64 {
         self.read().position()
     }
+    pub(super) fn main_output_latency_frames(&self) -> Option<u32> {
+        self.read()
+            .status()
+            .map(|status| status.main_output_latency_frames)
+    }
     pub(super) fn arm_midi_capture(
         &mut self,
         binding: hex_engine::midi_capture::MidiCaptureBinding,
@@ -368,6 +403,29 @@ impl RuntimeMut<'_> {
             }
             (Self::Legacy(p), None) => p.render_with_signal_observers(output, observer, project),
             (Self::Eligible(p), None) => p.render_with_signal_observers(output, observer, project),
+        }
+    }
+    pub(super) fn render_with_live_track_audio(
+        &mut self,
+        output: &mut [Frame],
+        track: hex_engine::OutputCaptureId,
+        input: &[Frame],
+        observer: Option<&mut hex_engine::NodeSignalObserver<'_>>,
+        project: Option<&mut hex_engine::ProjectOutputTap<'_, '_>>,
+        foreign: Option<&mut dyn hex_lattice::ForeignProcessors>,
+    ) -> Result<(), Invalid> {
+        let hex_engine::OutputCaptureId::Track(track) = track else {
+            return Err(Invalid("input monitor target must be a track"));
+        };
+        let mut refuse = hex_lattice::RefuseForeign;
+        let foreign = foreign.unwrap_or(&mut refuse);
+        match self {
+            Self::Legacy(p) => p.render_with_live_track_audio(
+                output, track, input, None, observer, project, foreign,
+            ),
+            Self::Eligible(p) => p.render_with_live_track_audio(
+                output, track, input, None, observer, project, foreign,
+            ),
         }
     }
     pub(super) fn clear_gain_recording_override(&mut self) {

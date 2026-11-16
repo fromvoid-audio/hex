@@ -54,6 +54,84 @@ fn aligned_tap(session: &Session, frames: usize) -> Vec<hex_engine::Frame> {
 }
 
 #[test]
+fn merged_range_prints_one_mix_and_mutes_only_the_source_interval() {
+    let folder = Folder::new();
+    let mut session = Session::new(8_000, 32, 40_000).unwrap();
+    let a = audio_track(&mut session, &folder, "first", [0.2, 0.4]);
+    let b = audio_track(&mut session, &folder, "second", [0.3, -0.2]);
+    let bus = group(&mut session, &[a, b], "group");
+    let c = audio_track(&mut session, &folder, "third", [0.125, -0.25]);
+    let outside = audio_track(&mut session, &folder, "outside", [0.9, 0.9]);
+    for (track, gain) in [(a, 0.5), (b, 0.75), (bus, 0.5), (c, 0.25), (outside, 1.0)] {
+        session.command(Command::Gain { track, gain }).unwrap();
+    }
+    session
+        .command(Command::Balance {
+            track: b,
+            balance: -1.0,
+        })
+        .unwrap();
+    let (start, end) = (4_032, 4_160);
+    let group_row = TimeRange::new(vec![bus], start, end).unwrap();
+    assert_eq!(
+        session
+            .project()
+            .merged_bounce_range(&group_row)
+            .unwrap()
+            .tracks(),
+        &[bus, a, b]
+    );
+    let range = TimeRange::new(vec![bus, a, b, c], start, end).unwrap();
+    let before = session.project().snapshot();
+    session
+        .bounce_arrangement_adopting(
+            BounceTarget::MergedRange(range.clone()),
+            false,
+            BounceAdoption::NewTracksMutingSources,
+            &folder.0,
+            &hex_export::ExportControl::default(),
+            None,
+        )
+        .unwrap();
+    let project = session.project();
+    assert_eq!(project.tracks().len(), before.tracks.len() + 1);
+    let bounce = &project.tracks()[4];
+    assert_eq!(bounce.parent_group(), None);
+    assert_eq!(bounce.gain(), 1.0);
+    assert_eq!(project.tracks()[5].id(), outside);
+    let [clip] = bounce.clips() else {
+        panic!("one bounced clip")
+    };
+    assert_eq!((clip.start(), clip.duration()), (start, end - start));
+    let asset = project.asset(clip.asset()).unwrap();
+    let pcm =
+        hex_media::decode_wav_file(asset.path(), hex_media::Limits::new(16_000, 1_000)).unwrap();
+    let expected = [
+        0.5 * (0.2 * 0.5 + 0.3 * 0.75) + 0.125 * 0.25,
+        0.5 * 0.4 * 0.5 - 0.25 * 0.25,
+    ];
+    assert_eq!(pcm.audio().frames().len(), (end - start) as usize);
+    for frame in pcm.audio().frames() {
+        assert!((frame[0] - expected[0]).abs() < 0.000_001, "{frame:?}");
+        assert!((frame[1] - expected[1]).abs() < 0.000_001, "{frame:?}");
+    }
+    assert_eq!(
+        project.time_range_has_active_clips(&range).unwrap(),
+        Some(false)
+    );
+    for id in [a, b, c] {
+        let clips = project.track(id).unwrap().clips();
+        assert!(clips.first().unwrap().active() && clips.last().unwrap().active());
+    }
+    assert!(project.track(outside).unwrap().clips()[0].active());
+    let after = project.snapshot();
+    assert!(session.undo());
+    assert_eq!(session.project().snapshot().tracks, before.tracks);
+    assert!(session.redo());
+    assert_eq!(session.project().snapshot().tracks, after.tracks);
+}
+
+#[test]
 fn group_range_prints_the_nested_post_device_submix_and_adopts_a_sibling() {
     let folder = Folder::new();
     let (mut session, midi, _) = fixture_at_rate(8_000);

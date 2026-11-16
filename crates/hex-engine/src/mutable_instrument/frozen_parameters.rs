@@ -11,9 +11,10 @@ use hex_lattice_contract::{
 };
 
 #[derive(Default)]
-pub(super) struct FrozenParameters {
+pub(crate) struct FrozenParameters {
     ids: Vec<ParameterId>,
     values: Vec<Option<ParameterValue>>,
+    unclamped_target: Option<(ParameterId, f64)>,
     ready: bool,
 }
 impl FrozenParameters {
@@ -81,6 +82,9 @@ impl FrozenParameters {
             .get_mut(..self.ids.len())
             .ok_or(MutableInstrumentRuntimeError::Budget)?;
         pair.copy_committed_parameter_targets(&self.ids, output)
+            .map_err(map_runtime_error)?;
+        pair.committed_unclamped_modulation_target()
+            .map(|_| ())
             .map_err(map_runtime_error)
     }
     fn capture(
@@ -90,17 +94,28 @@ impl FrozenParameters {
         if self.ids.is_empty() {
             return Ok(());
         }
+        let unclamped_target = pair
+            .committed_unclamped_modulation_target()
+            .map_err(map_runtime_error)?;
         pair.copy_committed_parameter_targets(&self.ids, &mut self.values)
             .map_err(map_runtime_error)?;
+        self.unclamped_target = unclamped_target;
         self.ready = true;
         Ok(())
     }
     pub(super) fn reset(&mut self) {
         self.values.fill(None);
+        self.unclamped_target = None;
         self.ready = false;
     }
 }
 impl NativeParameterAutomation for FrozenParameters {
+    fn normalized_before_clamp(&self, parameter: ParameterId, _: usize) -> Option<f64> {
+        self.unclamped_target
+            .filter(|(id, _)| *id == parameter)
+            .map(|(_, value)| value)
+    }
+
     fn parameter_ids(&self) -> &[ParameterId] {
         &self.ids
     }
@@ -149,7 +164,11 @@ impl MutableInstrumentTrackRuntime {
             ));
         }
         let frame = std::mem::take(&mut self.frozen_parameters);
+        // The detached tail consumes the last committed effective values.
+        // Keep custody of the inactive source bank through the callback.
+        let modulation = self.modulation.take();
         let result = render(self, Some(&frame));
+        self.modulation = modulation;
         self.frozen_parameters = frame;
         Ok(result)
     }
@@ -169,34 +188,48 @@ impl MutableInstrumentTrackRuntime {
         clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
         values: Option<&dyn NativeParameterAutomation>,
     ) -> Result<(), MutableInstrumentRuntimeError> {
-        if values.is_none() {
-            return self.process_segment_inner(
-                track,
-                performance,
-                performance,
+        let gain = self.output_trim.map(|trim| trim.committed.linear());
+        let mut render = |frames: &mut [[f32; 2]]| {
+            if values.is_none() {
+                self.process_segment_inner(
+                    track,
+                    performance,
+                    performance,
+                    frames,
+                    onsets,
+                    &[],
+                    events,
+                    clock,
+                    &hex_lattice::EMPTY_DEVICE_RESOURCES,
+                    None,
+                    None,
+                )
+            } else {
+                self.process_volume_scope(
+                    track,
+                    performance,
+                    performance,
+                    frames,
+                    onsets,
+                    &[],
+                    events,
+                    clock,
+                    &hex_lattice::EMPTY_DEVICE_RESOURCES,
+                    None,
+                    values,
+                )
+            }
+        };
+        if let Some(gain) = gain {
+            super::output_trim::render_contribution(
                 frames,
-                onsets,
-                &[],
-                events,
-                clock,
-                &hex_lattice::EMPTY_DEVICE_RESOURCES,
-                None,
-                None,
-            );
+                |_| gain,
+                MutableInstrumentRuntimeError::Budget,
+                render,
+            )
+        } else {
+            render(frames)
         }
-        self.process_volume_scope(
-            track,
-            performance,
-            performance,
-            frames,
-            onsets,
-            &[],
-            events,
-            clock,
-            &hex_lattice::EMPTY_DEVICE_RESOURCES,
-            None,
-            values,
-        )
     }
 }
 
@@ -236,23 +269,32 @@ mod tests {
             .unwrap();
         let factory = instrument.prepare_mutable_runtime().unwrap().unwrap();
         let mut runtime = MutableInstrumentTrackRuntime::new(factory.as_ref(), 48000).unwrap();
+        let expected_ids: Vec<_> = [
+            2, 3, 5, 6, 8, 9, 11, 12, 14, 15, 16, 17, 19, 20, 21, 22, 24, 25, 26, 27, 29, 30, 31,
+            32,
+        ]
+        .into_iter()
+        .map(ParameterId::from_static)
+        .collect();
+        assert_eq!(runtime.frozen_parameters.ids, expected_ids);
         assert_eq!(
             runtime.frozen_parameters.storage_bytes(),
-            FrozenParameters::quote(4)
+            FrozenParameters::quote(24)
         );
         assert_eq!(
             MutableInstrumentTrackRuntime::checkpoint_storage_upper_bound(factory.as_ref(), 48000),
             runtime
                 .declared_pair_bytes()
                 .checked_add(runtime.ledger_capacity_bytes().unwrap())
-                .and_then(|bytes| bytes.checked_add(FrozenParameters::quote(4).unwrap()))
+                .and_then(|bytes| bytes.checked_add(FrozenParameters::quote(24).unwrap()))
         );
         assert!(runtime.with_frozen_parameters(|_, _| ()).is_err());
         runtime.capture_tail_parameters().unwrap();
         let before = runtime.frozen_parameters.values.clone();
+        assert!(before.iter().all(Option::is_some));
         let failed: Result<(), ()> = runtime
             .with_frozen_parameters(|_, values| {
-                assert_eq!(values.unwrap().parameter_ids().len(), 4);
+                assert_eq!(values.unwrap().parameter_ids(), expected_ids);
                 Err(())
             })
             .unwrap();
@@ -261,10 +303,10 @@ mod tests {
         assert!(runtime.frozen_parameters.ready);
         runtime
             .with_frozen_parameters(|_, values| {
-                assert_eq!(
-                    values.unwrap().value_at(ParameterId::from_static(29), 0),
-                    before[0]
-                )
+                let values = values.unwrap();
+                for (id, expected) in expected_ids.iter().zip(&before) {
+                    assert_eq!(values.value_at(*id, 0), *expected);
+                }
             })
             .unwrap();
         let bytes = runtime.frozen_parameters.storage_bytes();

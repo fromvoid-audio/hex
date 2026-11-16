@@ -144,6 +144,9 @@ impl SessionPlayback {
         for chain in &mut self.device_chains {
             chain.begin_block();
         }
+        for chain in self.source_effects.chains_mut() {
+            chain.begin_block();
+        }
         for chain in &mut self.return_chains {
             chain.begin_block();
         }
@@ -183,6 +186,7 @@ impl SessionPlayback {
                     capture,
                     sources,
                     foreign,
+                    None,
                     None,
                     None,
                 )?;
@@ -245,6 +249,7 @@ impl SessionPlayback {
                     )?;
                     let parameter_block = parameter_context.block();
                     source_live::render_source_live_input(
+                        &self.revision,
                         self.computer_keyboard.as_mut().map(Box::as_mut),
                         self.mutable_instruments[index].as_mut(),
                         &mut self.mutable_onsets,
@@ -257,6 +262,7 @@ impl SessionPlayback {
                         parameter_block
                             .as_ref()
                             .map(|values| values as &dyn hex_lattice::NativeParameterAutomation),
+                        None,
                     )?;
                 } else if let Some(runtime) = self.mutable_instruments[index]
                     .as_mut()
@@ -342,6 +348,18 @@ impl SessionPlayback {
                         frames,
                     )?;
                 }
+                if self.source_effects.has_chain(index) {
+                    let clock = crate::effect_clock::ArrangementEffectClock::session(
+                        self.revision.session().timing(),
+                        self.arrangement_frame,
+                        self.performance_frame,
+                        self.arrangement_loop_pass,
+                        false,
+                    );
+                    self.source_effects
+                        .process_with_clock(index, frames, &clock)
+                        .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
+                }
                 track.apply_instrument_output_gain(frames);
                 let chain = &mut self.device_chains[index];
                 if chain.is_empty() {
@@ -406,7 +424,15 @@ impl SessionPlayback {
                 self.return_effect_tails
                     .render_chunk(chunk, offset, capture, foreign)?;
             }
-            self.render_detached_tails(self.performance_frame, chunk, offset, capture, None)?;
+            self.render_detached_tails(
+                self.performance_frame,
+                chunk,
+                offset,
+                capture,
+                None,
+                None,
+                foreign,
+            )?;
             self.advance_paused_analytic_releases(count)?;
             offset = end;
         }
@@ -454,6 +480,9 @@ impl SessionPlayback {
         }
         self.revision.arrangement().master_mix().apply(output);
         for chain in &mut self.device_chains {
+            chain.commit_block();
+        }
+        for chain in self.source_effects.chains_mut() {
             chain.commit_block();
         }
         for chain in &mut self.return_chains {

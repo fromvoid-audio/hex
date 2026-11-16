@@ -7,6 +7,7 @@ use std::sync::Arc;
 fn chain(gain: f32, bypassed: bool, automation: PreparedParameterAutomation) -> NativeRuntimeChain {
     let kind = DeviceTypeId::from_static("test.static.processing");
     NativeRuntimeChain::new_prepared(vec![PreparedRuntimeInstance {
+        modulation: None,
         automation,
         meter: Default::default(),
         owner: ProcessorChainOwner::Track(1),

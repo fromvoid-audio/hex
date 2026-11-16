@@ -58,6 +58,12 @@ impl AudibleClock {
         }
     }
 
+    /// A fresh seek discards the previous output history even when its new
+    /// performance clock happens to equal the old cut clock.
+    pub(super) fn clear(&mut self) {
+        self.len = 0;
+    }
+
     /// Record one rendered playing block that started at `position` and
     /// `performance`. A performance discontinuity discards the history.
     pub(super) fn push(&mut self, position: u64, performance: u64, frames: usize) {
@@ -208,6 +214,15 @@ mod tests {
         assert_eq!(clock.audible(48_384, 48_384, 0, None), 48_384);
         // Stop rewinds both clocks to zero.
         assert_eq!(clock.audible(0, 0, 288, None), 0);
+    }
+
+    #[test]
+    fn fresh_seek_clears_history_even_with_a_continuous_performance_clock() {
+        let mut clock = AudibleClock::new();
+        clock.push(100, 100, 20);
+        clock.clear();
+        clock.push(4_000, 120, 10);
+        assert_eq!(clock.audible(4_010, 130, 20, None), 4_000);
     }
 
     #[test]

@@ -237,6 +237,9 @@ fn clip_loop_outer_real_pointer_retains_released_paint_and_one_worker_history_ed
             "trim-live-preview"
         };
         let held = f.visual.debug_bounds(overlay).expect("held painted loop");
+        let header = Box::leak(format!("clip-name-{}", f.clip.value()).into_boxed_str());
+        let gradients = crate::editor::clip_header_loop::gradient_quads(&mut f.visual, header);
+        assert!(!gradients.is_empty());
         let marker = f
             .visual
             .debug_bounds("clip-repeat-marker-0")
@@ -263,6 +266,11 @@ fn clip_loop_outer_real_pointer_retains_released_paint_and_one_worker_history_ed
             f.visual.debug_bounds("clip-repeat-marker-0"),
             Some(marker),
             "marker stays at prospective boundary before ACK"
+        );
+        assert_eq!(
+            crate::editor::clip_header_loop::gradient_quads(&mut f.visual, header),
+            gradients,
+            "released header keeps the prospective gradient until acknowledgement"
         );
         f.editor.read_with(&f.visual, |v, _| {
             assert!(v.pending_trim.is_some());
@@ -307,6 +315,11 @@ fn clip_loop_outer_real_pointer_retains_released_paint_and_one_worker_history_ed
             assert_eq!(directed, reversed, "loop resizing retains direction");
             project.snapshot()
         });
+        assert_eq!(
+            crate::editor::clip_header_loop::gradient_quads(&mut f.visual, header),
+            gradients,
+            "the committed header paints the acknowledged cycle positions"
+        );
         if reversed {
             assert!(
                 f.visual.debug_bounds(selector(&f, "cycle")).is_none(),
@@ -608,12 +621,21 @@ fn clip_loop_existing_repeat_shift_warp_keeps_processed_waveform_and_real_histor
             .simulate_mouse_move(target, MouseButton::Left, shift);
         f.visual.run_until_parked();
         let held = f.visual.debug_bounds("trim-live-preview").unwrap();
+        let header = Box::leak(format!("clip-name-{}", f.clip.value()).into_boxed_str());
+        let gradient = crate::editor::clip_header_loop::gradient_quads(&mut f.visual, header);
+        assert!(!gradient.is_empty());
+
         f.editor.read_with(&f.visual,|v,_|assert!(v.waveform_geometry_cache.borrow().painted_waveforms().iter().any(|p|
             p.bounds.right()>=held.right()-px(2.0) && p.ordinates.iter().any(|(lo,hi)| hi-lo>1.0)
         ),"ordinary Shift-Warp retains accepted processed root peaks on an existing repeat; warped={warped}"));
         f.visual.simulate_mouse_up(target, MouseButton::Left, shift);
         f.visual.run_until_parked();
         assert_eq!(f.visual.debug_bounds("trim-live-preview"), Some(held));
+        assert_eq!(
+            crate::editor::clip_header_loop::gradient_quads(&mut f.visual, header),
+            gradient
+        );
+
         pump(&f.editor, &mut f.visual);
         f.editor.read_with(&f.visual, |v, _| {
             assert!(v.error.is_none(), "{:?}", v.error)
@@ -964,8 +986,8 @@ fn option_repeat_edge_has_priority_over_a_covering_time_selection(cx: &mut TestA
                 clip.start() + clip.duration()
             };
             view.time_selection = Some(super::super::time_selection::TimeSelection {
-                anchor_track: track,
-                end_track: track,
+                anchor_track: Some(track),
+                end_track: Some(track),
                 anchor_frame: 0,
                 end_frame: if boundary {
                     clip_end
@@ -986,6 +1008,7 @@ fn option_repeat_edge_has_priority_over_a_covering_time_selection(cx: &mut TestA
                         .time_selection
                         .unwrap()
                         .anchor_track
+                        .unwrap()
                         .value())
                 )
                 .into_boxed_str(),

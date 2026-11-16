@@ -1,5 +1,6 @@
 //! Borrow an already admitted graph program in the original PCM transaction.
 use hex_lattice::ForeignAutomation;
+use hex_lattice_contract::MAX_FOREIGN_AUTOMATION_TARGETS;
 use hex_plugin_host::transport::{
     AuthoredParameterProgram, Fault, MAX_PARAMETER_POINTS, MAX_TIMING_CHANGES, ParameterPoint,
     Parameters, TimingChanges,
@@ -53,10 +54,23 @@ impl AuthoredParameterProgram for TransportProgram<'_> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AuthoredSelection {
     class: hex_plugin_state::ClassId,
-    ids: [u32; MAX_PARAMETER_POINTS],
+    ids: [u32; MAX_FOREIGN_AUTOMATION_TARGETS],
     len: usize,
+    dense_parameter: Option<u32>,
 }
 impl AuthoredSelection {
+    /// An exact source class with no selected authored parameters. This grants
+    /// no SDK target and is used only to inspect an unlaned restored state.
+    pub fn for_no_parameters(class: [u8; 16]) -> Result<Self, &'static str> {
+        Ok(Self {
+            class: hex_plugin_state::ClassId::new(class)
+                .map_err(|_| "authored vst3 class is invalid")?,
+            ids: [0; MAX_FOREIGN_AUTOMATION_TARGETS],
+            len: 0,
+            dense_parameter: None,
+        })
+    }
+
     pub fn from_targets(
         targets: impl IntoIterator<Item = (u32, Option<[u8; 16]>)>,
     ) -> Result<Option<Self>, &'static str> {
@@ -68,8 +82,9 @@ impl AuthoredSelection {
             .map_err(|_| "authored vst3 class is invalid")?;
         let mut selected = Self {
             class,
-            ids: [0; MAX_PARAMETER_POINTS],
+            ids: [0; MAX_FOREIGN_AUTOMATION_TARGETS],
             len: 0,
+            dense_parameter: None,
         };
         for (id, candidate) in std::iter::once((first, Some(class.bytes()))).chain(targets) {
             if candidate != Some(class.bytes()) || id > i32::MAX as u32 {
@@ -88,6 +103,41 @@ impl AuthoredSelection {
             return Err("duplicate authored vst3 parameter target");
         }
         Ok(Some(selected))
+    }
+
+    /// Merge the reserved raw ID with authored metadata selection. An
+    /// existing lane in Base mode may already name the same class and ID.
+    /// The worker and graph independently admit the actual continuous target.
+    pub fn from_targets_and_dense(
+        targets: impl IntoIterator<Item = (u32, Option<[u8; 16]>)>,
+        dense: Option<(u32, [u8; 16])>,
+    ) -> Result<Option<Self>, &'static str> {
+        let selected = Self::from_targets(targets)?;
+        let Some((id, class)) = dense else {
+            return Ok(selected);
+        };
+        let mut selected = match selected {
+            Some(selected) => selected,
+            None => Self::from_targets([(id, Some(class))])?
+                .ok_or("dense vst3 parameter selection missing")?,
+        };
+        if selected.class.bytes() != class || id > i32::MAX as u32 {
+            return Err("dense vst3 parameter identity differs");
+        }
+        if let Err(index) = selected.ids[..selected.len].binary_search(&id) {
+            if selected.len == MAX_FOREIGN_AUTOMATION_TARGETS {
+                return Err("dense vst3 target count exceeds its point budget");
+            }
+            selected.ids.copy_within(index..selected.len, index + 1);
+            selected.ids[index] = id;
+            selected.len += 1;
+        }
+        selected.dense_parameter = Some(id);
+        Ok(Some(selected))
+    }
+
+    pub fn dense_parameter(&self) -> Option<u32> {
+        self.dense_parameter
     }
 
     /// Selection membership only; actual SDK/source admission stays with Root.
@@ -114,7 +164,7 @@ impl AuthoredSelection {
 #[derive(Clone)]
 pub(super) struct SourceCapabilities {
     class: Option<hex_plugin_state::ClassId>,
-    parameters: [hex_lattice::ForeignParameterCapability; MAX_PARAMETER_POINTS],
+    parameters: [hex_lattice::ForeignParameterCapability; MAX_FOREIGN_AUTOMATION_TARGETS],
     len: usize,
 }
 
@@ -126,13 +176,13 @@ impl Default for SourceCapabilities {
                 id: 0,
                 steps: 0,
                 normalized_base_bits: 0,
-            }; MAX_PARAMETER_POINTS],
+            }; MAX_FOREIGN_AUTOMATION_TARGETS],
             len: 0,
         }
     }
 }
 
-pub(super) type CanonicalParameterBases = [Option<(u32, u64)>; MAX_PARAMETER_POINTS];
+pub(super) type CanonicalParameterBases = [Option<(u32, u64)>; MAX_FOREIGN_AUTOMATION_TARGETS];
 
 impl SourceCapabilities {
     /// The original source reserved its native metadata container. An empty
@@ -152,7 +202,7 @@ impl SourceCapabilities {
     ) -> Result<(Self, CanonicalParameterBases), hex_plugin_host::Error> {
         use hex_plugin_host::Error;
 
-        if ids.len() > MAX_PARAMETER_POINTS {
+        if ids.len() > MAX_FOREIGN_AUTOMATION_TARGETS {
             return Err(Error::Protocol(
                 "authored parameter selection exceeds the PCM point budget",
             ));
@@ -163,7 +213,7 @@ impl SourceCapabilities {
             len: ids.len(),
             ..Self::default()
         };
-        let mut bases = [None; MAX_PARAMETER_POINTS];
+        let mut bases = [None; MAX_FOREIGN_AUTOMATION_TARGETS];
         for ((entry, base), &id) in source.parameters.iter_mut().zip(&mut bases).zip(ids) {
             let previous = retained.and_then(|old| {
                 (old.class == Some(class))
@@ -197,7 +247,7 @@ impl SourceCapabilities {
     pub(super) fn from_canonical(
         class: hex_plugin_state::ClassId,
         values: &CanonicalParameterBases,
-        steps: &[u32; MAX_PARAMETER_POINTS],
+        steps: &[u32; MAX_FOREIGN_AUTOMATION_TARGETS],
     ) -> Result<Self, &'static str> {
         let mut result = Self {
             class: Some(class),
@@ -271,6 +321,7 @@ impl SourceCapabilities {
             class: self.class?.bytes(),
             sample_rate,
             quantum_frames,
+            dense_parameter: None,
             parameters: &self.parameters[..self.len],
         })
     }
@@ -281,10 +332,54 @@ mod tests {
     use super::*;
 
     #[test]
+    fn empty_canonical_selection_keeps_class_without_claiming_parameters() {
+        let selected = AuthoredSelection::for_no_parameters([4; 16]).unwrap();
+        assert_eq!(selected.parameters().0.bytes(), [4; 16]);
+        assert!(selected.parameters().1.is_empty());
+        assert_eq!(selected.dense_parameter(), None);
+        assert!(AuthoredSelection::for_no_parameters([0; 16]).is_err());
+        let values = [None; MAX_FOREIGN_AUTOMATION_TARGETS];
+        let steps = [0; MAX_FOREIGN_AUTOMATION_TARGETS];
+        let capabilities =
+            SourceCapabilities::from_canonical(selected.parameters().0, &values, &steps).unwrap();
+        assert!(capabilities.parameters().is_empty());
+    }
+
+    #[test]
+    fn dense_selection_merges_one_exact_raw_id_without_discarding_sparse_targets() {
+        let class = [4; 16];
+        let selected =
+            AuthoredSelection::from_targets_and_dense([(7, Some(class))], Some((0, class)))
+                .unwrap()
+                .unwrap();
+        assert_eq!(selected.dense_parameter(), Some(0));
+        assert_eq!(selected.parameters().1, &[0, 7]);
+        assert_eq!(
+            AuthoredSelection::from_targets_and_dense(
+                [(0, Some(class)), (7, Some(class))],
+                Some((0, class)),
+            )
+            .unwrap(),
+            Some(selected),
+        );
+        assert!(
+            AuthoredSelection::from_targets_and_dense([(7, Some(class))], Some((0, [3; 16])))
+                .is_err()
+        );
+        assert!(
+            AuthoredSelection::from_targets_and_dense(
+                (0..MAX_FOREIGN_AUTOMATION_TARGETS as u32).map(|id| (id, Some(class))),
+                Some((MAX_FOREIGN_AUTOMATION_TARGETS as u32, class)),
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
     fn canonical_metadata_keeps_exact_bases_and_requires_complete_ordered_values() {
         let class = hex_plugin_state::ClassId::new([3; 16]).unwrap();
-        let mut values = [None; MAX_PARAMETER_POINTS];
-        let steps = [0; MAX_PARAMETER_POINTS];
+        let mut values = [None; MAX_FOREIGN_AUTOMATION_TARGETS];
+        let steps = [0; MAX_FOREIGN_AUTOMATION_TARGETS];
         let precise = f64::from_bits(0x3fe0000000000001);
         values[0] = Some((0, precise.to_bits()));
         values[1] = Some((7, 0.25f64.to_bits()));
@@ -343,7 +438,7 @@ mod tests {
         assert!(AuthoredSelection::from_targets([(u32::MAX, class)]).is_err());
         assert!(
             AuthoredSelection::from_targets(
-                (0..=MAX_PARAMETER_POINTS as u32).map(|id| (id, class))
+                (0..=MAX_FOREIGN_AUTOMATION_TARGETS as u32).map(|id| (id, class))
             )
             .is_err()
         );
@@ -384,14 +479,26 @@ mod retained_tests {
         start: u64,
         program: &PreparedForeignAutomation,
     ) {
+        stage_origins(callback, frames, program, |offset| {
+            Some(start + offset as u64)
+        });
+    }
+
+    fn stage_origins(
+        callback: &mut Callback,
+        frames: usize,
+        program: &PreparedForeignAutomation,
+        origin: impl Fn(usize) -> Option<u64>,
+    ) {
         let transport = TransportProgram(program.borrow());
-        let mut output = [[0.0; 2]; 8];
+        let input = [[0.0; 2]; 256];
+        let mut output = [[0.0; 2]; 256];
         let measured = allocation_counter::measure(|| {
             callback.begin_physical_callback(frames).unwrap();
             callback
                 .stage_segment_with_authored_parameters(
                     0,
-                    &[[0.0; 2]; 8][..frames],
+                    &input[..frames],
                     &[],
                     &mut output[..frames],
                     SegmentTiming {
@@ -400,7 +507,7 @@ mod retained_tests {
                     },
                     AuthoredSegment {
                         program: &transport,
-                        origin: &|offset| Some(start + offset as u64),
+                        origin: &origin,
                     },
                 )
                 .unwrap();
@@ -417,13 +524,74 @@ mod retained_tests {
         );
     }
     #[test]
+    fn shared_beat_vst3_jump_stages_without_callback_allocation_or_drop() {
+        use hex_engine::foreign_automation::{ParameterCapability, Program, QuantumProfile};
+        use hex_project::{
+            AutomationInterpolation::Linear, AutomationPoint, AutomationReadSelection,
+            AutomationValue, BeatTime, DeviceAutomation, DeviceAutomationTarget,
+        };
+
+        let project = hex_project::Project::new(8000).unwrap();
+        let jump = BeatTime::from_ratio(1, 1000).unwrap();
+        let lane = DeviceAutomation {
+            read_selection: AutomationReadSelection::Authored,
+            target: DeviceAutomationTarget::Vst3 { parameter: 0 },
+            vst3_class: Some([1; 16]),
+            points: [(BeatTime::ZERO, 0.0), (jump, 1.0), (jump, 0.25)]
+                .map(|(beat, value)| AutomationPoint {
+                    beat,
+                    value: AutomationValue::new(value).unwrap(),
+                    outgoing: Linear,
+                })
+                .to_vec(),
+            touch: Vec::new(),
+        };
+        let program = Program::prepare(
+            &[lane],
+            [1; 16],
+            &[ParameterCapability {
+                id: 0,
+                steps: 0,
+                normalized_base_bits: 0,
+            }],
+            project.tempo_map(),
+            QuantumProfile::arbitrary(8, 1),
+        )
+        .unwrap()
+        .unwrap();
+        let binding = ForeignProcessorBinding {
+            root: 1,
+            instance: 2,
+            graph: 3,
+            epoch: 4,
+        };
+        let bytes = program.backing_bytes().unwrap();
+        let program =
+            PreparedForeignAutomation::new(binding, NonZeroU64::new(1).unwrap(), program, bytes)
+                .unwrap();
+        let (_control, mut callback, mut worker) = channel(binding, 8).unwrap();
+        stage(&mut callback, 8, 0, &program);
+        let request = worker.receive_request().unwrap().unwrap();
+        let emitted: Vec<_> = request
+            .block
+            .parameters
+            .as_slice()
+            .iter()
+            .map(|point| (point.frame, point.normalized))
+            .collect();
+        assert_eq!(emitted, [(0, 0.0), (3, 0.75), (4, 0.25), (7, 0.25)]);
+        worker.complete(request.block).unwrap();
+    }
+
+    #[test]
     fn full_constant_base_program_stages_without_callback_allocation_or_drop() {
         let project = hex_project::Project::new(8000).unwrap();
-        let capabilities = (0..MAX_PARAMETER_POINTS as u32)
+        let capabilities = (0..MAX_FOREIGN_AUTOMATION_TARGETS as u32)
             .map(|id| hex_engine::foreign_automation::ParameterCapability {
                 id,
                 steps: 0,
-                normalized_base_bits: (f64::from(id) / MAX_PARAMETER_POINTS as f64).to_bits(),
+                normalized_base_bits: (f64::from(id) / MAX_FOREIGN_AUTOMATION_TARGETS as f64)
+                    .to_bits(),
             })
             .collect::<Vec<_>>();
         let program = hex_engine::foreign_automation::Program::prepare(
@@ -448,10 +616,13 @@ mod retained_tests {
         let (_control, mut callback, mut worker) = channel(binding, 8).unwrap();
         stage(&mut callback, 8, 0, &program);
         let request = worker.receive_request().unwrap().unwrap();
-        assert_eq!(request.parameter_capacity, 0);
+        assert_eq!(
+            request.parameter_capacity,
+            MAX_PARAMETER_POINTS - MAX_FOREIGN_AUTOMATION_TARGETS
+        );
         assert_eq!(
             request.block.parameters.as_slice().len(),
-            MAX_PARAMETER_POINTS
+            MAX_FOREIGN_AUTOMATION_TARGETS
         );
         for (point, expected) in request
             .block
@@ -464,6 +635,177 @@ mod retained_tests {
             assert_eq!(point.normalized.to_bits(), expected.normalized_base_bits);
         }
         worker.complete(request.block).unwrap();
+    }
+
+    #[test]
+    fn two_sparse_curves_stage_without_callback_allocation_or_drop() {
+        use hex_engine::foreign_automation::{ParameterCapability, Program, QuantumProfile};
+        use hex_lattice_contract::DeviceAutomationTarget;
+        use hex_project::{
+            AutomationInterpolation, AutomationPoint, AutomationReadSelection, AutomationValue,
+            BeatTime, DeviceAutomation, Project,
+        };
+
+        let project = Project::new(8000).unwrap();
+        let class = [1; 16];
+        let make_point = |beat, value, outgoing| AutomationPoint {
+            beat,
+            value: AutomationValue::new(value).unwrap(),
+            outgoing,
+        };
+        let make_lane = |id, before, after| DeviceAutomation {
+            target: DeviceAutomationTarget::Vst3 { parameter: id },
+            vst3_class: Some(class),
+            read_selection: AutomationReadSelection::Authored,
+            points: vec![
+                make_point(BeatTime::ZERO, before, AutomationInterpolation::Linear),
+                make_point(BeatTime::ONE, after, AutomationInterpolation::Step),
+            ],
+            touch: Vec::new(),
+        };
+        let capabilities = [94, 148].map(|id| ParameterCapability {
+            id,
+            steps: 0,
+            normalized_base_bits: 0,
+        });
+        let tempo = project.tempo_map();
+        let program = Program::prepare(
+            &[make_lane(94, 0.0, 1.0), make_lane(148, 1.0, 0.0)],
+            class,
+            &capabilities,
+            tempo,
+            QuantumProfile::for_arrangement_instrument(256, None),
+        )
+        .unwrap()
+        .unwrap();
+        let binding = ForeignProcessorBinding {
+            root: 1,
+            instance: 2,
+            graph: 3,
+            epoch: 4,
+        };
+        let bytes = program.backing_bytes().unwrap();
+        let program =
+            PreparedForeignAutomation::new(binding, NonZeroU64::MIN, program, bytes).unwrap();
+        let (_control, mut callback, mut worker) = channel(binding, 256).unwrap();
+        let corner = tempo.beat_to_frame(BeatTime::ONE).unwrap();
+        stage(&mut callback, 256, corner - 64, &program);
+        let request = worker.receive_request().unwrap().unwrap();
+        let points = request.block.parameters.as_slice();
+        assert_eq!(points.len(), 6);
+        assert_eq!(
+            (points[2].frame, points[2].id, points[2].normalized),
+            (64, 94, 1.0)
+        );
+        assert_eq!(
+            (points[3].frame, points[3].id, points[3].normalized),
+            (64, 148, 0.0)
+        );
+        assert_eq!(
+            request.parameter_capacity,
+            MAX_PARAMETER_POINTS - points.len()
+        );
+        worker.complete(request.block).unwrap();
+    }
+
+    #[test]
+    fn recorded_lanes_stage_discontinuous_origins_without_callback_allocation_or_drop() {
+        use hex_engine::foreign_automation::{ParameterCapability, Program, QuantumProfile};
+        use hex_lattice_contract::DeviceAutomationTarget;
+        use hex_project::{
+            AutomationReadSelection, AutomationValue, DeviceAutomation, DeviceAutomationTouchSpan,
+            DeviceAutomationTouchStep, LoopRegion, Project,
+        };
+
+        let project = Project::new(8000).unwrap();
+        let tempo = project.tempo_map();
+        let beat = |frame| tempo.frame_to_beat(frame).unwrap();
+        let class = [1; 16];
+        let lanes = [(0, 0.75), (11, 0.5), (23, 0.625), (34, 0.375)].map(|(parameter, value)| {
+            DeviceAutomation {
+                target: DeviceAutomationTarget::Vst3 { parameter },
+                vst3_class: Some(class),
+                read_selection: AutomationReadSelection::Authored,
+                points: Vec::new(),
+                touch: vec![DeviceAutomationTouchSpan {
+                    start: beat(4100),
+                    end: beat(4600),
+                    steps: vec![DeviceAutomationTouchStep {
+                        beat: beat(4100),
+                        value: AutomationValue::new(value).unwrap(),
+                    }],
+                }],
+            }
+        });
+        let capabilities = [0, 11, 23, 34, 45].map(|id| ParameterCapability {
+            id,
+            steps: 0,
+            normalized_base_bits: 0.25f64.to_bits(),
+        });
+        let region = LoopRegion::new(4000, 4200, true).unwrap();
+        let program = Program::prepare(
+            &lanes,
+            class,
+            &capabilities,
+            tempo,
+            QuantumProfile::for_arrangement_instrument(256, Some(region)),
+        )
+        .unwrap()
+        .unwrap();
+        let binding = ForeignProcessorBinding {
+            root: 1,
+            instance: 2,
+            graph: 3,
+            epoch: 4,
+        };
+        let bytes = program.backing_bytes().unwrap();
+        let program =
+            PreparedForeignAutomation::new(binding, NonZeroU64::MIN, program, bytes).unwrap();
+        let (_control, mut callback, mut worker) = channel(binding, 256).unwrap();
+        stage_origins(&mut callback, 256, &program, |offset| {
+            Some(4096 + (offset % 38) as u64)
+        });
+
+        let request = worker.receive_request().unwrap().unwrap();
+        let points = request.block.parameters.as_slice();
+        assert_eq!(points.len(), 113);
+        assert_eq!(
+            request.parameter_capacity,
+            MAX_PARAMETER_POINTS - points.len()
+        );
+        assert_eq!(points.iter().filter(|point| point.id == 45).count(), 1);
+        for point in points {
+            let expected = match (point.id, point.frame % 38 >= 4) {
+                (0, true) => 0.75,
+                (11, true) => 0.5,
+                (23, true) => 0.625,
+                (34, true) => 0.375,
+                _ => 0.25,
+            };
+            assert_eq!(point.normalized, expected);
+        }
+        worker.complete(request.block).unwrap();
+
+        // Eight repeated ranges actually need 129 points. The
+        // transport refuses the whole quantum instead of sending a prefix.
+        let transport = TransportProgram(program.borrow());
+        callback.begin_physical_callback(256).unwrap();
+        let result = callback.stage_segment_with_authored_parameters(
+            0,
+            &[[0.0; 2]; 256],
+            &[],
+            &mut [[0.0; 2]; 256],
+            SegmentTiming {
+                playing: None,
+                at: |_| None,
+            },
+            AuthoredSegment {
+                program: &transport,
+                origin: &|offset| Some(4096 + (offset % 32) as u64),
+            },
+        );
+        assert!(matches!(result, Err(Fault::InvalidParameters)));
+        assert!(matches!(worker.receive_request(), Err(Fault::Revoked)));
     }
 
     #[test]
@@ -492,7 +834,7 @@ mod retained_tests {
         for expected in [0.25, 0.75] {
             let request = worker.receive_request().unwrap().unwrap();
             assert!(request.authored_program.is_some());
-            assert_eq!(request.parameter_capacity, 62);
+            assert_eq!(request.parameter_capacity, MAX_PARAMETER_POINTS - 2);
             assert_eq!(
                 request.block.parameters.as_slice(),
                 &[

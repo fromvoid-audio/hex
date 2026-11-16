@@ -218,8 +218,14 @@ impl MutableInstrumentRuntime for Runtime {
         }
         let mut offset = 0;
         for event in events {
-            if matches!(event, NativeInstrumentEvent::Expression { .. }) {
-                return Err(NativeInstrumentRuntimeError::InvalidEventBatch);
+            match event {
+                NativeInstrumentEvent::Expression { .. } => {
+                    return Err(NativeInstrumentRuntimeError::InvalidEventBatch);
+                }
+                NativeInstrumentEvent::NotePressure { .. } => {
+                    return Err(NativeInstrumentRuntimeError::UnsupportedNotePressure);
+                }
+                _ => {}
             }
             let current = event.frame_offset();
             if current < offset || current >= frame_count {
@@ -245,7 +251,8 @@ impl MutableInstrumentRuntime for Runtime {
                 }
                 match event {
                     // Unsupported by this fixture's read-only preflight.
-                    NativeInstrumentEvent::Expression { .. } => {}
+                    NativeInstrumentEvent::Expression { .. }
+                    | NativeInstrumentEvent::NotePressure { .. } => {}
                     NativeInstrumentEvent::NoteOn { occurrence_id, .. } => {
                         if let Some(voice) = self.voices.iter_mut().find(|voice| !voice.active) {
                             *voice = Voice {
@@ -648,14 +655,20 @@ fn linear_export_ignores_transport_and_unused_session_loops_but_refuses_arrangem
 
     let refused_path = dir.0.join("authored-loop.wav");
     let (revision, _) = prepared_hybrid(false, false, true);
+    let error = hex_export::render_prepared_new(&refused_path, revision, 0, 16)
+        .expect_err("arrangement loop must be refused");
+    let hex_export::ExportError::StagingRetained { path: stage, cause } = error else {
+        panic!("failed preparation must report its retained stage");
+    };
     assert!(matches!(
-        hex_export::render_prepared_new(&refused_path, revision, 0, 16),
-        Err(hex_export::ExportError::SessionRender(
+        *cause,
+        hex_export::ExportError::SessionRender(
             SessionPlaybackError::MutableInstrumentLoopUnsupported
-        ))
+        )
     ));
+    assert!(stage.is_file());
     assert!(!refused_path.exists());
-    assert_eq!(fs::read_dir(&dir.0).expect("list files").count(), 1);
+    assert_eq!(fs::read_dir(&dir.0).expect("list files").count(), 2);
 }
 
 #[test]

@@ -18,7 +18,7 @@ CID = bytes([0x48, 0x45, 0x58, 0x50, *range(1, 13)])
 
 class Session:
     def __init__(self, binary, bundle, trace, *, variant=0, channels=(2, 2), maximum=256,
-                 rate=48000, cid=CID, corrupt_hash=False, precision=0, config_frame=None, auto_present=True, startup_state=None, startup_frame=None, tail_frames=None):
+                 rate=48000, cid=CID, corrupt_hash=False, precision=0, config_frame=None, auto_present=True, startup_state=None, startup_frame=None, tail_frames=None, note_trace_dir=None):
         self.socket, peer = socket.socketpair()
         # Fresh copied macOS modules can spend over10s in dyld's code-signature
         # validation before their first reply (see native test failure samples).
@@ -26,6 +26,8 @@ class Session:
         self.socket.settimeout(60)
         env = {**os.environ, "HEX_ORIGINAL_INSTANCE_VARIANT": str(variant),
                "HEX_ORIGINAL_INSTANCE_TRACE": str(trace)}
+        if note_trace_dir is not None:
+            env["HEX_ORIGINAL_NOTE_TRACE_DIR"] = str(note_trace_dir)
         self.tail_frames = tail_frames if tail_frames is not None else 0
         if tail_frames is not None:
             env["HEX_ORIGINAL_TAIL_FRAMES"] = str(tail_frames)
@@ -116,13 +118,19 @@ class Session:
         self.frames += frames
         return header, inputs, message
 
-    def render_parameters(self, frames, points):
+    def render_parameters(self, frames, points, *, authored_steps=None):
         inputs = tuple(v for n in range(frames) for v in
                        [(self.frames + n + 1) / 256 if self.channels[0] else 0,
                         -(self.frames + n + 3) / 512 if self.channels[0] == 2 else 0])
-        header = struct.pack("<4sHHHH4x6Q", b"HXVB", 2, frames, 0, len(points),
+        version = 2 if authored_steps is None else 0x8002
+        header = struct.pack("<4sHHHH4x6Q", b"HXVB", version, frames, 0, len(points),
                              *BINDING, self.sequence, self.frames)
-        payload = b"".join(struct.pack("<HHId", offset, 0, parameter, value) for offset, parameter, value in points)
+        if authored_steps is None:
+            payload = b"".join(struct.pack("<HHId", offset, 0, parameter, value)
+                               for offset, parameter, value in points)
+        else:
+            payload = b"".join(struct.pack("<HHIdI", offset, 0, parameter, value, authored_steps)
+                               for offset, parameter, value in points)
         self.socket.sendall(header + struct.pack("<" + "f" * len(inputs), *inputs) + payload)
         message = self.message()
         self.sequence += 1
@@ -192,6 +200,30 @@ class NativeInstanceTests(unittest.TestCase):
         if controller:
             self.assertEqual(state[128:], b"HXCT" + struct.pack("<I", 7))
 
+    def test_clean_stop_retires_without_switching_off_inactive_buses(self):
+        # Both fixtures refuse any bus-off call after stopping; the instrument
+        # also has an active MIDI event input. Termination itself must succeed.
+        for variant, channels in [(151, (2, 2)), (152, (0, 2))]:
+            with self.subTest(variant=variant):
+                session = self.session(variant=variant, channels=channels)
+                if channels[0]:
+                    self.ready(session, controller=True)
+                else:
+                    magic, ready = session.message()
+                    self.assertEqual(magic, b"HXVIRD05")
+                    self.assertEqual(struct.unpack_from("<H4Q", ready), (1, *BINDING))
+                session.render(8)
+                self.assertEqual(self.terminal(session, 0, message=session.stop())[5:7], (1, 8))
+
+    def test_failed_stop_still_refuses_termination_and_unload(self):
+        # These failures occur before the clean-stop retirement route.
+        for variant in (58, 100):
+            with self.subTest(variant=variant):
+                session = self.session(variant=variant)
+                self.ready(session, controller=True)
+                session.render(8)
+                self.terminal(session, 10, closed=False, unloaded=False, message=session.stop())
+
     def test_actual_parameter_step_ramp_and_feedback_across_variable_sdk_blocks(self):
         session = self.session(variant=37)
         self.ready(session, controller=True)
@@ -224,6 +256,72 @@ class NativeInstanceTests(unittest.TestCase):
         self.assertEqual(reply[:64], header)
         self.assertEqual(struct.unpack_from("<26f", reply, 64), tuple(value * 4 for value in inputs))
         self.terminal(session, 0, message=session.stop())
+
+    def test_full_slice_input_lane_preserves_each_authored_parameter_sample(self):
+        session = self.session(variant=80)
+        self.ready(session, controller=True)
+        values = tuple(.125 if frame % 2 else .75 for frame in range(64))
+        points = [(frame, 0, value) for frame, value in enumerate(values)]
+        inputs, (magic, reply) = session.render_parameters(64, points, authored_steps=0)
+        self.assertEqual(magic, b"HXVB", reply)
+        self.assertEqual(struct.unpack_from("<HHHH", reply, 4), (2, 64, 0, 1))
+        output = struct.unpack_from("<128f", reply, 64)
+        self.assertEqual(output, tuple(sample * values[index // 2] * 2
+                                       for index, sample in enumerate(inputs)))
+        self.assertEqual(struct.unpack_from("<HHId", reply, 64 + 64 * 8),
+                         (63, 0, 0, values[-1]))
+        self.terminal(session, 0, message=session.stop())
+
+    def dense_request(self, session, values, *, dense_id, frames, sparse=(), cut=None):
+        version = 0x8806 if cut is not None else 0x8802
+        header = struct.pack("<4sHHHHB3x6Q", b"HXVB", version, frames, 0, len(sparse),
+                             int(cut is not None), *BINDING, session.sequence, session.frames)
+        pcm = struct.pack("<" + "f" * (2 * frames), *([.25] * (2 * frames)))
+        points = b"".join(struct.pack("<HHIdI", *point) for point in sparse)
+        timing = b""
+        if cut is not None:
+            timing = struct.pack("<qQIBBBxQQ", 0, 0, 0, 1, 0, 0, 0, 0)
+            timing += struct.pack("<H6x", cut) + bytes(40)
+        dense = struct.pack("<II" + "d" * len(values), dense_id, 0, *values)
+        session.socket.sendall(header + pcm + points + timing + dense)
+
+    def test_full_dense_quantum_keeps_256_offsets_through_an_sdk_timing_cut(self):
+        session = self.session(variant=143)
+        self.ready(session, controller=True)
+        values = tuple(.125 if frame % 2 else .75 for frame in range(256))
+        cut = 96
+        # Parameter 11 is the distinct manual input. Its exact value holds
+        # across both SDK slices without occupying a dense-lane sample.
+        self.dense_request(session, values, dense_id=7, frames=256,
+                           sparse=[(0, 1, 11, .125, 0)], cut=cut)
+        magic, reply = session.message()
+        self.assertEqual(magic, b"HXVB", reply)
+        self.assertEqual(struct.unpack_from("<HHHH", reply, 4), (2, 256, 0, 2))
+        pcm = struct.unpack_from("<512f", reply, 64)
+        expected = tuple(value * (.25 if index // 2 < cut else .3125)
+                         for index, value in enumerate(v for v in values for _ in range(2)))
+        self.assertEqual(pcm, expected)
+        self.assertEqual(struct.unpack_from("<HHIdHHId", reply, 64 + 256 * 8),
+                         (cut - 1, 0, 7, values[cut - 1], 255, 0, 7, values[-1]))
+        session.sequence += 1
+        session.frames += 256
+        self.terminal(session, 0, message=session.stop())
+
+    def test_malformed_dense_quantum_never_enters_the_sdk(self):
+        for values, sparse, short in (
+            ((.5,) * 8, [(0, 0, 0, .25, 0)], False),
+            ((.5,) * 7 + (float("nan"),), [], False),
+            ((.5,) * 7, [], True),
+        ):
+            with self.subTest(sparse=sparse, short=short):
+                session = self.session(variant=80)
+                self.ready(session, controller=True)
+                self.dense_request(session, values, dense_id=0, frames=8, sparse=sparse)
+                if short:
+                    session.socket.shutdown(socket.SHUT_WR)
+                self.error(session, 8)
+                self.terminal(session, 8)
+                self.assertEqual(self.observation()[10], 0)
 
     def test_invalid_output_parameter_values_leave_valid_feedback_and_pcm_intact(self):
         session = self.session(variant=124)
@@ -363,7 +461,7 @@ class NativeInstanceTests(unittest.TestCase):
                                                *BINDING, session.sequence, session.frames,
                                                operation, 0, 0, action, 0, 0))
             reply_magic, reply = session.message()
-            self.assertEqual(reply_magic, b"HXVIMD01")
+            self.assertEqual(reply_magic, b"HXVIMD03")
             self.assertEqual(struct.unpack_from("<H7Q", reply),
                              (1, *BINDING, session.sequence, session.frames, operation))
             return reply[58:]
@@ -409,6 +507,38 @@ class NativeInstanceTests(unittest.TestCase):
                     self.assertEqual(reply[8:10], bytes(2))
                     self.assertEqual(struct.unpack("<16f", reply[64:]), tuple(x for v in expected for x in (v, v)))
                 self.assertEqual(self.terminal(session, 0, message=session.stop())[5:7], (3, 24))
+
+    def test_note_teardown_trace_distinguishes_held_from_released_identity(self):
+        for release in (False, True):
+            with self.subTest(release=release):
+                session = self.session(variant=115, channels=(0, 2), note_trace_dir=self.root)
+                self.assertEqual(session.message()[0], b"HXVIRD05")
+                notes = [(0, 0x92, 100, 41)]
+                if release:
+                    notes.append((4, 0x82, 0, 41))
+                header = bytearray(session.packet(8))
+                struct.pack_into("<HHH", header, 4, 3, 8, len(notes))
+                events = b"".join(struct.pack("<HBBBB2xI", offset, 3, status, 60, velocity, identity)
+                                  for offset, status, velocity, identity in notes)
+                session.socket.sendall(header + bytes(64) + events)
+                self.assertEqual(session.message()[0], b"HXVB")
+                session.sequence += 1
+                session.frames += 8
+                self.terminal(session, 0, message=session.stop())
+                path = self.root / f"{session.process.pid}.bin"
+                deadline = time.monotonic() + 5
+                while time.monotonic() < deadline:
+                    try:
+                        stage, ons, offs, last_on, last_off = struct.unpack("=5i", path.read_bytes())
+                        if stage in (5, 6):
+                            break
+                    except (OSError, struct.error):
+                        pass
+                    time.sleep(.001)
+                else:
+                    self.fail("original endpoint teardown trace was not published")
+                self.assertEqual((ons, offs, last_on, last_off),
+                                 (1, int(release), 41, 41 if release else -1))
 
     def test_instrument_rejects_invalid_extra_output_layout_and_mutated_pointers(self):
         malformed = self.session(variant=130, channels=(0, 2))
@@ -595,13 +725,29 @@ class NativeInstanceTests(unittest.TestCase):
         self.terminal(session, 0, message=session.stop())
         self.assertEqual(self.observation()[1], 0, "controller setters stay on main")
 
-    def test_stopped_flush_rejects_live_stale_malformed_and_unknown_before_sdk_entry(self):
-        for mode in ("live", "operation", "prefix", "binding", "offset", "unknown", "duplicate"):
+    def test_idle_flush_applies_parameter_without_advancing_pcm(self):
+        session = self.session(variant=37)
+        self.ready(session, controller=True)
+        packet = struct.pack("<4sHHHH4x7QHHId", b"HXVF", 2, 0, 0, 1, *BINDING,
+                             0, 0, 1, 0, 0, 7, .5)
+        session.socket.sendall(packet)
+        magic, body = session.message()
+        self.assertEqual(magic, b"HXVIFL01")
+        self.assertEqual(struct.unpack("<H7QBHId", body), (1, *BINDING, 0, 0, 1, 1, 1, 7, .5))
+        _, inputs, (magic, output) = session.render(8)
+        self.assertEqual(magic, b"HXVB")
+        # The fixture maps 0.5 to gain 2, then applies its first-block scale 0.5.
+        self.assertEqual(struct.unpack_from("<16f", output, 64), inputs)
+        self.terminal(session, 0, message=session.stop())
+        self.assertEqual(self.observation()[10], 1)
+        self.assertEqual(self.observation()[11], 1)
+
+    def test_stopped_flush_rejects_stale_malformed_and_unknown_before_sdk_entry(self):
+        for mode in ("operation", "prefix", "binding", "offset", "unknown", "duplicate"):
             with self.subTest(mode=mode):
                 session=self.session(variant=37);self.ready(session, controller=True)
-                if mode!="live":
-                    session.socket.sendall(struct.pack("<4sHHH6x6Q",b"HXVQ",1,0,0,*BINDING,0,0))
-                    self.assertEqual(session.message()[0],b"HXVIQF03")
+                session.socket.sendall(struct.pack("<4sHHH6x6Q",b"HXVQ",1,0,0,*BINDING,0,0))
+                self.assertEqual(session.message()[0],b"HXVIQF03")
                 binding=(*BINDING[:3],99) if mode=="binding" else BINDING
                 operation=2 if mode=="operation" else 1
                 prefix=1 if mode=="prefix" else 0
@@ -1329,13 +1475,19 @@ class NativeInstanceTests(unittest.TestCase):
                 self.assertEqual(self.observation()[10], 0)
 
     def test_partial_pcm_is_not_a_completed_block(self):
-        session = self.session()
-        self.ready(session)
-        session.socket.sendall(session.packet(2) + struct.pack("<f", .25))
-        session.socket.shutdown(socket.SHUT_WR)
-        self.error(session, 8)
-        self.terminal(session, 8)
-        self.assertEqual(self.observation()[10], 0)
+        # Exercise the actual reader and control-lane EOF observation together.
+        # On macOS, concurrent peeking could strand the partial read after EOF.
+        for attempt in range(32):
+            with self.subTest(attempt=attempt):
+                session = self.session()
+                self.ready(session)
+                session.socket.sendall(session.packet(2) + struct.pack("<f", .25))
+                if attempt % 2:
+                    time.sleep(.005)
+                session.socket.shutdown(socket.SHUT_WR)
+                self.error(session, 8)
+                self.terminal(session, 8)
+                self.assertEqual(self.observation()[10], 0)
 
     def test_eof_cancels_without_fabricating_graceful_retirement(self):
         session = self.session()
@@ -1344,6 +1496,46 @@ class NativeInstanceTests(unittest.TestCase):
         self.assertEqual(session.socket.recv(1), b"")
         self.assertEqual(session.process.wait(timeout=10), 9)
         self.assertNotEqual(self.observation()[0], 6)
+
+    def test_fragmented_pcm_waits_for_the_remaining_samples(self):
+        session = self.session()
+        self.ready(session)
+        session.socket.sendall(session.packet(2) + struct.pack("<f", .25))
+        time.sleep(.03)  # Cross multiple incomplete-frame rechecks.
+        session.socket.sendall(struct.pack("<3f", -.5, .75, -1.))
+        magic, body = session.message()
+        self.assertEqual(magic, b"HXVB")
+        self.assertEqual(struct.unpack_from("<4f", body, 64), (.125, -.25, .375, -.5))
+        session.sequence, session.frames = 1, 2
+        self.terminal(session, 0, message=session.stop())
+
+    def test_truncated_header_and_empty_pcm_payload_are_refused(self):
+        for case in ("header", "payload"):
+            with self.subTest(case=case):
+                session = self.session()
+                self.ready(session)
+                packet = session.packet(2)
+                session.socket.sendall(packet[:12] if case == "header" else packet)
+                session.socket.shutdown(socket.SHUT_WR)
+                self.error(session, 8)
+                self.terminal(session, 8)
+                self.assertEqual(self.observation()[10], 0)
+
+    def test_buffered_stop_precedes_write_shutdown(self):
+        session = self.session()
+        self.ready(session)
+        session.socket.sendall(struct.pack("<4sHHH6x6Q", b"HXVE", 1, 0, 0, *BINDING, 0, 0))
+        session.socket.shutdown(socket.SHUT_WR)
+        self.terminal(session, 0)
+
+    def test_partial_pcm_hung_stop_is_still_bounded(self):
+        session = self.session(variant=61)
+        self.ready(session, controller=True)
+        session.socket.sendall(session.packet(2) + struct.pack("<f", .25))
+        session.socket.shutdown(socket.SHUT_WR)
+        self.error(session, 8)
+        self.assertEqual(session.socket.recv(1), b"")
+        self.assertEqual(session.process.wait(timeout=5), 9)
 
     def test_instance_profile_excludes_discovery_fixtures_and_generic_run_refuses(self):
         info = BOOT.verify(self.receipt)

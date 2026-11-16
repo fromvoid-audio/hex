@@ -58,6 +58,18 @@ impl CandidateRoot {
             Ok(endpoint.received_program_on_control())
         })?
     }
+    pub(crate) fn try_native_source_program_frontier(
+        &self,
+        binding: Binding,
+    ) -> Result<hex_engine::ForeignProgramFrontier, &'static str> {
+        self.require_native_source_control_open()?;
+        self.try_with_native_source_endpoint(binding, |_, endpoint| {
+            if !endpoint.transport_is_live_on_control() {
+                return Err("native automation transport is not live");
+            }
+            Ok(endpoint.program_frontier_on_control())
+        })?
+    }
     pub(crate) fn native_source_processed_program(
         &self,
         binding: Binding,
@@ -159,6 +171,10 @@ mod tests {
         assert_eq!(root.native_source_prepared_state(binding).unwrap(), state);
         assert_eq!(outer.native_source_received_program(binding), None);
         assert_eq!(outer.try_native_source_received_program(binding), Ok(None));
+        assert_eq!(
+            outer.try_native_source_program_frontier(binding),
+            Ok(hex_engine::ForeignProgramFrontier::Empty)
+        );
         assert!(
             outer.try_native_source_committed_quantum(binding).is_err(),
             "an unloaned endpoint grants no callback observation"
@@ -301,6 +317,10 @@ mod tests {
         let mut revoked_bank = super::super::endpoints::NativeEndpointBank::new().unwrap();
         assert!(revoked_bank.install(binding.root, callback).is_ok());
         revoked_bank.reject_rendering();
+        assert_eq!(
+            outer.try_native_source_program_frontier(binding),
+            Err("native automation transport is not live")
+        );
         assert!(
             outer.try_native_source_committed_quantum(binding).is_err(),
             "revocation must not expose a stale observation"

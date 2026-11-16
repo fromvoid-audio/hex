@@ -53,6 +53,7 @@ pub(super) fn project_with_loop(duration: u64) -> (hex_project::Project, hex_pro
     snapshot.tracks[0]
         .devices
         .push(hex_project::DeviceSnapshot {
+            modulation: Default::default(),
             parent: None,
             automation: Vec::new(),
             comparison: None,
@@ -156,6 +157,7 @@ pub(super) fn abc_project() -> (hex_project::Project, [hex_project::TrackId; 3])
         )
         .unwrap();
         track.devices.push(hex_project::DeviceSnapshot {
+            modulation: Default::default(),
             parent: None,
             automation: Vec::new(),
             comparison: None,

@@ -2,10 +2,14 @@
 //! C/zero read live canonical bypass and use the same terminal barrier as pointer
 //! bypass; rendered generation/owner/type identity refuses retired card handlers.
 //! Left/right step the selection through the chain, and paste targets a chosen
-//! insertion gap, else the position after the selection.
+//! insertion gap, else the position after the selection. Duplicate uses the
+//! worker clipboard edit and follows only its own committed insertion.
 use super::*;
 use crate::diagnostics::ActionTraceContext as _;
+use crate::editor::pending_edit::{Disposition, Receipt};
 use gpui::{FocusHandle, KeyBinding};
+use hex_project::{Created, DeviceSelectionIds};
+use hex_session::service::{DeviceClipboardAction, Event};
 
 gpui::actions!(
     hex_device_selection,
@@ -15,6 +19,7 @@ gpui::actions!(
         CopyDevices,
         CutDevices,
         PasteDevices,
+        DuplicateDevices,
         SelectPreviousDevice,
         SelectNextDevice
     ]
@@ -86,6 +91,11 @@ pub(in crate::editor) fn bind_keys(cx: &mut App) {
         KeyBinding::new("cmd-c", CopyDevices, Some("hex_device_selection")),
         KeyBinding::new("cmd-x", CutDevices, Some("hex_device_selection")),
         KeyBinding::new("cmd-v", PasteDevices, Some("hex_device_selection")),
+        KeyBinding::new(
+            "d",
+            DuplicateDevices,
+            Some("hex_device_selection && !hex_text_editing && !hex_text_input"),
+        ),
         // Deeper than the editor's clip/session arrows; nested controls that
         // own focus receive them through propagation.
         KeyBinding::new("left", SelectPreviousDevice, Some("hex_device_selection")),
@@ -121,6 +131,9 @@ fn clipboard(
     if selected_owner(view, state) != Some(owner) {
         return;
     }
+    let Some(project_owner) = project_owner(owner) else {
+        return;
+    };
     let order = chain_ids(&state.project, owner);
     let selected: Vec<_> = order
         .iter()
@@ -143,18 +156,18 @@ fn clipboard(
             };
             match intent {
                 ClipboardIntent::Copy => Action::Copy {
-                    owner: project_owner(owner),
+                    owner: project_owner,
                     selected,
                 },
                 ClipboardIntent::Cut => Action::Cut {
-                    owner: project_owner(owner),
+                    owner: project_owner,
                     selected,
                 },
                 ClipboardIntent::Paste => return,
             }
         }
         ClipboardIntent::Paste => Action::Paste {
-            owner: project_owner(owner),
+            owner: project_owner,
             before,
         },
     };
@@ -170,6 +183,225 @@ fn clipboard(
             .focus(window);
     }
     cx.notify();
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct ChainStamp {
+    generation: u64,
+    revision: u64,
+    owner: DevicePanelOwner,
+}
+
+impl ChainStamp {
+    fn current(view: &EditorView) -> Option<Self> {
+        Some(Self {
+            generation: view.project_generation,
+            revision: view.state.as_ref()?.revision,
+            owner: view.device_panel.owner?,
+        })
+    }
+}
+
+pub(in crate::editor) struct PendingDuplicate {
+    stamp: ChainStamp,
+    action: DeviceClipboardAction,
+    receipt: Receipt,
+    select_copies: bool,
+}
+
+impl DevicePanelState {
+    pub(super) fn cancel_duplicate_selection_update(&mut self) {
+        if let Some(pending) = &mut self.pending_duplicate {
+            pending.select_copies = false;
+        }
+    }
+
+    pub(in crate::editor) fn pending_duplicate_matches(&self, request: &Request) -> bool {
+        self.pending_duplicate.as_ref().is_some_and(|pending| {
+            pending.receipt.is_queued()
+                && matches!(request, Request::DeviceClipboard { project_generation, revision, action }
+                    if *project_generation == pending.stamp.generation
+                        && *revision == pending.stamp.revision
+                        && *action == pending.action)
+        })
+    }
+
+    pub(in crate::editor) fn duplicate_submitted(&mut self, pending_count: usize) {
+        if let Some(pending) = &mut self.pending_duplicate {
+            pending.receipt.submitted(pending_count);
+        }
+    }
+}
+
+fn duplicate(
+    view: &mut EditorView,
+    painted: Option<ChainStamp>,
+    focused_device: Option<DeviceId>,
+    window: &mut Window,
+    cx: &mut Context<EditorView>,
+) {
+    const STALE: &str = "device copy canceled · selection changed";
+    let Some(primary) = view.device_panel.selected_device else {
+        return;
+    };
+    let current = ChainStamp::current(view);
+    let (Some(stamp), Some(state)) = (current, view.state.as_ref()) else {
+        return;
+    };
+    if painted != current
+        || view.device_panel.generation != stamp.generation
+        || focused_device.is_some_and(|device| device != primary)
+        || !view.clip_view_open
+        || !view.device_panel_active
+        || selected_owner(view, state) != Some(stamp.owner)
+    {
+        view.error = Some(STALE.into());
+        cx.notify();
+        return;
+    }
+    if view.edit_pending()
+        || view.export_pending
+        || view.device_panel.pending_duplicate.is_some()
+        || view.device_panel.has_pending_draft(cx)
+    {
+        view.error = Some("finish pending edits before copying devices".into());
+        cx.notify();
+        return;
+    }
+    let order = chain_ids(&state.project, stamp.owner);
+    let selected: Vec<_> = order
+        .iter()
+        .copied()
+        .filter(|id| view.device_panel.is_selected(*id))
+        .collect();
+    if !selected.contains(&primary) || selected.len() != 1 + view.device_panel.selected_others.len()
+    {
+        view.error = Some(STALE.into());
+        cx.notify();
+        return;
+    }
+    let Ok(selected) = DeviceSelectionIds::new(&selected) else {
+        view.error = Some(STALE.into());
+        cx.notify();
+        return;
+    };
+    let last = order.iter().rposition(|id| selected.ids().contains(id));
+    // Clipboard copies are roots at the destination. Use the next gap
+    // outside the enclosing serial unit so its existing subtree stays intact.
+    let before = last.and_then(|index| {
+        order[index + 1..].iter().copied().find(|id| {
+            owned_device(&state.project, stamp.owner, *id)
+                .is_some_and(|device| device.parent().is_none())
+        })
+    });
+    let Some(destination) = project_owner(stamp.owner) else {
+        return;
+    };
+    let action =
+        match duplicate_device_action(&state.project, stamp.owner, selected, destination, before) {
+            Ok(action) => action,
+            Err(reason) => {
+                view.error = Some(reason.into());
+                cx.notify();
+                return;
+            }
+        };
+    view.device_panel.pending_duplicate = Some(PendingDuplicate {
+        stamp,
+        action: action.clone(),
+        receipt: Receipt::new(stamp.generation),
+        select_copies: true,
+    });
+    if view.enqueue(Request::DeviceClipboard {
+        project_generation: stamp.generation,
+        revision: stamp.revision,
+        action,
+    }) {
+        // Keep keyboard ownership stable even when the new cards land outside
+        // the old scroll window. A subsequent user focus change wins.
+        view.device_panel
+            .chain_window
+            .selection_focus(cx)
+            .focus(window);
+    } else {
+        view.device_panel.pending_duplicate = None;
+    }
+    cx.notify();
+}
+
+impl EditorView {
+    pub(in crate::editor) fn retire_abandoned_device_duplicate(&mut self) -> bool {
+        if self
+            .device_panel
+            .pending_duplicate
+            .as_ref()
+            .is_some_and(|p| p.receipt.is_queued())
+            && !self
+                .pending_requests
+                .iter()
+                .chain(self.device_gesture_barriers.iter())
+                .any(|request| self.device_panel.pending_duplicate_matches(request))
+        {
+            return self.device_panel.pending_duplicate.take().is_some();
+        }
+        false
+    }
+
+    pub(in crate::editor) fn complete_device_duplicate(&mut self, event: &Event) {
+        let Some(pending) = &mut self.device_panel.pending_duplicate else {
+            return;
+        };
+        let disposition = pending.receipt.observe(
+            self.project_generation,
+            event.project_replaced,
+            event.request_complete,
+        );
+        if disposition == Disposition::Waiting {
+            return;
+        }
+        let Some(pending) = self.device_panel.pending_duplicate.take() else {
+            return;
+        };
+        let stamp = pending.stamp;
+        if disposition != Disposition::Terminal
+            || !pending.select_copies
+            || event.error.is_some()
+            || stamp.revision.checked_add(1) != Some(event.state.revision)
+            || self.device_panel.owner != Some(stamp.owner)
+            || selected_owner(self, &event.state) != Some(stamp.owner)
+            || !self.device_panel_active
+            || !self.clip_view_open
+            || self.opening_project
+            || self.close_prompt_open
+        {
+            return;
+        }
+        let (Some(Created::Device(first)), DeviceClipboardAction::Duplicate { before, .. }) =
+            (&event.created, pending.action)
+        else {
+            return;
+        };
+        // Paste creates one contiguous run. Its first birth and the retained
+        // destination gap identify every inserted card, including descendants.
+        let order = chain_ids(&event.state.project, stamp.owner);
+        let Some(start) = order.iter().position(|id| id == first) else {
+            return;
+        };
+        let Some(end) = before.map_or(Some(order.len()), |before| {
+            order.iter().position(|id| *id == before)
+        }) else {
+            return;
+        };
+        let Some((primary, rest)) = order.get(start..end).and_then(<[DeviceId]>::split_first)
+        else {
+            return;
+        };
+        self.device_panel.select_only(Some(*primary));
+        self.device_panel.selected_others.extend(rest);
+        self.device_panel
+            .chain_window
+            .reveal_after_prepare(*primary);
+    }
 }
 
 /// Select the neighboring device and move keyboard focus to its card.
@@ -199,6 +431,8 @@ fn step(view: &mut EditorView, forward: bool, window: &mut Window, cx: &mut Cont
 
 pub(super) fn rail(view: &mut EditorView, cx: &Context<EditorView>, rail: Div) -> Div {
     let focus = view.device_panel.chain_window.selection_focus(cx);
+    let duplicate_focus = focus.clone();
+    let painted = ChainStamp::current(view);
     rail.track_focus(&focus)
         .key_context("hex_device_selection")
         // Other actions, including Undo and transport, still reach the editor.
@@ -236,6 +470,13 @@ pub(super) fn rail(view: &mut EditorView, cx: &Context<EditorView>, rail: Div) -
                 .is_focused(window)
             {
                 clipboard(view, ClipboardIntent::Paste, window, cx);
+            } else {
+                cx.propagate();
+            }
+        }))
+        .on_action(cx.trace(move |view, _: &DuplicateDevices, window, cx| {
+            if duplicate_focus.is_focused(window) {
+                duplicate(view, painted, None, window, cx);
             } else {
                 cx.propagate();
             }
@@ -337,6 +578,7 @@ fn owned_device(
             .devices()
             .iter()
             .find(|item| item.id() == device),
+        DevicePanelOwner::Source(_) => None,
     }
 }
 
@@ -456,6 +698,8 @@ pub(super) fn card(
     let copy_focus = focus.clone();
     let cut_focus = focus.clone();
     let paste_focus = focus.clone();
+    let duplicate_focus = focus.clone();
+    let painted = ChainStamp::current(view);
     let previous_focus = focus.clone();
     let next_focus = focus.clone();
     card.key_context("hex_device_selection")
@@ -490,6 +734,13 @@ pub(super) fn card(
         .on_action(cx.trace(move |view, _: &PasteDevices, window, cx| {
             if paste_focus.is_focused(window) {
                 clipboard(view, ClipboardIntent::Paste, window, cx);
+            } else {
+                cx.propagate();
+            }
+        }))
+        .on_action(cx.trace(move |view, _: &DuplicateDevices, window, cx| {
+            if duplicate_focus.is_focused(window) {
+                duplicate(view, painted, Some(device), window, cx);
             } else {
                 cx.propagate();
             }

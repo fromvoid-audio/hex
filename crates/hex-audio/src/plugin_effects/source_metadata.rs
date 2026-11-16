@@ -14,6 +14,7 @@ pub struct EffectSourceMetadata {
     executable_sha256: String,
     info_sha256: String,
     pub(super) authored_bases: super::automation::CanonicalParameterBases,
+    pub(super) dense_parameter: Option<u32>,
 }
 impl EffectSourceMetadata {
     /// Two existing 4096-byte configuration paths and two lower-hex digests.
@@ -28,6 +29,11 @@ impl EffectSourceMetadata {
             .iter()
             .flatten()
             .map(|&(id, bits)| (id, f64::from_bits(bits)))
+    }
+
+    /// Copied observation of the actual reserved continuous source target.
+    pub fn dense_parameter(&self) -> Option<u32> {
+        self.dense_parameter
     }
 
     pub fn selection(&self) -> EffectSelection<'_> {
@@ -56,7 +62,8 @@ impl EffectSourceMetadata {
             cid: config.identity.class.bytes(),
             executable_sha256: digest_text(config.identity.binary.executable_sha256)?,
             info_sha256: digest_text(config.identity.binary.info_sha256)?,
-            authored_bases: [None; hex_plugin_host::transport::MAX_PARAMETER_POINTS],
+            authored_bases: [None; MAX_FOREIGN_AUTOMATION_TARGETS],
+            dense_parameter: None,
         };
         if source.data_bytes() != Some(expected) {
             return Err(Error::Protocol("native source metadata capacity differs"));
@@ -71,6 +78,7 @@ impl EffectSourceMetadata {
             executable_sha256: copy_text(&self.executable_sha256)?,
             info_sha256: copy_text(&self.info_sha256)?,
             authored_bases: self.authored_bases,
+            dense_parameter: self.dense_parameter,
         })
     }
     /// Actual retained String capacities, excluding this inline value and

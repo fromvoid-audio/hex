@@ -108,6 +108,114 @@ fn assert_frames_near(actual: &[StereoFrame], expected: &[[f64; 2]]) {
 }
 
 #[test]
+fn prepared_sampler_gain_tracks_samples_and_committed_tail_at_zero_authored_gain() {
+    struct GainValues<'a>(&'a [Option<f32>]);
+    impl NativeParameterAutomation for GainValues<'_> {
+        fn parameter_ids(&self) -> &[ParameterId] {
+            &[GAIN]
+        }
+        fn value_at(&self, id: ParameterId, offset: usize) -> Option<ParameterValue> {
+            (id == GAIN)
+                .then(|| self.0.get(offset).copied().flatten())
+                .flatten()
+                .map(ParameterValue::Float)
+        }
+        fn has_sample_rate_modulation(&self, id: ParameterId) -> bool {
+            id == GAIN
+        }
+    }
+
+    let pcm = [0.25, 0.5, 0.75, 1.0, 0.125, 0.25, 0.5, 0.75];
+    let views = [view(&pcm)];
+    let resources = BorrowedDeviceResources(&views);
+    let mut settings = Settings::new(Region {
+        start: 0,
+        end: pcm.len(),
+    });
+    settings.gain = 0.0;
+    settings.pan = 0.25;
+    let prepared = prepare_retarget_settings(views[0], settings, 4, 259, &ratio_tuning(1.0))
+        .with_sample_rate_gain();
+    let mut runtime = pair(&prepared);
+    let mut next = pair(&prepared);
+    let read_target = |runtime: &NativeInstrumentRuntimePair| {
+        let mut target = [None];
+        runtime
+            .copy_committed_parameter_targets(&[GAIN], &mut target)
+            .unwrap();
+        target[0].unwrap()
+    };
+    let events = [on(0, 1, 60), off(2, 1)];
+    let mut output = [[0.0; 2]; 4];
+    let render = |runtime: &mut NativeInstrumentRuntimePair,
+                  events: &[NativeInstrumentEvent],
+                  output: &mut [StereoFrame],
+                  values: &[Option<f32>]| {
+        runtime.process_block_with_clock_and_automation(
+            events,
+            output,
+            None,
+            &[],
+            &GainValues(values),
+            &resources,
+        )
+    };
+    runtime.begin_block();
+    let mut refused = [[0.125; 2]; 4];
+    assert_eq!(
+        render(
+            &mut runtime,
+            &events,
+            &mut refused,
+            &[None, Some(f32::NAN), None, None]
+        ),
+        Err(Error::InvalidParameterAutomation)
+    );
+    assert_eq!(refused, [[0.125; 2]; 4]);
+    let values = [Some(0.0), Some(0.5), Some(2.0), Some(0.5)];
+    render(&mut runtime, &events, &mut output, &values).unwrap();
+    assert_eq!(read_target(&runtime), ParameterValue::Float(0.0));
+    runtime.rollback_block();
+    runtime.begin_block();
+    let mut replay = [[0.0; 2]; 4];
+    render(&mut runtime, &events, &mut replay, &values).unwrap();
+    assert_eq!(replay, output);
+    runtime.commit_block();
+    assert_eq!(read_target(&runtime), ParameterValue::Float(0.5));
+    let release = prepared.notes[60].unwrap().release_frames();
+    assert_frames_near(
+        &output,
+        &[
+            [0.0; 2],
+            [0.1875, 0.25],
+            [1.125, 1.5],
+            [0.375, 0.5].map(|value| value * release_level(1, release)),
+        ],
+    );
+
+    next.inherit_from(&runtime).unwrap();
+    let ParameterValue::Float(frozen) = read_target(&next) else {
+        panic!("gain target must be scalar");
+    };
+    assert_eq!(frozen, 0.5);
+    next.begin_block();
+    let mut tail = [[0.0; 2]; 2];
+    render(&mut next, &[], &mut tail, &[Some(frozen), None]).unwrap();
+    next.commit_block();
+    assert_frames_near(
+        &tail,
+        &[
+            [0.046875, 0.0625].map(|value| value * release_level(2, release)),
+            [0.0; 2],
+        ],
+    );
+    assert_eq!(read_target(&next), ParameterValue::Float(0.0));
+    next.reset();
+    assert_eq!(read_target(&next), ParameterValue::Float(0.0));
+    assert!(next.committed_is_quiescent());
+}
+
+#[test]
 fn actual_mutable_pair_keeps_trigger_audio_after_note_off_and_retires_at_source_end() {
     let pcm = [1.0, 3.0, 5.0, 7.0, 9.0, 11.0, 13.0, 15.0];
     let views = [view(&pcm)];
@@ -696,6 +804,41 @@ fn occurrence_gain_scales_actual_gated_release_without_touching_the_other_voice(
         .collect();
     assert_frames_near(&other_release, &expected);
     assert!(runtime.committed_is_quiescent());
+}
+
+#[test]
+fn occurrence_attenuation_multiplies_clip_gain_without_affecting_peer() {
+    let pcm = [1.0; 32];
+    let views = [view(&pcm)];
+    let resources = BorrowedDeviceResources(&views);
+    let prepared = prepare(views[0], Mode::Classic { loop_region: None }, 2);
+    let mut runtime = pair(&prepared);
+    let gain = NativeInstrumentOccurrenceGain::new(1, 0.5, 1.0, 8, 1)
+        .unwrap()
+        .with_attenuation(1.0, 0.0, 8, 2)
+        .unwrap();
+    let mut output = [[0.0; 2]; 6];
+    runtime.begin_block();
+    runtime
+        .process_block_with_clock_and_occurrence_gains(
+            &[on(0, 1, 60), on(0, 2, 60)],
+            &mut output,
+            None,
+            &[gain],
+            &resources,
+        )
+        .unwrap();
+    runtime.commit_block();
+    for (index, frame) in output.iter().enumerate() {
+        let clip = 0.5 + 0.5 * (1 + index) as f64 / 8.0;
+        let attenuation = 1.0 - (2 + index) as f64 / 8.0;
+        let expected = (1.0 + clip * attenuation) as f32;
+        assert!(
+            (frame[0] - expected).abs() < 1e-6,
+            "frame {index}: {frame:?}"
+        );
+        assert_eq!(frame[0], frame[1]);
+    }
 }
 
 #[test]
@@ -1414,6 +1557,7 @@ fn looping_release_deadline_overflow_refuses_before_changing_cursor_or_gate() {
     let age = u64::MAX - 2;
     let position = u128::from(age) * u128::from(prepared.notes[60].unwrap().step);
     let mut runtime = SamplerRuntime {
+        last_gain: prepared.base_gain as f32,
         prepared,
         active: [None; MAX_SAMPLER_RUNTIME_VOICES],
         fading: [None; MAX_SAMPLER_RUNTIME_VOICES],
@@ -1514,11 +1658,13 @@ fn event_spans_match_frame_major_pcm_and_voice_state() {
         };
         let prepared = prepare(views[0], mode, 2);
         let mut actual = SamplerRuntime {
+            last_gain: prepared.base_gain as f32,
             prepared: prepared.clone(),
             active: [None; MAX_SAMPLER_RUNTIME_VOICES],
             fading: [None; MAX_SAMPLER_RUNTIME_VOICES],
         };
         let mut expected = SamplerRuntime {
+            last_gain: prepared.base_gain as f32,
             prepared,
             active: [None; MAX_SAMPLER_RUNTIME_VOICES],
             fading: [None; MAX_SAMPLER_RUNTIME_VOICES],
@@ -1561,7 +1707,7 @@ fn event_spans_match_frame_major_pcm_and_voice_state() {
             actual.preflight_occurrence_gains(events, &gains).unwrap();
             let mut out = vec![[-0.0, 0.125]; length];
             let mut oracle = out.clone();
-            actual.process_with_gains(events, &mut out, &gains, &resources);
+            actual.process_with_gains::<false>(events, &mut out, &gains, &resources, &[]);
             frame_major_oracle(&mut expected, events, &mut oracle, &gains, &resources);
             assert_eq!(
                 out.iter().map(|f| f.map(f32::to_bits)).collect::<Vec<_>>(),

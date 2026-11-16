@@ -125,7 +125,10 @@ mod tests {
         assert_eq!(retained.source_contributors(source).count(), 1);
         assert!(retained.tracks()[0].receives_source_audio());
         assert!(retained.tracks()[0].retained_source_path());
-        assert!(Editor::new(retained.clone(), 8).is_err());
+        assert_eq!(
+            Editor::new(retained.clone(), 8).unwrap().project(),
+            &retained
+        );
         let bytes = crate::encode(&retained).unwrap();
         assert_eq!(crate::schema_version_for(&retained), 68);
         assert_eq!(

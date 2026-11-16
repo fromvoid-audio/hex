@@ -516,17 +516,69 @@ impl Callback {
         };
         let revision = next.revision();
         let context = next.diagnostic_context();
+        let streaming_enabled = next.streaming_enabled();
+        let incompatible_active = self
+            .active
+            .as_ref()
+            .is_some_and(|active| !matches!(active, ActivePublication::Eligible(_)));
+        let preflight_refusal = next.preflight_refusal(&self.candidate_root);
         self.trace_audio(
             AudioDiagnosticKind::PublicationAttempt,
             revision,
             context,
             frames.unwrap_or(0),
         );
-        let mut decision = if self
-            .active
-            .as_ref()
-            .is_some_and(|active| !matches!(active, ActivePublication::Eligible(_)))
+        if streaming_enabled
+            && !incompatible_active
+            && let Some(reason) = preflight_refusal
         {
+            self.reject_pending_eligible_successor(reason);
+            return;
+        }
+        if let Some(frames) = frames
+            && streaming_enabled
+            && !incompatible_active
+        {
+            let mut reservation = self.reserve_current_stream_window(frames);
+            if matches!(
+                reservation,
+                Err(crate::candidate_custody::QuantumFailure::Capacity)
+            ) {
+                if let Some(next) = self.deferred_eligible.as_mut() {
+                    next.cancel_stream_readiness(&mut self.domain_pages);
+                }
+                reservation = self.reserve_current_stream_window(frames);
+            }
+            match reservation {
+                Ok(Some(pins)) => {
+                    let complete = pins.complete();
+                    self.current_quantum_pins = Some(pins);
+                    if !complete {
+                        if let Some(next) = self.deferred_eligible.as_mut() {
+                            next.cancel_stream_readiness(&mut self.domain_pages);
+                        }
+                        return;
+                    }
+                }
+                Ok(None) => {}
+                Err(crate::candidate_custody::QuantumFailure::PendingAction) => return,
+                Err(crate::candidate_custody::QuantumFailure::Capacity) => {
+                    if !self.retry_pending_eligible_capacity() {
+                        self.reject_pending_eligible_successor(
+                            PlaybackHandoffRejection::StreamedPageCapacity,
+                        );
+                    }
+                    return;
+                }
+                Err(crate::candidate_custody::QuantumFailure::Invalid) => {
+                    self.reject_pending_eligible_successor(
+                        PlaybackHandoffRejection::StreamedPagesNotReady,
+                    );
+                    return;
+                }
+            }
+        }
+        let mut decision = if incompatible_active {
             InstallDecision::Refused(PlaybackHandoffRejection::ConstructorClaimsUnavailable)
         } else if let Some(next) = self.deferred_eligible.as_mut() {
             #[cfg(all(test, feature = "allocation-probe"))]
@@ -542,6 +594,8 @@ impl Callback {
                 pending_play: self.stream_pending_play.is_some(),
                 command_prefix: self.stream_prefix,
                 frames,
+                fenced_restart: false,
+                foreign_continuation: false,
             });
             next.prepare_install(previous, &self.candidate_root, request.as_mut())
         } else {
@@ -621,6 +675,7 @@ impl Callback {
                     let previous = self
                         .active
                         .replace(ActivePublication::Eligible(next.into_active()));
+                    self.release_current_quantum_pins();
                     if let Some(ActivePublication::Eligible(mut previous)) = previous {
                         if let Some(ActivePublication::Eligible(active)) = self.active.as_mut()
                             && let Some(ticket) = active.inherit_schedule_observation(&mut previous)

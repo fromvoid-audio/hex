@@ -199,6 +199,16 @@ fn cross_field_cycles_and_invalid_patches_leave_prior_bytes_unchanged() {
         ParameterValue::Float(0.2),
     );
     assert_eq!(cyclic, Err(DeviceContractError::InvalidParameterValue));
+    let semantics = |parameter| {
+        FM4_DEFINITION
+            .parameter_semantics_for_state(&first_edge, parameter)
+            .unwrap()
+    };
+    assert_eq!(
+        semantics(parameter::modulation(1, 2)).unwrap().modulation,
+        hex_lattice_contract::ParameterModulation::SampleRate
+    );
+    assert_eq!(semantics(parameter::modulation(2, 1)), None);
     assert_eq!(
         FM4_DEFINITION.read_parameter(&first_edge, parameter::modulation(1, 2)),
         Ok(ParameterValue::Float(0.2))
@@ -386,7 +396,7 @@ fn registered_event_validation_matches_inline_pitch_and_velocity_domain() {
 }
 
 #[test]
-fn only_implemented_carriers_declare_arrangement_automation_semantics() {
+fn default_state_grants_oscillator_levels_phases_and_carriers() {
     let state = FM4_DEFINITION.default_state().unwrap();
     for descriptor in PARAMETERS {
         let semantics = hex_lattice_contract::validated_parameter_semantics(
@@ -397,7 +407,10 @@ fn only_implemented_carriers_declare_arrangement_automation_semantics() {
         .unwrap();
         assert_eq!(
             semantics.is_some(),
-            (29..=32).contains(&descriptor.id.value())
+            matches!(
+                descriptor.id.value(),
+                2 | 3 | 5 | 6 | 8 | 9 | 11 | 12 | 29..=32
+            )
         );
         if let Some(semantics) = semantics {
             assert_eq!(
@@ -406,7 +419,11 @@ fn only_implemented_carriers_declare_arrangement_automation_semantics() {
             );
             assert_eq!(
                 semantics.smoothing,
-                hex_lattice_contract::ParameterSmoothing::DeviceManaged
+                if (29..=32).contains(&descriptor.id.value()) {
+                    hex_lattice_contract::ParameterSmoothing::DeviceManaged
+                } else {
+                    hex_lattice_contract::ParameterSmoothing::None
+                }
             );
         }
     }

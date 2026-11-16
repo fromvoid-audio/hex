@@ -89,13 +89,14 @@ fn captures(project: &Project) -> Vec<PluginStateCapture> {
         Arc::new(std::sync::atomic::AtomicU64::new(0)),
         0,
     );
-    let input = PluginStateSaveInput {
+    let input = PluginStateCaptureInput {
         project,
         context: hex_engine::AudioSourceContext {
             project_generation: 1,
             editor_revision: 2,
         },
         cancellation: &cancellation,
+        device_filter: None,
     };
     let mut result = Vec::new();
     input
@@ -193,6 +194,13 @@ fn save_projection_refuses_partial_stale_duplicate_malformed_and_wrong_binary() 
             "fault {fault}"
         );
     }
+    let mut source_owned = captures(&project);
+    let source = project.tracks()[1].source_id().unwrap();
+    source_owned[1].owner = ProcessorChainOwner::Source(source.value());
+    assert_eq!(
+        project_with_captures(project.clone(), source_owned).unwrap_err(),
+        "captured source effects are not supported"
+    );
     assert_eq!(
         project_with_captures(project.clone(), Vec::new()).unwrap(),
         project
@@ -227,9 +235,9 @@ fn save_capture_refusal_preserves_existing_file_dirty_state_and_new_destination(
         fn canonical_changed(&mut self, _: Arc<CanonicalAudioSourceSnapshot>) {}
         fn poll(&mut self) {}
         fn close(&mut self) {}
-        fn capture_plugin_states_for_save(
+        fn capture_plugin_states(
             &mut self,
-            _: PluginStateSaveInput<'_>,
+            _: PluginStateCaptureInput<'_>,
         ) -> Result<Vec<PluginStateCapture>, String> {
             if self.0.load(Ordering::Acquire) {
                 Err("controlled native capture refusal".into())
@@ -400,13 +408,14 @@ fn saved_reading_selection_keeps_raw_zero_and_excludes_base_and_host_targets() {
         Arc::new(std::sync::atomic::AtomicU64::new(0)),
         0,
     );
-    let input = PluginStateSaveInput {
+    let input = PluginStateCaptureInput {
         project: editor.project(),
         context: hex_engine::AudioSourceContext {
             project_generation: 1,
             editor_revision: 2,
         },
         cancellation: &cancellation,
+        device_filter: None,
     };
     assert_eq!(
         input
@@ -415,4 +424,116 @@ fn saved_reading_selection_keeps_raw_zero_and_excludes_base_and_host_targets() {
         vec![(0, Some([1; 16]))]
     );
     assert_eq!(input.authored_plugin_targets(u64::MAX).count(), 0);
+}
+#[test]
+fn bounce_capture_uses_the_live_receiver_and_projects_only_the_isolated_instrument() {
+    struct Sink {
+        owner: ProcessorChainOwner,
+        device: u64,
+        refuse: bool,
+    }
+    impl WorkerAudioSink for Sink {
+        fn initialize(&mut self, _: &AtomicBool) -> Result<u32, String> {
+            Ok(48_000)
+        }
+        fn canonical_changed(&mut self, _: Arc<CanonicalAudioSourceSnapshot>) {}
+        fn poll(&mut self) {}
+        fn close(&mut self) {}
+        fn capture_plugin_states(
+            &mut self,
+            input: PluginStateCaptureInput<'_>,
+        ) -> Result<Vec<PluginStateCapture>, String> {
+            let mut captured = Vec::new();
+            input.visit_plugin_devices(|owner, id, expected| {
+                assert_eq!((owner, id), (self.owner, self.device));
+                captured.push(PluginStateCapture {
+                    owner,
+                    device_id: id,
+                    expected: expected.clone(),
+                    captured: state(b"preset", b"preset gui"),
+                });
+                Ok(())
+            })?;
+            assert_eq!(captured.len(), 1);
+            if self.refuse {
+                return Err("controlled vst3 state capture refusal".into());
+            }
+            Ok(captured)
+        }
+    }
+
+    let mut editor = Editor::new(fixture(), 8).unwrap();
+    let receiver = &editor.project().tracks()[1];
+    let mut sink = Sink {
+        owner: ProcessorChainOwner::Track(receiver.id().value()),
+        device: receiver.instrument().unwrap().id().value(),
+        refuse: false,
+    };
+    let source = receiver.source_id().unwrap();
+    let Created::Track(contributor) = editor
+        .execute(Command::AddMidiTrack {
+            name: "contributor".into(),
+        })
+        .unwrap()
+    else {
+        panic!("contributor track");
+    };
+    editor
+        .execute(Command::BindTrackSource {
+            track: contributor,
+            source: Some(source),
+        })
+        .unwrap();
+    let canonical = editor.project();
+    let mut isolated = canonical.snapshot();
+    isolated.tracks.retain(|track| track.instrument.is_some());
+    isolated.main_devices.clear();
+    isolated.return_tracks.clear();
+    isolated.native_sources[0].receiver = Some(contributor.value());
+    let isolated = Project::from_snapshot(isolated).unwrap();
+    let input = ResidentEffectPreparation {
+        project: &isolated,
+        context: hex_engine::AudioSourceContext {
+            project_generation: 1,
+            editor_revision: 2,
+        },
+        restoring_plugin_state: false,
+        preparing_edit: false,
+    };
+    let control = hex_export::ExportControl::default();
+    let cancellation = RequestCancellation::new(
+        Arc::new(AtomicBool::new(false)),
+        Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        0,
+    )
+    .with_bounce(&control);
+    let projected = project_for_bounce_with_capture(canonical, &input, &cancellation, &mut sink)
+        .unwrap()
+        .unwrap();
+    for track in projected.tracks() {
+        assert_eq!(
+            track.instrument().unwrap().state(),
+            &state(b"preset", b"preset gui")
+        );
+    }
+    assert_eq!(
+        canonical
+            .track(contributor)
+            .unwrap()
+            .instrument()
+            .unwrap()
+            .state(),
+        &state(b"original", b"original gui")
+    );
+
+    sink.refuse = true;
+    assert_eq!(
+        project_for_bounce_with_capture(canonical, &input, &cancellation, &mut sink).unwrap_err(),
+        "controlled vst3 state capture refusal"
+    );
+    assert!(control.cancel());
+    assert_eq!(
+        project_for_bounce_with_capture(canonical, &input, &cancellation, &mut sink).unwrap_err(),
+        "bounce cancelled"
+    );
 }

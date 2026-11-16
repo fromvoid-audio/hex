@@ -381,6 +381,7 @@ pub struct PreparedSessionInventory {
     mutable_history_retarget_storage_bytes: usize,
     instrument_automation_storage_bytes: usize,
     instrument_automation_indices: [Option<u16>; hex_project::MAX_TRACKS],
+    armed_instrument_index: Option<usize>,
     audio_clips: Vec<PreparedSessionAudioClip>,
     work: SessionWorkEnvelope,
     contains_streamed_sources: bool,
@@ -510,6 +511,7 @@ impl PreparedSessionInventory {
         instruments: &hex_lattice::NativeInstrumentRegistry<'_>,
         shared_contexts: Arc<crate::shared_analytic::SharedAnalyticContextTable>,
         samplers: Option<&dyn crate::native_device_resources::InstrumentResourcePreparation>,
+        native_input: Option<crate::NativeParameterInputTarget>,
     ) -> Result<Self, crate::Invalid> {
         Self::prepare_with_resolver_scoped(
             project,
@@ -519,6 +521,7 @@ impl PreparedSessionInventory {
             Some(shared_contexts),
             |asset, rate| sources.resolve(asset, rate),
             samplers,
+            native_input,
         )
     }
 
@@ -541,6 +544,7 @@ impl PreparedSessionInventory {
             shared_contexts,
             resolve_source,
             None,
+            None,
         )
     }
 
@@ -556,6 +560,7 @@ impl PreparedSessionInventory {
             u32,
         ) -> Result<PreparedAudioSourceRef<'a>, crate::Invalid>,
         samplers: Option<&dyn crate::native_device_resources::InstrumentResourcePreparation>,
+        native_input: Option<crate::NativeParameterInputTarget>,
     ) -> Result<Self, crate::Invalid> {
         crate::device_automation::validate_project(project)?;
         crate::gain_envelope::validate_project(project)?;
@@ -596,7 +601,8 @@ impl PreparedSessionInventory {
         )?;
         let mut instrument_track_indices = BTreeMap::new();
         let mut instrument_automation_storage_bytes = 0;
-        for track in project.tracks() {
+        let mut armed_instrument_index = None;
+        for (index, track) in project.tracks().iter().enumerate() {
             let slot = track.instrument();
             let source_config = slot.and_then(|device| source_instruments.get_mut(&device.id()));
             let has_receiver = track
@@ -625,11 +631,25 @@ impl PreparedSessionInventory {
                     .flatten()
             });
             let automation = instrument_automation::prepare_for_receiver(
+                project,
                 track,
                 mutable_runtime.as_deref(),
                 instrument_registry,
+                native_input,
                 &mut instrument_automation_storage_bytes,
             )?;
+            if let Some(target) = native_input
+                && let Some(program) = automation.as_ref()
+                && program.device == target.device()
+                && program.values.input_target() == Some(target.target())
+                && matches!(
+                    target.identity().owner(),
+                    hex_lattice::ProcessorChainOwner::Source(owner)
+                        if track.source_id().is_some_and(|source| source.value() == owner)
+                )
+            {
+                armed_instrument_index = Some(index);
+            }
             let resource_factory_inline_bound = if samplers
                 .is_some_and(|sources| sources.device_scope().is_some())
                 && slot.is_some_and(|device| !device.state().asset_references().is_empty())
@@ -1063,7 +1083,8 @@ impl PreparedSessionInventory {
                                 false,
                             )
                         }
-                        PreparedAudioSourceRef::Streamed(source) => (
+                        PreparedAudioSourceRef::Streamed(source)
+                        | PreparedAudioSourceRef::StreamedWithPitch(source, _) => (
                             PreparedAudioSource::Streamed(Arc::clone(source)),
                             source.playback_frames(),
                             true,
@@ -1320,6 +1341,7 @@ impl PreparedSessionInventory {
             mutable_history_retarget_storage_bytes,
             instrument_automation_storage_bytes,
             instrument_automation_indices,
+            armed_instrument_index,
             audio_clips,
             work,
             contains_streamed_sources,
@@ -1368,8 +1390,9 @@ impl PreparedSessionInventory {
 
     pub(crate) fn instrument_automation_construction_bytes(
         project: &Project,
+        native_input: Option<crate::NativeParameterInputTarget>,
     ) -> Result<usize, crate::Invalid> {
-        instrument_automation::construction_bytes(project)
+        instrument_automation::construction_bytes(project, native_input)
     }
 
     /// Program backing only; this does not audit the complete native graph.
@@ -1390,6 +1413,19 @@ impl PreparedSessionInventory {
         self.instrument_automation_storage_bytes
     }
 
+    pub(crate) fn instrument_modulation(
+        &self,
+        receiver: TrackId,
+    ) -> Option<&hex_lattice::PreparedModulationState> {
+        self.mutable_instruments
+            .iter()
+            .find(|entry| entry.track == receiver)?
+            .automation
+            .as_ref()?
+            .modulation
+            .as_ref()
+    }
+
     /// Borrow one receiving source's program; contributors never own copies.
     pub fn instrument_automation(
         &self,
@@ -1405,13 +1441,19 @@ impl PreparedSessionInventory {
             .map(|program| &program.values)
     }
 
-    /// Constant-time receiving-track view for per-frame compensated generation.
-    /// The fixed index owns no program and is populated only on control.
-    pub(crate) fn instrument_automation_at(
+    /// The receiver's prepared program is the authority for stage ownership.
+    pub(crate) fn has_instrument_output_modulation_at(
         &self,
         index: usize,
         device: DeviceId,
-    ) -> Option<&hex_lattice::PreparedParameterAutomation> {
+    ) -> bool {
+        self.instrument_program_at(index)
+            .filter(|program| program.device == device)
+            .and_then(|program| program.modulation.as_ref())
+            .is_some_and(|modulation| modulation.program().host_output_gain_base().is_some())
+    }
+
+    fn instrument_program_at(&self, index: usize) -> Option<&instrument_automation::Program> {
         let slot = self
             .instrument_automation_indices
             .get(index)
@@ -1421,11 +1463,27 @@ impl PreparedSessionInventory {
         if self.tracks.get(index)?.id != entry.track {
             return None;
         }
-        entry
-            .automation
-            .as_ref()
+        entry.automation.as_ref()
+    }
+
+    /// Constant-time receiving-track view for per-frame compensated generation.
+    /// The fixed index owns no program and is populated only on control.
+    pub(crate) fn instrument_automation_at(
+        &self,
+        index: usize,
+        device: DeviceId,
+    ) -> Option<&hex_lattice::PreparedParameterAutomation> {
+        self.instrument_program_at(index)
             .filter(|program| program.device == device)
             .map(|program| &program.values)
+    }
+
+    /// The exact receiving program chosen during control-side preparation.
+    pub(crate) fn armed_instrument_automation(
+        &self,
+        target: crate::NativeParameterInputTarget,
+    ) -> Option<&hex_lattice::PreparedParameterAutomation> {
+        self.instrument_automation_at(self.armed_instrument_index?, target.device())
     }
 
     pub(crate) fn resource_factory_inline_bytes(&self) -> Result<usize, crate::AudioStorageError> {
@@ -1728,14 +1786,14 @@ impl PreparedSessionInventory {
         &self,
         id: TrackId,
         arrangement: &crate::Track,
-    ) -> Result<usize, crate::Invalid> {
+    ) -> Result<(usize, usize), crate::Invalid> {
         let (voices, _, _) = arrangement_midi_envelope(arrangement)?;
         let session = self
             .tracks
             .iter()
             .find(|track| track.id == id)
             .ok_or(crate::Invalid("shared contributor inventory is missing"))?;
-        Ok(voices.max(session.work.active_voices))
+        Ok((voices, voices.max(session.work.active_voices)))
     }
 
     pub fn contains_streamed_sources(&self) -> bool {

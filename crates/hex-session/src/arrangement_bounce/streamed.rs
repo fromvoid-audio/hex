@@ -9,18 +9,22 @@
 //! explicitly (the renderer has no pages) and adoption never starts.
 use crate::{AssetId, VerifiedAudioFile};
 use hex_engine::{PreparedRevision, native_device_resources::PreparedDeviceResources};
+use hex_export::ForeignBounceRenderer;
 use std::{collections::BTreeMap, path::Path, sync::Arc};
 
 /// Stateless host capability: render one isolated bounce item to `path` with
-/// independently verified pages, via `hex_export::render_arrangement_bounce_with_pages`.
-pub type StreamedBouncer =
-    fn(&StreamedBounceRequest<'_>) -> Result<hex_export::ExportReport, String>;
+/// independently verified pages and the bounce's optional private processor set.
+pub type StreamedBouncer = fn(
+    &StreamedBounceRequest<'_>,
+    Option<&mut dyn ForeignBounceRenderer>,
+) -> Result<hex_export::ExportReport, String>;
 
 /// Borrowed complete input for one bounce item. Only Session constructs it.
 pub struct StreamedBounceRequest<'a> {
     pub(crate) prepared: &'a Arc<PreparedRevision>,
     pub(crate) resources: Option<&'a PreparedDeviceResources>,
     pub(crate) files: &'a BTreeMap<AssetId, VerifiedAudioFile>,
+    pub(crate) repitches: &'a [hex_engine::audio_transform::StreamedRepitchRequirement],
     pub(crate) path: &'a Path,
     pub(crate) start: u64,
     pub(crate) frames: u64,
@@ -39,6 +43,10 @@ impl StreamedBounceRequest<'_> {
     /// Verified file facts captured with the document's source bindings.
     pub fn file(&self, asset: AssetId) -> Option<&VerifiedAudioFile> {
         self.files.get(&asset)
+    }
+    /// Exact file-backed Re-Pitch maps captured with the isolated revision.
+    pub fn repitches(&self) -> &[hex_engine::audio_transform::StreamedRepitchRequirement] {
+        self.repitches
     }
     pub fn path(&self) -> &Path {
         self.path
@@ -62,6 +70,7 @@ impl StreamedBounceRequest<'_> {
 pub(crate) struct BounceRevision {
     pub(crate) prepared: Arc<PreparedRevision>,
     pub(crate) files: BTreeMap<AssetId, VerifiedAudioFile>,
+    pub(crate) file_sources: Option<crate::service::ResidentFileSet>,
 }
 impl BounceRevision {
     pub(crate) fn capture(
@@ -73,7 +82,11 @@ impl BounceRevision {
         } else {
             BTreeMap::new()
         };
-        Self { prepared, files }
+        Self {
+            prepared,
+            files,
+            file_sources: None,
+        }
     }
 }
 
@@ -88,6 +101,7 @@ pub(crate) fn render(
     include_tails: bool,
     control: &hex_export::ExportControl,
     bouncer: Option<StreamedBouncer>,
+    foreign: Option<&mut dyn ForeignBounceRenderer>,
 ) -> Result<u64, String> {
     if revision
         .prepared
@@ -96,17 +110,39 @@ pub(crate) fn render(
         .is_some()
         && let Some(bouncer) = bouncer
     {
-        return bouncer(&StreamedBounceRequest {
-            prepared: &revision.prepared,
-            resources,
-            files: &revision.files,
+        return bouncer(
+            &StreamedBounceRequest {
+                prepared: &revision.prepared,
+                resources,
+                files: &revision.files,
+                repitches: revision
+                    .file_sources
+                    .as_ref()
+                    .map_or(&[], |files| files.repitches().requirements()),
+                path,
+                start,
+                frames,
+                include_tails,
+                control,
+            },
+            foreign,
+        )
+        .map(|report| report.frames);
+    }
+    if let Some(foreign) = foreign {
+        return hex_export::render_arrangement_bounce_with_foreign(
             path,
+            revision.prepared,
+            resources,
             start,
             frames,
             include_tails,
             control,
-        })
-        .map(|report| report.frames);
+            None,
+            foreign,
+        )
+        .map(|report| report.frames)
+        .map_err(|error| error.to_string());
     }
     hex_export::render_arrangement_bounce_new(
         path,

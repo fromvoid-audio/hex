@@ -1,5 +1,6 @@
 //! Synchronous isolated source render followed by one reserved ordinary conversion transaction.
 use super::*;
+use crate::service::{RequestCancellation, plugin_state_save};
 
 #[allow(clippy::too_many_arguments)]
 pub(in crate::service) fn bounce_clip(
@@ -123,6 +124,7 @@ pub(in crate::service) fn bounce_arrangement(
     adoption: hex_project::BounceAdoption,
     directory: &Path,
     control: &hex_export::ExportControl,
+    cancellation: &RequestCancellation,
     context: hex_engine::AudioSourceContext,
     sink: &mut dyn WorkerAudioSink,
     admission: sampler_export::Admission<'_>,
@@ -166,16 +168,20 @@ pub(in crate::service) fn bounce_arrangement(
                 .map_err(|e| e.to_string())?;
             let waveforms =
                 std::cell::RefCell::new(session.audio_clip_waveforms().map_err(|e| e.to_string())?);
-            let offline_input = ResidentEffectPreparation {
+            let effect_input = |project| ResidentEffectPreparation {
                 project,
                 context,
                 restoring_plugin_state: false,
                 preparing_edit: false,
             };
-            if in_place && offline_input.requires_plugin_profile() {
-                return Err("vst3 instrument bounce requires new tracks".into());
-            }
-            let offline = sink.prepare_offline_bounce(offline_input)?;
+            let captured = plugin_state_save::project_for_bounce_with_capture(
+                session.project(),
+                &effect_input(project),
+                cancellation,
+                &mut **sink,
+            )?;
+            let project = captured.as_ref().unwrap_or(project);
+            let offline = sink.prepare_offline_bounce(effect_input(project), control)?;
             let mut isolated = inputs
                 .prepare_with_gain(
                     project,
@@ -211,12 +217,16 @@ pub(in crate::service) fn bounce_arrangement(
                 .and_then(|n| n.checked_mul(std::mem::size_of::<hex_engine::Frame>() * 4))
                 .ok_or("bounce construction allowance overflows")?;
             inputs
-                .admit(
+                .admit_with_repitch(
                     &isolated.resources,
                     Some(&isolated.prepared),
                     &sink.resident_admission(),
                     runtime,
                     construction,
+                    isolated
+                        .file_sources
+                        .as_ref()
+                        .map(|files| files.repitches()),
                 )
                 .map_err(|e| e.to_string())?;
             let files = crate::arrangement_bounce::streamed::BounceRevision::capture(
@@ -226,35 +236,13 @@ pub(in crate::service) fn bounce_arrangement(
             .files;
             Ok((isolated, files, offline))
         },
-        |path, (isolated, files, offline), item, tails, control| {
-            if let Some(mut offline) = offline {
-                if isolated
-                    .prepared
-                    .arrangement_stream_sources()
-                    .next()
-                    .is_some()
-                {
-                    return Err("vst3 bounce with streamed audio sources is unavailable".into());
-                }
-                return hex_export::render_arrangement_bounce_with_foreign(
-                    path,
-                    isolated.prepared,
-                    Some(&isolated.resources),
-                    item.start,
-                    item.end - item.start,
-                    tails,
-                    control,
-                    None,
-                    offline.as_mut(),
-                )
-                .map(|report| report.frames)
-                .map_err(|e| e.to_string());
-            }
+        |path, (isolated, files, mut offline), item, tails, control| {
             crate::arrangement_bounce::streamed::render(
                 path,
                 crate::arrangement_bounce::streamed::BounceRevision {
                     prepared: isolated.prepared,
                     files,
+                    file_sources: isolated.file_sources,
                 },
                 Some(&isolated.resources),
                 item.start,
@@ -262,6 +250,9 @@ pub(in crate::service) fn bounce_arrangement(
                 tails,
                 control,
                 streamed,
+                offline
+                    .as_deref_mut()
+                    .map(|source| source as &mut dyn hex_export::ForeignBounceRenderer),
             )
         },
         |session, prepared, files| {

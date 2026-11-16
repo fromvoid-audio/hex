@@ -520,6 +520,7 @@ pub(crate) fn record_audio_backend_event(cx: &mut App, event: &crate::EditorAudi
             device,
             parameter,
             sequence,
+            ..
         } => {
             format!(
                 "stage=plugin_parameter_touched source={source:?} binding={binding:?} device={device} parameter={parameter} sequence={sequence}"

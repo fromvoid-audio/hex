@@ -1,7 +1,7 @@
 //! # Purpose
-//! Own native output lifecycle, bounded prepared-graph publication, callback command delivery and
-//! off-callback reclamation. Owns copied isolated-processor endpoints and their joining control
-//! worker; plugin ABI loading and native instance admission remain outside this crate.
+//! Own native input discovery and capture, output lifecycle, bounded prepared-graph publication, callback
+//! command delivery and off-callback reclamation. Owns copied isolated-processor endpoints and their
+//! joining control worker; plugin ABI loading and native instance admission remain outside this crate.
 //!
 //! # Dependencies
 //! Uses hex-engine for musical rendering, hex-stream for verified pages, CPAL for device I/O and
@@ -20,6 +20,8 @@
 pub mod audio_diagnostics;
 pub mod cpu_meter;
 mod device;
+pub mod input_capture;
+pub mod input_devices;
 mod open_outcome;
 mod output_route;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -39,6 +41,59 @@ pub use output_route::{OutputRoute, OutputRouteWatch, ROUTE_SAMPLE_INTERVAL};
 pub use render_fault::RenderFaultSnapshot;
 mod candidate_catalog;
 mod candidate_custody;
+// Per-callback-thread observation for the real readiness boundary regression.
+// Initialized before measurement; it neither allocates nor changes admission.
+#[cfg(all(test, feature = "allocation-probe", feature = "stream-test-support"))]
+pub(crate) mod candidate_window_probe {
+    use std::cell::Cell;
+    thread_local! {
+        static WINDOWS: Cell<Option<(usize, usize, usize)>> = const { Cell::new(None) };
+        static DOMAINS: Cell<Option<(u8, usize)>> = const { Cell::new(None) };
+    }
+    pub(crate) fn begin() {
+        WINDOWS.with(|value| value.set(Some((0, 0, usize::MAX))));
+        DOMAINS.with(|value| value.set(Some((0, usize::MAX))));
+    }
+    pub(crate) fn attempt(frames: usize) {
+        WINDOWS.with(|value| {
+            if let Some((failed, next, smallest)) = value.get()
+                && failed != 0
+            {
+                value.set(Some((
+                    failed,
+                    if next == 0 { frames } else { next },
+                    smallest.min(frames),
+                )));
+            }
+        });
+    }
+    pub(crate) fn accepted(slot: usize) {
+        DOMAINS.with(|value| {
+            if let Some((mask, usize::MAX)) = value.get() {
+                value.set(Some((mask | (1 << slot), usize::MAX)));
+            }
+        });
+    }
+    pub(crate) fn capacity(frames: usize, slot: usize) {
+        WINDOWS.with(|value| {
+            if let Some((0, next, smallest)) = value.get() {
+                value.set(Some((frames, next, smallest)));
+            }
+        });
+        DOMAINS.with(|value| {
+            if let Some((mask, usize::MAX)) = value.get() {
+                value.set(Some((mask, slot)));
+            }
+        });
+    }
+    pub(crate) fn domains() -> Option<(u8, usize)> {
+        DOMAINS.with(|value| value.get())
+    }
+    pub(crate) fn finish() -> Option<(usize, usize, usize)> {
+        DOMAINS.with(|value| value.set(None));
+        WINDOWS.with(|value| value.replace(None))
+    }
+}
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub use candidate_custody::{
     NativeSourceDataReservation, NativeSourcePreparationProgress, NativeSourcePreparationReturn,

@@ -1265,6 +1265,15 @@ fn real_immediate_scene_waits_before_route_and_play_then_restarts_actual_clip() 
 
 #[test]
 fn original_quantized_due_survives_pause_cancel_and_revocable_prewarm_pool_pressure() {
+    prewarm_pool_pressure(false);
+}
+
+#[test]
+fn abandoned_publication_restores_pending_launch_prewarm() {
+    prewarm_pool_pressure(true);
+}
+
+fn prewarm_pool_pressure(abandon: bool) {
     let _serial = serial();
     if !hex_engine::audio_storage_constructor_layout_supported() {
         return;
@@ -1490,6 +1499,37 @@ fn original_quantized_due_survives_pause_cancel_and_revocable_prewarm_pool_press
         }
         assert!(std::time::Instant::now() < deadline);
         std::thread::yield_now();
+    }
+    if abandon {
+        zero(allocation_counter::measure(|| {
+            data.owner_mut().unwrap().run(|c, _| {
+                if let Some(ActivePublication::Eligible(active)) = c.active.as_mut() {
+                    active.publication_replaces_prewarm(&mut c.domain_pages);
+                    active.publication_abandoned();
+                }
+            })
+        }));
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            let mut pinned = false;
+            zero(allocation_counter::measure(|| {
+                data.owner_mut().unwrap().run(|c, _| {
+                    c.begin_block();
+                    if let Some(ActivePublication::Eligible(active)) = c.active.as_mut() {
+                        pinned = active
+                            .test_launch_prewarm_protected(&mut c.domain_pages, c.stream_prefix);
+                    }
+                })
+            }));
+            if pinned {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < until,
+                "abandoned publication stranded the pending launch prewarm"
+            );
+            std::thread::yield_now();
+        }
     }
     assert!(control.status.performance_frame.load(Acquire) < 4096);
     let mut crossed = false;

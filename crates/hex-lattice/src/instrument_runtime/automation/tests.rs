@@ -740,3 +740,46 @@ fn late_invalid_target_never_publishes_an_earlier_valid_prefix() {
     );
     assert_eq!(output, original);
 }
+
+#[test]
+fn automation_only_view_refuses_an_active_sample_rate_route_before_rendering() {
+    struct Routed;
+    impl NativeParameterAutomation for Routed {
+        fn parameter_ids(&self) -> &[ParameterId] {
+            &[ID]
+        }
+        fn has_sample_rate_modulation(&self, parameter: ParameterId) -> bool {
+            parameter == ID
+        }
+        fn value_at(&self, _: ParameterId, _: usize) -> Option<ParameterValue> {
+            Some(ParameterValue::Float(1.5))
+        }
+    }
+
+    let mut pair = NativeInstrumentRuntimePair::new(&Factory::supported(), LIMITS).unwrap();
+    let mut output = [[0.0; 2]; 4];
+    pair.begin_block();
+    assert_eq!(
+        pair.process_block_with_clock_and_automation(
+            &[on(60)],
+            &mut output,
+            None,
+            &[],
+            &Routed,
+            &crate::EMPTY_DEVICE_RESOURCES,
+        ),
+        Err(NativeInstrumentRuntimeError::UnsupportedParameterModulation),
+    );
+    assert_eq!(output, [[0.0; 2]; 4]);
+    pair.process_block_with_clock_and_automation(
+        &[on(60)],
+        &mut output,
+        None,
+        &[],
+        &Values::authored(),
+        &crate::EMPTY_DEVICE_RESOURCES,
+    )
+    .unwrap();
+    assert!(output[0][0] > 0.0);
+    pair.commit_block();
+}

@@ -15,6 +15,7 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
             project.main_devices.insert(
                 index,
                 Device {
+                    modulation: Default::default(),
                     parent: None,
                     automation: Vec::new(),
                     id,

@@ -12,6 +12,7 @@ pub(super) struct SourceInputState {
     pub(super) id: LiveInputId,
     pub(super) capacity: usize,
     pub(super) mutable: bool,
+    pub(super) note_pressure: bool,
     pub(super) context: Option<Arc<crate::shared_analytic::SharedContextOwner>>,
     pub(super) events: [NativeInstrumentEvent; 259],
     pub(super) len: usize,
@@ -38,6 +39,9 @@ impl SourceInputState {
             id: LiveInputId { track, generation },
             capacity: source.capacity,
             mutable: source.runtime.is_some(),
+            note_pressure: source
+                .runtime
+                .is_some_and(MutableInstrumentTrackRuntime::supports_note_pressure),
             context: source.context.clone(),
             events: [NativeInstrumentEvent::NoteOff {
                 frame_offset: 0,
@@ -205,6 +209,93 @@ impl ComputerKeyboardRuntime {
         self.source_input
             .as_ref()
             .map_or(&[], |source| &source.events[..source.len])
+    }
+    /// Retain only a physical press the muted source actually suppressed.
+    /// The speculative voice pool commits or rolls back with keyboard input;
+    /// this is not proof that a later source owns the same live runtime.
+    pub(crate) fn mark_muted_source_onset(&mut self, id: u64) {
+        if let Some(voice) = self.scratch.iter_mut().flatten().find(|voice| {
+            voice.id == id
+                && voice.source == VoiceSource::Physical
+                && voice.gate.is_none()
+                && !voice.muted_source_onset
+        }) {
+            voice.muted_source_onset = true;
+        }
+    }
+    /// One held physical input suppressed by mute; more than one is not
+    /// admitted by the bounded shared-source continuation.
+    pub(crate) fn single_muted_source_onset(&self) -> Result<Option<u64>, ()> {
+        let mut held = self.primary.iter().flatten().filter(|voice| {
+            voice.muted_source_onset
+                && voice.gate.is_none()
+                && voice.source == VoiceSource::Physical
+        });
+        let first = held.next().map(|voice| voice.id);
+        if held.next().is_some() {
+            Err(())
+        } else {
+            Ok(first)
+        }
+    }
+    pub(crate) fn has_muted_source_onset(&self) -> bool {
+        self.primary.iter().flatten().any(|voice| {
+            voice.muted_source_onset
+                && voice.gate.is_none()
+                && voice.source == VoiceSource::Physical
+        })
+    }
+
+    pub(crate) fn muted_source_onset_event(&self, id: u64) -> Option<NativeInstrumentEvent> {
+        let voice = self.scratch.iter().flatten().find(|voice| {
+            voice.id == id
+                && voice.muted_source_onset
+                && voice.gate.is_none()
+                && voice.source == VoiceSource::Physical
+        })?;
+        Some(NativeInstrumentEvent::NoteOn {
+            frame_offset: 0,
+            occurrence_id: id,
+            pitch: ((voice.token & 255) as u8).saturating_sub(1),
+            velocity: ((voice.token >> 8) & 255) as u8,
+        })
+    }
+
+    pub(crate) fn clear_muted_source_onset(&mut self, id: u64) {
+        if let Some(voice) = self
+            .scratch
+            .iter_mut()
+            .flatten()
+            .find(|voice| voice.id == id)
+        {
+            voice.muted_source_onset = false;
+        }
+    }
+    pub(crate) fn clear_muted_source_onsets(&mut self) {
+        for voice in self.scratch.iter_mut().flatten() {
+            voice.muted_source_onset = false;
+        }
+    }
+    pub(crate) fn clear_committed_muted_source_onsets(&mut self) {
+        for voice in self.primary.iter_mut().chain(&mut self.scratch).flatten() {
+            voice.muted_source_onset = false;
+        }
+    }
+    #[cfg(test)]
+    pub(crate) fn muted_source_held_count(&self) -> usize {
+        self.primary
+            .iter()
+            .flatten()
+            .filter(|voice| voice.muted_source_onset && voice.gate.is_none())
+            .count()
+    }
+    #[cfg(test)]
+    pub(crate) fn held_physical_id(&self) -> Option<u64> {
+        self.primary
+            .iter()
+            .flatten()
+            .find(|voice| voice.source == VoiceSource::Physical && voice.gate.is_none())
+            .map(|voice| voice.id)
     }
     pub(crate) fn take_source_input_release(&mut self) -> bool {
         self.source_input

@@ -1336,3 +1336,24 @@ fn sparse_one_shot_keeps_occupied_pcm_and_reads_both_sides_of_its_gate() {
         );
     }
 }
+
+#[test]
+fn grouped_transforms_charge_each_distinct_source_once() {
+    let (mut editor, ids, media) = group_fixture();
+    editor.execute(Command::GroupClips(ids)).unwrap();
+    let context = AudioTransformPreparation {
+        source_limit: 112_000,
+        ..isolated(16 * 1024 * 1024, 8 * 1024 * 1024, 16)
+    };
+    let first = prepare(&editor, &media, &context);
+    let again = prepare(&editor, &media, &context);
+    assert_eq!(
+        render(&first, 0, 15_000, 127),
+        render(&again, 0, 15_000, 127)
+    );
+    assert_eq!(
+        source_charge(context.cache.borrow().entries.iter(), None).unwrap(),
+        112_000
+    );
+    assert!(context.cache_hits() > 0);
+}

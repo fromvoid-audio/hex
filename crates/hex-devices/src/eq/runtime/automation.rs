@@ -7,7 +7,9 @@
 //! Mode uses the preallocated routing fade: rapid targets coalesce to the
 //! latest reading until that one outgoing branch finishes. Cold/seek targets
 //! select directly. This module owns no curves, clock, publication or resource
-//! lifecycle.
+//! lifecycle. A mapped output gain applies on the same sample to both sides of
+//! the mode fade. An ordinary authored lane continues through its existing gain
+//! smoother from the last effective gain.
 use super::*;
 use hex_lattice::NativeParameterAutomation;
 use hex_lattice_contract::MAX_PARAMETERS_PER_DEVICE;
@@ -122,6 +124,7 @@ impl PreparedEq {
 pub(super) struct Targets {
     pub(super) gain: f64,
     pub(super) mode: u8,
+    pub(super) mapped_gain: bool,
 }
 impl EqRuntime {
     pub(super) fn process_automation(
@@ -152,12 +155,14 @@ impl EqRuntime {
             .parameters
             .iter()
             .any(|grant| grant.node.is_some());
+        let mapped_gain = values.has_sample_rate_modulation(OUTPUT_GAIN);
         let mut readings = [None; MAX_PARAMETERS_PER_DEVICE];
         for (offset, frame) in frames.iter_mut().enumerate() {
             values.values_at(offset, &mut readings[..ids.len()])?;
             let mut targets = Targets {
                 gain: self.configuration.gain,
                 mode: self.configuration.mode,
+                mapped_gain,
             };
             let mut authored_gain = false;
             for (&reading, &binding) in readings[..ids.len()].iter().zip(&bindings) {

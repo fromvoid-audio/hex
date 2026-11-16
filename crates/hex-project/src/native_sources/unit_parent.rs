@@ -9,17 +9,6 @@ impl Project {
             .map(super::NativeSource::id)
     }
 
-    fn require_unbound_source(&self, source: SourceId) -> Result<(), Invalid> {
-        if self
-            .tracks()
-            .iter()
-            .any(|track| track.source_id() == Some(source))
-        {
-            return Err(Invalid("editing bound source chains is not supported yet"));
-        }
-        Ok(())
-    }
-
     /// Preserve the designated instrument while editing one bounded flat chain.
     /// The registry publishes its new immutable definition and binding views only
     /// after the edit succeeds; the Editor validates/prepares before committing.
@@ -28,7 +17,6 @@ impl Project {
         source: SourceId,
         edit: impl FnOnce(&mut Vec<Device>) -> Result<(), Invalid>,
     ) -> Result<(), Invalid> {
-        self.require_unbound_source(source)?;
         self.edit_native_source(source, |definition| {
             let instrument = definition.instrument.id();
             let mut chain = std::mem::take(&mut definition.effects);
@@ -106,7 +94,6 @@ impl Project {
         parent: DeviceId,
         state: hex_lattice_contract::NativeDeviceState,
     ) -> Result<Created, Invalid> {
-        self.require_unbound_source(source)?;
         let count = self
             .native_source(source)
             .ok_or(Invalid("native source no longer exists"))?
@@ -131,6 +118,7 @@ impl Project {
             chain.insert(
                 end,
                 Device {
+                    modulation: Default::default(),
                     id,
                     parent: Some(parent),
                     state,
@@ -143,7 +131,72 @@ impl Project {
         })?;
         Ok(Created::Device(id))
     }
+
+    pub(crate) fn remove_source_device(
+        &mut self,
+        source: SourceId,
+        device: DeviceId,
+    ) -> Result<(), Invalid> {
+        let definition = self
+            .native_source(source)
+            .ok_or(Invalid("native source no longer exists"))?;
+        if definition.instrument().id() == device {
+            return Err(Invalid(
+                "source instrument requires explicit source removal or unlinking",
+            ));
+        }
+        self.edit_source_chain(source, |chain| {
+            let index = chain
+                .iter()
+                .position(|item| item.id() == device)
+                .ok_or(Invalid("source device no longer exists"))?;
+            let span = crate::device_inventory::serial_unit_span(chain, index)?;
+            drop(chain.drain(span));
+            Ok(())
+        })
+    }
+    pub(crate) fn move_source_device(
+        &mut self,
+        source: SourceId,
+        device: DeviceId,
+        before: Option<DeviceId>,
+    ) -> Result<(), Invalid> {
+        let definition = self
+            .native_source(source)
+            .ok_or(Invalid("native source no longer exists"))?;
+        if !definition.devices().any(|item| item.id() == device) {
+            return Err(Invalid("device does not belong to the source"));
+        }
+        // These unchanged placements also remain harmless on a bound singleton.
+        if before == Some(device)
+            || (before.is_none()
+                && definition
+                    .devices()
+                    .last()
+                    .is_some_and(|item| item.id() == device))
+        {
+            return Ok(());
+        }
+        self.edit_source_chain(source, |chain| {
+            let index = chain
+                .iter()
+                .position(|item| item.id() == device)
+                .ok_or(Invalid("source device no longer exists"))?;
+            let destination = match before {
+                Some(anchor) => chain
+                    .iter()
+                    .position(|item| item.id() == anchor)
+                    .ok_or(Invalid("source device anchor no longer exists"))?,
+                None => chain.len(),
+            };
+            crate::device::move_serial_unit(chain, index, destination)
+        })
+    }
 }
 
+#[cfg(test)]
+mod order_tests;
+#[cfg(test)]
+mod removal_tests;
 #[cfg(test)]
 mod tests;

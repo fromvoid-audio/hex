@@ -51,6 +51,16 @@ impl Member {
             Self::Instrument(binding) => binding,
         }
     }
+
+    fn authored_devices(&self) -> impl Iterator<Item = &Device> {
+        let (effect, source) = match self {
+            Self::Effect(device) => (Some(device.as_ref()), None),
+            Self::Instrument(binding) => (None, Some(binding)),
+        };
+        effect
+            .into_iter()
+            .chain(source.into_iter().flat_map(|binding| binding.devices()))
+    }
 }
 
 /// Complete authored state, restricted to the project and media it was captured from.
@@ -114,10 +124,9 @@ impl Project {
             return Err(Invalid("selected device no longer belongs to the chain"));
         }
         let mut asset_ids = BTreeSet::new();
-        for member in &members {
+        for device in members.iter().flat_map(Member::authored_devices) {
             asset_ids.extend(
-                member
-                    .device()
+                device
                     .authored_states()
                     .flat_map(|state| state.asset_references())
                     .map(|item| AssetId(item.asset.value())),
@@ -330,8 +339,13 @@ fn preflight_paste(
     {
         return Err(Invalid("track device limit reached"));
     }
+    let copied_devices = clipboard
+        .members
+        .iter()
+        .flat_map(Member::authored_devices)
+        .count();
     if crate::returns::device_count(project)?
-        .checked_add(clipboard.members.len())
+        .checked_add(copied_devices)
         .is_none_or(|count| count > crate::MAX_DEVICES)
     {
         return Err(Invalid("project device limit reached"));

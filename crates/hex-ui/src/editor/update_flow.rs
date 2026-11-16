@@ -172,6 +172,7 @@ impl EditorView {
             request,
             Request::SaveCurrent
                 | Request::SaveNew(_)
+                | Request::SaveProjectAs { .. }
                 | Request::SaveCurrentWithFormatUpgrade { .. }
         ) {
             return None;
@@ -204,6 +205,13 @@ impl EditorView {
         let request = match request {
             Request::SaveCurrent => Request::SaveCurrent,
             Request::SaveNew(path) => Request::SaveNew(path.clone()),
+            Request::SaveProjectAs {
+                path,
+                replace_existing,
+            } => Request::SaveProjectAs {
+                path: path.clone(),
+                replace_existing: *replace_existing,
+            },
             Request::SaveCurrentWithFormatUpgrade {
                 project_generation,
                 path,
@@ -388,6 +396,7 @@ impl EditorView {
                 && !window.is_pointer_dragging()
                 && !view.gain_recorder.blocks_edits()
                 && !view.native_automation_recorder.busy()
+                && !view.automation_take_recovery.unresolved()
                 && !view.midi_recorder.blocks_edits();
             let same_document = view.project_generation == generation
                 && view

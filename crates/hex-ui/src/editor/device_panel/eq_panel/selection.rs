@@ -46,7 +46,7 @@ pub(super) fn apply_marquee(selected: &mut Option<NodeId>, group: &mut Vec<NodeI
     };
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "ui-unit-tier"))]
 mod tests {
     use super::*;
 

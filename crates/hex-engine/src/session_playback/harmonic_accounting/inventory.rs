@@ -116,6 +116,7 @@ pub(super) fn revision(shape: &Shape, held: bool, first_id: u64) -> Arc<Prepared
         track.instrument_position = Some(48);
         for slot in 0..64 {
             track.devices.push(hex_project::DeviceSnapshot {
+                modulation: Default::default(),
                 parent: None,
                 automation: Vec::new(),
                 comparison: None,
@@ -169,6 +170,7 @@ pub(super) fn revision(shape: &Shape, held: bool, first_id: u64) -> Arc<Prepared
         let mut devices = Vec::new();
         for slot in 0..64 {
             devices.push(hex_project::DeviceSnapshot {
+                modulation: Default::default(),
                 parent: None,
                 automation: Vec::new(),
                 comparison: None,
@@ -322,6 +324,7 @@ pub(super) fn ownership(runtime: &SessionPlayback, proposed: bool) -> Ownership 
             ledgers,
             128 * size_of::<crate::mutable_instrument::MutableOccurrence>() + source_live_bytes
         );
+        let (frozen, modulation) = owner.proof_auxiliary_storage_bytes().unwrap();
         OwnerCharge {
             header: if proposed {
                 size_of::<payload::HostOwner>()
@@ -334,6 +337,8 @@ pub(super) fn ownership(runtime: &SessionPlayback, proposed: bool) -> Ownership 
                 owner.runtime_pair_storage_bytes().unwrap()
             },
             ledgers,
+            frozen,
+            modulation,
         }
     };
     let active = runtime

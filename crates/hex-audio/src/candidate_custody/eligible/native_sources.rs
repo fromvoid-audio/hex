@@ -11,6 +11,7 @@ use hex_plugin_host::native::{
     self, Cancellation, Pending, PreparationDisposal, PreparationFailure,
 };
 use hex_plugin_scan::macos::build_identity::InstanceBuild;
+use std::sync::atomic::AtomicU8;
 
 mod capture;
 mod completion;
@@ -31,7 +32,7 @@ pub(super) use references::References;
 const MAX_SOURCES: usize = hex_lattice::MAX_STATEFUL_PROCESSORS;
 type Cancellations = [Option<Cancellation>; MAX_SOURCES];
 struct EndpointSignal {
-    requested: AtomicBool,
+    requested: AtomicU8,
     // Written only by actual callback installation/return. Queue admission is
     // not an endpoint ACK and this observation grants no graph admission.
     installed: AtomicBool,
@@ -42,18 +43,67 @@ struct EndpointSignal {
 impl EndpointSignal {
     fn new() -> Self {
         Self {
-            requested: AtomicBool::new(false),
+            requested: AtomicU8::new(0),
             installed: AtomicBool::new(false),
             runtime_required: AtomicBool::new(false),
         }
     }
     fn load(&self, order: Ordering) -> bool {
-        self.requested.load(order)
+        self.requested.load(order) & RETURN_REQUESTED != 0
     }
-    fn store(&self, value: bool, order: Ordering) {
-        self.requested.store(value, order);
+    fn request_return(&self) {
+        self.requested.fetch_or(RETURN_REQUESTED, Ordering::AcqRel);
+    }
+    fn reserve(&self) -> Option<EndpointReturnFence<'_>> {
+        self.requested
+            .compare_exchange(0, RETURN_RESERVED, Ordering::AcqRel, Ordering::Acquire)
+            .ok()?;
+        Some(EndpointReturnFence {
+            signal: self,
+            decided: false,
+        })
     }
 }
+// A request is sticky until the endpoint is returned. The reserved bit is
+// held only by the callback and never delays a control-side return request.
+const RETURN_REQUESTED: u8 = 1;
+const RETURN_RESERVED: u8 = 2;
+
+pub(crate) struct EndpointReturnFence<'a> {
+    signal: &'a EndpointSignal,
+    decided: bool,
+}
+impl EndpointReturnFence<'_> {
+    pub(crate) fn is_live(&self) -> bool {
+        !self.signal.load(Ordering::Acquire)
+    }
+    pub(crate) fn try_order_before_return(&mut self) -> bool {
+        if self.decided
+            || self
+                .signal
+                .requested
+                .compare_exchange(
+                    RETURN_RESERVED,
+                    RETURN_RESERVED,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                )
+                .is_err()
+        {
+            return false;
+        }
+        self.decided = true;
+        true
+    }
+}
+impl Drop for EndpointReturnFence<'_> {
+    fn drop(&mut self) {
+        self.signal
+            .requested
+            .fetch_and(!RETURN_RESERVED, Ordering::Release);
+    }
+}
+
 /// Per-cell allowances charged for the whole configured pool before any child
 /// or cancellation pair starts. These are reserved capacity, not allocated bytes
 /// or a producer/resource witness. The same fixed pool also reserves its
@@ -208,7 +258,7 @@ impl Bank {
                 && let Some(signal) = &source.endpoint_return
                 && !signal.runtime_required.load(Ordering::Acquire)
             {
-                signal.store(true, Ordering::Release);
+                signal.request_return();
             }
         }
     }
@@ -217,7 +267,7 @@ impl Bank {
             if slot.phase != Phase::Vacant {
                 slot.retiring = true;
                 if let Some(signal) = &slot.endpoint_return {
-                    signal.store(true, Ordering::Release);
+                    signal.request_return();
                 }
                 // A fully constructed effect retires through its existing
                 // joining worker/SDK stop. In-flight preparation cancels now.
@@ -592,7 +642,7 @@ impl Custody {
                 && let Some(signal) = &slot.endpoint_return
                 && !signal.runtime_required.load(Ordering::Acquire)
             {
-                signal.store(true, Ordering::Release);
+                signal.request_return();
             }
             if slot.processor.is_none() {
                 slot.request_cancellation()

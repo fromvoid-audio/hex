@@ -299,18 +299,41 @@ fn nested_insertion_refusals_preserve_ids_history_and_parent_state() {
     for kind in 0..3 {
         let (mut editor, owner, ids, instrument) = fixture(kind);
         let before = editor.project().snapshot();
-        for parent in [DeviceId(u64::MAX), instrument] {
-            assert!(
-                editor
-                    .execute(Command::InsertNestedDevice {
-                        parent,
-                        state: crate::default_instrument_state().unwrap()
-                    })
-                    .is_err()
-            );
-            assert_eq!(editor.project().snapshot(), before);
-            assert!(!editor.can_undo());
-        }
+        assert!(
+            editor
+                .execute(Command::InsertNestedDevice {
+                    parent: DeviceId(u64::MAX),
+                    state: crate::default_instrument_state().unwrap(),
+                })
+                .is_err()
+        );
+        assert_eq!(editor.project().snapshot(), before);
+        assert!(!editor.can_undo());
+        // The instrument is a bound source root and supports nested children.
+        // Keep that independent of the local/Main/Return refusal checks below.
+        let mut source_editor =
+            Editor::new(Project::from_snapshot(before.clone()).unwrap(), 16).unwrap();
+        let Created::Device(child) = source_editor
+            .execute(Command::InsertNestedDevice {
+                parent: instrument,
+                state: crate::default_instrument_state().unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("source child")
+        };
+        assert_eq!(
+            source_editor.project().device(child).unwrap().parent(),
+            Some(instrument)
+        );
+        let after = source_editor.project().snapshot();
+        let mut undone = before.clone();
+        undone.next_id = after.next_id;
+        assert!(source_editor.undo());
+        assert_eq!(source_editor.project().snapshot(), undone);
+        assert!(source_editor.redo());
+        assert_eq!(source_editor.project().snapshot(), after);
+
         let reached = std::cell::Cell::new(false);
         let refused: Result<_, crate::Invalid> = editor.execute_prepared(
             Command::InsertNestedDevice {

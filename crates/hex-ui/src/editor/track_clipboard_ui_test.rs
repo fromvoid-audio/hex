@@ -83,7 +83,13 @@ fn nested_group_plates_and_poles_join_follow_selection_and_close_at_visible_ends
         },
     );
     visual.run_until_parked();
+    let fold_button = selector("group-fold", outer);
+    let unselected_fold_bounds = visual.debug_bounds(fold_button).unwrap();
     select(&mut visual, outer, false);
+    assert_eq!(
+        visual.debug_bounds(fold_button),
+        Some(unselected_fold_bounds)
+    );
     let before = snapshot(&visual, &editor);
     let scale = visual.update(|window, _| window.scale_factor());
     let check_rail =
@@ -101,26 +107,34 @@ fn nested_group_plates_and_poles_join_follow_selection_and_close_at_visible_ends
                 f64::from(corners.bottom_left),
                 if last { 2.0 * f64::from(scale) } else { 0.0 }
             );
-            assert_eq!(
-                visual.rendered_background(key),
-                visual.rendered_background(selector("track-name-area", group)),
+            let plate = visual.rendered_path_triangles(selector("track-name-plate", group));
+            assert!(!plate.is_empty(), "the group plate is painted");
+            let pole = visual.rendered_background(key).expect("group pole fill");
+            assert!(
+                plate.iter().all(|triangle| triangle.color == pole),
                 "the group plate and its entire pole use the same selected/unselected fill"
             );
         };
     for track in [outer, inner] {
         let plate = visual
-            .debug_bounds(selector("track-name-area", track))
+            .debug_bounds(selector("track-name-plate", track))
             .unwrap();
         let header = visual
             .debug_bounds(selector("arrangement-track-header", track))
             .unwrap();
         assert_eq!(plate.top(), header.top());
         assert_eq!(plate.bottom(), header.bottom());
-        let (corners, _) = visual
-            .rendered_surface_geometry(selector("track-name-area", track))
+        let own_rail = visual
+            .debug_bounds(selector("track-color-strip", track))
             .unwrap();
-        assert_eq!(f64::from(corners.top_right), 6.0 * f64::from(scale));
-        assert_eq!(f64::from(corners.bottom_right), 6.0 * f64::from(scale));
+        assert_eq!(plate.left(), own_rail.right(), "title joins its own rail");
+        assert_eq!(plate.top(), own_rail.top());
+        assert!(
+            !visual
+                .rendered_path_triangles(selector("track-name-plate", track))
+                .is_empty(),
+            "group name plate is painted as a shaped path"
+        );
     }
     // Resizing a group grows only its plate, keeping the working controls
     // in the compact top slot instead of following the middle of the row.
@@ -317,13 +331,61 @@ fn g_groups_session_track_headers(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn g_does_not_group_a_single_track_or_track_name_edit(cx: &mut TestAppContext) {
+fn g_groups_a_single_track_in_arrangement_and_console(cx: &mut TestAppContext) {
+    use super::EditorMode;
+    use hex_session::service::Request;
+    for mode in [EditorMode::Arrangement, EditorMode::Session] {
+        let (mut visual, editor, ids) = live_tracks(cx, 2, false);
+        if mode == EditorMode::Session {
+            editor.update(&mut visual, |view, cx| {
+                view.set_mode(mode);
+                cx.notify();
+            });
+            visual.run_until_parked();
+            let header = Box::leak(format!("session-track-{}", ids[0].value()).into_boxed_str());
+            let at = visual.debug_bounds(header).unwrap().center();
+            visual.simulate_click(at, Modifiers::default());
+        } else {
+            select(&mut visual, ids[0], false);
+        }
+        let before = snapshot(&visual, &editor);
+        visual.simulate_keystrokes("g");
+        editor.read_with(&visual, |view, _| {
+            assert!(matches!(
+                &view.last_enqueued_edit,
+                Some(hex_project::Command::GroupTracks { tracks, .. }) if tracks.ids() == &ids[..1]
+            ));
+        });
+        receive(&mut visual, &editor);
+        let after = snapshot(&visual, &editor);
+        editor.read_with(&visual, |view, _| {
+            let project = &view.state.as_ref().unwrap().project;
+            let [group, child, sibling] = project.tracks() else {
+                panic!("expected a group, its child and the unselected track");
+            };
+            assert!(group.is_group());
+            assert_eq!(child.id(), ids[0]);
+            assert_eq!(child.parent_group(), Some(group.id()));
+            assert_eq!(sibling.id(), ids[1]);
+            assert_eq!(sibling.parent_group(), None);
+        });
+        editor.update(&mut visual, |view, _| assert!(view.enqueue(Request::Undo)));
+        receive(&mut visual, &editor);
+        let mut restored = snapshot(&visual, &editor);
+        restored.next_id = before.next_id;
+        assert_eq!(restored, before);
+        editor.update(&mut visual, |view, _| assert!(view.enqueue(Request::Redo)));
+        receive(&mut visual, &editor);
+        assert_eq!(snapshot(&visual, &editor), after);
+    }
+}
+
+#[gpui::test]
+fn g_does_not_group_during_track_name_edit(cx: &mut TestAppContext) {
     let (mut visual, editor, ids) = live_tracks(cx, 2, false);
     select(&mut visual, ids[0], false);
-    let before = snapshot(&visual, &editor);
-    visual.simulate_keystrokes("g");
-    assert_eq!(snapshot(&visual, &editor), before);
     select(&mut visual, ids[1], true);
+    let before = snapshot(&visual, &editor);
     visual.simulate_keystrokes("cmd-r g");
     editor.read_with(&visual, |view, _| {
         assert!(view.track_name.is_editing());
@@ -336,27 +398,64 @@ fn g_does_not_group_a_single_track_or_track_name_edit(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn g_refuses_tracks_with_different_parents_without_partial_group(cx: &mut TestAppContext) {
-    let (mut visual, editor, ids) = live_tracks(cx, 3, false);
-    select(&mut visual, ids[0], false);
-    select(&mut visual, ids[1], true);
-    visual.simulate_keystrokes("g");
-    receive(&mut visual, &editor);
-    select(&mut visual, ids[0], false);
-    select(&mut visual, ids[2], true);
-    let before = snapshot(&visual, &editor);
-    visual.simulate_keystrokes("g");
-    editor.read_with(&visual, |view, _| {
-        assert!(view.worker_requests_pending > 0);
-    });
-    editor.update(&mut visual, |view, cx| {
-        let event = super::track_reorder_ui_test::next(&view.service);
-        assert!(event.error.is_some());
-        view.receive(event);
-        cx.notify();
-    });
-    visual.run_until_parked();
-    assert_eq!(snapshot(&visual, &editor), before);
+fn grouping_mixed_parents_uses_the_last_selected_header(cx: &mut TestAppContext) {
+    for anchor_inside in [false, true] {
+        let (mut visual, editor, ids) = live_tracks(cx, 4, false);
+        let [inside, sibling, between, outside] = ids.try_into().unwrap();
+        select(&mut visual, inside, false);
+        select(&mut visual, sibling, true);
+        visual.simulate_keystrokes("g");
+        receive(&mut visual, &editor);
+        let parent = editor.read_with(&visual, |view, _| {
+            view.state.as_ref().unwrap().project.tracks()[0].id()
+        });
+        let (first, last) = if anchor_inside {
+            (outside, inside)
+        } else {
+            (inside, outside)
+        };
+        select(&mut visual, first, false);
+        select(&mut visual, last, true);
+        if anchor_inside {
+            let point = bounds(&mut visual, first).center();
+            visual.simulate_mouse_down(point, MouseButton::Right, Modifiers::default());
+            visual.simulate_mouse_up(point, MouseButton::Right, Modifiers::default());
+            visual.run_until_parked();
+            let index = editor.read_with(&visual, |view, _| {
+                view.context_menu
+                    .as_ref()
+                    .unwrap()
+                    .items
+                    .iter()
+                    .position(|item| item.label == "group tracks")
+                    .unwrap()
+            });
+            for _ in 0..index {
+                visual.simulate_keystrokes("down");
+            }
+            visual.simulate_keystrokes("enter");
+        } else {
+            visual.simulate_keystrokes("g");
+        }
+        receive(&mut visual, &editor);
+        editor.read_with(&visual, |view, _| {
+            let project = &view.state.as_ref().unwrap().project;
+            let group = project.track(inside).unwrap().parent_group().unwrap();
+            assert_ne!(group, parent);
+            assert_eq!(project.track(outside).unwrap().parent_group(), Some(group));
+            assert_eq!(project.track(sibling).unwrap().parent_group(), Some(parent));
+            assert_eq!(
+                project.track(group).unwrap().parent_group(),
+                anchor_inside.then_some(parent)
+            );
+            let expected = if anchor_inside {
+                [parent, group, inside, outside, sibling, between]
+            } else {
+                [parent, sibling, between, group, inside, outside]
+            };
+            assert!(project.tracks().iter().map(|track| track.id()).eq(expected));
+        });
+    }
 }
 
 fn group_track_header_menu(cx: &mut TestAppContext, mode: super::EditorMode) {
@@ -410,13 +509,6 @@ fn group_track_header_menu(cx: &mut TestAppContext, mode: super::EditorMode) {
         }
         group.id()
     });
-    let marker = if mode == super::EditorMode::Session {
-        "console-group-fold"
-    } else {
-        "group-track-marker"
-    };
-    let selector = Box::leak(format!("{marker}-{}", group.value()).into_boxed_str());
-    assert!(visual.debug_bounds(selector).is_some());
     for id in &ids {
         let selector = Box::leak(format!("track-hierarchy-indent-{}", id.value()).into_boxed_str());
         assert_eq!(

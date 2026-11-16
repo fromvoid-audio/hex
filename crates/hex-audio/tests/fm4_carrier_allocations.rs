@@ -56,13 +56,33 @@ fn real_fm4_carrier_processing_rollbacks_and_reset_allocate_and_free_nothing() {
     let mut ids = [0; 64];
     let mut observed = Ok(0);
     let target_ids = [
+        parameter::oscillator_level(1),
+        parameter::oscillator_phase(1),
+        parameter::oscillator_level(2),
+        parameter::oscillator_phase(2),
+        parameter::oscillator_level(3),
+        parameter::oscillator_phase(3),
+        parameter::oscillator_level(4),
+        parameter::oscillator_phase(4),
+        parameter::modulation(1, 2),
+        parameter::modulation(1, 3),
+        parameter::modulation(1, 4),
+        parameter::modulation(2, 1),
+        parameter::modulation(2, 3),
+        parameter::modulation(2, 4),
+        parameter::modulation(3, 1),
+        parameter::modulation(3, 2),
+        parameter::modulation(3, 4),
+        parameter::modulation(4, 1),
+        parameter::modulation(4, 2),
+        parameter::modulation(4, 3),
         parameter::carrier(1),
         parameter::carrier(2),
         parameter::carrier(3),
         parameter::carrier(4),
     ];
     let mut target_results = [Ok(()); 3];
-    let mut targets = [[None; 4]; 3];
+    let mut targets = [[None; 24]; 3];
     let counts = allocation_counter::measure(|| {
         pair.begin_block();
         results[0] = pair.process_block_with_clock_and_automation(
@@ -103,9 +123,16 @@ fn real_fm4_carrier_processing_rollbacks_and_reset_allocate_and_free_nothing() {
     assert_eq!(results, [Ok(()); 3]);
     assert_eq!(observed, Ok(64));
     assert_eq!(target_results, [Ok(()); 3]);
-    let base = [1.0, 0.0, 0.0, 0.0].map(|value| Some(ParameterValue::Float(value)));
+    let base = [
+        1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, // levels and phases
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, // modulation edges
+        1.0, 0.0, 0.0, 0.0, // carriers
+    ]
+    .map(|value| Some(ParameterValue::Float(value)));
     assert_eq!(targets[0], base);
-    assert_eq!(targets[1], [Some(ParameterValue::Float(0.0)); 4]);
+    let mut committed = base;
+    committed[20] = Some(ParameterValue::Float(0.0));
+    assert_eq!(targets[1], committed);
     assert_eq!(targets[2], base);
     assert_eq!(
         (
