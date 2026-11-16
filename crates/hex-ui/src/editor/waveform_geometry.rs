@@ -1328,7 +1328,7 @@ mod tests {
         Bounds::new(point(px(12.0), px(34.0)), size(px(1200.0), px(180.0)))
     }
 
-    #[cfg(feature = "ui-unit-tier")]
+    #[cfg(all(test, feature = "ui-unit-tier"))]
     #[test]
     fn full_queue_retry_wakes_once_without_spinning_offscreen() {
         use hex_project::{Command, Created, Editor, Project};
@@ -1396,7 +1396,7 @@ mod tests {
         assert!(!cache.busy());
     }
 
-    #[cfg(feature = "ui-unit-tier")]
+    #[cfg(all(test, feature = "ui-unit-tier"))]
     #[test]
     #[ignore = "optimized scheduling profile"]
     fn overrange_scheduling_profile() {
@@ -1487,7 +1487,7 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "ui-unit-tier")]
+    #[cfg(all(test, feature = "ui-unit-tier"))]
     #[test]
     #[ignore = "optimized retained geometry handoff profile"]
     fn overrange_ready_rebuild_profile() {
@@ -1577,7 +1577,7 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "ui-unit-tier")]
+    #[cfg(all(test, feature = "ui-unit-tier"))]
     #[test]
     fn overrange_cache_keeps_preview_and_replaced_source_results_separate() {
         use hex_project::{Command, Created, Editor, Project};
@@ -1766,7 +1766,7 @@ mod tests {
         assert_eq!(columns.as_slice(), &[None, None]);
     }
 
-    #[cfg(feature = "ui-unit-tier")]
+    #[cfg(all(test, feature = "ui-unit-tier"))]
     #[test]
     fn delayed_old_decision_rebuilds_only_its_own_geometry() {
         use hex_project::{Command, Created, Editor, Project};

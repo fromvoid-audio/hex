@@ -1533,6 +1533,11 @@ class SingleRunFeatureTests(unittest.TestCase):
             ui_source.write_text('#[cfg(all(test, feature = "ui-unit-tier"))]\nmod tests {}\n')
             self.assertEqual(plan.single_run_packages(root, ["hex-ui", "hex-session"], inventory),
                              {"hex-ui": "ui-test-support"})
+            ui_source.write_text('#[cfg(all(test, any(feature = "ui-unit-tier", feature = "ui-test-support")))]\nmod tests {}\n')
+            self.assertEqual(plan.single_run_packages(root, ["hex-ui", "hex-session"], inventory),
+                             {"hex-ui": "ui-test-support"})
+            ui_source.write_text('#[cfg(any(feature = "ui-unit-tier", feature = "ui-test-support"))]\nfn runtime() {}\n')
+            self.assertEqual(plan.single_run_packages(root, ["hex-ui", "hex-session"], inventory), {})
             ui_source.write_text('#[cfg(feature = "ui-unit-tier")]\nfn runtime() {}\n')
             self.assertEqual(plan.single_run_packages(root, ["hex-ui", "hex-session"], inventory), {})
             ui_source.write_text("")
