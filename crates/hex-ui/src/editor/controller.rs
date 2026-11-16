@@ -2846,6 +2846,10 @@ impl EditorView {
             self.committed_time_range_copy_view = None;
         }
         self.state = Some(event.state);
+        if let Some(state) = &self.state {
+            self.audio_recorder
+                .reconcile_audio_arm(&state.project, event.project_replaced);
+        }
         if let Some(selection) = audio_placement_selection {
             self.install_audio_placement_selection(selection);
         }

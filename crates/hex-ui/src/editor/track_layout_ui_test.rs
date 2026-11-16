@@ -93,7 +93,7 @@ fn track_meter_uses_own_peak_and_stays_inside_compact_header(cx: &mut TestAppCon
             "track-pan",
             "track-mute",
             "track-solo",
-            "track-arm-unavailable",
+            "track-audio-arm",
         ] {
             let control = bounds(&mut visual, prefix, tracks[0]);
             assert!(
@@ -101,7 +101,7 @@ fn track_meter_uses_own_peak_and_stays_inside_compact_header(cx: &mut TestAppCon
                 "{prefix} {control:?} overlaps {meter:?}"
             );
         }
-        let arm = bounds(&mut visual, "track-arm-unavailable", tracks[0]);
+        let arm = bounds(&mut visual, "track-audio-arm", tracks[0]);
         let pan = bounds(&mut visual, "track-pan", tracks[0]);
         assert_eq!(arm.right(), pan.right());
     }
