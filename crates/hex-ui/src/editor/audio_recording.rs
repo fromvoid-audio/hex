@@ -91,6 +91,7 @@ enum Stage {
         stopping: bool,
         invalidated: bool,
         monitoring: Monitoring,
+        monitor_installed: bool,
         monitor_error: Option<&'static str>,
     },
 }
@@ -99,6 +100,7 @@ enum Stage {
 pub(super) struct Recorder {
     stage: Stage,
     stop_transport_after: bool,
+    retiring_monitor_output: Option<u64>,
     pub(super) pending_commit_path: Option<PathBuf>,
     input: Option<(InputDeviceId, gpui::SharedString)>,
     listing_inputs: bool,
@@ -108,6 +110,9 @@ pub(super) struct Recorder {
 impl Recorder {
     pub(super) fn blocks_edits(&self) -> bool {
         !matches!(self.stage, Stage::Idle)
+    }
+    pub(super) fn needs_poll(&self) -> bool {
+        self.blocks_edits() || self.retiring_monitor_output.is_some()
     }
     pub(super) fn label(&self) -> &'static str {
         match self.stage {
@@ -436,6 +441,10 @@ impl EditorView {
             }
             Stage::Idle => {}
         }
+        if self.audio_recorder.retiring_monitor_output.is_some() {
+            self.error = Some("wait for software monitoring to finish stopping".into());
+            return;
+        }
         if !cfg!(all(target_os = "macos", target_arch = "aarch64")) {
             self.error = Some("audio recording currently requires macos arm64".into());
             return;
@@ -572,7 +581,44 @@ impl EditorView {
         }
     }
 
+    fn stop_recording_monitor(&mut self, binding: Binding) {
+        if let Some(control) = self
+            .audio
+            .as_mut()
+            .filter(|audio| audio.control.output_identity() == Some(binding.source.output_identity))
+            .and_then(|audio| audio.control.input_monitor())
+        {
+            control.stop();
+            if control.reclaim().is_none() {
+                self.audio_recorder.retiring_monitor_output = Some(binding.source.output_identity);
+            }
+        }
+    }
+
     pub(super) fn tick_audio_recording(&mut self) -> bool {
+        if let Some(identity) = self.audio_recorder.retiring_monitor_output {
+            let finished = match self
+                .audio
+                .as_mut()
+                .filter(|audio| audio.control.output_identity() == Some(identity))
+            {
+                Some(audio)
+                    if audio
+                        .control
+                        .status()
+                        .is_some_and(|status| !status.device_fault.load(Acquire)) =>
+                {
+                    audio
+                        .control
+                        .input_monitor()
+                        .is_none_or(|control| control.reclaim().is_some())
+                }
+                _ => true,
+            };
+            if finished {
+                self.audio_recorder.retiring_monitor_output = None;
+            }
+        }
         let stage = std::mem::take(&mut self.audio_recorder.stage);
         match stage {
             Stage::Idle => false,
@@ -589,6 +635,7 @@ impl EditorView {
                             .as_ref()
                             .is_none_or(|state| state.revision != binding.context.revision);
                     let mut monitoring = Monitoring::Hardware;
+                    let mut monitor_installed = false;
                     let mut monitor_error = None;
                     if let Some(stream) = monitor {
                         monitoring = Monitoring::Failed;
@@ -617,6 +664,7 @@ impl EditorView {
                                         .is_ok()
                                 });
                             if installed {
+                                monitor_installed = true;
                                 monitoring = Monitoring::Waiting;
                             } else {
                                 self.error = Some("software monitoring is unavailable · recording was not started".into());
@@ -635,6 +683,7 @@ impl EditorView {
                         stopping,
                         invalidated: stopping,
                         monitoring,
+                        monitor_installed,
                         monitor_error,
                     };
                     self.status = if stopping {
@@ -701,6 +750,7 @@ impl EditorView {
                 mut stopping,
                 mut invalidated,
                 mut monitoring,
+                monitor_installed,
                 mut monitor_error,
             } => {
                 if self.project_generation != binding.context.project_generation
@@ -738,11 +788,7 @@ impl EditorView {
                             if stopping {
                                 control.stop();
                             }
-                            let status = control.status();
-                            if stopping {
-                                control.reclaim();
-                            }
-                            status
+                            control.status()
                         });
                     if !stopping {
                         match monitor_action(monitoring, monitor_status) {
@@ -780,23 +826,14 @@ impl EditorView {
                             stopping,
                             invalidated,
                             monitoring,
+                            monitor_installed,
                             monitor_error,
                         };
                         became_started || monitor_changed
                     }
                     Ok(Some(outcome)) => {
-                        if let Some(control) = self
-                            .audio
-                            .as_mut()
-                            .filter(|audio| {
-                                audio.control.output_identity()
-                                    == Some(binding.source.output_identity)
-                            })
-                            .and_then(|audio| audio.control.input_monitor())
-                            && monitoring != Monitoring::Hardware
-                        {
-                            control.stop();
-                            control.reclaim();
+                        if monitor_installed {
+                            self.stop_recording_monitor(binding);
                         }
                         if let Some(audio) = self.audio.as_mut().filter(|audio| {
                             audio.control.output_identity() == Some(binding.source.output_identity)
@@ -822,18 +859,8 @@ impl EditorView {
                         true
                     }
                     Err(_) => {
-                        if let Some(control) = self
-                            .audio
-                            .as_mut()
-                            .filter(|audio| {
-                                audio.control.output_identity()
-                                    == Some(binding.source.output_identity)
-                            })
-                            .and_then(|audio| audio.control.input_monitor())
-                            && monitoring != Monitoring::Hardware
-                        {
-                            control.stop();
-                            control.reclaim();
+                        if monitor_installed {
+                            self.stop_recording_monitor(binding);
                         }
                         if let Some(audio) = self.audio.as_mut().filter(|audio| {
                             audio.control.output_identity() == Some(binding.source.output_identity)
@@ -1145,6 +1172,18 @@ mod tests {
                     .unwrap()
                     .contains("finish audio recording")
             );
+            view.audio_recorder.stage = Stage::Idle;
+            view.audio_recorder.retiring_monitor_output = Some(2);
+            assert!(view.audio_recorder.needs_poll());
+            view.toggle_audio_recording();
+            assert!(
+                view.error
+                    .as_ref()
+                    .unwrap()
+                    .contains("wait for software monitoring")
+            );
+            view.tick_audio_recording();
+            assert!(!view.audio_recorder.needs_poll());
         });
     }
 
