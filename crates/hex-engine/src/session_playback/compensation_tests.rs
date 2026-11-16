@@ -1071,6 +1071,70 @@ fn computer_keyboard_plays_through_positive_latency_on_another_track() {
 }
 
 #[test]
+fn paused_source_monitor_preserves_buffered_arrangement_audio() {
+    use crate::playback::{Playback, PlaybackCommand};
+    use hex_project::Command;
+
+    let mut mismatches = Vec::new();
+    for (keyboard, partition) in [(false, 1), (false, 257), (true, 1), (true, 257)] {
+        let mut f = fixture(&[&[7], &[]], 1024);
+        f.editor
+            .execute(Command::InsertInstrument {
+                track: f.tracks[0],
+                state: hex_project::default_instrument_state().unwrap(),
+            })
+            .unwrap();
+        // The muted keyboard track contributes latency but no PCM. The second
+        // track's impulse is still in the compensation delay when paused.
+        f.editor
+            .execute(Command::Gain {
+                track: f.tracks[0],
+                gain: 0.0,
+            })
+            .unwrap();
+        let revision = prepare(&f).unwrap();
+        let mut actual = Playback::from_prepared(Arc::clone(&revision));
+        let mut oracle = Playback::from_prepared(revision);
+        let keys = Arc::new(crate::computer_keyboard::ComputerKeyboardInput::default());
+        if keyboard {
+            actual
+                .prepare_computer_keyboard(f.editor.project(), f.tracks[0], Arc::clone(&keys))
+                .unwrap();
+        }
+        for playback in [&mut actual, &mut oracle] {
+            playback.apply(PlaybackCommand::Play);
+            playback.render(&mut [[0.0; 2]; 4]).unwrap();
+            playback.apply(PlaybackCommand::Pause);
+        }
+        if keyboard {
+            keys.set_key(0, Some((60, 100, 1))).unwrap();
+        }
+        let mut monitored = [[0.0; 2]; 257];
+        for block in monitored.chunks_mut(partition) {
+            actual.render(block).unwrap();
+        }
+        if keyboard {
+            keys.set_key(0, None).unwrap();
+        }
+        for playback in [&mut actual, &mut oracle] {
+            playback.apply(PlaybackCommand::Play);
+        }
+        let mut got = [[0.0; 2]; 32];
+        let mut expected = got;
+        actual.render(&mut got).unwrap();
+        oracle.render(&mut expected).unwrap();
+        assert!(expected.iter().any(|frame| *frame != [0.0; 2]));
+        if got != expected {
+            mismatches.push((keyboard, partition));
+        }
+    }
+    assert!(
+        mismatches.is_empty(),
+        "resume PCM differs for (keyboard active, paused partition) {mismatches:?}"
+    );
+}
+
+#[test]
 fn operator_sync_companions_preserve_pcm_through_compensated_startup_and_partitions() {
     use hex_lattice_contract::{DeviceTypeId, ParameterId, ParameterValue};
     use hex_project::{BeatTime, Command, Created};
