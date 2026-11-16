@@ -1368,3 +1368,124 @@ fn running_tempo_edit_with_latency_keeps_the_audio_graph_playing() {
         );
     }
 }
+
+#[test]
+fn running_tempo_edit_with_streamed_audio_and_latency_preserves_position() {
+    let _native = native_fixture();
+    for partition in [1, 257] {
+        let files = Files::new();
+        // Force this ordinary document's import through its file-backed source path.
+        let mut h = ResidentHarness::with_frame_limit(4);
+        assert!(h.next().error.is_none());
+        let (mut applied, _) = h.applied(0);
+        let imported = h.run(Request::Import(files.wav(48_000, 32_768)));
+        (applied, _) = h.applied(applied);
+        assert!(
+            imported
+                .state
+                .canonical_audio_source
+                .as_ref()
+                .unwrap()
+                .sources()
+                .values()
+                .any(|source| matches!(source, hex_session::AudioSourceBinding::VerifiedFile(_)))
+        );
+        let track = imported.state.project.tracks()[0].id();
+        h.run(Request::AddNativeDevice {
+            track,
+            class: hex_engine::NativeDeviceClass::Effect,
+            type_id: Box::new(hex_engine::DeviceTypeId::from_static("hex.limiter")),
+            before: None,
+        });
+        (applied, _) = h.applied(applied);
+        assert!(
+            h.submitted_observation()
+                .unwrap()
+                .track_latency(track)
+                .unwrap()
+                .local_frames
+                > 0
+        );
+        h.audio
+            .as_mut()
+            .unwrap()
+            .control
+            .command(PlaybackCommand::Play)
+            .unwrap();
+        let ready = Instant::now() + Duration::from_secs(2);
+        while !h.render().iter().flatten().any(|sample| *sample != 0.0) {
+            assert!(Instant::now() < ready, "streamed audio did not start");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let old_tempo = imported.state.project.tempo_map().clone();
+        h.service
+            .submit(Request::Edit(Command::SetProjectTempo {
+                tempo: hex_project::Tempo::new(90_000_000).unwrap(),
+            }))
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut edited = None;
+        let mut cut = None;
+        while edited.is_none() || cut.is_none() {
+            h.pump();
+            if let Ok(event) = h.service.try_event() {
+                assert!(event.error.is_none(), "{:?}", event.error);
+                edited = Some(event);
+            }
+            let status = h.audio.as_ref().unwrap().status().unwrap();
+            let before_revision = status.applied_revision.load(Acquire);
+            let before_position = status.position.load(Acquire);
+            let mut frames = [[0.0; 2]; 257];
+            let mut callback = h.callback.lock().unwrap();
+            let allocations = allocation_counter::measure(|| {
+                callback
+                    .as_mut()
+                    .unwrap()
+                    .render(&mut frames[..partition])
+                    .unwrap();
+            });
+            assert_eq!(
+                (
+                    allocations.count_total,
+                    allocations.bytes_total,
+                    allocations.count_current,
+                    allocations.bytes_current
+                ),
+                (0, 0, 0, 0)
+            );
+            drop(callback);
+            let status = h.audio.as_ref().unwrap().status().unwrap();
+            if before_revision == applied && status.applied_revision.load(Acquire) > applied {
+                cut = Some((before_position, status.position.load(Acquire)));
+            }
+            assert!(
+                Instant::now() < deadline,
+                "streamed tempo edit did not publish"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let (before, after) = cut.unwrap();
+        let beat = old_tempo.frame_to_beat(before).unwrap();
+        let relocated = edited
+            .unwrap()
+            .state
+            .project
+            .tempo_map()
+            .beat_to_frame(beat)
+            .unwrap();
+        assert_eq!(after, relocated + partition as u64, "partition={partition}");
+        let status = h.audio.as_ref().unwrap().status().unwrap();
+        assert!(status.playing.load(Acquire));
+        assert!(status.rejected_revision().is_none());
+        // Drain more than the Limiter's 288-frame delay before checking that
+        // the new graph is still producing streamed audio.
+        for _ in 0..8 {
+            h.render();
+        }
+        let ready = Instant::now() + Duration::from_secs(2);
+        while !h.render().iter().flatten().any(|sample| *sample != 0.0) {
+            assert!(Instant::now() < ready, "streamed audio did not resume");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+}
