@@ -44,13 +44,17 @@ pub struct NativeParameterContinuationRequest<'a> {
 }
 
 fn stopped_program_frontier(
-    quantum: crate::plugin_worker::CommittedQuantumState,
+    quantum: hex_plugin_host::transport::QuantumObservation,
     worker: hex_engine::ForeignProgramFrontier,
 ) -> hex_engine::ForeignProgramFrontier {
     use crate::plugin_worker::CommittedQuantumState;
+    use hex_plugin_host::transport::QuantumObservation;
     let open_quantum = match quantum {
-        CommittedQuantumState::OpenProgram(key) => Some(key),
-        CommittedQuantumState::Closed | CommittedQuantumState::OpenUnprogrammed => None,
+        QuantumObservation::Committed(quantum) => match quantum.state {
+            CommittedQuantumState::OpenProgram(key) => Some(key),
+            CommittedQuantumState::Closed | CommittedQuantumState::OpenUnprogrammed => None,
+        },
+        QuantumObservation::Untouched(_) => None,
     };
     hex_engine::ForeignProgramFrontier::Stopped {
         open_quantum,
@@ -97,9 +101,9 @@ impl PublicationControl {
     }
 
     /// Combine the exact original callback's last coherent quantum and worker
-    /// pickup while the same stopped source fence remains ready. An absent
-    /// quantum is unknown, not a closed quantum. The worker's Unknown or keyed
-    /// pickup is never promoted to an empty receipt. This is a control-side
+    /// pickup while the same stopped source fence remains ready. A proven
+    /// untouched pair is distinct from an absent or unavailable observation.
+    /// The worker's Unknown or keyed pickup is never promoted to an empty receipt. This is a control-side
     /// observation only: callers must prove installed predecessor membership,
     /// establish which programs can still be needed, and hold the fence until
     /// the successor is installed or refused.
@@ -109,17 +113,20 @@ impl PublicationControl {
         fence: StoppedEditFence,
         binding: Binding,
     ) -> Result<hex_engine::ForeignProgramFrontier, &'static str> {
-        let checkpoint = self
-            .try_fenced_native_quantum_on_control(source, fence, binding)?
-            .ok_or("native callback quantum is unavailable")?;
-        let worker = self.try_native_source_program_frontier_on_control(binding)?;
-        if !self.fenced_native_quantum_fence_is_ready(checkpoint) {
+        if binding.root != source.output_identity
+            || !self.stopped_native_quantum_fence_matches(source, fence)
+        {
             return Err("native quantum fence is not current");
         }
-        Ok(stopped_program_frontier(
-            checkpoint.observation().state,
-            worker,
-        ))
+        let quantum = self
+            .candidate_root
+            .try_native_source_quantum_observation(binding)?
+            .ok_or("native callback quantum is unavailable")?;
+        let worker = self.try_native_source_program_frontier_on_control(binding)?;
+        if !self.stopped_native_quantum_fence_matches(source, fence) {
+            return Err("native quantum fence is not current");
+        }
+        Ok(stopped_program_frontier(quantum, worker))
     }
 
     /// Recheck the correlated fence only; this does not assert the callback
