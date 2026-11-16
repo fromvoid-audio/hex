@@ -88,6 +88,9 @@ public:
     int focus_gained=0,focus_lost=0;
     int key_downs=0,key_ups=0,last_key=0,last_modifiers=0;
     bool handles_keys=false;
+    EditorFrame* callback_frame=nullptr;
+    NSEvent* nested_down=nil;
+    bool refocus_on_down=false,reenter_on_up=false;
 
     tresult PLUGIN_API queryInterface(const TUID,void** out) override {
         if(out) *out=nullptr;
@@ -101,10 +104,19 @@ public:
     tresult PLUGIN_API onWheel(float) override { return kNotImplemented; }
     tresult PLUGIN_API onKeyDown(char16,int16 key,int16 modifiers) override {
         ++key_downs;last_key=key;last_modifiers=modifiers;
+        if(refocus_on_down) {
+            refocus_on_down=false;
+            callback_frame->focus_changed(false);
+            callback_frame->focus_changed(true);
+        }
         return handles_keys?kResultOk:kResultFalse;
     }
     tresult PLUGIN_API onKeyUp(char16,int16 key,int16 modifiers) override {
         ++key_ups;last_key=key;last_modifiers=modifiers;
+        if(reenter_on_up) {
+            reenter_on_up=false;
+            assert(callback_frame->handle_key_event(nested_down));
+        }
         return handles_keys?kResultOk:kResultFalse;
     }
     tresult PLUGIN_API getSize(ViewRect*) override { return kNotImplemented; }
@@ -228,6 +240,32 @@ static void check_keys() {
     [other release];[window release];
 }
 
+static void check_reentrant_keys() {
+    auto* window=[[NSWindow alloc] initWithContentRect:NSMakeRect(0,0,320,240)
+        styleMask:NSWindowStyleMaskTitled backing:NSBackingStoreBuffered defer:NO];
+    ResizeView view(window);
+    EditorFrame host(window,&view);
+    view.callback_frame=&host;
+    auto* down=key_event(window,NSEventTypeKeyDown,NSLeftArrowFunctionKey,123);
+    auto* up=key_event(window,NSEventTypeKeyUp,NSLeftArrowFunctionKey,123);
+    host.focus_changed(true);
+    view.handles_keys=true;
+    view.refocus_on_down=true;
+    assert(host.handle_key_event(down));
+    view.handles_keys=false;
+    assert(!host.handle_key_event(down)); // The old focus epoch did not retain the key.
+    assert(!host.handle_key_event(up));
+
+    view.handles_keys=true;
+    assert(host.handle_key_event(down));
+    view.nested_down=down;
+    view.reenter_on_up=true;
+    assert(host.handle_key_event(up));
+    assert(host.handle_key_event(up)); // The nested down retains its own release.
+    host.invalidate();
+    [window release];
+}
+
 int main() {
     @autoreleasepool {
         [NSApplication sharedApplication];
@@ -241,6 +279,7 @@ int main() {
         check_focus(NSWindowStyleMaskTitled|NSWindowStyleMaskClosable);
         check_focus(style);
         check_keys();
+        check_reentrant_keys();
         auto* window=[[NSWindow alloc] initWithContentRect:NSMakeRect(40,60,320,240)
             styleMask:style
             backing:NSBackingStoreBuffered defer:NO];
