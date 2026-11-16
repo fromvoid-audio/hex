@@ -7,7 +7,16 @@ impl AudioViewProjection<'_> {
     /// their first sample/beat quantum; an exhausted once read has no cursor.
     /// This metadata query neither prepares audio nor transfers source custody.
     pub fn play_start_position(&self) -> Result<Option<u64>, Invalid> {
-        self.require_complete_repeat_projection()?;
+        if self.cycle != self.audible {
+            return if self.phase < self.audible && self.count > 0 {
+                self.view_start
+                    .checked_add(self.phase)
+                    .map(Some)
+                    .ok_or(Invalid("audio play start overflow"))
+            } else {
+                Ok(None)
+            };
+        }
         if self.count == 0 {
             return Ok(None);
         }
@@ -68,11 +77,24 @@ impl AudioViewProjection<'_> {
     /// live/frozen tempo, repeat phase and directed reads matching range queries.
     /// Constant work, no allocation, DSP preparation or source custody transfer.
     pub fn root_position_for_frame(&self, frame: u64) -> Result<Option<u64>, Invalid> {
-        self.require_complete_repeat_projection()?;
         if frame < self.placed_frames.0 || frame >= self.placed_frames.1 || self.count == 0 {
             return Ok(None);
         }
         let elapsed = self.elapsed_at_frame(frame)?;
+        if self.cycle != self.audible {
+            let phase = (u128::from(self.phase) + u128::from(elapsed)) % u128::from(self.cycle);
+            return if phase < u128::from(self.audible) {
+                self.view_start
+                    .checked_add(
+                        u64::try_from(phase)
+                            .map_err(|_| Invalid("audio playback phase overflow"))?,
+                    )
+                    .map(Some)
+                    .ok_or(Invalid("audio playback root position overflow"))
+            } else {
+                Ok(None)
+            };
+        }
         let leading = u64::try_from(self.first_read - self.start)
             .map_err(|_| Invalid("audio leading extent exceeds placement"))?;
         let audible_start = if self.has_subframe_intro() {
@@ -159,9 +181,17 @@ impl AudioViewProjection<'_> {
         &self,
         range: Range<u64>,
     ) -> Result<[Option<Range<u64>>; 2], Invalid> {
-        self.require_complete_repeat_projection()?;
         if range.start > range.end {
             return Err(Invalid("audio selection range is reversed"));
+        }
+        if self.cycle != self.audible {
+            let first = range.start.max(self.placed_frames.0);
+            let last = range.end.min(self.placed_frames.1);
+            if first >= last {
+                return Ok([None, None]);
+            }
+            return self
+                .gapped_root_ranges(first - self.placed_frames.0, last - self.placed_frames.0);
         }
         let (read_start, read_end) = if self.first_read != self.start {
             let read = self.occurrence(0)?;
@@ -281,6 +311,41 @@ impl AudioViewProjection<'_> {
             .is_some_and(|placement| placement.mode == AudioViewMode::Repeat)
             .then_some((self.view_start, source_end));
         crate::source_ranges::source_ranges(start, end, self.view_start, source_end, looping)
+    }
+}
+
+impl AudioViewProjection<'_> {
+    // Frame-clock, forward-only gaps have a bounded periodic source union.
+    fn gapped_root_ranges(
+        &self,
+        first: u64,
+        last: u64,
+    ) -> Result<[Option<Range<u64>>; 2], Invalid> {
+        let period = u128::from(self.cycle);
+        let span = u128::from(last - first);
+        let audible = u128::from(self.audible);
+        let root = u128::from(self.view_start);
+        let make = |start: u128, end: u128| -> Result<Option<Range<u64>>, Invalid> {
+            if start >= end {
+                return Ok(None);
+            }
+            Ok(Some(
+                u64::try_from(root + start).map_err(|_| Invalid("audio selection overflow"))?
+                    ..u64::try_from(root + end).map_err(|_| Invalid("audio selection overflow"))?,
+            ))
+        };
+        if span >= period {
+            return Ok([make(0, audible)?, None]);
+        }
+        let start = (u128::from(self.phase) + u128::from(first)) % period;
+        let end = start + span;
+        let after_wrap = make(0, end.saturating_sub(period).min(audible))?;
+        let before_wrap = make(start.min(audible), end.min(period).min(audible))?;
+        match (after_wrap, before_wrap) {
+            (Some(a), Some(b)) if a.end >= b.start => Ok([Some(a.start..a.end.max(b.end)), None]),
+            (Some(a), b) => Ok([Some(a), b]),
+            (None, b) => Ok([b, None]),
+        }
     }
 }
 
