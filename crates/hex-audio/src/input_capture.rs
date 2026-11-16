@@ -148,6 +148,7 @@ impl Drop for Lease {
     }
 }
 
+#[derive(Clone, Copy)]
 struct Block<T> {
     stamp: T,
     offset_frames: u32,
@@ -155,12 +156,17 @@ struct Block<T> {
     frames: usize,
     pcm: [[f32; 2]; FRAMES],
 }
+struct MonitorWriter<T> {
+    output: Producer<Block<T>>,
+    overrun: Arc<AtomicBool>,
+}
 struct Writer<T> {
     output: Producer<Block<T>>,
     shared: Arc<Shared>,
     channels: usize,
     sequence: u64,
     previous: Option<T>,
+    monitor: Option<MonitorWriter<T>>,
 }
 impl<T: Copy + Ord> Writer<T> {
     fn submit(&mut self, input: &[f32], stamp: T) {
@@ -206,12 +212,103 @@ impl<T: Copy + Ord> Writer<T> {
                     [input[0], input[1]]
                 };
             }
-            if self.output.push(block).is_err() {
+            if let Some(monitor) = &mut self.monitor {
+                let live = block;
+                if self.output.push(block).is_err() {
+                    self.shared.fail(BACKPRESSURE);
+                    return;
+                }
+                if !monitor.overrun.load(Acquire)
+                    && !monitor.output.is_abandoned()
+                    && monitor.output.push(live).is_err()
+                {
+                    // A monitor discontinuity must never stop or truncate a take.
+                    monitor.overrun.store(true, Release);
+                }
+            } else if self.output.push(block).is_err() {
                 self.shared.fail(BACKPRESSURE);
                 return;
             }
             self.sequence = next;
         }
+    }
+}
+
+/// Separately bounded live PCM feed from an input capture. It contains at most
+/// 32 packets of 256 frames. A full queue permanently latches an overrun;
+/// the consumer must stop using this feed rather than play discontinuous PCM.
+/// An empty queue means no packet is currently available. A requested stop or
+/// input fault refuses further packets; a concurrent read may already be in flight.
+///
+/// The endpoint may be read from an output callback, but its owner must retain
+/// and destroy it on control only after that callback has quiesced. In
+/// particular, dropping this endpoint on an audio callback is forbidden.
+pub struct InputMonitor {
+    input: Consumer<Block<cpal::StreamInstant>>,
+    overrun: Arc<AtomicBool>,
+    shared: Arc<Shared>,
+    id: InputDeviceId,
+    config: InputConfig,
+}
+
+/// A monitor feed cannot provide more continuous input. This is not evidence
+/// that the native input callback has quiesced; only `InputPhase::Finished` is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InputMonitorEnd {
+    Overrun,
+    StopRequested,
+    InputFailure(InputEnd),
+}
+impl fmt::Display for InputMonitorEnd {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Overrun => f.write_str("audio input monitor queue overran"),
+            Self::StopRequested => f.write_str("audio input monitoring stop requested"),
+            Self::InputFailure(reason) => {
+                let detail = match reason {
+                    InputEnd::Stopped => "stopped",
+                    InputEnd::Backpressure => "recording queue full",
+                    InputEnd::InvalidBuffer => "invalid input buffer",
+                    InputEnd::ClockChanged => "input clock changed",
+                    InputEnd::DeviceFailed => "input device failed",
+                    InputEnd::OpenFailed => "input device could not open",
+                    InputEnd::WorkerFailed => "input worker failed",
+                };
+                write!(f, "audio input monitoring failed · {detail}")
+            }
+        }
+    }
+}
+impl std::error::Error for InputMonitorEnd {}
+
+impl InputMonitor {
+    /// The requested input and configuration; opening may still fail on the worker.
+    pub fn source(&self) -> (&InputDeviceId, InputConfig) {
+        (&self.id, self.config)
+    }
+
+    fn status(&self) -> Result<(), InputMonitorEnd> {
+        if self.overrun.load(Acquire) {
+            return Err(InputMonitorEnd::Overrun);
+        }
+        let fault = self.shared.fault.load(Acquire);
+        if fault != NO_FAULT {
+            return Err(InputMonitorEnd::InputFailure(end(fault.saturating_add(1))));
+        }
+        if self.shared.stop.load(Acquire) {
+            return Err(InputMonitorEnd::StopRequested);
+        }
+        Ok(())
+    }
+
+    /// Read at most one fixed-size packet without allocation or waiting.
+    /// Once an overrun is observed, later reads always refuse it. A read that
+    /// races the overrun can complete at its final check before the overrun.
+    pub fn try_read(&mut self) -> Result<Option<InputPacket>, InputMonitorEnd> {
+        self.status()?;
+        let next = self.input.pop().ok();
+        self.status()?;
+        Ok(next.map(packet))
     }
 }
 
@@ -261,6 +358,42 @@ impl InputCapture {
         id: InputDeviceId,
         config: InputConfig,
     ) -> Result<Self, InputCaptureError> {
+        Self::open_inner(id, config, None)
+    }
+
+    /// Open one capture with an independent optional monitor feed. The feed
+    /// starts with capture, never consumes take packets, and does not open a
+    /// second input stream or alter the writer's stop/backpressure behavior.
+    pub fn open_with_monitor_on_control(
+        id: InputDeviceId,
+        config: InputConfig,
+    ) -> Result<(Self, InputMonitor), InputCaptureError> {
+        let (output, input) = RingBuffer::new(PACKETS);
+        let overrun = Arc::new(AtomicBool::new(false));
+        let monitor = MonitorWriter {
+            output,
+            overrun: Arc::clone(&overrun),
+        };
+        let capture = Self::open_inner(id, config, Some(monitor))?;
+        let shared = Arc::clone(&capture.shared);
+        let id = capture.id.clone();
+        Ok((
+            capture,
+            InputMonitor {
+                input,
+                overrun,
+                shared,
+                id,
+                config,
+            },
+        ))
+    }
+
+    fn open_inner(
+        id: InputDeviceId,
+        config: InputConfig,
+        monitor: Option<MonitorWriter<cpal::StreamInstant>>,
+    ) -> Result<Self, InputCaptureError> {
         if !(8_000..=192_000).contains(&config.sample_rate) || !(1..=2).contains(&config.channels) {
             return Err(InputCaptureError::InvalidConfiguration);
         }
@@ -287,7 +420,7 @@ impl InputCapture {
                 let _lease = lease;
                 let mut custody = Custody::default();
                 let result = catch_unwind(AssertUnwindSafe(|| {
-                    run_worker(&mut custody, &worker_state, producer, id, config)
+                    run_worker(&mut custody, &worker_state, producer, id, config, monitor)
                 }));
                 match result {
                     Ok(Ok(())) => {}
@@ -486,6 +619,7 @@ fn run_worker(
     producer: Producer<Block<cpal::StreamInstant>>,
     id: InputDeviceId,
     config: InputConfig,
+    monitor: Option<MonitorWriter<cpal::StreamInstant>>,
 ) -> Result<(), String> {
     let host = cpal::default_host();
     if id.cpal_id().0 != host.id() {
@@ -538,6 +672,7 @@ fn run_worker(
         channels: usize::from(config.channels),
         sequence: 0,
         previous: None,
+        monitor,
     };
     let (mut data, terminal) = crate::native_callback_owner::reserve(writer);
     let (errors, error_terminal) = crate::native_callback_owner::reserve(Arc::clone(shared));
@@ -606,10 +741,238 @@ mod tests {
                 channels,
                 sequence: 0,
                 previous: None,
+                monitor: None,
             },
             input,
             shared,
         )
+    }
+
+    fn monitored_channel(
+        channels: usize,
+    ) -> (
+        Writer<cpal::StreamInstant>,
+        Consumer<Block<cpal::StreamInstant>>,
+        InputMonitor,
+        Arc<Shared>,
+    ) {
+        let (output, recording) = RingBuffer::new(PACKETS);
+        let (monitor_output, input) = RingBuffer::new(PACKETS);
+        let overrun = Arc::new(AtomicBool::new(false));
+        let shared = Arc::new(Shared {
+            phase: AtomicU8::new(CAPTURING),
+            stop: AtomicBool::new(false),
+            fault: AtomicU8::new(NO_FAULT),
+            terminal: AtomicU8::new(0),
+        });
+        let writer = Writer {
+            output,
+            shared: Arc::clone(&shared),
+            channels,
+            sequence: 0,
+            previous: None,
+            monitor: Some(MonitorWriter {
+                output: monitor_output,
+                overrun: Arc::clone(&overrun),
+            }),
+        };
+        (
+            writer,
+            recording,
+            InputMonitor {
+                input,
+                overrun,
+                shared: Arc::clone(&shared),
+                id: format!("{}:test-input", cpal::default_host().id())
+                    .parse()
+                    .unwrap(),
+                config: InputConfig {
+                    sample_rate: 48_000,
+                    channels: channels as u16,
+                },
+            },
+            shared,
+        )
+    }
+
+    #[test]
+    fn monitor_and_recording_receive_identical_mono_and_stereo_packets() {
+        for channels in [1, 2] {
+            let (mut writer, mut recording, mut monitor, shared) = monitored_channel(channels);
+            assert_eq!(
+                monitor.source().0.to_string(),
+                format!("{}:test-input", cpal::default_host().id())
+            );
+            assert_eq!(
+                monitor.source().1,
+                InputConfig {
+                    sample_rate: 48_000,
+                    channels: channels as u16
+                }
+            );
+            let samples: Vec<f32> = (0..(FRAMES + 7) * channels)
+                .map(|n| n as f32 / 1024.0)
+                .collect();
+            let stamp = cpal::StreamInstant::new(2, 123);
+            writer.submit(&samples, stamp);
+            for sequence in 0..2 {
+                let recorded = read(&mut recording, &shared).unwrap().unwrap();
+                let live = monitor.try_read().unwrap().unwrap();
+                assert_eq!(live.captured_at, recorded.stamp);
+                assert_eq!(live.offset_frames, recorded.offset_frames);
+                assert_eq!(live.sequence, sequence);
+                assert_eq!(live.sequence, recorded.sequence);
+                assert_eq!(live.frames(), &recorded.pcm[..recorded.frames]);
+            }
+            assert!(monitor.try_read().unwrap().is_none());
+            assert_eq!(shared.fault.load(Acquire), NO_FAULT);
+        }
+    }
+
+    #[test]
+    fn monitor_overrun_or_abandonment_never_interrupts_recording() {
+        let (mut writer, mut recording, mut monitor, shared) = monitored_channel(1);
+        let samples = [0.25; FRAMES];
+        let stamp = cpal::StreamInstant::new(3, 0);
+        for sequence in 0..=PACKETS {
+            writer.submit(&samples, stamp);
+            let packet = read(&mut recording, &shared).unwrap().unwrap();
+            assert_eq!(packet.sequence, sequence as u64);
+            assert!(
+                packet.pcm[..packet.frames]
+                    .iter()
+                    .all(|frame| *frame == [0.25, 0.25])
+            );
+        }
+        assert!(matches!(monitor.try_read(), Err(InputMonitorEnd::Overrun)));
+        assert!(matches!(monitor.try_read(), Err(InputMonitorEnd::Overrun)));
+        drop(monitor); // control-side release while capture continues
+        writer.submit(&samples, stamp);
+        assert_eq!(
+            read(&mut recording, &shared).unwrap().unwrap().sequence,
+            (PACKETS + 1) as u64
+        );
+        assert_eq!(shared.fault.load(Acquire), NO_FAULT);
+        shared.stop.store(true, Release);
+        writer.submit(&samples, stamp);
+        assert!(read(&mut recording, &shared).unwrap().is_none());
+    }
+
+    #[test]
+    fn abandoned_monitor_before_overrun_does_not_stop_or_change_recording() {
+        let (mut writer, mut recording, monitor, shared) = monitored_channel(1);
+        drop(monitor);
+        let stamp = cpal::StreamInstant::new(4, 0);
+        for sequence in 0..(PACKETS + 2) {
+            writer.submit(&[0.5; FRAMES], stamp);
+            assert_eq!(
+                read(&mut recording, &shared).unwrap().unwrap().sequence,
+                sequence as u64
+            );
+        }
+        assert_eq!(shared.fault.load(Acquire), NO_FAULT);
+    }
+
+    #[test]
+    fn monitor_refuses_buffered_pcm_after_stop_or_input_failure() {
+        for failure in [None, Some(DEVICE_FAILED)] {
+            let (mut writer, mut recording, mut monitor, shared) = monitored_channel(1);
+            writer.submit(&[0.5; FRAMES], cpal::StreamInstant::new(4, 0));
+            if let Some(fault) = failure {
+                shared.fail(fault);
+                assert!(matches!(
+                    monitor.try_read(),
+                    Err(InputMonitorEnd::InputFailure(InputEnd::DeviceFailed))
+                ));
+            } else {
+                shared.stop.store(true, Release);
+                assert!(matches!(
+                    monitor.try_read(),
+                    Err(InputMonitorEnd::StopRequested)
+                ));
+            }
+            assert_eq!(
+                read(&mut recording, &shared).unwrap().unwrap().pcm[0],
+                [0.5, 0.5]
+            );
+        }
+    }
+
+    #[test]
+    fn monitor_overrun_remains_visible_after_stop() {
+        let (mut writer, mut recording, mut monitor, shared) = monitored_channel(1);
+        let stamp = cpal::StreamInstant::new(4, 0);
+        for _ in 0..=PACKETS {
+            writer.submit(&[0.5; FRAMES], stamp);
+            assert!(read(&mut recording, &shared).unwrap().is_some());
+        }
+        shared.stop.store(true, Release);
+        assert!(matches!(monitor.try_read(), Err(InputMonitorEnd::Overrun)));
+    }
+
+    #[cfg(feature = "allocation-probe")]
+    #[test]
+    fn callback_guard_returns_monitor_custody_without_freeing_it() {
+        let (mut writer, _recording, monitor, _shared) = monitored_channel(1);
+        writer.submit(&[0.25; FRAMES], cpal::StreamInstant::new(4, 0));
+        let (mut guard, mut terminal) = crate::native_callback_owner::reserve(monitor);
+        let measured = allocation_counter::measure(|| {
+            assert!(guard.owner_mut().unwrap().try_read().unwrap().is_some());
+            guard.close();
+        });
+        assert_eq!(
+            (
+                measured.count_total,
+                measured.bytes_total,
+                measured.count_current,
+                measured.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        assert!(terminal.ready());
+        let endpoint = terminal.take().unwrap();
+        drop(endpoint); // control after callback guard returned
+    }
+
+    #[cfg(feature = "allocation-probe")]
+    #[test]
+    fn monitored_capture_and_overrun_allocate_and_free_nothing_on_callback() {
+        let (mut writer, mut recording, mut monitor, shared) = monitored_channel(1);
+        let stamp = cpal::StreamInstant::new(5, 0);
+        let input = [0.125; FRAMES];
+        let measured = allocation_counter::measure(|| {
+            writer.submit(&input, stamp);
+            assert!(read(&mut recording, &shared).unwrap().is_some());
+            assert!(monitor.try_read().unwrap().is_some());
+        });
+        assert_eq!(
+            (
+                measured.count_total,
+                measured.bytes_total,
+                measured.count_current,
+                measured.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        for _ in 0..PACKETS {
+            writer.submit(&input, stamp);
+            assert!(read(&mut recording, &shared).unwrap().is_some());
+        }
+        let measured = allocation_counter::measure(|| {
+            writer.submit(&input, stamp);
+            assert!(read(&mut recording, &shared).unwrap().is_some());
+            assert!(matches!(monitor.try_read(), Err(InputMonitorEnd::Overrun)));
+        });
+        assert_eq!(
+            (
+                measured.count_total,
+                measured.bytes_total,
+                measured.count_current,
+                measured.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        assert_eq!(shared.fault.load(Acquire), NO_FAULT);
     }
 
     #[test]
@@ -855,6 +1218,7 @@ mod tests {
             channels: 1,
             sequence: 0,
             previous: None,
+            monitor: None,
         };
         let (mut data, data_terminal) = crate::native_callback_owner::reserve(writer);
         let (mut errors, error_terminal) = crate::native_callback_owner::reserve(shared);
@@ -886,6 +1250,7 @@ mod tests {
                 channels: 1,
                 sequence: 0,
                 previous: None,
+                monitor: None,
             };
             let (data, data_terminal) = crate::native_callback_owner::reserve(writer);
             let (errors, error_terminal) =
