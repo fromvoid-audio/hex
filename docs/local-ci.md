@@ -259,6 +259,11 @@ carries a doc example (a fenced block in `///` or `//!` comments). A reviewed ru
 consumer that is itself the changed owner (for example hex-storage) is
 module-scoped like any owner.
 
+For a module-scoped `hex-session` automation-take adoption change, the
+planner also runs the `automation_take_density` integration target when it is
+present. It exercises the real durable overflow boundary and must run at least
+one test. Whole-package checks already include it; unrelated modules stay scoped.
+
 Python tooling follows the same rule. A changed `scripts/NAME.py` (or
 `scripts/NAME`) runs its own `test_NAME` module, and a changed
 `scripts/tests/test_X.py` runs itself. Both add the shared planner invariants.
@@ -458,16 +463,20 @@ the previous target and failed report; changing the location is not evidence tha
 every test meets its time limit. Measure test setup and execution, including any
 copying or other setup, and investigate any remaining slow test separately.
 
-For a one-time dev target admission, set an explicit absolute `CARGO_TARGET_DIR`
-with existing ancestors and pass `--fresh-target` to a full or scoped run.
+For a one-time dev target admission, first create an empty target directory,
+set its explicit absolute path as `CARGO_TARGET_DIR`, and pass `--fresh-target`
+to a full or scoped run.
 
 ```sh
-mkdir -p artifacts
+mkdir -p artifacts/cargo-ci-target
 CARGO_TARGET_DIR="$PWD/artifacts/cargo-ci-target" \
   python3 scripts/cargo-slot.py python3 scripts/local-ci.py --profile full --fresh-target
 ```
 
-The target must be absent or empty and have no existing owner. The reservation
+The target must already exist, be empty and have no existing owner. An absent
+target is refused before Cargo metadata: the runner cannot yet prove the identity
+of a directory it creates before opening it. Create an empty directory yourself
+and retry; existing target contents are never removed. The reservation
 pins directory ancestry and holds the same lock across planner metadata, runner
 metadata, create-only owner publication and guarded checks. Metadata temporarily
 disables the rustc information cache, then must report the selected workspace
@@ -498,8 +507,8 @@ before its first Cargo operation and retain it through the later custody
 decision. Metadata must report exactly the explicit target and leave it fresh;
 resolution alone neither admits the target nor publishes ownership. A target
 inferred only from Cargo configuration does not meet this API's proof contract.
-The dev publisher uses the existing owner schema for absent and empty targets.
-An absent target is materialized under the held lock before owner publication.
+The dev publisher uses the existing owner schema for pre-existing empty targets.
+Identity-bound creation for absent targets remains unsupported.
 
 The summary records the identified filesystem, probe duration and dev cleanup
 duration (including failed cleanup). A target
@@ -598,6 +607,10 @@ PY
 Use one persistent Cargo target per executor, with no concurrent raw Cargo writer.
 Repository tools acquire an advisory target lock. Unknown/foreign/pending cache
 ownership refuses before normal checks. Read the diagnostic before recovery.
+The lock file is opened without following a final symlink and its existing bytes
+are left unchanged. Contention reports that the target is in use without reading
+or displaying the untrusted lock-file contents as a holder identity. Older
+runner versions may still display stale holder information from that file.
 `--adopt-target` explicitly invalidates supported workspace development outputs
 and establishes the checkout's development owner; it is not permission to remove
 another executor's active cache, release artifacts or user data.

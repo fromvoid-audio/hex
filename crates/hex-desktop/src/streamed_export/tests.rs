@@ -3,6 +3,318 @@ use super::*;
 use hex_project::{Command, Created, Editor, Project};
 
 #[test]
+fn pitched_and_raw_file_pages_match_resident_and_validate_source_identity() {
+    std::thread::Builder::new()
+        .stack_size(8 * 1024 * 1024)
+        .spawn(pitched_and_raw_file_pages_case)
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+fn pitched_and_raw_file_pages_case() {
+    use hex_engine::native_device_resources::{PreparedDeviceResources, ResidentDeviceAssets};
+    use std::collections::BTreeMap;
+    const FRAMES: usize = 8192;
+    let cancelled = AtomicBool::new(false);
+    let dir = std::env::temp_dir().join(format!(
+        "hex-pitch-export-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir(&dir).unwrap();
+    struct Cleanup(std::path::PathBuf);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let _cleanup = Cleanup(dir.clone());
+    let path = dir.join("source.wav");
+    let other_path = dir.join("other.wav");
+    let pcm: Vec<_> = (0..FRAMES)
+        .map(|n| {
+            let sample = ((n as f32) * 0.071).sin() * 0.2;
+            [sample, -sample]
+        })
+        .collect();
+    for (target, scale) in [(&path, 1.0), (&other_path, 0.5)] {
+        let mut offset = 0;
+        hex_export::write_float_wav_new(target, 48_000, FRAMES as u64, &cancelled, |output| {
+            let end = offset + output.len();
+            for (dst, src) in output.iter_mut().zip(&pcm[offset..end]) {
+                *dst = src.map(|x| x * scale);
+            }
+            offset += output.len();
+            Ok(())
+        })
+        .unwrap();
+    }
+    let limits = hex_media::VerifiedWavReaderLimits::new(
+        hex_media::WavReaderLimits::new(1 << 20, 65_536, 128, 4096),
+        1 << 20,
+    );
+    let file = VerifiedAudioFile::inspect(path.clone(), 48_000, limits, || false).unwrap();
+    let other = VerifiedAudioFile::inspect(other_path, 48_000, limits, || false).unwrap();
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+    let Created::Imported { clip, asset, .. } = editor
+        .execute(Command::ImportAudioTrack {
+            name: "source".into(),
+            path: path.clone(),
+            sample_rate: 48_000,
+            frames: FRAMES as u64,
+        })
+        .unwrap()
+    else {
+        panic!("audio fixture")
+    };
+    editor
+        .execute(Command::SetClipFades {
+            clip,
+            fade_in: 0,
+            fade_out: 0,
+        })
+        .unwrap();
+    let Created::Clip(pitched_clip) = editor.execute(Command::DuplicateClip(clip)).unwrap() else {
+        panic!("duplicate fixture")
+    };
+    editor
+        .execute(Command::SetAudioClipPitch {
+            clip: pitched_clip,
+            cents: 700,
+        })
+        .unwrap();
+    let raw = file.source_metadata(asset, 7).unwrap();
+    let pitched = raw
+        .with_plain_pitch(700, hex_project::WarpResampler::V2)
+        .unwrap();
+    let sources = BTreeMap::from([(
+        asset,
+        hex_engine::compile::PreparedAudioSource::Streamed(Arc::new(raw.clone())),
+    )]);
+    let catalog = BTreeMap::from([(pitched.key(), Arc::new(pitched.clone()))]);
+    let resources = PreparedDeviceResources::prepare_on_control(
+        &ResidentDeviceAssets::default(),
+        editor.project(),
+        1 << 20,
+        &cancelled,
+    )
+    .unwrap();
+    let transforms = hex_engine::audio_transform::AudioTransformPreparation::default();
+    let revision = Arc::new(
+        hex_engine::PreparedRevision::prepare_with_prepared_pitch_sources_and_device_resources(
+            editor.project(),
+            &sources,
+            &catalog,
+            7,
+            Arc::new(hex_engine::SineTable::new()),
+            None,
+            &transforms,
+            &resources,
+            0,
+            &cancelled,
+        )
+        .unwrap(),
+    );
+    let resident = BTreeMap::from([(asset, hex_engine::Audio::new(48_000, pcm).unwrap())]);
+    let oracle = Arc::new(
+        hex_engine::PreparedRevision::prepare_with_device_resources(
+            editor.project(),
+            &resident,
+            Arc::new(hex_engine::SineTable::new()),
+            None,
+            &transforms,
+            &resources,
+            0,
+            &cancelled,
+        )
+        .unwrap(),
+    );
+    let config = StreamConfig::with_pool_pages(4);
+    assert!(
+        VerifiedPages::capture_files(
+            &revision,
+            |_| Ok(&file),
+            &[],
+            Some(&path),
+            config,
+            &cancelled
+        )
+        .is_err()
+    );
+    assert!(
+        VerifiedPages::capture_files(
+            &revision,
+            |key| if key.pitch().is_some() {
+                Ok(&other)
+            } else {
+                Ok(&file)
+            },
+            &[],
+            None,
+            config,
+            &cancelled
+        )
+        .is_err()
+    );
+    let mut pages =
+        VerifiedPages::capture_files(&revision, |_| Ok(&file), &[], None, config, &cancelled)
+            .unwrap();
+    assert_eq!(pages.files.len(), 2);
+    for start in [0, FRAMES as u64] {
+        let mut actual =
+            SessionPlayback::new_with_device_resources(Arc::clone(&revision), &resources).unwrap();
+        let mut expected =
+            SessionPlayback::new_with_device_resources(Arc::clone(&oracle), &resources).unwrap();
+        for playback in [&mut actual, &mut expected] {
+            playback
+                .apply(hex_engine::SessionPlaybackCommand::Seek(start))
+                .unwrap();
+            playback
+                .apply(hex_engine::SessionPlaybackCommand::Play)
+                .unwrap();
+        }
+        let mut out = [[0.0; 2]; 193];
+        let mut reference = [[0.0; 2]; 193];
+        assert_eq!(
+            hex_engine::PreparedPrerollPages::prepare_chunk(
+                &mut pages,
+                &actual,
+                out.len(),
+                &cancelled
+            )
+            .unwrap(),
+            out.len()
+        );
+        actual.render_with_pages(&mut out, &mut pages).unwrap();
+        hex_engine::PreparedPrerollPages::complete_chunk(&mut pages).unwrap();
+        expected.render(&mut reference).unwrap();
+        assert!(reference.iter().flatten().any(|sample| sample.abs() > 0.01));
+        for (actual, expected) in out.iter().flatten().zip(reference.iter().flatten()) {
+            assert!((actual - expected).abs() <= 1e-5, "{actual} != {expected}");
+        }
+    }
+    pages.finish_pages(&cancelled).unwrap();
+    let mut repitch_editor = Editor::new(editor.project().clone(), 8).unwrap();
+    let warp = hex_project::default_audio_warp(
+        repitch_editor.project().clip(clip).unwrap(),
+        repitch_editor.project().tempo_map(),
+        hex_project::WarpMode::RePitch,
+    )
+    .unwrap();
+    repitch_editor
+        .execute(Command::SetAudioClipWarp {
+            clip,
+            settings: Some(warp),
+        })
+        .unwrap();
+    let requirement = hex_engine::audio_transform::StreamedRepitchRequirement::new(
+        &raw,
+        repitch_editor
+            .project()
+            .clip(clip)
+            .unwrap()
+            .audio_edit()
+            .unwrap(),
+        repitch_editor.project().tempo_map(),
+        &cancelled,
+    )
+    .unwrap();
+    let derived = requirement.metadata_for(&raw).unwrap();
+    let mut derived_catalog = catalog.clone();
+    derived_catalog.insert(derived.key(), Arc::new(derived.clone()));
+    let repitched =
+        hex_engine::PreparedRevision::prepare_with_prepared_pitch_sources_and_device_resources(
+            repitch_editor.project(),
+            &sources,
+            &derived_catalog,
+            7,
+            Arc::new(hex_engine::SineTable::new()),
+            None,
+            &transforms,
+            &resources,
+            0,
+            &cancelled,
+        )
+        .unwrap();
+    let requirements = [requirement];
+    assert!(
+        VerifiedPages::capture_files(&repitched, |_| Ok(&file), &[], None, config, &cancelled)
+            .is_err()
+    );
+    assert!(
+        VerifiedPages::capture_files(
+            &repitched,
+            |_| Ok(&other),
+            &requirements,
+            None,
+            config,
+            &cancelled
+        )
+        .is_err()
+    );
+    let mut changed = Editor::new(repitch_editor.project().clone(), 8).unwrap();
+    changed
+        .execute(Command::SetProjectTempo {
+            tempo: hex_project::Tempo::new(180_000_000).unwrap(),
+        })
+        .unwrap();
+    let changed_requirement = hex_engine::audio_transform::StreamedRepitchRequirement::new(
+        &raw,
+        changed.project().clip(clip).unwrap().audio_edit().unwrap(),
+        changed.project().tempo_map(),
+        &cancelled,
+    )
+    .unwrap();
+    assert!(
+        VerifiedPages::capture_files(
+            &repitched,
+            |_| Ok(&file),
+            &[changed_requirement],
+            None,
+            config,
+            &cancelled
+        )
+        .is_err()
+    );
+    let mut no_map_budget = config;
+    no_map_budget.max_kernel_table_bytes = 0;
+    assert!(
+        VerifiedPages::capture_files(
+            &repitched,
+            |_| Ok(&file),
+            &requirements,
+            None,
+            no_map_budget,
+            &cancelled
+        )
+        .is_err()
+    );
+    let repitch_pages = VerifiedPages::capture_files(
+        &repitched,
+        |_| Ok(&file),
+        &requirements,
+        None,
+        config,
+        &cancelled,
+    )
+    .unwrap();
+    assert!(
+        repitch_pages
+            .definitions
+            .as_ref()
+            .unwrap()
+            .iter()
+            .any(|definition| definition.key == derived.key())
+    );
+    std::fs::write(&path, b"changed source").unwrap();
+    assert!(pages.finish_pages(&cancelled).is_err());
+}
+
+#[test]
 fn scalar_offline_capture_refuses_before_source_resolution() {
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
     let Created::Track(track) = editor
@@ -67,6 +379,7 @@ fn scalar_offline_capture_refuses_before_source_resolution() {
             reads.set(reads.get() + 1);
             Err(ExportError::Invalid("unexpected source resolution"))
         },
+        &[],
         None,
         StreamConfig::with_pool_pages(3),
         &AtomicBool::new(false),
@@ -288,6 +601,7 @@ fn history_seek_case() {
                 editor_revision: 17,
             },
             |_| Ok(&file),
+            &[],
             &cancelled,
         )
         .unwrap();
@@ -299,6 +613,7 @@ fn history_seek_case() {
         let mut pages = VerifiedPages::capture_files(
             &revision,
             |_| Ok(&file),
+            &[],
             None,
             StreamConfig::with_pool_pages(3),
             &cancelled,
@@ -344,6 +659,7 @@ fn history_seek_case() {
                 resolutions.set(resolutions.get() + 1);
                 Ok(&file)
             },
+            &[],
             &cancelled
         )
         .is_err()
@@ -355,6 +671,7 @@ fn history_seek_case() {
             &resources,
             context,
             |_| Ok(&file),
+            &[],
             &AtomicBool::new(true)
         ),
         Err(hex_engine::ArrangementPrerollError::Cancelled)
@@ -365,6 +682,7 @@ fn history_seek_case() {
             &resources,
             context,
             |_| Err(ExportError::Invalid("fixture binding unavailable")),
+            &[],
             &cancelled
         )
         .is_err()
@@ -373,6 +691,7 @@ fn history_seek_case() {
     // and the private page owner joins during control-side error unwinding.
     std::fs::write(&path, b"changed fixture").unwrap();
     assert!(
-        prepare_file_seek_runtime(&spec, &resources, context, |_| Ok(&file), &cancelled).is_err()
+        prepare_file_seek_runtime(&spec, &resources, context, |_| Ok(&file), &[], &cancelled)
+            .is_err()
     );
 }

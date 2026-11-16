@@ -6,6 +6,80 @@ mod checkpoint_worker;
 pub(super) use checkpoint::{RecoveryContext, RecoveryTracker};
 pub use checkpoint::{RecoveryFailure, RecoveryRestart};
 
+/// A test-only, bounded hold of one private recovery checkpoint.
+#[cfg(feature = "recovery-checkpoint-test-support")]
+pub struct HeldCheckpoint {
+    path: PathBuf,
+    entered: std::sync::mpsc::Receiver<()>,
+    has_entered: bool,
+    release: Option<std::sync::mpsc::SyncSender<()>>,
+}
+
+#[cfg(feature = "recovery-checkpoint-test-support")]
+static HELD_CHECKPOINT_PATHS: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
+
+#[cfg(feature = "recovery-checkpoint-test-support")]
+impl HeldCheckpoint {
+    pub fn try_entered(&mut self) -> Result<(), std::sync::mpsc::TryRecvError> {
+        self.entered.try_recv()?;
+        self.has_entered = true;
+        Ok(())
+    }
+
+    /// A disconnected receiver means the bounded hold timed out or was removed.
+    pub fn release(mut self) -> Result<(), std::sync::mpsc::TrySendError<()>> {
+        if !self.has_entered {
+            return Err(std::sync::mpsc::TrySendError::Disconnected(()));
+        }
+        match self.release.take() {
+            Some(release) => release.try_send(()),
+            None => Err(std::sync::mpsc::TrySendError::Disconnected(())),
+        }
+    }
+}
+
+#[cfg(feature = "recovery-checkpoint-test-support")]
+impl Drop for HeldCheckpoint {
+    fn drop(&mut self) {
+        let mut paths = HELD_CHECKPOINT_PATHS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut gates = checkpoint::CHECKPOINT_GATE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        gates.retain(|(path, _, _)| path != &self.path);
+        paths.retain(|path| path != &self.path);
+    }
+}
+
+/// Register one uniquely scoped checkpoint hold; no default build exposes it.
+#[cfg(feature = "recovery-checkpoint-test-support")]
+pub fn hold_next_checkpoint(path: PathBuf) -> Result<HeldCheckpoint, &'static str> {
+    let mut paths = HELD_CHECKPOINT_PATHS
+        .lock()
+        .map_err(|_| "checkpoint test paths unavailable")?;
+    let mut gates = checkpoint::CHECKPOINT_GATE
+        .lock()
+        .map_err(|_| "checkpoint test gates unavailable")?;
+    if paths.len() >= 8
+        || gates.len() >= 8
+        || paths.contains(&path)
+        || gates.iter().any(|(existing, _, _)| existing == &path)
+    {
+        return Err("checkpoint test gate capacity or path conflict");
+    }
+    let (entered_tx, entered) = std::sync::mpsc::sync_channel(1);
+    let (release, release_rx) = std::sync::mpsc::sync_channel(1);
+    gates.push((path.clone(), entered_tx, release_rx));
+    paths.push(path.clone());
+    Ok(HeldCheckpoint {
+        path,
+        entered,
+        has_entered: false,
+        release: Some(release),
+    })
+}
+
 #[cfg(test)]
 pub(super) fn install_checkpoint_gate(
     path: PathBuf,
@@ -287,7 +361,15 @@ pub(super) fn open_source_with_limits(
     }
     // Validate saved sampler identity before inspecting its media. The prepare
     // boundary repeats this check because other callers enter it directly.
-    validate_sampler_source_identity(&project)?;
+    let private_sampler = validate_sampler_source_identity(&project)?;
+    if mode == DocumentAudioMode::VerifiedStreaming
+        && (private_sampler
+            || project
+                .assets()
+                .any(|asset| asset.original_source().is_some()))
+    {
+        return Err("device-original verified opening is not yet available".into());
+    }
     project = with_missing_media_offline(project, &project_dir)?;
     let session = prepare_project(
         current,
@@ -319,9 +401,7 @@ pub(super) fn prepare_project(
 ) -> Result<Session, String> {
     let private_sampler = validate_sampler_source_identity(&project)?;
     let has_originals = project.assets().any(|a| a.original_source().is_some());
-    if (has_originals || private_sampler)
-        && (mode != DocumentAudioMode::Resident || native.is_none())
-    {
+    if (has_originals || private_sampler) && native.is_none() {
         return Err("device-original reopening requires resident native limits".into());
     }
     if current.shutdown.load(Ordering::Acquire) {
@@ -363,7 +443,7 @@ pub(super) fn prepare_project(
     let ordinary_file_backed = mode == DocumentAudioMode::Resident
         && reservation.is_some()
         && (required_pcm > frame_allowance || oversized_plain_asset);
-    if mode == DocumentAudioMode::VerifiedStreaming {
+    if mode == DocumentAudioMode::VerifiedStreaming && !has_originals && !private_sampler {
         let reservation = reservation
             .ok_or("verified source reservation is required")?
             .validate()
@@ -386,7 +466,7 @@ pub(super) fn prepare_project(
         for asset in online_assets(&project) {
             let path = asset_media_path(project_dir, asset);
             let source = candidate
-                .verify_asset(path, asset)
+                .verify_asset(path, asset, None)
                 .map_err(|e| e.to_string())?;
             if !source.matches_asset(asset, project.sample_rate()) {
                 return Err("verified media differs from project metadata".into());
@@ -398,13 +478,14 @@ pub(super) fn prepare_project(
         candidate.sine_table = current.sine_table();
         return Ok(candidate);
     }
-    let mut file_candidate = if ordinary_file_backed {
+    let mut file_candidate = if ordinary_file_backed || mode == DocumentAudioMode::VerifiedStreaming
+    {
         Some(
             Session::new_with_audio_mode_in_overview_domain(
                 project.sample_rate(),
                 history_capacity,
                 current.max_resident_frames(),
-                DocumentAudioMode::Resident,
+                mode,
                 reservation,
                 current.overview_budget.clone(),
             )
@@ -432,13 +513,27 @@ pub(super) fn prepare_project(
             && let Some(candidate) = file_candidate.as_mut()
         {
             let file = candidate
-                .verify_asset(media_path, asset)
+                .verify_asset(media_path, asset, current.verified_sources.get(&asset.id()))
                 .map_err(|e| e.to_string())?;
             if !file.matches_asset(asset, project.sample_rate()) {
                 return Err("verified media differs from project metadata".into());
             }
             candidate.verified_sources.insert(asset.id(), file);
             continue;
+        }
+        if mode == DocumentAudioMode::VerifiedStreaming && asset.original_source().is_none() {
+            return Err("verified recovery does not support resident clip processing".into());
+        }
+        if mode == DocumentAudioMode::VerifiedStreaming
+            && (project.tracks().iter().any(|track| {
+                track.clips().iter().any(|clip| {
+                    clip.referenced_assets().any(|referenced| referenced == asset.id())
+                })
+            }) || project.session_cells().iter().any(|cell| {
+                matches!(cell.content(), hex_project::SessionCellContent::Audio(clip) if clip.asset() == asset.id())
+            }))
+        {
+            return Err("verified recovery cannot use device originals as clip sources".into());
         }
         let required_frames = if asset.original_source().is_some() {
             asset.source_frames()
@@ -630,6 +725,7 @@ pub(super) fn prepare_project(
                 cancel: &current.shutdown,
             },
             files,
+            mode,
         )
     } else {
         Session::from_prepared_with_native_limits_in_overview_domain(
@@ -694,12 +790,30 @@ fn with_missing_media_offline(project: Project, base: &Path) -> Result<Project, 
         .map_err(|error| format!("missing media: {error}"))
 }
 
-/// Keep every materialized processing dependency resident, including retained
-/// grouped roots. File selection must not turn a valid saved edit into an
-/// unsupported streamed transform merely because another plain asset is large.
+/// Keep materialized processing dependencies resident, including retained
+/// grouped roots. Complete plain pitch and supported long Re-Pitch roots can
+/// use verified worker pages; other edits retain resident preparation.
 fn asset_requires_resident_processing(project: &Project, asset: hex_project::AssetId) -> bool {
     let requires = |clip: &hex_project::Clip| {
-        (clip.asset() == asset && hex_engine::audio_transform::AudioTransformPreparation::clip_requires_resident_source(clip))
+        let streamed_repitch = clip.asset() == asset
+            && clip
+                .audio_edit()
+                .zip(project.asset(clip.asset()))
+                .is_some_and(|(edit, source)| {
+                    (clip.duration() > hex_project::MAX_AUDIO_DOMAIN_FRAMES
+                        || source.playback_frames() > hex_project::MAX_AUDIO_DOMAIN_FRAMES)
+                        && hex_engine::audio_transform::streamed_repitch_map(
+                            edit,
+                            project.tempo_map(),
+                            source.playback_frames(),
+                            &std::sync::atomic::AtomicBool::new(false),
+                        )
+                        .is_ok()
+                });
+        (clip.asset() == asset
+            && crate::audio_sources::plain_pitch_requirement(project, clip).is_none()
+            && !streamed_repitch
+            && hex_engine::audio_transform::AudioTransformPreparation::clip_requires_resident_source(clip))
             || clip.audio_edit().and_then(|edit| edit.domain.events.as_ref())
                 .is_some_and(|events| events.sources.iter().any(|root| root.clip.asset() == asset))
     };
@@ -738,7 +852,7 @@ impl PreparedCheckpoint {
             untitled,
             image,
         } = self;
-        #[cfg(test)]
+        #[cfg(any(test, feature = "recovery-checkpoint-test-support"))]
         checkpoint::wait_at_checkpoint(&path);
         let project = image.materialize()?;
         if journal
@@ -882,6 +996,96 @@ fn checkpoint_path(document: Option<&DocumentHandle>, untitled: &Path) -> Result
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU64, Ordering};
+
+    #[test]
+    fn ordinary_file_recovery_only_exempts_complete_plain_pitch() {
+        let mut editor = hex_project::Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let hex_project::Created::Imported { clip, asset, .. } = editor
+            .execute(Command::ImportAudioTrack {
+                name: "clip".into(),
+                path: "clip.wav".into(),
+                sample_rate: 48_000,
+                frames: 32,
+            })
+            .unwrap()
+        else {
+            panic!("fixture")
+        };
+        editor
+            .execute(Command::SetClipFades {
+                clip,
+                fade_in: 0,
+                fade_out: 0,
+            })
+            .unwrap();
+        editor
+            .execute(Command::SetAudioClipPitch { clip, cents: 700 })
+            .unwrap();
+        assert!(!asset_requires_resident_processing(editor.project(), asset));
+        let mut cropped = hex_project::Editor::new(editor.project().clone(), 8).unwrap();
+        let start = cropped.project().clip(clip).unwrap().start();
+        cropped
+            .execute(Command::TrimClipEdge {
+                clip,
+                edge: hex_project::TrimEdge::Right,
+                frame: start + 16,
+            })
+            .unwrap();
+        assert!(asset_requires_resident_processing(cropped.project(), asset));
+        editor
+            .execute(Command::SetAudioClipMusical {
+                clip,
+                enabled: true,
+            })
+            .unwrap();
+        assert!(asset_requires_resident_processing(editor.project(), asset));
+    }
+    #[test]
+    fn ordinary_recovery_preserves_short_repitch_resident_path() {
+        let mut editor = hex_project::Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let hex_project::Created::Imported { clip, asset, .. } = editor
+            .execute(Command::ImportAudioTrack {
+                name: "clip".into(),
+                path: "clip.wav".into(),
+                sample_rate: 48_000,
+                frames: 32,
+            })
+            .unwrap()
+        else {
+            panic!("fixture")
+        };
+        editor
+            .execute(Command::SetClipFades {
+                clip,
+                fade_in: 0,
+                fade_out: 0,
+            })
+            .unwrap();
+        let warp = hex_project::default_audio_warp(
+            editor.project().clip(clip).unwrap(),
+            editor.project().tempo_map(),
+            hex_project::WarpMode::RePitch,
+        )
+        .unwrap();
+        editor
+            .execute(Command::SetAudioClipWarp {
+                clip,
+                settings: Some(warp),
+            })
+            .unwrap();
+        assert!(asset_requires_resident_processing(editor.project(), asset));
+    }
+    #[cfg(feature = "recovery-checkpoint-test-support")]
+    #[test]
+    fn test_checkpoint_gate_releases_registration_and_rejects_unentered_release() {
+        let path = PathBuf::from("hex-test-checkpoint-gate-registration");
+        let first = hold_next_checkpoint(path.clone()).unwrap();
+        assert!(hold_next_checkpoint(path.clone()).is_err());
+        drop(first);
+        let second = hold_next_checkpoint(path.clone()).unwrap();
+        assert!(second.release().is_err());
+        assert!(hold_next_checkpoint(path).is_ok());
+    }
 
     #[test]
     fn prepared_checkpoint_keeps_snapshot_and_journal_custody_when_moved() {

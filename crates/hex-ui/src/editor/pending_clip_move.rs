@@ -319,6 +319,43 @@ impl EditorView {
         drag.cursor_position().map(|(_, frame)| frame)
     }
 
+    /// Show the callback-confirmed anchor for the held gesture. Never infer an
+    /// audible position from a submitted pointer target.
+    pub(super) fn audible_clip_move_anchor(&self) -> Option<(hex_project::TrackId, u64)> {
+        let (destination, frame) = self.audible_clip_move_position()?;
+        Some((destination.existing_track()?, frame))
+    }
+
+    pub(super) fn audible_clip_move_position(
+        &self,
+    ) -> Option<(hex_session::service::ClipMovePreviewDestination, u64)> {
+        let drag = self.active_clip_drag.as_ref()?;
+        let (audio_revision, applied) = self.applied_clip_preview?;
+        let desired = self.expected_clip_preview?;
+        let state = self.state.as_ref()?;
+        if !self.drag_start_is_current(drag)
+            || self
+                .audio_status()?
+                .applied_revision
+                .load(std::sync::atomic::Ordering::Acquire)
+                != audio_revision
+            || applied.context != desired.context
+            || applied.context.project_generation != self.project_generation
+            || applied.context.editor_revision != state.revision
+            || applied.gesture != desired.gesture
+            || applied.sequence > desired.sequence
+        {
+            return None;
+        }
+        let frame = match applied.position {
+            hex_project::ClipGroupPosition::Audio(frame) => frame,
+            hex_project::ClipGroupPosition::Midi(beat) => {
+                state.project.tempo_map().beat_to_frame(beat).ok()?
+            }
+        };
+        Some((applied.destination, frame))
+    }
+
     pub(super) fn pending_clip_move_matches(&self, request: &Request) -> bool {
         self.pending_clip_move
             .as_ref()
@@ -343,6 +380,9 @@ impl EditorView {
             return None;
         }
         let pending = self.pending_clip_move.take()?;
+        self.service.retire_arrangement_move_audition();
+        self.expected_clip_preview = None;
+        self.applied_clip_preview = None;
         let cursor = (disposition == Disposition::Terminal)
             .then(|| committed_drop_cursor(&pending.drag, pending.cursor_epoch, event))
             .flatten();
@@ -354,6 +394,9 @@ impl EditorView {
         let Some(pending) = self.pending_clip_move.take() else {
             return false;
         };
+        self.service.retire_arrangement_move_audition();
+        self.expected_clip_preview = None;
+        self.applied_clip_preview = None;
         pending.drag.retire();
         true
     }

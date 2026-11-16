@@ -8,6 +8,281 @@ const BINDING: Binding = Binding {
 };
 
 #[test]
+fn parameter_input_reservation_serializes_admission_and_callback() {
+    use std::num::NonZeroU64;
+    let ordinal = |n| NonZeroU64::new(n).unwrap();
+    let (control, callback, _worker) = channel(BINDING, 8).unwrap();
+    let (_other_control, other_callback, _other_worker) = channel(BINDING, 8).unwrap();
+    assert!(
+        callback
+            .reserve_parameter_input_on_callback(ordinal(1))
+            .is_none()
+    );
+    let admission = control
+        .reserve_parameter_input_on_control(ordinal(1))
+        .unwrap();
+    assert!(
+        callback
+            .reserve_parameter_input_on_callback(ordinal(1))
+            .is_none()
+    );
+    drop(admission);
+    control
+        .reserve_parameter_input_on_control(ordinal(1))
+        .unwrap()
+        .publish();
+    assert!(
+        other_callback
+            .reserve_parameter_input_on_callback(ordinal(1))
+            .is_none()
+    );
+    assert!(
+        callback
+            .reserve_parameter_input_on_callback(ordinal(2))
+            .is_none()
+    );
+    let fence = callback
+        .reserve_parameter_input_on_callback(ordinal(1))
+        .unwrap();
+    assert!(fence.is_live());
+    assert!(matches!(
+        control.reserve_parameter_input_on_control(ordinal(2)),
+        Err(Fault::Saturated)
+    ));
+    assert!(
+        callback
+            .reserve_parameter_input_on_callback(ordinal(1))
+            .is_none()
+    );
+    drop(fence);
+    drop(
+        control
+            .reserve_parameter_input_on_control(ordinal(2))
+            .unwrap(),
+    );
+    assert!(
+        callback
+            .reserve_parameter_input_on_callback(ordinal(1))
+            .is_some()
+    );
+    assert!(matches!(
+        control.reserve_parameter_input_on_control(ordinal(1)),
+        Err(Fault::Protocol)
+    ));
+    assert!(matches!(
+        control.reserve_parameter_input_on_control(ordinal(u64::MAX)),
+        Err(Fault::Exhausted)
+    ));
+    assert!(matches!(
+        control.reserve_parameter_input_on_control(ordinal(1_u64 << 62)),
+        Err(Fault::Exhausted)
+    ));
+    drop(
+        control
+            .reserve_parameter_input_on_control(ordinal((1_u64 << 62) - 1))
+            .unwrap(),
+    );
+    control
+        .reserve_parameter_input_on_control(ordinal(2))
+        .unwrap()
+        .publish();
+    assert!(
+        callback
+            .reserve_parameter_input_on_callback(ordinal(1))
+            .is_none()
+    );
+    let fence = callback
+        .reserve_parameter_input_on_callback(ordinal(2))
+        .unwrap();
+    control.revoke();
+    assert!(!fence.is_live());
+    drop(fence);
+    assert!(
+        callback
+            .reserve_parameter_input_on_callback(ordinal(2))
+            .is_none()
+    );
+    assert!(matches!(
+        control.reserve_parameter_input_on_control(ordinal(3)),
+        Err(Fault::Revoked)
+    ));
+}
+
+#[test]
+fn observed_parameter_input_requires_the_original_pair_and_current_generation() {
+    use std::num::NonZeroU64;
+    let one = NonZeroU64::new(1).unwrap();
+    let two = NonZeroU64::new(2).unwrap();
+    let (control, callback, worker) = channel(BINDING, 8).unwrap();
+    let (other_control, other_callback, _other_worker) = channel(BINDING, 8).unwrap();
+    assert!(control.observe_parameter_input_on_control(one).is_none());
+    control
+        .reserve_parameter_input_on_control(one)
+        .unwrap()
+        .publish();
+    other_control
+        .reserve_parameter_input_on_control(one)
+        .unwrap()
+        .publish();
+    let observed = control.observe_parameter_input_on_control(one).unwrap();
+    assert!(
+        other_callback
+            .reserve_observed_parameter_input_on_callback(&observed)
+            .is_none()
+    );
+    let fence = callback
+        .reserve_observed_parameter_input_on_callback(&observed)
+        .unwrap();
+    assert!(fence.is_live());
+    drop(fence);
+    control
+        .reserve_parameter_input_on_control(two)
+        .unwrap()
+        .publish();
+    assert!(
+        callback
+            .reserve_observed_parameter_input_on_callback(&observed)
+            .is_none()
+    );
+    let current = control.observe_parameter_input_on_control(two).unwrap();
+    control.revoke();
+    assert!(
+        callback
+            .reserve_observed_parameter_input_on_callback(&current)
+            .is_none()
+    );
+    drop((control, callback, worker));
+    // The weak identity survives the pair without keeping the worker alive.
+    assert!(
+        other_callback
+            .reserve_observed_parameter_input_on_callback(&current)
+            .is_none()
+    );
+}
+
+#[test]
+fn parameter_input_decision_is_ordered_against_revocation() {
+    use std::num::NonZeroU64;
+    let ordinal = NonZeroU64::new(1).unwrap();
+    let (control, callback, _worker) = channel(BINDING, 8).unwrap();
+    control
+        .reserve_parameter_input_on_control(ordinal)
+        .unwrap()
+        .publish();
+    let mut fence = callback
+        .reserve_parameter_input_on_callback(ordinal)
+        .unwrap();
+    std::thread::scope(|scope| scope.spawn(|| control.revoke()).join().unwrap());
+    assert!(!fence.try_order_before_revocation());
+    drop(fence);
+    assert!(callback.is_revoked());
+    assert!(
+        callback
+            .reserve_parameter_input_on_callback(ordinal)
+            .is_none()
+    );
+
+    let (control, callback, mut worker) = channel(BINDING, 8).unwrap();
+    control
+        .reserve_parameter_input_on_control(ordinal)
+        .unwrap()
+        .publish();
+    let mut fence = callback
+        .reserve_parameter_input_on_callback(ordinal)
+        .unwrap();
+    assert!(fence.try_order_before_revocation());
+    assert!(!fence.try_order_before_revocation());
+    std::thread::scope(|scope| scope.spawn(|| control.revoke()).join().unwrap());
+    assert!(!fence.is_live());
+    assert!(matches!(worker.receive(), Err(Fault::Revoked)));
+    drop(fence);
+    assert!(callback.is_revoked());
+
+    let (control, callback, _worker) = channel(BINDING, 8).unwrap();
+    let admission = control.reserve_parameter_input_on_control(ordinal).unwrap();
+    control.revoke();
+    admission.publish();
+    assert!(control.is_revoked() && callback.is_revoked());
+    assert!(
+        callback
+            .reserve_parameter_input_on_callback(ordinal)
+            .is_none()
+    );
+}
+
+#[test]
+fn concurrent_revocation_never_loses_the_terminal_marker() {
+    use std::{num::NonZeroU64, sync::Barrier};
+    let ordinal = NonZeroU64::new(1).unwrap();
+    for _ in 0..128 {
+        let (control, callback, mut worker) = channel(BINDING, 8).unwrap();
+        control
+            .reserve_parameter_input_on_control(ordinal)
+            .unwrap()
+            .publish();
+        let mut fence = callback
+            .reserve_parameter_input_on_callback(ordinal)
+            .unwrap();
+        let barrier = Barrier::new(2);
+        std::thread::scope(|scope| {
+            let revoke = scope.spawn(|| {
+                barrier.wait();
+                control.revoke();
+            });
+            barrier.wait();
+            // Either ordering is valid. Once revoked, neither the decision nor
+            // dropping its reservation may erase the terminal marker.
+            let _ordered_before_revocation = fence.try_order_before_revocation();
+            revoke.join().unwrap();
+        });
+        assert!(!fence.is_live());
+        assert!(matches!(worker.receive(), Err(Fault::Revoked)));
+        drop(fence);
+        assert!(callback.is_revoked());
+        assert!(
+            callback
+                .reserve_parameter_input_on_callback(ordinal)
+                .is_none()
+        );
+    }
+}
+
+#[cfg(feature = "allocation-probe")]
+#[test]
+fn parameter_input_reservation_does_not_allocate_or_free_on_callback() {
+    use std::num::NonZeroU64;
+    let (control, callback, worker) = channel(BINDING, 8).unwrap();
+    let ordinal = NonZeroU64::new(1).unwrap();
+    control
+        .reserve_parameter_input_on_control(ordinal)
+        .unwrap()
+        .publish();
+    let observed = control.observe_parameter_input_on_control(ordinal).unwrap();
+    let measured = allocation_counter::measure(|| {
+        let mut fence = callback
+            .reserve_observed_parameter_input_on_callback(&observed)
+            .unwrap();
+        assert!(fence.is_live());
+        assert!(fence.try_order_before_revocation());
+        drop(fence);
+    });
+    assert_eq!((measured.count_total, measured.bytes_total), (0, 0));
+    assert_eq!((measured.count_current, measured.bytes_current), (0, 0));
+    let revoked = allocation_counter::measure(|| {
+        let mut fence = callback
+            .reserve_observed_parameter_input_on_callback(&observed)
+            .unwrap();
+        assert!(fence.try_order_before_revocation());
+        control.revoke();
+        assert!(!fence.is_live());
+        drop(fence);
+    });
+    assert_eq!((revoked.count_total, revoked.bytes_total), (0, 0));
+    assert_eq!((revoked.count_current, revoked.bytes_current), (0, 0));
+    drop((control, callback, worker));
+}
+
+#[test]
 fn constructor_storage_requires_the_original_pair_and_survives_exchange_and_retirement() {
     let quote = channel_storage_bound().unwrap();
     let (control, mut callback, mut worker) = channel(BINDING, 8).unwrap();
@@ -260,15 +535,149 @@ fn native_instrument_keeps_ordered_input_and_recovers_from_one_late_reply() {
 }
 
 #[test]
-fn native_instrument_revokes_after_two_consecutive_missed_replies() {
+fn native_instrument_recovers_after_several_late_replies_without_replaying_them() {
+    let (control, mut callback, mut worker) =
+        native_pcm_channel_from_completed_prefix(BINDING, 8, 37).unwrap();
+    let mut output = [[0.0; 2]; 8];
+    let counts = allocation_counter::measure(|| {
+        // The worker remains occupied for six deadlines. Every input stays
+        // ordered; only missing output is concealed.
+        for value in 1..=8 {
+            callback
+                .stage(&[[value as f32; 2]; 8], &[], &mut output)
+                .unwrap();
+            callback.finish(true).unwrap();
+            assert_eq!(output, [[0.0; 2]; 8]);
+        }
+        for sequence in 37..45 {
+            let reply = worker.receive().unwrap().unwrap();
+            assert_eq!(reply.sequence, sequence);
+            assert_eq!(reply.pcm[0], [(sequence - 36) as f32; 2]);
+            let marker = (sequence == 37).then_some(ManualParameterInput {
+                operation: NonZeroU64::MIN,
+                action: ManualParameterAction::Point(ParameterPoint {
+                    id: 7,
+                    frame: 0,
+                    normalized: 0.5,
+                }),
+            });
+            worker
+                .complete_with_manual_parameter(reply, marker)
+                .unwrap();
+        }
+        callback.stage(&[[0.0; 2]; 8], &[], &mut output).unwrap();
+        callback.finish(true).unwrap();
+        assert_eq!(output, [[7.0; 2]; 8]);
+        assert_eq!(callback.take_accepted_manual_parameter(), None);
+        assert!(!control.is_revoked());
+    });
+    assert_eq!(
+        (
+            counts.count_total,
+            counts.bytes_total,
+            counts.count_current,
+            counts.bytes_current
+        ),
+        (0, 0, 0, 0)
+    );
+}
+
+#[test]
+fn native_concealment_covers_adjacent_gaps_across_a_partial_callback() {
+    let (_control, mut callback, _worker) =
+        native_pcm_channel_from_completed_prefix(BINDING, 8, 0).unwrap();
+    for _ in 0..2 {
+        callback
+            .stage(&[[0.0; 2]; 8], &[], &mut [[0.0; 2]; 8])
+            .unwrap();
+        callback.finish(true).unwrap();
+    }
+    for (frames, expected) in [(4, (0, 4)), (8, (0, 8)), (4, (0, 4))] {
+        callback.begin_physical_callback(frames).unwrap();
+        let reply = callback
+            .stage_segment_with_parameters(
+                0,
+                &[[1.0; 2]; 8][..frames],
+                &[],
+                &[],
+                &mut [[0.0; 2]; 8][..frames],
+            )
+            .unwrap();
+        assert_eq!(reply.concealed_output, Some(expected));
+        callback.finish(true).unwrap();
+    }
+}
+
+#[test]
+fn native_worker_can_catch_up_over_multiple_callbacks() {
     let (control, mut callback, mut worker) =
         native_pcm_channel_from_completed_prefix(BINDING, 8, 0).unwrap();
     let mut output = [[0.0; 2]; 8];
-    for _ in 0..3 {
+    for value in 1..=4 {
+        callback
+            .stage(&[[value as f32; 2]; 8], &[], &mut output)
+            .unwrap();
+        callback.finish(true).unwrap();
+        assert_eq!(output, [[0.0; 2]; 8]);
+    }
+    for expected in 0..2 {
+        let reply = worker.receive().unwrap().unwrap();
+        assert_eq!(reply.sequence, expected);
+        worker.complete(reply).unwrap();
+    }
+    callback.stage(&[[5.0; 2]; 8], &[], &mut output).unwrap();
+    callback.finish(true).unwrap();
+    assert_eq!(output, [[0.0; 2]; 8]);
+    for expected in 2..4 {
+        let reply = worker.receive().unwrap().unwrap();
+        assert_eq!(reply.sequence, expected);
+        worker.complete(reply).unwrap();
+    }
+    callback.stage(&[[6.0; 2]; 8], &[], &mut output).unwrap();
+    callback.finish(true).unwrap();
+    assert_eq!(output, [[4.0; 2]; 8]);
+    assert!(!control.is_revoked());
+}
+
+#[test]
+fn malformed_late_native_reply_is_rejected_before_discarding() {
+    let (control, mut callback, mut worker) =
+        native_pcm_channel_from_completed_prefix(BINDING, 8, 0).unwrap();
+    for _ in 0..4 {
+        callback
+            .stage(&[[0.0; 2]; 8], &[], &mut [[0.0; 2]; 8])
+            .unwrap();
+        callback.finish(true).unwrap();
+    }
+    let mut late = worker.receive().unwrap().unwrap();
+    late.pcm[0][0] = f32::NAN;
+    worker
+        .replies
+        .push(OutputReply {
+            block: late,
+            manual: None,
+            editor: None,
+        })
+        .unwrap();
+    let mut output = [[9.0; 2]; 8];
+    assert_eq!(
+        callback.stage(&[[0.0; 2]; 8], &[], &mut output).err(),
+        Some(Fault::InvalidSamples)
+    );
+    assert_eq!(output, [[0.0; 2]; 8]);
+    assert!(control.is_revoked());
+}
+
+#[test]
+fn native_instrument_revokes_after_bounded_consecutive_missed_replies() {
+    let (control, mut callback, mut worker) =
+        native_pcm_channel_from_completed_prefix(BINDING, 8, 0).unwrap();
+    let mut output = [[0.0; 2]; 8];
+    for _ in 0..8 {
         callback.stage(&[[0.0; 2]; 8], &[], &mut output).unwrap();
         callback.finish(true).unwrap();
     }
-    // The stale reply does not turn a second missed deadline into a success.
+    // A stale reply does not reset the consecutive-miss limit.
     let late = worker.receive().unwrap().unwrap();
     worker.complete(late).unwrap();
     assert_eq!(
@@ -276,7 +685,7 @@ fn native_instrument_revokes_after_two_consecutive_missed_replies() {
         Some(Fault::MissingOutput)
     );
     assert!(control.is_revoked());
-    assert_eq!(control.deadline_miss().unwrap().reply_sequence, 1);
+    assert_eq!(control.deadline_miss().unwrap().reply_sequence, 6);
 }
 
 #[test]
@@ -1234,6 +1643,45 @@ fn received_program_snapshot_is_coherent_during_worker_slot_reuse() {
 }
 
 #[test]
+fn untouched_quantum_witness_refuses_a_started_or_revoked_callback() {
+    let (control, mut callback, _worker) = channel(BINDING, 8).unwrap();
+    assert_eq!(control.committed_quantum(), None);
+    assert_eq!(
+        control.quantum_observation(),
+        Some(QuantumObservation::Untouched(BINDING))
+    );
+    let mut output = [[0.0; 2]; 8];
+    callback
+        .stage(&[[0.0; 2]; 3], &[], &mut output[..3])
+        .unwrap();
+    assert_eq!(
+        control.quantum_observation(),
+        Some(QuantumObservation::Untouched(BINDING))
+    );
+    callback.finish(true).unwrap();
+    assert_eq!(
+        control.quantum_observation(),
+        Some(QuantumObservation::Committed(CommittedQuantum {
+            binding: BINDING,
+            state: CommittedQuantumState::OpenUnprogrammed,
+        }))
+    );
+    control.revoke();
+    assert_eq!(control.quantum_observation(), None);
+    let (in_progress, _, _) = channel(BINDING, 8).unwrap();
+    in_progress
+        .revoked
+        .quantum_serial
+        .store(1, std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(in_progress.quantum_observation(), None);
+    in_progress
+        .revoked
+        .quantum_serial
+        .store(u64::MAX, std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(in_progress.quantum_observation(), None);
+}
+
+#[test]
 fn committed_quantum_is_published_only_after_accepted_callback() {
     let (control, mut callback, _worker) = channel(BINDING, 8).unwrap();
     let (other, _, _) = channel(BINDING, 8).unwrap();
@@ -1330,6 +1778,12 @@ fn committed_quantum_snapshot_is_bounded_and_coherent() {
         );
         barrier.wait();
         while !finished.load(Acquire) {
+            if let Some(observation) = control.quantum_observation() {
+                assert!(
+                    matches!(observation, QuantumObservation::Committed(_)),
+                    "a callback with published quanta cannot become untouched"
+                );
+            }
             if let Some(snapshot) = control.committed_quantum() {
                 assert_eq!(snapshot.binding, BINDING);
                 assert!(matches!(

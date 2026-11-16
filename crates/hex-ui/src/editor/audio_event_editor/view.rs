@@ -95,6 +95,15 @@ pub(in crate::editor) fn view(
         .map_or(640.0, |bounds| f32::from(bounds.size.width));
     let mut body = div()
         .id("audio-events-waveform")
+        .on_mouse_down(
+            MouseButton::Middle,
+            cx.listener(|view, event: &gpui::MouseDownEvent, window, cx| {
+                if view.begin_audio_pan(false, event.position, window, cx) {
+                    cx.stop_propagation();
+                    cx.notify();
+                }
+            }),
+        )
         .on_scroll_wheel(cx.listener(|view, event, window, cx| {
             if view.audio_navigation_wheel(event, false, window, cx) {
                 cx.stop_propagation();
@@ -617,6 +626,7 @@ pub(in crate::editor) fn view(
                 // Existing geometry tracking above may end a stale gesture;
                 // the lease witness itself only reads current held state.
                 let view = entity.read(cx);
+                view.renew_audio_pan(false, bounds, window, entity.entity_id());
                 if let Some(gesture) = view.audio_event_editor.gesture.as_ref()
                     && view.audio_event_focus.is_focused(window)
                 {

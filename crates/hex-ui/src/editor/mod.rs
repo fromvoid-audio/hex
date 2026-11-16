@@ -88,6 +88,7 @@ mod activation;
 mod activation_ui_test;
 mod arranger_navigation;
 mod audio_import_settings;
+mod audio_recording;
 pub(crate) mod changelog;
 mod clip_detail_resize;
 #[cfg(all(test, feature = "ui-test-support"))]
@@ -277,6 +278,7 @@ mod waveform;
 mod waveform_columns;
 mod waveform_geometry;
 mod waveform_loop;
+mod waveform_overrange;
 mod waveform_source;
 mod waveform_stretch;
 mod zoom_fit;
@@ -378,6 +380,7 @@ struct PendingEditorPublicationObservation {
 
 #[derive(Clone)]
 struct PlaybackCandidate {
+    clip_preview_identity: Option<hex_session::service::ClipMovePreviewIdentity>,
     worker_requires_preroll: Option<bool>,
     observation: Option<Arc<hex_engine::PreparedPlaybackObservation>>,
     audio_revision: u64,
@@ -538,6 +541,8 @@ fn bind_editor_keys(cx: &mut App) {
     hex_widgets::bind_response_graph_keys(cx);
     device_panel::bind_operator_keys(cx);
     device_panel::bind_picker_keys(cx);
+    device_panel::bind_source_picker_keys(cx);
+    device_panel::bind_source_manager_keys(cx);
     device_panel::bind_keyboard_keys(cx);
     section_launch::bind_keys(cx);
     clip_name::bind_keys(cx);
@@ -553,7 +558,7 @@ fn bind_editor_keys(cx: &mut App) {
         KeyBinding::new("enter", LaunchSessionSelection, Some("hex_editor")),
         escape_binding(),
         KeyBinding::new("cmd-i", ImportAudio, Some("hex_editor")),
-        KeyBinding::new("cmd-t", AddTrack, Some(EDITOR_PRINTABLE_KEY_CONTEXT)),
+        KeyBinding::new("t", AddTrack, Some(EDITOR_PRINTABLE_KEY_CONTEXT)),
         KeyBinding::new("cmd-alt-b", ToggleBrowser, None),
         KeyBinding::new("cmd-f", CreateFadesOrSearch, None),
         KeyBinding::new("up", BrowserPrevious, Some("hex_browser")),
@@ -924,6 +929,7 @@ pub(super) struct EditorView {
     device_panel: device_panel::DevicePanelState,
     project_spectrum: project_spectrum::ProjectSpectrumState,
     sample_recorder: sample_recorder::Recorder,
+    audio_recorder: audio_recording::Recorder,
     worker_requests_pending: usize,
     sampler_load: sampler_load::State,
     sampler_parameter: sampler_parameter::State,
@@ -974,6 +980,12 @@ pub(super) struct EditorView {
     committed_time_range_copy_view: Option<Arc<ViewState>>,
     group_selection_history: group_selection::SelectionHistory,
     pending_clip_move: Option<pending_clip_move::Pending>,
+    /// The latest held move intent; only an exact callback revision can make it audible.
+    expected_clip_preview: Option<hex_session::service::ClipMovePreviewIdentity>,
+    applied_clip_preview: Option<(u64, hex_session::service::ClipMovePreviewIdentity)>,
+    // Once a move has been submitted, a callback may outrun its metadata even
+    // after input is canceled. Keep conservative revision tracking until reset.
+    clip_preview_may_apply: bool,
     close_prompt_open: bool,
     automation_close_preflight: close::AutomationClosePreflight,
     export_pending: bool,
@@ -1050,6 +1062,8 @@ pub(super) struct EditorView {
     midi_visible_notes: std::cell::RefCell<midi_loop_notes::VisibleNotesCache>,
     midi_tile_images: Rc<std::cell::RefCell<midi_loop_notes::TileImages>>,
     active_clip_drag: Option<drag::ClipDrag>,
+    clip_move_audition: Option<drag::MoveAudition>,
+    clip_move_gesture: u64,
     active_browser_audio_drag: Option<drag::BrowserAudioDrag>,
     pending_sample_drop: Option<pending_sample_drop::PendingSampleDrop>,
     arrangement_device_preview: Option<arrangement_device_drop::ArrangementDevicePreview>,
@@ -1724,6 +1738,7 @@ impl EditorView {
             device_panel: device_panel::DevicePanelState::default(),
             project_spectrum: Default::default(),
             sample_recorder: Default::default(),
+            audio_recorder: Default::default(),
             worker_requests_pending: 0,
             sampler_load: Default::default(),
             sampler_parameter: Default::default(),
@@ -1771,6 +1786,9 @@ impl EditorView {
             committed_time_range_copy_view: None,
             group_selection_history: group_selection::SelectionHistory::default(),
             pending_clip_move: None,
+            expected_clip_preview: None,
+            applied_clip_preview: None,
+            clip_preview_may_apply: false,
             close_prompt_open: false,
             automation_close_preflight: Default::default(),
             export_pending: false,
@@ -1852,6 +1870,8 @@ impl EditorView {
             midi_visible_notes: Default::default(),
             midi_tile_images: Default::default(),
             active_clip_drag: None,
+            clip_move_audition: None,
+            clip_move_gesture: 0,
             active_browser_audio_drag: None,
             pending_sample_drop: None,
             active_native_device_drag: None,
@@ -1970,6 +1990,10 @@ impl EditorView {
     }
 
     pub(super) fn select_track(&mut self, track: TrackId, window: &mut Window) {
+        if device_panel::source_sampler_edit_active(self) {
+            self.error = Some("finish the sampler edit before changing the source view".into());
+            return;
+        }
         let Some(state) = self.state.as_ref() else {
             return;
         };
@@ -2004,16 +2028,35 @@ impl EditorView {
 
     pub(super) fn toggle_play(&mut self) {
         self.escape_stop_armed = false;
-        if self.section_install_pending() {
-            self.error = Some("applying edit · wait for audio".into());
-            return;
-        }
         if self.opening_project || self.close_prompt_open {
             self.error = Some("project change pending · playback is paused".into());
             return;
         }
         if self.recovery.generation().is_some() {
             self.defer_play_until_audio_recovers();
+            return;
+        }
+        if self.section_install_pending() {
+            let playing = self
+                .audio
+                .as_ref()
+                .and_then(|audio| audio.control.status())
+                .is_some_and(|status| status.playing.load(std::sync::atomic::Ordering::Acquire));
+            if self.desired_playing(playing) {
+                #[cfg(test)]
+                {
+                    self.last_transport_command = Some(PlaybackCommand::Pause);
+                }
+                self.queue_audio_command(PlaybackCommand::Pause);
+            } else if let Some(source) = self.section_copy_play_source() {
+                if let Some(frame) = self.section_copy_play_start() {
+                    self.queue_section_copy_play(frame, source);
+                } else {
+                    self.error = Some("applying edit · wait for audio".into());
+                }
+            } else {
+                self.error = Some("applying edit · wait for audio".into());
+            }
             return;
         }
         let device_playing = self.audio.as_ref().is_some_and(|audio| {
@@ -2046,6 +2089,10 @@ impl EditorView {
     /// selection, play-start lock and loop intact. The reset wins over all of
     /// those sources, including a loop whose start is later in the song.
     fn playback_start_frame(&self) -> u64 {
+        self.playback_start_frame_with_section_override(None)
+    }
+
+    fn playback_start_frame_with_section_override(&self, section: Option<u64>) -> u64 {
         if self.play_start_at_beginning {
             return 0;
         }
@@ -2070,7 +2117,7 @@ impl EditorView {
             return selection.start();
         }
         if let Some(frame) = self.selected_arrangement_play_start() {
-            return frame;
+            return section.unwrap_or(frame);
         }
         if let Some(cursor) = self
             .edit_cursor

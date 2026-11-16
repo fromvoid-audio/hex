@@ -5,8 +5,8 @@ use std::time::Duration;
 mod file_sources;
 pub(super) mod native_sampler;
 pub use file_sources::{
-    ResidentFileInput, ResidentFileMetadata, ResidentFilePublication, ResidentFileSeekPreparer,
-    ResidentFileSeekRequest, ResidentFileSet,
+    ResidentFileInput, ResidentFileMetadata, ResidentFilePitch, ResidentFilePublication,
+    ResidentFileSeekPreparer, ResidentFileSeekRequest, ResidentFileSet,
 };
 pub use native_sampler::{
     NativeSamplerInput, NativeSamplerReservationHold, NativeSamplerRetryFacts,
@@ -221,8 +221,10 @@ impl<'a> ResidentEffectPreparation<'a> {
         Ok(selected)
     }
 
-    /// An authored program is immutable for one native worker epoch. An
-    /// instrument loop edit may keep that epoch when the run budget matches.
+    /// Whether the authored program can stay on its original native worker.
+    /// Effect loop activation and deactivation use the prepared origin budget
+    /// for delayed audio and partial worker quanta. Instruments also need to
+    /// preserve their transport and MIDI gate continuity.
     pub fn same_authored_plugin_program(
         &self,
         previous: &Self,
@@ -252,18 +254,28 @@ impl<'a> ResidentEffectPreparation<'a> {
         }
         let next_loop = self.project.loop_region();
         let previous_loop = previous.project.loop_region();
-        let same_loop_budget = next_loop == previous_loop
-            || quantum_frames.is_some_and(|frames| {
-                self.project
-                    .native_sources()
-                    .iter()
-                    .any(|source| source.instrument().id().value() == device)
-                    && hex_engine::foreign_automation::QuantumProfile::keeps_instrument_epoch(
+        let same_loop_budget = next_loop == previous_loop || {
+            let instrument = self
+                .project
+                .native_sources()
+                .iter()
+                .any(|source| source.instrument().id().value() == device);
+            if instrument {
+                quantum_frames.is_some_and(|frames| {
+                    hex_engine::foreign_automation::QuantumProfile::keeps_instrument_epoch(
                         frames,
                         previous_loop,
                         next_loop,
                     )
-            });
+                })
+            } else {
+                hex_engine::foreign_automation::QuantumProfile::keeps_effect_epoch(
+                    quantum_frames,
+                    previous_loop,
+                    next_loop,
+                )
+            }
+        };
         self.project.tempo_map() == previous.project.tempo_map()
             && same_loop_budget
             && current.eq(old)
@@ -327,7 +339,7 @@ impl<'a> ResidentEffectPreparation<'a> {
 
 /// One private native bounce owner. It supplies exact compile facts before
 /// rendering and is dropped before Session adopts any of the output media.
-pub trait OfflineBounceSource: hex_export::ForeignBounceRenderer {
+pub trait OfflineBounceSource: hex_export::ForeignBounceRenderer + Send {
     fn retained_data_bytes(&self) -> usize;
     fn prepare(
         &self,
@@ -357,11 +369,29 @@ pub(super) fn requires_plugin_profile(project: &Project) -> bool {
         .any(is_plugin_effect)
 }
 
+/// Reported preparation origin, not proof of canonical state or source custody.
+/// A canonical candidate may be prepared and applied before its edit commits;
+/// unknown also covers preparations whose context was subsequently rebased.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResidentSourceOrigin {
+    Unknown,
+    CanonicalCandidate,
+    DevicePreview,
+    TuningPreview,
+    ClipMovePreview,
+    ClipStretchPreview,
+    ClipPlayStartPreview,
+}
+
 /// Scalar identity for one worker-private ordinary resident graph. Neither preview correlation
 /// nor a requested freshness fence grants source custody or acknowledges callback application.
 #[derive(Clone, Copy, Debug)]
 pub struct ResidentPublicationMetadata {
+    /// Producer-reported origin; this is not an admission or source proof.
+    pub source_origin: ResidentSourceOrigin,
     pub context: hex_engine::AudioSourceContext,
+    /// Identity of a clip-move preview, not proof of callback application.
+    pub clip_preview: Option<ClipMovePreviewIdentity>,
     pub device_preview: Option<DevicePreviewIdentity>,
     pub tuning_preview: Option<TuningPreviewIdentity>,
     pub seek_request: Option<u64>,
@@ -378,6 +408,8 @@ pub struct ResidentFreshRuntimeFence {
     pub admitted_command_ticket: u64,
     /// Last output-fault epoch observed before the seek was prepared.
     pub output_fault_epoch: u64,
+    /// Callback-observed priority Stop generation of the captured audio fence.
+    pub consumed_stop_generation: u64,
 }
 /// Nonowning scalar witness for the actual installed graph's audition loop.
 /// No PCM, prepared graph, lease or callback runtime is borrowed or transferred.
@@ -387,6 +419,8 @@ pub struct ResidentRuntimeLoop {
     pub output_identity: u64,
     pub audio_revision: u64,
     pub source_context: Option<hex_engine::AudioSourceContext>,
+    /// Origin reported for this exact submission, not authority to use its source.
+    pub source_origin: ResidentSourceOrigin,
     pub section_loop: Option<hex_project::LoopRegion>,
 }
 /// Read-only, output-bound observation of the one admitted resident graph.
@@ -482,13 +516,42 @@ pub enum ResidentPublicationAcceptance {
     },
     OfflineRetained,
 }
+/// A control-side receipt for one exact prepared graph submission. It does not
+/// acknowledge callback application, retain a graph, or grant a source fence.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ResidentGraphSubmission {
+    pub output_identity: u64,
+    pub audio_revision: u64,
+    pub context: hex_engine::AudioSourceContext,
+}
+impl ResidentGraphSubmission {
+    /// Compare with the callback's correlated publication observation. A pending
+    /// successor is not a stable source for a stopped edit. The caller must still
+    /// establish and hold the exact fence before using this as a predecessor.
+    pub fn matches_applied(self, readiness: ResidentPublicationReadiness) -> bool {
+        matches!(readiness, ResidentPublicationReadiness::Applied {
+            submission: ResidentRuntimeLoop { output_identity, audio_revision, source_context: Some(context), .. },
+            publication_in_flight: false,
+        } if output_identity == self.output_identity && audio_revision == self.audio_revision && context == self.context)
+    }
+}
+/// Reason category for a refused resident publication. The unavailable
+/// category describes source custody only; it does not imply a deadline fault.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResidentPublicationFailure {
+    NativeSourceUnavailable,
+    Other,
+}
+
 pub struct ResidentPublicationRefusal {
+    pub kind: ResidentPublicationFailure,
     pub playback: Playback,
     pub error: String,
 }
 impl std::fmt::Debug for ResidentPublicationRefusal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ResidentPublicationRefusal")
+            .field("kind", &self.kind)
             .field("error", &self.error)
             .finish_non_exhaustive()
     }
@@ -681,6 +744,18 @@ pub trait WorkerAudioSink: Send {
     fn take_plugin_parameters(&mut self) -> Option<PluginParameterResult> {
         None
     }
+    fn query_plugin_parameter_conversion(
+        &mut self,
+        _query: PluginParameterConversionQuery,
+    ) -> Result<(), String> {
+        Err("vst3 conversion unavailable for this output".into())
+    }
+    fn plugin_parameter_conversion_ready(&self) -> bool {
+        false
+    }
+    fn take_plugin_parameter_conversion(&mut self) -> Option<PluginParameterConversionResult> {
+        None
+    }
     /// Match the exact request control; never cancel an unrelated later source.
     /// Exact canonical terminal. Rejected requests retire only their matching native preparation;
     /// acceptance transfers display/request custody, never the native source's lifetime.
@@ -700,6 +775,25 @@ pub trait WorkerAudioSink: Send {
             -> Result<hex_engine::PreparedRevision, hex_engine::Invalid>,
     ) -> Result<Option<hex_engine::PreparedRevision>, String> {
         Ok(None)
+    }
+    /// Optionally hold the exact stopped predecessor while a saturated history
+    /// is prepared. False preserves the ordinary conservative history path.
+    /// A successful lease must remain held through its publication terminal.
+    fn begin_stopped_foreign_history(
+        &mut self,
+        _predecessor: ResidentGraphSubmission,
+        _successor: hex_engine::AudioSourceContext,
+    ) -> Result<bool, String> {
+        Ok(false)
+    }
+    /// Confirm a leased successor before canonical history commits. Hosts with
+    /// no lease leave the existing publication path unchanged.
+    fn confirm_stopped_foreign_history(
+        &mut self,
+        _context: hex_engine::AudioSourceContext,
+        _accepted: ResidentPublicationAcceptance,
+    ) -> Result<(), String> {
+        Ok(())
     }
     /// Actual original-worker pickup only, for bounded immutable program
     /// retention. Unknown/Empty retain existing history; only an actual empty
@@ -835,6 +929,7 @@ pub trait WorkerAudioSink: Send {
         ) -> Result<(), String>,
     ) -> Result<ResidentPublicationAcceptance, ResidentPublicationRefusal> {
         Err(ResidentPublicationRefusal {
+            kind: crate::service::ResidentPublicationFailure::Other,
             playback,
             error: "ordinary worker publication is unavailable".into(),
         })
@@ -858,6 +953,7 @@ pub trait WorkerAudioSink: Send {
     ) -> Result<ResidentPublicationAcceptance, ResidentPublicationRefusal> {
         if playback.contains_streamed_sources() {
             return Err(ResidentPublicationRefusal {
+                kind: crate::service::ResidentPublicationFailure::Other,
                 playback,
                 error: "ordinary file-backed publication is unavailable for this output".into(),
             });
@@ -906,6 +1002,11 @@ pub trait WorkerAudioSink: Send {
     /// A consumer uses its existing reserved builder; this grants no source,
     /// output or callback owner. Offline/default sinks retain model editing.
     fn verified_device_parameter_source(&mut self, _source: Arc<VerifiedDeviceParameterSource>) {}
+    /// Accept source-bound clip intent on control. This is not graph admission
+    /// or callback acknowledgement; false retains no worker-side delivery claim.
+    fn verified_clip_move_update(&mut self, _update: VerifiedClipMoveUpdate) -> bool {
+        false
+    }
     /// Synchronous private canonical/original PCM input; no borrow may survive.
     fn native_sampler_input(&mut self, _input: NativeSamplerInput<'_>) {}
     /// A bounded stopped Arrangement handshake, shared by structural edits and
@@ -1331,7 +1432,7 @@ impl WorkerEvents {
             .ok_or_else(|| "audio adapter unavailable".to_owned())?
             .restart_audio(project_generation, request_id)
     }
-    fn poll(&mut self) {
+    pub(super) fn poll(&mut self) {
         if let Some(audio) = self.audio.as_mut() {
             audio.poll();
         }
@@ -1711,6 +1812,16 @@ impl WorkerEvents {
                     document_intent,
                 ));
             }
+            if self
+                .audio
+                .as_ref()
+                .is_some_and(|audio| audio.plugin_parameter_conversion_ready())
+            {
+                return Some(QueuedRequest::continuation(
+                    Request::ContinuePluginParameterConversion,
+                    document_intent,
+                ));
+            }
             if plugin_effect.is_some_and(|insertion| {
                 insertion.context != context
                     || insertion.control.is_cancelled()
@@ -1962,14 +2073,8 @@ mod tests {
             crate::test_wait::pause();
         }
     }
-    #[test]
-    fn plugin_source_selection_retains_base_lanes_as_well_as_reading_lanes() {
-        use hex_project::{
-            AutomationInterpolation, AutomationPoint, AutomationReadSelection, AutomationValue,
-            BeatTime, Command, Created, DeviceAutomationTarget, Editor,
-        };
-        let class = [1; 16];
-        let state = hex_plugin_state::encode(hex_plugin_state::State {
+    fn saved_effect_state(class: [u8; 16]) -> NativeDeviceState {
+        hex_plugin_state::encode(hex_plugin_state::State {
             identity: hex_plugin_state::Identity {
                 class: hex_plugin_state::ClassId::new(class).unwrap(),
                 binary: hex_plugin_state::BinaryIdentity {
@@ -1980,12 +2085,99 @@ mod tests {
             component: Some(&[4]),
             controller: None,
         })
-        .unwrap();
+        .unwrap()
+    }
+
+    #[test]
+    fn toggling_a_compatible_loop_keeps_the_authored_effect_worker() {
+        use hex_project::{
+            AutomationInterpolation, AutomationPoint, AutomationValue, BeatTime, Command, Created,
+            DeviceAutomationTarget, Editor,
+        };
+
+        fn prepare(project: &Project) -> ResidentEffectPreparation<'_> {
+            ResidentEffectPreparation {
+                project,
+                context: hex_engine::AudioSourceContext {
+                    project_generation: 1,
+                    editor_revision: 1,
+                },
+                restoring_plugin_state: false,
+                preparing_edit: true,
+            }
+        }
+
         let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
         let Created::Device(device) = editor
             .execute(Command::InsertMainDevice {
                 before: None,
-                state,
+                state: saved_effect_state([1; 16]),
+            })
+            .unwrap()
+        else {
+            panic!("plugin fixture");
+        };
+        let automation = |value| Command::ReplaceDeviceAutomationTarget {
+            device,
+            target: DeviceAutomationTarget::Vst3 { parameter: 7 },
+            points: vec![AutomationPoint {
+                beat: BeatTime::ZERO,
+                value: AutomationValue::new(value).unwrap(),
+                outgoing: AutomationInterpolation::Step,
+            }],
+        };
+        editor.execute(automation(0.5)).unwrap();
+        editor
+            .execute(Command::SetLoopRegion {
+                start: 1024,
+                end: 4096,
+                enabled: true,
+            })
+            .unwrap();
+        let before = editor.project().clone();
+
+        editor.execute(Command::ToggleLoopRegion).unwrap();
+        let keeps_worker = |old: &Project, new: &Project| {
+            prepare(new).same_authored_plugin_program(&prepare(old), device.value(), Some(256))
+        };
+        let disabled = editor.project().clone();
+        assert!(keeps_worker(&before, &disabled));
+        assert!(keeps_worker(&disabled, &before));
+
+        editor
+            .execute(Command::SetLoopRegion {
+                start: 0,
+                end: 1024,
+                enabled: true,
+            })
+            .unwrap();
+        assert!(keeps_worker(&disabled, editor.project()));
+
+        editor.execute(automation(0.75)).unwrap();
+        assert!(!keeps_worker(&disabled, editor.project()));
+        assert!(editor.undo());
+        editor
+            .execute(Command::SetLoopRegion {
+                start: 0,
+                end: 1025,
+                enabled: true,
+            })
+            .unwrap();
+        assert!(!keeps_worker(&disabled, editor.project()));
+    }
+
+    #[test]
+    fn plugin_source_selection_retains_base_lanes_as_well_as_reading_lanes() {
+        use hex_project::{
+            AutomationInterpolation, AutomationPoint, AutomationReadSelection, AutomationValue,
+            BeatTime, Command, Created, DeviceAutomationTarget, Editor,
+        };
+        let class = [1; 16];
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let Created::Device(device) = editor
+            .execute(Command::InsertMainDevice {
+                before: None,
+                state: saved_effect_state(class),
             })
             .unwrap()
         else {

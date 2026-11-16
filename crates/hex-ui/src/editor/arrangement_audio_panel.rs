@@ -295,6 +295,15 @@ pub(super) fn view(
     waveform_panel = waveform_panel.child(time_ruler(window, viewport));
     let mut canvas_region = div()
         .id("arrangement-audio-waveform")
+        .on_mouse_down(
+            gpui::MouseButton::Middle,
+            cx.listener(|view, event: &gpui::MouseDownEvent, window, cx| {
+                if view.begin_audio_pan(true, event.position, window, cx) {
+                    cx.stop_propagation();
+                    cx.notify();
+                }
+            }),
+        )
         .on_scroll_wheel(cx.listener(|view, event, window, cx| {
             if view.audio_navigation_wheel(event, true, window, cx) {
                 cx.stop_propagation();
@@ -343,9 +352,10 @@ pub(super) fn view(
     let measure = cx.entity().clone();
     canvas_region = canvas_region.children([gpui::canvas(
         |_, _, _| (),
-        move |bounds, _, _, cx| {
+        move |bounds, _, window, cx| {
             measure.update(cx, |view, _| {
-                view.audio_event_editor.source_bounds = Some(bounds)
+                view.audio_event_editor.source_bounds = Some(bounds);
+                view.renew_audio_pan(true, bounds, window, measure.entity_id());
             });
         },
     )

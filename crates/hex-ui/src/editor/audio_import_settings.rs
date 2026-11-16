@@ -43,6 +43,16 @@ impl EditorView {
             options.new_track_gain =
                 Some(self.track_defaults.captured_gain().map_err(str::to_owned)?);
         }
+        if let Request::InsertProjectSample {
+            destination:
+                AudioBatchDestination::NewTracks { .. }
+                | AudioBatchDestination::Console(ConsoleDestination::NewTrack { .. }),
+            new_track_gain,
+            ..
+        } = &mut request
+        {
+            *new_track_gain = Some(self.track_defaults.captured_gain().map_err(str::to_owned)?);
+        }
         match request {
             Request::Import(path) => Ok(Request::ImportToNewTrackWithGain {
                 path,

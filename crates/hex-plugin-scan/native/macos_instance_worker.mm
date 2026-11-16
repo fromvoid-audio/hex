@@ -12,6 +12,7 @@
 #include <mutex>
 #include <fcntl.h>
 #include <poll.h>
+#include <sys/ioctl.h>
 #include <optional>
 #include <os/log.h>
 #include <thread>
@@ -95,15 +96,21 @@ bool send_state_overflow(int channel,const wire::Config& config,uint64_t blocks,
     wire::number(body,1,1);wire::number(body,observed,4);
     return wire::send(channel,"HXVICR02",body);
 }
+// The processing lane owns reads, including EOF. On macOS a concurrent
+// MSG_PEEK can consume its wakeup and leave a partial-frame read blocked.
+// poll and FIONREAD observe closure without becoming another socket reader.
+bool peer_closed(int channel) {
+    pollfd descriptor{channel,POLLIN,0};
+    const int ready=::poll(&descriptor,1,0);
+    if(ready<=0 || !(descriptor.revents&POLLHUP)) return false;
+    int available=0;
+    return ::ioctl(channel,FIONREAD,&available)==0 && available==0;
+}
 bool wait_for_peer_close(int channel) {
     pollfd descriptor{channel,POLLIN,0};
     const int ready=::poll(&descriptor,1,failed_main_wait_ms);
     if(ready==0) return false;
-    if(ready>0) {
-        uint8_t byte=0;const auto peer=::recv(channel,&byte,1,MSG_PEEK|MSG_DONTWAIT);
-        // A closed peer with unread bytes still reports hangup.
-        if(peer==0 || (descriptor.revents&POLLHUP)) return true;
-    }
+    if(ready>0 && (descriptor.revents&POLLHUP)) return true;
     std::this_thread::sleep_for(std::chrono::milliseconds(failed_main_wait_ms));
     return false;
 }
@@ -358,6 +365,7 @@ int main(int argc,char** argv) {
             hex_instance::ParameterFeedback parameter_feedback;
             std::atomic<uint64_t> diagnostic_pcm_blocks{0},diagnostic_nonzero_input_blocks{0};
             std::atomic<bool> done{false};std::atomic<uint32_t> worker_failure{0},startup{0},phase{0};
+            std::atomic<bool> worker_retiring{false};
             std::mutex startup_mutex;std::condition_variable startup_changed;bool go=false;
             const auto control_failure=[&](uint32_t code) {
                 // Share the epoch wait mutex so failure publication cannot
@@ -394,6 +402,7 @@ int main(int argc,char** argv) {
             hex_instance::ControllerQuery page_query{};
             hex_instance::ControllerParameterPage parameter_page{};
             hex_instance::EditorState editor_state=hex_instance::EditorState::Closed;
+            bool editor_edits_sealed=false;
             std::optional<hex_instance::EditorPosition> detached_editor_position;
             uint32_t page_failure=0;
             std::thread worker([&] {
@@ -463,12 +472,13 @@ int main(int argc,char** argv) {
                     // Keep the sequence of the last input for each parameter
                     // until a later input replaces it. Inventory refreshes
                     // preserve the sorted ID set, including across epochs.
-                    std::array<uint64,hex_instance::HOST_PARAMETER_COUNT> feedback_sequences{};
-                    const auto feedback_sequence=[&](ParamID id,std::optional<uint64> input) -> std::optional<uint64> {
+                    struct FeedbackOrigin { uint64 sequence=0; bool editor_input=false; };
+                    std::array<FeedbackOrigin,hex_instance::HOST_PARAMETER_COUNT> feedback_sequences{};
+                    const auto feedback_sequence=[&](ParamID id,std::optional<uint64> input,bool editor_input=false) -> std::optional<FeedbackOrigin> {
                         const auto* info=processing_parameters.find(id);
                         if(!info) return std::nullopt;
                         auto& sequence=feedback_sequences[info-processing_parameters.parameters.data()];
-                        if(input) sequence=*input;
+                        if(input) sequence={*input,editor_input};
                         return sequence;
                     };
                     const auto conflicts_with_prior_cohort=[&](const hex_instance::EditEvent& event) {
@@ -568,7 +578,7 @@ int main(int argc,char** argv) {
                         }
                         return !remaining_group;
                     };
-                    const auto mirror_flushed_parameters=[&](hex_instance::ParameterFeedback& feedback) {
+                    const auto mirror_flushed_parameters=[&](hex_instance::ParameterFeedback& feedback,uint64 host_frontier) {
                         // A zero-frame flush has no timeline ordering between
                         // input and output. Keep the value from a native Perform
                         // for its own controller. The processor may report its
@@ -581,8 +591,9 @@ int main(int argc,char** argv) {
                                 const auto editor_sequence=staged_editor_sequence(point.id);
                                 if(!is_input && editor_sequence) continue;
                                 const auto sequence=feedback_sequence(point.id,is_input?
-                                    std::optional<uint64>{editor_sequence}:std::nullopt);
-                                if(!sequence || !feedback.put(point.id,point.normalized,*sequence)) return false;
+                                    std::optional<uint64>{editor_sequence?editor_sequence:host_frontier}:std::nullopt,
+                                    is_input && editor_sequence);
+                                if(!sequence || !feedback.put(point.id,point.normalized,sequence->sequence,sequence->editor_input)) return false;
                             }
                         }
                         return true;
@@ -600,11 +611,12 @@ int main(int argc,char** argv) {
                             ProcessData flush{};flush.processMode=process_mode;flush.symbolicSampleSize=kSample32;
                             flush.inputParameterChanges=&parameter_input;flush.outputParameterChanges=&parameter_output;
                             phase.store(2,std::memory_order_release);
+                            const auto host_frontier=instance.editor_frontier_on_worker();
                             const auto result=instance.flush_idle(flush);
                             const bool input_returned=parameter_input.end_sdk(),output_returned=parameter_output.end_sdk();
                             if(!input_returned || !output_returned) {error(channel,&*config,Processing);std::_Exit(Processing);}
                             if(result!=hex_instance::FlushResult::Applied) return false;
-                            if(!mirror_flushed_parameters(parameter_feedback)) return false;
+                            if(!mirror_flushed_parameters(parameter_feedback,host_frontier)) return false;
                             instance.publish_parameter_feedback(parameter_feedback);
                         }
                         for(size_t n=0;n<applying_edit_count;++n) complete_edit(applying_edits[n]);
@@ -627,12 +639,13 @@ int main(int argc,char** argv) {
                         ProcessData flush{};flush.processMode=process_mode;flush.symbolicSampleSize=kSample32;
                         flush.inputParameterChanges=parameter_input.size()?&parameter_input:nullptr;flush.outputParameterChanges=&parameter_output;
                         phase.store(2,std::memory_order_release);
+                        const auto host_frontier=instance.editor_frontier_on_worker();
                         const auto result=idle?instance.flush_idle(flush):instance.flush_stopped(flush);
                         const bool input_returned=parameter_input.end_sdk(),output_returned=parameter_output.end_sdk();
                         if(!input_returned || !output_returned) { error(channel,&*config,Processing);std::_Exit(Processing); }
                         if(result!=hex_instance::FlushResult::Applied && result!=hex_instance::FlushResult::Empty) return Processing;
                         flushed_values={};
-                        if(!mirror_flushed_parameters(flushed_values)) return ProtocolFailure;
+                        if(!mirror_flushed_parameters(flushed_values,host_frontier)) return ProtocolFailure;
                         for(size_t n=0;n<applying_edit_count;++n) complete_edit(applying_edits[n]);
                         {
                             std::unique_lock<std::mutex> lock(startup_mutex);
@@ -661,7 +674,9 @@ int main(int argc,char** argv) {
                         const bool complete=poll && state==PageComplete;
                         wire::Bytes body;config->stamp(body);wire::number(body,blocks,8);wire::number(body,frames,8);
                         wire::number(body,page_operation,8);
-                        if(complete && hex_instance::editor_request(page_query.kind)) {
+                        if(complete && page_query.kind==hex_instance::SEAL_EDITOR_EDITS) {
+                            wire::number(body,5,1);wire::number(body,editor_edits_sealed?1:0,1);
+                        } else if(complete && hex_instance::editor_request(page_query.kind)) {
                             wire::number(body,4,1);
                             if(detached_editor_position) {
                                 wire::number(body,3,1);
@@ -745,7 +760,7 @@ int main(int argc,char** argv) {
                             hex_instance::ParameterPoint point{};
                             if(!parameter_output.point(index,point)) return false;
                             const auto sequence=feedback_sequence(point.id,std::nullopt);
-                            if(!sequence || !parameter_feedback.put(point.id,point.normalized,*sequence)) return false;
+                            if(!sequence || !parameter_feedback.put(point.id,point.normalized,sequence->sequence,sequence->editor_input)) return false;
                         }
                         return true;
                     };
@@ -820,7 +835,7 @@ int main(int argc,char** argv) {
                         if((received==2 || received==3) && live_stage.load(std::memory_order_acquire)!=LiveIdle) {
                             worker_failure.store(ProtocolFailure);break;
                         }
-                        if(received==2) { normal_stop=true;break; }
+                        if(received==2) { worker_retiring.store(true,std::memory_order_release);normal_stop=true;break; }
                         if(received==0) std::_Exit(Cancelled); // EOF never claims cooperative close
                         if(received==3) {
                             if(packet.release_gates) {
@@ -908,7 +923,7 @@ int main(int argc,char** argv) {
                             if(worker_failure.load()) break;
                             continue;
                         }
-                        if(received!=1) { worker_failure.store(ProtocolFailure);break; }
+                        if(received!=1) { worker_retiring.store(true,std::memory_order_release);worker_failure.store(ProtocolFailure);break; }
                         bool valid=true;output_right.fill(0);input.silenceFlags=input_silence;output.silenceFlags=0;
                         bool nonzero_input=false;
                         for(size_t n=0;n<packet.frames;++n) {
@@ -1013,6 +1028,7 @@ int main(int argc,char** argv) {
                             window.inputEvents=event_channels?&input_notes:nullptr;
                             window.processContext=slice?&packet.timing_changes[slice-1].context:(packet.context?&*packet.context:nullptr);
                             window.numSamples=width;phase.store(2,std::memory_order_release);
+                            const auto host_frontier=instance.editor_frontier_on_worker();
                             const bool processed=instance.process(window);
                             // No SDK stop/unload beneath a retained borrowed queue.
                             const bool input_returned=parameter_input.end_sdk(),output_returned=parameter_output.end_sdk();
@@ -1037,9 +1053,14 @@ int main(int argc,char** argv) {
                                 // Native edits enter at quantum offset zero.
                                 // A later authored input replaces the sequence.
                                 std::optional<uint64> input_sequence;
-                                if(use_input) input_sequence=first || point.offset?0:staged_editor_sequence(point.id);
-                                const auto sequence=feedback_sequence(point.id,input_sequence);
-                                if(!sequence || !parameter_feedback.put(point.id,point.normalized,*sequence)) valid=false;
+                                bool editor_input=false;
+                                if(use_input) {
+                                    const auto editor_sequence=first || point.offset?0:staged_editor_sequence(point.id);
+                                    input_sequence=editor_sequence?editor_sequence:host_frontier;
+                                    editor_input=editor_sequence!=0;
+                                }
+                                const auto sequence=feedback_sequence(point.id,input_sequence,editor_input);
+                                if(!sequence || !parameter_feedback.put(point.id,point.normalized,sequence->sequence,sequence->editor_input)) valid=false;
                             }
                             if(!valid || !packet.append_parameter_reply(first,parameter_output)) {
                                 worker_failure.store(ProtocolFailure);break;
@@ -1090,8 +1111,7 @@ int main(int argc,char** argv) {
             // Ready means the actual worker's fallible setProcessing succeeded,
             // not merely that a control-side configuration was copied.
             while(!startup.load(std::memory_order_acquire)) {
-                uint8_t byte=0;const auto peer=::recv(channel,&byte,1,MSG_PEEK|MSG_DONTWAIT);
-                if(peer==0) std::_Exit(Cancelled);
+                if(peer_closed(channel)) std::_Exit(Cancelled);
                 CFRunLoopRunInMode(kCFRunLoopDefaultMode,0.001,true);
             }
             if(instance.host_refusals()) worker_failure.store(HostControl);
@@ -1103,6 +1123,15 @@ int main(int argc,char** argv) {
             // Foreign timers and controller calls can also autorelease work
             // on turns that do not visit the editor's AppKit event pump.
             auto next_message_report=std::chrono::steady_clock::time_point::min();
+            std::optional<std::chrono::steady_clock::time_point> retirement_deadline;
+            const auto may_cancel_closed_peer=[&] {
+                if(!worker_retiring.load(std::memory_order_acquire)) return true;
+                const auto now=std::chrono::steady_clock::now();
+                // Give an already admitted terminal reply a bounded chance to
+                // finish; a hung foreign stop cannot hold a closed peer forever.
+                if(!retirement_deadline) retirement_deadline=now+std::chrono::milliseconds(250);
+                return now>=*retirement_deadline;
+            };
             while(!done.load(std::memory_order_acquire)) @autoreleasepool {
                 try {
                     if(trace_messages) {
@@ -1122,7 +1151,10 @@ int main(int argc,char** argv) {
                         // unless the worker itself is receiving (it then sees
                         // EOF and finishes); a hung DSP/stop never returns.
                         if(wait_for_peer_close(channel) && phase.load(std::memory_order_acquire)!=1 &&
-                            !done.load(std::memory_order_acquire)) std::_Exit(Cancelled);
+                            !done.load(std::memory_order_acquire)) {
+                            if(may_cancel_closed_peer()) std::_Exit(Cancelled);
+                            std::this_thread::sleep_for(std::chrono::milliseconds(failed_main_wait_ms));
+                        }
                         continue;
                     }
                     // The worker owns active response framing. Publishing a
@@ -1146,14 +1178,29 @@ int main(int argc,char** argv) {
                                 @autoreleasepool {
                                     const bool was_open=editor.is_open();
                                     const auto kind=page_query.kind;
-                                    detached_editor_position=kind==hex_instance::DETACH_EDITOR?editor.position():std::nullopt;
+                                    const bool guarded=kind==hex_instance::DETACH_EDITOR_WHEN_IDLE;
+                                    const auto admission=guarded?instance.begin_editor_detach_on_control():hex_instance::EditorDetachAdmission::Granted;
+                                    const bool allowed=admission==hex_instance::EditorDetachAdmission::Granted;
+                                    struct DetachGuard {
+                                        decltype(instance)& owner;
+                                        bool held;
+                                        ~DetachGuard() { if(held) owner.end_editor_detach_on_control(); }
+                                    } guard{instance,guarded && allowed};
+                                    detached_editor_position=allowed &&
+                                        (kind==hex_instance::DETACH_EDITOR || guarded)?editor.position():std::nullopt;
                                     const auto placement=kind==hex_instance::REOPEN_EDITOR && page_query.id==1?
                                         std::optional<hex_instance::EditorPosition>(hex_instance::editor_reopen_position(page_query)):
                                         std::nullopt;
-                                    if(kind==hex_instance::REOPEN_EDITOR && was_open)
+                                    if(admission==hex_instance::EditorDetachAdmission::Refused)
+                                        page_failure=HostControl;
+                                    else if(!allowed)
+                                        editor_state=hex_instance::EditorState::GestureActive;
+                                    else if(kind==hex_instance::SEAL_EDITOR_EDITS)
+                                        editor_edits_sealed=instance.seal_editor_edits_on_control();
+                                    else if(kind==hex_instance::REOPEN_EDITOR && was_open)
                                         editor_state=hex_instance::EditorState::Open;
                                     else if(!editor.close()) page_failure=Teardown;
-                                    else if(kind==hex_instance::DETACH_EDITOR)
+                                    else if(kind==hex_instance::DETACH_EDITOR || guarded)
                                         editor_state=was_open?hex_instance::EditorState::Open:hex_instance::EditorState::Closed;
                                     else if(was_open || kind==hex_instance::CLOSE_EDITOR)
                                         editor_state=hex_instance::EditorState::Closed;
@@ -1310,6 +1357,9 @@ int main(int argc,char** argv) {
                         std::lock_guard<std::mutex> lock(startup_mutex);
                         epoch_stage=CaptureSent;startup_changed.notify_all();
                     } else if(stage==ResumeRequested) {
+                        // An editor seal is terminal for this actual helper.
+                        // Never acknowledge an epoch that cannot accept edits.
+                        if(instance.editor_edits_sealed_on_control()) { error(channel,&*config,Resume);std::_Exit(Resume); }
                         if(instance.latency_restart()) { error(channel,&*config,Quiescence);std::_Exit(Quiescence); }
                         supplied=next_presentation;
                         presentation=apply_presentation(instance,*available,supplied);
@@ -1334,8 +1384,7 @@ int main(int argc,char** argv) {
                         std::lock_guard<std::mutex> lock(startup_mutex);
                         epoch_stage=ResumeSent;startup_changed.notify_all();
                     }
-                    uint8_t byte=0;const auto peer=::recv(channel,&byte,1,MSG_PEEK|MSG_DONTWAIT);
-                    if(peer==0 && phase.load(std::memory_order_acquire)!=1 && !done.load(std::memory_order_acquire)) {
+                    if(peer_closed(channel) && phase.load(std::memory_order_acquire)!=1 && !done.load(std::memory_order_acquire) && may_cancel_closed_peer()) {
                         // EOF is cancellation, not the graceful HXVE terminal.
                         // Retire the isolated process rather than wait on hung DSP
                         // or unload code beneath its processing thread.
@@ -1371,7 +1420,7 @@ int main(int argc,char** argv) {
             ::close(channel);
             std::_Exit(sent?0:ProtocolFailure);
         }
-        try { if(editor.close()) closing=instance.close_for_retirement(); } catch(...) {}
+        try { if(editor.close()) closing=instance.close_for_retirement(normal_stop && !failure); } catch(...) {}
     }
     @autoreleasepool {
         bool unloaded=false;

@@ -1,8 +1,8 @@
 use super::{
-    latest_applied_canonical_candidate, pending_playback_for_state, preview_source_is_current,
-    promote_playback_candidates, reconcile_verified_applied_source, rejected_candidate_project,
-    rejected_preview_candidate, restore_verified_recovery_from_applied,
-    retained_install_fresh_policy,
+    AppliedCandidateSource, applied_clip_candidate_source, latest_applied_canonical_candidate,
+    pending_playback_for_state, preview_source_is_current, promote_playback_candidates,
+    reconcile_verified_applied_source, rejected_candidate_project, rejected_preview_candidate,
+    restore_verified_recovery_from_applied, retained_install_fresh_policy,
 };
 use crate::editor::PlaybackCandidate;
 use crate::editor::audio_admission::{AudioAdmissionStatus, ProjectRevision};
@@ -304,9 +304,111 @@ fn rejected_unapplied_candidate_never_becomes_audible() {
     assert!(candidates.is_empty());
 }
 
+#[test]
+fn clip_preview_requires_exact_applied_revision_and_current_gesture() {
+    let mut project = hex_project::Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+    let hex_project::Created::Track(track) = project
+        .execute(hex_project::Command::AddTrack {
+            name: "source".into(),
+        })
+        .unwrap()
+    else {
+        panic!("track")
+    };
+    let identity = hex_session::service::ClipMovePreviewIdentity {
+        context: hex_engine::AudioSourceContext {
+            project_generation: 2,
+            editor_revision: 40,
+        },
+        gesture: 9,
+        sequence: 3,
+        destination: hex_session::service::ClipMovePreviewDestination::Existing(track),
+        position: hex_project::ClipGroupPosition::Audio(240),
+        mode: hex_session::service::ArrangementMoveMode::Move,
+    };
+    let mut preview = candidate(5, 40, 2);
+    preview.clip_preview_identity = Some(identity);
+    let classify = |applied, generation, revision, expected| {
+        applied_clip_candidate_source(&preview, identity, applied, generation, revision, expected)
+    };
+    assert_eq!(
+        classify(4, 2, Some(40), Some(identity)),
+        AppliedCandidateSource::SupersededPreview
+    );
+    assert_eq!(
+        classify(5, 2, Some(40), Some(identity)),
+        AppliedCandidateSource::Current
+    );
+    assert_eq!(
+        classify(6, 2, Some(40), Some(identity)),
+        AppliedCandidateSource::SupersededPreview
+    );
+    assert_eq!(
+        classify(5, 3, Some(40), Some(identity)),
+        AppliedCandidateSource::SupersededPreview
+    );
+    assert_eq!(
+        classify(5, 2, Some(41), Some(identity)),
+        AppliedCandidateSource::SupersededPreview
+    );
+    assert_eq!(
+        classify(5, 2, Some(40), None),
+        AppliedCandidateSource::SupersededPreview
+    );
+    let mut newer = identity;
+    newer.sequence += 1;
+    assert_eq!(
+        classify(5, 2, Some(40), Some(newer)),
+        AppliedCandidateSource::Current
+    );
+    let mut different_gesture = newer;
+    different_gesture.gesture += 1;
+    assert_eq!(
+        classify(5, 2, Some(40), Some(different_gesture)),
+        AppliedCandidateSource::SupersededPreview
+    );
+    let mut conflicting_target = identity;
+    conflicting_target.position = hex_project::ClipGroupPosition::Midi(hex_project::BeatTime::ONE);
+    assert_eq!(
+        classify(5, 2, Some(40), Some(conflicting_target)),
+        AppliedCandidateSource::SupersededPreview
+    );
+    let mut queue = VecDeque::from([preview]);
+    assert!(latest_applied_canonical_candidate(&queue, 5, None).is_none());
+    assert!(rejected_candidate_project(&queue, 5).is_none());
+    assert!(promote_playback_candidates(&mut queue, 4, None).is_none());
+    let applied = promote_playback_candidates(&mut queue, 5, None).unwrap();
+    assert_eq!(
+        applied_clip_candidate_source(&applied, identity, 5, 2, Some(40), Some(identity)),
+        AppliedCandidateSource::Current
+    );
+}
+
+#[test]
+fn applied_clip_preview_invalidates_only_the_previous_canonical_audio() {
+    use super::super::audio_admission::AdmissionState;
+    let project = ProjectRevision {
+        generation: 2,
+        revision: 40,
+    };
+    let mut admission = AudioAdmissionStatus::default();
+    admission.canonical_revision(project);
+    admission.published(project, 4);
+    admission.applied(project, 4);
+    assert!(admission.preview_applied(5));
+    let current = admission.current().unwrap();
+    assert_eq!(current.state, AdmissionState::Pending);
+    assert_eq!(current.audio_revision, None);
+    assert!(admission.last_audible().is_none());
+    admission.published(project, 7);
+    admission.preview_applied(6);
+    assert_eq!(admission.current().unwrap().audio_revision, Some(7));
+}
+
 fn candidate(audio_revision: u64, project_revision: u64, generation: u64) -> PlaybackCandidate {
     let project = Arc::new(Project::new(48_000).expect("project"));
     PlaybackCandidate {
+        clip_preview_identity: None,
         worker_requires_preroll: None,
         observation: None,
         audio_revision,

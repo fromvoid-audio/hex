@@ -78,6 +78,10 @@ pub(crate) struct NativeEffectControl {
     pub(super) state_authority: hex_lattice_contract::Vst3StateAuthority,
 }
 impl NativeEffect {
+    #[cfg(test)]
+    pub(crate) fn pending_edit_result_nonempty_for_test(&self) -> Option<bool> {
+        self.worker.pending_edit_result_nonempty_for_test()
+    }
     pub(crate) fn parameter_hold(
         &mut self,
         command: NativeParameterHold<'_>,
@@ -171,6 +175,12 @@ impl NativeEffect {
     ) -> Result<Option<hex_plugin_host::protocol::RecoveryEdits>, &'static str> {
         self.worker.poll_recovery_edits_on_control(flush_idle)
     }
+    pub(crate) fn poll_stopped_edits(
+        &mut self,
+        recovery: bool,
+    ) -> Result<crate::plugin_worker::StoppedEditProgress, &'static str> {
+        self.worker.poll_stopped_edits_on_control(recovery)
+    }
     pub(crate) fn begin_state_capture(&mut self) -> Result<NativeWorkerCapture, &'static str> {
         self.worker.begin_state_capture_on_control()
     }
@@ -179,6 +189,39 @@ impl NativeEffect {
         request: &NativeWorkerCapture,
     ) -> Result<NativeWorkerCaptureProgress, &'static str> {
         self.worker.poll_state_capture_on_control(request)
+    }
+    pub(crate) fn begin_capture_after_parameter(
+        &mut self,
+        input: &NativeWorkerParameterChange,
+    ) -> Result<NativeWorkerCapture, &'static str> {
+        self.worker
+            .begin_state_capture_after_parameter_on_control(input)
+    }
+    pub(crate) fn begin_capture_after_idle_parameter(
+        &mut self,
+        input: &NativeWorkerParameterChange,
+    ) -> Result<NativeWorkerCapture, &'static str> {
+        self.worker
+            .begin_state_capture_after_idle_parameter_on_control(input)
+    }
+    pub(crate) fn poll_capture_after_parameter(
+        &mut self,
+        request: &NativeWorkerCapture,
+    ) -> Result<crate::plugin_worker::NativeWorkerSequencedCaptureProgress, &'static str> {
+        self.worker
+            .poll_state_capture_after_parameter_on_control(request)
+    }
+    pub(crate) fn sequenced_capture_is_current(
+        &self,
+        fact: &crate::plugin_worker::NativeWorkerStateAfterParameter,
+    ) -> Result<bool, &'static str> {
+        self.worker.sequenced_capture_is_current_on_control(fact)
+    }
+    pub(crate) fn observe_sequenced_capture_input(
+        &self,
+        fact: &crate::plugin_worker::NativeWorkerStateAfterParameter,
+    ) -> Result<Option<hex_plugin_host::transport::ParameterInputSource>, &'static str> {
+        self.worker.observe_sequenced_capture_input_on_control(fact)
     }
     #[allow(clippy::result_large_err)] // Refusal retains the entire original pair, without an error-path allocation.
     pub(crate) fn loan_on_control(
@@ -204,6 +247,10 @@ impl NativeEffect {
     }
 }
 impl NativeEffectControl {
+    #[cfg(test)]
+    pub(crate) fn pending_edit_result_nonempty_for_test(&self) -> Option<bool> {
+        self.worker.pending_edit_result_nonempty_for_test()
+    }
     pub(crate) fn reserve_program_revision_on_control(
         &mut self,
     ) -> Result<std::num::NonZeroU64, &'static str> {
@@ -300,6 +347,12 @@ impl NativeEffectControl {
     ) -> Result<Option<hex_plugin_host::protocol::RecoveryEdits>, &'static str> {
         self.worker.poll_recovery_edits_on_control(flush_idle)
     }
+    pub(crate) fn poll_stopped_edits(
+        &mut self,
+        recovery: bool,
+    ) -> Result<crate::plugin_worker::StoppedEditProgress, &'static str> {
+        self.worker.poll_stopped_edits_on_control(recovery)
+    }
     pub(crate) fn begin_state_capture(&mut self) -> Result<NativeWorkerCapture, &'static str> {
         self.worker.begin_state_capture_on_control()
     }
@@ -308,6 +361,39 @@ impl NativeEffectControl {
         request: &NativeWorkerCapture,
     ) -> Result<NativeWorkerCaptureProgress, &'static str> {
         self.worker.poll_state_capture_on_control(request)
+    }
+    pub(crate) fn begin_capture_after_parameter(
+        &mut self,
+        input: &NativeWorkerParameterChange,
+    ) -> Result<NativeWorkerCapture, &'static str> {
+        self.worker
+            .begin_state_capture_after_parameter_on_control(input)
+    }
+    pub(crate) fn begin_capture_after_idle_parameter(
+        &mut self,
+        input: &NativeWorkerParameterChange,
+    ) -> Result<NativeWorkerCapture, &'static str> {
+        self.worker
+            .begin_state_capture_after_idle_parameter_on_control(input)
+    }
+    pub(crate) fn poll_capture_after_parameter(
+        &mut self,
+        request: &NativeWorkerCapture,
+    ) -> Result<crate::plugin_worker::NativeWorkerSequencedCaptureProgress, &'static str> {
+        self.worker
+            .poll_state_capture_after_parameter_on_control(request)
+    }
+    pub(crate) fn sequenced_capture_is_current(
+        &self,
+        fact: &crate::plugin_worker::NativeWorkerStateAfterParameter,
+    ) -> Result<bool, &'static str> {
+        self.worker.sequenced_capture_is_current_on_control(fact)
+    }
+    pub(crate) fn observe_sequenced_capture_input(
+        &self,
+        fact: &crate::plugin_worker::NativeWorkerStateAfterParameter,
+    ) -> Result<Option<hex_plugin_host::transport::ParameterInputSource>, &'static str> {
+        self.worker.observe_sequenced_capture_input_on_control(fact)
     }
     pub(crate) fn transport_is_live_on_control(&self) -> bool {
         self.worker.transport_is_live_on_control()
@@ -385,6 +471,14 @@ impl NativeEffectReference<'_> {
         match self {
             Self::Unsplit(effect) => effect.worker.program_frontier_on_control(),
             Self::Loaned(control) => control.worker.program_frontier_on_control(),
+        }
+    }
+    pub(crate) fn quantum_observation_on_control(
+        &self,
+    ) -> Option<hex_plugin_host::transport::QuantumObservation> {
+        match self {
+            Self::Unsplit(effect) => effect.worker.quantum_observation_on_control(),
+            Self::Loaned(control) => control.worker.quantum_observation_on_control(),
         }
     }
     pub(crate) fn committed_quantum_on_control(

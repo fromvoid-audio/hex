@@ -28,7 +28,11 @@ impl fmt::Display for Error {
             Self::Invalid(message) => f.write_str(message),
             Self::File(error) => write!(f, "preset original file: {error}"),
             Self::Decode(error) => write!(f, "could not read preset original audio: {error}"),
-            Self::Write(error) => write!(f, "could not retain preset original audio: {error}"),
+            Self::Write(error) => write!(
+                f,
+                "could not retain preset original audio: {}",
+                super::super::export_error_text(error)
+            ),
             Self::Cancelled => f.write_str("preset original audio operation canceled"),
         }
     }

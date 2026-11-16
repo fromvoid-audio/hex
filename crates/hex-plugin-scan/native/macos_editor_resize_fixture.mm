@@ -84,6 +84,7 @@ public:
     int constraints=0;
     bool accepts=false;
     bool resizable=false;
+    int focus_gained=0,focus_lost=0;
 
     tresult PLUGIN_API queryInterface(const TUID,void** out) override {
         if(out) *out=nullptr;
@@ -98,7 +99,10 @@ public:
     tresult PLUGIN_API onKeyDown(char16,int16,int16) override { return kNotImplemented; }
     tresult PLUGIN_API onKeyUp(char16,int16,int16) override { return kNotImplemented; }
     tresult PLUGIN_API getSize(ViewRect*) override { return kNotImplemented; }
-    tresult PLUGIN_API onFocus(TBool) override { return kNotImplemented; }
+    tresult PLUGIN_API onFocus(TBool focused) override {
+        if(focused) ++focus_gained;else ++focus_lost;
+        return kResultOk;
+    }
     tresult PLUGIN_API setFrame(IPlugFrame*) override { return kNotImplemented; }
     tresult PLUGIN_API canResize() override { return resizable?kResultOk:kResultFalse; }
     tresult PLUGIN_API checkSizeConstraint(ViewRect* rect) override {
@@ -114,6 +118,33 @@ public:
     }
 };
 
+static void check_focus(NSWindowStyleMask style) {
+    auto* window=[[NSWindow alloc] initWithContentRect:NSMakeRect(0,0,320,240)
+        styleMask:style backing:NSBackingStoreBuffered defer:NO];
+    assert(window && ![window isVisible]);
+    ResizeView view(window);
+    EditorFrame host(window,&view);
+    auto* delegate=[[HexVSTEditorResizeDelegate alloc] initWithEditorFrame:&host];
+    assert([delegate respondsToSelector:@selector(windowDidBecomeKey:)]);
+    assert([delegate respondsToSelector:@selector(windowDidResignKey:)]);
+    auto* gained=[NSNotification notificationWithName:NSWindowDidBecomeKeyNotification object:window];
+    auto* lost=[NSNotification notificationWithName:NSWindowDidResignKeyNotification object:window];
+    [delegate windowDidBecomeKey:gained];
+    [delegate windowDidBecomeKey:gained];
+    assert(view.focus_gained==1 && view.focus_lost==0);
+    [delegate windowDidResignKey:lost];
+    [delegate windowDidResignKey:lost];
+    assert(view.focus_gained==1 && view.focus_lost==1);
+    [delegate windowDidBecomeKey:gained];
+    host.focus_changed(false); // EditorWindow::close before detaching the view.
+    assert(view.focus_gained==2 && view.focus_lost==2);
+    host.invalidate();
+    [delegate windowDidBecomeKey:gained];
+    assert(view.focus_gained==2 && view.focus_lost==2);
+    [delegate release];
+    [window release];
+}
+
 int main() {
     @autoreleasepool {
         [NSApplication sharedApplication];
@@ -124,6 +155,8 @@ int main() {
         fixed.resizable=true;
         const auto style=EditorFrame::window_style(fixed);
         assert(style&NSWindowStyleMaskResizable);
+        check_focus(NSWindowStyleMaskTitled|NSWindowStyleMaskClosable);
+        check_focus(style);
         auto* window=[[NSWindow alloc] initWithContentRect:NSMakeRect(40,60,320,240)
             styleMask:style
             backing:NSBackingStoreBuffered defer:NO];

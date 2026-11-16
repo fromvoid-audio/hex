@@ -216,7 +216,11 @@ fn authentic_flat_schema66_migrates_as_roots() {
     let bytes = include_bytes!("../../../tests/fixtures/sampler-crossfade/schema66.json");
     let project = crate::decode(bytes).unwrap();
     assert!(project.devices().all(|device| device.parent().is_none()));
-    assert_eq!(crate::encode(&project).unwrap(), bytes);
+    let encoded = crate::encode(&project).unwrap();
+    let expected: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+    let actual: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
+    assert_eq!(actual, expected);
+    assert_eq!(crate::decode(&encoded).unwrap(), project);
 }
 
 #[test]

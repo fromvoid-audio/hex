@@ -710,6 +710,7 @@ pub struct DeviceResourceAdmission<'a> {
     playback: Option<&'a crate::playback::Playback>,
     playback_resources: Option<&'a PreparedDeviceResources>,
     batch: Option<&'a DeviceResourcePublicationBatch>,
+    repitch_requirements: Option<&'a crate::audio_transform::StreamedRepitchRequirements>,
 }
 impl<'a> DeviceResourceAdmission<'a> {
     pub fn new(
@@ -726,6 +727,7 @@ impl<'a> DeviceResourceAdmission<'a> {
             playback: None,
             playback_resources: None,
             batch: None,
+            repitch_requirements: None,
         }
     }
     /// Borrow actual unpublished worker-owned runtime leases while an output is unavailable or
@@ -745,6 +747,15 @@ impl<'a> DeviceResourceAdmission<'a> {
     /// both current/export aliases. Ordinary non-resource factory contracts remain unchanged.
     pub fn with_prepared_revisions(mut self, revisions: &'a [&'a crate::PreparedRevision]) -> Self {
         self.revisions = revisions;
+        self
+    }
+    /// Include a control-owned requirement set in the same native storage ledger.
+    /// Repeated shared maps are counted once; this grants no publication authority.
+    pub fn with_repitch_requirements(
+        mut self,
+        requirements: &'a crate::audio_transform::StreamedRepitchRequirements,
+    ) -> Self {
+        self.repitch_requirements = Some(requirements);
         self
     }
     /// One actual captured set and its exact compiled revision, suitable for a bounded worker
@@ -797,6 +808,9 @@ impl<'a> DeviceResourceAdmission<'a> {
         ledger: &mut AudioRootStorageLedger<'a>,
     ) -> Result<u64, AudioStorageError> {
         let mut frames = 0u64;
+        if let Some(requirements) = self.repitch_requirements {
+            requirements.visit(ledger)?;
+        }
         for set in self.sets.iter().copied().chain(self.set) {
             frames = frames
                 .checked_add(set.visit(ledger)?)
@@ -836,6 +850,14 @@ impl<'a> DeviceResourceAdmission<'a> {
         }
         if let Some(playback) = self.playback {
             ledger.root(playback, crate::AudioStorageRole::Caller)?;
+            let continuation_bytes = playback.foreign_continuation_metadata_bytes_on_control()?;
+            if continuation_bytes != 0 {
+                ledger.bytes(
+                    crate::audio_storage::Owner::exclusive(playback),
+                    crate::audio_storage::Location("unpublished-foreign-continuation", 0),
+                    continuation_bytes,
+                )?;
+            }
             if let Some(resources) = self.playback_resources {
                 let revision = playback
                     .prepared_revision()

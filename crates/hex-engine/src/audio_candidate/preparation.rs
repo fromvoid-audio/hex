@@ -91,6 +91,28 @@ impl<'a, 'definitions> AudioCandidateEffects<'a, 'definitions> {
             scan_frames, cancel, self.registry, native_input,
         )
     }
+    /// Same resource/effect preparation with exact separately verified pitch
+    /// metadata. Page and native source custody remain with the host.
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_registered_pitch_source_revision(
+        &self,
+        project: &Project,
+        sources: &BTreeMap<AssetId, crate::compile::PreparedAudioSource>,
+        pitched: &BTreeMap<crate::StreamSourceKey, Arc<crate::StreamedSourceMetadata>>,
+        generation: u64,
+        table: Arc<crate::SineTable>,
+        previous: Option<&crate::PreparedSessionInventory>,
+        transforms: &crate::audio_transform::AudioTransformPreparation,
+        resources: &crate::native_device_resources::PreparedDeviceResources,
+        scan_frames: u64,
+        cancel: &std::sync::atomic::AtomicBool,
+        native_input: Option<crate::NativeParameterInputTarget>,
+    ) -> Result<crate::PreparedRevision, crate::Invalid> {
+        crate::PreparedRevision::prepare_with_prepared_pitch_sources_device_resources_and_effect_registry(
+            project, sources, pitched, generation, table, previous, transforms, resources,
+            scan_frames, cancel, self.registry, native_input,
+        )
+    }
     pub fn quote(
         &self,
         project: &Project,
@@ -248,6 +270,13 @@ impl AudioCandidatePreparation {
         Ok(result)
     }
     fn collecting(&self, asset: AssetId) -> Result<(), AudioStorageError> {
+        self.collecting_slot()?;
+        if self.sources.iter().any(|(id, _)| *id == asset) {
+            return Err(AudioStorageError::DuplicateAsset);
+        }
+        Ok(())
+    }
+    fn collecting_slot(&self) -> Result<(), AudioStorageError> {
         if self.failed
             || self.cleaning
             || self.complete
@@ -257,9 +286,6 @@ impl AudioCandidatePreparation {
             || self.resident_draft.capacity() != 0
         {
             return Err(AudioStorageError::Capacity);
-        }
-        if self.sources.iter().any(|(id, _)| *id == asset) {
-            return Err(AudioStorageError::DuplicateAsset);
         }
         Ok(())
     }
@@ -375,6 +401,82 @@ impl AudioCandidatePreparation {
         self.sources.push((asset, source));
         Ok(())
     }
+    /// Add a derived stream only for an already collected matching raw source.
+    pub fn add_pitched_streamed_source_on_control(
+        &mut self,
+        metadata: crate::StreamedSourceMetadata,
+    ) -> Result<(), AudioStorageError> {
+        use crate::audio_only_inputs::SourceKind;
+
+        self.collecting_slot()?;
+        let key = metadata.key();
+        let (cents, law) = key.pitch().ok_or(AudioStorageError::SourceMismatch)?;
+        let raw = self
+            .sources
+            .iter()
+            .find_map(|(asset, source)| {
+                if *asset != key.asset() {
+                    return None;
+                }
+                match &source.kind {
+                    SourceKind::Streamed(raw) if raw.key().is_raw() => Some(raw),
+                    _ => None,
+                }
+            })
+            .ok_or(AudioStorageError::SourceMismatch)?;
+        if cents == 0
+            || !raw
+                .with_plain_pitch(cents, law)
+                .is_ok_and(|expected| expected == metadata)
+        {
+            return Err(AudioStorageError::SourceMismatch);
+        }
+        if self.sources.iter().any(
+            |(_, source)| matches!(&source.kind, SourceKind::Streamed(old) if old.key() == key),
+        ) {
+            return Err(AudioStorageError::DuplicateAsset);
+        }
+        self.validate_collection_bytes(std::mem::size_of::<crate::StreamedSourceMetadata>())?;
+        let source = crate::OwnedAudioSource::try_pitched_streamed(metadata)
+            .map_err(|refused| refused.reason)?;
+        self.sources.push((key.asset(), source));
+        Ok(())
+    }
+    /// Retain a Re-Pitch stream only alongside its exact original source facts.
+    pub fn add_repitch_streamed_source_on_control(
+        &mut self,
+        metadata: crate::StreamedSourceMetadata,
+    ) -> Result<(), AudioStorageError> {
+        use crate::audio_only_inputs::SourceKind;
+        self.collecting_slot()?;
+        let key = metadata.key();
+        let raw = self
+            .sources
+            .iter()
+            .find_map(|(asset, source)| {
+                if *asset != key.asset() {
+                    return None;
+                }
+                match &source.kind {
+                    SourceKind::Streamed(raw) if raw.key().is_raw() => Some(raw),
+                    _ => None,
+                }
+            })
+            .ok_or(AudioStorageError::SourceMismatch)?;
+        if !metadata.is_repitch_of(raw) {
+            return Err(AudioStorageError::SourceMismatch);
+        }
+        if self.sources.iter().any(
+            |(_, source)| matches!(&source.kind, SourceKind::Streamed(old) if old.key() == key),
+        ) {
+            return Err(AudioStorageError::DuplicateAsset);
+        }
+        self.validate_collection_bytes(std::mem::size_of::<crate::StreamedSourceMetadata>())?;
+        let source = crate::OwnedAudioSource::try_repitch_streamed(metadata)
+            .map_err(|refused| refused.reason)?;
+        self.sources.push((key.asset(), source));
+        Ok(())
+    }
     /// Low-level exact Project/context bridge. Session snapshots call this with
     /// their paired canonical Project and counters; numbers grant no custody.
     pub fn prepare_on_control(
@@ -467,7 +569,7 @@ impl AudioCandidatePreparation {
             return Err(AudioStorageError::SourceMismatch);
         }
         if self.bank.is_none() && self.token.is_none() {
-            OwnedAudioInputs::try_new_in_place(
+            OwnedAudioInputs::try_new_with_derived_in_place(
                 &mut self.sources,
                 self.reservation,
                 &mut self.bank,
@@ -733,6 +835,194 @@ mod tests {
         assert_ne!(copy.frames().as_ptr(), original);
         assert_eq!(copy.frames(), audio.frames());
         Some((project, cell))
+    }
+    #[test]
+    fn repitch_collection_matches_raw_and_preserves_owners_through_bank_transfer() {
+        if !crate::audio_storage_constructor_layout_supported() {
+            return;
+        }
+        let project = crate::audio_preparation::candidate_test_project();
+        let asset = project.assets().next().unwrap();
+        let raw = crate::StreamedSourceMetadata::new(
+            crate::StreamSourceKey::new(11, asset.id()),
+            asset.source_sample_rate(),
+            project.sample_rate(),
+            asset.source_frames(),
+            asset.playback_frames(),
+            asset.conversion_version(),
+            [7; 32],
+        )
+        .unwrap();
+        let frames = raw.playback_frames();
+        let map = hex_warp::TimeMap::new(
+            vec![hex_warp::MapSegment {
+                output_start: 0,
+                output_end: frames * 2,
+                source_start_q32: 0,
+                source_end_q32: i128::from(frames) << 32,
+            }],
+            (frames * 2) as usize,
+        )
+        .unwrap();
+        let repitch = raw.with_repitch(&map, hex_warp::Resampler::V2).unwrap();
+        let other = crate::StreamedSourceMetadata::new(
+            raw.key(),
+            raw.source_rate(),
+            raw.project_rate(),
+            raw.source_frames(),
+            raw.playback_frames(),
+            raw.conversion_version(),
+            [8; 32],
+        )
+        .unwrap()
+        .with_repitch(&map, hex_warp::Resampler::V2)
+        .unwrap();
+        let mut cell = AudioCandidatePreparation::try_new_on_control(3, reservation()).unwrap();
+        assert_eq!(
+            cell.add_repitch_streamed_source_on_control(repitch.clone()),
+            Err(AudioStorageError::SourceMismatch)
+        );
+        assert_eq!(
+            cell.add_streamed_source_on_control(repitch.clone()),
+            Err(AudioStorageError::SourceMismatch)
+        );
+        assert_eq!(
+            cell.add_pitched_streamed_source_on_control(repitch.clone()),
+            Err(AudioStorageError::SourceMismatch)
+        );
+        cell.add_streamed_source_on_control(raw.clone()).unwrap();
+        let handle = cell.sources[0].1.handle;
+        assert_eq!(
+            cell.add_repitch_streamed_source_on_control(other),
+            Err(AudioStorageError::SourceMismatch)
+        );
+        assert_eq!(cell.sources[0].1.handle, handle);
+        cell.add_repitch_streamed_source_on_control(repitch.clone())
+            .unwrap();
+        let handles: Vec<_> = cell.sources.iter().map(|(_, owner)| owner.handle).collect();
+        assert_eq!(
+            cell.add_repitch_streamed_source_on_control(repitch.clone()),
+            Err(AudioStorageError::DuplicateAsset)
+        );
+        assert_eq!(
+            cell.sources
+                .iter()
+                .map(|(_, owner)| owner.handle)
+                .collect::<Vec<_>>(),
+            handles
+        );
+        let context = crate::AudioSourceContext {
+            project_generation: 2,
+            editor_revision: 8,
+        };
+        assert_eq!(
+            cell.prepare_on_control(&project, 0, context),
+            Err(AudioStorageError::SourceMismatch)
+        );
+        let bank = cell.bank.as_ref().unwrap();
+        assert!(bank.pitched_source_token(repitch.key()).is_err());
+        let token = bank.repitch_source_token(repitch.key()).unwrap();
+        assert_eq!(
+            bank.source_view(&token).unwrap().streamed_metadata(),
+            Some(&repitch)
+        );
+        assert_eq!(
+            bank.source_view(&bank.source_token(asset.id()).unwrap())
+                .unwrap()
+                .streamed_metadata(),
+            Some(&raw)
+        );
+        cell.prepare_on_control(&project, 11, context).unwrap();
+        cell.cleanup_on_control().unwrap();
+    }
+
+    #[test]
+    fn pitched_stream_collection_refuses_invalid_sources_and_transfers_bank() {
+        if !crate::audio_storage_constructor_layout_supported() {
+            return;
+        }
+        let project = crate::audio_preparation::candidate_test_project();
+        let asset = project.assets().next().unwrap();
+        let raw = crate::StreamedSourceMetadata::new(
+            crate::StreamSourceKey::new(11, asset.id()),
+            asset.source_sample_rate(),
+            project.sample_rate(),
+            asset.source_frames(),
+            asset.playback_frames(),
+            asset.conversion_version(),
+            [7; 32],
+        )
+        .unwrap();
+        let up = raw
+            .with_plain_pitch(700, hex_project::WarpResampler::V2)
+            .unwrap();
+        let down = raw
+            .with_plain_pitch(-300, hex_project::WarpResampler::V2)
+            .unwrap();
+        let mut cell = AudioCandidatePreparation::try_new_on_control(3, reservation()).unwrap();
+        assert_eq!(
+            cell.add_pitched_streamed_source_on_control(up.clone()),
+            Err(AudioStorageError::SourceMismatch)
+        );
+        assert_eq!(
+            cell.add_streamed_source_on_control(up.clone()),
+            Err(AudioStorageError::SourceMismatch)
+        );
+        cell.add_streamed_source_on_control(raw.clone()).unwrap();
+        let foreign = crate::StreamedSourceMetadata::new(
+            raw.key(),
+            raw.source_rate(),
+            raw.project_rate(),
+            raw.source_frames(),
+            raw.playback_frames(),
+            raw.conversion_version(),
+            [8; 32],
+        )
+        .unwrap()
+        .with_plain_pitch(700, hex_project::WarpResampler::V2)
+        .unwrap();
+        assert_eq!(
+            cell.add_pitched_streamed_source_on_control(foreign),
+            Err(AudioStorageError::SourceMismatch)
+        );
+        cell.add_pitched_streamed_source_on_control(up.clone())
+            .unwrap();
+        assert_eq!(
+            cell.add_pitched_streamed_source_on_control(up.clone()),
+            Err(AudioStorageError::DuplicateAsset)
+        );
+        cell.add_pitched_streamed_source_on_control(down.clone())
+            .unwrap();
+        let handles: Vec<_> = cell.sources.iter().map(|(_, s)| s.handle).collect();
+        assert_eq!(
+            cell.add_pitched_streamed_source_on_control(up.clone()),
+            Err(AudioStorageError::Capacity)
+        );
+        assert_eq!(
+            cell.sources
+                .iter()
+                .map(|(_, s)| s.handle)
+                .collect::<Vec<_>>(),
+            handles
+        );
+        let context = crate::AudioSourceContext {
+            project_generation: 2,
+            editor_revision: 8,
+        };
+        assert_eq!(
+            cell.prepare_on_control(&project, 0, context),
+            Err(AudioStorageError::SourceMismatch)
+        );
+        let bank = cell.bank.as_ref().unwrap();
+        for metadata in [&up, &down] {
+            let token = bank.pitched_source_token(metadata.key()).unwrap();
+            assert_eq!(
+                bank.source_view(&token).unwrap().streamed_metadata(),
+                Some(metadata)
+            );
+        }
+        cell.prepare_on_control(&project, 11, context).unwrap();
+        cell.cleanup_on_control().unwrap();
     }
     #[test]
     fn armed_native_state_box_is_quoted_and_observed_once_in_closed_custody() {

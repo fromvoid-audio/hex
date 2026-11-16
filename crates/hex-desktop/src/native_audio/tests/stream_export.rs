@@ -185,9 +185,9 @@ fn varied(files: &Files, name: &str, rate: u32, frames: u32) -> PathBuf {
 }
 fn tiny(
     request: &hex_session::service::StreamedExportRequest<'_>,
-) -> Result<hex_export::ExportReport, String> {
+) -> Result<hex_export::ExportReport, hex_session::service::ExportFailure> {
     crate::streamed_export::render_with_config(request, StreamConfig::with_pool_pages(3))
-        .map_err(|error| error.to_string())
+        .map_err(Into::into)
 }
 
 #[test]
@@ -218,7 +218,10 @@ fn verified_export_turns_over_a_two_page_cache_and_refuses_overlapping_demand_wi
     let refused = files.0.join("over-capacity.wav");
     run(&streamed, Request::Export(refused.clone()));
     let error = exported(&streamed).result.unwrap_err();
-    assert!(error.contains("simultaneous cache capacity"), "{error}");
+    assert!(
+        error.message().contains("simultaneous cache capacity"),
+        "{error}"
+    );
     assert!(!refused.exists());
     let after = run(
         &streamed,
@@ -353,7 +356,8 @@ fn verified_export_never_overwrites_its_original_source_even_with_export_overwri
         );
         let error = exported(&service).result.unwrap_err();
         assert!(
-            error.contains("original media") || error.contains("existing regular file"),
+            error.message().contains("original media")
+                || error.message().contains("existing regular file"),
             "{error}"
         );
         assert_eq!(fs::read(&source).unwrap(), original);
@@ -362,7 +366,7 @@ fn verified_export_never_overwrites_its_original_source_even_with_export_overwri
 
 fn replace_at_finish(
     request: &hex_session::service::StreamedExportRequest<'_>,
-) -> Result<hex_export::ExportReport, String> {
+) -> Result<hex_export::ExportReport, hex_session::service::ExportFailure> {
     crate::streamed_export::test_support::finish_action(request, || {
         let AudioSourceBinding::VerifiedFile(file) =
             request.source().required_sources().next().unwrap().1
@@ -378,7 +382,7 @@ fn replace_at_finish(
 }
 fn cancel_at_finish(
     request: &hex_session::service::StreamedExportRequest<'_>,
-) -> Result<hex_export::ExportReport, String> {
+) -> Result<hex_export::ExportReport, hex_session::service::ExportFailure> {
     crate::streamed_export::test_support::finish_action(request, || {
         assert!(
             request.control().cancel(),
@@ -415,7 +419,7 @@ fn verified_export_rechecks_cached_sources_and_cancellation_before_publication()
         );
         let error = exported(&service).result.unwrap_err();
         assert!(
-            error.contains("changed") || error.contains("cancel"),
+            error.message().contains("changed") || error.message().contains("cancel"),
             "{error}"
         );
         assert_eq!(
@@ -431,7 +435,7 @@ type ExportGate = (SyncSender<u64>, mpsc::Receiver<()>);
 static EXPORT_GATE: Mutex<Option<ExportGate>> = Mutex::new(None);
 fn gated_export(
     request: &hex_session::service::StreamedExportRequest<'_>,
-) -> Result<hex_export::ExportReport, String> {
+) -> Result<hex_export::ExportReport, hex_session::service::ExportFailure> {
     let (entered, release) = EXPORT_GATE.lock().unwrap().take().unwrap();
     entered
         .send(request.source().context().editor_revision)
@@ -492,7 +496,7 @@ fn verified_export_keeps_captured_revision_through_later_edit_and_new_document()
 
 fn cancel_after_first_chunk(
     request: &hex_session::service::StreamedExportRequest<'_>,
-) -> Result<hex_export::ExportReport, String> {
+) -> Result<hex_export::ExportReport, hex_session::service::ExportFailure> {
     crate::streamed_export::test_support::chunk_action(request, || {
         assert!(request.control().cancel());
     })
@@ -519,7 +523,13 @@ fn verified_export_cancellation_during_page_backed_render_discards_staging() {
             overwrite: false,
         },
     );
-    assert!(exported(&service).result.unwrap_err().contains("cancel"));
+    assert!(
+        exported(&service)
+            .result
+            .unwrap_err()
+            .message()
+            .contains("cancel")
+    );
     let progress = control.progress();
     assert!(progress.processed_frames > 0);
     assert!(progress.processed_frames < progress.total_frames);
@@ -535,7 +545,10 @@ fn verified_export_unexpected_render_page_miss_cannot_publish_engine_fallback_si
     let output = files.0.join("must-not-be-silence.wav");
     run(&service, Request::Export(output.clone()));
     let error = exported(&service).result.unwrap_err();
-    assert!(error.contains("unexpected media page miss"), "{error}");
+    assert!(
+        error.message().contains("unexpected media page miss"),
+        "{error}"
+    );
     assert!(!output.exists());
 }
 

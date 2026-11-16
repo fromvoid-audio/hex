@@ -439,6 +439,38 @@ fn delayed_scalar_values_follow_loop_origins_across_irregular_blocks() {
     seek(&mut runtime);
     let mut warmup = vec![[0.0; 2]; latency as usize];
     runtime.render_with_pages(&mut warmup, &mut pages).unwrap();
+    let before = (runtime.arrangement_frame(), runtime.performance_frame());
+    let mut projected = Vec::new();
+    assert_eq!(
+        runtime.visit_current_stream_quantum(8, None, true, &mut |extent| {
+            projected.push(extent);
+            Ok(())
+        }),
+        Ok(8)
+    );
+    assert_eq!(
+        (runtime.arrangement_frame(), runtime.performance_frame()),
+        before
+    );
+    let mut committed = Vec::new();
+    let mut advanced = 0;
+    while advanced < 8 {
+        let window = runtime
+            .visit_ordinary_stream_chunk(8 - advanced, None, &mut |extent| {
+                committed.push(extent);
+                Ok(())
+            })
+            .unwrap();
+        assert!(window.frames > 0);
+        runtime
+            .render_with_pages(&mut vec![[0.0; 2]; window.frames], &mut pages)
+            .unwrap();
+        advanced += window.frames;
+    }
+    assert_eq!(
+        projected, committed,
+        "delayed scalar loop demand differs from committed chunks"
+    );
     let mut actual = Vec::new();
     for width in [1, 3, 2, 2] {
         let mut block = vec![[0.0; 2]; width];

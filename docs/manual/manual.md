@@ -1000,12 +1000,28 @@ saved in the project. check the range and output choice before
 exporting, then audition the resulting files. offline rendering can be available
 even when live audio output is unavailable.
 
+when you confirm replacing an existing wav, hex keeps the previous file and
+shows its location after export. inspect it and remove it yourself when you no
+longer need it; retained files use disk space.
+
+if export fails or is cancelled after writing begins, inspect the staging path
+shown in the error before removing anything. a cancelled export during shutdown
+can leave a hidden `.hex-export-*.tmp` file beside the chosen destination even
+if the error is no longer visible. older running versions of hex may remove
+these files, so move anything you need to keep before running an older version.
+
 file-backed audio in ordinary and verified streaming projects uses offline
 media verification during export. keep original media available until export completes. hex verifies those files
 before reading and again before publishing; missing or changed media, unavailable
 pages and cancellation leave the previous destination intact. choose an export
 path separate from the original media. editing or opening another document does
 not change an export already in progress.
+
+an interrupted export can leave hidden `.hex-export-<pid>-<number>.tmp` files
+beside the destination. inspect and preserve any files you need; hex does not
+automatically remove them. older versions can remove matching files when
+exporting to the same folder, so keep possible recovery files elsewhere before
+using those versions.
 
 # reversing clips
 
@@ -1038,7 +1054,7 @@ the complete edit.
 | set loop from selection / toggle matching loop | l / w |
 | toggle active transport loop | command+l |
 | import audio | command+i |
-| add track | command+t |
+| add track | t |
 | add track for notes / midi clip | command+shift+t / command+shift+m |
 | undo / redo | command+z / command+shift+z |
 | toggle browser | command+option+b |

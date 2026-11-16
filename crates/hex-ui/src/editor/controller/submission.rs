@@ -76,7 +76,11 @@ pub(super) struct Refused {
 }
 
 fn is_initial_observation(request: &Request) -> bool {
-    request.is_read_only_observation() && !matches!(request, Request::ContinuePluginParameters)
+    request.is_read_only_observation()
+        && !matches!(
+            request,
+            Request::ContinuePluginParameters | Request::ContinuePluginParameterConversion
+        )
 }
 
 impl EditorView {
@@ -330,7 +334,7 @@ impl EditorView {
             visible |= self.retire_pending_clip_paint();
         }
         if kinds.section {
-            visible |= self.retire_pending_section();
+            visible |= self.refuse_section(request);
         }
         if kinds.track_reorder {
             visible |= self.retire_pending_track_reorder();
@@ -395,6 +399,9 @@ mod observation_tests {
             &Request::QueryFailedPluginAutomation { request_id: 7 }
         ));
         assert!(!is_initial_observation(&Request::ContinuePluginParameters));
+        assert!(!is_initial_observation(
+            &Request::ContinuePluginParameterConversion
+        ));
         assert!(!is_initial_observation(&Request::Undo));
     }
 }

@@ -1975,3 +1975,72 @@ fn event_gain_escape_discards_held_edit(cx: &mut TestAppContext) {
         assert!(view.last_enqueued_edit.is_none());
     });
 }
+
+#[gpui::test]
+fn middle_drag_pans_audio_waveform_without_editing(cx: &mut TestAppContext) {
+    let (handle, editor, _, _) = super::super::clip_view_ui_test::audio_detail_fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(gpui::size(px(1280.0), px(800.0)));
+    visual.run_until_parked();
+    let bounds = visual.debug_bounds("audio-events-waveform").unwrap();
+    let start = bounds.center();
+    let end = point(bounds.left() - px(20.0), start.y);
+    let (before, viewport) = editor.read_with(&visual, |view, _| {
+        (
+            view.state.as_ref().unwrap().project.snapshot(),
+            view.event_frame_window(&view.event_context().unwrap().1),
+        )
+    });
+    visual.simulate_mouse_down(start, MouseButton::Middle, Modifiers::default());
+    assert!(editor.read_with(&visual, |view, _| view.audio_event_editor.pan.is_some()));
+    visual.simulate_mouse_move(end, MouseButton::Middle, Modifiers::default());
+    visual.run_until_parked();
+    visual.simulate_mouse_up(end, MouseButton::Middle, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        assert!(view.audio_event_editor.pan.is_none());
+        assert!(
+            view.event_frame_window(&view.event_context().unwrap().1)
+                .start
+                > viewport.start
+        );
+        assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before);
+        assert!(!view.edit_pending());
+    });
+}
+
+#[gpui::test]
+fn middle_drag_pans_source_and_releases_on_view_change(cx: &mut TestAppContext) {
+    let (handle, editor, _, _) = super::super::clip_view_ui_test::audio_detail_fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(gpui::size(px(1280.0), px(800.0)));
+    visual.run_until_parked();
+    let source_tab = visual.debug_bounds("audio-source-tab").unwrap().center();
+    visual.simulate_click(source_tab, Modifiers::default());
+    visual.run_until_parked();
+    let bounds = visual.debug_bounds("arrangement-audio-waveform").unwrap();
+    let start = bounds.center();
+    let end = point(start.x - px(80.0), start.y);
+    let before = editor.read_with(&visual, |view, _| {
+        (
+            view.audio_source_viewport(),
+            view.state.as_ref().unwrap().project.snapshot(),
+        )
+    });
+    visual.simulate_mouse_down(start, MouseButton::Middle, Modifiers::default());
+    visual.simulate_mouse_move(end, MouseButton::Middle, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        assert!(view.audio_event_editor.pan.is_some());
+        assert!(view.audio_source_viewport().start > before.0.start);
+    });
+    editor.update(&mut visual, |view, cx| {
+        view.clip_view_open = false;
+        cx.notify();
+    });
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        assert!(view.audio_event_editor.pan.is_none());
+        assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before.1);
+    });
+}

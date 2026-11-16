@@ -13,6 +13,8 @@ workspace = true
 source-overview-test-support = []
 # Test-only, per-take writer failure injection; never enabled by default.
 recording-fault-test-support = []
+# Test-only checkpoint hold; never enabled by default.
+recovery-checkpoint-test-support = []
 
 [dependencies]
 hex-storage = { path = "../hex-storage" }

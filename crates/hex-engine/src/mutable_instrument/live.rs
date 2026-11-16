@@ -16,6 +16,7 @@ pub(super) struct LiveOccurrence {
     pub(super) id: u64,
     pub(super) quiet_age: Option<u64>,
     pub(super) release_requested: bool,
+    pub(super) contributor_fade: Option<ContributorFade>,
 }
 
 pub(super) struct LiveLedger {
@@ -215,7 +216,16 @@ impl MutableInstrumentTrackRuntime {
     /// releases plus the full future authored envelope. Rejections cannot steal
     /// a continuing authored voice or consume its reserved NoteOff capacity.
     pub(crate) fn live_voice_capacity(&self, authored_envelope: usize) -> usize {
-        let authored = self.scratch.len().saturating_add(authored_envelope);
+        self.live_voice_capacity_for_proofs(self.scratch.len(), authored_envelope)
+    }
+    /// Apply the same admission reserve to a donor's committed proofs before
+    /// inheriting its live ledger into a candidate with a new peak envelope.
+    pub(crate) fn live_voice_capacity_for_proofs(
+        &self,
+        authored_proofs: usize,
+        authored_envelope: usize,
+    ) -> usize {
+        let authored = authored_proofs.saturating_add(authored_envelope);
         let voices = self
             .max_active_occurrences()
             .min(MAX_MUTABLE_OCCURRENCE_PROOFS)
@@ -242,15 +252,53 @@ impl MutableInstrumentTrackRuntime {
             .as_ref()
             .map_or(0, |live| live.scratch.iter().flatten().count())
     }
+    /// Live occurrences occupy the same provider capacity as authored proofs.
+    /// Match the transaction selected by the caller's route transition.
+    pub(crate) fn transition_live_count(&self, speculative: bool) -> usize {
+        self.live.as_ref().map_or(0, |live| {
+            let voices = if speculative {
+                &live.scratch
+            } else {
+                &live.primary
+            };
+            voices.iter().flatten().count()
+        })
+    }
     /// A scheduling span contains transitions at offset zero only. The first
     /// callback sample and ordered ingress events have a one-frame span; empty
     /// spans reuse the ordinary query width. Release room is reserved before
-    /// scheduler/capture admission.
+    /// scheduler/capture admission. An optional fade token identifies exactly
+    /// one offset-zero NoteOn in this input generation; it cannot share a batch
+    /// with its NoteOff. Refuse unsupported providers before changing the ledger.
     pub(crate) fn stage_live_events(
         &mut self,
         input: LiveInputId,
         transitions: &[NativeInstrumentEvent],
+        fade_in_token: Option<u64>,
     ) -> Result<(), MutableInstrumentRuntimeError> {
+        let fade_frames = if let Some(token) = fade_in_token {
+            let marked = transitions.iter().filter(|event| matches!(event,
+                NativeInstrumentEvent::NoteOn { occurrence_id, frame_offset: 0, .. } if *occurrence_id == token
+            )).count();
+            if marked != 1
+                || transitions.iter().any(|event| matches!(event,
+                    NativeInstrumentEvent::NoteOn { occurrence_id, frame_offset: 1.., .. } if *occurrence_id == token
+                ))
+                || transitions.iter().any(|event| matches!(event,
+                    NativeInstrumentEvent::NoteOff { occurrence_id, .. } if *occurrence_id == token
+                ))
+                || !self.pair.supports_occurrence_gain()
+            {
+                return Err(MutableInstrumentRuntimeError::InvalidSourceSpan);
+            }
+            Some(
+                ContributorFadeIn::new(self.sample_rate)
+                    .ok_or(MutableInstrumentRuntimeError::InvalidSourceSpan)?
+                    .frames(),
+            )
+        } else {
+            None
+        };
         let tail = self.max_release_tail_frames();
         let capacity = self
             .max_active_occurrences()
@@ -346,6 +394,14 @@ impl MutableInstrumentTrackRuntime {
                         id,
                         quiet_age: None,
                         release_requested: false,
+                        contributor_fade: fade_frames.filter(|_| fade_in_token == Some(token)).map(
+                            |frames| ContributorFade {
+                                start_age: live.scratch_age,
+                                frames,
+                                start_bits: 0.0_f64.to_bits(),
+                                muted: false,
+                            },
+                        ),
                     });
                     live.push(NativeInstrumentEvent::NoteOn {
                         frame_offset,
@@ -486,6 +542,7 @@ impl MutableInstrumentTrackRuntime {
                             .gate_frame
                             .map(|gate| tail.saturating_sub(voice.age_frames.saturating_sub(gate))),
                         release_requested: false,
+                        contributor_fade: None,
                     });
                 }
             }
@@ -528,6 +585,7 @@ mod tests {
             id: 7,
             quiet_age: None,
             release_requested: true,
+            contributor_fade: None,
         });
         assert!(!ledger.committed_gates_released());
         ledger.begin();

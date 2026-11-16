@@ -21,11 +21,14 @@ pub use controller::{
     NativeWorkerControllerQuery,
 };
 pub use hex_plugin_host::protocol::{
-    ControllerRequest, ParameterEdit, ParameterEditKind, ParameterPageQuery, PluginEditorPosition,
-    PluginEditorState, RecoveryEdits,
+    ControllerRequest, ParameterConversion, ParameterConversionStatus, ParameterEdit,
+    ParameterEditKind, ParameterPageQuery, ParameterText, PluginEditorPosition, PluginEditorState,
+    RecoveryEdits,
 };
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 mod edits;
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub use edits::StoppedEditProgress;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 mod parameter_change;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -39,7 +42,10 @@ pub use parameter_change::{
 pub use parameters::{MAX_OBSERVED_PARAMETERS, NativeParameterValue, NativeParameterValues};
 mod storage;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-pub use capture::{NativeWorkerCapture, NativeWorkerCaptureProgress};
+pub use capture::{
+    NativeWorkerCapture, NativeWorkerCaptureProgress, NativeWorkerParameterApplication,
+    NativeWorkerSequencedCaptureProgress, NativeWorkerStateAfterParameter,
+};
 /// Non-terminal helper refusal carried by [`NativeWorkerCaptureProgress::Refused`].
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub use hex_plugin_host::protocol::StateCaptureRefusal;
@@ -48,6 +54,7 @@ pub use hex_plugin_host::protocol::StateCaptureRefusal;
 // The callback never sees the capture mailbox or takes its mutex.
 struct Signal {
     blocks: AtomicU64,
+    offline: Option<OfflineProgress>,
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     editor_plan: EditorPlanSignal,
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -63,10 +70,22 @@ struct Signal {
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     parameter_change_requested: std::sync::atomic::AtomicBool,
 }
+#[derive(Default)]
+struct OfflineProgress {
+    lock: std::sync::Mutex<()>,
+    changed: std::sync::Condvar,
+}
+
+// The private render owner can wake a parked worker after dispatch. A timeout
+// also lets both sides check revocation, cancellation, or a failed worker.
+const OFFLINE_IDLE: Duration = Duration::from_millis(10);
+const LIVE_POLL: Duration = Duration::from_micros(50);
+
 impl Signal {
-    fn new() -> Self {
+    fn new(offline: bool) -> Self {
         Self {
             blocks: AtomicU64::new(0),
+            offline: offline.then(OfflineProgress::default),
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             editor_plan: EditorPlanSignal::default(),
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -81,6 +100,19 @@ impl Signal {
             failure_diagnostic: std::sync::Mutex::new(None),
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             parameter_change_requested: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    fn publish_blocks(&self, blocks: u64) {
+        if let Some(offline) = &self.offline {
+            let _guard = offline
+                .lock
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            self.blocks.store(blocks, Release);
+            offline.changed.notify_one();
+        } else {
+            self.blocks.store(blocks, Release);
         }
     }
 }
@@ -390,6 +422,31 @@ impl Reaper {
     }
     pub fn revoke(&self) {
         self.control.revoke();
+        self.wake_offline();
+    }
+    fn wake_offline(&self) {
+        if self.completed.offline.is_some()
+            && let Some(join) = &self.join
+        {
+            join.thread().unpark();
+        }
+    }
+
+    fn wait_for_blocks(&self, target: u64, timeout: Duration) -> Result<(), Fault> {
+        if let Some(offline) = &self.completed.offline {
+            let guard = offline.lock.lock().map_err(|_| Fault::Protocol)?;
+            if self.completed_blocks() < target {
+                drop(
+                    offline
+                        .changed
+                        .wait_timeout(guard, timeout.min(OFFLINE_IDLE))
+                        .map_err(|_| Fault::Protocol)?,
+                );
+            }
+        } else {
+            thread::sleep(timeout.min(LIVE_POLL));
+        }
+        Ok(())
     }
     #[cfg(test)]
     pub fn is_finished(&self) -> bool {
@@ -397,7 +454,7 @@ impl Reaper {
     }
     /// Control-only. Preserve a failed completion and never retry foreign DSP.
     pub fn join_on_control(&mut self) -> Result<(), Fault> {
-        self.control.revoke();
+        self.revoke();
         if let Some(join) = self.join.take() {
             self.result = Some(join.join());
         }
@@ -431,7 +488,7 @@ fn spawn_processor(
     worker: Worker,
     processor: Processor,
 ) -> std::io::Result<Reaper> {
-    spawn_processor_with(control, worker, processor, spawn_transport).map_err(|failure| {
+    spawn_processor_with(control, worker, processor, false, spawn_transport).map_err(|failure| {
         let SpawnFailure { error, reaper } = failure;
         drop(reaper); // Legacy synchronous control cleanup; not a disposal receipt.
         error
@@ -449,12 +506,13 @@ fn spawn_processor_with(
     control: Control,
     worker: Worker,
     processor: Processor,
+    offline: bool,
     spawn: impl FnOnce(
         crate::native_callback_owner::Guard<State>,
         Arc<Signal>,
     ) -> std::io::Result<SpawnedTransport>,
 ) -> Result<Reaper, SpawnFailure> {
-    let completed = Arc::new(Signal::new());
+    let completed = Arc::new(Signal::new(offline));
     let published = Arc::clone(&completed);
     let (guard, terminal) = crate::native_callback_owner::reserve(State {
         worker,
@@ -660,11 +718,15 @@ fn transport_runner_with_setup(
                         }
                         break;
                     }
-                    published
-                        .blocks
-                        .store(state.worker.completed_blocks(), Release);
+                    published.publish_blocks(state.worker.completed_blocks());
                 }
-                Ok(None) => thread::sleep(Duration::from_micros(50)),
+                Ok(None) => {
+                    if published.offline.is_some() {
+                        thread::park_timeout(OFFLINE_IDLE);
+                    } else {
+                        thread::sleep(LIVE_POLL);
+                    }
+                }
                 Err(Fault::Revoked) => break,
                 Err(error) => {
                     fault = Some(error);
@@ -713,6 +775,7 @@ pub struct NativeWorker {
     binding: Binding,
     quantum: u16,
     retirement_requested: bool,
+    editor_edits_sealed: bool,
     grouped_editor_callbacks: bool,
     source_storage: Option<hex_plugin_host::native::PreparedStorage>,
 }
@@ -890,6 +953,16 @@ impl NativeWorker {
         }
     }
 
+    /// Copied untouched-or-committed observation on the original live pair.
+    /// This is not a source, installation, or quiescence witness.
+    pub fn quantum_observation_on_control(
+        &self,
+    ) -> Option<hex_plugin_host::transport::QuantumObservation> {
+        self.transport_is_live_on_control()
+            .then(|| self.reaper.control.quantum_observation())
+            .flatten()
+    }
+
     /// Last accepted callback quantum on this original pair. This is not an
     /// installed-graph, quiescence, worker-receipt or reclamation witness.
     pub fn committed_quantum_on_control(&self) -> Option<CommittedQuantum> {
@@ -909,16 +982,43 @@ impl NativeWorker {
     pub fn published_blocks_on_control(&self) -> u64 {
         self.reaper.completed_blocks()
     }
+    pub(crate) fn wake_offline_on_control(&self) {
+        self.reaper.wake_offline();
+    }
+
+    pub(crate) fn wait_for_offline_blocks_on_control(
+        &self,
+        target: u64,
+        timeout: Duration,
+    ) -> Result<(), Fault> {
+        self.reaper.wait_for_blocks(target, timeout)
+    }
     /// Join, retain the exact old ring endpoints, and consume the returned
     /// native processor into its actual quiescent protocol. An admitted capture
     /// first drains through its existing bounded terminal. Unwind/refusal is
-    /// terminal and cannot become a retry. Old callback custody stays separate.
+    /// terminal and cannot become a retry. A pending editor seal or a sealed
+    /// editor refuses this reusable transition without taking the source; the
+    /// sealed worker remains available for receipt draining and retirement.
+    /// Old callback custody stays separate.
     pub fn quiesce_on_control(
         &mut self,
     ) -> Result<hex_plugin_host::native::Quiescent, hex_plugin_host::Error> {
         if self.retirement_requested {
             return Err(hex_plugin_host::Error::Protocol(
                 "native worker retirement is terminal",
+            ));
+        }
+        if self.editor_edits_sealed {
+            return Err(hex_plugin_host::Error::Protocol(
+                "sealed editor source cannot resume",
+            ));
+        }
+        if self
+            .editor_seal_query_pending_on_control()
+            .map_err(hex_plugin_host::Error::Protocol)?
+        {
+            return Err(hex_plugin_host::Error::Protocol(
+                "native editor seal query is pending",
             ));
         }
         if self
@@ -1029,6 +1129,80 @@ impl NativeWorker {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn run_offline_transport(offline: bool, blocks: u64, fail_at: Option<u64>) -> Duration {
+        const QUANTUM: u16 = 256;
+        let (control, mut callback, worker) = channel(
+            Binding {
+                root: 1,
+                instance: 2,
+                graph: 3,
+                epoch: 4,
+            },
+            QUANTUM,
+        )
+        .unwrap();
+        let mut next = 0;
+        let processor = Processor::Function(Box::new(move |block| {
+            assert_eq!(block.sequence, next);
+            next += 1;
+            if fail_at == Some(next) {
+                Err(Fault::InvalidSamples)
+            } else {
+                Ok(block)
+            }
+        }));
+        let mut reaper = spawn_processor_with(control, worker, processor, offline, spawn_transport)
+            .unwrap_or_else(|failure| panic!("transport spawn: {}", failure.error));
+        let start = std::time::Instant::now();
+        for index in 0..blocks {
+            let input = [(index % 4 + 1) as f32 / 8.0; 2];
+            let mut output = [[0.0; 2]; QUANTUM as usize];
+            callback
+                .stage(&[input; QUANTUM as usize], &[], &mut output)
+                .unwrap();
+            callback.finish(true).unwrap();
+            let expected = index
+                .checked_sub(2)
+                .map_or([0.0; 2], |index| [(index % 4 + 1) as f32 / 8.0; 2]);
+            assert_eq!(output, [expected; QUANTUM as usize]);
+            let target = index + 1;
+            let deadline = std::time::Instant::now() + Duration::from_secs(2);
+            reaper.wake_offline();
+            while reaper.completed_blocks() < target && !reaper.is_finished() {
+                let timeout = deadline
+                    .checked_duration_since(std::time::Instant::now())
+                    .expect("offline reply deadline");
+                reaper.wait_for_blocks(target, timeout).unwrap();
+            }
+            if fail_at == Some(target) {
+                assert_eq!(reaper.completed_blocks(), target - 1);
+                assert_eq!(reaper.join_on_control(), Err(Fault::InvalidSamples));
+                return start.elapsed();
+            }
+            assert_eq!(reaper.completed_blocks(), target);
+        }
+        let elapsed = start.elapsed();
+        reaper.join_on_control().unwrap();
+        elapsed
+    }
+
+    #[test]
+    fn offline_worker_publishes_exact_replies_and_joins_on_failure() {
+        run_offline_transport(true, 16, None);
+        run_offline_transport(true, 16, Some(5));
+    }
+
+    #[test]
+    #[ignore = "release transport timing, run explicitly"]
+    fn measure_offline_worker_wakeup() {
+        for _ in 0..3 {
+            let polling = run_offline_transport(false, 6000, None);
+            let wakeups = run_offline_transport(true, 6000, None);
+            eprintln!("6000 x 256 frames: polling={polling:?}, wakeups={wakeups:?}");
+        }
+    }
+
     #[test]
     fn reaper_constructor_lists_boxes_terminal_counter_and_actual_thread_capture() {
         let captured = [42_u8; 173];
@@ -1052,6 +1226,7 @@ mod tests {
             control,
             worker,
             Processor::Function(Box::new(process)),
+            false,
             |guard, published| {
                 let spawned = spawn_transport(guard, published)?;
                 capture_bytes.set(spawned.capture_data_bytes);
@@ -1113,6 +1288,7 @@ mod tests {
                 let _capture = &capture;
                 Ok(block)
             })),
+            false,
             |guard, _| {
                 drop(guard); // Same closure-ownership return as std thread spawn refusal.
                 Err(std::io::Error::other("original thread creation refusal"))

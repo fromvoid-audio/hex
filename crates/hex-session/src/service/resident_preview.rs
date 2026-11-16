@@ -17,6 +17,14 @@ pub(crate) struct Preview {
     pub(super) identity: Identity,
 }
 impl Preview {
+    /// A newer canonical preparation can supersede an overlay before rebase.
+    pub(super) fn follows(&self, canonical: &resident_audio::Snapshot) -> bool {
+        let overlay = self.snapshot.prepared_context;
+        let canonical = canonical.prepared_context;
+        overlay.project_generation == canonical.project_generation
+            && overlay.editor_revision >= canonical.editor_revision
+    }
+
     pub(super) fn device_identity(&self) -> Option<DevicePreviewIdentity> {
         match &self.identity {
             Identity::Device(id) => Some(*id),
@@ -35,11 +43,11 @@ impl Preview {
             _ => None,
         }
     }
+    pub(super) fn clip_move_identity(&self) -> Option<ClipMovePreviewIdentity> {
+        self.clip_target()?.move_identity()
+    }
     pub(super) fn admission(&self) -> DeviceResourceAdmission<'_> {
-        DeviceResourceAdmission::prepared_on_control(
-            &self.snapshot.resources,
-            &self.snapshot.prepared,
-        )
+        self.snapshot.admission()
     }
     /// Native accounting covers the resource/factory union and conservative
     /// input/control capture, including a retained clip selection. The shared
@@ -60,12 +68,32 @@ impl Preview {
             .ok_or_else(|| "preview metadata overflow".into())
     }
 }
+impl Identity {
+    pub(super) fn source_origin(&self) -> ResidentSourceOrigin {
+        match self {
+            Self::Device(_) => ResidentSourceOrigin::DevicePreview,
+            Self::Tuning(_) => ResidentSourceOrigin::TuningPreview,
+            Self::Clip(clip_audition::Target::Move(_)) => ResidentSourceOrigin::ClipMovePreview,
+            Self::Clip(clip_audition::Target::Stretch(_)) => {
+                ResidentSourceOrigin::ClipStretchPreview
+            }
+            Self::Clip(clip_audition::Target::PlayStart(_)) => {
+                ResidentSourceOrigin::ClipPlayStartPreview
+            }
+        }
+    }
+}
 fn metadata(
     context: hex_engine::AudioSourceContext,
     identity: Option<Identity>,
     prepared: &PreparedRevision,
 ) -> ResidentPublicationMetadata {
     ResidentPublicationMetadata {
+        source_origin: crate::service::ResidentSourceOrigin::Unknown,
+        clip_preview: identity.as_ref().and_then(|id| match id {
+            Identity::Clip(target) => target.move_identity(),
+            _ => None,
+        }),
         context,
         device_preview: identity.as_ref().and_then(|id| match id {
             Identity::Device(id) => Some(*id),
@@ -187,17 +215,24 @@ pub(super) fn restore(
     let snapshot = current
         .as_mut()
         .ok_or(SessionError::Invalid("canonical playback unavailable"))?;
-    let selected = snapshot.inputs.clone();
     let admission = with_preview(admission, preview.as_ref());
-    session.publish_resident_runtime_inputs(
-        snapshot,
-        sink,
-        admission,
-        metadata(context, None, &snapshot.prepared),
-        ResidentPublicationPolicy::InheritRuntime,
-        selected,
-        None,
-    )?;
+    if admission.preview.is_some_and(|overlay| {
+        overlay.follows(snapshot) && overlay.snapshot.prepared.has_arrangement_foreign_programs()
+    }) {
+        *snapshot = session
+            .restore_resident_preview_with_foreign_programs(snapshot, sink, admission, context)?;
+    } else {
+        let selected = snapshot.inputs.clone();
+        session.publish_resident_runtime_inputs(
+            snapshot,
+            sink,
+            admission,
+            metadata(context, None, &snapshot.prepared),
+            ResidentPublicationPolicy::InheritRuntime,
+            selected,
+            None,
+        )?;
+    }
     let prepared = Arc::clone(&snapshot.prepared);
     *preview = None;
     Ok(Some((Arc::new(session.project().clone()), prepared)))
@@ -334,9 +369,7 @@ pub(super) fn publish_inputs(
         .registered
         .iter()
         .copied()
-        .chain(std::iter::once(
-            DeviceResourceAdmission::prepared_on_control(&canonical.resources, &canonical.prepared),
-        ))
+        .chain(std::iter::once(canonical.admission()))
         .collect::<Vec<_>>();
     let runtime_bytes = admission
         .runtime_bytes
@@ -345,12 +378,13 @@ pub(super) fn publish_inputs(
         .ok_or(SessionError::Invalid("preview input metadata overflow"))?;
     metadata.device_preview = overlay.device_identity();
     metadata.tuning_preview = overlay.tuning_identity();
+    metadata.clip_preview = overlay.clip_move_identity();
     metadata.requires_preroll = overlay
         .snapshot
         .prepared
         .arrangement_seek_requires_preroll();
     metadata.gain_recording_track = overlay.snapshot.prepared.gain_recording_track();
-    let (hint, accepted) = session.prepare_resident_runtime_inputs(
+    let (hint, accepted, submission) = session.prepare_resident_runtime_inputs(
         &overlay.snapshot,
         &overlay.project,
         sink,
@@ -365,6 +399,9 @@ pub(super) fn publish_inputs(
         required,
     )?;
     drop(registered);
+    overlay
+        .snapshot
+        .record_submission(metadata.context, submission);
     accepted.cancel_retired_from(&canonical.inputs);
     canonical.inputs = accepted.clone();
     overlay.snapshot.inputs = accepted;

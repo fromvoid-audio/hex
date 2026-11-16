@@ -18,7 +18,11 @@ for its client-frame maximum. It refuses before stream start if the configured
 rate or buffer no longer matches, or the maximum exceeds the caller's ceiling.
 The reported hardware-buffer duration uses the device's rate. Failed startup
 attempts restore the prior buffer if it still equals the requested value.
-The generic output and input entry points keep their existing setup.
+The generic output entry point keeps its existing setup. The input entry point
+forwards device-disconnect errors for every selected input, including the
+system default, to the supplied error callback. The selected input is pinned;
+a change of system default does not silently transfer its capture to another
+device. As elsewhere in this backend, a contended error callback may be skipped.
 The direct device-property approach also appears in upstream CPAL 0.18.0,
 archive SHA-256 `d9dd2b2151ebb4d5866c804d89fe28244bfb6b74481b9b4d406e4ec4d7f88ce5`,
 VCS revision `45fe976149d5ea0c01b30546e26b3c867285c539`.
@@ -30,10 +34,13 @@ the direct range against the former Audio Unit query on the selected device:
 
 ```sh
 cargo test --manifest-path third_party/cpal/Cargo.toml --lib --locked route_probe_regression
+cargo test --manifest-path third_party/cpal/Cargo.toml --lib --locked input_disconnect_regression
 ```
 
-The test requires a working macOS default output. It tests the configuration
-query, not device deadlines or audible output. The isolated vendored manifest uses
+The route test requires a working macOS default output. The disconnect test
+exercises the shared input callback forwarding without a physical device; it
+does not prove native unplug behavior. Neither proves device deadlines or audible
+output. The isolated vendored manifest uses
 its published lockfile; workspace consumers use the root `Cargo.lock`.
 `hex-patches.diff` records the source delta. Reassess this backport when upgrading
 CPAL; do not edit the Cargo registry cache. Run `python3 scripts/check-cpal-patch.py`

@@ -5,6 +5,7 @@ use hex_project::BeatTime;
 
 mod automation_start;
 mod section_edit;
+mod section_recovery;
 mod track_duplicate;
 
 #[test]
@@ -762,6 +763,36 @@ fn instrument_insertion_plays_authored_midi_in_the_desktop_audio_graph() {
     instrument_entrypoint(InstrumentWorkflow::Playback);
 }
 
+#[test]
+#[ignore = "requires explicit source-bound SDK receipts"]
+fn session_play_from_releases_old_sdk_instrument_gate() {
+    instrument_entrypoint(InstrumentWorkflow::SessionRestart);
+}
+
+#[test]
+#[ignore = "requires explicit source-bound SDK receipts"]
+fn session_loop_repeats_sdk_instrument_gates() {
+    instrument_entrypoint(InstrumentWorkflow::SessionLoop);
+}
+
+#[test]
+#[ignore = "requires explicit source-bound SDK receipts"]
+fn session_seek_releases_old_sdk_instrument_gate() {
+    instrument_entrypoint(InstrumentWorkflow::SessionSeek);
+}
+
+#[test]
+#[ignore = "requires explicit source-bound SDK receipts"]
+fn session_priority_stop_releases_gate_on_original_sdk_endpoint() {
+    instrument_entrypoint(InstrumentWorkflow::SessionStopTrace);
+}
+
+#[test]
+#[ignore = "requires explicit source-bound SDK receipts"]
+fn session_pause_releases_sdk_gate_without_rechasing_on_resume() {
+    instrument_entrypoint(InstrumentWorkflow::SessionPause);
+}
+
 /// An opt-in wall-clock driver for the actual native worker, not a physical
 /// audio deadline or a reproduction of any particular user project.
 #[test]
@@ -775,6 +806,19 @@ fn paced_live_instrument_automation_preserves_the_worker() {
 #[ignore = "requires an installed VST3 instrument, its catalog and a source-bound helper"]
 fn paced_automation_and_parameter_polling_preserve_the_worker() {
     instrument_entrypoint(InstrumentWorkflow::PacedMonitoring);
+}
+
+/// Five independently hosted instruments share one paced graph callback.
+#[test]
+#[ignore = "requires an installed VST3 instrument, its catalog and a source-bound helper"]
+fn paced_five_instruments_with_automation_and_polling() {
+    instrument_entrypoint(InstrumentWorkflow::PacedFive);
+}
+
+#[test]
+#[ignore = "requires an installed VST3 instrument, its catalog and a source-bound helper"]
+fn paced_five_instruments_with_automation_undo_and_redo() {
+    instrument_entrypoint(InstrumentWorkflow::PacedFiveHistory);
 }
 
 #[test]
@@ -989,21 +1033,44 @@ fn recorded_session_gesture_commits_one_take_and_reopens() {
 #[derive(Clone, Copy)]
 enum InstrumentWorkflow {
     Playback,
+    SessionRestart,
+    SessionLoop,
+    SessionPause,
+    SessionSeek,
+    SessionStopTrace,
     Authoring,
     AuthoringAcrossPlay,
     PacedAuthoring,
     PacedMonitoring,
+    PacedFive,
+    PacedFiveHistory,
     Takeover,
 }
 
 fn instrument_entrypoint(workflow: InstrumentWorkflow) {
-    let shared_authoring = !matches!(workflow, InstrumentWorkflow::Playback);
+    let shared_authoring = !matches!(
+        workflow,
+        InstrumentWorkflow::Playback
+            | InstrumentWorkflow::SessionRestart
+            | InstrumentWorkflow::SessionLoop
+            | InstrumentWorkflow::SessionPause
+            | InstrumentWorkflow::SessionSeek
+            | InstrumentWorkflow::SessionStopTrace
+    );
     let takeover = matches!(workflow, InstrumentWorkflow::Takeover);
     let paced = matches!(
         workflow,
-        InstrumentWorkflow::PacedAuthoring | InstrumentWorkflow::PacedMonitoring
+        InstrumentWorkflow::PacedAuthoring
+            | InstrumentWorkflow::PacedMonitoring
+            | InstrumentWorkflow::PacedFive
+            | InstrumentWorkflow::PacedFiveHistory
     );
-    let monitor = matches!(workflow, InstrumentWorkflow::PacedMonitoring);
+    let monitor = matches!(
+        workflow,
+        InstrumentWorkflow::PacedMonitoring
+            | InstrumentWorkflow::PacedFive
+            | InstrumentWorkflow::PacedFiveHistory
+    );
     let name = std::thread::current().name().unwrap().to_owned();
     const CHILD: &str = "HEX_DESKTOP_TEST_INSTRUMENT_CHILD";
     let installed = std::env::var("HEX_TEST_VST3_INSTRUMENT_BUNDLE").ok();
@@ -1012,6 +1079,11 @@ fn instrument_entrypoint(workflow: InstrumentWorkflow) {
         child
             .args(["--exact", &name, "--ignored", "--nocapture"])
             .env(CHILD, "1");
+        let trace_directory =
+            matches!(workflow, InstrumentWorkflow::SessionStopTrace).then(Files::new);
+        if let Some(directory) = &trace_directory {
+            child.env("HEX_ORIGINAL_NOTE_TRACE_DIR", &directory.0);
+        }
         if installed.is_none() {
             child.env(
                 "HEX_ORIGINAL_INSTANCE_VARIANT",
@@ -1095,7 +1167,13 @@ fn instrument_entrypoint(workflow: InstrumentWorkflow) {
         panic!("midi track");
     };
     (applied, _) = harness.applied(applied);
-    let (clip_length, note_duration) = if takeover || paced {
+    let (clip_length, note_duration) = if paced {
+        // Keep the instrument sounding through the optional long stress run.
+        (
+            BeatTime::from_quarters(1024).unwrap(),
+            BeatTime::from_quarters(1024).unwrap(),
+        )
+    } else if takeover {
         // The headless control driver can render far faster than wall time
         // while waiting for SDK work. Keep its held note alive throughout
         // these operations without adding processing to the test.
@@ -1159,16 +1237,35 @@ fn instrument_entrypoint(workflow: InstrumentWorkflow) {
             track,
             scene,
             name: "console notes".into(),
-            source_length: BeatTime::from_quarters(1).unwrap(),
+            source_length: if matches!(workflow, InstrumentWorkflow::SessionLoop) {
+                BeatTime::from_ratio(1, 32).unwrap()
+            } else {
+                BeatTime::from_quarters(1).unwrap()
+            },
         }));
         let Some(Created::SessionClip(console)) = console.created else {
             panic!("console clip")
         };
         (applied, _) = harness.applied(applied);
+        if matches!(workflow, InstrumentWorkflow::SessionLoop) {
+            harness.run(Request::Edit(Command::SetSessionMidiClipSource {
+                clip: console,
+                source_length: BeatTime::from_ratio(1, 32).unwrap(),
+                source_start: BeatTime::ZERO,
+                loop_start: BeatTime::ZERO,
+                loop_end: BeatTime::from_ratio(1, 32).unwrap(),
+                looping: true,
+            }));
+            (applied, _) = harness.applied(applied);
+        }
         note = harness.run(Request::Edit(Command::AddMidiNote {
             clip: console,
             start: BeatTime::ZERO,
-            duration: BeatTime::from_quarters(1).unwrap(),
+            duration: if matches!(workflow, InstrumentWorkflow::SessionLoop) {
+                BeatTime::from_ratio(1, 64).unwrap()
+            } else {
+                BeatTime::from_quarters(1).unwrap()
+            },
             pitch: installed_pitch.unwrap_or(if controlled_fixture { 60 } else { 64 }),
             channel,
             velocity: 88,
@@ -1220,6 +1317,63 @@ fn instrument_entrypoint(workflow: InstrumentWorkflow) {
     assert!(project_track.instrument().is_some());
     assert_eq!(accepted.state.project.sample_rate(), rate);
     (applied, _) = harness.applied(applied);
+    let instrument = project_track.instrument().unwrap().id();
+    if matches!(
+        workflow,
+        InstrumentWorkflow::PacedFive | InstrumentWorkflow::PacedFiveHistory
+    ) {
+        for index in 1..5 {
+            let added = harness.run(Request::Edit(Command::AddMidiTrack {
+                name: format!("synth {index}"),
+            }));
+            let Some(Created::Track(track)) = added.created else {
+                panic!("midi track");
+            };
+            (applied, _) = harness.applied(applied);
+            let placed = harness.run(Request::Edit(Command::PlaceMidiClip {
+                track,
+                start: BeatTime::ZERO,
+                length: clip_length,
+            }));
+            let Some(Created::Clip(clip)) = placed.created else {
+                panic!("midi clip");
+            };
+            (applied, _) = harness.applied(applied);
+            let note = harness.run(Request::Edit(Command::AddMidiNote {
+                clip,
+                start: BeatTime::ZERO,
+                duration: note_duration,
+                pitch,
+                channel,
+                velocity: 112,
+            }));
+            (applied, _) = harness.applied(applied);
+            let mut insertion = request(&note.state, PluginEffectDestination::Instrument(track));
+            insertion.selection = installed_selection(
+                &PathBuf::from(std::env::var_os("HEX_TEST_VST3_INSTRUMENT_CATALOG").unwrap()),
+                installed.as_ref().unwrap(),
+                hex_plugin_catalog::PluginRole::Instrument,
+            );
+            harness
+                .service
+                .submit(Request::InsertPluginEffect(insertion))
+                .unwrap();
+            let event = terminal(&mut harness);
+            assert!(event.error.is_none(), "{:?}", event.error);
+            assert!(event.plugin_effect_complete[0].accepted);
+            assert_eq!(
+                event
+                    .state
+                    .project
+                    .tracks()
+                    .iter()
+                    .filter(|track| track.instrument().is_some())
+                    .count(),
+                index + 1
+            );
+            (applied, _) = harness.applied(applied);
+        }
+    }
     if matches!(workflow, InstrumentWorkflow::AuthoringAcrossPlay) {
         automation_start::verify(
             &mut harness,
@@ -1241,9 +1395,10 @@ fn instrument_entrypoint(workflow: InstrumentWorkflow) {
     if paced {
         verify_paced_instrument_authoring(
             &mut harness,
-            project_track.instrument().unwrap().id(),
+            instrument,
             applied,
             monitor,
+            matches!(workflow, InstrumentWorkflow::PacedFiveHistory),
         );
         return;
     }
@@ -1267,6 +1422,373 @@ fn instrument_entrypoint(workflow: InstrumentWorkflow) {
         return;
     }
     let console = console.unwrap();
+    if matches!(workflow, InstrumentWorkflow::SessionSeek) {
+        assert!(
+            controlled_fixture,
+            "this oracle requires the controlled SDK fixture"
+        );
+        let send = |harness: &mut ResidentHarness, command| {
+            harness
+                .audio
+                .as_mut()
+                .unwrap()
+                .control
+                .session_command_with_ticket(command)
+                .unwrap();
+        };
+        let settle = |harness: &ResidentHarness| {
+            for _ in 0..4 {
+                render_completed_block(harness);
+            }
+        };
+        let sounding = |harness: &ResidentHarness, stage: &str| {
+            for frame in render_completed_block(harness) {
+                assert!(
+                    (frame[0] - 88.0 / 127.0).abs() < 1e-5,
+                    "expected one SDK gate at {stage}: {frame:?}"
+                );
+                assert!((frame[0] - frame[1]).abs() < 1e-6);
+            }
+        };
+        send(&mut harness, SessionPlaybackCommand::Play);
+        settle(&harness);
+        send(
+            &mut harness,
+            SessionPlaybackCommand::LaunchClip {
+                clip: console,
+                quantization: Immediate,
+            },
+        );
+        settle(&harness);
+        sounding(&harness, "before seek");
+
+        send(&mut harness, SessionPlaybackCommand::Seek(12_000));
+        settle(&harness);
+        sounding(&harness, "after seek");
+        send(
+            &mut harness,
+            SessionPlaybackCommand::StopTrack {
+                track,
+                quantization: Immediate,
+            },
+        );
+        settle(&harness);
+        assert_eq!(
+            render_completed_block(&harness),
+            [[0.0; 2]; 256],
+            "seek left a prior gate"
+        );
+
+        let status = harness.audio.as_ref().unwrap().status().unwrap();
+        assert!(status.playing.load(Acquire));
+        assert!(status.position.load(Acquire) >= 12_000);
+        assert!(status.rejected_action().is_none());
+        assert!(status.render_fault_snapshot().is_none());
+        return;
+    }
+    if matches!(workflow, InstrumentWorkflow::SessionStopTrace) {
+        assert!(
+            controlled_fixture,
+            "this oracle requires the controlled SDK fixture"
+        );
+        let send = |harness: &mut ResidentHarness, command| {
+            harness
+                .audio
+                .as_mut()
+                .unwrap()
+                .control
+                .session_command_with_ticket(command)
+                .unwrap();
+        };
+        send(&mut harness, SessionPlaybackCommand::Play);
+        for _ in 0..4 {
+            render_completed_block(&harness);
+        }
+        send(
+            &mut harness,
+            SessionPlaybackCommand::LaunchClip {
+                clip: console,
+                quantization: Immediate,
+            },
+        );
+        for _ in 0..4 {
+            render_completed_block(&harness);
+        }
+        let sounding = render_completed_block(&harness);
+        assert!(
+            sounding
+                .iter()
+                .all(|frame| (frame[0] - 88.0 / 127.0).abs() < 1e-5)
+        );
+        let directory = PathBuf::from(std::env::var_os("HEX_ORIGINAL_NOTE_TRACE_DIR").unwrap());
+        let paths: Vec<_> = std::fs::read_dir(&directory)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().is_some_and(|extension| extension == "bin"))
+            .collect();
+        assert_eq!(
+            paths.len(),
+            1,
+            "expected the one sounding SDK helper: {paths:?}"
+        );
+        let original = &paths[0];
+        use std::os::unix::fs::MetadataExt as _;
+        let before_inode = std::fs::metadata(original).unwrap().ino();
+        harness.audio.as_ref().unwrap().control.stop();
+        assert_eq!(harness.render_plugin_block(), [[0.0; 2]; 256]);
+        let mut restored = harness.run(Request::RestoreStoppedPlayback);
+        if !restored.stopped_playback_restore_complete {
+            restored = restored_terminal(&mut harness);
+        }
+        assert!(restored.error.is_none(), "{:?}", restored.error);
+        let (_, metadata) = harness.applied(applied);
+        assert!(metadata.stopped_restore);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let notes = loop {
+            harness.pump();
+            let updated =
+                std::fs::metadata(original).is_ok_and(|metadata| metadata.ino() != before_inode);
+            let words = updated
+                .then(|| std::fs::read(original).ok())
+                .flatten()
+                .filter(|bytes| bytes.len() == 20)
+                .map(|bytes| {
+                    bytes
+                        .chunks_exact(4)
+                        .map(|chunk| i32::from_ne_bytes(chunk.try_into().unwrap()))
+                        .collect::<Vec<_>>()
+                });
+            if let Some(words) = words.filter(|words| words[1] >= 2) {
+                break words;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "original SDK helper trace did not update"
+            );
+            std::thread::yield_now();
+        };
+        assert_eq!(
+            notes[1], notes[2],
+            "original SDK endpoint retained a note: {notes:?}"
+        );
+        assert!(
+            notes[3] > 0,
+            "the held gate needs a real occurrence identity: {notes:?}"
+        );
+        assert_eq!(
+            notes[3], notes[4],
+            "the released identity differs: {notes:?}"
+        );
+        println!("original SDK helper {original:?} note trace={notes:?}");
+        return;
+    }
+    if matches!(workflow, InstrumentWorkflow::SessionPause) {
+        assert!(
+            controlled_fixture,
+            "this oracle requires the controlled SDK fixture"
+        );
+        let send = |harness: &mut ResidentHarness, command| {
+            harness
+                .audio
+                .as_mut()
+                .unwrap()
+                .control
+                .session_command_with_ticket(command)
+                .unwrap();
+        };
+        send(&mut harness, SessionPlaybackCommand::Play);
+        for _ in 0..4 {
+            render_completed_block(&harness);
+        }
+        send(
+            &mut harness,
+            SessionPlaybackCommand::LaunchClip {
+                clip: console,
+                quantization: Immediate,
+            },
+        );
+        for _ in 0..4 {
+            render_completed_block(&harness);
+        }
+        let sounding = render_completed_block(&harness);
+        for frame in sounding {
+            assert!(
+                (frame[0] - 88.0 / 127.0).abs() < 1e-5,
+                "Session gate was not sounding: {frame:?}"
+            );
+            assert!((frame[0] - frame[1]).abs() < 1e-6);
+        }
+        send(&mut harness, SessionPlaybackCommand::Pause);
+        for _ in 0..4 {
+            render_completed_block(&harness);
+        }
+        assert_eq!(render_completed_block(&harness), [[0.0; 2]; 256]);
+        let status = harness.audio.as_ref().unwrap().status().unwrap();
+        assert!(!status.playing.load(Acquire));
+        let paused_at = status.position.load(Acquire);
+        assert!(
+            paused_at < 24_000,
+            "held note must not have reached its authored end"
+        );
+        send(&mut harness, SessionPlaybackCommand::Play);
+        for _ in 0..4 {
+            render_completed_block(&harness);
+        }
+        assert_eq!(render_completed_block(&harness), [[0.0; 2]; 256]);
+        let status = harness.audio.as_ref().unwrap().status().unwrap();
+        assert!(status.playing.load(Acquire));
+        assert!(status.position.load(Acquire) > paused_at);
+        assert!(status.position.load(Acquire) < 24_000);
+        assert!(status.rejected_action().is_none());
+        assert!(status.render_fault_snapshot().is_none());
+        return;
+    }
+    if matches!(workflow, InstrumentWorkflow::SessionLoop) {
+        assert!(
+            controlled_fixture,
+            "this oracle requires the controlled SDK fixture"
+        );
+        let send = |harness: &mut ResidentHarness, command| {
+            harness
+                .audio
+                .as_mut()
+                .unwrap()
+                .control
+                .session_command_with_ticket(command)
+                .unwrap();
+        };
+        send(&mut harness, SessionPlaybackCommand::Play);
+        for _ in 0..4 {
+            render_completed_block(&harness);
+        }
+        send(
+            &mut harness,
+            SessionPlaybackCommand::LaunchClip {
+                clip: console,
+                quantization: Immediate,
+            },
+        );
+        for _ in 0..3 {
+            render_completed_block(&harness);
+        }
+        let pcm: Vec<_> = (0..12)
+            .flat_map(|_| render_completed_block(&harness))
+            .collect();
+        let expected = 88.0 / 127.0;
+        assert!(
+            (pcm.last().unwrap()[0] - expected).abs() < 1e-5,
+            "the final SDK gate must be sounding before StopTrack"
+        );
+        let mut runs = Vec::new();
+        for frame in pcm {
+            assert!((frame[0] - frame[1]).abs() < 1e-6);
+            let on = if frame[0].abs() < 1e-6 {
+                false
+            } else {
+                assert!(
+                    (frame[0] - expected).abs() < 1e-5,
+                    "unexpected sample {frame:?}"
+                );
+                true
+            };
+            if let Some((last, count)) = runs.last_mut()
+                && *last == on
+            {
+                *count += 1;
+            } else {
+                runs.push((on, 1_usize));
+            }
+        }
+        assert!(runs.len() >= 8, "expected several loop cycles: {runs:?}");
+        for &(on, count) in &runs[1..runs.len() - 1] {
+            assert_eq!(count, 375, "unexpected {on} gate length: {runs:?}");
+        }
+        send(
+            &mut harness,
+            SessionPlaybackCommand::StopTrack {
+                track,
+                quantization: Immediate,
+            },
+        );
+        for _ in 0..4 {
+            render_completed_block(&harness);
+        }
+        assert_eq!(render_completed_block(&harness), [[0.0; 2]; 256]);
+        return;
+    }
+    if matches!(workflow, InstrumentWorkflow::SessionRestart) {
+        assert!(
+            controlled_fixture,
+            "this oracle requires the controlled SDK fixture"
+        );
+        let send = |harness: &mut ResidentHarness, command| {
+            harness
+                .audio
+                .as_mut()
+                .unwrap()
+                .control
+                .session_command_with_ticket(command)
+                .unwrap();
+        };
+        send(&mut harness, SessionPlaybackCommand::Play);
+        for _ in 0..4 {
+            render_completed_block(&harness);
+        }
+        send(
+            &mut harness,
+            SessionPlaybackCommand::LaunchClip {
+                clip: console,
+                quantization: Immediate,
+            },
+        );
+        let peak = |frames: [hex_engine::Frame; 256]| {
+            frames
+                .into_iter()
+                .flatten()
+                .map(f32::abs)
+                .fold(0.0, f32::max)
+        };
+        for _ in 0..4 {
+            render_completed_block(&harness);
+        }
+        let before = peak(render_completed_block(&harness));
+        assert!(
+            (before - 88.0 / 127.0).abs() < 0.0001,
+            "Session note must sound before restart, got {before}"
+        );
+        harness
+            .audio
+            .as_mut()
+            .unwrap()
+            .control
+            .command(PlaybackCommand::PlayFrom(12_000))
+            .unwrap();
+        for _ in 0..4 {
+            render_completed_block(&harness);
+        }
+        let after = peak(render_completed_block(&harness));
+        assert!(
+            (before - after).abs() < 0.0001,
+            "Session restart must leave exactly one SDK gate: before={before}, after={after}"
+        );
+        let status = harness.audio.as_ref().unwrap().status().unwrap();
+        assert!(status.position.load(Acquire) >= 12_000);
+        assert!(status.rejected_action().is_none());
+        assert!(status.render_fault_snapshot().is_none());
+        send(
+            &mut harness,
+            SessionPlaybackCommand::StopTrack {
+                track,
+                quantization: Immediate,
+            },
+        );
+        for _ in 0..3 {
+            render_completed_block(&harness);
+        }
+        assert_eq!(render_completed_block(&harness), [[0.0; 2]; 256]);
+        return;
+    }
     // Exercise the resident keyboard request on a newly inserted worker
     // before the authored transport has ever started.
     let keys = Arc::new(
@@ -1668,6 +2190,68 @@ fn instrument_entrypoint(workflow: InstrumentWorkflow) {
             render_completed_block(&harness);
         }
         assert_eq!(render_completed_block(&harness), [[0.0; 2]; 256]);
+
+        // Return to the authored Arrangement, then seek out of a held note.
+        // The worker's copied output must release it after its bridge latency.
+        send(
+            &mut harness,
+            SessionPlaybackCommand::BackToArrangement {
+                quantization: Immediate,
+            },
+        );
+        render_completed_block(&harness);
+        harness
+            .audio
+            .as_mut()
+            .unwrap()
+            .control
+            .command(PlaybackCommand::PlayFrom(0))
+            .unwrap();
+        let held_peak = (0..8)
+            .map(|_| pcm_peak(render_completed_block(&harness)))
+            .fold(0.0, f32::max);
+        assert!(
+            held_peak > 0.001,
+            "the authored note must be held before seeking"
+        );
+        harness
+            .audio
+            .as_mut()
+            .unwrap()
+            .control
+            .command(PlaybackCommand::Seek(48_000))
+            .unwrap();
+        for _ in 0..6 {
+            render_completed_block(&harness);
+        }
+        for _ in 0..2 {
+            assert_eq!(
+                render_completed_block(&harness),
+                [[0.0; 2]; 256],
+                "seek must release the held SDK gate"
+            );
+        }
+        let status = harness.audio.as_ref().unwrap().status().unwrap();
+        assert!(status.position.load(Acquire) >= 48_000);
+        assert!(status.rejected_action().is_none());
+        assert!(status.render_fault_snapshot().is_none());
+        harness
+            .audio
+            .as_mut()
+            .unwrap()
+            .control
+            .command(PlaybackCommand::PlayFrom(0))
+            .unwrap();
+        let fresh_peak = (0..8)
+            .map(|_| pcm_peak(render_completed_block(&harness)))
+            .fold(0.0, f32::max);
+        assert!(
+            fresh_peak > 0.001,
+            "a fresh authored note must sound after seek"
+        );
+        let status = harness.audio.as_ref().unwrap().status().unwrap();
+        assert!(status.rejected_action().is_none());
+        assert!(status.render_fault_snapshot().is_none());
     }
 }
 
@@ -1676,6 +2260,7 @@ fn verify_paced_instrument_authoring(
     device: hex_project::DeviceId,
     mut applied: u64,
     monitor: bool,
+    history: bool,
 ) {
     use hex_project::{
         AutomationInterpolation, AutomationPoint, AutomationValue, DeviceAutomationTarget,
@@ -1733,22 +2318,53 @@ fn verify_paced_instrument_authoring(
     let mut query_yielded = 0_u64;
     let mut revision = context.editor_revision;
     let mut max_lateness = Duration::ZERO;
+    let mut previous_callback = None;
+    let mut recent_callbacks = [(0_u32, 0_u128, 0_u128, 0_u128); 8];
     let mut peak = 0.0_f32;
     let mut tail_peak = 0.0_f32;
-    for block in 0..600_u32 {
+    // The short default remains useful for routine feedback. The original
+    // report failed after tens of thousands of blocks, so permit an explicit
+    // longer stress run without lengthening ordinary checks.
+    let blocks = std::env::var("HEX_TEST_VST3_PACED_BLOCKS")
+        .map(|value| value.parse::<u32>().expect("paced block count"))
+        .unwrap_or(600);
+    assert!(
+        (600..=100_000).contains(&blocks),
+        "paced block count out of range"
+    );
+    let burst_delay = std::env::var("HEX_TEST_VST3_BURST_MILLIS")
+        .map(|value| value.parse::<u64>().expect("burst delay"))
+        .unwrap_or(0);
+    assert!(burst_delay <= 25, "burst delay out of range");
+    for block in 0..blocks {
         let deadline = start + period * block;
         if let Some(delay) = deadline.checked_duration_since(Instant::now()) {
             std::thread::sleep(delay);
         }
+        if burst_delay != 0 && block != 0 && block % 100 == 0 {
+            std::thread::sleep(Duration::from_millis(burst_delay));
+        }
         harness.pump();
-        max_lateness = max_lateness.max(Instant::now().saturating_duration_since(deadline));
+        let callback_start = Instant::now();
+        let late = callback_start.saturating_duration_since(deadline);
+        let gap = previous_callback.map_or(Duration::ZERO, |previous| {
+            callback_start.duration_since(previous)
+        });
+        previous_callback = Some(callback_start);
+        max_lateness = max_lateness.max(late);
         let frames = harness.render_plugin_block();
+        recent_callbacks[block as usize % 8] = (
+            block,
+            late.as_micros(),
+            gap.as_micros(),
+            callback_start.elapsed().as_micros(),
+        );
         let block_peak = frames
             .into_iter()
             .flatten()
             .fold(0.0_f32, |value, sample| value.max(sample.abs()));
         peak = peak.max(block_peak);
-        if block >= 550 {
+        if block >= blocks - 50 {
             tail_peak = tail_peak.max(block_peak);
         }
         if monitor && query_pending.is_none() && (30..500).contains(&block) && block % 25 == 0 {
@@ -1770,7 +2386,9 @@ fn verify_paced_instrument_authoring(
             query_sent += 1;
             query_pending = Some(request_id);
         }
-        if !pending && sent < 3 && block >= 50 + sent * 125 {
+        let edit_count = if history { 5 } else { 3 };
+        let spacing = if history { 100 } else { 125 };
+        if !pending && sent < edit_count && block >= 50 + sent * spacing {
             let points = [
                 (BeatTime::ZERO, 0.4),
                 (BeatTime::from_ratio(1 + u64::from(sent), 8).unwrap(), 0.7),
@@ -1781,17 +2399,21 @@ fn verify_paced_instrument_authoring(
                 outgoing: AutomationInterpolation::Step,
             })
             .to_vec();
-            harness
-                .service
-                .submit(Request::DeviceAutomation {
+            let request = if sent == 3 {
+                Request::Undo
+            } else if sent == 4 {
+                Request::Redo
+            } else {
+                Request::DeviceAutomation {
                     project_generation: context.project_generation,
                     revision,
                     device,
                     target,
                     vst3_class: Some(class),
                     points,
-                })
-                .unwrap();
+                }
+            };
+            harness.service.submit(request).unwrap();
             sent += 1;
             pending = true;
         }
@@ -1827,6 +2449,22 @@ fn verify_paced_instrument_authoring(
                 query_pending = None;
             } else if event.state.revision > revision {
                 assert!(pending, "unexpected project revision during polling");
+                if history && completed >= 3 {
+                    let points = &event
+                        .state
+                        .project
+                        .device(device)
+                        .unwrap()
+                        .automation_target(target)
+                        .unwrap()
+                        .points;
+                    let expected_beat = if completed == 3 { 2 } else { 3 };
+                    assert_eq!(points.len(), 2);
+                    assert_eq!(
+                        points[1].beat,
+                        BeatTime::from_ratio(expected_beat, 8).unwrap()
+                    );
+                }
                 revision = event.state.revision;
                 pending = false;
                 completed += 1;
@@ -1839,9 +2477,10 @@ fn verify_paced_instrument_authoring(
         }
         assert!(
             harness.degraded_devices.is_empty(),
-            "vst endpoint degraded after block {block}, maximum lateness {:?}: {:?}",
+            "vst endpoint degraded after block {block}, maximum lateness {:?}: {:?}; recent (block, late_us, gap_us, render_us)={recent_callbacks:?}; worker failure={:?}",
             max_lateness,
-            harness.degraded_devices
+            harness.degraded_devices,
+            *harness.plugin_failure.lock().unwrap()
         );
         let status = harness.audio.as_ref().unwrap().status().unwrap();
         if block >= 50 {
@@ -1859,7 +2498,11 @@ fn verify_paced_instrument_authoring(
         "vst endpoint degraded: {:?}",
         harness.degraded_devices
     );
-    assert_eq!((sent, completed, pending), (3, 3, false));
+    let expected_edits = if history { 5 } else { 3 };
+    assert_eq!(
+        (sent, completed, pending),
+        (expected_edits, expected_edits, false)
+    );
     if monitor {
         assert!(
             query_completed >= 5,
@@ -1896,7 +2539,7 @@ fn verify_paced_instrument_authoring(
         "instrument must remain audible after editing"
     );
     println!(
-        "paced_vst3 rate={} blocks=600 edits={completed} applied={applied} max_late_us={} peak={peak} tail_peak={tail_peak}",
+        "paced_vst3 rate={} blocks={blocks} edits={completed} applied={applied} max_late_us={} peak={peak} tail_peak={tail_peak}",
         harness.audio.as_ref().unwrap().sample_rate,
         max_lateness.as_micros()
     );
@@ -2845,7 +3488,7 @@ fn verify_instrument_takeover(
                         // refusal at the exact committed revision, never export
                         // the old curve or publish a misleading file.
                         assert!(
-                            export.result.unwrap_err().contains(
+                            export.result.unwrap_err().message().contains(
                                 "vst3 automation requires interactive arrangement playback"
                             )
                         );
@@ -3530,4 +4173,477 @@ fn verify_instrument_takeover(
         assert!((peak(h) - baseline * 2.0).abs() < 0.0001);
     }
     println!("instrument takeover {case} passed");
+}
+
+#[test]
+#[ignore = "requires exact source-bound native helpers and original VST3 fixtures"]
+fn native_vst3_instrument_and_streamed_audio_export() {
+    const CHILD: &str = "HEX_DESKTOP_INSTRUMENT_EXPORT_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let name = std::thread::current().name().unwrap().to_owned();
+        let child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", &name, "--ignored", "--nocapture"])
+            .env(CHILD, "1")
+            .env("HEX_ORIGINAL_INSTANCE_VARIANT", "127")
+            .env("HEX_ORIGINAL_INSTRUMENT_LIVE_PRESET", "1")
+            .output()
+            .unwrap();
+        assert!(
+            child.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&child.stdout),
+            String::from_utf8_lossy(&child.stderr)
+        );
+        return;
+    }
+    use hex_session::service::{ExportControl, ExportSignal};
+    let _native = native_fixture();
+    let files = Files::new();
+    let mut selected = selection();
+    let module = files.0.canonicalize().unwrap().join("original.vst3");
+    super::ui::copy_original_module(&selected.module, &module);
+    selected.module = module;
+    hex_ui::write_plugin_effect_test_catalog(&files.0, &selected, "Instrument|Synth", 0).unwrap();
+    let recovery = files.0.join("recovery");
+    fs::create_dir(&recovery).unwrap();
+    let mut h = ResidentHarness::with_plugins_at_rate_and_catalog_recovery(
+        host(),
+        None,
+        48_000,
+        8_192,
+        files.0.canonicalize().unwrap().join("plugin-catalog.json"),
+        recovery.join("instrument-export.hex-journal"),
+    );
+    assert!(h.next().error.is_none());
+    let (applied, _) = h.applied(0);
+    let source = files.wav(48_000, 16_384);
+    let imported = h.run(Request::ImportToNewTrack {
+        path: source.clone(),
+        before_track: None,
+        start: 0,
+    });
+    let (applied, _) = h.applied(applied);
+    let added = h.run(Request::Edit(Command::AddMidiTrack {
+        name: "instrument".into(),
+    }));
+    let Some(Created::Track(track)) = added.created else {
+        panic!("midi track")
+    };
+    let (applied, _) = h.applied(applied);
+    let placed = h.run(Request::Edit(Command::PlaceMidiClip {
+        track,
+        start: BeatTime::ZERO,
+        length: BeatTime::ONE,
+    }));
+    let Some(Created::Clip(clip)) = placed.created else {
+        panic!("midi clip")
+    };
+    let (applied, _) = h.applied(applied);
+    let note = h.run(Request::Edit(Command::AddMidiNote {
+        clip,
+        start: BeatTime::ZERO,
+        duration: BeatTime::from_ratio(1, 2).unwrap(),
+        pitch: 60,
+        channel: 0,
+        velocity: 100,
+    }));
+    let (applied, _) = h.applied(applied);
+    let mut insertion = request(&note.state, PluginEffectDestination::Instrument(track));
+    insertion.selection = selected;
+    h.service
+        .submit(Request::InsertPluginEffect(insertion))
+        .unwrap();
+    let inserted = terminal(&mut h);
+    assert!(inserted.error.is_none(), "{:?}", inserted.error);
+    h.applied(applied);
+    assert!(
+        imported
+            .state
+            .canonical_audio_source
+            .as_ref()
+            .unwrap()
+            .sources()
+            .values()
+            .any(|source| matches!(source, hex_session::AudioSourceBinding::VerifiedFile(_)))
+    );
+    let before = Arc::clone(&inserted.state.project);
+    let live = h.plugin_progress.lock().unwrap().binding;
+    let path = files.0.join("instrument-export.wav");
+    let queued = super::super::resident_sections::run_callback(
+        &mut h,
+        Request::ExportRange {
+            path: path.clone(),
+            start: 0,
+            frames: Some(1024),
+            signal: ExportSignal::Main,
+            control: ExportControl::default(),
+            format: hex_export::ExportFormat::Pcm16,
+            overwrite: false,
+        },
+    );
+    assert!(queued.error.is_none(), "{:?}", queued.error);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let completed = loop {
+        h.pump();
+        h.render();
+        if let Ok(event) = h.service.try_export_event() {
+            break event;
+        }
+        assert!(Instant::now() < deadline, "instrument export timed out");
+        std::thread::yield_now();
+    };
+    assert_eq!(completed.result.expect("instrument export").frames, 1024);
+    let wav = fs::read(path).unwrap();
+    let pcm: Vec<_> = wav[44..]
+        .chunks_exact(4)
+        .map(|frame| i16::from_le_bytes([frame[0], frame[1]]))
+        .collect();
+    assert!(
+        pcm.iter().any(|sample| i32::from(*sample) > 8194),
+        "instrument must add audible PCM"
+    );
+    assert_eq!(queued.state.project, before);
+    assert_eq!(h.plugin_progress.lock().unwrap().binding, live);
+    assert_eq!(fs::read(source).unwrap().len(), 44 + 16_384 * 2);
+}
+
+#[test]
+#[ignore = "requires an explicitly selected installed instrument, catalog and native helper"]
+fn installed_instrument_and_effect_export_with_streamed_audio() {
+    use hex_session::service::{ExportControl, ExportSignal};
+    let _native = native_fixture();
+    let bundle = std::env::var("HEX_TEST_VST3_INSTRUMENT_BUNDLE").unwrap();
+    let original_catalog =
+        PathBuf::from(std::env::var_os("HEX_TEST_VST3_INSTRUMENT_CATALOG").unwrap());
+    let instrument = installed_selection(
+        &original_catalog,
+        &bundle,
+        hex_plugin_catalog::PluginRole::Instrument,
+    );
+    let files = Files::new();
+    let root = files.0.canonicalize().unwrap();
+    let catalog = root.join("plugin-catalog.json");
+    fs::copy(&original_catalog, &catalog).unwrap();
+    let mut effect = selection();
+    let module = root.join("original-effect.vst3");
+    super::ui::copy_original_module(&effect.module, &module);
+    effect.module = module;
+    hex_ui::write_plugin_effect_test_catalog(&root, &effect, "Fx", 0).unwrap();
+    let recovery = root.join("recovery");
+    fs::create_dir(&recovery).unwrap();
+    let mut h = ResidentHarness::with_plugins_at_rate_and_catalog_recovery(
+        host(),
+        None,
+        48_000,
+        8_192,
+        catalog,
+        recovery.join("mixed-export.hex-journal"),
+    );
+    assert!(h.next().error.is_none());
+    let (applied, _) = h.applied(0);
+    let probe = std::env::var_os("HEX_TEST_EXPORT_PROBE").is_some();
+    let complete = std::env::var_os("HEX_TEST_EXPORT_COMPLETE").is_some();
+    let verify_live_state = std::env::var_os("HEX_TEST_EXPORT_LIVE_STATE").is_some();
+    let source_frames = if probe || complete { 8_000_001 } else { 16_384 };
+    let source = files.wav(48_000, source_frames);
+    // Distinct long silent sections reveal stale, skipped, or shifted streamed
+    // pages well after the instrument's short initial note has finished.
+    let markers = [(4_000_000usize, 8192usize), (7_950_000, 8192)];
+    if complete {
+        let mut marked = fs::read(&source).unwrap();
+        for (start, length) in markers {
+            marked[44 + start * 2..44 + (start + length) * 2].fill(0);
+        }
+        fs::write(&source, marked).unwrap();
+    }
+    let source_bytes = fs::read(&source).unwrap();
+    let imported = h.run(Request::ImportToNewTrack {
+        path: source.clone(),
+        before_track: None,
+        start: 0,
+    });
+    let (applied, _) = h.applied(applied);
+    let audio_track = imported.state.project.tracks()[0].id();
+    let mut insertion = request(&imported.state, PluginEffectDestination::Track(audio_track));
+    insertion.selection = effect;
+    h.service
+        .submit(Request::InsertPluginEffect(insertion))
+        .unwrap();
+    let effected = terminal(&mut h);
+    assert!(effected.error.is_none(), "{:?}", effected.error);
+    let (applied, _) = h.applied(applied);
+    let added = h.run(Request::Edit(Command::AddMidiTrack {
+        name: "instrument".into(),
+    }));
+    let Some(Created::Track(track)) = added.created else {
+        panic!("midi track")
+    };
+    let (applied, _) = h.applied(applied);
+    let placed = h.run(Request::Edit(Command::PlaceMidiClip {
+        track,
+        start: BeatTime::ZERO,
+        length: BeatTime::ONE,
+    }));
+    let Some(Created::Clip(clip)) = placed.created else {
+        panic!("midi clip")
+    };
+    let (applied, _) = h.applied(applied);
+    let note = h.run(Request::Edit(Command::AddMidiNote {
+        clip,
+        start: BeatTime::ZERO,
+        duration: BeatTime::from_ratio(1, 2).unwrap(),
+        pitch: 60,
+        channel: 0,
+        velocity: 100,
+    }));
+    let (applied, _) = h.applied(applied);
+    let mut insertion = request(&note.state, PluginEffectDestination::Instrument(track));
+    insertion.selection = instrument;
+    h.service
+        .submit(Request::InsertPluginEffect(insertion))
+        .unwrap();
+    let inserted = terminal(&mut h);
+    assert!(inserted.error.is_none(), "{:?}", inserted.error);
+    let (applied, _) = h.applied(applied);
+    let before = Arc::clone(&inserted.state.project);
+    let live_binding = h.plugin_progress.lock().unwrap().binding;
+    let saved_path = root.join("live-state.hex");
+    let captured_before = if verify_live_state {
+        let saved = h.run(Request::SaveNew(saved_path.clone()));
+        assert!(saved.save_complete);
+        assert_eq!(saved.state.project, before);
+        assert_eq!(saved.state.revision, inserted.state.revision);
+        Some(hex_storage::load(&saved_path).unwrap())
+    } else {
+        None
+    };
+    let path = root.join("mixed.wav");
+    let control = ExportControl::default();
+    let queued = super::super::resident_sections::run_callback(
+        &mut h,
+        Request::ExportRange {
+            path: path.clone(),
+            start: 0,
+            frames: Some(if probe || complete {
+                u64::from(source_frames)
+            } else {
+                1024
+            }),
+            signal: ExportSignal::Main,
+            control: control.clone(),
+            format: hex_export::ExportFormat::Pcm16,
+            overwrite: false,
+        },
+    );
+    assert!(queued.error.is_none(), "{:?}", queued.error);
+    let started = Instant::now();
+    let until = started
+        + Duration::from_secs(if probe {
+            3
+        } else if complete {
+            27
+        } else {
+            10
+        });
+    let result = loop {
+        h.pump();
+        if !probe && !complete {
+            h.render();
+        }
+        if let Ok(event) = h.service.try_export_event() {
+            break event.result;
+        }
+        let now = Instant::now();
+        if probe && now >= until {
+            let progress = control.progress();
+            let elapsed = started.elapsed();
+            assert!(control.cancel());
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                h.pump();
+                if let Ok(event) = h.service.try_export_event() {
+                    assert!(event.result.is_err());
+                    break;
+                }
+                assert!(Instant::now() < deadline, "cancelled probe did not stop");
+                std::thread::yield_now();
+            }
+            assert!(!path.exists());
+            println!(
+                "export_probe elapsed_ns={} processed_frames={} total_frames={}",
+                elapsed.as_nanos(),
+                progress.processed_frames,
+                progress.total_frames
+            );
+            return;
+        }
+        assert!(
+            now < until,
+            "mixed export timed out: {:?}",
+            control.progress()
+        );
+        std::thread::yield_now();
+    };
+    let report = result.expect("mixed VST export");
+    let wav = fs::read(path).unwrap();
+    if complete {
+        use sha2::{Digest, Sha256};
+        let hash = |bytes: &[u8]| {
+            Sha256::digest(bytes)
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        };
+        assert_eq!(report.frames, u64::from(source_frames));
+        assert_eq!(wav.len() as u64, 44 + u64::from(source_frames) * 4);
+        assert!(wav[44..44 + 4096].iter().any(|byte| *byte != 0));
+        assert!(wav[wav.len() - 4096..].iter().any(|byte| *byte != 0));
+        for (start, length) in markers {
+            let silent = |frame: usize| wav[44 + frame * 4..44 + (frame + 1) * 4] == [0; 4];
+            let observed_start = (start - 2048..start + 2048)
+                .find(|frame| silent(*frame))
+                .expect("late-song silence begins near its source marker");
+            let observed_end = (start + length - 2048..start + length + 2048)
+                .find(|frame| !silent(*frame))
+                .expect("late-song audio resumes near its source marker");
+            assert_eq!(observed_end - observed_start, length);
+            assert_eq!(observed_start, start, "marker must be sample-aligned");
+            assert!((observed_start..observed_end).all(silent));
+            println!("source_marker={start} output_marker={observed_start} length={length}");
+        }
+        println!(
+            "complete_export elapsed_ns={} frames={} output_sha256={} source_sha256={}",
+            started.elapsed().as_nanos(),
+            report.frames,
+            hash(&wav),
+            hash(&source_bytes)
+        );
+    } else {
+        assert_eq!(report.frames, 1024);
+        assert_eq!(wav.len(), 44 + 1024 * 4);
+    }
+    assert!(
+        wav[44..]
+            .chunks_exact(4)
+            .any(|frame| i16::from_le_bytes([frame[0], frame[1]]) != 0)
+    );
+    assert_eq!(queued.state.project, before);
+    assert_eq!(h.plugin_progress.lock().unwrap().binding, live_binding);
+    assert_eq!(fs::read(&source).unwrap(), source_bytes);
+    if let Some(captured_before) = captured_before {
+        let saved = h.run(Request::SaveCurrent);
+        assert!(saved.save_complete);
+        assert_eq!(saved.state.project, before);
+        assert_eq!(saved.state.revision, inserted.state.revision);
+        assert_eq!(saved.state.can_undo, inserted.state.can_undo);
+        assert_eq!(saved.state.can_redo, inserted.state.can_redo);
+        let captured_after = hex_storage::load(&saved_path).unwrap();
+        let instrument_state = |project: &hex_project::Project| {
+            project
+                .track(track)
+                .unwrap()
+                .instrument()
+                .unwrap()
+                .state()
+                .clone()
+        };
+        let effect_state = |project: &hex_project::Project| {
+            project.track(audio_track).unwrap().devices()[0]
+                .state()
+                .clone()
+        };
+        assert_eq!(
+            instrument_state(&captured_before),
+            instrument_state(&captured_after)
+        );
+        assert_eq!(
+            effect_state(&captured_before),
+            effect_state(&captured_after)
+        );
+    }
+    let muted = h.run(Request::Edit(Command::Mute { track, muted: true }));
+    h.applied(applied);
+    let silent_instrument_path = root.join("muted-instrument.wav");
+    let muted_queued = super::super::resident_sections::run_callback(
+        &mut h,
+        Request::ExportRange {
+            path: silent_instrument_path.clone(),
+            start: 0,
+            frames: Some(1024),
+            signal: ExportSignal::Main,
+            control: ExportControl::default(),
+            format: hex_export::ExportFormat::Pcm16,
+            overwrite: false,
+        },
+    );
+    assert!(muted_queued.error.is_none(), "{:?}", muted_queued.error);
+    let until = Instant::now() + Duration::from_secs(10);
+    let result = loop {
+        h.pump();
+        h.render();
+        if let Ok(event) = h.service.try_export_event() {
+            break event.result;
+        }
+        assert!(Instant::now() < until, "muted export timed out");
+        std::thread::yield_now();
+    };
+    assert_eq!(result.expect("muted export").frames, 1024);
+    let without_instrument = fs::read(silent_instrument_path).unwrap();
+    assert!(
+        without_instrument[44..]
+            .chunks_exact(4)
+            .any(|frame| (1000..=7000).contains(&i16::from_le_bytes([frame[0], frame[1]]))),
+        "effect must audibly process the streamed source"
+    );
+    assert_ne!(
+        &wav[44..44 + 1024 * 4],
+        &without_instrument[44..],
+        "instrument must change the rendered mix"
+    );
+    assert_eq!(muted_queued.state.project, muted.state.project);
+    if complete {
+        return;
+    }
+    for changed in [false, true] {
+        if changed {
+            let mut altered = source_bytes.clone();
+            altered[48] ^= 1;
+            fs::write(&source, altered).unwrap();
+        }
+        let destination = root.join("existing.wav");
+        fs::write(&destination, b"preserve existing").unwrap();
+        let control = ExportControl::default();
+        if !changed {
+            assert!(control.cancel());
+        }
+        let refused = super::super::resident_sections::run_callback(
+            &mut h,
+            Request::ExportRange {
+                path: destination.clone(),
+                start: 0,
+                frames: Some(1024),
+                signal: ExportSignal::Main,
+                control,
+                format: hex_export::ExportFormat::Pcm16,
+                overwrite: true,
+            },
+        );
+        assert_eq!(refused.state.project, muted.state.project);
+        let until = Instant::now() + Duration::from_secs(10);
+        let result = loop {
+            h.pump();
+            h.render();
+            if let Ok(event) = h.service.try_export_event() {
+                break event.result;
+            }
+            assert!(Instant::now() < until, "refused export timed out");
+            std::thread::yield_now();
+        };
+        assert!(result.is_err());
+        assert_eq!(fs::read(destination).unwrap(), b"preserve existing");
+        if changed {
+            fs::write(&source, &source_bytes).unwrap();
+        }
+    }
+    assert_eq!(fs::read(source).unwrap(), source_bytes);
 }

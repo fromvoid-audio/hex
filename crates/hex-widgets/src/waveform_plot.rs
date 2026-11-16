@@ -44,6 +44,7 @@ pub struct WaveformChannel {
     envelope: Path<Pixels>,
     centerline: Option<Path<Pixels>>,
     zero_ranges: Option<Path<Pixels>>,
+    overrange: Option<Path<Pixels>>,
     filled_envelope: bool,
 }
 impl WaveformChannel {
@@ -123,8 +124,39 @@ impl WaveformChannel {
             } else {
                 None
             },
+            overrange: None,
             filled_envelope,
         })
+    }
+
+    /// Add bounded horizontal markers supplied by the host's signal projection.
+    /// Empty input retains the original fast path and creates no marker path.
+    pub fn with_overrange_markers(
+        mut self,
+        spans: impl IntoIterator<Item = [Point<Pixels>; 2]>,
+        width: Pixels,
+    ) -> Option<Self> {
+        if !valid_width(width) {
+            return None;
+        }
+        let mut spans = spans.into_iter().peekable();
+        if spans.peek().is_none() {
+            return Some(self);
+        }
+        let mut path = PathBuilder::stroke(width);
+        let mut count = 0;
+        for span in spans {
+            if count == MAX_WAVEFORM_COLUMNS * 2 || !valid_span(span) {
+                return None;
+            }
+            count += 1;
+            path.move_to(span[0]);
+            path.line_to(span[1]);
+        }
+        if count > 0 {
+            self.overrange = Some(path.build().ok()?);
+        }
+        Some(self)
     }
 
     pub fn has_zero_range_trace(&self) -> bool {
@@ -244,6 +276,7 @@ pub struct WaveformColors {
     pub waveform: u32,
     pub inactive: u32,
     pub centerline: u32,
+    pub overrange: u32,
 }
 /// Actual paint bounds/scale and ancestor clip, supplied read-only to the host's
 /// existing cache lookup. Changing a mask need not invalidate cached geometry.
@@ -271,6 +304,7 @@ fn paint_channels_with_offset(
     offset: Point<Pixels>,
     color: u32,
     centerline: u32,
+    overrange: u32,
     window: &mut Window,
 ) {
     if let Channels::Stereo(channels) = &geometry.channels {
@@ -283,11 +317,16 @@ fn paint_channels_with_offset(
                 offset,
                 rgb(color),
             );
+            for channel in channels {
+                if let Some(path) = &channel.overrange {
+                    window.paint_path_with_offset(path, offset, rgb(overrange));
+                }
+            }
             return;
         }
     }
     for channel in geometry.channels() {
-        paint_channel_with_offset(channel, offset, color, centerline, window);
+        paint_channel_with_offset(channel, offset, color, centerline, overrange, window);
     }
 }
 
@@ -296,6 +335,7 @@ fn paint_channel_with_offset(
     offset: Point<Pixels>,
     color: u32,
     centerline: u32,
+    overrange: u32,
     window: &mut Window,
 ) {
     if let Some(path) = &channel.centerline {
@@ -304,6 +344,9 @@ fn paint_channel_with_offset(
     window.paint_path_with_offset(&channel.envelope, offset, rgb(color));
     if let Some(path) = &channel.zero_ranges {
         window.paint_path_with_offset(path, offset, rgb(color));
+    }
+    if let Some(path) = &channel.overrange {
+        window.paint_path_with_offset(path, offset, rgb(overrange));
     }
 }
 
@@ -378,6 +421,7 @@ where
                         offset,
                         colors.waveform,
                         colors.centerline,
+                        colors.overrange,
                         window,
                     );
                     return;
@@ -396,6 +440,7 @@ where
                             offset,
                             color,
                             colors.centerline,
+                            colors.overrange,
                             window,
                         );
                     });

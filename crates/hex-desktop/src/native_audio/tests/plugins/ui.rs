@@ -707,7 +707,7 @@ fn rendered_native_effect_terminals_preserve_canonical_history_and_original_sour
             Terminal::StaleRevision => {
                 click(&mut fixture.visual, "main-track-header");
                 let before = fixture.view(cx).queued_requests;
-                fixture.visual.simulate_keystrokes("cmd-t");
+                fixture.visual.simulate_keystrokes("t");
                 assert_eq!(
                     fixture.view(cx).queued_requests,
                     before + 1,
@@ -1505,6 +1505,234 @@ fn live_vst3_pointer_drag_reaches_native_device_during_playback(cx: &mut gpui::T
                     != before_edit.device(device).unwrap().state()
         })
     });
+}
+
+#[gpui::test]
+#[ignore = "explicit original SDK helper/source receipts required"]
+fn vst3_controller_text_edit_commits_and_undoes(cx: &mut gpui::TestAppContext) {
+    const CHILD: &str = "HEX_DESKTOP_TEST_CONTROLLER_TEXT_EDIT";
+    if std::env::var_os(CHILD).is_none() {
+        let files = Files::new();
+        let home = files.0.canonicalize().unwrap().join("home");
+        fs::create_dir(&home).unwrap();
+        let name = std::thread::current().name().unwrap().to_owned();
+        let result = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", &name, "--ignored", "--nocapture"])
+            .env(CHILD, "1")
+            .env("HEX_ORIGINAL_INSTANCE_VARIANT", "92")
+            .env("HOME", home)
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+        return;
+    }
+    let _native = native_fixture();
+    let mut fixture = open_browser(
+        cx,
+        2,
+        Some(EffectPresentation {
+            input_frames: 0,
+            output_frames: 512,
+        }),
+    );
+    fixture.activate_to_facts(cx, false);
+    fixture.resume.send(()).unwrap();
+    let revision = fixture.state.revision + 1;
+    until("original VST3 inserted and applied", || {
+        fixture.step(cx);
+        let view = fixture.view(cx);
+        !view.pending
+            && view
+                .applied
+                .is_some_and(|source| source.context.editor_revision == revision)
+    });
+    let initial = fixture.view(cx).state.unwrap().project.clone();
+    let device = initial.main_devices()[0].id();
+    click(&mut fixture.visual, "main-track-header");
+    let value = Box::leak(format!("vst3-knob-{}-0-value", device.value()).into_boxed_str());
+    until("live controller value field", || {
+        fixture.step(cx);
+        fixture.visual.debug_bounds(value).is_some()
+    });
+    click(&mut fixture.visual, value);
+    fixture.visual.simulate_keystrokes("cmd-a");
+    fixture.visual.simulate_input("invalid");
+    fixture.visual.simulate_keystrokes("enter");
+    until("plugin refused invalid value", || {
+        fixture.step(cx);
+        fixture
+            .view(cx)
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("refused"))
+    });
+    assert_eq!(fixture.view(cx).state.unwrap().project, initial);
+    until("initial conversion has retired", || {
+        fixture.step(cx);
+        !fixture.view(cx).parameter_query_pending
+    });
+    fixture.visual.simulate_keystrokes("cmd-a");
+    fixture.visual.simulate_input("double");
+    fixture.visual.simulate_keystrokes("enter");
+    assert!(
+        fixture.view(cx).parameter_query_pending,
+        "conversion must be admitted before cancellation"
+    );
+    fixture.visual.simulate_keystrokes("escape");
+    until("cancelled conversion retires", || {
+        fixture.step(cx);
+        !fixture.view(cx).parameter_query_pending
+    });
+    assert_eq!(
+        fixture.view(cx).state.unwrap().project,
+        initial,
+        "a late parse reply must not commit a cancelled draft"
+    );
+    click(&mut fixture.visual, value);
+    fixture.visual.simulate_keystrokes("cmd-a");
+    fixture.visual.simulate_input("double");
+    fixture.visual.simulate_keystrokes("enter");
+    assert!(fixture.view(cx).parameter_query_pending);
+    fixture.visual.simulate_keystrokes("cmd-a");
+    fixture.visual.simulate_input("unity");
+    until("superseded conversion retires", || {
+        fixture.step(cx);
+        !fixture.view(cx).parameter_query_pending
+    });
+    assert_eq!(
+        fixture.view(cx).state.unwrap().project,
+        initial,
+        "a late reply must not commit over newer text"
+    );
+    fixture.visual.simulate_keystrokes("cmd-a");
+    fixture.visual.simulate_input("double");
+    fixture.visual.simulate_keystrokes("enter");
+    until("plugin text commits the parameter", || {
+        fixture.step(cx);
+        let view = fixture.view(cx);
+        assert!(view.error.is_none(), "{:?}", view.error);
+        view.state.is_some_and(|state| {
+            state.revision == revision + 1
+                && state.project.device(device).unwrap().state()
+                    != initial.device(device).unwrap().state()
+        })
+    });
+    click(&mut fixture.visual, "undo · cmd+z");
+    until("undo restores the original plugin state", || {
+        fixture.step(cx);
+        fixture
+            .view(cx)
+            .state
+            .is_some_and(|state| state.revision == revision + 2 && state.project == initial)
+    });
+    until("controller is refreshed after undo", || {
+        fixture.step(cx);
+        let view = fixture.view(cx);
+        !view.parameter_query_pending
+            && fixture.visual.debug_bounds(value).is_some()
+            && view
+                .parameter_controls
+                .iter()
+                .any(|&(current, parameter, _)| current == device.value() && parameter == 0)
+    });
+    click(&mut fixture.visual, value);
+    fixture.visual.simulate_keystrokes("cmd-a");
+    fixture.visual.simulate_input("double");
+    fixture.visual.simulate_keystrokes("enter");
+    assert!(fixture.view(cx).parameter_query_pending);
+    click(&mut fixture.visual, "undo · cmd+z");
+    until(
+        "undo removes the source while conversion is pending",
+        || {
+            fixture.step(cx);
+            fixture.view(cx).state.is_some_and(|state| {
+                state.revision == revision + 3 && state.project.main_devices().is_empty()
+            })
+        },
+    );
+    until("old source conversion retires", || {
+        fixture.step(cx);
+        !fixture.view(cx).parameter_query_pending
+    });
+    let state = fixture.view(cx).state.unwrap();
+    assert_eq!(
+        state.revision,
+        revision + 3,
+        "the removed source must not receive a late edit"
+    );
+    assert!(state.project.main_devices().is_empty());
+}
+
+#[gpui::test]
+#[ignore = "explicit original SDK helper/source receipts required"]
+fn vst3_unsupported_text_parser_refuses_without_editing(cx: &mut gpui::TestAppContext) {
+    const CHILD: &str = "HEX_DESKTOP_TEST_UNSUPPORTED_CONTROLLER_TEXT";
+    if std::env::var_os(CHILD).is_none() {
+        let files = Files::new();
+        let home = files.0.canonicalize().unwrap().join("home");
+        fs::create_dir(&home).unwrap();
+        let name = std::thread::current().name().unwrap().to_owned();
+        let result = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", &name, "--ignored", "--nocapture"])
+            .env(CHILD, "1")
+            .env("HEX_ORIGINAL_INSTANCE_VARIANT", "37")
+            .env("HOME", home)
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+        return;
+    }
+    let _native = native_fixture();
+    let mut fixture = open_browser(
+        cx,
+        2,
+        Some(EffectPresentation {
+            input_frames: 0,
+            output_frames: 512,
+        }),
+    );
+    fixture.activate_to_facts(cx, false);
+    fixture.resume.send(()).unwrap();
+    let revision = fixture.state.revision + 1;
+    until("original VST3 inserted and applied", || {
+        fixture.step(cx);
+        let view = fixture.view(cx);
+        !view.pending
+            && view
+                .applied
+                .is_some_and(|source| source.context.editor_revision == revision)
+    });
+    let initial = fixture.view(cx).state.unwrap().project.clone();
+    let device = initial.main_devices()[0].id();
+    click(&mut fixture.visual, "main-track-header");
+    let value = Box::leak(format!("vst3-knob-{}-7-value", device.value()).into_boxed_str());
+    until("live controller value field", || {
+        fixture.step(cx);
+        fixture.visual.debug_bounds(value).is_some()
+    });
+    click(&mut fixture.visual, value);
+    fixture.visual.simulate_keystrokes("cmd-a");
+    fixture.visual.simulate_input("0.5");
+    fixture.visual.simulate_keystrokes("enter");
+    until("unsupported parser is reported", || {
+        fixture.step(cx);
+        fixture
+            .view(cx)
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("unsupported"))
+    });
+    assert_eq!(fixture.view(cx).state.unwrap().project, initial);
 }
 
 #[gpui::test]

@@ -3,9 +3,17 @@
 //! backpressure. Native gesture receipts retain their existing ordered reader;
 //! only the UI projection coalesces. No callback work or canonical edit is added.
 use super::*;
-use hex_audio::plugin_worker::{ParameterEdit, ParameterEditKind, RecoveryEdits};
+use hex_audio::plugin_worker::{
+    ParameterEdit, ParameterEditKind, RecoveryEdits, StoppedEditProgress,
+};
 use hex_audio::prepared::AppliedAudioSource;
 use hex_session::device_gesture::PluginParameterValue;
+
+#[derive(Clone, Copy)]
+pub(super) struct PendingRead {
+    recovery: bool,
+    source: AppliedAudioSource,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct Touch {
@@ -30,6 +38,35 @@ fn latest_touch(source: AppliedAudioSource, edits: &[ParameterEdit]) -> Option<T
                 .flatten(),
         })
     })
+}
+
+fn touch_for_read(
+    current: AppliedAudioSource,
+    admitted_at: AppliedAudioSource,
+    edits: &[ParameterEdit],
+) -> Option<Touch> {
+    let mut touch = latest_touch(current, edits)?;
+    if admitted_at != current {
+        // Events can have arrived on either side of the source transition.
+        touch.value = None;
+    }
+    Some(touch)
+}
+
+fn continue_stopped_read(
+    live: Result<Option<RecoveryEdits>, &'static str>,
+    pending: Option<PendingRead>,
+    stopped: impl FnOnce(bool) -> Result<StoppedEditProgress, &'static str>,
+) -> Result<Option<RecoveryEdits>, &'static str> {
+    match (live, pending) {
+        (Err("native edit source is not live"), Some(pending)) => {
+            match stopped(pending.recovery)? {
+                StoppedEditProgress::Pending => Ok(None),
+                StoppedEditProgress::Completed(batch) => Ok(Some(batch)),
+            }
+        }
+        (result, _) => result,
+    }
 }
 
 impl Plugins {
@@ -82,9 +119,11 @@ impl Plugins {
                 }
                 continue;
             }
-            let requested_recovery = source
-                .edit_recovery
+            let pending_read = source.edit_recovery;
+            let requested_recovery = pending_read
+                .map(|read| read.recovery)
                 .unwrap_or(recovery && recording.is_none());
+            let receipt_source = pending_read.map_or(active, |read| read.source);
             source.observes_latency |= requested_recovery;
             let result = if requested_recovery {
                 control.poll_native_source_recovery_edits_on_control(source.binding)
@@ -98,16 +137,40 @@ impl Plugins {
                         })
                     })
             };
+            let result = continue_stopped_read(result, pending_read, |mode| {
+                control.poll_native_source_stopped_edits_on_control(source.binding, mode)
+            });
             let batch = match result {
                 Ok(batch) => {
-                    source.edit_recovery = batch.is_none().then_some(requested_recovery);
+                    source.edit_recovery = batch.is_none().then_some(PendingRead {
+                        recovery: requested_recovery,
+                        source: receipt_source,
+                    });
                     batch
+                }
+                Err(
+                    reason @ ("native stopped edit worker failed"
+                    | "native stopped edit read failed"
+                    | "native stopped edit source differs"
+                    | "native stopped edit owner missing"
+                    | "native stopped edit read was not admitted"
+                    | "native edit observation mode differs"
+                    | "native edit result custody differs"
+                    | "native edit mailbox failed"),
+                ) => {
+                    source.edit_recovery = None;
+                    if let Some(log) = &self.diagnostics {
+                        let _ = log.record_typed(hex_diagnostics::Level::Warn, hex_diagnostics::Category::Audio,
+                            &format!("vst3_editor v=1 stage=stopped_read_failed device={} binding={:?} reason={reason}", source.device, source.binding));
+                    }
+                    return None;
                 }
                 Err(_) => return None, // Busy preserves the admitted request and prior touch.
             };
             if let Some(batch) = batch {
                 source.edit_backlog = batch.edits.pending != 0;
-                if let Some(touch) = latest_touch(active, batch.edits.as_slice()) {
+                if let Some(touch) = touch_for_read(active, receipt_source, batch.edits.as_slice())
+                {
                     source.pending_touch = Some(touch);
                 }
                 if let Some(log) = &self.diagnostics
@@ -122,10 +185,21 @@ impl Plugins {
                 #[cfg(all(test, feature = "allocation-probe"))]
                 {
                     source.observed_latency_receipt = true;
+                    if let Some(progress) = &self.progress
+                        && let Ok(mut progress) = progress.lock()
+                    {
+                        for edit in batch.edits.as_slice() {
+                            let index = progress.editor_receipt_count;
+                            if let Some(slot) = progress.editor_receipts.get_mut(index) {
+                                *slot = Some(*edit);
+                                progress.editor_receipt_count += 1;
+                            }
+                        }
+                    }
                 }
                 let binding = source.binding;
                 self.observe_recording_order(binding, batch.edits.as_slice());
-                if recovery
+                if requested_recovery
                     && batch.pending_latency_restart.is_some()
                     && self.latency_notice.is_none_or(|(last, at)| {
                         last != active
@@ -293,5 +367,65 @@ mod tests {
             latest_touch(source, &edits[..1]).unwrap().value,
             Some(PluginParameterValue::new(0.625).unwrap())
         );
+        let next = AppliedAudioSource {
+            audio_revision: source.audio_revision + 1,
+            ..source
+        };
+        let same = touch_for_read(source, source, &edits[..1]).unwrap();
+        assert_eq!(same.value, Some(PluginParameterValue::new(0.625).unwrap()));
+        let crossed = touch_for_read(next, source, &edits[..1]).unwrap();
+        assert_eq!(
+            (crossed.source, crossed.parameter, crossed.sequence),
+            (next, 42, 1)
+        );
+        assert_eq!(crossed.value, None);
+    }
+
+    #[test]
+    fn revoked_source_resumes_only_its_admitted_read_and_preserves_latency() {
+        let source = AppliedAudioSource {
+            context: AudioSourceContext {
+                project_generation: 3,
+                editor_revision: 7,
+            },
+            output_identity: 2,
+            audio_revision: 9,
+        };
+        let read = PendingRead {
+            recovery: true,
+            source,
+        };
+        let latency = std::num::NonZeroU64::new(9).unwrap();
+        let received =
+            continue_stopped_read(Err("native edit source is not live"), Some(read), |mode| {
+                assert!(mode);
+                Ok(StoppedEditProgress::Completed(RecoveryEdits {
+                    edits: Default::default(),
+                    pending_latency_restart: Some(latency),
+                }))
+            })
+            .unwrap()
+            .unwrap();
+        assert_eq!(received.pending_latency_restart, Some(latency));
+        assert!(
+            continue_stopped_read(Err("native edit source is not live"), None, |_| panic!(
+                "no admitted read"
+            ))
+            .is_err()
+        );
+        assert!(
+            continue_stopped_read(
+                Err("native edit observation is busy"),
+                Some(read),
+                |_| panic!("live read is busy")
+            )
+            .is_err()
+        );
+        assert!(matches!(
+            continue_stopped_read(Err("native edit source is not live"), Some(read), |_| Err(
+                "native stopped edit worker failed"
+            )),
+            Err("native stopped edit worker failed")
+        ));
     }
 }

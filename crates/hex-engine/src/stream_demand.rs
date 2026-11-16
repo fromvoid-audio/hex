@@ -132,22 +132,30 @@ impl Clip {
             } else {
                 relative + metadata.source_phase
             };
-            let Some(source_frame) = (self.source_offset as u64).checked_add(phase) else {
+            let source_phase = if metadata.reversed {
+                self.source_length as u64 - 1 - phase
+            } else {
+                phase
+            };
+            let Some(source_frame) = (self.source_offset as u64).checked_add(source_phase) else {
                 break;
             };
-            let until_wrap = if self.looping {
+            let until_wrap = if self.looping || metadata.reversed {
                 self.source_length as u64 - phase
             } else {
                 u64::MAX
             };
-            let count = (span_end - position)
-                .min(until_wrap)
-                .min((STREAM_PAGE_FRAMES as u64) - source_frame % STREAM_PAGE_FRAMES as u64)
-                as usize;
+            let page_remaining = if metadata.reversed {
+                source_frame % STREAM_PAGE_FRAMES as u64 + 1
+            } else {
+                STREAM_PAGE_FRAMES as u64 - source_frame % STREAM_PAGE_FRAMES as u64
+            };
+            let count = (span_end - position).min(until_wrap).min(page_remaining) as usize;
             let consumed = visit(
                 source,
                 StreamedPageSpan {
                     source_frame,
+                    reversed: metadata.reversed,
                     timeline_frame: position,
                     output_offset: (position - start) as usize,
                     count,
@@ -164,6 +172,18 @@ impl Clip {
 }
 
 impl Track {
+    /// Allocation-probe access to the same bounded page-demand traversal.
+    #[cfg(feature = "instrument-test-support")]
+    #[doc(hidden)]
+    pub fn probe_stream_demand(
+        &self,
+        start: u64,
+        count: usize,
+        visit: &mut impl FnMut(StreamPageExtent) -> Result<(), Invalid>,
+    ) -> Result<(), Invalid> {
+        self.visit_stream_demand(start, count, visit)
+    }
+
     pub(crate) fn visit_stream_demand(
         &self,
         start: u64,
@@ -179,7 +199,14 @@ impl Track {
                 return;
             }
             clip.visit_streamed_spans(start, end, |source, span| {
-                result = visit_page_range(source, span.source_frame, span.count, visit);
+                let first = if span.reversed {
+                    span.source_frame.checked_sub((span.count - 1) as u64)
+                } else {
+                    Some(span.source_frame)
+                };
+                result = first
+                    .ok_or(Invalid("reverse stream demand underflow"))
+                    .and_then(|first| visit_page_range(source, first, span.count, visit));
                 if result.is_ok() { span.count } else { 0 }
             });
         });
