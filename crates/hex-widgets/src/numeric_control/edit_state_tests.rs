@@ -188,6 +188,21 @@ fn deferred_text_cancel_revokes_reply_and_unedited_blur_is_not_an_edit(cx: &mut 
         );
         assert_eq!(control.value(), 0.0);
     });
+    visual.simulate_click(value.center(), Modifiers::default());
+    visual.simulate_keystrokes("cmd-a");
+    visual.simulate_input("draft");
+    control.update(cx, |control, _| control.marked = Some(0..1));
+    visual.simulate_keystrokes("enter");
+    visual.run_until_parked();
+    assert_eq!(requests.borrow().len(), 2, "marked input is not submitted");
+    control.update(cx, |control, cx| {
+        assert!(control.finish_edit(cx).is_err());
+        assert!(control.prepare_finish_edit_for_owner(cx).is_err());
+        control.marked = None;
+    });
+    visual.simulate_keystrokes("enter");
+    visual.run_until_parked();
+    assert_eq!(requests.borrow()[2].text, "draft");
 }
 
 #[gpui::test]
