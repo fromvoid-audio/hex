@@ -51,6 +51,57 @@ fn review_stale_tuning_export_creates_no_file_after_revision_or_generation_chang
     stale_library_write(true);
 }
 
+#[test]
+fn existing_tuning_recovery_does_not_block_slot_save() {
+    let directory = library_scratch();
+    let mut session = Session::new(48_000, 8, 1_000_000).unwrap();
+    hex_storage::tuning_library::save(&directory.0, 1, "original", tuning(333.0).scale()).unwrap();
+    for number in 1..=32 {
+        std::fs::write(
+            directory
+                .0
+                .join(format!("slot-1-recovery-{number:02}.freqs")),
+            b"preserve",
+        )
+        .unwrap();
+    }
+    let path = directory.0.join("slot-1.freqs");
+    let (result, prepared) = run_tuning_library_operation_in(
+        &mut session,
+        TuningLibraryContext {
+            request_generation: 0,
+            request_revision: 0,
+            operation_id: 1,
+            current_generation: 0,
+            current_revision: 0,
+        },
+        TuningLibraryOperation::Save {
+            slot: 1,
+            name: "new".into(),
+        },
+        None,
+        &directory.0,
+    );
+    assert!(result.error.is_none(), "{:?}", result.error);
+    assert!(prepared.is_none());
+    assert_eq!(
+        hex_storage::tuning_library::read_file(&path).unwrap().name,
+        "new"
+    );
+    assert_eq!(result.slots[0].name.as_deref(), Some("new"));
+    for number in 1..=32 {
+        assert_eq!(
+            std::fs::read(
+                directory
+                    .0
+                    .join(format!("slot-1-recovery-{number:02}.freqs"))
+            )
+            .unwrap(),
+            b"preserve"
+        );
+    }
+}
+
 fn next(service: &Service) -> Event {
     // Blocks on the event channel; bounded only against hangs.
     match service.events.recv_timeout(crate::test_wait::HANG_BOUND) {

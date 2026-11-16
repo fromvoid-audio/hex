@@ -586,7 +586,7 @@ fn tiny_derived_roots_cannot_accumulate_large_original_source_cache_owners() {
         );
         old_sources.push(weak);
         let cache = context.cache.borrow();
-        assert_eq!(cache.source_bytes, 64_000);
+        assert_eq!(source_charge(cache.entries.iter(), None).unwrap(), 64_000);
         assert_eq!(cache.entries.len(), 1);
         assert_eq!(cache.bytes, 512);
     }
@@ -611,14 +611,11 @@ fn tiny_derived_roots_cannot_accumulate_large_original_source_cache_owners() {
                 let pending = context.pending.borrow();
                 let entries = pending.as_ref().unwrap();
                 assert_eq!(entries.len(), 1);
+                assert_eq!(source_charge(entries.iter(), None).unwrap(), 64_000);
                 assert_eq!(
-                    entries
-                        .iter()
-                        .map(|entry| entry.source_bytes)
-                        .sum::<usize>(),
-                    64_000
+                    source_charge(context.cache.borrow().entries.iter(), None).unwrap(),
+                    0
                 );
-                assert_eq!(context.cache.borrow().source_bytes, 0);
             }
             Ok(())
         })
@@ -2221,6 +2218,130 @@ fn duplicated_warped_audio_keeps_preparable_timing() {
 }
 
 #[test]
+fn streamed_repitch_projects_canonical_map_and_refuses_other_processing() {
+    let (mut editor, clip, _) = fixture(false);
+    editor
+        .execute(Command::SetClipFades {
+            clip,
+            fade_in: 0,
+            fade_out: 0,
+        })
+        .unwrap();
+    let settings = default_audio_warp(
+        editor.project().clip(clip).unwrap(),
+        editor.project().tempo_map(),
+        WarpMode::RePitch,
+    )
+    .unwrap();
+    editor
+        .execute(Command::SetAudioClipWarp {
+            clip,
+            settings: Some(settings),
+        })
+        .unwrap();
+    let edit = editor
+        .project()
+        .clip(clip)
+        .unwrap()
+        .audio_edit()
+        .unwrap()
+        .clone();
+    let tempo = editor.project().tempo_map();
+    let cancel = AtomicBool::new(false);
+    let (resident, _) = mapping::prepare_map(&edit, tempo, &cancel).unwrap();
+    let (streamed, law) = streamed_repitch_map(&edit, tempo, 8_000, &cancel).unwrap();
+    assert_eq!(streamed, resident);
+    assert_eq!(law, render_resampler(&edit.domain));
+    let asset = editor.project().clip(clip).unwrap().asset();
+    let raw = crate::StreamedSourceMetadata::new(
+        crate::StreamSourceKey::new(1, asset),
+        16_000,
+        16_000,
+        8_000,
+        8_000,
+        hex_project::IDENTITY_CONVERSION,
+        [3; 32],
+    )
+    .unwrap();
+    let requirement = StreamedRepitchRequirement::new(&raw, &edit, tempo, &cancel).unwrap();
+    assert_eq!(requirement.map(), &streamed);
+    let worker_map = requirement.try_owned_map().unwrap();
+    assert_eq!(worker_map, streamed);
+    assert_ne!(
+        worker_map.segments().as_ptr(),
+        requirement.map().segments().as_ptr()
+    );
+    assert_eq!(requirement.law(), law);
+    assert_eq!(
+        requirement.metadata_for(&raw).unwrap(),
+        raw.with_repitch(&streamed, law).unwrap()
+    );
+    assert!(requirement.retained_bytes().unwrap() >= streamed.backing_bytes().unwrap());
+    assert_eq!(
+        requirement.clone().metadata_for(&raw).unwrap(),
+        requirement.metadata_for(&raw).unwrap()
+    );
+    let foreign = crate::StreamedSourceMetadata::new(
+        crate::StreamSourceKey::new(1, asset),
+        16_000,
+        16_000,
+        8_000,
+        8_000,
+        hex_project::IDENTITY_CONVERSION,
+        [4; 32],
+    )
+    .unwrap();
+    assert!(requirement.metadata_for(&foreign).is_err());
+    let next_generation = crate::StreamedSourceMetadata::new(
+        crate::StreamSourceKey::new(2, asset),
+        16_000,
+        16_000,
+        8_000,
+        8_000,
+        hex_project::IDENTITY_CONVERSION,
+        [3; 32],
+    )
+    .unwrap();
+    assert_eq!(
+        requirement.metadata_for(&next_generation).unwrap(),
+        next_generation.with_repitch(&streamed, law).unwrap()
+    );
+    assert!(streamed_repitch_map(&edit, tempo, 7_999, &cancel).is_err());
+    let mut invalid = edit.clone();
+    Arc::make_mut(&mut invalid.domain).pitch_cents = 100;
+    assert!(streamed_repitch_map(&invalid, tempo, 8_000, &cancel).is_err());
+    assert!(StreamedRepitchRequirement::new(&raw, &invalid, tempo, &cancel).is_err());
+    assert!(
+        StreamedRepitchRequirement::new(
+            &raw.with_repitch(&streamed, law).unwrap(),
+            &edit,
+            tempo,
+            &cancel
+        )
+        .is_err()
+    );
+    Arc::make_mut(&mut invalid.domain).pitch_cents = 0;
+    Arc::make_mut(&mut invalid.domain).looping = true;
+    assert!(streamed_repitch_map(&invalid, tempo, 8_000, &cancel).is_err());
+    let mut long = edit;
+    let beat_length = BeatTime::from_raw(BeatTime::ONE.raw() * 2_500);
+    let domain = Arc::make_mut(&mut long.domain);
+    domain.source_length = 20_000_000;
+    domain.clock = AudioDomainClock::Beats(beat_length);
+    let last = domain.warp.as_mut().unwrap().markers.last_mut().unwrap();
+    last.source_frame = 20_000_000;
+    last.beat = beat_length;
+    long.view_end = beat_length.raw();
+    assert!(mapping::prepare_map(&long, tempo, &cancel).is_err());
+    let (map, _) = streamed_repitch_map(&long, tempo, 20_000_000, &cancel).unwrap();
+    assert_eq!(map.segments().len(), 1);
+    assert_eq!(map.segments()[0].output_end, 20_000_000);
+    assert_eq!(map.segments()[0].source_end_q32, 20_000_000_i128 << 32);
+    assert!(map.backing_bytes().unwrap() < 1024);
+    assert!(streamed_repitch_map(&long, tempo, 20_000_000, &AtomicBool::new(true)).is_err());
+}
+
+#[test]
 fn warp_map_coalesces_partial_cycles_and_tempo_crossings_but_preserves_authored_markers() {
     let (mut editor, clip, _) = fixture(false);
     let settings = default_audio_warp(
@@ -3272,5 +3393,38 @@ fn selection_crossfade_pcm_is_the_two_source_mix_with_unchanged_outside_audio() 
     assert_eq!(
         render(&prepare(&editor, &media, &context), 0, 8_000, 17),
         actual
+    );
+}
+
+#[test]
+fn distinct_transforms_share_one_bounded_source_charge_across_edits() {
+    let (mut editor, clip, media) = fixture(false);
+    let context = AudioTransformPreparation {
+        source_limit: 64_000,
+        ..isolated(512_000, 512_000, 16)
+    };
+    editor
+        .execute(Command::SetAudioClipPitch { clip, cents: 137 })
+        .unwrap();
+    let first = prepare(&editor, &media, &context);
+    editor
+        .execute(Command::SetAudioClipPitch { clip, cents: 250 })
+        .unwrap();
+    let second = prepare(&editor, &media, &context);
+    editor
+        .execute(Command::SetAudioClipPitch { clip, cents: 137 })
+        .unwrap();
+    let again = prepare(&editor, &media, &context);
+    let source = |revision: &crate::PreparedRevision| {
+        revision.arrangement().audio_clip_views()[0].audio.clone()
+    };
+    assert!(
+        source(&first).shares_pcm_with(&source(&again)),
+        "unchanged derived audio should be reused"
+    );
+    assert!(!source(&first).shares_pcm_with(&source(&second)));
+    assert_eq!(
+        source_charge(context.cache.borrow().entries.iter(), None).unwrap(),
+        64_000
     );
 }

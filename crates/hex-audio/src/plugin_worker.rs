@@ -21,11 +21,14 @@ pub use controller::{
     NativeWorkerControllerQuery,
 };
 pub use hex_plugin_host::protocol::{
-    ControllerRequest, ParameterEdit, ParameterEditKind, ParameterPageQuery, PluginEditorPosition,
-    PluginEditorState, RecoveryEdits,
+    ControllerRequest, ParameterConversion, ParameterConversionStatus, ParameterEdit,
+    ParameterEditKind, ParameterPageQuery, ParameterText, PluginEditorPosition, PluginEditorState,
+    RecoveryEdits,
 };
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 mod edits;
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub use edits::StoppedEditProgress;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 mod parameter_change;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -39,7 +42,10 @@ pub use parameter_change::{
 pub use parameters::{MAX_OBSERVED_PARAMETERS, NativeParameterValue, NativeParameterValues};
 mod storage;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-pub use capture::{NativeWorkerCapture, NativeWorkerCaptureProgress};
+pub use capture::{
+    NativeWorkerCapture, NativeWorkerCaptureProgress, NativeWorkerParameterApplication,
+    NativeWorkerSequencedCaptureProgress, NativeWorkerStateAfterParameter,
+};
 /// Non-terminal helper refusal carried by [`NativeWorkerCaptureProgress::Refused`].
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub use hex_plugin_host::protocol::StateCaptureRefusal;
@@ -769,6 +775,7 @@ pub struct NativeWorker {
     binding: Binding,
     quantum: u16,
     retirement_requested: bool,
+    editor_edits_sealed: bool,
     grouped_editor_callbacks: bool,
     source_storage: Option<hex_plugin_host::native::PreparedStorage>,
 }
@@ -946,6 +953,16 @@ impl NativeWorker {
         }
     }
 
+    /// Copied untouched-or-committed observation on the original live pair.
+    /// This is not a source, installation, or quiescence witness.
+    pub fn quantum_observation_on_control(
+        &self,
+    ) -> Option<hex_plugin_host::transport::QuantumObservation> {
+        self.transport_is_live_on_control()
+            .then(|| self.reaper.control.quantum_observation())
+            .flatten()
+    }
+
     /// Last accepted callback quantum on this original pair. This is not an
     /// installed-graph, quiescence, worker-receipt or reclamation witness.
     pub fn committed_quantum_on_control(&self) -> Option<CommittedQuantum> {
@@ -979,13 +996,29 @@ impl NativeWorker {
     /// Join, retain the exact old ring endpoints, and consume the returned
     /// native processor into its actual quiescent protocol. An admitted capture
     /// first drains through its existing bounded terminal. Unwind/refusal is
-    /// terminal and cannot become a retry. Old callback custody stays separate.
+    /// terminal and cannot become a retry. A pending editor seal or a sealed
+    /// editor refuses this reusable transition without taking the source; the
+    /// sealed worker remains available for receipt draining and retirement.
+    /// Old callback custody stays separate.
     pub fn quiesce_on_control(
         &mut self,
     ) -> Result<hex_plugin_host::native::Quiescent, hex_plugin_host::Error> {
         if self.retirement_requested {
             return Err(hex_plugin_host::Error::Protocol(
                 "native worker retirement is terminal",
+            ));
+        }
+        if self.editor_edits_sealed {
+            return Err(hex_plugin_host::Error::Protocol(
+                "sealed editor source cannot resume",
+            ));
+        }
+        if self
+            .editor_seal_query_pending_on_control()
+            .map_err(hex_plugin_host::Error::Protocol)?
+        {
+            return Err(hex_plugin_host::Error::Protocol(
+                "native editor seal query is pending",
             ));
         }
         if self

@@ -95,6 +95,31 @@ fn flat_trace_and_mixed_dc_spans_survive_in_mono_and_stereo_displays() {
 }
 
 #[test]
+fn overrange_markers_are_bounded_and_optional() {
+    let upper = [point(px(0.0), px(1.0)), point(px(10.0), px(1.0))];
+    let lower = [point(px(0.0), px(9.0)), point(px(10.0), px(9.0))];
+    let make = || channel(&upper, &lower).unwrap();
+    let empty = make().with_overrange_markers([], px(1.0)).unwrap();
+    assert!(empty.overrange.is_none());
+    let span = [point(px(2.0), px(1.0)), point(px(4.0), px(1.0))];
+    assert!(
+        make()
+            .with_overrange_markers([span], px(1.0))
+            .unwrap()
+            .overrange
+            .is_some()
+    );
+    assert!(make().with_overrange_markers([span], px(0.0)).is_none());
+    let invalid = [span[0], point(px(f32::NAN), px(1.0))];
+    assert!(make().with_overrange_markers([invalid], px(1.0)).is_none());
+    assert!(
+        make()
+            .with_overrange_markers(std::iter::repeat(span), px(1.0))
+            .is_none()
+    );
+}
+
+#[test]
 fn emphasis_refuses_invalid_ranges_and_partitions_the_whole_overview() {
     for range in [
         (-0.1, 0.5),
@@ -109,6 +134,7 @@ fn emphasis_refuses_invalid_ranges_and_partitions_the_whole_overview() {
         waveform: 1,
         inactive: 2,
         centerline: 3,
+        overrange: 3,
     };
     assert_eq!(
         regions(
@@ -146,6 +172,7 @@ impl Render for Fixture {
                         waveform: 0x123456,
                         inactive: 0x789abc,
                         centerline: 0x555555,
+                        overrange: 0x555555,
                     },
                     WaveformEmphasis::Uniform,
                 )
@@ -216,6 +243,7 @@ impl Render for OffsetFixture {
                                 waveform: 0x123456,
                                 inactive: 0x789abc,
                                 centerline: 0x555555,
+                                overrange: 0x555555,
                             },
                             WaveformEmphasis::Range(Some(WaveformRange::new(0.25, 0.75).unwrap())),
                         )
@@ -311,12 +339,31 @@ impl Render for DisjointStereoFixture {
                             waveform: 0x123456,
                             inactive: 0x789abc,
                             centerline: 0x555555,
+                            overrange: 0xff0000,
                         },
                         WaveformEmphasis::Uniform,
                     )),
             )
             .child(path_bounds(8.0, "stereo-upper-path-bounds"))
             .child(path_bounds(30.0, "stereo-lower-path-bounds"))
+            .child(
+                div()
+                    .absolute()
+                    .left(px(7.0))
+                    .top(px(11.0))
+                    .w(px(30.0))
+                    .h(px(2.0))
+                    .debug_selector(|| "stereo-upper-marker".into()),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .left(px(7.0))
+                    .top(px(33.0))
+                    .w(px(30.0))
+                    .h(px(2.0))
+                    .debug_selector(|| "stereo-lower-marker".into()),
+            )
     }
 }
 
@@ -327,7 +374,14 @@ fn separated_stereo_geometry(grouped: bool) -> Rc<WaveformGeometry> {
             point(px(-20.0), px(bottom)),
             point(px(80.0), px(bottom + 4.0)),
         ];
-        let mut channel = channel(&upper, &lower).unwrap();
+        let marker = [
+            point(px(0.0), px(top + 4.0)),
+            point(px(30.0), px(top + 4.0)),
+        ];
+        let mut channel = channel(&upper, &lower)
+            .unwrap()
+            .with_overrange_markers([marker], px(2.0))
+            .unwrap();
         channel.filled_envelope = grouped;
         channel
     };
@@ -345,7 +399,13 @@ fn disjoint_stereo_pair_matches_individual_paths_with_offset_inside_live_clip(
     let view = handle.root(cx).unwrap();
     let mut visual = VisualTestContext::from_window(*handle, cx);
     let observe = |visual: &mut VisualTestContext| {
-        ["stereo-upper-path-bounds", "stereo-lower-path-bounds"].map(|selector| {
+        [
+            "stereo-upper-path-bounds",
+            "stereo-lower-path-bounds",
+            "stereo-upper-marker",
+            "stereo-lower-marker",
+        ]
+        .map(|selector| {
             let triangles = visual.rendered_path_triangles(selector);
             assert_eq!(triangles.len(), 2, "{selector}");
             triangles
@@ -353,6 +413,8 @@ fn disjoint_stereo_pair_matches_individual_paths_with_offset_inside_live_clip(
     };
     visual.run_until_parked();
     let individual = observe(&mut visual);
+    assert_ne!(individual[0][0].color, individual[2][0].color);
+    assert_eq!(individual[2][0].color, individual[3][0].color);
 
     view.update(cx, |view, cx| {
         view.grouped = true;

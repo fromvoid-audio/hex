@@ -43,6 +43,26 @@ impl SessionPlayback {
     ) -> Result<StreamChunkWindow, SessionPlaybackError> {
         self.preview_stream_handoff_with_scope(previous, maximum_frames, playing, visit, false)
     }
+
+    /// Preview the next stream chunk and the handoff selected for this exact
+    /// predecessor. The report is observational: the eventual handoff must
+    /// revalidate after any intervening transport, route, or source change.
+    pub fn preview_stream_handoff_with_report(
+        &mut self,
+        previous: &mut Self,
+        maximum_frames: usize,
+        playing: Option<bool>,
+        visit: &mut impl FnMut(StreamResourceExtent) -> Result<(), Invalid>,
+    ) -> Result<(StreamChunkWindow, SessionHandoffReport), SessionPlaybackError> {
+        self.preview_stream_handoff_with_policy_and_report(
+            previous,
+            maximum_frames,
+            playing,
+            visit,
+            false,
+            false,
+        )
+    }
     pub(crate) fn preview_stream_handoff_with_scope(
         &mut self,
         previous: &mut Self,
@@ -70,6 +90,48 @@ impl SessionPlayback {
         ordinary: bool,
         fenced_restart: bool,
     ) -> Result<StreamChunkWindow, SessionPlaybackError> {
+        self.preview_stream_handoff_with_policy_and_report(
+            previous,
+            maximum_frames,
+            playing,
+            visit,
+            ordinary,
+            fenced_restart,
+        )
+        .map(|(window, _)| window)
+    }
+
+    pub(crate) fn preview_stream_handoff_with_policy_and_report(
+        &mut self,
+        previous: &mut Self,
+        maximum_frames: usize,
+        playing: Option<bool>,
+        visit: &mut impl FnMut(StreamResourceExtent) -> Result<(), Invalid>,
+        ordinary: bool,
+        fenced_restart: bool,
+    ) -> Result<(StreamChunkWindow, SessionHandoffReport), SessionPlaybackError> {
+        self.preview_stream_handoff_with_continuation_and_report(
+            previous,
+            maximum_frames,
+            playing,
+            visit,
+            ordinary,
+            fenced_restart,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)] // Preserve the actual source, preview scope and exact borrowed matcher.
+    pub(crate) fn preview_stream_handoff_with_continuation_and_report(
+        &mut self,
+        previous: &mut Self,
+        maximum_frames: usize,
+        playing: Option<bool>,
+        visit: &mut impl FnMut(StreamResourceExtent) -> Result<(), Invalid>,
+        ordinary: bool,
+        fenced_restart: bool,
+        continuation: Option<&hex_lattice::ForeignConfigurationContinuation<'_>>,
+    ) -> Result<(StreamChunkWindow, SessionHandoffReport), SessionPlaybackError> {
         if self.linear_arrangement_export
             || previous.linear_arrangement_export
             || (!ordinary
@@ -86,10 +148,18 @@ impl SessionPlayback {
             visit,
             window: None,
         };
-        self.inherit_state_planned(previous, None, Some(&mut demand), true, fenced_restart)?;
-        demand
+        let report = self.inherit_state_planned(
+            previous,
+            None,
+            Some(&mut demand),
+            true,
+            fenced_restart,
+            continuation,
+        )?;
+        let window = demand
             .window
-            .ok_or(SessionPlaybackError::ArithmeticOverflow)
+            .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
+        Ok((window, report))
     }
 
     /// Enumerate the next chunk's streamed page coverage without mutation.

@@ -68,8 +68,8 @@ pub use resample_kernel::{
 };
 pub use stream::{WavFrameReader, WavReaderLimits};
 pub use verified_stream::{
-    VERIFIED_WAV_PAGE_BYTES, VerifiedReaderDataLayout, VerifiedWavManifest, VerifiedWavReader,
-    VerifiedWavReaderLimits,
+    VERIFIED_WAV_PAGE_BYTES, VerifiedReaderDataLayout, VerifiedWavCoverage, VerifiedWavManifest,
+    VerifiedWavReader, VerifiedWavReaderLimits,
 };
 
 /// Caller-owned resource ceilings for a single import operation.

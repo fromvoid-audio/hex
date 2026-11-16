@@ -29,6 +29,20 @@ impl CandidateRoot {
             Ok(endpoint.committed_quantum_on_control())
         })?
     }
+    /// Observation from the exact live, loaned original endpoint; no custody
+    /// or graph membership is conveyed to the reader.
+    pub(crate) fn try_native_source_quantum_observation(
+        &self,
+        binding: Binding,
+    ) -> Result<Option<hex_plugin_host::transport::QuantumObservation>, &'static str> {
+        self.require_native_source_control_open()?;
+        self.try_with_native_source_endpoint(binding, |loaned, endpoint| {
+            if !loaned || !endpoint.transport_is_live_on_control() {
+                return Err("native callback source is not live and loaned");
+            }
+            Ok(endpoint.quantum_observation_on_control())
+        })?
+    }
     pub(crate) fn reserve_native_program_revision(
         &self,
         binding: Binding,

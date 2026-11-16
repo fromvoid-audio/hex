@@ -5183,7 +5183,15 @@ fn held_new_track_audition_uses_captured_defaults_for_release_and_undo(cx: &mut 
         }
         editor.update(&mut visual, |view, _| {
             let result = &view.state.as_ref().unwrap().project;
-            assert_eq!(result.tracks().len(), original.tracks().len() + 1);
+            assert_eq!(
+                result.tracks().len(),
+                original.tracks().len() + 1,
+                "modifiers={modifiers:?}, error={:?}, last edit={:?}, pending={}, queued={}",
+                view.error,
+                view.last_enqueued_edit,
+                view.worker_requests_pending,
+                view.pending_requests.len()
+            );
             assert_eq!(result.tracks()[1].gain(), 0.5);
             assert!(view.enqueue(hex_session::service::Request::Undo));
         });

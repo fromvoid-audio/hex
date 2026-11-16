@@ -3,8 +3,9 @@ use super::*;
 
 /// Stateless host capability, invoked only on the existing offline export worker.
 /// It owns independent verification/page preparation through ordinary export and
-/// must drop/join every resource before returning. This grants no native admission.
-pub type StreamedExporter = fn(&StreamedExportRequest<'_>) -> Result<ExportReport, String>;
+/// must drop/join every resource before returning. Publisher failures retain
+/// their structured recovery paths. This grants no native admission.
+pub type StreamedExporter = fn(&StreamedExportRequest<'_>) -> Result<ExportReport, ExportFailure>;
 
 pub(super) struct StreamedExportJob {
     pub(super) source: Arc<CanonicalAudioSourceSnapshot>,

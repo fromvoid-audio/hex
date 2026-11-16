@@ -185,6 +185,7 @@ pub(in crate::editor) fn window_with_gain(
                     Owner::Main => super::super::device_panel::select_main(view, window, cx),
                     Owner::Return(id) => view.focused_return = Some(id),
                     Owner::Track(_) => {}
+                    Owner::Source(_) => panic!("source has no automation lane"),
                 }
                 view.focus.focus(window);
                 cx.notify();
@@ -223,6 +224,7 @@ fn header_menu(visual: &mut VisualTestContext, owner: Owner) {
         Owner::Track(id) => format!("arrangement-track-header-{}", id.value()),
         Owner::Main => "main-track-header".into(),
         Owner::Return(id) => format!("return-track-header-{}", id.value()),
+        Owner::Source(_) => panic!("source has no track header"),
     };
     let bounds = visual
         .debug_bounds(Box::leak(key.into_boxed_str()))
@@ -1113,6 +1115,51 @@ fn lane_line_press_adds_a_point_and_drags_it_without_a_time_selection(cx: &mut T
         .expect("new point");
     assert!(added.value.get() > 0.7, "the drag raised the new point");
     assert_eq!(selected_beats(&visual, &editor), [added.beat]);
+
+    for (request, expected) in [(Request::Undo, &points), (Request::Redo, &after)] {
+        editor.update(&mut visual, |view, _| assert!(view.enqueue(request)));
+        pump(&mut visual, &editor);
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, _| {
+            let state = view.state.as_ref().unwrap();
+            let lanes = &view.automation_view.devices;
+            let entry = lanes
+                .main
+                .iter()
+                .chain(&lanes.extra)
+                .find(|entry| entry.target.device == device && entry.target.kind == target)
+                .expect("visible automation lane");
+            assert_eq!(lanes.points_ref(&state.project, entry.target), expected);
+        });
+        assert_eq!(lane_points(&visual, &editor, device, target), *expected);
+    }
+}
+
+#[gpui::test]
+fn undo_queued_immediately_after_automation_point_release_restores_the_curve(
+    cx: &mut TestAppContext,
+) {
+    let (mut visual, editor, device, target, before) = three_point_lane(cx);
+    let at = lane_value_point(&mut visual, device, target, 0.6, before[0].value.get());
+    visual.simulate_mouse_down(at, MouseButton::Left, CMD);
+    visual.simulate_mouse_up(at, MouseButton::Left, CMD);
+    let after = editor.read_with(&visual, |view, _| {
+        assert!(view.worker_requests_pending > 0);
+        view.automation_view
+            .devices
+            .pending
+            .as_ref()
+            .unwrap()
+            .points
+            .clone()
+    });
+    assert_eq!(after.len(), before.len() + 1);
+    editor.update(&mut visual, |view, _| assert!(view.enqueue(Request::Undo)));
+    pump(&mut visual, &editor);
+    assert_eq!(lane_points(&visual, &editor, device, target), before);
+    editor.update(&mut visual, |view, _| assert!(view.enqueue(Request::Redo)));
+    pump(&mut visual, &editor);
+    assert_eq!(lane_points(&visual, &editor, device, target), after);
 }
 
 #[gpui::test]

@@ -1,5 +1,6 @@
 //! Actual Session/desktop/native Root workflow; no device or app execution.
 mod automation;
+mod capture_source_guard;
 mod editor_recording;
 mod first_effect_take;
 mod installed_edits;
@@ -8,6 +9,7 @@ mod offline_bounce;
 mod performance_profile;
 mod state;
 mod ui;
+mod unlaned_effect_commit;
 mod unsealed_admission;
 use super::resident_preview::ResidentHarness;
 use super::*;
@@ -1330,6 +1332,331 @@ fn parameter_inventory_reaches_session_from_the_hosted_controller() {
         .unwrap();
     assert_eq!(refused.query, stale);
     assert!(refused.rows.is_err());
+    let conversion = hex_session::service::PluginParameterConversionQuery {
+        context: query.context,
+        device,
+        output_identity: query.output_identity,
+        request_id: 4,
+        source,
+        parameter: 7,
+        operation: hex_session::service::PluginParameterConversion::Parse(
+            hex_session::service::PluginParameterText::new("double").unwrap(),
+        ),
+    };
+    h.run(Request::QueryPluginParameterConversion(conversion));
+    assert_eq!(
+        h.next()
+            .plugin_parameter_conversion
+            .unwrap()
+            .value
+            .unwrap_err(),
+        "vst3 parameter conversion unsupported"
+    );
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
+fn parameter_conversion_reaches_the_exact_hosted_controller_without_editing() {
+    use hex_session::service::{
+        PluginParameterConversion as Conversion, PluginParameterConversionQuery,
+        PluginParameterText,
+    };
+    const CHILD: &str = "HEX_DESKTOP_TEST_PARAMETER_CONVERSION_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let name = std::thread::current().name().unwrap().to_owned();
+        let result = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", &name, "--ignored", "--nocapture"])
+            .env(CHILD, "1")
+            .env("HEX_ORIGINAL_INSTANCE_VARIANT", "91")
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+        return;
+    }
+    let _native = native_fixture();
+    let mut h = ResidentHarness::with_plugins(
+        host(),
+        Some(EffectPresentation {
+            input_frames: 0,
+            output_frames: 512,
+        }),
+    );
+    let initial = h.next();
+    h.applied(0);
+    h.run(Request::InsertPluginEffect(request(
+        &initial.state,
+        PluginEffectDestination::Main,
+    )));
+    let accepted = terminal(&mut h);
+    assert!(accepted.error.is_none());
+    let (_, metadata) = h.applied(1);
+    let device = accepted.state.project.main_devices()[0].id();
+    let output_identity = h.audio.as_ref().unwrap().control.output_identity().unwrap();
+    h.run(Request::QueryPluginParameters(
+        hex_session::service::PluginParameterQuery {
+            context: metadata.context,
+            device,
+            output_identity,
+            request_id: 1,
+            page_first: Some(0),
+        },
+    ));
+    let source = h.next().plugin_parameters.unwrap().source.unwrap();
+    let query = PluginParameterConversionQuery {
+        context: metadata.context,
+        device,
+        output_identity,
+        request_id: 2,
+        source,
+        parameter: 7,
+        operation: Conversion::Parse(PluginParameterText::new("double").unwrap()),
+    };
+    let admitted = h.run(Request::QueryPluginParameterConversion(query.clone()));
+    assert!(admitted.plugin_parameter_observation);
+    assert_eq!(admitted.state.revision, accepted.state.revision);
+    let result = h.next();
+    assert_eq!(result.state.project, accepted.state.project);
+    let converted = result.plugin_parameter_conversion.unwrap();
+    assert_eq!(converted.query, query);
+    let value = converted.value.unwrap();
+    assert_eq!(value.normalized, 0.5);
+    assert_eq!(value.display.as_deref(), Some("double"));
+
+    let format = PluginParameterConversionQuery {
+        request_id: 3,
+        operation: Conversion::Format(0.25),
+        ..query.clone()
+    };
+    h.run(Request::QueryPluginParameterConversion(format));
+    assert_eq!(
+        h.next()
+            .plugin_parameter_conversion
+            .unwrap()
+            .value
+            .unwrap()
+            .display
+            .as_deref(),
+        Some("unity")
+    );
+
+    let refused = PluginParameterConversionQuery {
+        request_id: 4,
+        operation: Conversion::Parse(PluginParameterText::new("not a value").unwrap()),
+        ..query.clone()
+    };
+    h.run(Request::QueryPluginParameterConversion(refused));
+    assert!(h.next().plugin_parameter_conversion.unwrap().value.is_err());
+
+    let missing = PluginParameterConversionQuery {
+        request_id: 5,
+        parameter: 8,
+        ..query.clone()
+    };
+    h.run(Request::QueryPluginParameterConversion(missing));
+    assert!(h.next().plugin_parameter_conversion.unwrap().value.is_err());
+
+    let invalid = PluginParameterConversionQuery {
+        request_id: 6,
+        operation: Conversion::Format(f64::NAN),
+        ..query.clone()
+    };
+    assert!(
+        h.run(Request::QueryPluginParameterConversion(invalid))
+            .plugin_parameter_conversion
+            .unwrap()
+            .value
+            .is_err()
+    );
+
+    // A background page and a user conversion share one controller mailbox.
+    // The page may complete or yield, but neither observation may be lost.
+    h.service
+        .submit(Request::QueryPluginParameters(
+            hex_session::service::PluginParameterQuery {
+                context: query.context,
+                device,
+                output_identity,
+                request_id: 7,
+                page_first: Some(0),
+            },
+        ))
+        .unwrap();
+    h.service
+        .submit(Request::QueryPluginParameterConversion(
+            PluginParameterConversionQuery {
+                request_id: 8,
+                operation: Conversion::Format(0.25),
+                ..query.clone()
+            },
+        ))
+        .unwrap();
+    let (mut page_seen, mut conversion_seen) = (false, false);
+    while !page_seen || !conversion_seen {
+        let event = h.next();
+        if let Some(page) = event.plugin_parameters {
+            assert_eq!(page.query.request_id, 7);
+            page_seen = true;
+        }
+        if let Some(conversion) = event.plugin_parameter_conversion {
+            assert_eq!(conversion.query.request_id, 8);
+            assert_eq!(conversion.value.unwrap().display.as_deref(), Some("unity"));
+            conversion_seen = true;
+        }
+    }
+    let mut stale = query;
+    stale.source.epoch += 1;
+    assert!(
+        h.run(Request::QueryPluginParameterConversion(stale))
+            .plugin_parameter_conversion
+            .unwrap()
+            .value
+            .is_err()
+    );
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
+fn admitted_parameter_conversion_survives_output_close() {
+    use hex_session::service::{
+        PluginParameterConversion, PluginParameterConversionQuery, PluginParameterQuery,
+    };
+    const CHILD: &str = "HEX_DESKTOP_TEST_CONVERSION_CLOSE_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let gates = Files::new();
+        std::fs::write(gates.0.join("release"), b"allow inventory").unwrap();
+        let result = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                std::thread::current().name().unwrap(),
+                "--ignored",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .env("HEX_ORIGINAL_INSTANCE_VARIANT", "93")
+            .env("HEX_ORIGINAL_INSTANCE_RELEASE", gates.0.join("release"))
+            .env("HEX_ORIGINAL_INSTANCE_TRACE", gates.0.join("trace"))
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+        return;
+    }
+    let _native = native_fixture();
+    let mut h = ResidentHarness::with_plugins(
+        host(),
+        Some(EffectPresentation {
+            input_frames: 0,
+            output_frames: 512,
+        }),
+    );
+    let initial = h.next();
+    h.applied(0);
+    h.run(Request::InsertPluginEffect(request(
+        &initial.state,
+        PluginEffectDestination::Main,
+    )));
+    let inserted = terminal(&mut h);
+    assert!(inserted.error.is_none());
+    let (_, metadata) = h.applied(1);
+    let device = inserted.state.project.main_devices()[0].id();
+    let output = h.audio.as_ref().unwrap().control.output_identity().unwrap();
+    h.run(Request::QueryPluginParameters(PluginParameterQuery {
+        context: metadata.context,
+        device,
+        output_identity: output,
+        request_id: 1,
+        page_first: Some(0),
+    }));
+    let source = h.next().plugin_parameters.unwrap().source.unwrap();
+    let release = PathBuf::from(std::env::var_os("HEX_ORIGINAL_INSTANCE_RELEASE").unwrap());
+    let trace = PathBuf::from(std::env::var_os("HEX_ORIGINAL_INSTANCE_TRACE").unwrap());
+    std::fs::remove_file(&release).unwrap();
+    let _ = std::fs::remove_file(&trace);
+    let query = PluginParameterConversionQuery {
+        context: metadata.context,
+        device,
+        output_identity: output,
+        request_id: 2,
+        source,
+        parameter: 7,
+        operation: PluginParameterConversion::Format(0.25),
+    };
+    assert!(
+        h.run(Request::QueryPluginParameterConversion(query.clone()))
+            .plugin_parameter_conversion
+            .is_none()
+    );
+    let until = Instant::now() + Duration::from_secs(5);
+    loop {
+        h.pump();
+        let stage = std::fs::read(&trace)
+            .ok()
+            .and_then(|bytes| Some(i32::from_ne_bytes(bytes.get(..4)?.try_into().ok()?)));
+        if stage == Some(26) {
+            break;
+        }
+        assert!(
+            Instant::now() < until,
+            "conversion did not enter the original controller"
+        );
+        std::thread::yield_now();
+    }
+    h.service
+        .submit(Request::RestartAudio {
+            project_generation: metadata.context.project_generation,
+            request_id: 3,
+        })
+        .unwrap();
+    let restarted = h.next();
+    assert!(restarted.plugin_parameter_conversion.is_none());
+    h.release_relinquished_output();
+    let held_until = Instant::now() + Duration::from_millis(50);
+    let mut terminal = None;
+    while Instant::now() < held_until {
+        h.pump();
+        while let Ok(event) = h.service.try_event() {
+            if let Some(result) = event.plugin_parameter_conversion {
+                assert!(
+                    terminal.replace(result).is_none(),
+                    "duplicate conversion terminal"
+                );
+            }
+        }
+        std::thread::yield_now();
+    }
+    std::fs::write(&release, b"release controller").unwrap();
+    h.wait_fresh_output(output);
+    let result = match terminal {
+        Some(result) => result,
+        None => loop {
+            let event = h.next();
+            if let Some(result) = event.plugin_parameter_conversion {
+                break result;
+            }
+        },
+    };
+    assert_eq!(result.query, query);
+    assert!(result.value.is_err());
+    let until = Instant::now() + Duration::from_millis(50);
+    while Instant::now() < until {
+        h.pump();
+        while let Ok(event) = h.service.try_event() {
+            assert!(
+                event.plugin_parameter_conversion.is_none(),
+                "late duplicate conversion terminal"
+            );
+        }
+        std::thread::yield_now();
+    }
 }
 
 #[test]

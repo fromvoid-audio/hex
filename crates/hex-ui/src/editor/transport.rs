@@ -134,6 +134,66 @@ impl EditorView {
                 .rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS)),
             )
             .child(
+                self.control_icon_description(
+                    "in",
+                    "audio input",
+                    format!(
+                        "audio input · {}",
+                        hex_session::service::text::verbatim(self.audio_recorder.input_label())
+                    )
+                    .into(),
+                    theme::action_style(),
+                    |view, window, cx| view.open_audio_input_menu(window, cx),
+                    cx,
+                )
+                .rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS))
+                .debug_selector(|| "audio-input-picker".into()),
+            )
+            .child(
+                self.control_icon(
+                    "mon",
+                    if self.audio_recorder.software_monitor {
+                        "software monitoring during recording · click for hardware"
+                    } else {
+                        "hardware monitoring during recording · click for software"
+                    },
+                    |view, _, cx| {
+                        view.toggle_software_monitor();
+                        cx.notify();
+                    },
+                    cx,
+                )
+                .rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS))
+                .debug_selector(|| "audio-monitor-toggle".into())
+                .text_color(rgb(theme::color(
+                    if self.audio_recorder.software_monitor {
+                        theme::PaletteRole::Primary
+                    } else {
+                        theme::PaletteRole::Muted
+                    },
+                ))),
+            )
+            .child(
+                self.control_icon(
+                    "●a",
+                    self.audio_recorder.label(),
+                    |view, _, cx| {
+                        view.toggle_audio_recording();
+                        cx.notify();
+                    },
+                    cx,
+                )
+                .rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS))
+                .debug_selector(|| "audio-record-toggle".into())
+                .text_color(rgb(theme::color(
+                    if self.audio_recorder.blocks_edits() {
+                        theme::PaletteRole::Recording
+                    } else {
+                        theme::PaletteRole::Muted
+                    },
+                ))),
+            )
+            .child(
                 self.control_icon(
                     "●",
                     self.midi_recorder.label(),

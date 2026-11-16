@@ -52,14 +52,15 @@ pub(crate) fn fixture_view(
                     .state
                     .as_ref()
                     .and_then(|state| device_panel::selected_owner(view, state))
-                    .map(|owner| match owner {
+                    .and_then(|owner| match owner {
                         device_panel::DevicePanelOwner::Track(id) => {
-                            PluginEffectDestination::Track(id)
+                            Some(PluginEffectDestination::Track(id))
                         }
                         device_panel::DevicePanelOwner::Return(id) => {
-                            PluginEffectDestination::Return(id)
+                            Some(PluginEffectDestination::Return(id))
                         }
-                        device_panel::DevicePanelOwner::Main => PluginEffectDestination::Main,
+                        device_panel::DevicePanelOwner::Main => Some(PluginEffectDestination::Main),
+                        device_panel::DevicePanelOwner::Source(_) => None,
                     }),
                 status: view.status.clone(),
                 applied: view
@@ -67,6 +68,14 @@ pub(crate) fn fixture_view(
                     .as_ref()
                     .and_then(|audio| audio.status())
                     .and_then(|status| status.native_effect_source()),
+                transport: view
+                    .audio
+                    .as_ref()
+                    .and_then(|audio| audio.status())
+                    .map(|status| {
+                        use std::sync::atomic::Ordering::Acquire;
+                        (status.position.load(Acquire), status.playing.load(Acquire))
+                    }),
             }
         })
         .map_err(|error| error.to_string())
@@ -122,7 +131,7 @@ impl EditorView {
             Some(device_panel::DevicePanelOwner::Track(id)) => PluginEffectDestination::Track(id),
             Some(device_panel::DevicePanelOwner::Return(id)) => PluginEffectDestination::Return(id),
             Some(device_panel::DevicePanelOwner::Main) => PluginEffectDestination::Main,
-            None => {
+            None | Some(device_panel::DevicePanelOwner::Source(_)) => {
                 self.error =
                     Some("select a track, return or main before inserting an effect".into());
                 return;

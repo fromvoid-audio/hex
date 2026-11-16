@@ -20,7 +20,7 @@ inline constexpr size_t HOST_RESTART_COUNT=8;
 // Reserve the burst on main without changing PCM handoff or receipt sizes.
 inline constexpr size_t HOST_REQUEST_COUNT=64;
 struct ParameterSnapshot {
-    struct Parameter { ParameterInfo info{}; ParamValue value=0; uint64 editor_sequence=0; };
+    struct Parameter { ParameterInfo info{}; ParamValue value=0; uint64 editor_sequence=0; uint64 feedback_floor=0; };
     // Rich strings belong to the main SDK lane. Allocate only the validated
     // count, retaining the previous inventory until a full refresh succeeds.
     std::unique_ptr<Parameter[]> parameters;
@@ -81,14 +81,14 @@ struct ProcessingParameterSnapshot {
 // Latest processor observations, coalesced by stable ID. This is controller
 // synchronization, not an authored gesture or callback-delivery acknowledgement.
 struct ParameterFeedback {
-    struct Value { ParamID id=0; ParamValue normalized=0; uint64 editor_sequence=0; };
+    struct Value { ParamID id=0; ParamValue normalized=0; uint64 editor_sequence=0; bool editor_input=false; };
     // The per-epoch feedback obligation is independent of the inventory.
     std::array<Value,HOST_FEEDBACK_COUNT> values{};
     uint32 count=0;
     Value at(uint32 index) const { return values[index]; }
-    bool put(ParamID id,ParamValue value,uint64 editor_sequence=0) {
+    bool put(ParamID id,ParamValue value,uint64 editor_sequence=0,bool editor_input=false) {
         if(id>0x7FFFFFFFu || !std::isfinite(value) || value<0 || value>1) return false;
-        const Value next{id,value,editor_sequence};
+        const Value next{id,value,editor_sequence,editor_input};
         for(uint32 n=0;n<count;++n) if(values[n].id==id) { values[n]=next;return true; }
         if(count==values.size()) return false;
         values[count++]=next;return true;
@@ -115,6 +115,7 @@ struct EditEvent {
     bool grouped_gesture=false;
 };
 enum class HostDisposition { Idle, Refreshed, InvalidMetadata, NoController, Recursive, Retiring, WrongThread, Capacity, Pending, EditQueued };
+enum class EditorDetachAdmission { Granted, GestureActive, Refused };
 struct HostDispatch {
     uint64 sequence=0, metadata_revision=0;
     int32 flags=0;
@@ -153,6 +154,9 @@ class Host final : public IHostApplication, public IComponentHandler, public ICo
     std::array<bool,HOST_EDIT_COUNT> active_grouped{};
     size_t first=0, count=0, restart_count=0, active_count=0;
     uint64 sequence=0;
+    // Main publishes accepted editor edits; the worker samples this frontier
+    // before a host-authored SDK exchange. No controller pointer crosses lanes.
+    std::atomic<uint64> editor_frontier{0};
     const bool advertises_editor_groups;
     uint64 cohort=0;
     bool refused_cohort=false;
@@ -162,6 +166,10 @@ class Host final : public IHostApplication, public IComponentHandler, public ICo
     size_t cohort_value_count=0;
     size_t end_reservations() const { return active_count+(cohort?1:0); }
     std::atomic<bool> accepting{true};
+    // Main-lane editor admission can close while accepted work continues to
+    // dispatch and the worker drains the exact ordered receipt prefix.
+    bool editor_edits_sealed=false;
+    bool editor_detaching=false;
     std::atomic<pthread_t> processing_thread{nullptr};
     bool dispatching=false, recursive=false, applying_feedback=false, applying_saved_state=false;
     ParameterSnapshot metadata{};
@@ -221,6 +229,27 @@ public:
     const HostMessageDiagnostics& message_diagnostics() const { return message_trace; }
     uint32 reference_count() const { return references.load(); }
     uint32 refusal_flags() const { return refusals.load(); }
+    // Do not invent an End or split an atomic group. The caller retains the
+    // original source if closing the editor leaves an open gesture/cohort.
+    // Normal dispatch, feedback and latency observations stay live.
+    bool seal_editor_edits_on_control() {
+        if(![NSThread isMainThread] || !accepting || dispatching || applying_saved_state ||
+            active_count || cohort || editor_detaching) return false;
+        editor_edits_sealed=true;
+        return true;
+    }
+    // A live processor may still own an audible tail. Fence editor callbacks
+    // only for the synchronous window detach, without sealing that processor.
+    EditorDetachAdmission begin_editor_detach_on_control() {
+        if(![NSThread isMainThread] || !accepting || dispatching || applying_saved_state ||
+            editor_edits_sealed || editor_detaching) return EditorDetachAdmission::Refused;
+        if(active_count || cohort) return EditorDetachAdmission::GestureActive;
+        editor_detaching=true;
+        return EditorDetachAdmission::Granted;
+    }
+    void end_editor_detach_on_control() { editor_detaching=false; }
+    // The helper's main lane owns the editor seal and resume transition.
+    bool editor_edits_sealed_on_control() const { return editor_edits_sealed; }
     void bind_processing_thread() { processing_thread.store(pthread_self(),std::memory_order_release); }
     // A synchronous SDK state setter may echo parameter edits. The saved
     // bytes already define the processor state and the controller inventory
@@ -303,6 +332,7 @@ public:
         if(!advertises_editor_groups) return kNotImplemented;
         if(![NSThread isMainThread]) {refuse(WrongThread);return kResultFalse;}
         if(!accepting) {refuse(Retiring);return kResultFalse;}
+        if((editor_edits_sealed || editor_detaching) && !applying_saved_state) return kResultFalse;
         if(dispatching) {recursive=true;refuse(RecursiveRestart);return kResultFalse;}
         if(applying_saved_state) return kResultOk;
         if(cohort) {poison_cohort();return kResultFalse;}
@@ -318,6 +348,7 @@ public:
         if(!advertises_editor_groups) return kNotImplemented;
         if(![NSThread isMainThread]) {refuse(WrongThread);return kResultFalse;}
         if(!accepting) {refuse(Retiring);return kResultFalse;}
+        if((editor_edits_sealed || editor_detaching) && !applying_saved_state) return kResultFalse;
         if(dispatching) {recursive=true;refuse(RecursiveRestart);return kResultFalse;}
         if(applying_saved_state) return kResultOk;
         if(!cohort) {refuse(InvalidEdit);return kResultFalse;}
@@ -328,9 +359,13 @@ public:
         if(terminal==GroupAborted) {
             for(auto& active:active_tokens)
                 if(active && std::find(cohort_gestures.begin(),cohort_gestures.end(),active)!=cohort_gestures.end()) {
+                    const auto index=static_cast<size_t>(&active-active_tokens.data());
+                    for(uint32 n=0;n<metadata.count;++n)
+                        if(metadata.parameters[n].info.id==active_ids[index]) metadata.parameters[n].feedback_floor=sequence;
                     active=0;--active_count;
                 }
         }
+        if(terminal==GroupAborted) editor_frontier.store(sequence,std::memory_order_release);
         requests[(first+count++)%requests.size()]={sequence,cohort,0,0,terminal,false,cohort};
         cohort=0;refused_cohort=false;
         pending_edits.fetch_add(1,std::memory_order_release);
@@ -465,15 +500,19 @@ private:
         requests[(first+count++)%requests.size()]={gesture+2,gesture,0,id,End,false,cohort};
         sequence=gesture+2;
         info.editor_sequence=gesture+1;
+        info.feedback_floor=gesture+2;
+        editor_frontier.store(info.feedback_floor,std::memory_order_release);
         if(has_room) pending_edits.fetch_add(records,std::memory_order_release);
         return kResultOk;
     }
     tresult admit_edit(ParamID id,uint32 kind,ParamValue value) {
         if(![NSThread isMainThread]) {refuse(WrongThread);return kResultFalse;}
         if(!accepting) {refuse(Retiring);return kResultFalse;}
+        if((editor_edits_sealed || editor_detaching) && !applying_saved_state) return kResultFalse;
         if(dispatching) {recursive=true;refuse(RecursiveRestart);return kResultFalse;}
         const bool valid_value=kind!=Perform || (std::isfinite(value) && value>=0 && value<=1);
         if(applying_saved_state && id<=0x7FFFFFFFu && valid_value) return kResultOk;
+        if(editor_edits_sealed || editor_detaching) return kResultFalse;
         ParameterSnapshot::Parameter* info=nullptr;
         for(uint32 n=0;n<metadata.count;++n) if(metadata.parameters[n].info.id==id) info=&metadata.parameters[n];
         if(!info) {refuse_editor_edit(InvalidEdit|UnknownEditParameter);return kInvalidArgument;}
@@ -507,6 +546,7 @@ private:
         if(kind==Perform && (!available || !cohort_room(1))) {
             if(replace_queued_perform(event)) {
                 info->editor_sequence=next;
+                editor_frontier.store(next,std::memory_order_release);
                 sequence=next;
                 return kResultOk;
             }
@@ -514,11 +554,18 @@ private:
         }
         requests[(first+count)%requests.size()]=event;
         ++count;sequence=next;pending_edits.fetch_add(1,std::memory_order_release);
-        if(kind==Perform) info->editor_sequence=next;
+        if(kind==Perform) {
+            info->editor_sequence=next;
+            editor_frontier.store(next,std::memory_order_release);
+        }
         if(kind==Begin) {
             active_ids[vacant]=id;active_tokens[vacant]=gesture;active_grouped[vacant]=grouped;++active_count;
         }
-        if(kind==End) {active_tokens[active]=0;--active_count;}
+        if(kind==End) {
+            active_tokens[active]=0;--active_count;
+            info->feedback_floor=next;
+            editor_frontier.store(next,std::memory_order_release);
+        }
         return kResultOk;
     }
 public:
@@ -652,9 +699,10 @@ private:
                 parameter.value=controller->getParamNormalized(info.id);
                 valid=std::isfinite(parameter.value) && parameter.value>=0 && parameter.value<=1;
                 if(i<metadata.count && metadata.parameters[i].info.id==info.id)
-                    parameter.editor_sequence=metadata.parameters[i].editor_sequence;
+                    {parameter.editor_sequence=metadata.parameters[i].editor_sequence;parameter.feedback_floor=metadata.parameters[i].feedback_floor;}
                 else for(uint32 prior=0;prior<metadata.count;++prior) if(metadata.parameters[prior].info.id==info.id) {
-                    parameter.editor_sequence=metadata.parameters[prior].editor_sequence;break;
+                    parameter.editor_sequence=metadata.parameters[prior].editor_sequence;
+                    parameter.feedback_floor=metadata.parameters[prior].feedback_floor;break;
                 }
             }
         }
@@ -712,7 +760,7 @@ public:
         auto staged=phase==Ready?feedback.snapshot:ParameterFeedback{};
         for(uint32 n=0;n<pending.count;++n) {
             const auto value=pending.at(n);
-            if(!staged.put(value.id,value.normalized,value.editor_sequence)) {
+            if(!staged.put(value.id,value.normalized,value.editor_sequence,value.editor_input)) {
                 feedback.phase.store(phase,std::memory_order_release);return false;
             }
         }
@@ -743,7 +791,12 @@ public:
             if(index==metadata.count) {refuse(FeedbackParameterMissing);return false;}
             // DSP can finish long after the controller has moved
             // on to a newer drag position. Its DSP receipt remains valid.
-            if(value.editor_sequence && metadata.parameters[index].editor_sequence>value.editor_sequence) continue;
+            bool editing=false;
+            for(size_t i=0;i<active_tokens.size();++i)
+                if(active_tokens[i] && active_ids[i]==value.id) {editing=true;break;}
+            if(editing || metadata.parameters[index].editor_sequence>value.editor_sequence ||
+                (metadata.parameters[index].feedback_floor>value.editor_sequence &&
+                    !(value.editor_input && metadata.parameters[index].editor_sequence==value.editor_sequence))) continue;
             auto normalized=value.editor_sequence?controller->getParamNormalized(value.id):-1.0;
             if(normalized!=value.normalized) {
                 applying_feedback=true;
@@ -782,6 +835,7 @@ public:
     // Main-only monotonic admission revision also detects an edit that the
     // worker has already completed during a foreign state-read callback.
     uint64 callback_revision_on_control() const { return sequence; }
+    uint64 editor_frontier_on_worker() const { return editor_frontier.load(std::memory_order_acquire); }
     void complete_parameter_edit() { pending_edits.fetch_sub(1,std::memory_order_acq_rel); }
     void stop_accepting() {
         if (![NSThread isMainThread]) { refuse(WrongThread); return; }

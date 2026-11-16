@@ -147,6 +147,125 @@ class PlannerSourceLoaderTests(unittest.TestCase):
 
 
 class ScopeTests(unittest.TestCase):
+    def test_resolve_uses_explicit_git_and_native_selection_environment(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve() / "repo"
+            root.mkdir()
+            empty = Path(directory) / "empty-config"
+            empty.write_text("")
+            exclusions = Path(directory) / "excludes"
+            exclusions.write_text("extra.rs\n")
+            configured = Path(directory) / "configured-git"
+            configured.write_text(f"[core]\n\texcludesfile = {exclusions}\n")
+            default_env = {**os.environ, "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": str(empty),
+                           "HEX_VST3_SDK_DIR": ""}
+            selected_env = {**default_env, "GIT_CONFIG_GLOBAL": str(configured),
+                            "HEX_VST3_SDK_DIR": "explicit-fixture"}
+            def git(*args):
+                return subprocess.check_output(["git", *args], cwd=root, env=default_env, text=True).strip()
+            git("init", "-q")
+            (root / "source.rs").write_text("before\n")
+            git("add", "source.rs")
+            git("-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "base")
+            base = git("rev-parse", "HEAD")
+            (root / "source.rs").write_text("after\n")
+            git("add", "source.rs")
+            git("-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "source")
+            source = git("rev-parse", "HEAD")
+            (root / "extra.rs").write_text("extra\n")
+            metadata = {"workspace_members": ["fixture"], "packages": [{
+                "id": "fixture", "name": "fixture", "manifest_path": str(root / "Cargo.toml"),
+                "features": {}, "dependencies": [], "targets": [],
+            }]}
+            with patch.dict(os.environ, default_env, clear=True):
+                default = plan.resolve(root, profile="merge", base=base, source=source, metadata=metadata)
+                selected = plan.resolve(root, profile="merge", base=base, source=source,
+                                        metadata=metadata, env=selected_env)
+            self.assertIn("extra.rs", default["paths"])
+            self.assertNotIn("extra.rs", selected["paths"])
+            self.assertEqual(selected["runtime_inputs"], plan.runtime_inputs(root, selected_env))
+            self.assertNotEqual(default["runtime_inputs"], selected["runtime_inputs"])
+            self.assertIn("explicit native acceptance inputs", selected["python_tests"]["reasons"][0])
+            self.assertNotIn("explicit native acceptance inputs", default["python_tests"]["reasons"][0])
+
+    def test_session_density_inventory_retains_target_path(self):
+        root = SCRIPTS.parent
+        package_dir = root / "crates/hex-session"
+        metadata = {"workspace_members": ["session"], "packages": [{
+            "id": "session", "name": "hex-session",
+            "manifest_path": str(package_dir / "Cargo.toml"), "features": {}, "dependencies": [],
+            "targets": [{"name": "automation_take_density", "kind": ["test"],
+                         "src_path": str(package_dir / "tests/automation_take_density.rs")}],
+        }]}
+        inventory = plan.cargo_inventory(metadata, root)
+        self.assertEqual(inventory[0]["targets"][0]["src_path"],
+                         "tests/automation_take_density.rs")
+
+    def test_session_adoption_selects_density_integration_only_when_needed(self):
+        owner = "hex-session"
+        target = {"name": "automation_take_density", "kind": ["test"],
+                  "src_path": "tests/automation_take_density.rs", "required-features": []}
+        for filters, targets, expected in (
+            (["service::automation_take::adoption::"], [target], True),
+            (["service::automation_take::"], [target], True),
+            (["service::automation_take::adoption::tests::"], [target], True),
+            (["service::recovery::"], [target], False),
+            (["service::automation_take::adoption::"], [], False),
+            ([], [target], False),
+        ):
+            with self.subTest(filters=filters, targets=targets):
+                inventory = [{"name": owner, "manifest": "crates/hex-session/Cargo.toml",
+                              "features": {}, "dependencies": [],
+                              "targets": [{"name": "hex_session", "kind": ["lib"]}, *targets]}]
+                boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
+                            "lint_packages": [owner], "single_run": {},
+                            "module_filters": {owner: filters} if filters else {}}
+                steps = {step.step_id: step for step in ci.boundary_steps({
+                    "affected_packages": [owner], "boundary": boundary,
+                    "cargo_inventory": inventory, "paths": []})}
+                step = steps.get("session-automation-take-density")
+                self.assertEqual(step is not None, expected)
+                if step:
+                    self.assertEqual(step.argv, ("cargo", "test", "-p", owner, "--test",
+                                                  "automation_take_density", "--locked"))
+                    self.assertTrue(step.requires_tests)
+                if not filters:
+                    self.assertIn("affected-tests", steps)
+
+    def test_session_adoption_rejects_malformed_density_target(self):
+        owner = "hex-session"
+        for target in (
+            {"name": "automation_take_density", "kind": ["test"], "src_path": "tests/wrong.rs"},
+            {"name": "automation_take_density", "kind": ["example"],
+             "src_path": "tests/automation_take_density.rs"},
+            {"name": "automation_take_density", "kind": ["test"],
+             "src_path": "tests/automation_take_density.rs", "required-features": ["hidden"]},
+        ):
+            with self.subTest(target=target):
+                inventory = [{"name": owner, "manifest": "crates/hex-session/Cargo.toml",
+                              "features": {}, "dependencies": [],
+                              "targets": [{"name": "hex_session", "kind": ["lib"]}, target]}]
+                boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
+                            "lint_packages": [owner], "single_run": {},
+                            "module_filters": {owner: ["service::automation_take::adoption::"]}}
+                with self.assertRaisesRegex(ValueError, "integration target is malformed"):
+                    ci.boundary_steps({"affected_packages": [owner], "boundary": boundary,
+                                       "cargo_inventory": inventory, "paths": []})
+
+    def test_session_resident_audio_source_and_nested_tests_share_module_boundary(self):
+        root = SCRIPTS.parent
+        owner = "hex-session"
+        inventory = [{"name": owner, "manifest": "crates/hex-session/Cargo.toml"}]
+        source = "crates/hex-session/src/service/resident_audio.rs"
+        tests = "crates/hex-session/src/service/resident_audio/tests/verified_replacement_tests.rs"
+        self.assertEqual(
+            plan.module_test_filters(root, [source, tests], inventory, [owner]),
+            {owner: ["service::resident_audio::"]},
+        )
+        self.assertEqual(
+            plan.module_test_filters(root, [tests], inventory, [owner]),
+            {owner: ["service::resident_audio::tests::verified_replacement_tests::"]},
+        )
     def test_path_included_storage_text_selects_its_real_consumers(self):
         inventory = [
             {"name": "hex-storage", "manifest": "crates/hex-storage/Cargo.toml", "features": {},
@@ -322,6 +441,18 @@ class ScopeTests(unittest.TestCase):
                     ci.main(arguments)
                 self.assertEqual(error.exception.code, 2)
                 runner.assert_not_called()
+
+    def test_scoped_cli_resolves_with_its_metadata_environment(self):
+        fixture_plan = {"scope": "metadata", "qualifies_merge": True}
+        completed = subprocess.CompletedProcess([], 0, "{}", "")
+        with patch.object(ci, "command_output", return_value=completed) as metadata, \
+                patch.object(ci, "cli_policy_error", return_value=None), \
+                patch.object(ci.ci_plan, "resolve", return_value=fixture_plan) as resolve, \
+                patch.object(ci, "LocalCiRunner") as runner:
+            runner.return_value.run.return_value = 0
+            runner.return_value.summary = {"steps": [], "status": "partial"}
+            self.assertEqual(ci.main(["--profile", "merge", "--base", "base", "--source", "source"]), 0)
+        self.assertIs(resolve.call_args.kwargs["env"], metadata.call_args.args[2])
 
     def test_edit_target_validation_and_required_features(self):
         inventory = [{"name": "fixture", "features": {"default": ["enabled"], "enabled": [], "extra": []},
@@ -678,9 +809,10 @@ class ScopeTests(unittest.TestCase):
                         manifest_path=str(root / "Cargo.toml"), features={}, targets=[], dependencies=[])]}
             with self.assertRaisesRegex(ValueError, "symlink"):
                 plan.resolve(root, profile="merge", base=base, source="HEAD", metadata=metadata)
-            runner = ci.LocalCiRunner(root, mode="full", min_free_bytes=0,
-                                      steps=(ci.Step("must-not-run", (sys.executable, "-c", "raise AssertionError()")),))
-            self.assertEqual(runner.run(), 2)
+            runner = ci.LocalCiRunner(root, mode="full", min_free_bytes=0)
+            with patch.object(runner, "_run_step") as execute:
+                self.assertEqual(runner.run(), 2)
+            execute.assert_not_called()
             self.assertIn("symlink", runner.summary["repository_error"])
             self.assertTrue(all(s["status"] == "not_run" for s in runner.summary["steps"]))
 
@@ -1066,8 +1198,39 @@ class ScopeTests(unittest.TestCase):
             self.assertEqual([s.step_id for s in ci.planned_steps(reused)], ["metadata-continuation"])
             self.assertEqual(reused["reuse"]["source"], previous)
             self.assertIs(reused["reuse"]["native_acceptance_opt_in"], False)
+            complete_bytes = report.read_bytes()
+            incomplete_bytes = json.dumps({**evidence, "steps": [{"status": "passed"}]}).encode()
+            resolved_report = report.resolve()
+            original_read = Path.read_bytes
+            reads = []
+            def change_report(path):
+                if path == resolved_report:
+                    reads.append(None)
+                    return complete_bytes if len(reads) == 1 else incomplete_bytes
+                return original_read(path)
+            with patch.object(Path, "read_bytes", change_report):
+                retained = ci.reusable_plan(root, resolved, report, env={})
+            self.assertEqual(len(reads), 1)
+            self.assertEqual(retained["reuse"]["sha256"], hashlib.sha256(complete_bytes).hexdigest())
+            reads.clear()
+            def change_incomplete_report(path):
+                if path == resolved_report:
+                    reads.append(None)
+                    return incomplete_bytes if len(reads) == 1 else complete_bytes
+                return original_read(path)
+            with patch.object(Path, "read_bytes", change_incomplete_report), \
+                    self.assertRaisesRegex(ValueError, "complete required configurations"):
+                ci.reusable_plan(root, resolved, report, env={})
+            self.assertEqual(len(reads), 1)
+            with self.assertRaisesRegex(ValueError, "native/external"):
+                ci.reusable_plan(root, resolved, report, env={"HEX_VST3_SDK_DIR": "fixture"})
             original_report = report.read_bytes()
             original_plan = json.dumps(resolved, sort_keys=True)
+            report.write_bytes(b"[]")
+            for check in (ci.reusable_plan, plan.reuse_checks):
+                with self.subTest(check=check.__name__), self.assertRaisesRegex(ValueError, "must be an object"):
+                    check(root, resolved, report, env={})
+            report.write_bytes(original_report)
             # Full reports without a plan and scoped reports must both carry an
             # explicit false observation. Missing historical state is unknown.
             for old_plan in (None, {"scope": "tooling", "qualifies_merge": True}):
@@ -1122,9 +1285,10 @@ class ScopeTests(unittest.TestCase):
             changed = plan.resolve(root, profile="merge", base=base, source=current, metadata=metadata)
             with self.assertRaises(ValueError):
                 ci.reusable_plan(root, changed, report)
-            runner = ci.LocalCiRunner(root, mode="merge", plan=changed, min_free_bytes=0,
-                                      steps=(ci.Step("must-not-run", (sys.executable, "-c", "raise AssertionError()")),))
-            self.assertEqual(runner.run(), 2)
+            runner = ci.LocalCiRunner(root, mode="merge", plan=changed, min_free_bytes=0)
+            with patch.object(runner, "_run_step") as execute:
+                self.assertEqual(runner.run(), 2)
+            execute.assert_not_called()
             self.assertTrue(runner.summary["start_tree"]["dirty"])
             self.assertTrue(all(s["status"] == "not_run" for s in runner.summary["steps"]))
 
@@ -1935,7 +2099,8 @@ class MainHealthTests(unittest.TestCase):
             script.write_text("# change\n")
             git("commit", "-qam", "tool change")
             source = git("rev-parse", "HEAD")
-            with patch.object(plan.python_tests, "available_modules",
+            with patch.dict(os.environ, dict.fromkeys(plan.python_tests.native_acceptance_inputs(os.environ), "")), \
+                 patch.object(plan.python_tests, "available_modules",
                               return_value=sorted(plan.python_tests.REVIEWED_MODULES)):
                 resolved = plan.resolve(root, profile="health", base=source + "^1", source=source,
                                         metadata=BaseAdvanceCarryTests.metadata(self, root))

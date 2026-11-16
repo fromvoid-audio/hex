@@ -256,6 +256,7 @@ impl NativeAudioSink {
                 output_identity: output,
                 audio_revision: 0,
                 source_context: None,
+                source_origin: hex_session::service::ResidentSourceOrigin::Unknown,
                 section_loop: None,
             }));
         }
@@ -361,10 +362,16 @@ impl NativeAudioSink {
                 .pending
                 .as_ref()
                 .map_or(DeviceResourceAdmission::default(), |pending| {
-                    DeviceResourceAdmission::unpublished_on_control(
+                    let view = DeviceResourceAdmission::unpublished_on_control(
                         &pending.playback,
                         pending.resources.as_ref(),
-                    )
+                    );
+                    match pending.file_sources.as_ref() {
+                        Some(files) if !files.repitches().requirements().is_empty() => {
+                            view.with_repitch_requirements(files.repitches())
+                        }
+                        _ => view,
+                    }
                 }),
         ]
     }
@@ -383,6 +390,87 @@ impl NativeAudioSink {
         admit: &mut dyn FnMut(&[DeviceResourceAdmission<'_>]) -> Result<(), String>,
         file_sources: Option<&hex_session::service::ResidentFileSet>,
     ) -> Result<ResidentPublicationAcceptance, ResidentPublicationRefusal> {
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        let mut playback = playback;
+        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+        let playback = playback;
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        let mut continuation_fence = None;
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        {
+            let control = self
+                .output
+                .as_mut()
+                .and_then(|output| output.publication.control());
+            let request = match self.plugins.sequenced_publication_request(
+                control.as_deref(),
+                self.desired.as_deref(),
+                metadata.context,
+                &playback,
+            ) {
+                Ok(request) => request,
+                Err(error) => {
+                    return Err(ResidentPublicationRefusal {
+                        kind: hex_session::service::ResidentPublicationFailure::Other,
+                        playback,
+                        error,
+                    });
+                }
+            };
+            match request {
+                Some(request)
+                    if matches!(
+                        policy,
+                        ResidentPublicationPolicy::InheritRuntime
+                            | ResidentPublicationPolicy::InheritRuntimeAt(_)
+                    ) =>
+                {
+                    continuation_fence =
+                        Some((request.source, request.transport_epoch, request.playing));
+                    let valid = if playback.has_foreign_continuation_states() {
+                        playback.foreign_continuation_states_match_on_control(
+                            request.identity,
+                            request.binding,
+                            request.previous_state,
+                            request.capture.state(),
+                        )
+                    } else {
+                        playback
+                            .retain_foreign_continuation_states_on_control(
+                                request.identity,
+                                request.binding,
+                                request.previous_state.clone(),
+                                request.capture.state().clone(),
+                            )
+                            .is_ok()
+                    };
+                    if !valid {
+                        return Err(ResidentPublicationRefusal {
+                            kind: hex_session::service::ResidentPublicationFailure::Other,
+                            playback,
+                            error: "vst3 continuation state differs".into(),
+                        });
+                    }
+                }
+                Some(_) => {
+                    return Err(ResidentPublicationRefusal {
+                        kind: hex_session::service::ResidentPublicationFailure::Other,
+                        playback,
+                        error: "vst3 continuation policy differs".into(),
+                    });
+                }
+                None if playback.has_foreign_continuation_states() => {
+                    return Err(ResidentPublicationRefusal {
+                        kind: hex_session::service::ResidentPublicationFailure::Other,
+                        playback,
+                        error: "vst3 continuation gesture changed".into(),
+                    });
+                }
+                None => {}
+            }
+        }
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        let parameter_source = self.plugins.override_publication_source(metadata.context);
         let native_publication = self.plugins.preparing_edit(metadata.context)
             || playback.foreign_nodes_on_control().next().is_some();
         let edit_cancellation = self
@@ -566,6 +654,12 @@ impl NativeAudioSink {
             .as_ref()
             .map(|replacement| replacement.deadline);
         let request_cancellation = self.request_cancellation.as_ref();
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        let stopped_history = self
+            .stopped_foreign_history
+            .as_ref()
+            .filter(|lease| lease.context == metadata.context)
+            .map(|lease| (lease.source, lease.fence));
         // Active-output refusal never enters the offline slot. The prospective view already
         // includes the active book, so it must not also be selected from resident_inventory.
         if let Some(control) = self
@@ -607,6 +701,22 @@ impl NativeAudioSink {
                 }
                 ResidentPublicationPolicy::InheritRuntime
                 | ResidentPublicationPolicy::InheritRuntimeAt(_) => {
+                    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                    if let Some((source, fence)) = stopped_history {
+                        hex_audio::prepared::PublicationPolicy::InheritUnderStoppedNative {
+                            source,
+                            fence,
+                        }
+                    } else if let Some((source, transport_epoch, playing)) = parameter_source {
+                        hex_audio::prepared::PublicationPolicy::InheritUnderNativeParameter {
+                            source,
+                            transport_epoch,
+                            playing,
+                        }
+                    } else {
+                        hex_audio::prepared::PublicationPolicy::InheritRuntime
+                    }
+                    #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
                     hex_audio::prepared::PublicationPolicy::InheritRuntime
                 }
                 ResidentPublicationPolicy::InstallFreshRuntime => {
@@ -648,6 +758,8 @@ impl NativeAudioSink {
                             && expected.route_generation == actual.route_state_generation()
                             && expected.admitted_command_ticket == actual.admitted_command_ticket()
                             && expected.output_fault_epoch == actual.output_fault_epoch()
+                            && expected.consumed_stop_generation
+                                == actual.consumed_stop_generation()
                     }) else {
                         return Err(ResidentPublicationRefusal {
                             kind: hex_session::service::ResidentPublicationFailure::Other,
@@ -720,6 +832,46 @@ impl NativeAudioSink {
                         error: cancellation_error.into(),
                     });
                 }
+                #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                let published = if retained_playback.has_foreign_continuation_states() {
+                    match self.plugins.sequenced_publication_request(
+                        Some(control),
+                        self.desired.as_deref(),
+                        metadata.context,
+                        &retained_playback,
+                    ) {
+                        Ok(Some(request))
+                            if continuation_fence
+                                == Some((
+                                    request.source,
+                                    request.transport_epoch,
+                                    request.playing,
+                                )) =>
+                        {
+                            control.publish_native_parameter_continuation_on_control(
+                                retained_playback,
+                                request,
+                                |prospective| admit(&[prospective, retired, pending]),
+                            )
+                        }
+                        Ok(_) => Err(hex_audio::prepared::AdmittedPublishError::Admission {
+                            reason: "vst3 continuation gesture changed".into(),
+                            playback: retained_playback,
+                        }),
+                        Err(error) => Err(hex_audio::prepared::AdmittedPublishError::Admission {
+                            reason: error,
+                            playback: retained_playback,
+                        }),
+                    }
+                } else {
+                    control.publish_with_admission_and_source_on_control(
+                        retained_playback,
+                        policy,
+                        metadata.context,
+                        |prospective| admit(&[prospective, retired, pending]),
+                    )
+                };
+                #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
                 let published = control.publish_with_admission_and_source_on_control(
                     retained_playback,
                     policy,
@@ -767,6 +919,7 @@ impl NativeAudioSink {
                         output_identity,
                         audio_revision,
                         source_context: Some(metadata.context),
+                        source_origin: metadata.source_origin,
                         section_loop,
                     });
                     self.resident.capture_target = observation.native_parameter_input_target();
@@ -978,6 +1131,7 @@ mod publication_readiness_tests {
             output_identity: 7,
             audio_revision: 12,
             source_context: None,
+            source_origin: hex_session::service::ResidentSourceOrigin::ClipPlayStartPreview,
             section_loop: None,
         };
         assert_eq!(

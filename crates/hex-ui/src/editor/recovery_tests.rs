@@ -772,6 +772,8 @@ struct Sink {
     reject_next_fresh: Arc<AtomicBool>,
     cancel_next_fresh: Arc<AtomicBool>,
     cancellation_done: Arc<AtomicBool>,
+    section_fixture: bool,
+    section_fence: Option<(hex_audio::prepared::StoppedEditFence, Option<u64>)>,
 }
 
 /// Existing production-path test sink with neutral gates. Callers retain the
@@ -781,6 +783,7 @@ pub(in crate::editor) fn worker_fixture_sink(
     events: SyncSender<EditorAudioEvent>,
     audition_ready: bool,
     consume_next_inherited_candidate: Arc<AtomicBool>,
+    section_fixture: bool,
 ) -> Box<dyn WorkerAudioSink> {
     Box::new(Sink {
         output,
@@ -792,6 +795,8 @@ pub(in crate::editor) fn worker_fixture_sink(
         reject_next_fresh: Arc::new(AtomicBool::new(false)),
         cancel_next_fresh: Arc::new(AtomicBool::new(false)),
         cancellation_done: Arc::new(AtomicBool::new(false)),
+        section_fixture,
+        section_fence: None,
     })
 }
 
@@ -987,6 +992,68 @@ fn a_changed_output_route_restarts_audio_once_its_guards_allow(cx: &mut gpui::Te
     output.publication.close();
 }
 impl WorkerAudioSink for Sink {
+    fn begin_section_edit(
+        &mut self,
+        context: hex_engine::AudioSourceContext,
+        _: bool,
+    ) -> Result<(), String> {
+        if !self.section_fixture || self.section_fence.is_some() {
+            return Err("fixture section fence unavailable".into());
+        }
+        let control = self
+            .output
+            .publication
+            .control()
+            .ok_or("fixture output closed")?;
+        let source = control
+            .status
+            .recording_source()
+            .filter(|source| source.context == context)
+            .ok_or("fixture source changed")?;
+        let fence = control
+            .request_live_arrangement_edit_fence(context.project_generation, source.audio_revision)
+            .map_err(str::to_owned)?;
+        self.section_fence = Some((fence, None));
+        Ok(())
+    }
+    fn section_edit_ready(
+        &mut self,
+    ) -> Option<Result<hex_session::service::ArrangementEditPosition, String>> {
+        let (fence, _) = self.section_fence?;
+        let control = self.output.publication.control()?;
+        match control.stopped_edit_fence_state(fence) {
+            hex_audio::prepared::StoppedEditFenceState::Pending => None,
+            hex_audio::prepared::StoppedEditFenceState::Refused => {
+                Some(Err("fixture section fence refused".into()))
+            }
+            hex_audio::prepared::StoppedEditFenceState::Ready => Some(
+                control
+                    .arrangement_edit_position(fence)
+                    .zip(control.arrangement_edit_playing(fence))
+                    .ok_or_else(|| "fixture position unavailable".to_string())
+                    .and_then(|(frame, playing)| {
+                        hex_session::service::ArrangementEditPosition::from_frames(
+                            frame,
+                            playing,
+                            control.arrangement_edit_section_loop(fence),
+                        )
+                    }),
+            ),
+        }
+    }
+    fn cancel_section_edit(&mut self) {
+        if self
+            .section_fence
+            .is_some_and(|(_, revision)| revision.is_some())
+        {
+            return;
+        }
+        if let Some((fence, None)) = self.section_fence.take()
+            && let Some(control) = self.output.publication.control()
+        {
+            control.release_stopped_edit_fence(fence);
+        }
+    }
     fn resident_publication_readiness(
         &mut self,
     ) -> hex_session::service::ResidentPublicationReadiness {
@@ -1024,7 +1091,18 @@ impl WorkerAudioSink for Sink {
     }
     fn canonical_changed(&mut self, _: Arc<CanonicalAudioSourceSnapshot>) {}
     fn poll(&mut self) {
-        self.output.publication.control().unwrap().reclaim();
+        let control = self.output.publication.control().unwrap();
+        control.reclaim();
+        if let Some((fence, Some(revision))) = self.section_fence
+            && (control.status.applied_revision.load(Acquire) == revision
+                || control
+                    .status
+                    .rejected_revision()
+                    .is_some_and(|(rejected, _)| rejected == revision))
+        {
+            control.release_stopped_edit_fence(fence);
+            self.section_fence = None;
+        }
     }
     fn close(&mut self) {
         self.output.publication.close();
@@ -1097,6 +1175,7 @@ impl WorkerAudioSink for Sink {
                         && actual.route_state_generation() == expected.route_generation
                         && actual.admitted_command_ticket() == expected.admitted_command_ticket
                         && actual.output_fault_epoch() == expected.output_fault_epoch
+                        && actual.consumed_stop_generation() == expected.consumed_stop_generation
                 }) else {
                     return Err(ResidentPublicationRefusal {
                         kind: hex_session::service::ResidentPublicationFailure::Other,
@@ -1115,11 +1194,18 @@ impl WorkerAudioSink for Sink {
                 }
             }
             ResidentPublicationPolicy::ArrangementEdit => {
-                return Err(ResidentPublicationRefusal {
-                    kind: hex_session::service::ResidentPublicationFailure::Other,
-                    playback,
-                    error: "fixture does not publish stopped arrangement replacements".into(),
-                });
+                let Some((fence, None)) = self.section_fence else {
+                    return Err(ResidentPublicationRefusal {
+                        kind: hex_session::service::ResidentPublicationFailure::Other,
+                        playback,
+                        error: "fixture arrangement fence unavailable".into(),
+                    });
+                };
+                if control.arrangement_edit_playing(fence) == Some(true) {
+                    PublicationPolicy::InheritUnderArrangement(fence)
+                } else {
+                    PublicationPolicy::InstallUnderStoppedArrangement(fence)
+                }
             }
             ResidentPublicationPolicy::ReplaceDocument { .. } => {
                 return Err(ResidentPublicationRefusal {
@@ -1129,8 +1215,21 @@ impl WorkerAudioSink for Sink {
                 });
             }
         };
-        let revision = control
-            .publish_with_admission_on_control(
+        let revision = if self.section_fixture {
+            control.publish_with_admission_and_source_on_control(
+                playback,
+                policy,
+                metadata.context,
+                |view| {
+                    admit(&[
+                        view,
+                        DeviceResourceAdmission::default(),
+                        DeviceResourceAdmission::default(),
+                    ])
+                },
+            )
+        } else {
+            control.publish_with_admission_on_control(
                 playback,
                 policy,
                 metadata.context.project_generation,
@@ -1142,30 +1241,32 @@ impl WorkerAudioSink for Sink {
                     ])
                 },
             )
-            .map_err(|error| match error {
-                AdmittedPublishError::Admission { reason, playback } => {
-                    ResidentPublicationRefusal {
-                        kind: hex_session::service::ResidentPublicationFailure::Other,
-                        playback,
-                        error: reason,
+        }
+        .map_err(|error| match error {
+            AdmittedPublishError::Admission { reason, playback } => ResidentPublicationRefusal {
+                kind: hex_session::service::ResidentPublicationFailure::Other,
+                playback,
+                error: reason,
+            },
+            AdmittedPublishError::Publication(error) => {
+                let kind = match error.kind {
+                    hex_audio::prepared::PublishErrorKind::NativeSourceUnavailable => {
+                        hex_session::service::ResidentPublicationFailure::NativeSourceUnavailable
                     }
+                    hex_audio::prepared::PublishErrorKind::Other => {
+                        hex_session::service::ResidentPublicationFailure::Other
+                    }
+                };
+                ResidentPublicationRefusal {
+                    kind,
+                    playback: error.playback,
+                    error: error.reason.into(),
                 }
-                AdmittedPublishError::Publication(error) => {
-                    let kind = match error.kind {
-                        hex_audio::prepared::PublishErrorKind::NativeSourceUnavailable => {
-                            hex_session::service::ResidentPublicationFailure::NativeSourceUnavailable
-                        }
-                        hex_audio::prepared::PublishErrorKind::Other => {
-                            hex_session::service::ResidentPublicationFailure::Other
-                        }
-                    };
-                    ResidentPublicationRefusal {
-                        kind,
-                        playback: error.playback,
-                        error: error.reason.into(),
-                    }
-                },
-            })?;
+            }
+        })?;
+        if let Some((_, submitted)) = self.section_fence.as_mut() {
+            *submitted = Some(revision);
+        }
         if cancel_fresh {
             assert_eq!(
                 control.cancel_fresh_runtime_publication(revision),
@@ -1375,6 +1476,8 @@ fn second_limiter_while_playing_applies_without_stopping(cx: &mut gpui::TestAppC
             reject_next_fresh: Arc::clone(&reject_next_fresh),
             cancel_next_fresh: Arc::clone(&cancel_next_fresh),
             cancellation_done: Arc::clone(&cancellation_done),
+            section_fixture: false,
+            section_fence: None,
         }),
         reservation,
     )
@@ -1593,6 +1696,8 @@ fn recovered_mutable_cursor_uses_stopped_preroll_and_exact_callback_ack(
             reject_next_fresh: Arc::new(AtomicBool::new(false)),
             cancel_next_fresh: Arc::new(AtomicBool::new(false)),
             cancellation_done: Arc::new(AtomicBool::new(false)),
+            section_fixture: false,
+            section_fence: None,
         }),
         reservation,
     )

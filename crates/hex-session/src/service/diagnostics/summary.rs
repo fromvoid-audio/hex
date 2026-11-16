@@ -910,7 +910,7 @@ pub(super) fn command(value: &Command) -> Description {
             describe!("import_device_asset_into_new_instrument"; ["track" => track.value(), "placement" => placement, "path_redacted_bytes" => path.as_os_str().len(), "sample_rate" => sample_rate, "frames" => frames, "state_type" => state.type_id().as_str(), "state_state_version" => state.state_version(), "state_payload_bytes" => state.payload().len()]; omitted="source_slot")
         }
         Command::ImportDeviceAssetReplacingInstrument {
-            track,
+            owner,
             device,
             expected_state,
             path,
@@ -919,7 +919,7 @@ pub(super) fn command(value: &Command) -> Description {
             state,
             ..
         } => {
-            describe!("import_device_asset_replacing_instrument"; ["track" => track.value(), "device" => device.value(), "expected_state_type" => expected_state.type_id().as_str(), "expected_state_state_version" => expected_state.state_version(), "expected_state_payload_bytes" => expected_state.payload().len(), "path_redacted_bytes" => path.as_os_str().len(), "sample_rate" => sample_rate, "frames" => frames, "state_type" => state.type_id().as_str(), "state_state_version" => state.state_version(), "state_payload_bytes" => state.payload().len()]; omitted="source_slot")
+            describe!("import_device_asset_replacing_instrument"; ["owner" => owner, "device" => device.value(), "expected_state_type" => expected_state.type_id().as_str(), "expected_state_state_version" => expected_state.state_version(), "expected_state_payload_bytes" => expected_state.payload().len(), "path_redacted_bytes" => path.as_os_str().len(), "sample_rate" => sample_rate, "frames" => frames, "state_type" => state.type_id().as_str(), "state_state_version" => state.state_version(), "state_payload_bytes" => state.payload().len()]; omitted="source_slot")
         }
         Command::RelinkAssets(relinks) => {
             describe!("relink_assets"; ["count" => relinks.len()]; omitted="paths")
@@ -1344,6 +1344,69 @@ pub(super) fn command(value: &Command) -> Description {
 
 pub(super) fn request(value: &Request) -> Description {
     match value {
+        Request::CreateRetainedNativeSource {
+            project_generation,
+            revision,
+            type_id,
+            name,
+        } => {
+            describe!("create_retained_native_source"; ["project_generation" => project_generation, "revision" => revision, "type_id" => type_id.as_str(), "name_redacted_bytes" => name.len()]; omitted="source name")
+        }
+        Request::RenameRetainedSource {
+            project_generation,
+            revision,
+            source,
+            name,
+        } => {
+            describe!("rename_retained_source"; ["project_generation" => project_generation, "revision" => revision, "source" => source.value(), "name_redacted_bytes" => name.len()]; omitted="source name")
+        }
+        Request::DeleteRetainedSource {
+            project_generation,
+            revision,
+            source,
+        } => {
+            describe!("delete_retained_source"; ["project_generation" => project_generation, "revision" => revision, "source" => source.value()]; omitted="")
+        }
+        Request::ChooseNativeSourceReceiver {
+            project_generation,
+            revision,
+            source,
+            expected_receiver,
+            track,
+        } => {
+            describe!("choose_native_source_receiver"; ["project_generation" => project_generation, "revision" => revision, "source" => source.value(), "expected_receiver" => expected_receiver.map(|id| id.value()), "track" => track.value()]; omitted="")
+        }
+        Request::MoveSourceUtility {
+            project_generation,
+            revision,
+            track,
+            source,
+            instrument,
+            effect,
+            neighbor,
+            direction,
+        } => {
+            describe!("move_source_utility"; ["project_generation" => project_generation, "revision" => revision, "track" => track.value(), "source" => source.value(), "instrument" => instrument.value(), "effect" => effect.value(), "neighbor" => neighbor.value(), "direction" => format!("{direction:?}")]; omitted="")
+        }
+        Request::RemoveSourceUtility {
+            project_generation,
+            revision,
+            track,
+            source,
+            instrument,
+            effect,
+        } => {
+            describe!("remove_source_utility"; ["project_generation" => project_generation, "revision" => revision, "track" => track.value(), "source" => source.value(), "instrument" => instrument.value(), "effect" => effect.value()]; omitted="")
+        }
+        Request::AppendSourceUtility {
+            project_generation,
+            revision,
+            track,
+            source,
+            instrument,
+        } => {
+            describe!("append_source_utility"; ["project_generation" => project_generation, "revision" => revision, "track" => track.value(), "source" => source.value(), "instrument" => instrument.value()]; omitted="")
+        }
         Request::RebindNativeSource {
             project_generation,
             revision,
@@ -1410,12 +1473,12 @@ pub(super) fn request(value: &Request) -> Description {
             project_generation,
             revision,
             asset,
-            track,
-            start,
+            destination,
+            new_track_gain,
             warp,
             audition_timing,
         } => {
-            describe!("insert_project_sample"; ["project_generation" => project_generation, "revision" => revision, "asset" => asset.value(), "track" => track.value(), "start" => start, "warp" => format!("{warp:?}"), "audition_timing_present" => audition_timing.is_some()]; omitted="audition_timing")
+            describe!("insert_project_sample"; ["project_generation" => project_generation, "revision" => revision, "asset" => asset.value(), "destination" => format!("{destination:?}"), "new_track_gain" => new_track_gain, "warp" => format!("{warp:?}"), "audition_timing_present" => audition_timing.is_some()]; omitted="audition_timing")
         }
         Request::ReorderTracks {
             project_generation,
@@ -1561,6 +1624,12 @@ pub(super) fn request(value: &Request) -> Description {
         }
         Request::ContinuePluginParameters => {
             describe!("continue_plugin_parameters"; []; omitted="")
+        }
+        Request::QueryPluginParameterConversion(query) => {
+            describe!("query_plugin_parameter_conversion"; ["device" => query.device.value(), "request_id" => query.request_id]; omitted="operation")
+        }
+        Request::ContinuePluginParameterConversion => {
+            describe!("continue_plugin_parameter_conversion"; []; omitted="")
         }
         Request::ContinuePluginStateRestore => {
             describe!("continue_plugin_state_restore"; []; omitted="")
@@ -1740,7 +1809,14 @@ pub(super) fn request(value: &Request) -> Description {
             let (generation, revision) = match edit {
                 crate::service::SamplerEdit::Parameter(e) => {
                     description.operation = Some("parameter");
-                    description.field("track", format_args!("{}", e.track.value()));
+                    match e.owner {
+                        crate::service::SamplerParameterOwner::Track(track) => {
+                            description.field("track", format_args!("{}", track.value()))
+                        }
+                        crate::service::SamplerParameterOwner::Source(source) => {
+                            description.field("source", format_args!("{}", source.value()))
+                        }
+                    }
                     description.field("device", format_args!("{}", e.device.value()));
                     description.field("parameter", format_args!("{:?}", e.parameter));
                     description.field("value", format_args!("{}", e.value));
@@ -1748,7 +1824,14 @@ pub(super) fn request(value: &Request) -> Description {
                 }
                 crate::service::SamplerEdit::Replacement(e) => {
                     description.operation = Some("replacement");
-                    description.field("track", format_args!("{}", e.track.value()));
+                    match e.owner {
+                        hex_project::InstrumentAssetOwner::Track(track) => {
+                            description.field("track", format_args!("{}", track.value()))
+                        }
+                        hex_project::InstrumentAssetOwner::Source(source) => {
+                            description.field("source", format_args!("{}", source.value()))
+                        }
+                    }
                     description.field("device", format_args!("{}", e.device.value()));
                     description.field(
                         "path_redacted_bytes",
@@ -2083,6 +2166,40 @@ pub(super) fn gesture_target(value: &crate::device_gesture::GestureTarget) -> De
 #[cfg(test)]
 mod default_tests {
     use super::*;
+
+    #[test]
+    fn retained_source_rename_redacts_the_name() {
+        let mut editor =
+            hex_project::Editor::new(hex_project::Project::new(48_000).unwrap(), 1).unwrap();
+        let hex_project::Created::NativeSource(source) = editor
+            .execute(Command::CreateNativeSource {
+                name: "source".into(),
+                devices: vec![hex_project::default_instrument_state().unwrap()],
+                instrument_index: 0,
+            })
+            .unwrap()
+        else {
+            panic!("source")
+        };
+        let description = request(&Request::RenameRetainedSource {
+            project_generation: 0,
+            revision: 1,
+            source,
+            name: "private source name".into(),
+        });
+        assert_eq!(description.name, "rename_retained_source");
+        assert!(description.details.text.contains("name_redacted_bytes=19"));
+        assert!(!description.details.text.contains("private source name"));
+        let description = request(&Request::CreateRetainedNativeSource {
+            project_generation: 0,
+            revision: 1,
+            type_id: Box::new(hex_project::default_instrument_state().unwrap().type_id()),
+            name: "private source name".into(),
+        });
+        assert_eq!(description.name, "create_retained_native_source");
+        assert!(description.details.text.contains("name_redacted_bytes=19"));
+        assert!(!description.details.text.contains("private source name"));
+    }
 
     #[test]
     fn source_reorder_projection_keeps_source_device_and_anchor_identities() {

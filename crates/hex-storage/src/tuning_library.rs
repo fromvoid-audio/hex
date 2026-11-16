@@ -1,11 +1,11 @@
 //! Eight named native tuning presets and bounded portable Freqs file I/O.
 //! Paths are supplied by the control worker; this module owns no project edits.
-//! Slot writes hold a persistent per-slot advisory lock and recheck the bytes
-//! read before replacement. Older Hex versions and external writers do not
-//! honor that lock; they can still race the final check and rename. This is not
-//! an atomic compare-and-swap, and such a writer's changes can be lost.
-//! The empty lock file is never removed: its open handle is held until the
-//! operation finishes, and the OS releases the lock if the process exits.
+//! Slot writes serialize cooperating Hex writers and recheck the existing
+//! preset before publishing a complete temporary file with an atomic rename.
+//! A noncooperating writer can still change a destination after that check;
+//! the rename is not an atomic compare-and-swap. Existing recovery files are
+//! never modified. The persistent empty lock file is not removed, so the OS can
+//! safely release the same advisory lock when a process exits.
 use hex_tuning::{
     Scale,
     preset::{self, MAX_PRESET_BYTES, Preset},
@@ -127,7 +127,17 @@ fn save_with_hook(
     };
     publish_slot(&path, text.as_bytes(), expected.as_deref(), before_check)
 }
-fn lock_slot(path: &Path) -> Result<File, String> {
+// Explicitly unlock before closing: a descriptor duplicated by a concurrent
+// subprocess can otherwise keep the advisory lock alive past this operation.
+struct SlotLock(File);
+
+impl Drop for SlotLock {
+    fn drop(&mut self) {
+        let _ = fs2::FileExt::unlock(&self.0);
+    }
+}
+
+fn lock_slot(path: &Path) -> Result<SlotLock, String> {
     let lock_path = path.with_extension("freqs.lock");
     let mut options = OpenOptions::new();
     options.read(true).write(true).create(true).truncate(false);
@@ -154,6 +164,7 @@ fn lock_slot(path: &Path) -> Result<File, String> {
             format!("cannot lock tuning slot · {e}")
         }
     })?;
+    let lock = SlotLock(file);
     let current = fs::symlink_metadata(&lock_path)
         .map_err(|e| format!("cannot inspect tuning slot lock · {e}"))?;
     if current.file_type().is_symlink() || !current.is_file() || current.len() != 0 {
@@ -166,7 +177,7 @@ fn lock_slot(path: &Path) -> Result<File, String> {
             return Err("tuning slot lock changed · try again".into());
         }
     }
-    Ok(file)
+    Ok(lock)
 }
 fn rename_with_hook(
     directory: &Path,
@@ -199,20 +210,18 @@ pub fn duplicate(directory: &Path, slot: usize) -> Result<usize, String> {
     }
     let name = format!("{}{suffix}", &old.name[..end]);
     let text = preset::encode(&name, old.scale).map_err(|e| e.to_string())?;
-    publish(&slot_path(directory, target)?, text.as_bytes(), false)?;
+    publish(&slot_path(directory, target)?, text.as_bytes())?;
     Ok(target)
 }
 /// Export is create-new; an existing file is never silently replaced.
-/// Filesystems without hardlinks use an exclusively created destination. A failed
-/// write may leave that new file incomplete; destinations are never deleted.
+/// Publication is atomic, including on supported volumes without hard links.
+/// Volumes without atomic create-new publication return an error.
 pub fn export_file(path: &Path, name: &str, scale: Scale) -> Result<(), String> {
     let text = preset::encode(name, scale).map_err(|e| e.to_string())?;
-    publish(path, text.as_bytes(), false)
+    publish(path, text.as_bytes())
 }
-fn publish(destination: &Path, bytes: &[u8], replace: bool) -> Result<(), String> {
-    publish_with_link(destination, bytes, replace, |source, target| {
-        fs::hard_link(source, target)
-    })
+fn publish(destination: &Path, bytes: &[u8]) -> Result<(), String> {
+    publish_with_guard(destination, bytes, || Ok(()))
 }
 fn publish_slot(
     destination: &Path,
@@ -220,39 +229,53 @@ fn publish_slot(
     expected: Option<&[u8]>,
     before_check: impl FnOnce(),
 ) -> Result<(), String> {
-    publish_with_guard(
-        destination,
-        bytes,
-        expected.is_some(),
-        |source, target| fs::hard_link(source, target),
-        || {
-            before_check();
-            if let Some(expected) = expected {
-                let actual = read_validated(destination)
-                    .map_err(|_| "tuning slot changed · try again".to_owned())?
-                    .1;
-                if actual != expected {
-                    return Err("tuning slot changed · try again".into());
-                }
-            }
-            Ok(())
-        },
-    )
+    if let Some(expected) = expected {
+        return replace_existing(destination, bytes, expected, before_check);
+    }
+    publish_with_guard(destination, bytes, || {
+        before_check();
+        Ok(())
+    })
 }
-fn publish_with_link(
+
+fn replace_existing(
     destination: &Path,
     bytes: &[u8],
-    replace: bool,
-    link: impl Fn(&Path, &Path) -> std::io::Result<()>,
+    expected: &[u8],
+    before_check: impl FnOnce(),
 ) -> Result<(), String> {
-    publish_with_guard(destination, bytes, replace, link, || Ok(()))
+    publish_staged_with(
+        destination,
+        bytes,
+        Some(expected),
+        || {
+            before_check();
+            Ok(())
+        },
+        |source, destination| fs::rename(source, destination),
+    )
 }
+
 fn publish_with_guard(
     destination: &Path,
     bytes: &[u8],
-    replace: bool,
-    link: impl Fn(&Path, &Path) -> std::io::Result<()>,
     before_publish: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    publish_staged_with(
+        destination,
+        bytes,
+        None,
+        before_publish,
+        |source, destination| fs::rename(source, destination),
+    )
+}
+
+fn publish_staged_with(
+    destination: &Path,
+    bytes: &[u8],
+    expected: Option<&[u8]>,
+    before_publish: impl FnOnce() -> Result<(), String>,
+    replace: impl FnOnce(&Path, &Path) -> std::io::Result<()>,
 ) -> Result<(), String> {
     let parent = destination
         .parent()
@@ -264,12 +287,16 @@ fn publish_with_guard(
             }
         })
         .ok_or("tuning preset path has no parent")?;
-    if let Ok(metadata) = fs::symlink_metadata(destination) {
-        if metadata.file_type().is_symlink() || !metadata.is_file() {
-            return Err("tuning destination is not a regular file".into());
-        }
-        if !replace {
-            return Err("tuning destination already exists".into());
+    if expected.is_none() {
+        match fs::symlink_metadata(destination) {
+            Ok(metadata) => {
+                if metadata.file_type().is_symlink() || !metadata.is_file() {
+                    return Err("tuning destination is not a regular file".into());
+                }
+                return Err("tuning destination already exists".into());
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(format!("cannot inspect tuning destination · {error}")),
         }
     }
     static NEXT: AtomicU64 = AtomicU64::new(0);
@@ -296,21 +323,22 @@ fn publish_with_guard(
             .map_err(|e| format!("cannot write tuning preset · {e}"))?;
         drop(file);
         before_publish()?;
-        if replace {
-            fs::rename(&temporary, destination)
-                .map_err(|e| format!("cannot publish tuning slot · {e}"))?;
-        } else {
-            if link(&temporary, destination).is_err() {
-                let mut destination = OpenOptions::new()
-                    .write(true)
-                    .create_new(true)
-                    .open(destination)
-                    .map_err(|e| format!("cannot publish new tuning preset · {e}"))?;
-                destination.write_all(bytes).and_then(|()| destination.sync_all())
-                    .map_err(|e| format!("new tuning preset could not be completed · incomplete file retained · {e}"))?;
+        if let Some(expected) = expected {
+            let actual = read_validated(destination)
+                .map_err(|_| "tuning slot changed · try again".to_owned())?
+                .1;
+            if actual != expected {
+                return Err("tuning slot changed · try again".into());
             }
-            fs::remove_file(&temporary)
-                .map_err(|e| format!("tuning saved but temporary cleanup failed · {e}"))?;
+            replace(&temporary, destination)
+                .map_err(|e| format!("cannot replace tuning preset atomically · {e}"))?;
+        } else {
+            let published = crate::publication::publish_new_atomic(&temporary, destination)
+                .map_err(|e| format!("cannot publish new tuning preset atomically · {e}"))?;
+            if published.staging_remains() {
+                fs::remove_file(&temporary)
+                    .map_err(|e| format!("tuning saved but temporary cleanup failed · {e}"))?;
+            }
         }
         #[cfg(unix)]
         fs::File::open(parent)
@@ -354,6 +382,73 @@ mod tests {
         Directory(p)
     }
     #[test]
+    fn repeated_slot_saves_keep_working() {
+        let d = directory();
+        for number in 1..=32 {
+            fs::write(
+                d.0.join(format!("slot-1-recovery-{number:02}.freqs")),
+                b"preserve",
+            )
+            .unwrap();
+        }
+        for index in 0..34 {
+            save(&d.0, 1, "tuning", Scale::equal(12))
+                .unwrap_or_else(|error| panic!("save {index} failed: {error}"));
+            rename(&d.0, 1, "renamed").unwrap();
+        }
+        assert_eq!(load(&d.0, 1).unwrap().name, "renamed");
+        for number in 1..=32 {
+            assert_eq!(
+                fs::read(d.0.join(format!("slot-1-recovery-{number:02}.freqs"))).unwrap(),
+                b"preserve"
+            );
+        }
+        assert!(!d.0.join("slot-1-recovery-33.freqs").exists());
+        assert!(!fs::read_dir(&d.0).unwrap().any(|entry| {
+            entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".tuning-")
+        }));
+    }
+    #[test]
+    fn export_refuses_without_atomic_publication_and_cleans_up() {
+        let d = directory();
+        let _volume = crate::publication::simulate::volume(
+            crate::publication::simulate::Volume::NoAtomicCreate,
+        );
+        let destination = d.0.join("export.freqs");
+        assert!(export_file(&destination, "scale", Scale::equal(19)).is_err());
+        assert!(!destination.exists());
+        assert_eq!(fs::read_dir(&d.0).unwrap().count(), 0);
+    }
+    #[test]
+    fn destination_created_before_publication_is_preserved() {
+        let d = directory();
+        let destination = d.0.join("export.freqs");
+        let result = publish_with_guard(&destination, b"new preset", || {
+            fs::write(&destination, b"existing file").unwrap();
+            Ok(())
+        });
+        assert!(result.is_err());
+        assert_eq!(fs::read(&destination).unwrap(), b"existing file");
+        assert_eq!(fs::read_dir(&d.0).unwrap().count(), 1);
+    }
+    #[cfg(unix)]
+    #[test]
+    fn slot_lock_releases_when_an_inherited_descriptor_remains_open() {
+        let d = directory();
+        let path = d.0.join("slot-1.freqs");
+        let lock = lock_slot(&path).unwrap();
+        let inherited = lock.0.try_clone().unwrap();
+        assert!(lock_slot(&path).is_err(), "another writer must be excluded");
+        drop(lock);
+        let next = lock_slot(&path).expect("operation must release the slot lock");
+        drop(next);
+        drop(inherited);
+    }
+    #[test]
     fn save_preserves_a_slot_created_during_preparation() {
         let d = directory();
         let competing = b"another writer's tuning data";
@@ -380,6 +475,101 @@ mod tests {
             assert_eq!(fs::read(&path).unwrap(), competing.as_bytes());
         }
     }
+    #[test]
+    fn failed_atomic_replacement_preserves_slot_and_cleans_temporary() {
+        let d = directory();
+        save(&d.0, 1, "old", Scale::equal(12)).unwrap();
+        let path = d.0.join("slot-1.freqs");
+        let original = fs::read(&path).unwrap();
+        let new = preset::encode("new", Scale::equal(19)).unwrap();
+        let error = publish_staged_with(
+            &path,
+            new.as_bytes(),
+            Some(&original),
+            || Ok(()),
+            |_, _| Err(std::io::Error::other("injected publication failure")),
+        )
+        .unwrap_err();
+        assert!(error.contains("cannot replace tuning preset atomically"));
+        assert_eq!(fs::read(path).unwrap(), original);
+        assert!(!fs::read_dir(&d.0).unwrap().any(|entry| {
+            entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".tuning-")
+        }));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn failed_staged_write_preserves_slot_and_cleans_temporary() {
+        const CHILD: &str = "HEX_TUNING_WRITE_FAILURE_CHILD";
+        if let Some(directory) = std::env::var_os(CHILD) {
+            let error = save(Path::new(&directory), 1, "new", Scale::equal(19)).unwrap_err();
+            assert!(error.contains("cannot write tuning preset"));
+            return;
+        }
+        let d = directory();
+        save(&d.0, 1, "old", Scale::equal(12)).unwrap();
+        let path = d.0.join("slot-1.freqs");
+        let original = fs::read(&path).unwrap();
+        let output = std::process::Command::new("/bin/sh")
+            .args(["-c", "ulimit -f 0; trap '' XFSZ; exec \"$@\"", "hex-test"])
+            .arg(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "tuning_library::tests::failed_staged_write_preserves_slot_and_cleans_temporary",
+            ])
+            .env(CHILD, &d.0)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "child failed: {} {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(fs::read(path).unwrap(), original);
+        assert!(!fs::read_dir(&d.0).unwrap().any(|entry| {
+            entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".tuning-")
+        }));
+    }
+
+    #[test]
+    fn interrupted_prepublication_keeps_original_and_complete_staged_candidate() {
+        const CHILD: &str = "HEX_TUNING_PREPARE_CHILD";
+        if let Some(directory) = std::env::var_os(CHILD) {
+            let _ = save_with_hook(Path::new(&directory), 1, "new", Scale::equal(19), || {
+                std::process::exit(0)
+            });
+            std::process::exit(1);
+        }
+        let d = directory();
+        save(&d.0, 1, "old", Scale::equal(12)).unwrap();
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "tuning_library::tests::interrupted_prepublication_keeps_original_and_complete_staged_candidate"])
+            .env(CHILD, &d.0).status().unwrap();
+        assert!(status.success());
+        assert_eq!(load(&d.0, 1).unwrap().name, "old");
+        let staged: Vec<_> = fs::read_dir(&d.0)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| {
+                path.file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .starts_with(".tuning-")
+            })
+            .collect();
+        assert_eq!(staged.len(), 1);
+        assert_eq!(read_file(&staged[0]).unwrap().name, "new");
+    }
+
     #[test]
     fn concurrent_hex_writer_is_refused_without_changing_slot() {
         const CHILD: &str = "HEX_TUNING_SLOT_LOCK_CHILD";
@@ -542,25 +732,28 @@ mod tests {
         assert_eq!(fs::read_link(&link).unwrap(), target);
         assert!(!target.exists());
     }
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
-    fn review_create_new_export_does_not_require_hardlinks_or_replace_existing_files() {
+    fn export_and_new_slot_use_atomic_rename_without_hard_links() {
         let d = directory();
-        let path = d.0.join("removable.freqs");
-        let text = preset::encode("portable", Scale::equal(19)).unwrap();
-        let no_links =
-            |_: &Path, _: &Path| Err(std::io::Error::from(std::io::ErrorKind::Unsupported));
-        publish_with_link(&path, text.as_bytes(), false, no_links).unwrap();
-        assert_eq!(read_file(&path).unwrap().scale, Scale::equal(19));
-        assert!(publish_with_link(&path, b"replacement", false, no_links).is_err());
-        assert_eq!(fs::read(&path).unwrap(), text.as_bytes());
+        let _volume = crate::publication::simulate::volume(
+            crate::publication::simulate::Volume::NoHardLinks(libc::ENOTSUP),
+        );
+        let path = d.0.join("export.freqs");
+        export_file(&path, "portable", Scale::equal(19)).unwrap();
+        let original = fs::read(&path).unwrap();
+        assert!(export_file(&path, "replacement", Scale::default()).is_err());
+        assert_eq!(fs::read(&path).unwrap(), original);
         assert_eq!(fs::read_dir(&d.0).unwrap().count(), 1);
-        let raced = d.0.join("raced.freqs");
-        let competing_writer = |_: &Path, target: &Path| {
-            fs::write(target, b"another writer's file")?;
-            Err(std::io::Error::from(std::io::ErrorKind::Unsupported))
-        };
-        assert!(publish_with_link(&raced, text.as_bytes(), false, competing_writer).is_err());
-        assert_eq!(fs::read(&raced).unwrap(), b"another writer's file");
+        save(&d.0, 1, "slot", Scale::equal(24)).unwrap();
+        assert_eq!(load(&d.0, 1).unwrap().scale, Scale::equal(24));
+        assert!(fs::read_dir(&d.0).unwrap().all(|entry| {
+            !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".tuning-")
+        }));
     }
     #[test]
     fn library_roundtrip_rename_duplicate_and_full_refusal() {

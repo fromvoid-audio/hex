@@ -44,7 +44,7 @@ pub(super) fn edit(
             .context()
             .project_generation,
         revision: state.revision,
-        track,
+        owner: hex_session::service::SamplerParameterOwner::Track(track),
         device,
         parameter: hex_engine::SamplerParameter::Gain,
         value: 0.5,
@@ -934,4 +934,101 @@ fn sampler_envelope_roundtrip_no_change_never_fences_drains_or_changes_history()
         h.audio.as_ref().unwrap().control.stop();
         assert_eq!(h.render(), [[0.0; 2]; 64]);
     }
+}
+
+#[test]
+fn unassigned_sampler_gain_commits_and_undoes_through_private_fence() {
+    let _serial = NATIVE_FIXTURE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let (files, mut h, track, device, original) = current(12);
+    let source = original.project.track(track).unwrap().source_id().unwrap();
+    wav(&files, true);
+    let saved = files.0.join("bound.hex");
+    h.run(Request::SaveNew(saved.clone()));
+    let mut project = hex_project::Editor::new(hex_storage::load(&saved).unwrap(), 16).unwrap();
+    project
+        .execute(Command::BindTrackSource {
+            track,
+            source: None,
+        })
+        .unwrap();
+    // Keep a different bound sampler current while the original source remains unassigned.
+    let state = project.project().device(device).unwrap().state().clone();
+    project
+        .execute(Command::InsertInstrument { track, state })
+        .unwrap();
+    let unbound = files.0.join("unbound.hex");
+    hex_storage::save_new(&unbound, project.project()).unwrap();
+    h.run(Request::NewWithAudioMode {
+        mode: DocumentAudioMode::Resident,
+        reservation: None,
+    });
+    h.open();
+    let opened = h.run(Request::Open(unbound));
+    h.open();
+    h.applied(h.context.unwrap());
+    let before = opened.state;
+    assert_ne!(
+        before.project.track(track).unwrap().source_id(),
+        Some(source)
+    );
+    assert_eq!(before.project.source_contributors(source).count(), 0);
+    let mut request = edit(&before, track, device);
+    request.owner = hex_session::service::SamplerParameterOwner::Source(source);
+    request
+        .cancel
+        .store(true, std::sync::atomic::Ordering::Release);
+    h.service
+        .as_ref()
+        .unwrap()
+        .submit(Request::SamplerEdit(
+            hex_session::service::SamplerEdit::Parameter(request),
+        ))
+        .unwrap();
+    let refused = h.next();
+    assert!(refused.error.is_some());
+    unchanged(&before, &refused);
+    let mut request = edit(&before, track, device);
+    request.owner = hex_session::service::SamplerParameterOwner::Source(source);
+    let changed = super::history::complete(
+        &mut h,
+        Request::SamplerEdit(hex_session::service::SamplerEdit::Parameter(request)),
+    );
+    assert_ne!(
+        changed.project.track(track).unwrap().source_id(),
+        Some(source)
+    );
+    assert_eq!(changed.project.source_contributors(source).count(), 0);
+    assert_eq!(
+        changed
+            .project
+            .native_source(source)
+            .unwrap()
+            .instrument()
+            .id(),
+        device
+    );
+    assert_eq!(
+        hex_engine::sampler_parameter_value_on_control(
+            Gain,
+            changed.project.device(device).unwrap().state(),
+        )
+        .unwrap(),
+        0.5
+    );
+    let undone = super::history::complete(
+        &mut h,
+        Request::SamplerEdit(hex_session::service::SamplerEdit::History(
+            super::history::history(&changed, false),
+        )),
+    );
+    assert_eq!(undone.project, before.project);
+    let redone = super::history::complete(
+        &mut h,
+        Request::SamplerEdit(hex_session::service::SamplerEdit::History(
+            super::history::history(&undone, true),
+        )),
+    );
+    assert_eq!(redone.project, changed.project);
 }

@@ -27,6 +27,40 @@ impl Drop for Files {
     }
 }
 
+#[test]
+fn cancelled_folder_save_reports_the_retained_staging_path() {
+    use std::sync::{Arc, atomic::AtomicBool};
+    let files = Files::new();
+    let parent = files.0.join("Mixed Case");
+    fs::create_dir(&parent).unwrap();
+    let cancellation = super::RequestCancellation::new(
+        Arc::new(AtomicBool::new(true)),
+        Arc::new(AtomicU64::new(0)),
+        0,
+    );
+    let error = super::save_as(
+        parent.join("Song.hex"),
+        false,
+        hex_project::Project::new(48_000).unwrap(),
+        None,
+        &cancellation,
+    )
+    .err()
+    .expect("cancelled save");
+    let entries: Vec<_> = fs::read_dir(&parent)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect();
+    let [stage] = entries.as_slice() else {
+        panic!("one retained staging folder")
+    };
+    let message = hex_storage::text::plain(&hex_storage::text::lowercase_outside_verbatim(&error));
+    assert!(message.contains(&stage.to_string_lossy().to_string()));
+    assert!(message.contains("staging path"));
+    assert!(stage.join(".hex-project").is_file());
+    assert!(!parent.join("Song").exists());
+}
+
 fn next(service: &Service) -> Event {
     service
         .events

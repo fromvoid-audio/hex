@@ -5,8 +5,8 @@ use std::time::Duration;
 mod file_sources;
 pub(super) mod native_sampler;
 pub use file_sources::{
-    ResidentFileInput, ResidentFileMetadata, ResidentFilePublication, ResidentFileSeekPreparer,
-    ResidentFileSeekRequest, ResidentFileSet,
+    ResidentFileInput, ResidentFileMetadata, ResidentFilePitch, ResidentFilePublication,
+    ResidentFileSeekPreparer, ResidentFileSeekRequest, ResidentFileSet,
 };
 pub use native_sampler::{
     NativeSamplerInput, NativeSamplerReservationHold, NativeSamplerRetryFacts,
@@ -369,10 +369,26 @@ pub(super) fn requires_plugin_profile(project: &Project) -> bool {
         .any(is_plugin_effect)
 }
 
+/// Reported preparation origin, not proof of canonical state or source custody.
+/// A canonical candidate may be prepared and applied before its edit commits;
+/// unknown also covers preparations whose context was subsequently rebased.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResidentSourceOrigin {
+    Unknown,
+    CanonicalCandidate,
+    DevicePreview,
+    TuningPreview,
+    ClipMovePreview,
+    ClipStretchPreview,
+    ClipPlayStartPreview,
+}
+
 /// Scalar identity for one worker-private ordinary resident graph. Neither preview correlation
 /// nor a requested freshness fence grants source custody or acknowledges callback application.
 #[derive(Clone, Copy, Debug)]
 pub struct ResidentPublicationMetadata {
+    /// Producer-reported origin; this is not an admission or source proof.
+    pub source_origin: ResidentSourceOrigin,
     pub context: hex_engine::AudioSourceContext,
     /// Identity of a clip-move preview, not proof of callback application.
     pub clip_preview: Option<ClipMovePreviewIdentity>,
@@ -392,6 +408,8 @@ pub struct ResidentFreshRuntimeFence {
     pub admitted_command_ticket: u64,
     /// Last output-fault epoch observed before the seek was prepared.
     pub output_fault_epoch: u64,
+    /// Callback-observed priority Stop generation of the captured audio fence.
+    pub consumed_stop_generation: u64,
 }
 /// Nonowning scalar witness for the actual installed graph's audition loop.
 /// No PCM, prepared graph, lease or callback runtime is borrowed or transferred.
@@ -401,6 +419,8 @@ pub struct ResidentRuntimeLoop {
     pub output_identity: u64,
     pub audio_revision: u64,
     pub source_context: Option<hex_engine::AudioSourceContext>,
+    /// Origin reported for this exact submission, not authority to use its source.
+    pub source_origin: ResidentSourceOrigin,
     pub section_loop: Option<hex_project::LoopRegion>,
 }
 /// Read-only, output-bound observation of the one admitted resident graph.
@@ -495,6 +515,25 @@ pub enum ResidentPublicationAcceptance {
         audio_revision: u64,
     },
     OfflineRetained,
+}
+/// A control-side receipt for one exact prepared graph submission. It does not
+/// acknowledge callback application, retain a graph, or grant a source fence.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ResidentGraphSubmission {
+    pub output_identity: u64,
+    pub audio_revision: u64,
+    pub context: hex_engine::AudioSourceContext,
+}
+impl ResidentGraphSubmission {
+    /// Compare with the callback's correlated publication observation. A pending
+    /// successor is not a stable source for a stopped edit. The caller must still
+    /// establish and hold the exact fence before using this as a predecessor.
+    pub fn matches_applied(self, readiness: ResidentPublicationReadiness) -> bool {
+        matches!(readiness, ResidentPublicationReadiness::Applied {
+            submission: ResidentRuntimeLoop { output_identity, audio_revision, source_context: Some(context), .. },
+            publication_in_flight: false,
+        } if output_identity == self.output_identity && audio_revision == self.audio_revision && context == self.context)
+    }
 }
 /// Reason category for a refused resident publication. The unavailable
 /// category describes source custody only; it does not imply a deadline fault.
@@ -705,6 +744,18 @@ pub trait WorkerAudioSink: Send {
     fn take_plugin_parameters(&mut self) -> Option<PluginParameterResult> {
         None
     }
+    fn query_plugin_parameter_conversion(
+        &mut self,
+        _query: PluginParameterConversionQuery,
+    ) -> Result<(), String> {
+        Err("vst3 conversion unavailable for this output".into())
+    }
+    fn plugin_parameter_conversion_ready(&self) -> bool {
+        false
+    }
+    fn take_plugin_parameter_conversion(&mut self) -> Option<PluginParameterConversionResult> {
+        None
+    }
     /// Match the exact request control; never cancel an unrelated later source.
     /// Exact canonical terminal. Rejected requests retire only their matching native preparation;
     /// acceptance transfers display/request custody, never the native source's lifetime.
@@ -724,6 +775,25 @@ pub trait WorkerAudioSink: Send {
             -> Result<hex_engine::PreparedRevision, hex_engine::Invalid>,
     ) -> Result<Option<hex_engine::PreparedRevision>, String> {
         Ok(None)
+    }
+    /// Optionally hold the exact stopped predecessor while a saturated history
+    /// is prepared. False preserves the ordinary conservative history path.
+    /// A successful lease must remain held through its publication terminal.
+    fn begin_stopped_foreign_history(
+        &mut self,
+        _predecessor: ResidentGraphSubmission,
+        _successor: hex_engine::AudioSourceContext,
+    ) -> Result<bool, String> {
+        Ok(false)
+    }
+    /// Confirm a leased successor before canonical history commits. Hosts with
+    /// no lease leave the existing publication path unchanged.
+    fn confirm_stopped_foreign_history(
+        &mut self,
+        _context: hex_engine::AudioSourceContext,
+        _accepted: ResidentPublicationAcceptance,
+    ) -> Result<(), String> {
+        Ok(())
     }
     /// Actual original-worker pickup only, for bounded immutable program
     /// retention. Unknown/Empty retain existing history; only an actual empty
@@ -1362,7 +1432,7 @@ impl WorkerEvents {
             .ok_or_else(|| "audio adapter unavailable".to_owned())?
             .restart_audio(project_generation, request_id)
     }
-    fn poll(&mut self) {
+    pub(super) fn poll(&mut self) {
         if let Some(audio) = self.audio.as_mut() {
             audio.poll();
         }
@@ -1739,6 +1809,16 @@ impl WorkerEvents {
             {
                 return Some(QueuedRequest::continuation(
                     Request::ContinuePluginParameters,
+                    document_intent,
+                ));
+            }
+            if self
+                .audio
+                .as_ref()
+                .is_some_and(|audio| audio.plugin_parameter_conversion_ready())
+            {
+                return Some(QueuedRequest::continuation(
+                    Request::ContinuePluginParameterConversion,
                     document_intent,
                 ));
             }

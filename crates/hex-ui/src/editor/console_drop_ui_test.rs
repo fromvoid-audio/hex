@@ -124,6 +124,90 @@ fn fixture(
 }
 
 #[gpui::test]
+fn project_sample_drag_reuses_asset_in_console(cx: &mut TestAppContext) {
+    let (handle, editor, track, scene, path) = fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    let deadline = crate::test_wait::hang_deadline();
+    loop {
+        editor.update(&mut visual, |view, cx| {
+            view.tick(cx);
+        });
+        visual.run_until_parked();
+        let ready = editor.read_with(&visual, |view, _| !view.audio_import_settings.is_loading());
+        if ready {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "audio import settings"
+        );
+        std::thread::yield_now();
+    }
+    editor.update(cx, |view, _| {
+        assert!(
+            view.enqueue(Request::ImportToTrack {
+                path: path.clone(),
+                track,
+                start: 0,
+            }),
+            "fixture import refused: {:?}",
+            view.error
+        )
+    });
+    receive_worker(&editor, cx);
+    let asset = editor.update(cx, |view, cx| {
+        let asset = view
+            .state
+            .as_ref()
+            .unwrap()
+            .project
+            .assets()
+            .next()
+            .unwrap()
+            .id();
+        view.browser.section = BrowserSection::ProjectSamples;
+        cx.notify();
+        asset
+    });
+    std::fs::remove_file(path).unwrap();
+    visual.run_until_parked();
+    let source = visual
+        .debug_bounds("browser-project-sample-0")
+        .unwrap()
+        .center();
+    let column = bounds(&mut visual, format!("session-track-{}", track.value()));
+    let row = visual.debug_bounds("session-scene-column").unwrap();
+    let target = point(column.center().x, row.center().y);
+    visual.simulate_mouse_down(source, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(
+        point(source.x + px(14.0), source.y),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    visual.run_until_parked();
+    visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+    receive_worker(&editor, cx);
+    editor.read_with(cx, |view, _| {
+        let project = &view.state.as_ref().unwrap().project;
+        assert_eq!(project.assets().count(), 1);
+        assert!(matches!(project.session_cell(track, scene), Some(hex_project::SessionCellContent::Audio(clip)) if clip.asset() == asset));
+    });
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+    receive_worker(&editor, cx);
+    editor.read_with(cx, |view, _| {
+        assert!(
+            view.state
+                .as_ref()
+                .unwrap()
+                .project
+                .session_cell(track, scene)
+                .is_none()
+        )
+    });
+}
+
+#[gpui::test]
 fn console_browser_drop_real_empty_cell_retires_ghost_and_imports_audio(cx: &mut TestAppContext) {
     let (handle, editor, track, scene, path) = fixture(cx);
     let mut visual = VisualTestContext::from_window(handle, cx);

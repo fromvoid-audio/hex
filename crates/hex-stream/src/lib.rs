@@ -3,8 +3,8 @@
 //! endpoints.
 //!
 //! # Dependencies
-//! Uses hex-engine/hex-project contracts, hex-media readers/conversion, hex-storage closed
-//! automation readers and rtrb ownership queues.
+//! Uses hex-engine/hex-project contracts, hex-media readers/conversion, hex-warp's
+//! bounded pitch kernel, hex-storage closed automation readers and rtrb ownership queues.
 //!
 //! # Does not own
 //! Does not edit projects, own CPAL or decode/hash on callback. Only the joining control owner
@@ -27,14 +27,14 @@ pub use hex_engine::{StreamPageExtent, StreamResourceExtent};
 pub use runtime::{
     AudioStreamStorageError, AudioStreamStorageLedger, AudioStreamStorageReservation,
     AudioStreamStorageSummary, CatalogLease, ConstructorPageLoan, ConstructorStreamDomain,
-    OpaqueStreamCost, OpaqueStreamHandleGroup, PagePoolReport, PendingStreamDomain,
-    PreparedRolePromotion, PreparedStreamDisposal, ProtectedStreamPages, ProtectionRole,
-    ReadinessArtifact, ReadinessProgress, ReadinessRefusal, ReadinessStamp, ShutdownError,
-    StreamBusy, StreamCallbackPages, StreamControl, StreamDisposalError, StreamDisposalPhase,
-    StreamDomainConstructorSummary, StreamDomainSealRefusal, StreamHandleLocation,
-    StreamOwningHandleObligation, StreamPairMismatch, StreamPreparationAllowance,
-    StreamPreparationBound, StreamReadinessReservation, StreamRuntime,
-    StreamSourceDomainObligation,
+    CurrentQuantumRefusal, CurrentQuantumReservation, OpaqueStreamCost, OpaqueStreamHandleGroup,
+    PagePoolReport, PendingStreamDomain, PreparedRolePromotion, PreparedStreamDisposal,
+    ProtectedStreamPages, ProtectionRole, ReadinessArtifact, ReadinessProgress, ReadinessRefusal,
+    ReadinessStamp, ShutdownError, StreamBusy, StreamCallbackPages, StreamControl,
+    StreamDisposalError, StreamDisposalPhase, StreamDomainConstructorSummary,
+    StreamDomainSealRefusal, StreamHandleLocation, StreamOwningHandleObligation,
+    StreamPairMismatch, StreamPreparationAllowance, StreamPreparationBound,
+    StreamReadinessReservation, StreamRuntime, StreamSourceDomainObligation,
 };
 pub use types::{
     CatalogFootprint, PageKey, ResourcePageKey, ScalarSharedData, ScalarSourceDefinition,

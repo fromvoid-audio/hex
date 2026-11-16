@@ -501,6 +501,7 @@ pub(super) fn waveform_canvas(
         waveform: ink,
         inactive: ink,
         centerline: theme::color(theme::PaletteRole::Border),
+        overrange: theme::color(theme::PaletteRole::Error),
     };
     waveform_plot_with_offset(
         move |paint| {
@@ -646,6 +647,7 @@ mod tests {
                                 waveform: 0,
                                 inactive: 0,
                                 centerline: 0,
+                                overrange: 0,
                             },
                             WaveformEmphasis::Uniform,
                         )])

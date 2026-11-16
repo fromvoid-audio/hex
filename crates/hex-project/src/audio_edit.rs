@@ -17,31 +17,31 @@ pub const MAX_AUDIO_DOMAIN_FRAMES: u64 = 16_777_216;
 pub const MAX_SPARSE_AUDIO_TIMELINE_FRAMES: u64 = 1 << 36;
 
 /// Refusal for an edit whose whole root must fit the bounded resident transform
-/// workspace (reverse, pitch, warp and stretch; #4145). Durations are
+/// workspace (processed reverse, pitch, warp and stretch; #4145). Durations are
 /// `MAX_AUDIO_DOMAIN_FRAMES / rate` rounded down for common project rates, so
 /// the static message stays exact; other rates name the frame cap instead.
 pub(crate) fn transform_domain_limit(sample_rate: u32) -> Invalid {
     Invalid(match sample_rate {
         44_100 => {
-            "reverse, pitch, warp and stretch support clips up to about 6:20 at 44.1 khz; trim or split the clip first"
+            "processed reverse, pitch, warp and stretch support clips up to about 6:20 at 44.1 khz; trim or split the clip first"
         }
         48_000 => {
-            "reverse, pitch, warp and stretch support clips up to about 5:49 at 48 khz; trim or split the clip first"
+            "processed reverse, pitch, warp and stretch support clips up to about 5:49 at 48 khz; trim or split the clip first"
         }
         88_200 => {
-            "reverse, pitch, warp and stretch support clips up to about 3:10 at 88.2 khz; trim or split the clip first"
+            "processed reverse, pitch, warp and stretch support clips up to about 3:10 at 88.2 khz; trim or split the clip first"
         }
         96_000 => {
-            "reverse, pitch, warp and stretch support clips up to about 2:54 at 96 khz; trim or split the clip first"
+            "processed reverse, pitch, warp and stretch support clips up to about 2:54 at 96 khz; trim or split the clip first"
         }
         176_400 => {
-            "reverse, pitch, warp and stretch support clips up to about 1:35 at 176.4 khz; trim or split the clip first"
+            "processed reverse, pitch, warp and stretch support clips up to about 1:35 at 176.4 khz; trim or split the clip first"
         }
         192_000 => {
-            "reverse, pitch, warp and stretch support clips up to about 1:27 at 192 khz; trim or split the clip first"
+            "processed reverse, pitch, warp and stretch support clips up to about 1:27 at 192 khz; trim or split the clip first"
         }
         _ => {
-            "reverse, pitch, warp and stretch support clips up to 16777216 frames; trim or split the clip first"
+            "processed reverse, pitch, warp and stretch support clips up to 16777216 frames; trim or split the clip first"
         }
     })
 }
@@ -462,6 +462,106 @@ fn signed_round(numerator: i128, denominator: u128) -> Result<i128, Invalid> {
 }
 
 impl AudioClipEdit {
+    /// Reconstruct an exact V2 plain-pitch edit from a plain clip. This does not
+    /// establish asset extent or source custody; normal project validation does.
+    pub fn reconstruct_plain_pitch(clip: &Clip, cents: i16) -> Result<Self, Invalid> {
+        if clip.audio_edit().is_some() || cents == 0 || !(-4_800..=4_800).contains(&cents) {
+            return Err(Invalid("invalid plain pitch reconstruction"));
+        }
+        let mut edit = Self::capture(clip);
+        let domain = Arc::make_mut(&mut edit.domain);
+        domain.pitch_cents = cents;
+        domain.warp_resampler = WarpResampler::V2;
+        if !edit.is_plain_pitch_capture(clip) {
+            return Err(Invalid(
+                "plain pitch requires a complete neutral frame clip",
+            ));
+        }
+        Ok(edit)
+    }
+
+    /// Exact V2 full-frame plain pitch captured from a neutral, unlooped clip.
+    /// Callers must also establish that the clip covers the complete asset.
+    pub fn is_plain_pitch_capture(&self, clip: &Clip) -> bool {
+        if self.domain.pitch_cents == 0
+            || clip.source_offset != 0
+            || clip.source_length != clip.duration
+            || clip.looping
+            || clip.source_phase != 0
+            || !clip.fade.is_neutral()
+        {
+            return false;
+        }
+        let mut expected = Self::capture(clip);
+        let domain = Arc::make_mut(&mut expected.domain);
+        domain.pitch_cents = self.domain.pitch_cents;
+        domain.warp_resampler = WarpResampler::V2;
+        self == &expected
+    }
+
+    /// Whether this is exactly the reversal created from an unedited clip.
+    /// Unlike the playback shape query, this proves that removing and then
+    /// recreating the edit preserves every authored field.
+    pub fn is_plain_reversed_capture(&self, clip: &Clip) -> bool {
+        let Some((_, length)) = self.plain_reversed_source(clip) else {
+            return false;
+        };
+        let Ok(window) = crate::ContentWindow::new(0, length, true) else {
+            return false;
+        };
+        let mut expected = Self::capture(clip);
+        expected.content_view = Some(AudioContentView {
+            restore_plain: true,
+            base_view_start: 0,
+            base_view_end: length,
+            base_placement: None,
+            base_start_delta: 0,
+            window,
+            read_resampler: WarpResampler::default(),
+        });
+        self == &expected
+    }
+
+    /// Return the source offset and length of an unprocessed, full-frame
+    /// reversal. This is a shape query only: callers still validate the clip
+    /// and establish source availability and custody before reading it.
+    pub fn plain_reversed_source(&self, clip: &Clip) -> Option<(u64, u64)> {
+        let view = self.content_view?;
+        let AudioDomainClock::Frames(length) = self.domain.clock else {
+            return None;
+        };
+        (view.restore_plain
+            && view.window.reversed
+            && view.window.start == 0
+            && view.window.end == length
+            && view.base_view_start == 0
+            && view.base_view_end == length
+            && view.base_placement.is_none()
+            && view.base_start_delta == 0
+            && self.view_start == 0
+            && self.view_end == length
+            && self.placement.is_none()
+            && self.processing_projection.is_none()
+            && matches!(self.timing, AudioClipTiming::Frames)
+            && self.placement_start_offset == 0
+            && self.placement_end_offset == 0
+            && clip.duration() == length
+            && length <= self.domain.source_length
+            && !self.domain.looping
+            && self.domain.source_phase == 0
+            && self.domain.pitch_cents == 0
+            && !self.domain.warp_enabled
+            && self.domain.warp.is_none()
+            && self.domain.sample_bpm.is_none()
+            && self.domain.events.is_none()
+            && self.domain.musical_event_source.is_none()
+            && self.domain.source_gain.is_empty()
+            && self.domain.fade.is_neutral()
+            && self.domain.fade_start == 0
+            && self.domain.fade_projection.is_none())
+        .then_some((self.domain.source_offset, length))
+    }
+
     pub fn processing_tempo<'a>(&'a self, current: &'a TempoMap) -> &'a TempoMap {
         self.processing_projection.as_ref().map_or_else(
             || self.effective_tempo(current),
@@ -858,22 +958,48 @@ impl AudioClipEdit {
             && self.domain.source_gain.is_empty()
     }
 
-    pub(crate) fn accepts_projected_extent(&self, length: u64) -> bool {
+    /// The full-source Re-Pitch root supported by bounded verified streaming.
+    /// This is a shape check only: callers must validate complete asset extent,
+    /// the projected map and actual file/page ownership independently.
+    pub fn is_streamed_repitch_root(&self) -> bool {
+        let domain = &self.domain;
+        domain.source_offset == 0
+            && domain.source_length > 0
+            && domain.source_length <= MAX_SPARSE_AUDIO_TIMELINE_FRAMES
+            && domain.source_phase == 0
+            && !domain.looping
+            && domain.fade.is_neutral()
+            && domain.pitch_cents == 0
+            && domain.source_gain.is_empty()
+            && domain.events.is_none()
+            && domain.warp_enabled
+            && domain
+                .warp
+                .as_ref()
+                .is_some_and(|warp| matches!(warp.mode, WarpMode::RePitch))
+            && self.content_view.is_none()
+            && self.placement.is_none()
+    }
+
+    pub(crate) fn accepts_projected_extent(&self, length: u64, clip: &Clip) -> bool {
         if length <= MAX_AUDIO_DOMAIN_FRAMES {
             return true;
         }
         length <= MAX_SPARSE_AUDIO_TIMELINE_FRAMES
-            && self.plain_frame_event_root()
-            && self.domain.events.as_ref().is_some_and(|events| {
-                events
-                    .events
-                    .iter()
-                    .try_fold(0u64, |n, event| {
-                        n.checked_add(event.end.checked_sub(event.start)?)
-                            .filter(|n| *n <= MAX_AUDIO_DOMAIN_FRAMES)
-                    })
-                    .is_some()
-            })
+            && (self.is_plain_reversed_capture(clip)
+                || self.is_plain_pitch_capture(clip)
+                || self.is_streamed_repitch_root()
+                || (self.plain_frame_event_root()
+                    && self.domain.events.as_ref().is_some_and(|events| {
+                        events
+                            .events
+                            .iter()
+                            .try_fold(0u64, |n, event| {
+                                n.checked_add(event.end.checked_sub(event.start)?)
+                                    .filter(|n| *n <= MAX_AUDIO_DOMAIN_FRAMES)
+                            })
+                            .is_some()
+                    })))
     }
 
     pub fn validate(
@@ -1029,8 +1155,20 @@ impl AudioClipEdit {
             return Err(Invalid("active warp needs settings and markers"));
         }
         let (_, length, view_start, view_end) = self.projected_domain(tempo)?;
-        if !self.accepts_projected_extent(length) {
+        if !self.accepts_projected_extent(length, clip) {
             return Err(transform_domain_limit(tempo.sample_rate()));
+        }
+        if length > MAX_AUDIO_DOMAIN_FRAMES
+            && self.is_plain_pitch_capture(clip)
+            && clip.source_length != asset_frames
+        {
+            return Err(Invalid("long pitch requires the complete audio source"));
+        }
+        if length > MAX_AUDIO_DOMAIN_FRAMES
+            && self.is_streamed_repitch_root()
+            && clip.source_length != asset_frames
+        {
+            return Err(Invalid("long repitch requires the complete audio source"));
         }
         if length == 0 || view_start >= view_end {
             return Err(EMPTY_DOMAIN_CROP);
@@ -1476,3 +1614,6 @@ mod limit_tests {
 #[path = "audio_edit/aliases.rs"]
 mod aliases;
 pub(crate) use aliases::rebase_alias_content;
+
+#[cfg(test)]
+mod long_pitch_tests;

@@ -10,10 +10,10 @@
 //! staged across contiguous graph segments until the complete physical callback
 //! passes final host conversion; only then may it reach a worker.
 //! Malformed output or saturation revokes the entire one-shot exchange.
-//! Native PCM workers may conceal one missing reply and discard its late
-//! output. The audio host uses aligned dry input for effects and silence for
-//! instruments. No stale-buffer replay, waiting, waking, allocation or DSP
-//! rollback occurs.
+//! Native PCM workers may conceal up to six consecutive missing replies and
+//! discard their late output. The audio host uses aligned dry input for effects
+//! and silence for instruments. No stale-buffer replay, waiting, waking,
+//! allocation or DSP rollback occurs; persistent misses still revoke the epoch.
 
 type Frame = [f32; 2];
 use crate::protocol::{EditorPerforms, EditorRestorations};
@@ -23,7 +23,7 @@ use std::num::NonZeroU64;
 use std::sync::{
     Arc,
     atomic::{
-        AtomicBool, AtomicU8, AtomicU64,
+        AtomicU8, AtomicU64,
         Ordering::{AcqRel, Acquire, Relaxed, Release},
     },
 };
@@ -34,6 +34,8 @@ mod dense;
 pub use dense::{
     DenseEffectCallback, DenseParameterRequest, dense_effect_channel_from_completed_prefix,
 };
+mod parameter_fence;
+pub use parameter_fence::{ParameterInputAdmission, ParameterInputFence, ParameterInputSource};
 mod parameters;
 mod storage;
 pub use parameters::{MAX_PARAMETER_POINTS, ParameterPoint, Parameters};
@@ -51,6 +53,8 @@ pub const MAX_EVENTS: usize = 64;
 /// the smaller generic event bound.
 pub const MAX_IDENTIFIED_INPUT_NOTES: usize = 160;
 pub const QUEUE_CAPACITY: usize = 8;
+// Two pipeline quanta and six concealed quanta fit in the bounded input ring.
+const MAX_CONCEALED_OUTPUT_GAPS: u8 = 6;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
@@ -91,6 +95,15 @@ pub enum CommittedQuantumState {
     OpenProgram(NonZeroU64),
 }
 
+/// A bounded snapshot from the exact callback pair. Untouched means no
+/// callback stage was accepted at observation time; a later callback can change
+/// it immediately. This grants no worker, graph or publication authority.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QuantumObservation {
+    Untouched(Binding),
+    Committed(CommittedQuantum),
+}
+
 /// A coherent diagnostic snapshot from the original constructor-paired callback.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CommittedQuantum {
@@ -100,7 +113,6 @@ pub struct CommittedQuantum {
 
 struct Revocation {
     binding: Binding,
-    revoked: AtomicBool,
     callback_fault: AtomicU8,
     received_prefix: AtomicU64,
     received_programs: [AtomicU64; 2],
@@ -113,6 +125,9 @@ struct Revocation {
     // Scope in high bits; low bit means armed. Keep the last serial after end
     // so a stale caller cannot reopen an earlier physical capture scope.
     editor_scope: AtomicU64,
+    // The low bit reserves the admitted input, and the high bit records
+    // revocation atomically against a callback's handoff decision.
+    parameter_input_generation: AtomicU64,
 }
 impl Revocation {
     const REPORTED: u8 = 1 << 7;
@@ -120,7 +135,6 @@ impl Revocation {
     fn new(binding: Binding) -> Self {
         Self {
             binding,
-            revoked: AtomicBool::new(false),
             callback_fault: AtomicU8::new(0),
             received_prefix: AtomicU64::new(0),
             received_programs: std::array::from_fn(|_| AtomicU64::new(0)),
@@ -131,15 +145,17 @@ impl Revocation {
             quantum_program: AtomicU64::new(0),
             quantum_state: AtomicU8::new(0),
             editor_scope: AtomicU64::new(0),
+            parameter_input_generation: AtomicU64::new(0),
         }
     }
 
     fn revoke(&self) {
-        self.revoked.store(true, Release);
+        self.parameter_input_generation
+            .fetch_or(parameter_fence::REVOKED_BIT, AcqRel);
     }
 
     fn is_revoked(&self) -> bool {
-        self.revoked.load(Acquire)
+        self.parameter_input_generation.load(Acquire) & parameter_fence::REVOKED_BIT != 0
     }
 
     // The callback is the sole publisher. Exhaustion permanently makes this
@@ -147,14 +163,22 @@ impl Revocation {
     fn publish_quantum(&self, quantum: CommittedQuantumState) {
         use std::sync::atomic::Ordering::SeqCst;
         let serial = self.quantum_serial.load(SeqCst);
-        let Some(next) = serial.checked_add(2) else {
-            self.quantum_serial.store(u64::MAX, SeqCst);
-            return;
+        // Serial 1 is reserved for the first accepted-stage transition. It
+        // was marked before callback acceptance, so an observer cannot mistake
+        // the acceptance/publication gap for an untouched callback.
+        let next = if serial == 1 {
+            2
+        } else {
+            if serial & 1 != 0 {
+                return;
+            }
+            let Some(next) = serial.checked_add(2) else {
+                self.quantum_serial.store(u64::MAX, SeqCst);
+                return;
+            };
+            self.quantum_serial.store(serial + 1, SeqCst);
+            next
         };
-        if serial & 1 != 0 {
-            return;
-        }
-        self.quantum_serial.store(serial + 1, SeqCst);
         let (state, key) = match quantum {
             CommittedQuantumState::Closed => (1, 0),
             CommittedQuantumState::OpenUnprogrammed => (2, 0),
@@ -548,6 +572,22 @@ impl Control {
         })
     }
 
+    /// Distinguish an untouched paired callback from a committed quantum.
+    /// None includes a concurrent first acceptance, contention, revocation,
+    /// and exhausted observation serial. Neither result stays valid by itself.
+    pub fn quantum_observation(&self) -> Option<QuantumObservation> {
+        use std::sync::atomic::Ordering::SeqCst;
+        if self.revoked.is_revoked() {
+            return None;
+        }
+        let serial = self.revoked.quantum_serial.load(SeqCst);
+        if serial == 0 {
+            return (self.revoked.quantum_serial.load(SeqCst) == 0 && !self.revoked.is_revoked())
+                .then_some(QuantumObservation::Untouched(self.revoked.binding));
+        }
+        self.committed_quantum().map(QuantumObservation::Committed)
+    }
+
     /// Read one bounded snapshot of the exact paired callback's most recently
     /// accepted quantum. None means no observation, contention, exhaustion, or
     /// revocation. A copied binding is not proof of any graph installation.
@@ -794,6 +834,8 @@ struct State {
     input_editor_scope: Option<NonZeroU64>,
     output: OutputReply,
     output_gap: bool,
+    consecutive_output_gaps: u8,
+    next_output_reply: u64,
     parameter_capacity: usize,
 }
 #[derive(Clone, Copy)]
@@ -879,9 +921,9 @@ pub fn channel_from_completed_prefix(
 }
 
 /// The native instance wire carries PCM and parameter observations, with no
-/// output MIDI. A single deadline miss conceals one quantum while preserving
-/// ordered input and the fixed 2Q alignment of subsequent replies. A late
-/// reply never acknowledges audio, editor gestures or manual parameters.
+/// output MIDI. Up to six consecutive deadline misses conceal their quanta
+/// while preserving ordered input and the fixed 2Q alignment of later replies.
+/// A late reply never acknowledges audio, editor gestures or manual parameters.
 pub fn native_pcm_channel_from_completed_prefix(
     binding: Binding,
     quantum: u16,
@@ -930,6 +972,8 @@ fn channel_with_policy(
                     editor: None,
                 },
                 output_gap: false,
+                consecutive_output_gaps: 0,
+                next_output_reply: completed_blocks,
                 parameter_capacity: MAX_PARAMETER_POINTS,
             },
             staged: None,
@@ -1316,8 +1360,9 @@ impl Callback {
                         sequence - 2,
                     )?;
                     if stage.state.output_gap {
+                        let start = result.concealed_output.map_or(index, |span| span.0);
                         result.concealed_output =
-                            Some((index, input.len().min(index + quantum_frames)));
+                            Some((start, input.len().min(index + quantum_frames)));
                     }
                     if let Some(manual) = stage.state.output.manual {
                         // Extent is at most one quantum, so only one reply
@@ -1464,6 +1509,12 @@ impl Callback {
     /// Call only after final host-format validation. Refusal terminates this
     /// epoch; consumed replies and foreign DSP are never rolled back/replayed.
     pub fn finish(&mut self, host_accepted: bool) -> Result<(), Fault> {
+        if self.committed_quantum.is_none() {
+            // Mark the first transition before any state can be accepted.
+            self.revoked
+                .quantum_serial
+                .store(1, std::sync::atomic::Ordering::SeqCst);
+        }
         if !host_accepted {
             return self.fail(Fault::Protocol);
         }
@@ -1539,35 +1590,44 @@ fn stage_reply(
         }
         reply.valid(binding, quantum, sequence)
     };
-    let mut reply = replies.pop();
-    if state.output_gap
-        && let Ok(late) = &reply
-        && expected.checked_sub(1) == Some(late.block.sequence)
-    {
-        // At most one concealed block may precede the sample-aligned reply.
-        validate(late, late.block.sequence)?;
-        reply = replies.pop();
+    if state.next_output_reply > expected {
+        return Err(Fault::Protocol);
     }
-    match reply {
-        Ok(reply) => {
-            validate(&reply, expected)?;
-            state.output = reply;
-            state.output_gap = false;
-        }
-        Err(_) if conceal_output_gap && !state.output_gap => {
-            state.output = OutputReply {
-                block: Block::empty(binding, quantum),
-                manual: None,
-                editor: None,
-            };
-            state.output_gap = true;
-        }
-        Err(_) => {
-            revoked.record_deadline_miss(expected);
-            return Err(Fault::MissingOutput);
+    // At most six stale replies and the current reply can be consumed in one
+    // callback. Validate every sequence before discarding its PCM and facts.
+    for _ in 0..=MAX_CONCEALED_OUTPUT_GAPS {
+        match replies.pop() {
+            Ok(reply) => {
+                validate(&reply, state.next_output_reply)?;
+                let sequence = state.next_output_reply;
+                state.next_output_reply = sequence.checked_add(1).ok_or(Fault::Exhausted)?;
+                if sequence == expected {
+                    state.output = reply;
+                    state.output_gap = false;
+                    state.consecutive_output_gaps = 0;
+                    return Ok(());
+                }
+            }
+            Err(_)
+                if conceal_output_gap
+                    && state.consecutive_output_gaps < MAX_CONCEALED_OUTPUT_GAPS =>
+            {
+                state.output = OutputReply {
+                    block: Block::empty(binding, quantum),
+                    manual: None,
+                    editor: None,
+                };
+                state.output_gap = true;
+                state.consecutive_output_gaps += 1;
+                return Ok(());
+            }
+            Err(_) => {
+                revoked.record_deadline_miss(expected);
+                return Err(Fault::MissingOutput);
+            }
         }
     }
-    Ok(())
+    Err(Fault::Protocol)
 }
 
 impl Worker {

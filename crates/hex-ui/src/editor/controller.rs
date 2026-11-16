@@ -1175,6 +1175,7 @@ impl EditorView {
         visible_change |= self.tick_native_automation_recording();
         visible_change |= self.tick_automation_take_recovery();
         visible_change |= self.tick_midi_recording();
+        visible_change |= self.tick_audio_recording();
         visible_change |= self.tick_sampler_parameter();
         visible_change |= self.tick_computer_keyboard();
         visible_change |= self.tick_tuning_audition();
@@ -1237,6 +1238,16 @@ impl EditorView {
                     }
                     self.midi_service_disconnected();
                     self.gain_take_service_disconnected();
+                    if let Some(path) = self.audio_recorder.pending_commit_path.take() {
+                        self.error = Some(
+                            format!(
+                                "audio recording commit outcome unknown · take retained at {}",
+                                hex_session::service::text::verbatim(path.display())
+                            )
+                            .into(),
+                        );
+                        visible_change = true;
+                    }
                     if self.cancel_new_preparation() {
                         visible_change |= replace_error(
                             &mut self.error,
@@ -2446,6 +2457,13 @@ impl EditorView {
                 event.state.revision,
             );
         }
+        if let Some(result) = event.plugin_parameter_conversion.take() {
+            super::device_panel::vst3_parameters::install_conversion_result(
+                self,
+                result,
+                event.state.revision,
+            );
+        }
         let sampler_load_complete = event.sampler_load_complete;
         let sampler_load_succeeded = event.error.is_none();
         if self
@@ -2553,6 +2571,7 @@ impl EditorView {
         {
             self.gain_recorder.arm_failed();
         }
+        let mut recorded_audio_failed_path = None;
         if event
             .audio_batch_complete
             .as_ref()
@@ -2562,6 +2581,11 @@ impl EditorView {
                     .is_some_and(|active| Arc::ptr_eq(active, completed))
             })
         {
+            if event.error.is_some() {
+                recorded_audio_failed_path = self.audio_recorder.pending_commit_path.take();
+            } else {
+                self.audio_recorder.pending_commit_path = None;
+            }
             self.audio_batch = None;
             self.audio_batch_progress = None;
         }
@@ -2829,6 +2853,10 @@ impl EditorView {
             self.committed_time_range_copy_view = None;
         }
         self.state = Some(event.state);
+        if let Some(state) = &self.state {
+            self.audio_recorder
+                .reconcile_audio_arm(&state.project, event.project_replaced);
+        }
         if let Some(selection) = audio_placement_selection {
             self.install_audio_placement_selection(selection);
         }
@@ -3405,11 +3433,16 @@ impl EditorView {
             self.status = "restarting audio · time will be duplicated when ready".into();
         }
         if let Some(error) = event.error.filter(|_| !recovering_refused_time_copy) {
-            self.error = Some(
-                event
-                    .audio_batch_failure
-                    .map_or_else(|| error.into(), Into::into),
-            );
+            let mut displayed: super::display_error::DisplayError = event
+                .audio_batch_failure
+                .map_or_else(|| error.into(), Into::into);
+            if let Some(path) = recorded_audio_failed_path {
+                displayed = displayed.with_context(&format!(
+                    "take retained at {}",
+                    hex_session::service::text::verbatim(path.display())
+                ));
+            }
+            self.error = Some(displayed);
         } else if let Some(error) = stopped_restore_error {
             self.error = Some(error.into());
         }
@@ -3466,6 +3499,11 @@ impl EditorView {
                 return false;
             }
         };
+        self.enqueue_with_clip_scope(request, false)
+    }
+
+    /// Recorded takes retain their own no-warp policy, not the browser-import preference.
+    pub(super) fn enqueue_recorded_audio(&mut self, request: Request) -> bool {
         self.enqueue_with_clip_scope(request, false)
     }
 
@@ -3554,6 +3592,14 @@ impl EditorView {
             request,
             Request::Edit(_)
                 | Request::BindUnassignedNativeSource { .. }
+                | Request::RebindNativeSource { .. }
+                | Request::ChooseNativeSourceReceiver { .. }
+                | Request::AppendSourceUtility { .. }
+                | Request::RemoveSourceUtility { .. }
+                | Request::MoveSourceUtility { .. }
+                | Request::DeleteRetainedSource { .. }
+                | Request::CreateRetainedNativeSource { .. }
+                | Request::RenameRetainedSource { .. }
                 | Request::ChangeProjectSampleRate { .. }
                 | Request::Import(_)
                 | Request::ImportAudioBatch { .. }
@@ -3626,7 +3672,10 @@ impl EditorView {
         duplicate_continuation: bool,
     ) -> bool {
         self.wake_poll();
-        if matches!(&request, Request::QueryPluginParameters(_)) {
+        if matches!(
+            &request,
+            Request::QueryPluginParameters(_) | Request::QueryPluginParameterConversion(_)
+        ) {
             // The panel owns retryable read intent. A full/busy service must
             // not move observations into the edit queue or interrupt a gesture.
             return match self.submit_to_service(request) {
@@ -3707,6 +3756,10 @@ impl EditorView {
             self.error = Some(
                 "finish or explicitly discard the midi take before another project action".into(),
             );
+            return false;
+        }
+        if self.audio_recorder.blocks_edits() {
+            self.error = Some("finish the audio recording before another project action".into());
             return false;
         }
         let own_gain_take = self.pending_gain_take_matches(&request);
@@ -3914,6 +3967,14 @@ impl EditorView {
             &request,
             Request::DeviceGesture(_)
                 | Request::BindUnassignedNativeSource { .. }
+                | Request::RebindNativeSource { .. }
+                | Request::ChooseNativeSourceReceiver { .. }
+                | Request::AppendSourceUtility { .. }
+                | Request::RemoveSourceUtility { .. }
+                | Request::MoveSourceUtility { .. }
+                | Request::DeleteRetainedSource { .. }
+                | Request::CreateRetainedNativeSource { .. }
+                | Request::RenameRetainedSource { .. }
                 | Request::DropNativeDevice { .. }
                 | Request::MoveTrackDevices { .. }
                 | Request::ReorderDevices { .. }
@@ -4381,6 +4442,120 @@ impl EditorView {
                 PlaybackAction::SetMetronome(!self.metronome_enabled()),
                 None,
             );
+        }
+    }
+
+    /// Starts only on the source that actually accepted this committed copy.
+    /// A full UI or audio queue refuses visibly rather than dropping the fence.
+    pub(super) fn queue_section_copy_play(
+        &mut self,
+        frame: u64,
+        source: hex_audio::prepared::AppliedAudioSource,
+    ) {
+        self.queue_applied_source_play(frame, source, false);
+    }
+
+    pub(super) fn queue_applied_source_play(
+        &mut self,
+        frame: u64,
+        source: hex_audio::prepared::AppliedAudioSource,
+        allow_playing: bool,
+    ) {
+        self.wake_poll();
+        let playing = self
+            .audio
+            .as_ref()
+            .and_then(|audio| audio.control.status())
+            .is_some_and(|status| status.playing.load(Acquire));
+        if (!allow_playing && self.desired_playing(playing))
+            || (allow_playing && self.desired_playing(playing) != playing)
+            || !self.pending_audio_commands.is_empty()
+            || self.stopped_playback_restore.is_some()
+        {
+            self.error = Some("applying edit · wait for audio".into());
+            return;
+        }
+        let token = match super::play_intent::prepare_admission(
+            &mut self.play_intent,
+            Some(true),
+            0,
+            UI_REQUEST_CAPACITY,
+        ) {
+            Ok(token) => token,
+            Err(AdmissionError::QueueFull) => {
+                self.error = Some("playback command queue full".into());
+                return;
+            }
+            Err(AdmissionError::TokenExhausted) => {
+                self.report_intent_exhausted();
+                return;
+            }
+        };
+        self.latency_rebuild = None;
+        self.sampler_edit_resume = None;
+        self.deferred_play = None;
+        self.cancel_section_launch_wait();
+        self.invalidate_prepared_seek();
+        let Some(ticket) = self.audio.as_mut().and_then(|audio| {
+            audio
+                .control
+                .play_from_source_with_ticket(frame, source)
+                .ok()
+        }) else {
+            self.error = Some("playback unavailable · retry".into());
+            return;
+        };
+        let command = PlaybackCommand::PlayFrom(frame);
+        self.admit_play_intent(
+            PendingPlaybackAction {
+                action: PlaybackAction::Transport(command),
+                generation: self.project_generation,
+                revision: None,
+                intent_token: token,
+            },
+            Some(true),
+            Some(ticket),
+        );
+        self.pending_seek_ticket = Some(ticket);
+        #[cfg(test)]
+        {
+            self.last_transport_command = Some(command);
+        }
+    }
+
+    /// Seek only if the callback still owns the observed source. Never place a
+    /// rejected fenced action on the ordinary, generation-only UI queue.
+    pub(super) fn queue_applied_source_seek(
+        &mut self,
+        frame: u64,
+        source: hex_audio::prepared::AppliedAudioSource,
+    ) {
+        self.wake_poll();
+        if !self.pending_audio_commands.is_empty()
+            || self.stopped_playback_restore.is_some()
+            || self.seek_pending()
+        {
+            self.error = Some("applying edit · wait for audio".into());
+            return;
+        }
+        self.latency_rebuild = None;
+        self.sampler_edit_resume = None;
+        self.deferred_play = None;
+        self.cancel_section_launch_wait();
+        self.invalidate_prepared_seek();
+        let Some(ticket) = self.audio.as_mut().and_then(|audio| {
+            audio
+                .control
+                .seek_from_source_with_ticket(frame, source)
+                .ok()
+        }) else {
+            self.error = Some("playback unavailable · retry".into());
+            return;
+        };
+        self.pending_seek_ticket = Some(ticket);
+        #[cfg(test)]
+        {
+            self.last_transport_command = Some(PlaybackCommand::Seek(frame));
         }
     }
 
@@ -4942,6 +5117,9 @@ impl EditorView {
 
     pub(super) fn stop(&mut self) {
         self.escape_stop_armed = false;
+        if self.finish_audio_recording_before_stop() {
+            return;
+        }
         self.stop_transport(true);
     }
 
@@ -6129,6 +6307,7 @@ mod sampler_native_ui_protocol_tests {
             assert!(view.applied_project_revision.is_none());
             assert_eq!(view.audio_admission, before);
             let mut metadata = hex_session::service::ResidentPublicationMetadata {
+                source_origin: hex_session::service::ResidentSourceOrigin::DevicePreview,
                 clip_preview: None,
                 context,
                 device_preview: Some(identity),
@@ -6552,6 +6731,7 @@ mod sampler_native_ui_protocol_tests {
                 canonical_revision: canonical.revision,
             };
             let metadata = hex_session::service::ResidentPublicationMetadata {
+                source_origin: hex_session::service::ResidentSourceOrigin::DevicePreview,
                 clip_preview: None,
                 context,
                 device_preview: Some(identity),

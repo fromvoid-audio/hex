@@ -1170,6 +1170,44 @@ fn accepted_sparse_root_peaks_keep_exact_samples_and_silence_at_distant_edges() 
             max: s.max(0.0)
         })
     );
+    let mut visited = Vec::new();
+    let over = waveform
+        .bounded_overrange(3_999_997..4_000_001, 4, |frame| {
+            visited.push(frame);
+            Some((1.0, 100.0))
+        })
+        .unwrap();
+    assert_eq!(visited, vec![3_999_997, 3_999_998, 3_999_999, 4_000_000]);
+    for (channel, value) in sample.iter().copied().enumerate() {
+        assert_eq!(over.positive[channel], value * 100.0 > 1.0);
+        assert_eq!(over.negative[channel], value * 100.0 < -1.0);
+    }
+    let (offset, loud) = prepared.audio.frames()[7_000..]
+        .iter()
+        .enumerate()
+        .find(|(_, frame)| frame[0].abs() > 0.02 && frame[1].abs() > 0.02)
+        .expect("occupied sparse event has audible samples");
+    let logical = 4_000_000 + offset;
+    let loud_result = waveform
+        .bounded_overrange(logical..logical + 1, 1, |_| Some((1.0, 100.0)))
+        .unwrap();
+    for (channel, value) in loud.iter().copied().enumerate() {
+        assert_eq!(loud_result.positive[channel], value * 100.0 > 1.0);
+        assert_eq!(loud_result.negative[channel], value * 100.0 < -1.0);
+    }
+    assert!(loud_result.positive.into_iter().any(|present| present));
+    assert!(loud_result.negative.into_iter().any(|present| present));
+    assert!(
+        waveform
+            .bounded_overrange(3_999_997..4_000_001, 3, |_| Some((1.0, 100.0)))
+            .is_none()
+    );
+    assert!(
+        waveform
+            .bounded_overrange(3_999_997..4_000_001, 4, |frame| (frame != 3_999_998)
+                .then_some((1.0, 1.0)))
+            .is_none()
+    );
 }
 
 #[test]

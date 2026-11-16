@@ -15,6 +15,7 @@ use hex_session::service::{
 mod degraded;
 mod editor;
 pub(super) mod editor_recording;
+mod parameter_conversion;
 mod parameter_gesture;
 mod parameters;
 mod restore;
@@ -56,7 +57,7 @@ struct Source {
     editor_open: bool,
     editor_transfer: bool,
     edit_backlog: bool,
-    edit_recovery: Option<bool>,
+    edit_recovery: Option<parameter_touches::PendingRead>,
     pending_touch: Option<parameter_touches::Touch>,
     #[cfg(all(test, feature = "allocation-probe"))]
     observed_latency_receipt: bool,
@@ -118,6 +119,8 @@ pub(super) struct PreparationObservation {
     pub(super) attempts: u64,
     pub(super) restore_refused: bool,
     pub(super) observed_latency_receipt: bool,
+    pub(super) editor_receipts: [Option<hex_audio::plugin_worker::ParameterEdit>; 8],
+    pub(super) editor_receipt_count: usize,
 }
 #[cfg(all(test, feature = "allocation-probe"))]
 impl std::fmt::Debug for PreparationObservation {
@@ -145,6 +148,7 @@ pub(super) struct Plugins {
     pending: Option<Pending>,
     editor: Option<editor::EditorOperation>,
     parameters: Option<parameters::Inventory>,
+    parameter_conversion: Option<parameter_conversion::Conversion>,
     observed_parameters: Vec<parameters::ObservedInventory>,
     parameter_gesture: Option<parameter_gesture::Gesture>,
     editor_recording: Option<editor_recording::Recording>,
@@ -243,6 +247,9 @@ impl Plugins {
         if let Some(parameters) = &mut self.parameters {
             parameters.output_closed();
         }
+        if let Some(conversion) = &mut self.parameter_conversion {
+            conversion.output_closed();
+        }
         self.configured = false;
         self.observed_parameters.clear();
         if let Some(gesture) = self.parameter_gesture.as_mut() {
@@ -337,6 +344,7 @@ impl Plugins {
             && self.editor.is_none()
             && self.editor_recording.is_none()
             && self.parameters.is_none()
+            && self.parameter_conversion.is_none()
             && self.restore.is_none()
             && !self.parameter_override_cleanup_pending()
             && self.reopen.is_none()
@@ -588,6 +596,7 @@ impl Plugins {
         };
         self.poll_editor(control, context, desired);
         self.poll_parameters(control, context);
+        self.poll_parameter_conversion(control, context);
         self.poll_parameter_override(control, context);
         self.poll_restore(control, context);
         if let Some(output) = control.output_identity()
@@ -602,8 +611,6 @@ impl Plugins {
                     let status = control.native_source_endpoint_status(source.binding);
                     if status == Some((true, false)) {
                         source.edit_backlog = false;
-                        source.edit_recovery = None;
-                        source.pending_touch = None;
                     }
                     if status == Some((true, false)) {
                         #[cfg(all(test, feature = "allocation-probe"))]
@@ -736,6 +743,8 @@ impl Plugins {
             {
                 let source = self.sources.first();
                 let restore_refused = observed.restore_refused;
+                let editor_receipts = observed.editor_receipts;
+                let editor_receipt_count = observed.editor_receipt_count;
                 *observed = PreparationObservation {
                     output: control.output_identity(),
                     binding: source.map(|source| source.binding),
@@ -749,6 +758,8 @@ impl Plugins {
                     restore_refused,
                     observed_latency_receipt: source
                         .is_some_and(|source| source.observed_latency_receipt),
+                    editor_receipts,
+                    editor_receipt_count,
                 };
             }
             if let Some(queued) = &self.queued {
@@ -877,8 +888,13 @@ impl Plugins {
                 return Ok(());
             };
             if !edits::original_state(control, source.binding, cancellation)?.processing_eq(state) {
-                let selection = edits::armed_selection(control, source.binding, cancellation)?
-                    .ok_or("vst3 canonical program selection unavailable")?;
+                let selection = match edits::armed_selection(control, source.binding, cancellation)?
+                {
+                    Some(selection) => selection,
+                    None => AuthoredSelection::for_no_parameters(
+                        Hosting::saved_identity_on_control(state)?.class.bytes(),
+                    )?,
+                };
                 canonical.push(edits::canonical_bases(
                     self.host
                         .as_ref()

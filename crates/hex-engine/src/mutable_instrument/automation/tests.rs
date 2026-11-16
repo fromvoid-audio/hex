@@ -100,6 +100,7 @@ fn onsets() -> MutableOnsetBuffer {
                 pitch: 60,
                 channel: 0,
                 velocity: 100,
+                contributor_fade_in: false,
             })
             .unwrap();
     }
@@ -109,6 +110,7 @@ fn volume(
     _: MutableOccurrenceSignature,
     at: u64,
     _: usize,
+    _: bool,
 ) -> Result<Option<VolumeSlice>, MutableInstrumentRuntimeError> {
     Ok(Some(VolumeSlice {
         at,
