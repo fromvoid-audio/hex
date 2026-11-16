@@ -1105,6 +1105,405 @@ mod tests {
         });
     }
 
+    fn monitored_fixture(
+        cx: &mut TestAppContext,
+    ) -> (
+        super::super::worker_ui_fixture::WorkerUiFixture,
+        hex_audio::worker_fixture::InputObserver,
+        PathBuf,
+    ) {
+        use hex_project::Command;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        let mut fixture = super::super::worker_ui_fixture::open_with_section_support(
+            cx,
+            vec![Command::AddTrack {
+                name: "input".into(),
+            }],
+            false,
+            true,
+        );
+        let editor = fixture.editor.clone();
+        editor.update(cx, |view, _| {
+            let audio = view.audio.as_mut().unwrap();
+            audio
+                .control
+                .bind_resident_transport(view.project_generation);
+            audio
+                .control
+                .command(hex_engine::PlaybackCommand::Play)
+                .unwrap();
+            view.audio_recorder.software_monitor = true;
+        });
+        fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+        let (binding, reader) = editor.update(cx, |view, _| {
+            let context = AudioBatchContext {
+                project_generation: view.project_generation,
+                revision: view.state.as_ref().unwrap().revision,
+                active_gesture: false,
+            };
+            let track = view.state.as_ref().unwrap().project.tracks()[0].id();
+            let audio = view.audio.as_mut().unwrap();
+            let source = audio.control.status().unwrap().recording_source().unwrap();
+            assert_eq!(
+                source.context.project_generation,
+                context.project_generation
+            );
+            assert_eq!(source.context.editor_revision, context.revision);
+            let reader = audio.control.start_bound_output_recording(source).unwrap();
+            (
+                Binding {
+                    source,
+                    track,
+                    context,
+                },
+                reader,
+            )
+        });
+        let (input, monitor, observer) = hex_audio::worker_fixture::monitored_input().unwrap();
+        let monitor = Box::new(MonitorStream::new_on_control(monitor, 48_000).ok().unwrap());
+        let path = std::env::temp_dir().join(format!(
+            "hex-monitor-ui-{}-{}.wav",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        let job = spawn_coordinated_take_gated(input, reader, path.clone()).unwrap();
+        let (sender, result) = mpsc::sync_channel(1);
+        sender
+            .send(Ok(PreparedTake {
+                job,
+                monitor: Some(monitor),
+            }))
+            .unwrap();
+        editor.update(cx, |view, _| {
+            view.audio_recorder.stage = Stage::Opening {
+                binding,
+                cancel: Arc::new(AtomicBool::new(false)),
+                result,
+            };
+            assert!(view.tick_audio_recording());
+            assert!(matches!(
+                view.audio_recorder.stage,
+                Stage::Capturing {
+                    monitoring: Monitoring::Waiting,
+                    ..
+                }
+            ));
+        });
+        (fixture, observer, path)
+    }
+
+    #[cfg(target_os = "macos")]
+    fn prime_recording_fixture(
+        fixture: &mut super::super::worker_ui_fixture::WorkerUiFixture,
+        observer: &hex_audio::worker_fixture::InputObserver,
+        cx: &mut TestAppContext,
+        deadline: std::time::Instant,
+    ) -> u32 {
+        let mut offset = 0;
+        loop {
+            fixture
+                .backend
+                .render_recording_fixture(&mut [[0.0; 2]; 64], offset)
+                .unwrap();
+            offset += 64;
+            assert!(!observer.started());
+            let capturing = fixture.editor.read_with(cx, |view, _| {
+                view.audio
+                    .as_ref()
+                    .unwrap()
+                    .control
+                    .sample_recording_phase()
+                    == Some(hex_audio::sample_recording::Phase::Capturing)
+            });
+            if capturing {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "output timing did not start"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert!(observer.set_capture_frame(offset + 64));
+        let end = offset + 1536;
+        while offset < end {
+            fixture
+                .backend
+                .render_recording_fixture(&mut [[0.0; 2]; 64], offset)
+                .unwrap();
+            offset += 64;
+            assert!(!observer.started());
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        offset
+    }
+
+    #[cfg(target_os = "macos")]
+    fn assert_fixture_take(path: &std::path::Path) {
+        let mut wav = hex_media::WavFrameReader::open(
+            path,
+            hex_media::WavReaderLimits::new(65_536, 2048, 32, 64),
+        )
+        .unwrap();
+        assert_eq!(wav.read_frames(0, 64).unwrap(), vec![[0.25; 2]; 64]);
+    }
+
+    fn assert_monitor_reusable(
+        fixture: &mut super::super::worker_ui_fixture::WorkerUiFixture,
+        cx: &mut TestAppContext,
+    ) {
+        let (input, monitor, _) = hex_audio::worker_fixture::monitored_input().unwrap();
+        let stream = Box::new(MonitorStream::new_on_control(monitor, 48_000).ok().unwrap());
+        fixture.editor.update(cx, |view, _| {
+            let track = view.state.as_ref().unwrap().project.tracks()[0].id();
+            let audio = view.audio.as_mut().unwrap();
+            let source = audio.control.status().unwrap().recording_source().unwrap();
+            let control = audio.control.input_monitor().unwrap();
+            assert!(
+                control
+                    .publish(stream, source, hex_engine::OutputCaptureId::Track(track))
+                    .is_ok()
+            );
+            control.stop();
+        });
+        fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+        fixture.editor.update(cx, |view, _| {
+            assert!(
+                view.audio
+                    .as_mut()
+                    .unwrap()
+                    .control
+                    .input_monitor()
+                    .unwrap()
+                    .reclaim()
+                    .is_some()
+            )
+        });
+        drop(input);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[gpui::test]
+    fn monitor_callback_acknowledgment_gates_recording_and_stop_reclaims(cx: &mut TestAppContext) {
+        let (mut fixture, observer, path) = monitored_fixture(cx);
+        let editor = fixture.editor.clone();
+        for _ in 0..4 {
+            editor.update(cx, |view, _| {
+                view.tick_audio_recording();
+            });
+            assert!(!observer.started());
+        }
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        // Continue output history while the editor withholds its permit.
+        let mut offset = prime_recording_fixture(&mut fixture, &observer, cx, deadline);
+        editor.update(cx, |view, _| {
+            assert_eq!(
+                view.audio
+                    .as_mut()
+                    .unwrap()
+                    .control
+                    .input_monitor()
+                    .unwrap()
+                    .status(),
+                MonitorStatus::Priming
+            );
+            view.tick_audio_recording();
+        });
+        let mut heard = false;
+        let mut capture_started = false;
+        while !capture_started || !heard {
+            let mut output = [[0.0; 2]; 64];
+            fixture
+                .backend
+                .render_recording_fixture(&mut output, offset)
+                .unwrap();
+            heard |= output.iter().any(|frame| *frame != [0.0; 2]);
+            offset += 64;
+            capture_started = editor.update(cx, |view, _| {
+                view.tick_audio_recording();
+                matches!(
+                    view.audio_recorder.stage,
+                    Stage::Capturing { started: true, .. }
+                )
+            });
+            assert!(
+                std::time::Instant::now() < deadline,
+                "recording did not start"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert!(observer.started());
+        assert!(heard, "monitored input did not reach output");
+        editor.update(cx, |view, _| view.toggle_audio_recording());
+        loop {
+            fixture
+                .backend
+                .render_recording_fixture(&mut [[0.0; 2]; 64], offset)
+                .unwrap();
+            offset += 64;
+            let done = editor.update(cx, |view, _| {
+                view.tick_audio_recording();
+                matches!(view.audio_recorder.stage, Stage::Idle)
+                    && view.audio_recorder.retiring_monitor_output.is_none()
+            });
+            if done {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "recording did not stop"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert!(path.exists(), "completed take was not retained");
+        assert_fixture_take(&path);
+        assert_monitor_reusable(&mut fixture, cx);
+        editor.read_with(cx, |view, _| {
+            assert!(view.error.is_none(), "{:?}", view.error)
+        });
+        fixture.finish(cx);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[gpui::test]
+    fn cancel_before_monitor_ack_never_starts_input_and_retires_owner(cx: &mut TestAppContext) {
+        let (mut fixture, observer, path) = monitored_fixture(cx);
+        let editor = fixture.editor.clone();
+        editor.update(cx, |view, _| view.toggle_audio_recording());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        let mut offset = 0;
+        loop {
+            fixture
+                .backend
+                .render_recording_fixture(&mut [[0.0; 2]; 64], offset)
+                .unwrap();
+            offset += 64;
+            let done = editor.update(cx, |view, _| {
+                view.tick_audio_recording();
+                matches!(view.audio_recorder.stage, Stage::Idle)
+                    && view.audio_recorder.retiring_monitor_output.is_none()
+            });
+            if done {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "canceled job did not stop"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert!(!observer.started());
+        assert!(!path.exists());
+        assert_monitor_reusable(&mut fixture, cx);
+        fixture.finish(cx);
+    }
+
+    #[gpui::test]
+    fn output_fault_before_monitor_ack_stops_preparation_and_returns_owner(
+        cx: &mut TestAppContext,
+    ) {
+        let (mut fixture, observer, path) = monitored_fixture(cx);
+        let editor = fixture.editor.clone();
+        fixture.backend.report_device_error().unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        let mut offset = 0;
+        loop {
+            let _ = fixture
+                .backend
+                .render_recording_fixture(&mut [[0.0; 2]; 64], offset);
+            offset += 64;
+            let done = editor.update(cx, |view, _| {
+                view.tick_audio_recording();
+                matches!(view.audio_recorder.stage, Stage::Idle)
+                    && view.audio_recorder.retiring_monitor_output.is_none()
+            });
+            if done {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "faulted job did not stop"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert!(!observer.started());
+        assert!(!path.exists());
+        editor.read_with(cx, |view, _| assert!(view.error.is_some()));
+        assert_monitor_reusable(&mut fixture, cx);
+        fixture.finish(cx);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[gpui::test]
+    fn monitor_underrun_reports_error_without_discarding_input_take(cx: &mut TestAppContext) {
+        let (mut fixture, observer, path) = monitored_fixture(cx);
+        let editor = fixture.editor.clone();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        let mut offset = prime_recording_fixture(&mut fixture, &observer, cx, deadline);
+        editor.update(cx, |view, _| {
+            view.tick_audio_recording();
+        });
+        loop {
+            fixture
+                .backend
+                .render_recording_fixture(&mut [[0.0; 2]; 64], offset)
+                .unwrap();
+            offset += 64;
+            let failed = editor.update(cx, |view, _| {
+                view.tick_audio_recording();
+                matches!(
+                    view.audio_recorder.stage,
+                    Stage::Capturing {
+                        started: true,
+                        stopping: false,
+                        monitoring: Monitoring::Failed,
+                        ..
+                    }
+                )
+            });
+            if failed {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "monitor did not report underrun"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert!(observer.started());
+        editor.read_with(cx, |view, _| {
+            assert!(view.error.as_ref().unwrap().contains("underrun"))
+        });
+        editor.update(cx, |view, _| view.toggle_audio_recording());
+        loop {
+            fixture
+                .backend
+                .render_recording_fixture(&mut [[0.0; 2]; 64], offset)
+                .unwrap();
+            offset += 64;
+            let done = editor.update(cx, |view, _| {
+                view.tick_audio_recording();
+                matches!(view.audio_recorder.stage, Stage::Idle)
+                    && view.audio_recorder.retiring_monitor_output.is_none()
+            });
+            if done {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "recording did not stop after monitor failure"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert!(path.exists(), "input take was lost after monitoring failed");
+        editor.read_with(cx, |view, _| {
+            assert!(view.error.as_ref().unwrap().contains("underrun"))
+        });
+        fixture.finish(cx);
+        std::fs::remove_file(path).unwrap();
+    }
+
     #[test]
     fn software_monitor_waits_for_priming_and_reports_terminal_states() {
         assert_eq!(
