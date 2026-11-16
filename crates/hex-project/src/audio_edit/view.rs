@@ -744,7 +744,7 @@ impl<'a> AudioViewProjection<'a> {
             value.content = Some((content.window, current, displacement));
             return Ok(value);
         }
-        Self::from_parts(
+        Self::from_parts_with_period(
             clip,
             tempo,
             clock,
@@ -752,6 +752,7 @@ impl<'a> AudioViewProjection<'a> {
             reference_start_raw.unwrap_or(i128::from(clip.start)),
             placement,
             displacement,
+            edit.and_then(|edit| edit.repeat_period),
         )
     }
 
@@ -1354,6 +1355,7 @@ pub struct AudioViewResize {
     pub view_end: u64,
     pub reference_start_raw: Option<i128>,
     pub placement: AudioViewPlacement,
+    repeat_period: Option<u64>,
     pub frame_start: u64,
     pub frame_end: u64,
     /// Resolved first root cursor for PlayStart; other operations return None.
@@ -1427,6 +1429,18 @@ pub fn preview_view_resize(
     tempo: &TempoMap,
     operation: AudioViewResizeOperation,
 ) -> Result<AudioViewResize, Invalid> {
+    if clip
+        .audio_edit()
+        .is_some_and(|edit| edit.repeat_period.is_some())
+        && !matches!(
+            operation,
+            AudioViewResizeOperation::CycleEnd { .. }
+                | AudioViewResizeOperation::OuterEnd { .. }
+                | AudioViewResizeOperation::RepeatOuterEnd { .. }
+        )
+    {
+        return Err(Invalid("this edit cannot yet modify a silent repeat gap"));
+    }
     if clip.audio_edit().is_some_and(|edit| {
         edit.placement
             .is_some_and(|placement| placement.mode.leading_ticks() != 0)
@@ -1583,6 +1597,7 @@ pub fn preview_view_resize(
             view_end,
             reference_start_raw,
             placement,
+            repeat_period: None,
             frame_start,
             frame_end,
             play_start_position: Some(position),
@@ -1632,6 +1647,7 @@ pub fn preview_view_resize(
             view_end: last,
             reference_start_raw,
             placement,
+            repeat_period: None,
             frame_start,
             frame_end,
             play_start_position: None,
@@ -1663,6 +1679,7 @@ pub fn preview_view_resize(
         outer_length: length_clock(view_end - view_start),
         cycle_phase: 0,
     });
+    let mut repeat_period = clip.audio_edit().and_then(|edit| edit.repeat_period);
     match operation {
         AudioViewResizeOperation::CycleRange { .. }
         | AudioViewResizeOperation::PlayStart { .. } => {
@@ -1679,7 +1696,7 @@ pub fn preview_view_resize(
                 // A corner drag is explicit activation. Ordinary outer edits
                 // preserve a Once cursor, including an exhausted silent tail.
                 placement.mode = AudioViewMode::Repeat;
-                placement.cycle_phase %= view_end - view_start;
+                placement.cycle_phase %= repeat_period.unwrap_or(view_end - view_start);
             }
         }
         AudioViewResizeOperation::CycleEnd { .. } => {
@@ -1693,16 +1710,32 @@ pub fn preview_view_resize(
                 .ok()
                 .filter(|n| *n > 0)
                 .ok_or(Invalid("audio cycle end must follow selected start"))?;
-            view_end = view_start
+            let requested_end = view_start
                 .checked_add(cycle)
-                .filter(|n| *n <= clock.length())
                 .ok_or(Invalid("audio cycle exceeds its retained root"))?;
+            if requested_end > clock.length() {
+                if !matches!(clock, AudioDomainClock::Frames(_))
+                    || placement.mode != AudioViewMode::Repeat
+                {
+                    return Err(Invalid(
+                        "silent repeat gaps require a forward frame-clock repeat",
+                    ));
+                }
+                if delta >= i128::from(placement.outer_length.length()) {
+                    return Err(Invalid("repeat boundary must remain inside the clip"));
+                }
+                view_end = clock.length();
+                repeat_period = Some(cycle);
+            } else {
+                view_end = requested_end;
+                repeat_period = None;
+            }
             if placement.mode == AudioViewMode::Repeat {
                 placement.cycle_phase %= cycle;
             }
         }
     }
-    let projected = AudioViewProjection::from_parts(
+    let projected = AudioViewProjection::from_parts_with_period(
         clip,
         tempo,
         clock,
@@ -1710,6 +1743,7 @@ pub fn preview_view_resize(
         reference_start_raw.unwrap_or(i128::from(clip.start)),
         Some(placement),
         displacement,
+        repeat_period,
     )?;
     let (frame_start, frame_end) = projected.outer_frame_bounds();
     Ok(AudioViewResize {
@@ -1717,6 +1751,7 @@ pub fn preview_view_resize(
         view_end,
         reference_start_raw,
         placement,
+        repeat_period,
         frame_start,
         frame_end,
         play_start_position: None,
@@ -1731,6 +1766,12 @@ pub(super) fn trim_placement(
     frame: u64,
     tempo: &TempoMap,
 ) -> Result<Clip, Invalid> {
+    if clip
+        .audio_edit()
+        .is_some_and(|edit| edit.repeat_period.is_some())
+    {
+        return Err(Invalid("trimming a silent repeat gap is not yet supported"));
+    }
     let edit = clip
         .audio_edit()
         .ok_or(Invalid("audio placement has no root"))?;
@@ -1856,6 +1897,7 @@ fn materialize_view_resize(
     value.view_end = next.view_end;
     value.set_reference_start_raw(next.reference_start_raw)?;
     value.placement = Some(next.placement);
+    value.repeat_period = next.repeat_period;
     if let Some(content) = next.content_override {
         value.content_view = Some(content);
     } else {

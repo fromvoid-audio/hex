@@ -273,8 +273,12 @@ pub struct AudioProcessingProjection {
 /// With an outer placement, the retained projection also owns its full repeat/
 /// directed read clock. Live musical endpoints plus residuals remain validated
 /// independently; translating a saved frame clock never re-quantizes its seams.
+/// A longer `repeat_period` adds silence after the audible crop. It is valid
+/// only for an undirected frame-clock repeat; the retained source is unchanged.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AudioClipEdit {
+    /// Complete frame-clock repeat period when longer than the retained audible span.
+    pub repeat_period: Option<u64>,
     /// Directed finite outer read law; source processing and editable settings stay live.
     pub content_view: Option<AudioContentView>,
     /// Complete source processing retained after structural song relocation.
@@ -706,6 +710,7 @@ impl AudioClipEdit {
     }
     pub(crate) fn capture(clip: &Clip) -> Self {
         Self {
+            repeat_period: None,
             content_view: None,
             processing_projection: None,
             placement_start_offset: 0,
@@ -1008,6 +1013,26 @@ impl AudioClipEdit {
         tempo: &TempoMap,
         asset_frames: u64,
     ) -> Result<(), Invalid> {
+        if let Some(period) = self.repeat_period
+            && (self
+                .view_end
+                .checked_sub(self.view_start)
+                .is_none_or(|span| period <= span)
+                || !matches!(self.domain.clock, AudioDomainClock::Frames(_))
+                || !matches!(self.timing, AudioClipTiming::Frames)
+                || self.content_view.is_some()
+                || self.processing_projection.is_some()
+                || self.placement.is_none_or(|placement| {
+                    placement.mode != AudioViewMode::Repeat
+                        || period
+                            .checked_sub(placement.cycle_phase)
+                            .is_none_or(|first| {
+                                first == 0 || first >= placement.outer_length.length()
+                            })
+                }))
+        {
+            return Err(Invalid("invalid silent audio repeat period"));
+        }
         if let Some(view) = self.content_view {
             view.validate(self)?;
         }
