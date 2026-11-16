@@ -711,17 +711,24 @@ impl EditorView {
         cx.notify();
     }
 
-    fn commit_locator_name(&mut self, cx: &mut Context<Self>) {
-        if let Some(edit) = self.locators.name.take()
-            && edit.source.current(self)
-        {
-            let text = edit.input.read(cx).text();
+    fn commit_locator_name(&mut self, cx: &mut Context<Self>) -> bool {
+        let Some(edit) = self.locators.name.take() else {
+            return true;
+        };
+        let accepted = if edit.source.current(self) {
+            let text = edit.input.read(cx).text().to_owned();
             self.enqueue(Request::Edit(Command::RenameArrangementLocator {
                 locator: edit.source.id,
-                name: (!text.trim().is_empty()).then(|| text.to_owned()),
-            }));
+                name: (!text.trim().is_empty()).then_some(text),
+            }))
+        } else {
+            true
+        };
+        if !accepted {
+            self.locators.name = Some(edit);
         }
         cx.notify();
+        accepted
     }
 
     pub(super) fn finalize_locator_name_for_open(
@@ -742,7 +749,7 @@ impl EditorView {
             return false;
         }
         self.finish_locator_name(true, window, cx);
-        true
+        self.locators.name.is_none()
     }
 
     pub(super) fn finish_locator_name(
@@ -755,7 +762,9 @@ impl EditorView {
             return false;
         }
         if commit {
-            self.commit_locator_name(cx);
+            if !self.commit_locator_name(cx) {
+                return true;
+            }
         } else {
             self.locators.name = None;
         }
@@ -1918,6 +1927,59 @@ mod tests {
         }
         editor.read_with(&visual, |view, _| {
             assert_eq!(view.playback_start_frame(), 90_000)
+        });
+    }
+
+    #[gpui::test]
+    fn refused_locator_rename_retains_draft_for_retry(cx: &mut TestAppContext) {
+        use crate::editor::drag::group_drag_ui_test::fixture;
+        let (_files, window, editor, _) = fixture(cx);
+        let mut visual = VisualTestContext::from_window(window, cx);
+        editor.update(&mut visual, |view, _| {
+            assert!(view.enqueue(Request::Edit(Command::AddArrangementLocator {
+                frame: 48_000
+            })));
+            let event = next_terminal(view);
+            assert!(event.error.is_none());
+            view.receive(event);
+        });
+        visual.update(|window, cx| {
+            editor.update(cx, |view, cx| {
+                let state = view.state.as_ref().unwrap();
+                let source = Source {
+                    generation: view.project_generation,
+                    revision: state.revision,
+                    id: state.project.arrangement_locators()[0].id(),
+                };
+                view.begin_locator_name(source, window, cx);
+                let input = view.locators.name.as_ref().unwrap().input.clone();
+                input.update(cx, |input, cx| input.set_text("chorus", cx));
+                for _ in 0..super::super::UI_REQUEST_CAPACITY {
+                    view.pending_requests.push_back(Request::Undo);
+                }
+                assert!(view.finish_locator_name(true, window, cx));
+                assert_eq!(
+                    view.locators.name.as_ref().unwrap().input.read(cx).text(),
+                    "chorus"
+                );
+                assert!(view.error.is_some());
+                assert_eq!(
+                    view.state.as_ref().unwrap().project.arrangement_locators()[0].name(),
+                    None
+                );
+                view.pending_requests.clear();
+            });
+        });
+        visual.simulate_keystrokes("enter");
+        editor.update(&mut visual, |view, _| {
+            let event = next_terminal(view);
+            assert!(event.error.is_none());
+            view.receive(event);
+            assert_eq!(
+                view.state.as_ref().unwrap().project.arrangement_locators()[0].name(),
+                Some("chorus")
+            );
+            assert!(view.locators.name.is_none());
         });
     }
 
