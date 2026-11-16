@@ -4306,3 +4306,211 @@ fn native_vst3_instrument_and_streamed_audio_export() {
     assert_eq!(h.plugin_progress.lock().unwrap().binding, live);
     assert_eq!(fs::read(source).unwrap().len(), 44 + 16_384 * 2);
 }
+
+#[test]
+#[ignore = "requires an explicitly selected installed instrument, catalog and native helper"]
+fn installed_instrument_and_effect_export_with_streamed_audio() {
+    use hex_session::service::{ExportControl, ExportSignal};
+    let _native = native_fixture();
+    let bundle = std::env::var("HEX_TEST_VST3_INSTRUMENT_BUNDLE").unwrap();
+    let original_catalog =
+        PathBuf::from(std::env::var_os("HEX_TEST_VST3_INSTRUMENT_CATALOG").unwrap());
+    let instrument = installed_selection(
+        &original_catalog,
+        &bundle,
+        hex_plugin_catalog::PluginRole::Instrument,
+    );
+    let files = Files::new();
+    let root = files.0.canonicalize().unwrap();
+    let catalog = root.join("plugin-catalog.json");
+    fs::copy(&original_catalog, &catalog).unwrap();
+    let mut effect = selection();
+    let module = root.join("original-effect.vst3");
+    super::ui::copy_original_module(&effect.module, &module);
+    effect.module = module;
+    hex_ui::write_plugin_effect_test_catalog(&root, &effect, "Fx", 0).unwrap();
+    let recovery = root.join("recovery");
+    fs::create_dir(&recovery).unwrap();
+    let mut h = ResidentHarness::with_plugins_at_rate_and_catalog_recovery(
+        host(),
+        None,
+        48_000,
+        8_192,
+        catalog,
+        recovery.join("mixed-export.hex-journal"),
+    );
+    assert!(h.next().error.is_none());
+    let (applied, _) = h.applied(0);
+    let source = files.wav(48_000, 16_384);
+    let source_bytes = fs::read(&source).unwrap();
+    let imported = h.run(Request::ImportToNewTrack {
+        path: source.clone(),
+        before_track: None,
+        start: 0,
+    });
+    let (applied, _) = h.applied(applied);
+    let audio_track = imported.state.project.tracks()[0].id();
+    let mut insertion = request(&imported.state, PluginEffectDestination::Track(audio_track));
+    insertion.selection = effect;
+    h.service
+        .submit(Request::InsertPluginEffect(insertion))
+        .unwrap();
+    let effected = terminal(&mut h);
+    assert!(effected.error.is_none(), "{:?}", effected.error);
+    let (applied, _) = h.applied(applied);
+    let added = h.run(Request::Edit(Command::AddMidiTrack {
+        name: "instrument".into(),
+    }));
+    let Some(Created::Track(track)) = added.created else {
+        panic!("midi track")
+    };
+    let (applied, _) = h.applied(applied);
+    let placed = h.run(Request::Edit(Command::PlaceMidiClip {
+        track,
+        start: BeatTime::ZERO,
+        length: BeatTime::ONE,
+    }));
+    let Some(Created::Clip(clip)) = placed.created else {
+        panic!("midi clip")
+    };
+    let (applied, _) = h.applied(applied);
+    let note = h.run(Request::Edit(Command::AddMidiNote {
+        clip,
+        start: BeatTime::ZERO,
+        duration: BeatTime::from_ratio(1, 2).unwrap(),
+        pitch: 60,
+        channel: 0,
+        velocity: 100,
+    }));
+    let (applied, _) = h.applied(applied);
+    let mut insertion = request(&note.state, PluginEffectDestination::Instrument(track));
+    insertion.selection = instrument;
+    h.service
+        .submit(Request::InsertPluginEffect(insertion))
+        .unwrap();
+    let inserted = terminal(&mut h);
+    assert!(inserted.error.is_none(), "{:?}", inserted.error);
+    let (applied, _) = h.applied(applied);
+    let before = Arc::clone(&inserted.state.project);
+    let path = root.join("mixed.wav");
+    let control = ExportControl::default();
+    let queued = super::super::resident_sections::run_callback(
+        &mut h,
+        Request::ExportRange {
+            path: path.clone(),
+            start: 0,
+            frames: Some(1024),
+            signal: ExportSignal::Main,
+            control: control.clone(),
+            format: hex_export::ExportFormat::Pcm16,
+            overwrite: false,
+        },
+    );
+    assert!(queued.error.is_none(), "{:?}", queued.error);
+    let until = Instant::now() + Duration::from_secs(10);
+    let result = loop {
+        h.pump();
+        h.render();
+        if let Ok(event) = h.service.try_export_event() {
+            break event.result;
+        }
+        assert!(
+            Instant::now() < until,
+            "mixed export timed out: {:?}",
+            control.progress()
+        );
+        std::thread::yield_now();
+    };
+    assert_eq!(result.expect("mixed VST export").frames, 1024);
+    let wav = fs::read(path).unwrap();
+    assert_eq!(wav.len(), 44 + 1024 * 4);
+    assert!(
+        wav[44..]
+            .chunks_exact(4)
+            .any(|frame| i16::from_le_bytes([frame[0], frame[1]]) != 0)
+    );
+    assert_eq!(queued.state.project, before);
+    assert_eq!(fs::read(&source).unwrap(), source_bytes);
+    let muted = h.run(Request::Edit(Command::Mute { track, muted: true }));
+    h.applied(applied);
+    let silent_instrument_path = root.join("muted-instrument.wav");
+    let muted_queued = super::super::resident_sections::run_callback(
+        &mut h,
+        Request::ExportRange {
+            path: silent_instrument_path.clone(),
+            start: 0,
+            frames: Some(1024),
+            signal: ExportSignal::Main,
+            control: ExportControl::default(),
+            format: hex_export::ExportFormat::Pcm16,
+            overwrite: false,
+        },
+    );
+    assert!(muted_queued.error.is_none(), "{:?}", muted_queued.error);
+    let until = Instant::now() + Duration::from_secs(10);
+    let result = loop {
+        h.pump();
+        h.render();
+        if let Ok(event) = h.service.try_export_event() {
+            break event.result;
+        }
+        assert!(Instant::now() < until, "muted export timed out");
+        std::thread::yield_now();
+    };
+    assert_eq!(result.expect("muted export").frames, 1024);
+    let without_instrument = fs::read(silent_instrument_path).unwrap();
+    assert!(
+        without_instrument[44..]
+            .chunks_exact(4)
+            .any(|frame| (1000..=7000).contains(&i16::from_le_bytes([frame[0], frame[1]]))),
+        "effect must audibly process the streamed source"
+    );
+    assert_ne!(
+        &wav[44..],
+        &without_instrument[44..],
+        "instrument must change the rendered mix"
+    );
+    assert_eq!(muted_queued.state.project, muted.state.project);
+    for changed in [false, true] {
+        if changed {
+            let mut altered = source_bytes.clone();
+            altered[48] ^= 1;
+            fs::write(&source, altered).unwrap();
+        }
+        let destination = root.join("existing.wav");
+        fs::write(&destination, b"preserve existing").unwrap();
+        let control = ExportControl::default();
+        if !changed {
+            assert!(control.cancel());
+        }
+        let refused = super::super::resident_sections::run_callback(
+            &mut h,
+            Request::ExportRange {
+                path: destination.clone(),
+                start: 0,
+                frames: Some(1024),
+                signal: ExportSignal::Main,
+                control,
+                format: hex_export::ExportFormat::Pcm16,
+                overwrite: true,
+            },
+        );
+        assert_eq!(refused.state.project, muted.state.project);
+        let until = Instant::now() + Duration::from_secs(10);
+        let result = loop {
+            h.pump();
+            h.render();
+            if let Ok(event) = h.service.try_export_event() {
+                break event.result;
+            }
+            assert!(Instant::now() < until, "refused export timed out");
+            std::thread::yield_now();
+        };
+        assert!(result.is_err());
+        assert_eq!(fs::read(destination).unwrap(), b"preserve existing");
+        if changed {
+            fs::write(&source, &source_bytes).unwrap();
+        }
+    }
+    assert_eq!(fs::read(source).unwrap(), source_bytes);
+}
