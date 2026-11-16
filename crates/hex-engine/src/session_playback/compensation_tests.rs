@@ -1124,13 +1124,15 @@ fn paused_source_monitor_preserves_buffered_arrangement_audio() {
         actual.render(&mut got).unwrap();
         oracle.render(&mut expected).unwrap();
         assert!(expected.iter().any(|frame| *frame != [0.0; 2]));
-        if got != expected {
-            mismatches.push((keyboard, partition));
+        let leaked_while_paused = monitored.iter().any(|frame| *frame != [0.0; 2]);
+        let resume_differs = got != expected;
+        if leaked_while_paused || resume_differs {
+            mismatches.push((keyboard, partition, leaked_while_paused, resume_differs));
         }
     }
     assert!(
         mismatches.is_empty(),
-        "resume PCM differs for (keyboard active, paused partition) {mismatches:?}"
+        "mismatches: (keyboard active, paused partition, leaked, resume differs) {mismatches:?}"
     );
 }
 
