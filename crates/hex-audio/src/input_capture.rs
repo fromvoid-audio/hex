@@ -10,9 +10,13 @@
 //! started callback can finish its bounded block. Input capture times are not
 //! Arrangement clock mappings.
 use crate::input_devices::InputDeviceId;
+mod coordinated;
 mod take;
 mod take_alignment;
 mod timeline_overlap;
+pub use coordinated::{
+    CoordinatedFailure, CoordinatedJob, CoordinatedOutcome, spawn_coordinated_take,
+};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use rtrb::{Consumer, Producer, RingBuffer};
 use std::{
