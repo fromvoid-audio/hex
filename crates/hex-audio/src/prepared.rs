@@ -10288,6 +10288,7 @@ mod tests {
                 },
                 sample_rate: 48_000,
                 frames: 16,
+                preroll_frames: 0,
                 timing: vec![InputTiming {
                     take_start: 0,
                     frames: 16,

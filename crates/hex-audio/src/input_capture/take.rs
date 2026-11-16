@@ -47,6 +47,8 @@ pub struct InputTake {
     pub input_config: InputConfig,
     pub sample_rate: u32,
     pub frames: u64,
+    /// Input frames observed before the coordinator declared recording ready.
+    pub preroll_frames: u64,
     pub timing: Vec<InputTiming>,
     pub end: InputTakeEnd,
     /// Backend detail, when opening or starting the input failed.
@@ -62,14 +64,27 @@ pub fn write_input_take(mut capture: InputCapture, path: &Path) -> io::Result<In
     let (device, config) = capture.source();
     let device = device.clone();
     let rate = config.sample_rate;
+    let preroll_frames = capture.preroll_frames;
+    let first = capture
+        .prefetched
+        .as_ref()
+        .map(|block| (block.sequence, block.offset_frames));
     let file = open_take(path)?;
-    let result = run(&mut capture, file, rate, MAX_TIMING, MAX_FRAMES)?;
+    let result = run_from(
+        &mut capture,
+        file,
+        rate,
+        MAX_TIMING,
+        MAX_FRAMES,
+        first.unwrap_or((0, 0)),
+    )?;
     Ok(InputTake {
         path: path.to_owned(),
         input_device: device,
         input_config: config,
         sample_rate: rate,
         frames: result.frames,
+        preroll_frames,
         timing: result.timing,
         end: result.end,
         open_error: capture.take_open_error_on_control(),
@@ -91,18 +106,29 @@ impl Source for InputCapture {
     fn start(&mut self) {
         loop {
             match self.phase() {
-                super::InputPhase::Opening => thread::sleep(Duration::from_millis(1)),
+                super::InputPhase::Opening | super::InputPhase::Starting => {
+                    thread::sleep(Duration::from_millis(1));
+                }
                 super::InputPhase::Ready => {
-                    if self.start_on_control() {
-                        break;
-                    }
+                    self.start_on_control();
                 }
                 _ => break,
             }
         }
+        if let Some(ready) = &self.recording_ready
+            && self.shared.phase.load(std::sync::atomic::Ordering::Acquire) == super::CAPTURING
+            && !self.shared.stop.load(std::sync::atomic::Ordering::Acquire)
+        {
+            let _ = ready.compare_exchange(
+                0,
+                1,
+                std::sync::atomic::Ordering::AcqRel,
+                std::sync::atomic::Ordering::Acquire,
+            );
+        }
     }
     fn read(&mut self) -> Result<Option<Block<Self::Stamp>>, InputEnd> {
-        super::read(&mut self.input, &self.shared)
+        self.read_block()
     }
     fn stop(&self) {
         self.stop_on_control();
@@ -128,12 +154,24 @@ struct ResultTake<T> {
     end: InputTakeEnd,
 }
 
+#[cfg(test)]
 fn run<S: Source, W: Output>(
+    source: &mut S,
+    file: W,
+    rate: u32,
+    timing_limit: usize,
+    frame_limit: u64,
+) -> io::Result<ResultTake<S::Stamp>> {
+    run_from(source, file, rate, timing_limit, frame_limit, (0, 0))
+}
+
+fn run_from<S: Source, W: Output>(
     source: &mut S,
     mut file: W,
     rate: u32,
     timing_limit: usize,
     frame_limit: u64,
+    first: (u64, u32),
 ) -> io::Result<ResultTake<S::Stamp>> {
     if !(8_000..=192_000).contains(&rate) {
         source.stop();
@@ -148,7 +186,7 @@ fn run<S: Source, W: Output>(
     }
     source.start();
     let mut frames = 0_u64;
-    let mut sequence = 0_u64;
+    let mut sequence = first.0;
     let mut timing: Vec<InputTiming<S::Stamp>> = Vec::new();
     let mut encoded = [0_u8; FRAMES * FRAME_BYTES as usize];
     let end = loop {
@@ -177,8 +215,9 @@ fn run<S: Source, W: Output>(
             && block.sequence == sequence
             && block.pcm[..count].iter().flatten().all(|v| v.is_finite());
         let new_callback = block.offset_frames == 0;
+        let first_packet = timing.is_empty();
         let ordered = match timing.last() {
-            None => new_callback,
+            None => block.offset_frames == first.1,
             Some(last) if new_callback => block.stamp >= last.captured_at,
             Some(last) => {
                 block.stamp == last.captured_at
@@ -196,11 +235,11 @@ fn run<S: Source, W: Output>(
             source.stop();
             break InputTakeEnd::WavLimit;
         }
-        if new_callback && timing.len() == timing_limit {
+        if (new_callback || first_packet) && timing.len() == timing_limit {
             source.stop();
             break InputTakeEnd::TimingLimit;
         }
-        if new_callback && timing.try_reserve(1).is_err() {
+        if (new_callback || first_packet) && timing.try_reserve(1).is_err() {
             source.stop();
             break InputTakeEnd::Storage(io::Error::other("could not reserve input timing index"));
         }
@@ -212,7 +251,7 @@ fn run<S: Source, W: Output>(
             source.stop();
             break InputTakeEnd::Storage(error);
         }
-        if new_callback {
+        if new_callback || first_packet {
             timing.push(InputTiming {
                 take_start: frames,
                 frames: count as u32,
@@ -364,6 +403,38 @@ mod tests {
     }
 
     #[test]
+    fn prefetched_mid_callback_preserves_offsets_pcm_and_sequence_checks() {
+        let temp = Temp::new();
+        let samples = [[0.25, 0.25], [0.5, -0.5], [-0.75, 0.75]];
+        let mut input = source(
+            vec![
+                block(7, 10, 64, &samples[..2]),
+                block(8, 10, 66, &samples[2..]),
+                block(10, 20, 0, &samples[..1]), // a missing packet must still fail
+            ],
+            InputEnd::Stopped,
+        );
+        let take = run_from(&mut input, temp.file(), 48_000, 8, MAX_FRAMES, (7, 64)).unwrap();
+        assert!(matches!(take.end, InputTakeEnd::InvalidPacket));
+        assert_eq!(take.frames, 3);
+        assert_eq!(
+            take.timing,
+            vec![InputTiming {
+                take_start: 0,
+                frames: 3,
+                captured_at: 10,
+                offset_frames: 64
+            }]
+        );
+        let mut wav = hex_media::WavFrameReader::open(
+            &temp.0,
+            hex_media::WavReaderLimits::new(1_024, 4, 32, 4),
+        )
+        .unwrap();
+        assert_eq!(wav.read_frames(0, 3).unwrap(), samples);
+    }
+
+    #[test]
     fn gaps_invalid_samples_and_index_pressure_stop_with_a_valid_prefix() {
         for (second, limit, timing_limit) in [
             (block(2, 20, 0, &[[0.4, 0.4]]), false, 8),
@@ -474,6 +545,9 @@ mod tests {
             shared,
             worker: thread::spawn(|| {}),
             error,
+            prefetched: None,
+            preroll_frames: 0,
+            recording_ready: None,
         };
         let take = write_input_take(capture, &temp.0).unwrap();
         assert!(matches!(
