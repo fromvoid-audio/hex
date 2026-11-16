@@ -1206,9 +1206,13 @@ impl SessionPlayback {
             cold_added_track(new, old)
                 .or_else(|| cold_added_track(old, new))
                 .or_else(|| {
-                    (same_base_timing && old_loop_region.is_none() && new_loop_region.is_none())
-                        .then(|| future_audio_track(new, old, previous.arrangement_frame))
-                        .flatten()
+                    (same_base_timing
+                        && old_loop_region.is_none()
+                        && new_loop_region.is_none()
+                        && !self.revision.contains_streamed_sources()
+                        && !previous.revision.contains_streamed_sources())
+                    .then(|| future_audio_track(new, old, previous.arrangement_frame))
+                    .flatten()
                 })
         });
         let compensation_pair = self
