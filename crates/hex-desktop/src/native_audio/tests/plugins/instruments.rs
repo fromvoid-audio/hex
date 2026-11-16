@@ -124,6 +124,7 @@ fn slow_native_instrument_exchange_reaches_the_session_log() {
     }
     let number = |name: &str| -> u64 {
         line.split_whitespace()
+            .rev()
             .find_map(|field| field.strip_prefix(name))
             .unwrap()
             .parse()
