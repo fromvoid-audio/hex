@@ -1380,6 +1380,33 @@ impl WorkerAudioSink for NativeAudioSink {
     fn take_plugin_parameters(&mut self) -> Option<hex_session::service::PluginParameterResult> {
         self.plugins.take_parameters()
     }
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn query_plugin_parameter_conversion(
+        &mut self,
+        query: hex_session::service::PluginParameterConversionQuery,
+    ) -> Result<(), String> {
+        let control = self
+            .output
+            .as_mut()
+            .and_then(|output| output.publication.control())
+            .ok_or("native output unavailable")?;
+        self.plugins.query_parameter_conversion(control, query)
+    }
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn plugin_parameter_conversion_ready(&self) -> bool {
+        self.plugins.parameter_conversion_ready()
+    }
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn take_plugin_parameter_conversion(
+        &mut self,
+    ) -> Option<hex_session::service::PluginParameterConversionResult> {
+        let output = self
+            .output
+            .as_mut()
+            .and_then(|output| output.publication.control())
+            .and_then(|control| control.output_identity());
+        self.plugins.take_parameter_conversion(output)
+    }
     fn finish_plugin_effect(
         &mut self,
         control: &Arc<hex_session::service::PluginEffectControl>,

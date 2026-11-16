@@ -115,8 +115,9 @@ mod project_save;
 pub use project_save::sample_take_root;
 mod recording_barrier;
 pub use plugin_parameters::{
-    PluginParameterQuery, PluginParameterResult, PluginParameterRow, vst3_automation_class,
-    vst3_parameter_cache_key,
+    PluginParameterConversion, PluginParameterConversionQuery, PluginParameterConversionResult,
+    PluginParameterConvertedValue, PluginParameterQuery, PluginParameterResult, PluginParameterRow,
+    PluginParameterText, vst3_automation_class, vst3_parameter_cache_key,
 };
 pub use plugin_state_save::{PluginStateCapture, PluginStateCaptureInput};
 pub mod diagnostics;
@@ -347,6 +348,7 @@ pub struct Event {
     /// state and unrelated completions still follow the normal ordered contract.
     pub plugin_parameter_observation: bool,
     pub plugin_parameters: Option<PluginParameterResult>,
+    pub plugin_parameter_conversion: Option<PluginParameterConversionResult>,
     pub computer_keyboard_complete: Option<u64>,
     /// Exact terminal for a retained MIDI take commit, including refusal.
     pub midi_take_complete: Option<MidiTakeCompletion>,
@@ -863,6 +865,8 @@ pub enum Request {
     ContinuePluginEditor,
     QueryPluginParameters(PluginParameterQuery),
     ContinuePluginParameters,
+    QueryPluginParameterConversion(PluginParameterConversionQuery),
+    ContinuePluginParameterConversion,
     /// Internal fresh-output state restoration; no authored edit or revision.
     ContinuePluginStateRestore,
     /// Catalog effect insertion; defaults and target admission belong to the worker.
@@ -1233,6 +1237,8 @@ impl Request {
             self,
             Self::QueryPluginParameters(_)
                 | Self::ContinuePluginParameters
+                | Self::QueryPluginParameterConversion(_)
+                | Self::ContinuePluginParameterConversion
                 | Self::QueryFailedPluginAutomation { .. }
                 | Self::InspectSealedAutomationRecovery { .. }
                 | Self::QueryDeviceAutomationCloseSafety { .. }
@@ -2897,6 +2903,7 @@ fn run_worker(
                 plugin_effect_complete: Vec::new(),
                 plugin_parameter_observation: false,
                 plugin_parameters: None,
+                plugin_parameter_conversion: None,
                 computer_keyboard_complete: None,
                 midi_take_complete: None,
                 device_automation_take_complete: None,
@@ -2941,6 +2948,7 @@ fn run_worker(
             plugin_effect_complete: Vec::new(),
             plugin_parameter_observation: false,
             plugin_parameters: None,
+            plugin_parameter_conversion: None,
             computer_keyboard_complete: None,
             midi_take_complete: None,
             device_automation_take_complete: None,
@@ -3493,12 +3501,14 @@ fn run_worker(
                 | Request::ContinuePluginEditor
                 | Request::ContinuePluginEditorRecording { .. }
                 | Request::ContinuePluginParameters
+                | Request::ContinuePluginParameterConversion
                 | Request::ContinuePluginStateRestore
                 | Request::ContinueStoppedPlaybackRestore
         );
         let mut plugin_effect_complete = Vec::new();
         let plugin_parameter_observation = request.is_read_only_observation();
         let mut plugin_parameters = None;
+        let mut plugin_parameter_conversion = None;
         let mut sampler_edit_complete = None;
         if matches!(
             &request,
@@ -5279,6 +5289,8 @@ fn run_worker(
                     | Request::ContinuePluginEditor
                     | Request::QueryPluginParameters(_)
                     | Request::ContinuePluginParameters
+                    | Request::QueryPluginParameterConversion(_)
+                    | Request::ContinuePluginParameterConversion
                     | Request::ContinuePluginStateRestore
                     | Request::PrepareComputerKeyboard { .. }
                     | Request::AssignSampler { .. }
@@ -5969,6 +5981,45 @@ fn run_worker(
                     plugin_parameters = events
                         .sampler_edit_audio()
                         .and_then(|audio| audio.take_plugin_parameters());
+                }
+                Request::QueryPluginParameterConversion(query) => {
+                    let result = if query.context.project_generation != project_generation
+                        || query.context.editor_revision != revision
+                        || !session
+                            .project()
+                            .device(query.device)
+                            .is_some_and(|device| {
+                                device.state().type_id().as_str() == Ok("hex.vst3")
+                            }) {
+                        Err("vst3 parameter target changed".into())
+                    } else {
+                        events
+                            .sampler_edit_audio()
+                            .ok_or_else(|| "vst3 conversion unavailable for this output".to_owned())
+                            .and_then(|audio| {
+                                audio.query_plugin_parameter_conversion(query.clone())
+                            })
+                    };
+                    if let Err(reason) = result {
+                        plugin_parameter_conversion = Some(PluginParameterConversionResult {
+                            query,
+                            value: Err(reason),
+                        });
+                    }
+                }
+                Request::ContinuePluginParameterConversion => {
+                    plugin_parameter_conversion = events
+                        .sampler_edit_audio()
+                        .and_then(|audio| audio.take_plugin_parameter_conversion());
+                    if let Some(result) = &mut plugin_parameter_conversion
+                        && (result.query.context.project_generation != project_generation
+                            || result.query.context.editor_revision != revision
+                            || !session.project().device(result.query.device).is_some_and(
+                                |device| device.state().type_id().as_str() == Ok("hex.vst3"),
+                            ))
+                    {
+                        result.value = Err("vst3 parameter target changed".into());
+                    }
                 }
                 request @ (Request::InsertPluginEffect(_) | Request::ContinuePluginEffect) => {
                     if let Request::InsertPluginEffect(insertion) = request {
@@ -10406,6 +10457,7 @@ fn run_worker(
             plugin_effect_complete,
             plugin_parameter_observation,
             plugin_parameters,
+            plugin_parameter_conversion,
             computer_keyboard_complete,
             midi_take_complete,
             device_automation_take_complete,

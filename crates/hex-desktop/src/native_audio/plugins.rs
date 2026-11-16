@@ -15,6 +15,7 @@ use hex_session::service::{
 mod degraded;
 mod editor;
 pub(super) mod editor_recording;
+mod parameter_conversion;
 mod parameter_gesture;
 mod parameters;
 mod restore;
@@ -147,6 +148,7 @@ pub(super) struct Plugins {
     pending: Option<Pending>,
     editor: Option<editor::EditorOperation>,
     parameters: Option<parameters::Inventory>,
+    parameter_conversion: Option<parameter_conversion::Conversion>,
     observed_parameters: Vec<parameters::ObservedInventory>,
     parameter_gesture: Option<parameter_gesture::Gesture>,
     editor_recording: Option<editor_recording::Recording>,
@@ -245,6 +247,9 @@ impl Plugins {
         if let Some(parameters) = &mut self.parameters {
             parameters.output_closed();
         }
+        if let Some(conversion) = &mut self.parameter_conversion {
+            conversion.output_closed();
+        }
         self.configured = false;
         self.observed_parameters.clear();
         if let Some(gesture) = self.parameter_gesture.as_mut() {
@@ -339,6 +344,7 @@ impl Plugins {
             && self.editor.is_none()
             && self.editor_recording.is_none()
             && self.parameters.is_none()
+            && self.parameter_conversion.is_none()
             && self.restore.is_none()
             && !self.parameter_override_cleanup_pending()
             && self.reopen.is_none()
@@ -590,6 +596,7 @@ impl Plugins {
         };
         self.poll_editor(control, context, desired);
         self.poll_parameters(control, context);
+        self.poll_parameter_conversion(control, context);
         self.poll_parameter_override(control, context);
         self.poll_restore(control, context);
         if let Some(output) = control.output_identity()

@@ -1706,6 +1706,20 @@ impl WorkerAudioSink for ResidentSink {
     fn take_plugin_parameters(&mut self) -> Option<hex_session::service::PluginParameterResult> {
         self.inner.take_plugin_parameters()
     }
+    fn query_plugin_parameter_conversion(
+        &mut self,
+        query: hex_session::service::PluginParameterConversionQuery,
+    ) -> Result<(), String> {
+        self.inner.query_plugin_parameter_conversion(query)
+    }
+    fn plugin_parameter_conversion_ready(&self) -> bool {
+        self.inner.plugin_parameter_conversion_ready()
+    }
+    fn take_plugin_parameter_conversion(
+        &mut self,
+    ) -> Option<hex_session::service::PluginParameterConversionResult> {
+        self.inner.take_plugin_parameter_conversion()
+    }
     fn plugin_editor_ready(&self) -> bool {
         self.inner.plugin_editor_ready()
     }
