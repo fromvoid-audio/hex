@@ -2180,8 +2180,8 @@ impl EditorView {
         self.submit_section(command, display, self.project_generation, state.revision);
     }
 
-    /// Admit one queued keyboard duplicate only against the exact committed
-    /// predecessor. Both FIFO receipts retain their own terminal custody.
+    /// Admit one queued duplicate of the same source only against the exact
+    /// committed predecessor. Both FIFO receipts retain their terminal custody.
     fn start_ahead_section_duplicate(&mut self) {
         if self.sections.ahead.is_some()
             || self.worker_requests_pending != 1
@@ -2194,8 +2194,12 @@ impl EditorView {
         let Some(primary) = self.sections.pending.as_ref() else {
             return;
         };
-        let Command::DuplicateArrangementSection(section) = primary.command else {
-            return;
+        let section = match &primary.command {
+            Command::DuplicateArrangementSection(section) => *section,
+            command => match copied_section_source(command) {
+                Some(section) => section,
+                None => return,
+            },
         };
         let Some(queued) = self.sections.queued.as_ref() else {
             return;
@@ -2217,6 +2221,9 @@ impl EditorView {
         }) else {
             return;
         };
+        if view.project.arrangement_section(section).is_none() {
+            return;
+        }
         let revision = view.revision;
         let command = queued.command.clone();
         self.sections.ahead = Some(Pending {
@@ -6670,11 +6677,29 @@ pub(super) mod tests {
 
     #[gpui::test]
     fn newer_selection_does_not_admit_an_ahead_section_copy(cx: &mut TestAppContext) {
+        newer_selection_rejects_ahead_section_copy(cx, false);
+    }
+
+    #[gpui::test]
+    fn newer_selection_does_not_admit_a_duplicate_after_pointer_copy(cx: &mut TestAppContext) {
+        newer_selection_rejects_ahead_section_copy(cx, true);
+    }
+
+    fn newer_selection_rejects_ahead_section_copy(cx: &mut TestAppContext, pointer_first: bool) {
         let (handle, editor, ids) = fixture(cx);
         let mut visual = VisualTestContext::from_window(handle, cx);
         editor.update(&mut visual, |view, _| {
             view.select_section_metadata(Some(ids[0]));
-            view.section_metadata(Command::DuplicateArrangementSection(ids[0]));
+            let first = if pointer_first {
+                Command::DuplicateArrangementSectionAt {
+                    section: ids[0],
+                    target: ids[0],
+                    after: true,
+                }
+            } else {
+                Command::DuplicateArrangementSection(ids[0])
+            };
+            view.section_metadata(first);
             view.section_metadata(Command::DuplicateArrangementSection(ids[0]));
         });
         let deadline = crate::test_wait::hang_deadline();
@@ -6699,6 +6724,41 @@ pub(super) mod tests {
             assert_eq!(view.sections.selected, Some(ids[1]));
             // The already requested command remains in the ordinary queue.
             assert!(view.sections.queued.is_some());
+        });
+    }
+
+    #[gpui::test]
+    fn pointer_copy_keeps_a_different_queued_duplicate_ordered(cx: &mut TestAppContext) {
+        let (handle, editor, ids) = fixture(cx);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        editor.update(&mut visual, |view, _| {
+            view.select_section_metadata(Some(ids[0]));
+            view.section_metadata(Command::DuplicateArrangementSectionAt {
+                section: ids[0],
+                target: ids[0],
+                after: true,
+            });
+            view.section_metadata(Command::DuplicateArrangementSection(ids[1]));
+        });
+        let deadline = crate::test_wait::hang_deadline();
+        let first = loop {
+            if let Ok(view) =
+                editor.read_with(&visual, |view, _| view.service.try_arrangement_edit_view())
+            {
+                break view;
+            }
+            assert!(Instant::now() < deadline, "first section view");
+            std::thread::yield_now();
+        };
+        let terminal = editor.read_with(&visual, |view, _| next(&view.service));
+        editor.update(&mut visual, |view, _| {
+            assert!(view.observe_duplicate_view(first));
+            assert!(
+                view.sections.ahead.is_none(),
+                "different source must not be admitted ahead"
+            );
+            assert!(view.sections.queued.is_some());
+            view.receive(terminal);
         });
     }
 
@@ -6910,11 +6970,30 @@ pub(super) mod tests {
 
     #[gpui::test]
     fn held_recovery_allows_next_section_copy_and_applied_play(cx: &mut TestAppContext) {
+        held_recovery_allows_queued_duplicate(cx, 0);
+    }
+
+    #[gpui::test]
+    fn held_pointer_copy_allows_queued_duplicate_and_applied_play(cx: &mut TestAppContext) {
+        held_recovery_allows_queued_duplicate(cx, 1);
+    }
+
+    #[gpui::test]
+    fn held_append_copy_allows_queued_duplicate_and_applied_play(cx: &mut TestAppContext) {
+        held_recovery_allows_queued_duplicate(cx, 2);
+    }
+
+    #[gpui::test]
+    fn held_replacement_copy_allows_queued_duplicate_and_applied_play(cx: &mut TestAppContext) {
+        held_recovery_allows_queued_duplicate(cx, 3);
+    }
+
+    fn held_recovery_allows_queued_duplicate(cx: &mut TestAppContext, copy_kind: u8) {
         use std::sync::atomic::Ordering::Acquire;
 
         let environment = super::super::test_environment::Environment::new().unwrap();
         let recovery = environment.root().join("held-section.hex-journal");
-        let commands = vec![
+        let mut commands = vec![
             Command::AddTrack {
                 name: "track".into(),
             },
@@ -6925,6 +7004,14 @@ pub(super) mod tests {
                 end: BeatTime::from_quarters(12).unwrap(),
             },
         ];
+        if copy_kind == 3 {
+            commands.push(Command::AddArrangementSection {
+                name: "target".into(),
+                color: ElementColor::Blue,
+                start: BeatTime::from_quarters(12).unwrap(),
+                end: BeatTime::from_quarters(16).unwrap(),
+            });
+        }
         let mut fixture = super::super::worker_ui_fixture::open_with_section_and_recovery(
             cx,
             commands,
@@ -6942,7 +7029,30 @@ pub(super) mod tests {
             view.play_start_at_beginning = false;
             let expected = view.playback_start_frame();
             let revision = view.state.as_ref().unwrap().revision;
-            view.section_metadata(Command::DuplicateArrangementSection(section));
+            let first = if copy_kind == 1 {
+                Command::DuplicateArrangementSectionAt {
+                    section,
+                    target: section,
+                    after: true,
+                }
+            } else if copy_kind == 2 {
+                Command::AppendArrangementSectionCopy {
+                    section,
+                    start: BeatTime::from_quarters(16).unwrap(),
+                    gap_name: "gap".into(),
+                    gap_color: ElementColor::Blue,
+                }
+            } else if copy_kind == 3 {
+                let target = view.state.as_ref().unwrap().project.arrangement_sections()[1].id();
+                Command::ReplaceArrangementSection {
+                    source: section,
+                    target,
+                    copy: true,
+                }
+            } else {
+                Command::DuplicateArrangementSection(section)
+            };
+            view.section_metadata(first);
             view.section_metadata(Command::DuplicateArrangementSection(section));
             (revision, expected)
         });
@@ -6984,6 +7094,12 @@ pub(super) mod tests {
             );
             std::thread::yield_now();
         }
+        let first_copy = match &first.as_ref().unwrap().kind {
+            hex_session::service::ArrangementEditViewKind::Duplicate(
+                hex_project::Created::ArrangementSection(id),
+            ) => *id,
+            _ => panic!("expected first copied section"),
+        };
         editor.update(&mut visual, |view, cx| {
             assert!(
                 view.service.try_event().is_err(),
@@ -7012,6 +7128,21 @@ pub(super) mod tests {
         };
         let committed = second.state.upgrade().unwrap();
         assert_eq!(committed.revision, revision + 2);
+        let expected = if copy_kind != 0 {
+            committed
+                .project
+                .tempo_map()
+                .beat_to_frame(
+                    committed
+                        .project
+                        .arrangement_section(first_copy)
+                        .unwrap()
+                        .start(),
+                )
+                .unwrap()
+        } else {
+            expected
+        };
         editor.update(&mut visual, |view, cx| {
             assert!(
                 view.service.try_event().is_err(),
@@ -7117,8 +7248,28 @@ pub(super) mod tests {
                     .project
                     .arrangement_sections()
                     .len(),
-                2
+                if copy_kind == 2 { 3 } else { 2 }
             )
+        });
+        editor.update(&mut visual, |view, cx| {
+            view.history_action(Request::Redo, cx)
+        });
+        loop {
+            fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+            let redone = editor.update(&mut visual, |view, cx| {
+                view.tick(cx);
+                view.state
+                    .as_ref()
+                    .is_some_and(|state| state.revision == revision + 4)
+            });
+            if redone {
+                break;
+            }
+            assert!(Instant::now() < deadline, "redo after durable copies");
+            std::thread::yield_now();
+        }
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(*view.state.as_ref().unwrap().project, *committed.project);
         });
         fixture.finish(cx);
         drop(environment);
