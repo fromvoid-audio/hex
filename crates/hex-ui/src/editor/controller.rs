@@ -1175,6 +1175,7 @@ impl EditorView {
         visible_change |= self.tick_native_automation_recording();
         visible_change |= self.tick_automation_take_recovery();
         visible_change |= self.tick_midi_recording();
+        visible_change |= self.tick_audio_recording();
         visible_change |= self.tick_sampler_parameter();
         visible_change |= self.tick_computer_keyboard();
         visible_change |= self.tick_tuning_audition();
@@ -1237,6 +1238,16 @@ impl EditorView {
                     }
                     self.midi_service_disconnected();
                     self.gain_take_service_disconnected();
+                    if let Some(path) = self.audio_recorder.pending_commit_path.take() {
+                        self.error = Some(
+                            format!(
+                                "audio recording commit outcome unknown · take retained at {}",
+                                hex_session::service::text::verbatim(path.display())
+                            )
+                            .into(),
+                        );
+                        visible_change = true;
+                    }
                     if self.cancel_new_preparation() {
                         visible_change |= replace_error(
                             &mut self.error,
@@ -2553,6 +2564,7 @@ impl EditorView {
         {
             self.gain_recorder.arm_failed();
         }
+        let mut recorded_audio_failed_path = None;
         if event
             .audio_batch_complete
             .as_ref()
@@ -2562,6 +2574,11 @@ impl EditorView {
                     .is_some_and(|active| Arc::ptr_eq(active, completed))
             })
         {
+            if event.error.is_some() {
+                recorded_audio_failed_path = self.audio_recorder.pending_commit_path.take();
+            } else {
+                self.audio_recorder.pending_commit_path = None;
+            }
             self.audio_batch = None;
             self.audio_batch_progress = None;
         }
@@ -3405,11 +3422,16 @@ impl EditorView {
             self.status = "restarting audio · time will be duplicated when ready".into();
         }
         if let Some(error) = event.error.filter(|_| !recovering_refused_time_copy) {
-            self.error = Some(
-                event
-                    .audio_batch_failure
-                    .map_or_else(|| error.into(), Into::into),
-            );
+            let mut displayed: super::display_error::DisplayError = event
+                .audio_batch_failure
+                .map_or_else(|| error.into(), Into::into);
+            if let Some(path) = recorded_audio_failed_path {
+                displayed = displayed.with_context(&format!(
+                    "take retained at {}",
+                    hex_session::service::text::verbatim(path.display())
+                ));
+            }
+            self.error = Some(displayed);
         } else if let Some(error) = stopped_restore_error {
             self.error = Some(error.into());
         }
@@ -3466,6 +3488,11 @@ impl EditorView {
                 return false;
             }
         };
+        self.enqueue_with_clip_scope(request, false)
+    }
+
+    /// Recorded takes retain their own no-warp policy, not the browser-import preference.
+    pub(super) fn enqueue_recorded_audio(&mut self, request: Request) -> bool {
         self.enqueue_with_clip_scope(request, false)
     }
 
@@ -3715,6 +3742,10 @@ impl EditorView {
             self.error = Some(
                 "finish or explicitly discard the midi take before another project action".into(),
             );
+            return false;
+        }
+        if self.audio_recorder.blocks_edits() {
+            self.error = Some("finish the audio recording before another project action".into());
             return false;
         }
         let own_gain_take = self.pending_gain_take_matches(&request);
@@ -5072,6 +5103,9 @@ impl EditorView {
 
     pub(super) fn stop(&mut self) {
         self.escape_stop_armed = false;
+        if self.finish_audio_recording_before_stop() {
+            return;
+        }
         self.stop_transport(true);
     }
 

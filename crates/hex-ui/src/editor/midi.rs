@@ -594,6 +594,7 @@ impl EditorView {
     pub(super) fn edit_blocked_outside_request_queue(&self) -> bool {
         self.gain_recorder.blocks_edits()
             || self.midi_recorder.blocks_edits()
+            || self.audio_recorder.blocks_edits()
             || self.automation_view.devices.pointer_active()
             || self.sampler_parameter_pending()
             || self.opening_project

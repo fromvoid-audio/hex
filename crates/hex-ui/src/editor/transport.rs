@@ -135,6 +135,26 @@ impl EditorView {
             )
             .child(
                 self.control_icon(
+                    "●a",
+                    self.audio_recorder.label(),
+                    |view, _, cx| {
+                        view.toggle_audio_recording();
+                        cx.notify();
+                    },
+                    cx,
+                )
+                .rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS))
+                .debug_selector(|| "audio-record-toggle".into())
+                .text_color(rgb(theme::color(
+                    if self.audio_recorder.blocks_edits() {
+                        theme::PaletteRole::Recording
+                    } else {
+                        theme::PaletteRole::Muted
+                    },
+                ))),
+            )
+            .child(
+                self.control_icon(
                     "●",
                     self.midi_recorder.label(),
                     |view, _, cx| {

@@ -181,6 +181,7 @@ impl EditorView {
         }
         if self.edit_pending()
             || self.gain_recorder.blocks_edits()
+            || self.audio_recorder.blocks_edits()
             || self.midi_step.enabled
             || self.pending_playback.is_some()
             || !self.playback_candidates.is_empty()
