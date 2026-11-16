@@ -13,7 +13,7 @@ use std::{
 
 // At most one entry per native callback. Split packets in one callback share
 // an entry. A full index interrupts capture rather than losing timing silently.
-const MAX_TIMING: usize = 1_048_576;
+pub(super) const MAX_TIMING: usize = 1_048_576;
 
 /// One original callback's accepted part in the take. `captured_at` is the
 /// timestamp supplied by CPAL; `offset_frames` is relative to that callback.

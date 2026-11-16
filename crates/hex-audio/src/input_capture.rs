@@ -11,6 +11,7 @@
 //! Arrangement clock mappings.
 use crate::input_devices::InputDeviceId;
 mod take;
+mod take_alignment;
 mod timeline_overlap;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use rtrb::{Consumer, Producer, RingBuffer};
@@ -29,6 +30,7 @@ use std::{
     time::Duration,
 };
 pub use take::{InputTake, InputTakeEnd, InputTiming, write_input_take};
+pub use take_alignment::{CandidatePlacement, TakeAlignmentError, align_complete_take};
 pub use timeline_overlap::{
     ClockOverlapError, OutputWindow, SharedClock, TimelineOverlap, timeline_overlap,
 };

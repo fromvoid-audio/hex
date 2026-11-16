@@ -88,6 +88,25 @@ impl OutputClockIndex {
     pub fn is_empty(&self) -> bool {
         self.packets.is_empty()
     }
+    /// Collection failure or the terminal observed after all accepted packets.
+    pub fn completion(&self) -> Result<Option<End>, OutputClockIndexError> {
+        self.failed.map_or(Ok(self.terminal), Err)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_push(
+        &mut self,
+        frames: usize,
+        timing: &[TimingSpan],
+        clock: OutputClock,
+    ) -> Result<(), OutputClockIndexError> {
+        self.push(frames, timing, Some(clock), MAX_PACKETS, MAX_SPANS)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_finish(&mut self, terminal: End) {
+        self.terminal = Some(terminal);
+    }
     pub fn packet(&self, index: usize) -> Option<OutputClockPacket<'_>> {
         let packet = self.packets.get(index)?;
         Some(OutputClockPacket {

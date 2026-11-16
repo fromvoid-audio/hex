@@ -123,33 +123,14 @@ pub fn timeline_overlap(
     {
         return Err(ClockOverlapError::InvalidOutput);
     }
-    let (later, earlier, sign) = if input.captured_at >= output.clock.playback {
-        (input.captured_at, output.clock.playback, 1_i128)
-    } else {
-        (output.clock.playback, input.captured_at, -1_i128)
-    };
-    let nanos = later
-        .duration_since(&earlier)
-        .ok_or(ClockOverlapError::TimeOutOfRange)?
-        .as_nanos();
-    let nanos = i128::try_from(nanos).map_err(|_| ClockOverlapError::TimeOutOfRange)?;
-    let timestamp_ticks = nanos
-        .checked_mul(i128::from(input_rate))
-        .and_then(|v| v.checked_mul(sign))
-        .ok_or(ClockOverlapError::Overflow)?;
     let output_offset = u64::from(output.clock.offset_frames) + u64::from(output.packet_start);
-    let frame_delta = i128::from(input.offset_frames) - i128::from(output_offset);
-    let ticks = timestamp_ticks
-        .checked_add(
-            frame_delta
-                .checked_mul(NANOSECONDS)
-                .ok_or(ClockOverlapError::Overflow)?,
-        )
-        .ok_or(ClockOverlapError::Overflow)?;
-    let offset = ticks
-        .checked_add(NANOSECONDS / 2)
-        .ok_or(ClockOverlapError::Overflow)?
-        .div_euclid(NANOSECONDS);
+    let offset = frame_offset(
+        input_rate,
+        input.captured_at,
+        u64::from(input.offset_frames),
+        output.clock.playback,
+        output_offset,
+    )?;
     let input_frames = i128::from(input.frames);
     let output_frames = i128::from(output.packet_end - output.packet_start);
     let begin = 0_i128.max(-offset);
@@ -171,6 +152,42 @@ pub fn timeline_overlap(
             .ok_or(ClockOverlapError::Overflow)?,
         frames,
     }))
+}
+
+/// Signed nearest-frame difference between two instants plus their frame offsets.
+pub(super) fn frame_offset(
+    rate: u32,
+    a: cpal::StreamInstant,
+    a_frames: u64,
+    b: cpal::StreamInstant,
+    b_frames: u64,
+) -> Result<i128, ClockOverlapError> {
+    let (later, earlier, sign) = if a >= b {
+        (a, b, 1_i128)
+    } else {
+        (b, a, -1_i128)
+    };
+    let nanos = later
+        .duration_since(&earlier)
+        .ok_or(ClockOverlapError::TimeOutOfRange)?
+        .as_nanos();
+    let nanos = i128::try_from(nanos).map_err(|_| ClockOverlapError::TimeOutOfRange)?;
+    let timestamp_ticks = nanos
+        .checked_mul(i128::from(rate))
+        .and_then(|v| v.checked_mul(sign))
+        .ok_or(ClockOverlapError::Overflow)?;
+    let frame_delta = i128::from(a_frames) - i128::from(b_frames);
+    let ticks = timestamp_ticks
+        .checked_add(
+            frame_delta
+                .checked_mul(NANOSECONDS)
+                .ok_or(ClockOverlapError::Overflow)?,
+        )
+        .ok_or(ClockOverlapError::Overflow)?;
+    Ok(ticks
+        .checked_add(NANOSECONDS / 2)
+        .ok_or(ClockOverlapError::Overflow)?
+        .div_euclid(NANOSECONDS))
 }
 
 #[cfg(test)]
