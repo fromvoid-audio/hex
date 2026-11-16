@@ -32,6 +32,57 @@ use hex_project::{BeatTime, Clip, MidiClip, Track};
 
 use clone_source_window::clone_source_window;
 
+impl EditorView {
+    fn audio_arm_button(
+        &self,
+        track: hex_project::TrackId,
+        eligible: bool,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<Div> {
+        let generation = self.project_generation;
+        let armed = self
+            .audio_recorder
+            .is_audio_armed(self.project_generation, track);
+        let (background, text) = if armed {
+            (
+                theme::color(theme::PaletteRole::Recording),
+                theme::color(theme::PaletteRole::Background),
+            )
+        } else {
+            super::track_gain::activator_colors(false)
+        };
+        toggle_button_with_style(
+            "○",
+            if !eligible {
+                "audio recording unavailable on this track"
+            } else if armed {
+                "disarm track for audio recording"
+            } else {
+                "arm track for audio recording"
+            },
+            ("track-audio-arm", track.value()),
+            theme::action_style().with_state_colors(background, text),
+        )
+        .debug_selector(move || format!("track-audio-arm-{}", track.value()))
+        .w(px(16.0))
+        .h(px(14.0))
+        .text_size(px(10.0))
+        .border_1()
+        .border_color(rgb(theme::control_style().border))
+        .flex_shrink_0()
+        .when(!eligible, |button| {
+            button.opacity(0.45).cursor(gpui::CursorStyle::Arrow)
+        })
+        .on_click(cx.listener(move |view, _, _, cx| {
+            if eligible {
+                cx.stop_propagation();
+                view.toggle_audio_arm(track, generation);
+                cx.notify();
+            }
+        }))
+    }
+}
+
 /// Observe the actual pixel-rounded resting clip rectangle. A clip's move hit
 /// strip excludes handles and cannot define its horizontal thirds. The canvas
 /// includes the parent's leading stroke; the trailing stroke belongs to the
@@ -1690,6 +1741,10 @@ impl EditorView {
                 .items_center()
                 .children([name_area.child(track_name_view).flex_1().min_w_0()])
                 .child(self.sample_arm_button(sample_source, cx))
+                .children(
+                    (resident_layout && !is_group)
+                        .then(|| self.audio_arm_button(track_id, true, cx)),
+                )
         } else if resident_layout {
             let (active_background, active_text) = super::track_gain::activator_colors(!muted);
             let (solo_background, solo_text) = super::track_gain::activator_colors(soloed);
@@ -1781,31 +1836,7 @@ impl EditorView {
                 view.toggle_solo(track_id, !event.modifiers().platform);
                 cx.notify();
             }));
-            let arm = div()
-                .id(("track-arm-unavailable", track_id.value()))
-                .debug_selector(move || format!("track-arm-unavailable-{}", track_id.value()))
-                .w(px(16.0))
-                .h(px(14.0))
-                .rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS))
-                .border_1()
-                .border_color(rgb(theme::control_style().border))
-                .flex_shrink_0()
-                .flex()
-                .items_center()
-                .justify_center()
-                .text_xs()
-                .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
-                .bg(rgb(theme::color(theme::PaletteRole::Raised)))
-                .cursor(gpui::CursorStyle::Arrow)
-                .opacity(0.45)
-                .tooltip(|_, cx| {
-                    cx.new(|_| ClipTooltip {
-                        kind: crate::tooltips::Kind::Identification,
-                        name: "recording unavailable · planned for hex 0.2".into(),
-                    })
-                    .into()
-                })
-                .child(theme::text("○"));
+            let arm = self.audio_arm_button(track_id, !is_group, cx);
             div()
                 .id(("arrangement-track-controls", track_id.value()))
                 .when(group_plate, |controls| controls.h_full())

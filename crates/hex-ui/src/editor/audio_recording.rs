@@ -56,6 +56,7 @@ pub(super) struct Recorder {
     pub(super) pending_commit_path: Option<PathBuf>,
     input: Option<(InputDeviceId, gpui::SharedString)>,
     listing_inputs: bool,
+    armed_track: Option<(u64, hex_project::TrackId)>,
 }
 impl Recorder {
     pub(super) fn blocks_edits(&self) -> bool {
@@ -63,6 +64,9 @@ impl Recorder {
     }
     pub(super) fn label(&self) -> &'static str {
         match self.stage {
+            Stage::Idle if self.armed_track.is_some() => {
+                "record armed track from chosen audio input · use hardware monitoring"
+            }
             Stage::Idle => {
                 "record selected track from chosen audio input · use hardware monitoring"
             }
@@ -90,6 +94,33 @@ impl Recorder {
             "{action} · {} · use hardware monitoring",
             hex_session::service::text::verbatim(self.input_label())
         )
+    }
+
+    pub(super) fn is_audio_armed(&self, generation: u64, track: hex_project::TrackId) -> bool {
+        self.armed_track == Some((generation, track))
+    }
+
+    pub(super) fn reconcile_audio_arm(&mut self, project: &hex_project::Project, replaced: bool) {
+        if replaced
+            || self
+                .armed_track
+                .is_some_and(|(_, id)| project.track(id).is_none_or(|track| track.is_group()))
+        {
+            self.armed_track = None;
+        }
+    }
+
+    fn target_track(
+        &self,
+        generation: u64,
+        project: &hex_project::Project,
+        selected: Option<hex_project::TrackId>,
+    ) -> Option<hex_project::TrackId> {
+        self.armed_track
+            .filter(|(owner, _)| *owner == generation)
+            .map(|(_, id)| id)
+            .or(selected)
+            .filter(|id| project.track(*id).is_some_and(|track| !track.is_group()))
     }
 }
 
@@ -143,6 +174,41 @@ fn open_selected_take(
 }
 
 impl EditorView {
+    pub(super) fn toggle_audio_arm(&mut self, track: hex_project::TrackId, generation: u64) {
+        if generation != self.project_generation {
+            return;
+        }
+        if self.audio_recorder.blocks_edits() {
+            self.error = Some("finish the audio recording before changing its armed track".into());
+            return;
+        }
+        if self.document_audio_mode != hex_session::DocumentAudioMode::Resident
+            || self
+                .state
+                .as_ref()
+                .and_then(|state| state.project.track(track))
+                .is_none_or(|track| track.is_group())
+        {
+            self.error =
+                Some("audio recording requires an ordinary resident arrangement track".into());
+            return;
+        }
+        self.audio_recorder.armed_track = if self
+            .audio_recorder
+            .is_audio_armed(self.project_generation, track)
+        {
+            None
+        } else {
+            Some((self.project_generation, track))
+        };
+        self.status = if self.audio_recorder.armed_track.is_some() {
+            "track armed for audio recording"
+        } else {
+            "track disarmed for audio recording"
+        }
+        .into();
+    }
+
     pub(super) fn open_audio_input_menu(
         &mut self,
         window: &mut gpui::Window,
@@ -318,12 +384,11 @@ impl EditorView {
             self.error = Some("no project is available".into());
             return;
         };
-        let Some(track) = self.selected_track.filter(|track| {
-            state
-                .project
-                .track(*track)
-                .is_some_and(|track| !track.is_group())
-        }) else {
+        let Some(track) = self.audio_recorder.target_track(
+            self.project_generation,
+            &state.project,
+            self.selected_track,
+        ) else {
             self.error = Some("select an arrangement track before recording audio".into());
             return;
         };
@@ -676,6 +741,163 @@ mod tests {
     use super::*;
     use crate::editor::clip_drag_ui_test::{audio_project, editor_window};
     use gpui::{AppContext, Modifiers, MouseButton, TestAppContext, VisualTestContext};
+
+    #[gpui::test]
+    fn track_arm_is_exclusive_and_owns_recording_target_until_disarmed(cx: &mut TestAppContext) {
+        let (project, first, second, _) = audio_project();
+        let (window, editor) = editor_window(cx, project, Default::default());
+        let mut visual = VisualTestContext::from_window(window, cx);
+        visual.run_until_parked();
+        let click_arm = |visual: &mut VisualTestContext, track: hex_project::TrackId| {
+            let selector = Box::leak(format!("track-audio-arm-{}", track.value()).into_boxed_str());
+            let point = visual.debug_bounds(selector).unwrap().center();
+            visual.simulate_click(point, Modifiers::default());
+            visual.run_until_parked();
+        };
+        click_arm(&mut visual, first);
+        editor.update(&mut visual, |view, _| {
+            view.selected_track = Some(second);
+            assert!(
+                view.audio_recorder
+                    .is_audio_armed(view.project_generation, first)
+            );
+            assert_eq!(
+                view.audio_recorder.target_track(
+                    view.project_generation,
+                    &view.state.as_ref().unwrap().project,
+                    view.selected_track
+                ),
+                Some(first)
+            );
+        });
+        click_arm(&mut visual, second);
+        editor.read_with(&visual, |view, _| {
+            assert!(
+                !view
+                    .audio_recorder
+                    .is_audio_armed(view.project_generation, first)
+            );
+            assert!(
+                view.audio_recorder
+                    .is_audio_armed(view.project_generation, second)
+            );
+        });
+        click_arm(&mut visual, second);
+        editor.read_with(&visual, |view, _| {
+            assert!(view.audio_recorder.armed_track.is_none());
+            assert_eq!(
+                view.audio_recorder.target_track(
+                    view.project_generation,
+                    &view.state.as_ref().unwrap().project,
+                    view.selected_track
+                ),
+                Some(second)
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn audio_arm_refuses_changes_during_preparation_and_clears_stale_target(
+        cx: &mut TestAppContext,
+    ) {
+        let (project, first, second, _) = audio_project();
+        let (window, editor) = editor_window(cx, project, Default::default());
+        let mut visual = VisualTestContext::from_window(window, cx);
+        let (_sender, result) = mpsc::sync_channel(1);
+        editor.update(&mut visual, |view, _| {
+            view.toggle_audio_arm(first, view.project_generation);
+            let state = view.state.as_ref().unwrap();
+            let context = AudioBatchContext {
+                project_generation: view.project_generation,
+                revision: state.revision,
+                active_gesture: false,
+            };
+            view.audio_recorder.stage = Stage::Opening {
+                binding: Binding {
+                    source: AppliedAudioSource {
+                        context: hex_engine::AudioSourceContext {
+                            project_generation: context.project_generation,
+                            editor_revision: context.revision,
+                        },
+                        audio_revision: 1,
+                        output_identity: 2,
+                    },
+                    track: first,
+                    context,
+                },
+                cancel: Arc::new(AtomicBool::new(false)),
+                result,
+            };
+            view.toggle_audio_arm(second, view.project_generation);
+            assert!(
+                view.audio_recorder
+                    .is_audio_armed(view.project_generation, first)
+            );
+            assert!(
+                view.error
+                    .as_ref()
+                    .unwrap()
+                    .contains("finish the audio recording")
+            );
+            view.audio_recorder
+                .reconcile_audio_arm(&hex_project::Project::new(48_000).unwrap(), false);
+            assert!(view.audio_recorder.armed_track.is_none());
+            assert!(matches!(&view.audio_recorder.stage, Stage::Opening { binding, .. } if binding.track == first));
+            view.audio_recorder.stage = Stage::Idle;
+            view.toggle_audio_arm(second, view.project_generation);
+            let project = Arc::clone(&view.state.as_ref().unwrap().project);
+            view.audio_recorder.reconcile_audio_arm(&project, true);
+            assert!(view.audio_recorder.armed_track.is_none());
+            view.toggle_audio_arm(second, view.project_generation + 1);
+            assert!(view.audio_recorder.armed_track.is_none());
+            view.document_audio_mode = hex_session::DocumentAudioMode::VerifiedStreaming;
+            view.toggle_audio_arm(second, view.project_generation);
+            assert!(view.audio_recorder.armed_track.is_none());
+            assert!(
+                view.error
+                    .as_ref()
+                    .unwrap()
+                    .contains("ordinary resident arrangement track")
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn audio_record_target_refuses_a_group_track(cx: &mut TestAppContext) {
+        let (project, first, _, _) = audio_project();
+        let mut editor = hex_project::Editor::new(project, 8).unwrap();
+        editor
+            .execute(hex_project::Command::GroupTracks {
+                tracks: hex_project::TrackSelectionIds::new(&[first]).unwrap(),
+                name: "group".into(),
+            })
+            .unwrap();
+        let project = editor.project();
+        let group = project
+            .tracks()
+            .iter()
+            .find(|track| track.is_group())
+            .unwrap()
+            .id();
+        assert_eq!(
+            Recorder::default().target_track(0, project, Some(group)),
+            None
+        );
+        let (window, view) = editor_window(cx, project.clone(), Default::default());
+        let mut visual = VisualTestContext::from_window(window, cx);
+        visual.run_until_parked();
+        let selector = Box::leak(format!("track-audio-arm-{}", group.value()).into_boxed_str());
+        let position = visual.debug_bounds(selector).unwrap().center();
+        visual.simulate_click(position, Modifiers::default());
+        visual.run_until_parked();
+        view.read_with(&visual, |view, _| {
+            assert!(
+                !view
+                    .audio_recorder
+                    .is_audio_armed(view.project_generation, group)
+            );
+        });
+    }
 
     #[cfg(target_os = "macos")]
     #[gpui::test]

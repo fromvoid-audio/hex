@@ -147,6 +147,46 @@ fn eq8_project() -> (
 }
 
 #[gpui::test]
+fn audio_track_arm_clears_when_the_track_is_removed_or_project_replaced(cx: &mut TestAppContext) {
+    let window = cx.add_window(|window, cx| {
+        let service = Service::new(48_000, 8, 8_000_000).expect("test service");
+        EditorView::new(window, cx, service, Err("offline test".into()))
+    });
+    let (project, track, _, _) = eq8_project();
+    let mut edited = Editor::new((*project).clone(), 8).unwrap();
+    edited.execute(Command::RemoveTrack(track)).unwrap();
+    let without = Arc::new(edited.project().clone());
+    window
+        .update(cx, |view, _, _| {
+            view.receive(event(Arc::clone(&project), 1, true));
+            view.toggle_audio_arm(track, view.project_generation);
+            assert!(
+                view.audio_recorder
+                    .is_audio_armed(view.project_generation, track)
+            );
+            view.receive(event(without, 2, false));
+            assert!(
+                !view
+                    .audio_recorder
+                    .is_audio_armed(view.project_generation, track)
+            );
+            view.receive(event(Arc::clone(&project), 3, false));
+            view.toggle_audio_arm(track, view.project_generation);
+            assert!(
+                view.audio_recorder
+                    .is_audio_armed(view.project_generation, track)
+            );
+            view.receive(event(project, 4, true));
+            assert!(
+                !view
+                    .audio_recorder
+                    .is_audio_armed(view.project_generation, track)
+            );
+        })
+        .unwrap();
+}
+
+#[gpui::test]
 fn spectrum_target_is_retired_when_detail_context_or_project_changes(cx: &mut TestAppContext) {
     let window = cx.add_window(|window, cx| {
         let service = Service::new(48_000, 8, 8_000_000).expect("test service");
