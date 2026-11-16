@@ -11,6 +11,12 @@ use hex_project::LoopRegion;
 use shared_source::{render_source_instrument_chunk, shared_source_has_route};
 use std::sync::Arc;
 
+#[derive(Clone, Copy)]
+struct LiveTrackAudio<'a> {
+    track: TrackId,
+    frames: &'a [Frame],
+}
+
 impl SessionPlayback {
     /// An edit at the stopped origin may have retained an original bus/Main
     /// endpoint. Drain its actual zero-input tail before it can return. A
@@ -74,6 +80,50 @@ impl SessionPlayback {
         tracks.fill([[0.0; 2]; N]);
         let mut capture = super::capture::window_probe::TrackWindowProbe { ids, tracks };
         self.render_internal::<dyn MediaPages>(output, None, None, Some(&mut capture), None)
+    }
+
+    /// Mix a borrowed live input block into one track before its device chain.
+    /// The caller retains the input and must provide exactly one finite stereo
+    /// frame per output frame (at most 256). Stopped monitoring is not admitted.
+    /// Refusal leaves the output silent and does not advance playback. This
+    /// entry point cannot admit a graph requiring a current sampler resource
+    /// scope; its owning wrapper must provide that scope in a future extension.
+    /// A project output tap is refused because its contract excludes monitoring.
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_with_live_track_audio(
+        &mut self,
+        output: &mut [Frame],
+        track: TrackId,
+        input: &[Frame],
+        pages: Option<&mut dyn MediaPages>,
+        observer: Option<&mut crate::NodeSignalObserver<'_>>,
+        project: Option<&mut ProjectOutputTap<'_, '_>>,
+        foreign: &mut dyn hex_lattice::ForeignProcessors,
+    ) -> Result<(), SessionPlaybackError> {
+        if !self.playing
+            || project.is_some()
+            || output.len() != input.len()
+            || input.len() > 256
+            || !self.routes.iter().any(|route| route.id == track)
+            || input.iter().flatten().any(|sample| !sample.is_finite())
+        {
+            output.fill([0.0; 2]);
+            foreign.reject_callback();
+            return Err(SessionPlaybackError::InvalidCommand);
+        }
+        self.candidate_admission_open = false;
+        self.render_internal_with_live_audio::<dyn MediaPages>(
+            output,
+            pages,
+            observer,
+            None,
+            None,
+            foreign,
+            Some(LiveTrackAudio {
+                track,
+                frames: input,
+            }),
+        )
     }
 
     /// Render using borrowed, already admitted foreign endpoints. This stages
@@ -380,6 +430,22 @@ impl SessionPlayback {
         sources: Option<crate::native_device_resources::SamplerSourcesRef<'_>>,
         foreign: &mut dyn hex_lattice::ForeignProcessors,
     ) -> Result<(), SessionPlaybackError> {
+        self.render_internal_with_live_audio(
+            output, pages, observer, capture, sources, foreign, None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn render_internal_with_live_audio<P: MediaPages + ?Sized>(
+        &mut self,
+        output: &mut [Frame],
+        pages: Option<&mut P>,
+        observer: Option<&mut crate::NodeSignalObserver<'_>>,
+        capture: Option<&mut dyn CaptureSink>,
+        sources: Option<crate::native_device_resources::SamplerSourcesRef<'_>>,
+        foreign: &mut dyn hex_lattice::ForeignProcessors,
+        live_audio: Option<LiveTrackAudio<'_>>,
+    ) -> Result<(), SessionPlaybackError> {
         // The runtime keeps this revision throughout rendering. Its cloned
         // handle cannot become the final owner on the callback.
         let revision =
@@ -410,16 +476,18 @@ impl SessionPlayback {
                     capture,
                     sources,
                     foreign,
+                    live_audio,
                 )
             }
-            None => {
-                self.render_internal_metered::<P>(output, None, observer, capture, sources, foreign)
-            }
+            None => self.render_internal_metered::<P>(
+                output, None, observer, capture, sources, foreign, live_audio,
+            ),
         };
         self.stream_miss_fades = fades;
         result
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn render_internal_metered<P: MediaPages + ?Sized>(
         &mut self,
         output: &mut [Frame],
@@ -428,6 +496,7 @@ impl SessionPlayback {
         capture: Option<&mut dyn CaptureSink>,
         sources: Option<crate::native_device_resources::SamplerSourcesRef<'_>>,
         foreign: &mut dyn hex_lattice::ForeignProcessors,
+        live_audio: Option<LiveTrackAudio<'_>>,
     ) -> Result<(), SessionPlaybackError> {
         self.render_work.begin(&self.revision, self.device_metering);
         let result = if self.device_metering {
@@ -443,6 +512,7 @@ impl SessionPlayback {
                 Some(&mut meter),
                 sources,
                 foreign,
+                live_audio,
             );
             if result.is_err() {
                 meter.invalidate();
@@ -450,7 +520,9 @@ impl SessionPlayback {
             self.meter_cells = cells;
             result
         } else {
-            self.render_internal_borrowed(output, pages, observer, capture, sources, foreign)
+            self.render_internal_borrowed(
+                output, pages, observer, capture, sources, foreign, live_audio,
+            )
         };
         self.render_work
             .publish(&self.revision, output.len(), result.is_ok());
@@ -461,6 +533,7 @@ impl SessionPlayback {
         result
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn render_internal_borrowed<P: MediaPages + ?Sized>(
         &mut self,
         output: &mut [Frame],
@@ -469,6 +542,7 @@ impl SessionPlayback {
         mut capture: Option<&mut dyn CaptureSink>,
         sources: Option<crate::native_device_resources::SamplerSourcesRef<'_>>,
         foreign: &mut dyn hex_lattice::ForeignProcessors,
+        live_audio: Option<LiveTrackAudio<'_>>,
     ) -> Result<(), SessionPlaybackError> {
         if let Some(state) = self.native_parameter_state.as_deref_mut() {
             state.application = None;
@@ -613,7 +687,15 @@ impl SessionPlayback {
         self.track_fader_scratch[..track_count].copy_from_slice(&self.track_faders[..track_count]);
         self.live_gain_scratch = self.live_gain;
         let result = if self.playing {
-            self.render_playing(output, pages, &mut observer, &mut capture, sources, foreign)
+            self.render_playing(
+                output,
+                pages,
+                &mut observer,
+                &mut capture,
+                sources,
+                foreign,
+                live_audio,
+            )
         } else if main_tails_only {
             // No admitted source monitoring can still feed the current chain.
             // Its flag survives input removal until an explicit discontinuity.
@@ -715,6 +797,7 @@ impl SessionPlayback {
         result
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn render_playing<P: MediaPages + ?Sized>(
         &mut self,
         output: &mut [Frame],
@@ -723,6 +806,7 @@ impl SessionPlayback {
         capture: &mut Option<&mut dyn CaptureSink>,
         sources: Option<crate::native_device_resources::SamplerSourcesRef<'_>>,
         foreign: &mut dyn hex_lattice::ForeignProcessors,
+        live_audio: Option<LiveTrackAudio<'_>>,
     ) -> Result<(), SessionPlaybackError> {
         // Move only the existing scratch Box, then restore it on every result.
         // No callback allocation, new owner, or final source/graph drop occurs.
@@ -738,6 +822,7 @@ impl SessionPlayback {
             sources,
             foreign,
             scalar.as_deref_mut(),
+            live_audio,
         );
         if let Some(state) = self.native_parameter_state.as_deref_mut() {
             state.scalar = scalar;
@@ -755,6 +840,7 @@ impl SessionPlayback {
         sources: Option<crate::native_device_resources::SamplerSourcesRef<'_>>,
         foreign: &mut dyn hex_lattice::ForeignProcessors,
         mut scalar: Option<&mut crate::scalar_automation::StateSet>,
+        live_audio: Option<LiveTrackAudio<'_>>,
     ) -> Result<(), SessionPlaybackError> {
         let width =
             u64::try_from(output.len()).map_err(|_| SessionPlaybackError::ArithmeticOverflow)?;
@@ -819,6 +905,17 @@ impl SessionPlayback {
         let mut stamps = [None; 256];
         let mut projected_history = None;
         let mut batched_sends = false;
+        // Shared-source contributions can cross track ownership; retain the
+        // scalar route for that graph until its live-input batching is proven.
+        let live_source_batch_safe = live_audio.is_none_or(|input| {
+            self.route_scratch
+                .iter()
+                .position(|route| route.id == input.track)
+                .is_some_and(|index| {
+                    !self.revision.source_routing().is_shared(index)
+                        && !self.revision.source_routing().contributes(index)
+                })
+        });
 
         while output_offset < output.len() {
             if let Some(region) = region {
@@ -873,7 +970,8 @@ impl SessionPlayback {
                 && !self.resident_source_scratch.is_empty()
                 && self.computer_keyboard.is_none()
                 && self.current_sampler_keyboards.is_empty()
-                && !self.current_sampler_console;
+                && !self.current_sampler_console
+                && live_source_batch_safe;
             if use_resident_sources && resident_source_index == resident_source_end {
                 let mut count = (output.len() - output_offset).min(256);
                 if let Some(next) = next_route.filter(|next| *next > performance_frame) {
@@ -897,6 +995,7 @@ impl SessionPlayback {
                     count,
                     &mut resident_source_eligible,
                     &mut resident_analytic_eligible,
+                    live_audio.map(|input| input.track),
                 )?;
                 projected_history = if observer.is_none() && scalar.is_none() {
                     self.prepare_native_origin_window(
@@ -1037,6 +1136,7 @@ impl SessionPlayback {
                         passthrough: &passthrough,
                         batched_sends,
                     }),
+                    live_audio,
                 )?;
                 if use_resident_sources {
                     resident_source_index += 1;
@@ -1054,6 +1154,7 @@ impl SessionPlayback {
                     sources,
                     foreign,
                     external,
+                    live_audio,
                 )?;
             }
             if current_first_frame {
@@ -1394,6 +1495,7 @@ impl SessionPlayback {
         sources: Option<crate::native_device_resources::SamplerSourcesRef<'_>>,
         foreign: &mut dyn hex_lattice::ForeignProcessors,
         external: Option<&dyn hex_lattice::NativeExternalAutomationSet>,
+        live_audio: Option<LiveTrackAudio<'_>>,
     ) -> Result<(), SessionPlaybackError> {
         let region = self.active_loop_region();
         let loop_fade = region.and_then(|region| {
@@ -1440,7 +1542,8 @@ impl SessionPlayback {
             let live_target = self.computer_keyboard.as_ref().is_some_and(|keyboard| {
                 !keyboard.is_source_input() && keyboard.track() == self.route_scratch[index].id
             }) || self.source_input_receiver() == Some(index)
-                || !audition.is_empty();
+                || !audition.is_empty()
+                || live_audio.is_some_and(|input| input.track == self.route_scratch[index].id);
             let live_target = live_target
                 || self
                     .current_sampler_keyboards
@@ -1536,6 +1639,17 @@ impl SessionPlayback {
                         pages.as_deref_mut(),
                         SourceStage::audio(audition),
                     )?;
+                    if let Some(input) =
+                        live_audio.filter(|input| input.track == self.route_scratch[index].id)
+                    {
+                        for (frame, source) in render_output
+                            .iter_mut()
+                            .zip(&input.frames[frame_offset..frame_offset + output.len()])
+                        {
+                            frame[0] += source[0];
+                            frame[1] += source[1];
+                        }
+                    }
                     if stateful_effects {
                         crate::native_parameter_input::process_range_with_external(
                             self.native_parameter_state

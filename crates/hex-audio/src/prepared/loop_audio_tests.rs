@@ -1503,3 +1503,70 @@ fn removing_utility_from_shared_chain_waits_for_stop_without_callback_allocation
         }
     }
 }
+
+#[test]
+fn live_track_audio_engine_render_has_no_allocations_or_frees() {
+    for compensated in [false, true] {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let Created::Track(track) = editor
+            .execute(Command::AddTrack {
+                name: "input".into(),
+            })
+            .unwrap()
+        else {
+            panic!("track")
+        };
+        if compensated {
+            let limiter = hex_engine::default_native_device_state_for_class(
+                hex_engine::NativeDeviceClass::Effect,
+                hex_engine::DeviceTypeId::from_static("hex.limiter"),
+            )
+            .unwrap();
+            editor
+                .execute(Command::InsertDevice {
+                    track,
+                    before: None,
+                    state: limiter,
+                })
+                .unwrap();
+        }
+        let revision = Arc::new(
+            PreparedRevision::prepare(
+                editor.project(),
+                &BTreeMap::new(),
+                Arc::new(SineTable::new()),
+                None,
+            )
+            .unwrap(),
+        );
+        let mut playback = hex_engine::SessionPlayback::new(revision).unwrap();
+        playback
+            .apply(hex_engine::SessionPlaybackCommand::Play)
+            .unwrap();
+        let mut output = [[0.0; 2]; 256];
+        let input = [[0.25, -0.5]; 256];
+        let mut result = Ok(());
+        let counts = allocation_counter::measure(|| {
+            result = playback.render_with_live_track_audio(
+                &mut output,
+                track,
+                &input,
+                None,
+                None,
+                None,
+                &mut hex_lattice::RefuseForeign,
+            );
+        });
+        result.unwrap();
+        assert_eq!(
+            (
+                counts.count_total,
+                counts.bytes_total,
+                counts.count_current,
+                counts.bytes_current
+            ),
+            (0, 0, 0, 0),
+            "compensated: {compensated}"
+        );
+    }
+}
