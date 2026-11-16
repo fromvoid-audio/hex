@@ -1625,6 +1625,12 @@ pub(super) fn request(value: &Request) -> Description {
         Request::ContinuePluginParameters => {
             describe!("continue_plugin_parameters"; []; omitted="")
         }
+        Request::QueryPluginParameterConversion(query) => {
+            describe!("query_plugin_parameter_conversion"; ["device" => query.device.value(), "request_id" => query.request_id]; omitted="operation")
+        }
+        Request::ContinuePluginParameterConversion => {
+            describe!("continue_plugin_parameter_conversion"; []; omitted="")
+        }
         Request::ContinuePluginStateRestore => {
             describe!("continue_plugin_state_restore"; []; omitted="")
         }

@@ -76,7 +76,11 @@ pub(super) struct Refused {
 }
 
 fn is_initial_observation(request: &Request) -> bool {
-    request.is_read_only_observation() && !matches!(request, Request::ContinuePluginParameters)
+    request.is_read_only_observation()
+        && !matches!(
+            request,
+            Request::ContinuePluginParameters | Request::ContinuePluginParameterConversion
+        )
 }
 
 impl EditorView {
@@ -395,6 +399,9 @@ mod observation_tests {
             &Request::QueryFailedPluginAutomation { request_id: 7 }
         ));
         assert!(!is_initial_observation(&Request::ContinuePluginParameters));
+        assert!(!is_initial_observation(
+            &Request::ContinuePluginParameterConversion
+        ));
         assert!(!is_initial_observation(&Request::Undo));
     }
 }
