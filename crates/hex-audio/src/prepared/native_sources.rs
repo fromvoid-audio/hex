@@ -1039,6 +1039,18 @@ impl PublicationControl {
         }
         self.candidate_root.native_source_endpoint_status(binding)
     }
+    /// Drain one best-effort sample from this exact active native source.
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub fn take_native_source_slow_exchange(
+        &self,
+        binding: Binding,
+    ) -> Option<crate::plugin_worker::SlowPluginExchange> {
+        if self.status.closing.load(Acquire) {
+            return None;
+        }
+        self.candidate_root
+            .take_native_source_slow_exchange(binding)
+    }
     /// Read the exact accepted endpoint's terminal diagnostic once, without
     /// joining its worker or exposing any callback state. Contention can defer it.
     pub fn take_native_source_failure_diagnostic(&self, binding: Binding) -> Option<String> {

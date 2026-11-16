@@ -9,6 +9,136 @@ mod section_recovery;
 mod track_duplicate;
 
 #[test]
+#[ignore = "requires explicit source-bound SDK receipts"]
+fn slow_native_instrument_exchange_reaches_the_session_log() {
+    const CHILD: &str = "HEX_SLOW_EXCHANGE_LOG_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let gate = Files::new();
+        let test = std::thread::current().name().unwrap().to_owned();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", &test, "--ignored", "--nocapture"])
+            .env(CHILD, "1")
+            .env("HEX_ORIGINAL_INSTANCE_VARIANT", "127")
+            .env("HEX_ORIGINAL_SDK_TIMING_GATE", "1")
+            .env("HEX_ORIGINAL_INSTANCE_TRACE", gate.0.join("trace"))
+            .env("HEX_ORIGINAL_INSTANCE_RELEASE", gate.0.join("release"))
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    let _native = native_fixture();
+    let files = Files::new();
+    let trace = PathBuf::from(std::env::var_os("HEX_ORIGINAL_INSTANCE_TRACE").unwrap());
+    let release = PathBuf::from(std::env::var_os("HEX_ORIGINAL_INSTANCE_RELEASE").unwrap());
+    let gate = std::thread::spawn(move || {
+        let until = Instant::now() + Duration::from_secs(5);
+        loop {
+            if fs::read(&trace).ok().and_then(|bytes| {
+                bytes
+                    .get(..4)
+                    .and_then(|b| b.try_into().ok())
+                    .map(i32::from_le_bytes)
+            }) == Some(9)
+            {
+                break;
+            }
+            assert!(Instant::now() < until, "SDK process gate did not open");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        std::thread::sleep(Duration::from_millis(15));
+        fs::write(release, b"release").unwrap();
+    });
+    let selected = selection();
+    hex_ui::write_plugin_effect_test_catalog(&files.0, &selected, "Instrument|Synth", 0).unwrap();
+    let catalog = files.0.canonicalize().unwrap().join("plugin-catalog.json");
+    let mut log = hex_diagnostics::SessionLog::start(files.0.join("logs")).unwrap();
+    let log_path = log.path();
+    let mut harness = ResidentHarness::with_plugins_catalog_and_diagnostics(
+        host(),
+        Some(EffectPresentation {
+            input_frames: 0,
+            output_frames: 512,
+        }),
+        catalog,
+        log.handle(),
+    );
+    assert!(harness.next().error.is_none());
+    let (applied, _) = harness.applied(0);
+    let added = harness.run(Request::Edit(Command::AddMidiTrack {
+        name: "synth".into(),
+    }));
+    let Some(Created::Track(track)) = added.created else {
+        panic!("midi track")
+    };
+    let (applied, _) = harness.applied(applied);
+    let insertion = request(&added.state, PluginEffectDestination::Instrument(track));
+    harness
+        .service
+        .submit(Request::InsertPluginEffect(insertion))
+        .unwrap();
+    let accepted = terminal(&mut harness);
+    assert!(accepted.error.is_none(), "{:?}", accepted.error);
+    let _ = harness.applied(applied);
+    let binding = harness.plugin_progress.lock().unwrap().binding.unwrap();
+    harness
+        .audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    harness.render_plugin_block();
+    gate.join().unwrap();
+    let until = Instant::now() + Duration::from_secs(5);
+    let line = loop {
+        harness.pump();
+        let text = fs::read_to_string(&log_path).unwrap_or_default();
+        if let Some(line) = text
+            .lines()
+            .find(|line| line.contains("stage=slow_exchange"))
+        {
+            break line.to_owned();
+        }
+        assert!(
+            Instant::now() < until,
+            "no real exchange sample in session log: {text}"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    };
+    assert!(line.contains(&format!("binding={binding:?}")), "{line}");
+    for field in [
+        "sequence=",
+        "exchange_ns=",
+        "sdk_process_ns=",
+        "quantum_ns=",
+        "dropped=",
+        "queue_ns=unavailable",
+    ] {
+        assert!(line.contains(field), "{line}");
+    }
+    let number = |name: &str| -> u64 {
+        line.split_whitespace()
+            .find_map(|field| field.strip_prefix(name))
+            .unwrap()
+            .parse()
+            .unwrap()
+    };
+    let exchange = number("exchange_ns=");
+    let sdk = number("sdk_process_ns=");
+    assert_eq!(number("sequence="), 0, "{line}");
+    assert!(sdk >= 15_000_000 && exchange >= sdk, "{line}");
+    assert_eq!(number("quantum_ns="), 5_333_333);
+    drop(harness);
+    log.shutdown().unwrap();
+}
+
+#[test]
 #[ignore = "requires explicit source-bound SDK receipts and optional installed catalog"]
 fn native_vst3_instrument_bounces_to_new_track_and_in_place() {
     const CHILD: &str = "HEX_DESKTOP_TEST_INSTRUMENT_BOUNCE_CHILD";

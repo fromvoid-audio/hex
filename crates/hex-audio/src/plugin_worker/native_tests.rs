@@ -151,6 +151,72 @@ fn native_instrument_keeps_note_state_after_one_late_reply() {
     assert!(owner.retire_on_control().unwrap().failure.is_none());
 }
 
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn slow_exchange_sample_survives_worker_retirement() {
+    const CHILD: &str = "HEX_AUDIO_SLOW_EXCHANGE_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let dir = std::env::temp_dir().join(format!(
+            "hex-slow-exchange-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&dir).unwrap();
+        let release = dir.join("release");
+        std::fs::write(&release, b"release").unwrap();
+        let test = thread::current().name().unwrap().to_owned();
+        let result = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", &test, "--ignored", "--nocapture"])
+            .env(CHILD, "1")
+            .env("HEX_ORIGINAL_INSTANCE_VARIANT", "127")
+            .env("HEX_ORIGINAL_SDK_TIMING_GATE", "1")
+            .env("HEX_ORIGINAL_INSTANCE_RELEASE", release)
+            .output()
+            .unwrap();
+        std::fs::remove_dir_all(dir).unwrap();
+        assert!(
+            result.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+        return;
+    }
+    let binding = Binding {
+        root: 1,
+        instance: 2,
+        graph: 3,
+        epoch: 1,
+    };
+    let instance = original_instance_with_inputs(binding, 0);
+    let (mut worker, mut callback) = NativeWorker::start_on_control(instance).unwrap();
+    callback
+        .stage(&[[0.0; 2]; 8], &[], &mut [[0.0; 2]; 8])
+        .unwrap();
+    callback.finish(true).unwrap();
+    let until = std::time::Instant::now() + Duration::from_secs(3);
+    while worker.published_blocks_on_control() < 1 {
+        assert!(std::time::Instant::now() < until);
+        thread::yield_now();
+    }
+    assert!(worker.retire_on_control().unwrap().failure.is_none());
+    let sample = worker.take_slow_exchange_on_control().unwrap();
+    assert_eq!(
+        (sample.binding, sample.sequence, sample.quantum_ns),
+        (binding, 0, 166_666)
+    );
+    assert!(sample.sdk_process_ns >= 4_000_000 && sample.exchange_ns >= sample.sdk_process_ns);
+    assert!(worker.take_slow_exchange_on_control().is_none());
+    assert!(
+        callback
+            .stage(&[[0.0; 2]; 8], &[], &mut [[0.0; 2]; 8])
+            .is_err()
+    );
+}
+
 fn hold_original_worker(
     instance: hex_plugin_host::native::Prepared,
 ) -> (std::sync::mpsc::SyncSender<()>, NativeWorker, Callback) {

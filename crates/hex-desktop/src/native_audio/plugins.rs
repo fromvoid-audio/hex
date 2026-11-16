@@ -609,6 +609,19 @@ impl Plugins {
                 .filter(|source| source.project_generation == generation)
                 .map(|source| {
                     let status = control.native_source_endpoint_status(source.binding);
+                    if let Some(log) = &self.diagnostics
+                        && let Some(sample) = control.take_native_source_slow_exchange(source.binding)
+                    {
+                        let _ = log.record_typed(
+                            hex_diagnostics::Level::Warn,
+                            hex_diagnostics::Category::Audio,
+                            &format!(
+                                "vst3 v=1 stage=slow_exchange generation={generation} output={output} device={} binding={:?} sequence={} exchange_ns={} sdk_process_ns={} quantum_ns={} dropped={} queue_ns=unavailable",
+                                source.device, sample.binding, sample.sequence, sample.exchange_ns,
+                                sample.sdk_process_ns, sample.quantum_ns, sample.dropped
+                            ),
+                        );
+                    }
                     if status == Some((true, false)) {
                         source.edit_backlog = false;
                     }
