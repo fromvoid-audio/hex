@@ -153,12 +153,12 @@ impl Knob {
         &self,
         query: PluginParameterQuery,
         row: &PluginParameterRow,
-        value: f64,
-        display: &str,
+        presentation: (f64, &str),
         enabled: bool,
         active: Option<hex_session::device_gesture::GestureSnapshot>,
         cx: &mut Context<EditorView>,
     ) -> Option<Entity<NumericControl>> {
+        let (value, display) = presentation;
         self.origin.set(parameter_origin(query, row)?);
         let value = self.pending_value(active).unwrap_or(value);
         let busy = active.is_some_and(|gesture| !self.owns(gesture.key));
@@ -964,12 +964,11 @@ fn apply_conversion_result(
                     value.display.as_deref(),
                     cx,
                 )
-            }) {
-                if view.error.is_none() {
-                    let reason = error.to_string().to_lowercase();
-                    view.device_panel.vst3_parameters.conversion_error = Some(reason.clone());
-                    view.error = Some(reason.into());
-                }
+            }) && view.error.is_none()
+            {
+                let reason = error.to_string().to_lowercase();
+                view.device_panel.vst3_parameters.conversion_error = Some(reason.clone());
+                view.error = Some(reason.into());
             }
         }
         Err(reason) => refuse_conversion(view, &pending.control, &pending.draft, &reason, cx),
@@ -2425,8 +2424,7 @@ fn knob(
         return knob.renew(
             query,
             row,
-            panel.display_value(row),
-            panel.display_text(row),
+            (panel.display_value(row), panel.display_text(row)),
             enabled,
             active,
             cx,
@@ -2462,8 +2460,7 @@ fn follow_knob(
         return knob.renew(
             query,
             row,
-            panel.display_value(row),
-            panel.display_text(row),
+            (panel.display_value(row), panel.display_text(row)),
             enabled,
             active,
             cx,
