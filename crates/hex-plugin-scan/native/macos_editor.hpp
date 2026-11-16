@@ -54,17 +54,20 @@ public:
             key=nontext_key([characters characterAtIndex:0]);
             if(!key) return false;
         }
-        id responder=[window firstResponder];
-        if([responder respondsToSelector:@selector(hasMarkedText)] &&
-           [(id<NSTextInputClient>)responder hasMarkedText] && owner!=2) {
-            if([event type]==NSEventTypeKeyUp) owner=0;
-            return false;
-        }
         const auto flags=[event modifierFlags];
         const int16 modifiers=(flags&NSEventModifierFlagShift?kShiftKey:0) |
             (flags&NSEventModifierFlagOption?kAlternateKey:0) |
             (flags&NSEventModifierFlagCommand?kCommandKey:0) |
             (flags&NSEventModifierFlagControl?kControlKey:0);
+        id responder=[window firstResponder];
+        if([responder respondsToSelector:@selector(hasMarkedText)] &&
+           [(id<NSTextInputClient>)responder hasMarkedText] && owner!=2) {
+            if([event type]==NSEventTypeKeyUp && owner) {
+                view->onKeyUp(0,key,modifiers);
+                owner=0;
+            }
+            return false;
+        }
         if([event type]==NSEventTypeKeyDown) {
             const auto handled=view->onKeyDown(0,key,modifiers)==kResultTrue;
             if(!owner) { key_values[code]=key;owner=handled?2:1; }

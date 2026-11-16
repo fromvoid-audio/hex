@@ -198,12 +198,17 @@ static void check_keys() {
     assert(!host.handle_key_event(key_event(other,NSEventTypeKeyDown,NSLeftArrowFunctionKey,123)));
     assert(!host.handle_key_event(key_event(window,NSEventTypeKeyDown,'a',0)));
     assert(view.key_downs==calls);
+    view.handles_keys=false;
+    assert(!host.handle_key_event(down));
     auto* marked=[[MarkedTextResponder alloc] initWithFrame:NSMakeRect(0,0,20,20)];
     [[window contentView] addSubview:marked];
     assert([window makeFirstResponder:marked]);
-    assert(!host.handle_key_event(down) && view.key_downs==calls);
+    const auto ups=view.key_ups;
+    assert(!host.handle_key_event(up) && view.key_ups==ups+1);
+    assert(!host.handle_key_event(down) && view.key_downs==calls+1);
     [window makeFirstResponder:nil];
     [marked removeFromSuperview];[marked release];
+    view.handles_keys=true;
     assert(host.handle_key_event(down));
     host.focus_changed(false);
     assert(!host.handle_key_event(up));
