@@ -4,6 +4,28 @@ use super::*;
 #[test]
 #[ignore = "explicit source-bound signed SDK receipts required"]
 fn verified_stream_through_native_main_effect_keeps_compensated_pcm() {
+    verify_streamed_effect(EffectRoute::Main);
+}
+
+#[test]
+#[ignore = "explicit source-bound signed SDK receipts required"]
+fn verified_stream_through_native_track_effect_keeps_compensated_pcm() {
+    verify_streamed_effect(EffectRoute::Track);
+}
+
+#[test]
+#[ignore = "explicit source-bound signed SDK receipts required"]
+fn verified_stream_through_native_return_effect_keeps_compensated_pcm() {
+    verify_streamed_effect(EffectRoute::Return);
+}
+
+enum EffectRoute {
+    Track,
+    Return,
+    Main,
+}
+
+fn verify_streamed_effect(location: EffectRoute) {
     let _native = native_fixture();
     let files = Files::new();
     let path = files.wav(48_000, 24_000);
@@ -27,12 +49,35 @@ fn verified_stream_through_native_main_effect_keeps_compensated_pcm() {
             .values()
             .any(|source| matches!(source, hex_session::AudioSourceBinding::VerifiedFile(_)))
     );
-    let (applied, _) = h.applied(applied);
+    let (mut applied, _) = h.applied(applied);
+    let track = imported.state.project.tracks()[0].id();
+    let (state, destination) = match location {
+        EffectRoute::Track => (
+            imported.state.clone(),
+            PluginEffectDestination::Track(track),
+        ),
+        EffectRoute::Return => {
+            let added = h.run(Request::Edit(Command::AddReturnTrack {
+                name: "effect".into(),
+            }));
+            (applied, _) = h.applied(applied);
+            let Some(Created::ReturnTrack(bus)) = added.created else {
+                panic!("return")
+            };
+            let state = h
+                .run(Request::Edit(Command::SetReturnSend {
+                    track,
+                    return_track: bus,
+                    gain: 0.5,
+                }))
+                .state;
+            (applied, _) = h.applied(applied);
+            (state, PluginEffectDestination::Return(bus))
+        }
+        EffectRoute::Main => (imported.state.clone(), PluginEffectDestination::Main),
+    };
     h.service
-        .submit(Request::InsertPluginEffect(request(
-            &imported.state,
-            PluginEffectDestination::Main,
-        )))
+        .submit(Request::InsertPluginEffect(request(&state, destination)))
         .unwrap();
     let accepted = terminal(&mut h);
     assert!(accepted.error.is_none(), "{:?}", accepted.error);
@@ -68,7 +113,11 @@ fn verified_stream_through_native_main_effect_keeps_compensated_pcm() {
         let expected = if index < 512 {
             0.0
         } else {
-            0.25 * (0.5 + ((index - 512) / 256) as f32 * 0.125)
+            let scaled = 0.5 + ((index - 512) / 256) as f32 * 0.125;
+            match location {
+                EffectRoute::Return => 0.25 + 0.125 * scaled,
+                EffectRoute::Track | EffectRoute::Main => 0.25 * scaled,
+            }
         };
         assert_eq!(*frame, [expected; 2], "streamed frame {index}");
     }
