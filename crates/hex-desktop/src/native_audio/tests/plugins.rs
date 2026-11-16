@@ -5,6 +5,7 @@ mod editor_recording;
 mod first_effect_take;
 mod installed_edits;
 mod instruments;
+mod live_stream;
 mod offline_bounce;
 mod performance_profile;
 mod state;
