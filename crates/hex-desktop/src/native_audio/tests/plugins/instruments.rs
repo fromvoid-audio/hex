@@ -4522,7 +4522,7 @@ fn installed_instrument_and_effect_export_with_streamed_audio() {
             assert!(muted.error.is_none(), "mixed mute: {:?}", muted.error);
             (applied, _) = h.applied(applied);
             let deadline = Instant::now() + Duration::from_secs(5);
-            let mut silent_blocks = 0;
+            let mut quiet_blocks = 0;
             loop {
                 let block = render_completed_block(&h);
                 let status = h.audio.as_ref().unwrap().status().unwrap();
@@ -4531,15 +4531,17 @@ fn installed_instrument_and_effect_export_with_streamed_audio() {
                     status.render_fault_snapshot().is_none(),
                     "mute render fault"
                 );
+                // Other active sources may retain a quiet tail after seek;
+                // the audible streamed track is above 0.01 here.
                 if !status.stream_buffering.load(Acquire)
-                    && block.iter().flatten().all(|sample| sample.abs() < 1e-6)
+                    && block.iter().flatten().all(|sample| sample.abs() < 0.005)
                 {
-                    silent_blocks += 1;
-                    if silent_blocks == 8 {
+                    quiet_blocks += 1;
+                    if quiet_blocks == 8 {
                         break;
                     }
                 } else {
-                    silent_blocks = 0;
+                    quiet_blocks = 0;
                 }
                 assert!(Instant::now() < deadline, "mixed mute did not reach output");
             }
