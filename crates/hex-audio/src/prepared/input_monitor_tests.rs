@@ -199,3 +199,92 @@ fn pcm_capture_refuses_monitor_without_interrupting_the_take() {
     assert!(reader.drain(|count, _, _| frames += count).is_none());
     assert_eq!(frames, 64);
 }
+
+#[test]
+fn priming_and_refusal_preserve_existing_audible_playback() {
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+    let Created::Imported { track, asset, .. } = editor
+        .execute(Command::ImportAudioTrack {
+            name: "audio".into(),
+            path: "audio.wav".into(),
+            sample_rate: 48_000,
+            frames: 1024,
+        })
+        .unwrap()
+    else {
+        panic!("imported audio")
+    };
+    let audio = hex_engine::Audio::new(48_000, vec![[0.5, -0.25]; 1024]).unwrap();
+    let revision = Arc::new(
+        hex_engine::PreparedRevision::prepare(
+            editor.project(),
+            &BTreeMap::from([(asset, audio)]),
+            Arc::new(hex_engine::SineTable::new()),
+            None,
+        )
+        .unwrap(),
+    );
+    let mut pair = Vec::new();
+    for _ in 0..2 {
+        let (mut control, mut callback) = channel(48_000).unwrap();
+        control
+            .publish_unaccounted_pcm_obligation(
+                Playback::try_from_prepared_with_session(Arc::clone(&revision)).unwrap(),
+                PublicationPolicy::InstallFreshRuntime,
+                7,
+                true,
+                false,
+                Some(hex_engine::AudioSourceContext {
+                    project_generation: 7,
+                    editor_revision: 3,
+                }),
+            )
+            .unwrap();
+        callback.begin_block();
+        control.command(PlaybackCommand::Play).unwrap();
+        callback.begin_block();
+        pair.push((control, callback));
+    }
+    let [
+        (reference_control, reference),
+        (monitored_control, monitored),
+    ] = &mut pair[..]
+    else {
+        panic!("pair")
+    };
+    let _ = reference_control;
+    let source = monitored.recording_source().unwrap();
+    let (mut input, stream) = test_monitor_source();
+    assert!(
+        monitored_control
+            .input_monitor
+            .publish(stream, source, hex_engine::OutputCaptureId::Track(track))
+            .is_ok()
+    );
+    monitored.begin_block();
+    let mut expected = [[0.0; 2]; 64];
+    let mut actual = [[0.0; 2]; 64];
+    reference.render(&mut expected).unwrap();
+    monitored.render(&mut actual).unwrap();
+    assert!(expected.iter().any(|frame| *frame != [0.0; 2]));
+    assert_eq!(actual, expected);
+    assert_eq!(
+        monitored_control.input_monitor.status(),
+        input_monitor::MonitorStatus::Priming
+    );
+    input.submit(&[0.25; 512]);
+    let reader = monitored_control
+        .sample_recording
+        .start(7, &[], true)
+        .unwrap();
+    assert!(reader.ready());
+    reference.begin_block();
+    monitored.begin_block();
+    reference.render(&mut expected).unwrap();
+    monitored.render(&mut actual).unwrap();
+    assert_eq!(actual, expected);
+    assert_eq!(
+        monitored_control.input_monitor.status(),
+        input_monitor::MonitorStatus::Unsupported
+    );
+}
