@@ -1076,19 +1076,29 @@ fn paused_source_monitor_preserves_buffered_arrangement_audio() {
     use hex_project::Command;
 
     let mut mismatches = Vec::new();
-    for (keyboard, partition) in [(false, 1), (false, 257), (true, 1), (true, 257)] {
+    for (effect_delay, keyboard, partition) in [
+        (false, false, 1),
+        (false, false, 257),
+        (false, true, 1),
+        (false, true, 257),
+        (true, false, 1),
+        (true, false, 257),
+        (true, true, 1),
+        (true, true, 257),
+    ] {
         let mut f = fixture(&[&[7], &[]], 1024);
+        let keyboard_track = f.tracks[usize::from(effect_delay)];
         f.editor
             .execute(Command::InsertInstrument {
-                track: f.tracks[0],
+                track: keyboard_track,
                 state: hex_project::default_instrument_state().unwrap(),
             })
             .unwrap();
-        // The muted keyboard track contributes latency but no PCM. The second
-        // track's impulse is still in the compensation delay when paused.
+        // The muted keyboard track contributes no PCM. The other track's
+        // impulse is queued either in compensation or a device delay.
         f.editor
             .execute(Command::Gain {
-                track: f.tracks[0],
+                track: keyboard_track,
                 gain: 0.0,
             })
             .unwrap();
@@ -1098,7 +1108,7 @@ fn paused_source_monitor_preserves_buffered_arrangement_audio() {
         let keys = Arc::new(crate::computer_keyboard::ComputerKeyboardInput::default());
         if keyboard {
             actual
-                .prepare_computer_keyboard(f.editor.project(), f.tracks[0], Arc::clone(&keys))
+                .prepare_computer_keyboard(f.editor.project(), keyboard_track, Arc::clone(&keys))
                 .unwrap();
         }
         for playback in [&mut actual, &mut oracle] {
@@ -1127,12 +1137,18 @@ fn paused_source_monitor_preserves_buffered_arrangement_audio() {
         let leaked_while_paused = monitored.iter().any(|frame| *frame != [0.0; 2]);
         let resume_differs = got != expected;
         if leaked_while_paused || resume_differs {
-            mismatches.push((keyboard, partition, leaked_while_paused, resume_differs));
+            mismatches.push((
+                effect_delay,
+                keyboard,
+                partition,
+                leaked_while_paused,
+                resume_differs,
+            ));
         }
     }
     assert!(
         mismatches.is_empty(),
-        "mismatches: (keyboard active, paused partition, leaked, resume differs) {mismatches:?}"
+        "mismatches: (device delay, keyboard active, paused partition, leaked, resume differs) {mismatches:?}"
     );
 }
 
