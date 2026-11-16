@@ -978,13 +978,14 @@ impl AudioTransformPreparation {
                 .get(&expected.key())
                 .filter(|candidate| candidate.as_ref() == &expected)
                 .ok_or(Invalid("matching pitched stream is unavailable"))?;
-            return Clip::streamed_region(
+            return Clip::streamed_region_with_fade(
                 Arc::clone(derived),
                 clip.start(),
                 clip.duration(),
                 0,
                 clip.duration(),
                 false,
+                edit.domain.fade,
             )
             .map(|prepared| Some(prepared.with_gain(clip.gain())));
         }

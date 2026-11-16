@@ -270,3 +270,91 @@ fn long_streamed_repitch_bounce_matches_resident_prefix() {
     let actual = render(&long, true);
     assert_matches(&actual, &expected, "repitch bounce");
 }
+
+#[test]
+fn long_streamed_pitch_fade_bounce_matches_resident_prefix() {
+    use std::io::Write;
+    let _native = native_fixture();
+    let files = Files::new();
+    fn source(path: &Path, frames: u32) {
+        let mut file = fs::File::create(path).unwrap();
+        file.write_all(b"RIFF").unwrap();
+        file.write_all(&(36 + frames).to_le_bytes()).unwrap();
+        file.write_all(b"WAVEfmt ").unwrap();
+        file.write_all(&16u32.to_le_bytes()).unwrap();
+        file.write_all(&1u16.to_le_bytes()).unwrap();
+        file.write_all(&1u16.to_le_bytes()).unwrap();
+        file.write_all(&48_000u32.to_le_bytes()).unwrap();
+        file.write_all(&48_000u32.to_le_bytes()).unwrap();
+        file.write_all(&1u16.to_le_bytes()).unwrap();
+        file.write_all(&8u16.to_le_bytes()).unwrap();
+        file.write_all(b"data").unwrap();
+        file.write_all(&frames.to_le_bytes()).unwrap();
+        let prefix: Vec<u8> = (0..8192).map(|i| 96 + ((i / 8) % 64) as u8).collect();
+        file.write_all(&prefix).unwrap();
+        file.set_len(44 + u64::from(frames)).unwrap();
+    }
+    fn render(path: &Path, streamed: bool) -> Vec<hex_engine::Frame> {
+        let mut h = ResidentHarness::with_frame_limit(65_536);
+        h.next();
+        let (mut applied, _) = h.applied(0);
+        let imported = h.run(Request::ImportToNewTrack {
+            path: path.to_path_buf(),
+            before_track: None,
+            start: 0,
+        });
+        (applied, _) = h.applied(applied);
+        let has_stream = imported
+            .state
+            .canonical_audio_source
+            .as_ref()
+            .unwrap()
+            .sources()
+            .values()
+            .any(|source| matches!(source, hex_session::AudioSourceBinding::VerifiedFile(_)));
+        assert_eq!(has_stream, streamed);
+        let track = imported.state.project.tracks()[0].id();
+        let clip = imported.state.project.tracks()[0].clips()[0].id();
+        h.run(Request::Edit(hex_project::Command::SetClipFades {
+            clip,
+            fade_in: 2048,
+            fade_out: 0,
+        }));
+        (applied, _) = h.applied(applied);
+        let current = h.run(Request::Edit(hex_project::Command::SetAudioClipPitch {
+            clip,
+            cents: 700,
+        }));
+        (applied, _) = h.applied(applied);
+        let result = bounce(
+            &mut h,
+            &current,
+            BounceTarget::Range(TimeRange::new(vec![track], 128, 640).unwrap()),
+            false,
+        );
+        assert!(result.error.is_none(), "{:?}", result.error);
+        let asset = added_asset(&current.state.project, &result.state.project);
+        let rendered = decoded(result.state.project.asset(asset).unwrap().path());
+        if streamed {
+            h.applied(applied);
+            fs::write(path, b"changed source").unwrap();
+            let refused = bounce(
+                &mut h,
+                &result,
+                BounceTarget::Range(TimeRange::new(vec![track], 128, 640).unwrap()),
+                false,
+            );
+            assert!(refused.error.is_some(), "changed source must refuse");
+            assert_eq!(refused.state.project, result.state.project);
+            assert_eq!(refused.state.revision, result.state.revision);
+        }
+        rendered
+    }
+    let short = files.0.join("short.wav");
+    let long = files.0.join("long.wav");
+    source(&short, 8192);
+    source(&long, 20_000_000);
+    let expected = render(&short, false);
+    let actual = render(&long, true);
+    assert_matches(&actual, &expected, "pitch and fade bounce");
+}

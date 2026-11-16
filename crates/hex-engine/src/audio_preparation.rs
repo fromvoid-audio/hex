@@ -1746,7 +1746,12 @@ impl AudioPreparationCustody {
                     },
                     gain: clip.gain().linear(),
                     looping: !transformed && repitch_view.is_none() && clip.looping(),
-                    fade: if transformed || repitch_view.is_some() {
+                    fade: if pitch_source.is_some() {
+                        clip.audio_edit()
+                            .ok_or(AudioStorageError::SourceMismatch)?
+                            .domain
+                            .fade
+                    } else if transformed || repitch_view.is_some() {
                         hex_project::ClipFade::neutral(clip.duration())
                             .map_err(|_| AudioStorageError::SourceMismatch)?
                     } else {

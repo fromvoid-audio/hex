@@ -47,8 +47,10 @@ fn bounded_clips<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<Pitch>, D
 
 fn pitch(clip: &hex_project::Clip) -> Option<i16> {
     let edit = clip.audio_edit()?;
-    (clip.duration() > MAX_AUDIO_DOMAIN_FRAMES && edit.is_plain_pitch_capture(clip))
-        .then_some(edit.domain.pitch_cents)
+    (clip.duration() > MAX_AUDIO_DOMAIN_FRAMES
+        && edit.is_plain_pitch_capture(clip)
+        && edit.domain.fade == clip.fade())
+    .then_some(edit.domain.pitch_cents)
 }
 
 pub(crate) fn contains(project: &Project) -> bool {

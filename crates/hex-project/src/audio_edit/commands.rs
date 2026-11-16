@@ -421,12 +421,15 @@ pub(crate) fn apply(
     }
     let reset_long_pitch = if reset_pitch && clip.duration > MAX_AUDIO_DOMAIN_FRAMES {
         let mut expected = AudioClipEdit::capture(&clip);
-        Arc::make_mut(&mut expected.domain).warp_resampler = WarpResampler::V2;
+        let domain = Arc::make_mut(&mut expected.domain);
+        domain.warp_resampler = WarpResampler::V2;
+        domain.fade = owned_edit.domain.fade;
         *owned_edit == expected
     } else {
         false
     };
     if reset_long_pitch {
+        clip.fade = owned_edit.domain.fade;
         clip.edit = None;
     } else {
         clip.edit = Some(owned_edit);

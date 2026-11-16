@@ -469,6 +469,16 @@ impl AudioClipEdit {
     /// Reconstruct an exact V2 plain-pitch edit from a plain clip. This does not
     /// establish asset extent or source custody; normal project validation does.
     pub fn reconstruct_plain_pitch(clip: &Clip, cents: i16) -> Result<Self, Invalid> {
+        if !clip.fade.is_neutral() {
+            return Err(Invalid(
+                "plain pitch reconstruction requires a neutral fade",
+            ));
+        }
+        Self::reconstruct_faded_pitch(clip, cents)
+    }
+
+    /// Reconstruct the full-source frame-clock pitch and retained fade from a plain clip.
+    pub fn reconstruct_faded_pitch(clip: &Clip, cents: i16) -> Result<Self, Invalid> {
         if clip.audio_edit().is_some() || cents == 0 || !(-4_800..=4_800).contains(&cents) {
             return Err(Invalid("invalid plain pitch reconstruction"));
         }
@@ -476,7 +486,9 @@ impl AudioClipEdit {
         let domain = Arc::make_mut(&mut edit.domain);
         domain.pitch_cents = cents;
         domain.warp_resampler = WarpResampler::V2;
-        if !edit.is_plain_pitch_capture(clip) {
+        let mut projected = clip.clone();
+        projected.fade = ClipFade::neutral(clip.duration)?;
+        if !edit.is_plain_pitch_capture(&projected) {
             return Err(Invalid(
                 "plain pitch requires a complete neutral frame clip",
             ));
@@ -484,7 +496,7 @@ impl AudioClipEdit {
         Ok(edit)
     }
 
-    /// Exact V2 full-frame plain pitch captured from a neutral, unlooped clip.
+    /// Exact V2 full-frame pitch and frame-clock fade captured from an unlooped clip.
     /// Callers must also establish that the clip covers the complete asset.
     pub fn is_plain_pitch_capture(&self, clip: &Clip) -> bool {
         if self.domain.pitch_cents == 0
@@ -493,6 +505,7 @@ impl AudioClipEdit {
             || clip.looping
             || clip.source_phase != 0
             || !clip.fade.is_neutral()
+            || self.domain.fade.validate_segment(clip.duration).is_err()
         {
             return false;
         }
@@ -500,6 +513,7 @@ impl AudioClipEdit {
         let domain = Arc::make_mut(&mut expected.domain);
         domain.pitch_cents = self.domain.pitch_cents;
         domain.warp_resampler = WarpResampler::V2;
+        domain.fade = self.domain.fade;
         self == &expected
     }
 

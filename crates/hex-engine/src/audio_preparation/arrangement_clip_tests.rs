@@ -269,6 +269,13 @@ fn long_plain_pitch_uses_its_verified_stream_and_keeps_raw_clip() {
             cents: 700,
         })
         .unwrap();
+    editor
+        .execute(Command::SetClipFades {
+            clip: pitched_clip,
+            fade_in: 1000,
+            fade_out: 2000,
+        })
+        .unwrap();
     let project = editor.project();
     let raw = crate::StreamedSourceMetadata::new(
         crate::StreamSourceKey::new(11, asset),
@@ -396,6 +403,11 @@ fn long_plain_pitch_uses_its_verified_stream_and_keeps_raw_clip() {
         })
         .collect();
     assert_eq!(streams, vec![raw.key(), pitched.key()]);
+    let prepared: Vec<_> = custody.arrangement_clips.clips().collect();
+    assert_eq!(
+        prepared[1].metadata.as_ref().unwrap().fade,
+        Some(project.clip(pitched_clip).unwrap().retained_fade())
+    );
     assert!(custody.cancel(&token));
     custody.cleanup_on_control();
     assert!(custody.recover_on_control(&token).is_some());
