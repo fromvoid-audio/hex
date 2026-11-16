@@ -4,6 +4,76 @@ use crate::signal_graph::tests::{fixture, prepare};
 use hex_project::{Command, Created};
 
 #[test]
+fn stopped_live_audio_uses_track_routes_without_playing_arrangement() {
+    for delays in [&[][..], &[7][..]] {
+        for partition in [1, 17, 256] {
+            let mut f = fixture(&[delays, &[]], 512);
+            let track = f.tracks[0];
+            f.editor
+                .execute(Command::Gain { track, gain: 0.5 })
+                .unwrap();
+            let Created::ReturnTrack(bus) = f
+                .editor
+                .execute(Command::AddReturnTrack {
+                    name: "return".into(),
+                })
+                .unwrap()
+            else {
+                panic!("return")
+            };
+            f.editor
+                .execute(Command::SetReturnSend {
+                    track,
+                    return_track: bus,
+                    gain: 0.5,
+                })
+                .unwrap();
+            // The stopped graph keeps real authored audio; it must not sound.
+            let mut stopped = SessionPlayback::new(prepare(&f).unwrap()).unwrap();
+            for audio in f.media.values_mut() {
+                *audio = crate::Audio::new(48_000, vec![[0.0; 2]; 512]).unwrap();
+            }
+            let mut reference = SessionPlayback::new(prepare(&f).unwrap()).unwrap();
+            reference.apply(SessionPlaybackCommand::Play).unwrap();
+            let mut expected = vec![[0.0; 2]; 512];
+            let mut actual = expected.clone();
+            for ((out, reference_out), input) in actual
+                .chunks_mut(partition)
+                .zip(expected.chunks_mut(partition))
+                .zip(f.samples.chunks(partition))
+            {
+                reference
+                    .render_with_live_track_audio(
+                        reference_out,
+                        track,
+                        input,
+                        None,
+                        None,
+                        None,
+                        &mut hex_lattice::RefuseForeign,
+                    )
+                    .unwrap();
+                stopped
+                    .render_with_live_track_audio(
+                        out,
+                        track,
+                        input,
+                        None,
+                        None,
+                        None,
+                        &mut hex_lattice::RefuseForeign,
+                    )
+                    .unwrap();
+            }
+            assert_eq!(actual, expected, "delay {delays:?}, partition {partition}");
+            assert!(actual.iter().any(|frame| *frame != [0.0; 2]));
+            assert_eq!(stopped.performance_frame(), 0);
+            assert!(!stopped.playing());
+        }
+    }
+}
+
+#[test]
 fn live_track_audio_matches_arrangement_through_effects_fader_and_send() {
     for delays in [&[][..], &[7][..]] {
         for partition in [1, 17, 256] {
@@ -80,7 +150,7 @@ fn invalid_live_blocks_are_silent_and_do_not_advance() {
             .render_with_live_track_audio(
                 &mut out,
                 track,
-                &[[0.5; 2]; 2],
+                &[[f32::NAN; 2]; 2],
                 None,
                 None,
                 None,
@@ -219,6 +289,61 @@ fn live_audio_follows_target_track_through_its_group() {
     .unwrap();
     assert_eq!(actual, expected);
     assert!(actual.iter().any(|frame| *frame != [0.0; 2]));
+}
+
+#[test]
+fn stopped_live_audio_follows_its_group_without_arrangement_audio() {
+    let mut f = fixture(&[&[7]], 512);
+    let track = f.tracks[0];
+    let Created::Track(group) = f
+        .editor
+        .execute(Command::GroupTracks {
+            tracks: hex_project::TrackSelectionIds::new(&[track]).unwrap(),
+            name: "group".into(),
+        })
+        .unwrap()
+    else {
+        panic!("group")
+    };
+    f.editor
+        .execute(Command::Gain {
+            track: group,
+            gain: 0.5,
+        })
+        .unwrap();
+    let mut stopped = SessionPlayback::new(prepare(&f).unwrap()).unwrap();
+    for audio in f.media.values_mut() {
+        *audio = crate::Audio::new(48_000, vec![[0.0; 2]; 512]).unwrap();
+    }
+    let mut reference = SessionPlayback::new(prepare(&f).unwrap()).unwrap();
+    reference.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut expected = [[0.0; 2]; 256];
+    let mut actual = expected;
+    reference
+        .render_with_live_track_audio(
+            &mut expected,
+            track,
+            &f.samples[..256],
+            None,
+            None,
+            None,
+            &mut hex_lattice::RefuseForeign,
+        )
+        .unwrap();
+    stopped
+        .render_with_live_track_audio(
+            &mut actual,
+            track,
+            &f.samples[..256],
+            None,
+            None,
+            None,
+            &mut hex_lattice::RefuseForeign,
+        )
+        .unwrap();
+    assert_eq!(actual, expected);
+    assert!(actual.iter().any(|frame| *frame != [0.0; 2]));
+    assert_eq!(stopped.performance_frame(), 0);
 }
 
 #[test]
