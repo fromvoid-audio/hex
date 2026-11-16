@@ -1529,20 +1529,48 @@ fn ordinary_reopen_keeps_processed_resident_sources_and_plain_files_with_atomic_
             cents: 137,
         }))
         .unwrap();
+    let pitched = next(&service);
+    assert!(pitched.error.is_none(), "{:?}", pitched.error);
+    assert_eq!(
+        pitched
+            .state
+            .project
+            .clip(plain)
+            .unwrap()
+            .audio_edit()
+            .unwrap()
+            .domain
+            .pitch_cents,
+        137
+    );
+    let asset = opened.state.project.clip(plain).unwrap().asset();
+    let pitched_source = pitched.state.canonical_audio_source.as_ref().unwrap();
+    let (AudioSourceBinding::VerifiedFile(before), Some(AudioSourceBinding::VerifiedFile(after))) = (
+        &source.sources()[&asset],
+        pitched_source.sources().get(&asset),
+    ) else {
+        panic!("verified facts")
+    };
+    assert_eq!(before, after);
+    service
+        .submit(Request::Edit(Command::SetAudioClipPitch {
+            clip: plain,
+            cents: 4_801,
+        }))
+        .unwrap();
     let refused = next(&service);
     assert!(
         refused
             .error
             .as_ref()
             .unwrap()
-            .contains("require resident audio")
+            .contains("audio pitch must be within -4800..4800 cents")
     );
-    assert_eq!(refused.state.project, opened.state.project);
-    assert_eq!(refused.state.revision, opened.state.revision);
-    assert_eq!(refused.state.can_undo, opened.state.can_undo);
+    assert_eq!(refused.state.project, pitched.state.project);
+    assert_eq!(refused.state.revision, pitched.state.revision);
+    assert_eq!(refused.state.can_undo, pitched.state.can_undo);
     let after = refused.state.canonical_audio_source.as_ref().unwrap();
-    assert_eq!(after.context(), source.context());
-    let asset = opened.state.project.clip(plain).unwrap().asset();
+    assert_eq!(after.context(), pitched_source.context());
     let (AudioSourceBinding::VerifiedFile(before), Some(AudioSourceBinding::VerifiedFile(after))) =
         (&source.sources()[&asset], after.sources().get(&asset))
     else {
