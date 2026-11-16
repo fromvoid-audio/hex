@@ -253,10 +253,9 @@ fn native_effect_export_case(limit: u64) {
         .chunks_exact(4)
         .map(|frame| i16::from_le_bytes([frame[0], frame[1]]))
         .collect();
-    assert!(pcm.iter().any(|sample| *sample != 0));
     assert!(
-        pcm.iter()
-            .any(|sample| (i32::from(*sample) - 8192).abs() > 2)
+        pcm.iter().any(|sample| (1000..=7000).contains(sample)),
+        "the private effect must audibly reduce the 8192-level input"
     );
     assert_eq!(h.plugin_progress.lock().unwrap().binding, live);
     assert_eq!(queued.state.project, before);
