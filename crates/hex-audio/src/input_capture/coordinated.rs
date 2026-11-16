@@ -142,7 +142,8 @@ impl Drop for CoordinatedJob {
 }
 
 /// Start one coordinator with an unstarted input and a newly reserved output
-/// reader. Output must actually deliver a timed span before input writing starts.
+/// reader bound to the exact applied output source. Output must actually deliver
+/// a timed span before input writing starts.
 /// The requested file must not exist; no project or clock authority is inferred.
 pub fn spawn_coordinated_take(
     input: InputCapture,
@@ -190,6 +191,12 @@ fn spawn_with_writer(
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "input and output sample rates differ",
+        ));
+    }
+    if output.source_binding().is_none() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "output recording must be bound to an applied audio source",
         ));
     }
     let input_stop = input.stop_handle_on_control();
@@ -468,11 +475,21 @@ mod tests {
         hex_engine::PreparedTempoMap,
     ) {
         let (mut control, callback) = sample_recording::channel(48_000);
-        let reader = control.start(1, &[], true).unwrap();
+        let reader = control.start_bound(source()).unwrap();
         let project = hex_project::Project::new(48_000).unwrap();
         let map =
             hex_engine::PreparedTempoMap::prepare(project.tempo_map().clone(), 48_000).unwrap();
         (control, callback, reader, map)
+    }
+    fn source() -> crate::prepared::AppliedAudioSource {
+        crate::prepared::AppliedAudioSource {
+            context: hex_engine::AudioSourceContext {
+                project_generation: 1,
+                editor_revision: 2,
+            },
+            audio_revision: 3,
+            output_identity: 4,
+        }
     }
     fn emit(
         callback: &mut sample_recording::Callback,
@@ -563,6 +580,18 @@ mod tests {
             CoordinatedOutcome::Failed { reason, .. } => panic!("unexpected failure: {reason}"),
         };
         assert_eq!(take.frames, 64);
+        assert_eq!(
+            take.input_device.to_string(),
+            format!("{}:test-input", cpal::default_host().id())
+        );
+        assert_eq!(
+            take.input_config,
+            input_capture::InputConfig {
+                sample_rate: 48_000,
+                channels: 1
+            }
+        );
+        assert_eq!(output.source_binding(), Some(source()));
         assert!(matches!(take.end, InputTakeEnd::Stopped));
         assert_eq!(output.completion().unwrap(), Some(End::Stopped));
         let placement =
@@ -575,6 +604,21 @@ mod tests {
         )
         .unwrap();
         assert_eq!(wav.read_frames(0, 64).unwrap(), vec![[0.25, 0.25]; 64]);
+    }
+
+    #[test]
+    fn unbound_output_is_refused_before_starting_input_or_creating_file() {
+        let temp = Temp::new();
+        let (input, started) = mock_input(false);
+        let (mut control, _callback) = sample_recording::channel(48_000);
+        let reader = control.start(1, &[], true).unwrap();
+        let error = match spawn_coordinated_take(input, reader, temp.0.clone()) {
+            Ok(_) => panic!("unbound output was accepted"),
+            Err(error) => error,
+        };
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert!(started.try_recv().is_err());
+        assert!(!temp.0.exists());
     }
 
     #[test]
