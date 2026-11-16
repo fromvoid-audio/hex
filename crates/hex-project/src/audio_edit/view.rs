@@ -199,9 +199,40 @@ mod independent_repeat_period_tests {
                 .collect();
             assert_eq!(actual, expected);
             assert_eq!(projection.outer_frame_bounds(), (100, 123));
-            assert!(projection.play_start_position().is_err());
-            assert!(projection.root_position_for_frame(100).is_err());
-            assert!(projection.root_ranges_for_frames(100..123).is_err());
+            assert_eq!(
+                projection.play_start_position().unwrap(),
+                (phase < 6).then_some(phase)
+            );
+            for frame in 100..123 {
+                let p = (phase + frame - 100) % 10;
+                assert_eq!(
+                    projection.root_position_for_frame(frame).unwrap(),
+                    (p < 6).then_some(p)
+                );
+            }
+            for start in 100..=123 {
+                for end in start..=123 {
+                    let mut expected = [false; 6];
+                    for frame in start..end {
+                        let p = (phase + frame - 100) % 10;
+                        if p < 6 {
+                            expected[p as usize] = true;
+                        }
+                    }
+                    let mut actual = [false; 6];
+                    for range in projection
+                        .root_ranges_for_frames(start..end)
+                        .unwrap()
+                        .into_iter()
+                        .flatten()
+                    {
+                        for pos in range {
+                            actual[pos as usize] = true;
+                        }
+                    }
+                    assert_eq!(actual, expected, "phase={phase} range={start}..{end}");
+                }
+            }
             assert!(projection.repeat_boundaries().is_err());
         }
         let silent = AudioViewProjection::from_parts_with_period(
@@ -220,6 +251,40 @@ mod independent_repeat_period_tests {
         )
         .unwrap();
         assert_eq!(silent.occurrence_count(), 0);
+        let offset = AudioViewProjection::from_parts_with_period(
+            clip,
+            editor.project().tempo_map(),
+            AudioDomainClock::Frames(10),
+            2..8,
+            100,
+            Some(AudioViewPlacement {
+                mode: AudioViewMode::Repeat,
+                outer_length: AudioDomainClock::Frames(23),
+                cycle_phase: 8,
+            }),
+            0,
+            Some(10),
+        )
+        .unwrap();
+        assert_eq!(offset.play_start_position().unwrap(), None);
+        assert_eq!(offset.root_position_for_frame(102).unwrap(), Some(2));
+        assert_eq!(offset.root_position_for_frame(108).unwrap(), None);
+        assert_eq!(
+            offset.root_ranges_for_frames(0..u64::MAX).unwrap(),
+            [Some(2..8), None]
+        );
+        assert_eq!(
+            offset.root_ranges_for_frames(108..112).unwrap(),
+            [None, None]
+        );
+        assert!(
+            offset
+                .root_ranges_for_frames(std::ops::Range {
+                    start: 112,
+                    end: 108
+                })
+                .is_err()
+        );
         for period in [0, 5] {
             assert!(
                 AudioViewProjection::from_parts_with_period(
