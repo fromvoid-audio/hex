@@ -136,6 +136,112 @@ pub struct AudioViewPlacement {
     pub cycle_phase: u64,
 }
 
+#[cfg(test)]
+mod independent_repeat_period_tests {
+    use super::*;
+    use crate::{Command, Created, Editor, Project};
+
+    #[test]
+    fn frame_occurrences_keep_source_separate_from_a_silent_repeat_gap() {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let Created::Imported { clip, .. } = editor
+            .execute(Command::ImportAudioTrack {
+                name: "source".into(),
+                path: "source.wav".into(),
+                sample_rate: 48_000,
+                frames: 10,
+            })
+            .unwrap()
+        else {
+            panic!("audio fixture")
+        };
+        let clip = editor.project().clip(clip).unwrap();
+        for (phase, expected) in [
+            (
+                0,
+                vec![(100, 106, 0, 6), (110, 116, 0, 6), (120, 123, 0, 3)],
+            ),
+            (
+                3,
+                vec![(100, 103, 3, 6), (107, 113, 0, 6), (117, 123, 0, 6)],
+            ),
+            (
+                8,
+                vec![(102, 108, 0, 6), (112, 118, 0, 6), (122, 123, 0, 1)],
+            ),
+        ] {
+            let placement = AudioViewPlacement {
+                mode: AudioViewMode::Repeat,
+                outer_length: AudioDomainClock::Frames(23),
+                cycle_phase: phase,
+            };
+            let projection = AudioViewProjection::from_parts_with_period(
+                clip,
+                editor.project().tempo_map(),
+                AudioDomainClock::Frames(10),
+                0..6,
+                100,
+                Some(placement),
+                0,
+                Some(10),
+            )
+            .unwrap();
+            let actual: Vec<_> = (0..projection.occurrence_count())
+                .map(|index| {
+                    let occurrence = projection.occurrence(index).unwrap();
+                    (
+                        occurrence.destination_start,
+                        occurrence.destination_end,
+                        occurrence.root_start,
+                        occurrence.root_end,
+                    )
+                })
+                .collect();
+            assert_eq!(actual, expected);
+            assert_eq!(projection.outer_frame_bounds(), (100, 123));
+            assert!(projection.play_start_position().is_err());
+            assert!(projection.root_position_for_frame(100).is_err());
+            assert!(projection.root_ranges_for_frames(100..123).is_err());
+            assert!(projection.repeat_boundaries().is_err());
+        }
+        let silent = AudioViewProjection::from_parts_with_period(
+            clip,
+            editor.project().tempo_map(),
+            AudioDomainClock::Frames(10),
+            0..6,
+            100,
+            Some(AudioViewPlacement {
+                mode: AudioViewMode::Repeat,
+                outer_length: AudioDomainClock::Frames(1),
+                cycle_phase: 8,
+            }),
+            0,
+            Some(10),
+        )
+        .unwrap();
+        assert_eq!(silent.occurrence_count(), 0);
+        for period in [0, 5] {
+            assert!(
+                AudioViewProjection::from_parts_with_period(
+                    clip,
+                    editor.project().tempo_map(),
+                    AudioDomainClock::Frames(10),
+                    0..6,
+                    100,
+                    Some(AudioViewPlacement {
+                        mode: AudioViewMode::Repeat,
+                        outer_length: AudioDomainClock::Frames(23),
+                        cycle_phase: 0
+                    }),
+                    0,
+                    Some(period),
+                )
+                .is_err()
+            );
+        }
+    }
+}
+
 /// One visible occurrence's full processing-root projection and retained crop.
 /// Root offsets are relative to `root_frame_origin`; destinations are absolute.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -172,6 +278,7 @@ pub struct AudioViewProjection<'a> {
     end: i128,
     view_start: u64,
     cycle: u64,
+    audible: u64,
     phase: u64,
     count: u64,
     first_index: u64,
@@ -507,8 +614,34 @@ impl<'a> AudioViewProjection<'a> {
         placement: Option<AudioViewPlacement>,
         displacement: i128,
     ) -> Result<Self, Invalid> {
+        Self::from_parts_with_period(
+            clip,
+            tempo,
+            clock,
+            view,
+            start,
+            placement,
+            displacement,
+            None,
+        )
+    }
+
+    // Internal preparation for a future independent repeat period. No saved or
+    // editable state supplies it until all playback and display consumers can
+    // represent gaps; musical and directed gaps require their own contracts.
+    #[allow(clippy::too_many_arguments)]
+    fn from_parts_with_period(
+        clip: &'a Clip,
+        tempo: &'a TempoMap,
+        clock: AudioDomainClock,
+        view: std::ops::Range<u64>,
+        start: i128,
+        placement: Option<AudioViewPlacement>,
+        displacement: i128,
+        repeat_period: Option<u64>,
+    ) -> Result<Self, Invalid> {
         let (view_start, view_end) = (view.start, view.end);
-        let cycle = view_end
+        let audible = view_end
             .checked_sub(view_start)
             .filter(|n| *n > 0)
             .ok_or(Invalid("audio cycle must have positive length"))?;
@@ -516,6 +649,17 @@ impl<'a> AudioViewProjection<'a> {
             return Err(Invalid("audio cycle exceeds retained root"));
         }
         let beat_clock = matches!(clock, AudioDomainClock::Beats(_));
+        let cycle = repeat_period.unwrap_or(audible);
+        if cycle < audible
+            || (cycle != audible
+                && (beat_clock
+                    || placement.is_none_or(|p| p.mode != AudioViewMode::Repeat)
+                    || clip.audio_edit().is_some_and(|edit| {
+                        edit.content_view.is_some() || edit.processing_projection.is_some()
+                    })))
+        {
+            return Err(Invalid("unsupported audio repeat period"));
+        }
         if beat_clock {
             audio_projection_frame(tempo, start)?;
         }
@@ -546,6 +690,8 @@ impl<'a> AudioViewProjection<'a> {
         let first_end = first_read + i128::from(cycle) - i128::from(phase);
         let mut count = if exhausted {
             0
+        } else if mode == AudioViewMode::Repeat && cycle != audible {
+            repeat_spans::AudibleRepeats::new(length, phase, cycle, audible)?.count()
         } else if mode == AudioViewMode::Repeat && length > cycle - phase {
             1 + (length - (cycle - phase)).div_ceil(cycle)
         } else {
@@ -614,6 +760,7 @@ impl<'a> AudioViewProjection<'a> {
             end,
             view_start,
             cycle,
+            audible,
             phase,
             count,
             first_index,
@@ -789,6 +936,7 @@ impl<'a> AudioViewProjection<'a> {
             .and_then(crate::RepeatCycles::seams))
     }
     fn retained_repeat_cycles(&self) -> Result<Option<crate::RepeatCycles>, Invalid> {
+        self.require_complete_repeat_projection()?;
         let edit = self.clip.audio_edit();
         let placement = edit.and_then(|edit| {
             edit.content_view
@@ -867,6 +1015,12 @@ impl<'a> AudioViewProjection<'a> {
     pub fn occurrence_count(&self) -> u64 {
         self.count
     }
+    fn require_complete_repeat_projection(&self) -> Result<(), Invalid> {
+        if self.cycle != self.audible {
+            return Err(Invalid("silent repeat gap geometry is not yet supported"));
+        }
+        Ok(())
+    }
     /// Technical placement origin in the declared domain clock, even for
     /// silence. A retained occurrence may carry a separate processing origin.
     pub fn root_origin(&self) -> i128 {
@@ -890,19 +1044,20 @@ impl<'a> AudioViewProjection<'a> {
         let source_index = index
             .checked_add(self.first_index)
             .ok_or(Invalid("audio occurrence index overflow"))?;
-        let offset = i128::from(source_index)
-            .checked_mul(i128::from(self.cycle))
-            .ok_or(Invalid("audio occurrence origin overflow"))?;
-        let root_origin = self.root_origin() + offset;
         let length = u64::try_from(self.end - self.first_read)
             .map_err(|_| Invalid("audio repeat window length overflow"))?;
-        let spans = repeat_spans::AudibleRepeats::new(length, self.phase, self.cycle, self.cycle)?;
+        let spans =
+            repeat_spans::AudibleRepeats::new(length, self.phase, self.cycle, self.audible)?;
         if source_index >= spans.count() {
             return Err(Invalid("audio occurrence exceeds repeat window"));
         }
         let span = spans
             .span(source_index)
             .ok_or(Invalid("audio occurrence exceeds repeat window"))?;
+        let offset = i128::from(span.cycle_index)
+            .checked_mul(i128::from(self.cycle))
+            .ok_or(Invalid("audio occurrence origin overflow"))?;
+        let root_origin = self.root_origin() + offset;
         let begin = self.first_read + i128::from(span.elapsed_start);
         let end = self.first_read + i128::from(span.elapsed_end);
         let destination_start = u64::try_from(self.frame(begin)?)
