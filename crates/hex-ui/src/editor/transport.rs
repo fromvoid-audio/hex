@@ -77,6 +77,9 @@ impl EditorView {
             self.computer_keyboard.base_pitch, self.computer_keyboard.velocity
         );
         let field = self.project_tempo_input(cx);
+        // Reserve room for transient recording and automation controls on the
+        // first row at the minimum window width.
+        let compact = f32::from(window.viewport_size().width) < 1_000.0;
         let controls = div()
             .id("transport-primary-controls")
             .on_click(|_, _, cx| cx.stop_propagation())
@@ -367,10 +370,16 @@ impl EditorView {
                 .debug_selector(|| "reenable-device-automation".into())
             }))
             .children([self.snap_control(cx)])
-            .children([self.section_focus_toggle(cx)])
-            .children([self.track_tag_filter_control(cx)])
-            .child(self.zoom_fit_button(super::zoom_fit::Target::Arrange, false, cx))
-            .child(self.zoom_fit_button(super::zoom_fit::Target::Arrange, true, cx));
+            .children((!compact).then(|| self.section_focus_toggle(cx)))
+            .children((!compact).then(|| self.track_tag_filter_control(cx)))
+            .children(
+                (!compact)
+                    .then(|| self.zoom_fit_button(super::zoom_fit::Target::Arrange, false, cx)),
+            )
+            .children(
+                (!compact)
+                    .then(|| self.zoom_fit_button(super::zoom_fit::Target::Arrange, true, cx)),
+            );
         let mut status = div()
             .id("transport-status-controls")
             .on_click(|_, _, cx| cx.stop_propagation())
@@ -378,6 +387,14 @@ impl EditorView {
             .items_center()
             .min_w_0()
             .flex_1()
+            .children(compact.then(|| self.section_focus_toggle(cx)))
+            .children(compact.then(|| self.track_tag_filter_control(cx)))
+            .children(
+                compact.then(|| self.zoom_fit_button(super::zoom_fit::Target::Arrange, false, cx)),
+            )
+            .children(
+                compact.then(|| self.zoom_fit_button(super::zoom_fit::Target::Arrange, true, cx)),
+            )
             .child(
                 div()
                     .debug_selector(|| "project position".into())
