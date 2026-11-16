@@ -130,6 +130,10 @@ impl RuntimeRef<'_> {
             Self::Eligible(p) => p.sample_rate().unwrap_or(0),
         }
     }
+    pub(super) fn main_output_latency_frames(&self) -> Option<u32> {
+        self.status()
+            .map(|status| status.main_output_latency_frames)
+    }
     pub(super) fn position(&self) -> u64 {
         self.status().map_or(0, |s| s.position)
     }

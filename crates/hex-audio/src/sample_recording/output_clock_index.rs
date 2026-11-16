@@ -254,6 +254,7 @@ mod tests {
         OutputClock {
             playback: StreamInstant::new(10, nanos),
             offset_frames: offset,
+            graph_latency_frames: Some(0),
         }
     }
     fn timing(start: u64, end: u64, timeline: u64) -> TimingSpan {

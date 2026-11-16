@@ -540,6 +540,7 @@ fn sample_output_clock(
     Some(crate::sample_recording::OutputClock {
         playback: info.timestamp().playback,
         offset_frames: u32::try_from(chunk.checked_mul(chunk_frames)?).ok()?,
+        graph_latency_frames: None,
     })
 }
 

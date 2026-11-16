@@ -460,6 +460,7 @@ fn end_label(end: End) -> &'static str {
         End::InvalidBlock => "audio was unavailable",
         End::UnsupportedOutput => "unsupported output mode",
         End::StorageFailed => "storage unavailable",
+        End::TransportChanged => "transport changed",
     }
 }
 

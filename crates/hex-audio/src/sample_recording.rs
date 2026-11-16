@@ -43,6 +43,7 @@ pub enum End {
     InvalidBlock,
     UnsupportedOutput,
     StorageFailed,
+    TransportChanged,
 }
 
 /// Scalar acknowledgement for the control surface. Preparing lasts until the
@@ -91,6 +92,9 @@ struct Packet {
 pub struct OutputClock {
     pub playback: cpal::StreamInstant,
     pub offset_frames: u32,
+    /// Applied graph's declared Main delay, captured on the rendering callback.
+    /// This excludes physical device and acoustic latency.
+    pub graph_latency_frames: Option<u32>,
 }
 
 pub struct Control {
@@ -369,6 +373,7 @@ impl Reader {
             x if x == End::Backpressure as u8 => Some(End::Backpressure),
             x if x == End::InvalidBlock as u8 => Some(End::InvalidBlock),
             x if x == End::UnsupportedOutput as u8 => Some(End::UnsupportedOutput),
+            x if x == End::TransportChanged as u8 => Some(End::TransportChanged),
             _ if disconnected => Some(End::OutputFailed),
             _ => None,
         }
@@ -400,6 +405,20 @@ impl Drop for Reader {
 }
 
 impl Callback {
+    /// A transport discontinuity invalidates bound recording even when a seek
+    /// lands at the next expected frame. Ordinary sample capture remains unbound.
+    pub(crate) fn end_bound_for_transport_change(&mut self) {
+        if self.active.is_none() {
+            self.active = self.incoming.pop().ok();
+        }
+        if self
+            .active
+            .as_ref()
+            .is_some_and(|capture| capture.layout.expected_source.is_some())
+        {
+            self.end(End::TransportChanged);
+        }
+    }
     pub(crate) fn begin(&mut self, frames: usize) {
         if self.active.is_none() {
             self.active = self.incoming.pop().ok();
