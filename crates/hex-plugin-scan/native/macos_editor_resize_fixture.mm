@@ -87,10 +87,11 @@ public:
     bool resizable=false;
     int focus_gained=0,focus_lost=0;
     int key_downs=0,key_ups=0,last_key=0,last_modifiers=0;
+    char16 last_character=0;
     bool handles_keys=false;
     EditorFrame* callback_frame=nullptr;
     NSEvent* nested_down=nil;
-    bool refocus_on_down=false,reenter_on_up=false;
+    bool refocus_on_down=false,refocus_on_up=false,reenter_on_up=false;
 
     tresult PLUGIN_API queryInterface(const TUID,void** out) override {
         if(out) *out=nullptr;
@@ -102,8 +103,8 @@ public:
     tresult PLUGIN_API attached(void*,FIDString) override { return kNotImplemented; }
     tresult PLUGIN_API removed() override { return kNotImplemented; }
     tresult PLUGIN_API onWheel(float) override { return kNotImplemented; }
-    tresult PLUGIN_API onKeyDown(char16,int16 key,int16 modifiers) override {
-        ++key_downs;last_key=key;last_modifiers=modifiers;
+    tresult PLUGIN_API onKeyDown(char16 character,int16 key,int16 modifiers) override {
+        ++key_downs;last_character=character;last_key=key;last_modifiers=modifiers;
         if(refocus_on_down) {
             refocus_on_down=false;
             callback_frame->focus_changed(false);
@@ -111,8 +112,13 @@ public:
         }
         return handles_keys?kResultOk:kResultFalse;
     }
-    tresult PLUGIN_API onKeyUp(char16,int16 key,int16 modifiers) override {
-        ++key_ups;last_key=key;last_modifiers=modifiers;
+    tresult PLUGIN_API onKeyUp(char16 character,int16 key,int16 modifiers) override {
+        ++key_ups;last_character=character;last_key=key;last_modifiers=modifiers;
+        if(refocus_on_up) {
+            refocus_on_up=false;
+            callback_frame->focus_changed(false);
+            callback_frame->focus_changed(true);
+        }
         if(reenter_on_up) {
             reenter_on_up=false;
             assert(callback_frame->handle_key_event(nested_down));
@@ -173,6 +179,13 @@ static void check_focus(NSWindowStyleMask style) {
 - (BOOL)hasMarkedText { return YES; }
 @end
 
+@interface TextResponder : NSView
+@end
+@implementation TextResponder
+- (BOOL)acceptsFirstResponder { return YES; }
+- (BOOL)hasMarkedText { return NO; }
+@end
+
 static NSEvent* key_event(NSWindow* window,NSEventType type,unichar character,
                           unsigned short code,NSEventModifierFlags modifiers=0) {
     NSString* text=[NSString stringWithCharacters:&character length:1];
@@ -211,7 +224,6 @@ static void check_keys() {
            view.key_ups==initial_ups);
     const auto calls=view.key_downs;
     assert(!host.handle_key_event(key_event(other,NSEventTypeKeyDown,NSLeftArrowFunctionKey,123)));
-    assert(!host.handle_key_event(key_event(window,NSEventTypeKeyDown,'a',0)));
     assert(view.key_downs==calls);
     view.handles_keys=false;
     assert(!host.handle_key_event(down));
@@ -238,6 +250,86 @@ static void check_keys() {
     host.invalidate();
     assert(!host.handle_key_event(down) && view.key_downs==final_calls);
     [other release];[window release];
+}
+
+static void check_printable_keys() {
+    auto* window=[[NSWindow alloc] initWithContentRect:NSMakeRect(0,0,320,240)
+        styleMask:NSWindowStyleMaskTitled backing:NSBackingStoreBuffered defer:NO];
+    ResizeView view(window);
+    EditorFrame host(window,&view);
+    view.callback_frame=&host;
+    host.focus_changed(true);
+    view.handles_keys=true;
+    auto* down=key_event(window,NSEventTypeKeyDown,'A',0,NSEventModifierFlagShift);
+    auto* up=key_event(window,NSEventTypeKeyUp,'x',0);
+    assert(host.handle_key_event(down));
+    assert(view.last_character=='A' && view.last_key==CharToVirtualKeyCode('A') &&
+           view.last_modifiers==kShiftKey);
+    assert(host.handle_key_event(key_event(window,NSEventTypeKeyDown,'a',0)) &&
+           view.last_character=='a' && view.last_key==CharToVirtualKeyCode('A'));
+    assert(host.handle_key_event(up) && view.last_character=='A' &&
+           view.last_key==CharToVirtualKeyCode('A'));
+    auto* shifted=[NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint
+        modifierFlags:NSEventModifierFlagShift timestamp:0 windowNumber:[window windowNumber]
+        context:nil characters:@"!" charactersIgnoringModifiers:@"1" isARepeat:NO keyCode:18];
+    assert(host.handle_key_event(shifted) && view.last_character=='!' &&
+           view.last_key==CharToVirtualKeyCode('1') && view.last_modifiers==kShiftKey);
+    assert(host.handle_key_event(key_event(window,NSEventTypeKeyUp,'1',18)));
+    assert(host.handle_key_event(down));
+    const auto before_handoff=view.key_ups;
+    assert(!host.handle_key_event(key_event(window,NSEventTypeKeyDown,0x00e9,0,NSEventModifierFlagOption)));
+    assert(view.key_ups==before_handoff+1 && view.last_character=='A');
+    assert(!host.handle_key_event(up) && view.key_ups==before_handoff+1);
+    assert(host.handle_key_event(down));
+    view.refocus_on_up=true;
+    assert(!host.handle_key_event(key_event(window,NSEventTypeKeyDown,0x00e9,0,NSEventModifierFlagOption)));
+    view.handles_keys=false;
+    const auto before_new_press=view.key_downs;
+    assert(!host.handle_key_event(down) && view.key_downs==before_new_press+1);
+    assert(!host.handle_key_event(up));
+    view.handles_keys=true;
+    assert(host.handle_key_event(down));
+    view.nested_down=down;
+    view.reenter_on_up=true;
+    assert(!host.handle_key_event(key_event(window,NSEventTypeKeyDown,0x00e9,0,NSEventModifierFlagOption)));
+    const auto before_shared_up=view.key_ups;
+    assert(!host.handle_key_event(up) && view.key_ups==before_shared_up+1);
+    assert(host.handle_key_event(down));
+    auto* native_text=[[NSTextView alloc] initWithFrame:NSMakeRect(0,0,80,20)];
+    [[window contentView] addSubview:native_text];
+    assert([window makeFirstResponder:native_text]);
+    auto* repeat=[NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint
+        modifierFlags:0 timestamp:0 windowNumber:[window windowNumber] context:nil
+        characters:@"a" charactersIgnoringModifiers:@"a" isARepeat:YES keyCode:0];
+    assert(!host.handle_key_event(repeat));
+    [native_text keyDown:repeat];
+    assert([[native_text string] isEqualToString:@"a"]);
+    assert(!host.handle_key_event(up));
+    [window makeFirstResponder:nil];
+    [native_text removeFromSuperview];[native_text release];
+    view.handles_keys=false;
+    auto* punctuation=key_event(window,NSEventTypeKeyDown,'.',47);
+    assert(!host.handle_key_event(punctuation) && view.last_character=='.' && view.last_key==0);
+    const auto calls=view.key_downs;
+    view.handles_keys=true;
+    assert(!host.handle_key_event(punctuation) && view.key_downs==calls);
+    assert(!host.handle_key_event(key_event(window,NSEventTypeKeyUp,'.',47)));
+    auto* tab=key_event(window,NSEventTypeKeyDown,'\t',48);
+    assert(host.handle_key_event(tab) && view.last_character==0 && view.last_key==KEY_TAB);
+    assert(host.handle_key_event(key_event(window,NSEventTypeKeyUp,'\t',48)));
+    const auto after_tab=view.key_downs;
+    auto* text=[[TextResponder alloc] initWithFrame:NSMakeRect(0,0,20,20)];
+    [[window contentView] addSubview:text];
+    assert([window makeFirstResponder:text]);
+    assert(!host.handle_key_event(down) && view.key_downs==after_tab);
+    assert(!host.handle_key_event(tab) && view.key_downs==after_tab);
+    [window makeFirstResponder:nil];
+    [text removeFromSuperview];[text release];
+    assert(!host.handle_key_event(key_event(window,NSEventTypeKeyDown,'a',0,NSEventModifierFlagOption)));
+    assert(!host.handle_key_event(key_event(window,NSEventTypeKeyDown,0x00e9,0)));
+    assert(view.key_downs==after_tab);
+    host.invalidate();
+    [window release];
 }
 
 static void check_reentrant_keys() {
@@ -279,6 +371,7 @@ int main() {
         check_focus(NSWindowStyleMaskTitled|NSWindowStyleMaskClosable);
         check_focus(style);
         check_keys();
+        check_printable_keys();
         check_reentrant_keys();
         auto* window=[[NSWindow alloc] initWithContentRect:NSMakeRect(40,60,320,240)
             styleMask:style

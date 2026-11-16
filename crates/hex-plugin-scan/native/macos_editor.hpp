@@ -24,9 +24,10 @@ class EditorFrame final : public IPlugFrame {
     IPlugView* view;
     NSSize accepted_size;
     bool resizing=false,focused=false;
-    // 0 = no admitted down, 1 = AppKit owns the pair, 2 = SDK owns it.
+    // 0 = no down, 1 = AppKit, 2 = SDK, 3 = reentrant SDK plus AppKit.
     std::array<uint8_t,128> key_owners{};
     std::array<int16,128> key_values{};
+    std::array<char16,128> key_characters{};
     std::array<uint64_t,128> key_serials{};
     uint64_t focus_epoch=0;
 public:
@@ -40,8 +41,8 @@ public:
         if(!active) key_owners.fill(0);
         view->onFocus(active);
     }
-    // Only keys without a text representation are intercepted. Plain text and
-    // marked-text composition remain entirely with AppKit's input system.
+    // Unambiguous ASCII may be offered to the SDK when the responder is not a
+    // text input client. Composition and other text remain with AppKit.
     bool handle_key_event(NSEvent* event) {
         if(![NSThread isMainThread] || !window || !view || !focused ||
            [event window]!=window || ([event type]!=NSEventTypeKeyDown &&
@@ -56,38 +57,90 @@ public:
             if([event type]==NSEventTypeKeyUp) { owner=0;++key_serials[code]; }
             return false;
         }
-        int16 key=owner?key_values[code]:0;
-        if(!owner) {
-            NSString* characters=[event charactersIgnoringModifiers];
-            if([characters length]!=1) return false;
-            key=nontext_key([characters characterAtIndex:0]);
-            if(!key) return false;
-        }
         const auto flags=[event modifierFlags];
         const int16 modifiers=(flags&NSEventModifierFlagShift?kShiftKey:0) |
             (flags&NSEventModifierFlagOption?kAlternateKey:0) |
             (flags&NSEventModifierFlagCommand?kCommandKey:0) |
             (flags&NSEventModifierFlagControl?kControlKey:0);
+        if(owner==3) {
+            // One physical release closes two separately admitted logical pairs.
+            // Clear custody before entering plug-in code, which can reenter.
+            if([event type]==NSEventTypeKeyUp) {
+                const auto key=key_values[code];
+                const auto character=key_characters[code];
+                owner=0;++key_serials[code];
+                view->onKeyUp(character,key,modifiers);
+            }
+            return false;
+        }
         id responder=[window firstResponder];
-        if([responder respondsToSelector:@selector(hasMarkedText)] &&
-           [(id<NSTextInputClient>)responder hasMarkedText] && !owner) return false;
+        const bool text_responder=[responder respondsToSelector:@selector(hasMarkedText)];
+        int16 key=owner?key_values[code]:0;
+        char16 character=owner?key_characters[code]:0;
+        if(owner==2 && character && [event type]==NSEventTypeKeyDown) {
+            NSString* typed=[event characters];
+            const bool ascii=[typed length]==1 && [typed characterAtIndex:0]>=0x20 &&
+                [typed characterAtIndex:0]<=0x7e;
+            if(text_responder || (flags&NSEventModifierFlagOption) || !ascii) {
+                // End the SDK's logical pair before handing this repeat and
+                // its physical release to AppKit's text input system.
+                owner=0;
+                const auto serial=++key_serials[code];
+                const auto epoch=focus_epoch;
+                view->onKeyUp(character,key,modifiers);
+                if(epoch==focus_epoch) {
+                    if(serial==key_serials[code] || owner==0) {
+                        owner=1;++key_serials[code];
+                    } else if(owner==2) {
+                        owner=3;++key_serials[code];
+                    }
+                }
+                return false;
+            }
+            character=[typed characterAtIndex:0];
+        }
+        if(!owner) {
+            NSString* characters=[event charactersIgnoringModifiers];
+            if([characters length]!=1) return false;
+            const unichar unmodified=[characters characterAtIndex:0];
+            key=nontext_key(unmodified);
+            if(!key && !text_responder && !(flags&NSEventModifierFlagOption))
+                key=text_control_key(unmodified);
+            if(!key) {
+                // A text client owns even the first composing keystroke, before
+                // hasMarkedText becomes true. Option/dead keys and multi-unit
+                // or non-ASCII text likewise stay with the native input system.
+                if(text_responder || (flags&NSEventModifierFlagOption)) return false;
+                NSString* typed=[event characters];
+                if([typed length]!=1) return false;
+                character=[typed characterAtIndex:0];
+                if(character<0x20 || character>0x7e) return false;
+                const auto upper=unmodified>='a' && unmodified<='z'?
+                    unmodified-('a'-'A'):unmodified;
+                key=CharToVirtualKeyCode(upper);
+            }
+        }
+        if(text_responder && [(id<NSTextInputClient>)responder hasMarkedText] && !owner) return false;
         if([event type]==NSEventTypeKeyDown) {
             const auto previous_owner=owner;
             const auto epoch=focus_epoch;
             const auto serial=key_serials[code];
-            const auto handled=view->onKeyDown(0,key,modifiers)==kResultTrue;
+            const auto handled=view->onKeyDown(character,key,modifiers)==kResultTrue;
             // Foreign code can enter AppKit and change focus or dispatch the
             // same physical key before returning. Do not restore an obsolete
             // owner over that newer state.
             if(epoch!=focus_epoch || serial!=key_serials[code])
                 return previous_owner==2 || handled;
-            if(!owner) { key_values[code]=key;owner=handled?2:1;++key_serials[code]; }
+            if(!owner) {
+                key_values[code]=key;key_characters[code]=character;
+                owner=handled?2:1;++key_serials[code];
+            }
             return owner==2;
         }
         const bool handled=owner==2;
         owner=0;
         ++key_serials[code];
-        view->onKeyUp(0,key,modifiers);
+        view->onKeyUp(character,key,modifiers);
         return handled;
     }
     static NSWindowStyleMask window_style(IPlugView& editor) {
@@ -154,6 +207,16 @@ public:
         resizing=false;
     }
 private:
+    static int16 text_control_key(unichar character) {
+        switch(character) {
+        case '\t': return KEY_TAB;
+        case '\r': return KEY_RETURN;
+        case 0x03: return KEY_ENTER;
+        case 0x1b: return KEY_ESCAPE;
+        case 0x7f: return KEY_BACK;
+        default: return 0;
+        }
+    }
     static int16 nontext_key(unichar character) {
         switch(character) {
         case NSLeftArrowFunctionKey: return KEY_LEFT;
