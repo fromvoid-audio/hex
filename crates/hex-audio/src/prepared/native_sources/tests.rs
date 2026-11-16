@@ -18,8 +18,19 @@ fn stopped_frontier_preserves_only_actual_quantum_and_empty_receipt() {
         (CommittedQuantumState::OpenProgram(key), Some(key)),
     ] {
         for worker in [Frontier::Unknown, Frontier::Empty, Frontier::Program(key)] {
+            let observed = hex_plugin_host::transport::QuantumObservation::Committed(
+                crate::plugin_worker::CommittedQuantum {
+                    binding: Binding {
+                        root: 1,
+                        instance: 2,
+                        graph: 3,
+                        epoch: 4,
+                    },
+                    state: quantum,
+                },
+            );
             assert_eq!(
-                stopped_program_frontier(quantum, worker),
+                stopped_program_frontier(observed, worker),
                 Frontier::Stopped {
                     open_quantum: expected_key,
                     worker_empty: worker == Frontier::Empty,
@@ -27,6 +38,32 @@ fn stopped_frontier_preserves_only_actual_quantum_and_empty_receipt() {
             );
         }
     }
+    let binding = Binding {
+        root: 1,
+        instance: 2,
+        graph: 3,
+        epoch: 4,
+    };
+    assert_eq!(
+        stopped_program_frontier(
+            hex_plugin_host::transport::QuantumObservation::Untouched(binding),
+            Frontier::Unknown
+        ),
+        Frontier::Stopped {
+            open_quantum: None,
+            worker_empty: false
+        }
+    );
+    assert_eq!(
+        stopped_program_frontier(
+            hex_plugin_host::transport::QuantumObservation::Untouched(binding),
+            Frontier::Empty
+        ),
+        Frontier::Stopped {
+            open_quantum: None,
+            worker_empty: true
+        }
+    );
 }
 
 #[test]

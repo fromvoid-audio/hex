@@ -195,6 +195,44 @@ fn fenced_quantum_requires_its_current_uninterrupted_graph_fence() {
 
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn stopped_frontier_observes_the_untouched_original_callback() {
+    let _serial = serial();
+    let mut f = fixture_with_authored("processing", 0, 256, &[7]);
+    let playback = compile(&f, true);
+    publish(&mut f.control, playback, PublicationPolicy::InheritRuntime);
+    physical_block::<8>(&mut f);
+    let source = f.control.status.native_effect_source().unwrap();
+    let fence = f.control.request_native_epoch_fence(source).unwrap();
+    allocation_free(|| {
+        f.data
+            .owner_mut()
+            .unwrap()
+            .run(|callback, _| callback.begin_block())
+    });
+    assert_eq!(
+        f.control.stopped_edit_fence_state(fence),
+        StoppedEditFenceState::Ready
+    );
+    assert_eq!(
+        f.control
+            .try_fenced_native_quantum_on_control(source, fence, f.binding),
+        Ok(None),
+        "the existing API must still report no committed observation"
+    );
+    assert!(matches!(
+        f.control
+            .try_fenced_native_program_frontier_on_control(source, fence, f.binding),
+        Ok(hex_engine::ForeignProgramFrontier::Stopped {
+            open_quantum: None,
+            ..
+        })
+    ));
+    f.control.release_stopped_edit_fence(fence);
+    dispose(f);
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn stopped_frontier_keeps_a_real_partial_programmed_quantum() {
     let _serial = serial();
     let mut f = fixture_with_authored("processing", 0, 256, &[7]);

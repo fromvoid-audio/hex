@@ -953,6 +953,16 @@ impl NativeWorker {
         }
     }
 
+    /// Copied untouched-or-committed observation on the original live pair.
+    /// This is not a source, installation, or quiescence witness.
+    pub fn quantum_observation_on_control(
+        &self,
+    ) -> Option<hex_plugin_host::transport::QuantumObservation> {
+        self.transport_is_live_on_control()
+            .then(|| self.reaper.control.quantum_observation())
+            .flatten()
+    }
+
     /// Last accepted callback quantum on this original pair. This is not an
     /// installed-graph, quiescence, worker-receipt or reclamation witness.
     pub fn committed_quantum_on_control(&self) -> Option<CommittedQuantum> {
