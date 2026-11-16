@@ -337,6 +337,7 @@ impl State {
                     block,
                     performs: Default::default(),
                     restorations: Default::default(),
+                    sdk_process_ns: None,
                 }),
             Some(Processor::Function(_)) => Err(Fault::InvalidParameters),
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -370,20 +371,10 @@ impl State {
                     (None, true, true, None) => instance
                         .exchange_armed_authored_with_editor_on_worker(block, manual_parameter),
                     (None, false, true, None) => instance.exchange_editor_on_worker(block),
-                    (None, true, false, None) => instance
-                        .exchange_armed_authored_with_manual_on_worker(block, manual_parameter)
-                        .map(|block| hex_plugin_host::protocol::EditorPcm {
-                            block,
-                            performs: Default::default(),
-                            restorations: Default::default(),
-                        }),
-                    (None, false, false, None) => instance.exchange_on_worker(block).map(|block| {
-                        hex_plugin_host::protocol::EditorPcm {
-                            block,
-                            performs: Default::default(),
-                            restorations: Default::default(),
-                        }
-                    }),
+                    (None, true, false, None) => {
+                        instance.exchange_armed_authored_timed_on_worker(block, manual_parameter)
+                    }
+                    (None, false, false, None) => instance.exchange_timed_on_worker(block),
                 };
                 match result {
                     Ok(reply) => Ok(reply),
@@ -682,6 +673,7 @@ fn transport_runner_with_setup(
                                  block: reply,
                                  performs,
                                  restorations,
+                                 sdk_process_ns: _,
                              }| {
                                 // Native exchange already validated the complete SDK
                                 // reply. Retain its private input receipt even if Stop
