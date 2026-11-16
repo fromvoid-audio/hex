@@ -2049,7 +2049,11 @@ impl EditorView {
                 }
                 self.queue_audio_command(PlaybackCommand::Pause);
             } else if let Some(source) = self.section_copy_play_source() {
-                self.queue_section_copy_play(self.playback_start_frame(), source);
+                if let Some(frame) = self.section_copy_play_start() {
+                    self.queue_section_copy_play(frame, source);
+                } else {
+                    self.error = Some("applying edit · wait for audio".into());
+                }
             } else {
                 self.error = Some("applying edit · wait for audio".into());
             }
@@ -2085,6 +2089,10 @@ impl EditorView {
     /// selection, play-start lock and loop intact. The reset wins over all of
     /// those sources, including a loop whose start is later in the song.
     fn playback_start_frame(&self) -> u64 {
+        self.playback_start_frame_with_section_override(None)
+    }
+
+    fn playback_start_frame_with_section_override(&self, section: Option<u64>) -> u64 {
         if self.play_start_at_beginning {
             return 0;
         }
@@ -2109,7 +2117,7 @@ impl EditorView {
             return selection.start();
         }
         if let Some(frame) = self.selected_arrangement_play_start() {
-            return frame;
+            return section.unwrap_or(frame);
         }
         if let Some(cursor) = self
             .edit_cursor

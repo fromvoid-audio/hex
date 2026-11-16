@@ -182,6 +182,8 @@ struct Pending {
     // Projected clip rows at submission, superseded by an exact copy view
     // when available. Retired with the receipt and canonical installation.
     layout: Option<Arc<ViewState>>,
+    // The created ID belongs to the exact committed copy observation.
+    copied: Option<SectionId>,
     receipt: Receipt,
     selection_intent_epoch: Option<u64>,
 }
@@ -596,6 +598,7 @@ impl EditorView {
             })
             .collect();
         pending.display.tempo = state.project.tempo_map().clone();
+        pending.copied = Some(copy);
         pending.layout = Some(state);
         self.start_ahead_section_duplicate();
         true
@@ -627,7 +630,7 @@ impl EditorView {
             .filter(|layout| pending.revision.checked_add(1) == Some(layout.revision))
     }
 
-    /// An early keyboard-copy start is safe only for the exact installed graph
+    /// An early copy start is safe only for the exact installed graph
     /// and its own non-preroll metadata. The ordinary receipt still owns the view.
     pub(super) fn section_copy_play_source(
         &self,
@@ -635,10 +638,10 @@ impl EditorView {
         use std::sync::atomic::Ordering::Acquire;
 
         let pending = self.sections.pending.as_ref()?;
-        let Command::DuplicateArrangementSection(section) = &pending.command else {
-            return None;
+        let section = match &pending.command {
+            Command::DuplicateArrangementSection(section) => *section,
+            command => copied_section_source(command)?,
         };
-        let section = *section;
         let current = self.state.as_ref()?;
         let committed = self.committed_section_copy_view()?;
         if self.document_audio_mode != hex_session::DocumentAudioMode::Resident
@@ -696,6 +699,30 @@ impl EditorView {
             return None;
         }
         Some(source)
+    }
+
+    /// Use the selection the successful terminal will install, without
+    /// installing that selection or the committed project prematurely.
+    pub(super) fn section_copy_play_start(&self) -> Option<u64> {
+        let pending = self.sections.pending.as_ref()?;
+        let Some(source) = copied_section_source(&pending.command) else {
+            return Some(self.playback_start_frame());
+        };
+        let selects_copy = self.device_panel.main_selected == Some(self.project_generation)
+            && self.sections.selected == Some(source)
+            && pending.selection_intent_epoch.is_some()
+            && pending.selection_intent_epoch == self.selection_intent_epoch;
+        if !selects_copy {
+            return Some(self.playback_start_frame());
+        }
+        let committed = self.committed_section_copy_view()?;
+        let copy = committed.project.arrangement_section(pending.copied?)?;
+        let frame = committed
+            .project
+            .tempo_map()
+            .beat_to_frame(copy.start())
+            .ok()?;
+        Some(self.playback_start_frame_with_section_override(Some(frame)))
     }
 
     pub(super) fn section_install_pending(&self) -> bool {
@@ -1518,6 +1545,7 @@ impl EditorView {
             command: command.clone(),
             display,
             layout,
+            copied: None,
             receipt: Receipt::new(generation),
             selection_intent_epoch: self.selection_intent_epoch,
         });
@@ -2197,6 +2225,7 @@ impl EditorView {
             command: command.clone(),
             display: primary.display.clone(),
             layout: None,
+            copied: None,
             receipt: Receipt::new(self.project_generation),
             selection_intent_epoch: primary.selection_intent_epoch,
         });
@@ -4834,6 +4863,7 @@ pub(super) mod tests {
                 command,
                 display: g.display,
                 layout: None,
+                copied: None,
                 receipt,
             });
             v.worker_requests_pending = 2;
@@ -6492,6 +6522,7 @@ pub(super) mod tests {
                 command: command.clone(),
                 display: primary.display.clone(),
                 layout: None,
+                copied: None,
                 receipt: Receipt::new(primary.generation),
                 selection_intent_epoch: primary.selection_intent_epoch,
             });
@@ -7091,6 +7122,203 @@ pub(super) mod tests {
         });
         fixture.finish(cx);
         drop(environment);
+    }
+
+    #[gpui::test]
+    fn applied_pointer_section_copy_plays_from_the_selected_copy(cx: &mut TestAppContext) {
+        pointer_section_copy_plays_from_the_selected_copy(cx, 0);
+    }
+
+    #[gpui::test]
+    fn appended_section_copy_with_gap_plays_from_the_selected_copy(cx: &mut TestAppContext) {
+        pointer_section_copy_plays_from_the_selected_copy(cx, 1);
+    }
+
+    #[gpui::test]
+    fn replaced_section_copy_plays_from_the_selected_copy(cx: &mut TestAppContext) {
+        pointer_section_copy_plays_from_the_selected_copy(cx, 2);
+    }
+
+    fn pointer_section_copy_plays_from_the_selected_copy(cx: &mut TestAppContext, copy_kind: u8) {
+        let environment = super::super::test_environment::Environment::new().unwrap();
+        let recovery = environment.root().join("held-pointer-section.hex-journal");
+        let mut commands = vec![
+            Command::AddTrack {
+                name: "track".into(),
+            },
+            Command::AddArrangementSection {
+                name: "section".into(),
+                color: ElementColor::Blue,
+                start: BeatTime::from_quarters(8).unwrap(),
+                end: BeatTime::from_quarters(12).unwrap(),
+            },
+        ];
+        if copy_kind == 2 {
+            commands.push(Command::AddArrangementSection {
+                name: "target".into(),
+                color: ElementColor::Blue,
+                start: BeatTime::from_quarters(12).unwrap(),
+                end: BeatTime::from_quarters(16).unwrap(),
+            });
+        }
+        let mut fixture = super::super::worker_ui_fixture::open_with_section_and_recovery(
+            cx,
+            commands,
+            false,
+            true,
+            Some(recovery.clone()),
+        );
+        let editor = fixture.editor.clone();
+        let mut visual = VisualTestContext::from_window(fixture.handle, cx);
+        visual.run_until_parked();
+        let mut gate = hex_session::service::hold_next_checkpoint(recovery).unwrap();
+        let original_revision = editor.update(&mut visual, |view, _| {
+            let section = view.state.as_ref().unwrap().project.arrangement_sections()[0].id();
+            view.select_section_metadata(Some(section));
+            view.play_start_at_beginning = false;
+            let revision = view.state.as_ref().unwrap().revision;
+            let command = if copy_kind == 1 {
+                Command::AppendArrangementSectionCopy {
+                    section,
+                    start: BeatTime::from_quarters(16).unwrap(),
+                    gap_name: "gap".into(),
+                    gap_color: ElementColor::Blue,
+                }
+            } else if copy_kind == 2 {
+                let target = view.state.as_ref().unwrap().project.arrangement_sections()[1].id();
+                Command::ReplaceArrangementSection {
+                    source: section,
+                    target,
+                    copy: true,
+                }
+            } else {
+                Command::DuplicateArrangementSectionAt {
+                    section,
+                    target: section,
+                    after: true,
+                }
+            };
+            view.section_metadata(command);
+            revision
+        });
+        let deadline = crate::test_wait::hang_deadline();
+        let observation = loop {
+            fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+            if let Ok(observation) =
+                editor.read_with(&visual, |view, _| view.service.try_arrangement_edit_view())
+            {
+                break observation;
+            }
+            assert!(Instant::now() < deadline, "committed section view");
+            std::thread::yield_now();
+        };
+        let committed = observation.state.upgrade().unwrap();
+        loop {
+            match gate.try_entered() {
+                Ok(()) => break,
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    assert!(Instant::now() < deadline, "checkpoint was not held");
+                    std::thread::yield_now();
+                }
+                Err(error) => panic!("checkpoint gate failed: {error}"),
+            }
+        }
+        let copied = match observation.kind {
+            hex_session::service::ArrangementEditViewKind::Duplicate(
+                hex_project::Created::ArrangementSection(id),
+            ) => id,
+            _ => panic!("unexpected committed view"),
+        };
+        let expected = committed
+            .project
+            .tempo_map()
+            .beat_to_frame(
+                committed
+                    .project
+                    .arrangement_section(copied)
+                    .unwrap()
+                    .start(),
+            )
+            .unwrap();
+        editor.update(&mut visual, |view, cx| {
+            assert!(view.observe_duplicate_view(observation));
+            assert_eq!(view.state.as_ref().unwrap().revision, original_revision);
+            cx.notify();
+        });
+        loop {
+            fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+            let applied = editor.update(&mut visual, |view, cx| {
+                view.tick(cx);
+                view.audio_status()
+                    .unwrap()
+                    .recording_source()
+                    .is_some_and(|source| source.context.editor_revision == original_revision + 1)
+            });
+            if applied {
+                break;
+            }
+            assert!(Instant::now() < deadline, "applied copied section source");
+            std::thread::yield_now();
+        }
+        editor.update(&mut visual, |view, cx| {
+            assert_eq!(view.state.as_ref().unwrap().revision, original_revision);
+            assert!(
+                view.service.try_event().is_err(),
+                "terminal must still be held"
+            );
+            let observation = view.pending_publication_observation.as_mut().unwrap();
+            observation.output_identity += 1;
+            assert!(
+                view.section_copy_play_source().is_none(),
+                "wrong output must refuse"
+            );
+            view.pending_publication_observation
+                .as_mut()
+                .unwrap()
+                .output_identity -= 1;
+            let epoch = view.selection_intent_epoch;
+            view.advance_selection_intent();
+            assert!(
+                view.section_copy_play_source().is_none(),
+                "changed selection must refuse"
+            );
+            view.selection_intent_epoch = epoch;
+            view.play_start_at_beginning = true;
+            assert_eq!(view.section_copy_play_start(), Some(0));
+            view.play_start_at_beginning = false;
+            view.toggle_play();
+            assert_eq!(
+                view.last_transport_command,
+                Some(hex_engine::playback::PlaybackCommand::PlayFrom(expected))
+            );
+            cx.notify();
+        });
+        fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+        editor.read_with(&visual, |view, _| {
+            assert!(
+                view.audio_status()
+                    .unwrap()
+                    .playing
+                    .load(std::sync::atomic::Ordering::Acquire)
+            );
+        });
+        gate.release()
+            .expect("checkpoint remains held until after Play");
+        let terminal = loop {
+            fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+            if let Ok(event) = editor.read_with(&visual, |view, _| view.service.try_event()) {
+                break event;
+            }
+            assert!(Instant::now() < deadline, "section terminal");
+            std::thread::yield_now();
+        };
+        assert!(terminal.error.is_none(), "{:?}", terminal.error);
+        editor.update(&mut visual, |view, cx| {
+            view.receive(terminal);
+            assert_eq!(view.playback_start_frame(), expected);
+            cx.notify();
+        });
+        fixture.finish(cx);
     }
 
     #[gpui::test]
