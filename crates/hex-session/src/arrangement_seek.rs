@@ -1216,6 +1216,12 @@ mod tests {
                 use hex_engine::session_playback::SessionPlaybackCommand;
                 use hex_lattice_contract::{DeviceTypeId, ParameterId, ParameterValue};
                 use hex_project::{BeatTime, Command, Created};
+                let profile = std::env::var_os("HEX_TEST_HISTORY_WORKER_PROFILE").is_some();
+                assert!(
+                    !profile || !cfg!(debug_assertions),
+                    "worker profile requires an optimized build"
+                );
+                let setup_started = Instant::now();
                 let mut session = Session::new(48_000, 8, 0).unwrap();
                 let state = hex_engine::default_native_device_state_for_class(
                     hex_engine::NativeDeviceClass::Instrument,
@@ -1263,6 +1269,12 @@ mod tests {
                 let graph = session.compile_prepared_revision(None).unwrap();
                 assert!(graph.arrangement_seek_requires_preroll());
                 let worker = ArrangementSeekWorker::new().unwrap();
+                if profile {
+                    println!(
+                        "HISTORY_WORKER_SETUP,rate=48000,tracks=1,voices=1,feedback=0.3,poll_ms=1,setup_us={}",
+                        setup_started.elapsed().as_micros()
+                    );
+                }
                 for (destination, playing) in [(512, true), (24_004, false)] {
                     let mut oracle = SessionPlayback::new(Arc::clone(&graph)).unwrap();
                     oracle.apply(SessionPlaybackCommand::Play).unwrap();
@@ -1285,8 +1297,15 @@ mod tests {
                         start_playing: playing,
                         ..spec(Arc::clone(&graph), 7)
                     };
+                    let submitted_at = Instant::now();
                     let request = worker.submit(requested.clone()).unwrap();
                     wait_for_ready(&worker);
+                    if profile {
+                        println!(
+                            "HISTORY_WORKER_SAMPLE,destination={destination},start_playing={playing},submit_to_observed_ready_us={}",
+                            submitted_at.elapsed().as_micros()
+                        );
+                    }
                     let result = worker.try_result().unwrap();
                     assert_eq!(
                         (
