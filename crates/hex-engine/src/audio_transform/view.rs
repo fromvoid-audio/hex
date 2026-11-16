@@ -31,7 +31,7 @@ impl AudioTransformPreparation {
     /// rate and extent checks do not establish its identity. The
     /// returned clip owns its prepared audio but does not publish a graph,
     /// mutate the project or confer a saved edit. Unsupported source shapes,
-    /// stale media and capacity/cancellation failures are returned explicitly.
+    /// incompatible rate or extent and capacity/cancellation failures refuse.
     pub fn preview_repeat_period(
         &self,
         project: &CanonicalProject,
