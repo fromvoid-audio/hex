@@ -11,6 +11,8 @@
 //! Arrangement clock mappings.
 use crate::input_devices::InputDeviceId;
 mod coordinated;
+mod monitor_stream;
+pub use monitor_stream::{MonitorBlock, MonitorStream, MonitorStreamError};
 mod take;
 mod take_alignment;
 mod timeline_overlap;
@@ -748,7 +750,7 @@ mod tests {
         )
     }
 
-    fn monitored_channel(
+    pub(super) fn monitored_channel(
         channels: usize,
     ) -> (
         Writer<cpal::StreamInstant>,
