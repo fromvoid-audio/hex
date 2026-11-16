@@ -1,5 +1,6 @@
 //! Sustained mixed Arrangement playback with stateful effects and identical-revision
-//! handoffs. This is a headless timing fixture, not a physical device deadline.
+//! handoffs. The mixed-tail modes also exercise bypass and detached effects.
+//! This is a headless timing fixture, not a physical device deadline.
 //! `--companion` gives each Operator a looping, shaped envelope.
 //! `--asymmetric` also gives the fourth operator a different sustain level.
 //! `--distinct` gives all four operators different sustain levels.
@@ -7,6 +8,7 @@
 #[path = "support/operator_feedback_fixture.rs"]
 mod operator_fixture;
 
+use hex_devices::operator_state::OPERATOR_METADATA;
 use hex_devices::{compressor, gate, saturator, utility};
 use hex_engine::{Audio, PreparedRevision, SessionPlayback, SessionPlaybackCommand, SineTable};
 use hex_lattice_contract::{NativeDeviceMetadata, ParameterId, ParameterValue};
@@ -51,7 +53,13 @@ fn fixture_with_companion(
     devices: usize,
     profile: CompanionProfile,
 ) -> Result<(Project, BTreeMap<hex_project::AssetId, Audio>)> {
-    let source = operator_fixture::project_with_operators(tracks, 4, 0.24, 0.82, true)?;
+    let state = operator_fixture::state_with_operators(
+        OPERATOR_METADATA.default_state()?,
+        0.24,
+        0.82,
+        true,
+    )?;
+    let source = operator_fixture::project(tracks, 4, &state)?;
     let mut snapshot = source.project.snapshot();
     let asset = snapshot.next_id;
     snapshot.next_id += 1;
@@ -111,6 +119,7 @@ fn fixture_with_companion(
         }
         for device in 0..devices {
             track.devices.push(DeviceSnapshot {
+                modulation: Default::default(),
                 parent: None,
                 automation: Vec::new(),
                 comparison: None,
@@ -248,9 +257,14 @@ fn composition_oracle(
     Ok(sum)
 }
 // Audio sources finish at the handoff while held Operator notes continue.
-// Utility ramps the continuously filtered output to the dry signal on bypass.
-// Isolated tracks provide the uninterrupted wet and instrument references.
-fn mixed_tail(tracks: usize, block: usize, profile: CompanionProfile) -> Result<()> {
+// On bypass, Utility ramps the continuously filtered output to dry; removal
+// retains the detached tail. Isolated tracks provide independent references.
+fn mixed_tail(
+    tracks: usize,
+    block: usize,
+    profile: CompanionProfile,
+    detached: bool,
+) -> Result<()> {
     let (base, mut media) = if profile != CompanionProfile::Default {
         fixture_with_companion(tracks, 1, profile)?
     } else {
@@ -287,11 +301,15 @@ fn mixed_tail(tracks: usize, block: usize, profile: CompanionProfile) -> Result<
     let old = Project::from_snapshot(snapshot.clone())?;
     for track in &mut snapshot.tracks {
         if track.instrument.is_none() {
-            track
-                .devices
-                .first_mut()
-                .ok_or("mixed-tail track lacks an effect")?
-                .bypassed = true;
+            if detached {
+                track.devices.clear();
+            } else {
+                track
+                    .devices
+                    .first_mut()
+                    .ok_or("mixed-tail track lacks an effect")?
+                    .bypassed = true;
+            }
         }
     }
     let changed = Project::from_snapshot(snapshot)?;
@@ -311,35 +329,37 @@ fn mixed_tail(tracks: usize, block: usize, profile: CompanionProfile) -> Result<
     if audio_peak <= 2.0e-5 {
         return Err(format!("mixed-tail audio reference too quiet: {audio_peak:e}").into());
     }
-    // The dry audio is zero after the clips end at frame 32. Apply the
-    // documented 5 ms Utility wet-to-dry law only to the isolated wet signal.
-    // The instrument path is unchanged and keeps its full level.
-    let ramp_frames = RATE.div_ceil(200) as usize;
-    let mut ramp_peak = 0.0_f32;
-    let mut first_stale_delta = None;
-    for (offset, (mixed, wet)) in expected[32..]
-        .iter_mut()
-        .zip(&audio_reference[32..])
-        .enumerate()
-    {
-        let dry_mix = (offset + 1).min(ramp_frames) as f32 / ramp_frames as f32;
-        for lane in 0..2 {
-            let stale = mixed[lane];
-            mixed[lane] -= wet[lane] * dry_mix;
-            let delta = (stale - mixed[lane]).abs();
-            if first_stale_delta.is_none() && delta > 2.0e-6 {
-                first_stale_delta = Some((offset / block, 32 + offset, lane, delta));
+    if !detached {
+        // The dry audio is zero after the clips end at frame 32. Apply the
+        // documented 5 ms Utility wet-to-dry law only to the isolated wet signal.
+        // The instrument path is unchanged and keeps its full level.
+        let ramp_frames = RATE.div_ceil(200) as usize;
+        let mut ramp_peak = 0.0_f32;
+        let mut first_stale_delta = None;
+        for (offset, (mixed, wet)) in expected[32..]
+            .iter_mut()
+            .zip(&audio_reference[32..])
+            .enumerate()
+        {
+            let dry_mix = (offset + 1).min(ramp_frames) as f32 / ramp_frames as f32;
+            for lane in 0..2 {
+                let stale = mixed[lane];
+                mixed[lane] -= wet[lane] * dry_mix;
+                let delta = (stale - mixed[lane]).abs();
+                if first_stale_delta.is_none() && delta > 2.0e-6 {
+                    first_stale_delta = Some((offset / block, 32 + offset, lane, delta));
+                }
+                ramp_peak = ramp_peak.max((wet[lane] * (1.0 - dry_mix)).abs());
             }
-            ramp_peak = ramp_peak.max((wet[lane] * (1.0 - dry_mix)).abs());
         }
-    }
-    if ramp_peak <= 2.0e-5 {
-        return Err(format!("mixed-tail bypass reference too quiet: {ramp_peak:e}").into());
-    }
-    if let Some((block, frame, lane, delta)) = first_stale_delta {
-        println!(
-            "unfaded_reference profile={profile:?} block={block} frame={frame} channel={lane} delta={delta:e}"
-        );
+        if ramp_peak <= 2.0e-5 {
+            return Err(format!("mixed-tail bypass reference too quiet: {ramp_peak:e}").into());
+        }
+        if let Some((block, frame, lane, delta)) = first_stale_delta {
+            println!(
+                "unfaded_reference profile={profile:?} block={block} frame={frame} channel={lane} delta={delta:e}"
+            );
+        }
     }
     let mut instrument_only = old.snapshot();
     instrument_only
@@ -360,6 +380,19 @@ fn mixed_tail(tracks: usize, block: usize, profile: CompanionProfile) -> Result<
     let mut prefix = [[0.0_f32; 2]; 32];
     previous.render(&mut prefix)?;
     let mut candidate = SessionPlayback::new(candidate_revision)?;
+    #[cfg(feature = "instrument-test-support")]
+    let before = if detached {
+        Some((
+            previous
+                .profile_runtime_storage_bytes()
+                .ok_or("old storage overflow")?,
+            candidate
+                .profile_runtime_storage_bytes()
+                .ok_or("candidate storage overflow")?,
+        ))
+    } else {
+        None
+    };
     let handoff_start = Instant::now();
     candidate.try_inherit_state_from(&mut previous)?;
     let handoff_ns = handoff_start.elapsed().as_nanos();
@@ -374,6 +407,29 @@ fn mixed_tail(tracks: usize, block: usize, profile: CompanionProfile) -> Result<
         let elapsed = start.elapsed().as_nanos();
         if index == 0 {
             first_render_ns = elapsed;
+            #[cfg(feature = "instrument-test-support")]
+            if let Some((old, before)) = before {
+                let retired = previous
+                    .profile_runtime_storage_bytes()
+                    .ok_or("retired storage overflow")?;
+                let after = candidate
+                    .profile_runtime_storage_bytes()
+                    .ok_or("candidate storage overflow")?;
+                if old.0 == 0
+                    || before.0 == 0
+                    || retired.0 == 0
+                    || old.1 != 0
+                    || before.1 != 0
+                    || after.1 == 0
+                    || after.1 > after.0
+                {
+                    return Err("unexpected detached-tail custody".into());
+                }
+                println!(
+                    "runtime_ledger_bytes old_before={} candidate_before={} retired_after_first_render={} candidate_after_first_render={} detached_track_tails_in_candidate={}; ledger charges, not unique memory or RSS; shared assets, native resources and allocator overhead excluded",
+                    old.0, before.0, retired.0, after.0, after.1
+                );
+            }
         }
         for (offset, (actual, expected)) in output[..count].iter().zip(expected_chunk).enumerate() {
             for channel in 0..2 {
@@ -392,7 +448,7 @@ fn mixed_tail(tracks: usize, block: usize, profile: CompanionProfile) -> Result<
         digest(&mut hash, &output[..count]);
     }
     println!(
-        "mixed_tail tracks={tracks} audio_tracks={} operator_tracks={} profile={profile:?} block={block} rate={RATE} post_cut_frames={} digest={hash:016x} composition_max_error={max_error:e} audio_tail_peak={audio_peak:e} handoff_us={:.3} first_render_us={:.3} combined_us={:.3}; separate preparation/retirement; one transition, no physical deadline",
+        "mixed_tail detached={detached} tracks={tracks} audio_tracks={} operator_tracks={} profile={profile:?} block={block} rate={RATE} post_cut_frames={} digest={hash:016x} composition_max_error={max_error:e} audio_tail_peak={audio_peak:e} handoff_us={:.3} first_render_us={:.3} combined_us={:.3}; separate preparation/retirement; one transition, no physical deadline",
         tracks.div_ceil(2),
         tracks / 2,
         RATE,
@@ -554,8 +610,15 @@ fn run(
 }
 fn main() -> Result<()> {
     let args: Vec<_> = std::env::args().skip(1).collect();
-    const USAGE: &str = "usage: profile_stateful_mixed <devices:1|4|16> <block:128|512> <seconds:1..60> [--composition] [--companion|--asymmetric|--distinct], or --mixed-tail <block:128|512> [--companion|--asymmetric|--distinct]";
-    if args.first().is_some_and(|arg| arg == "--mixed-tail") {
+    const USAGE: &str = "usage: profile_stateful_mixed <devices:1|4|16> <block:128|512> <seconds:1..60> [--composition] [--companion|--asymmetric|--distinct], or --mixed-tail|--mixed-detached-tail <block:128|512> [--companion|--asymmetric|--distinct]";
+    if args
+        .first()
+        .is_some_and(|arg| arg == "--mixed-tail" || arg == "--mixed-detached-tail")
+    {
+        let detached = args[0] == "--mixed-detached-tail";
+        if detached && !cfg!(feature = "instrument-test-support") {
+            return Err("mixed-detached-tail requires instrument-test-support".into());
+        }
         let profile = match args.as_slice() {
             [_, _] => CompanionProfile::Default,
             [_, _, flag] => CompanionProfile::from_flag(flag).ok_or(USAGE)?,
@@ -565,7 +628,7 @@ fn main() -> Result<()> {
         if ![128, 512].contains(&block) {
             return Err("mixed-tail block must be 128 or 512".into());
         }
-        return mixed_tail(TRACKS, block, profile);
+        return mixed_tail(TRACKS, block, profile, detached);
     }
     if args.len() < 3 || args.len() > 5 {
         return Err(USAGE.into());
@@ -745,22 +808,28 @@ mod tests {
 
     #[test]
     fn mixed_tail_keeps_audio_residual_and_sustained_instrument() -> Result<()> {
-        mixed_tail(2, 128, CompanionProfile::Default)
+        mixed_tail(2, 128, CompanionProfile::Default, false)
+    }
+
+    #[cfg(feature = "instrument-test-support")]
+    #[test]
+    fn mixed_detached_tail_keeps_audio_instrument_and_accounted_custody() -> Result<()> {
+        mixed_tail(2, 128, CompanionProfile::Default, true)
     }
 
     #[test]
     fn mixed_tail_keeps_audio_residual_and_sustained_instrument_uniform() -> Result<()> {
-        mixed_tail(2, 128, CompanionProfile::Uniform)
+        mixed_tail(2, 128, CompanionProfile::Uniform, false)
     }
 
     #[test]
     fn mixed_tail_keeps_audio_residual_and_sustained_instrument_asymmetric() -> Result<()> {
-        mixed_tail(2, 128, CompanionProfile::Asymmetric)
+        mixed_tail(2, 128, CompanionProfile::Asymmetric, false)
     }
 
     #[test]
     fn mixed_tail_keeps_audio_residual_and_sustained_instrument_distinct() -> Result<()> {
-        mixed_tail(2, 128, CompanionProfile::Distinct)
+        mixed_tail(2, 128, CompanionProfile::Distinct, false)
     }
 
     #[test]

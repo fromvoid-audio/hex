@@ -17,8 +17,10 @@ use std::cell::Cell;
 use std::hash::{Hash, Hasher};
 
 // Installed roles use bits 0–2, legacy pinning uses bit 3, and pending
-// readiness roles use bits 4–6. Legacy pins retain their replacement policy.
-const INSTALLED_PINS: u8 = 0b0000_0111;
+// readiness roles use bits 4–6, and the current quantum uses bit 7.
+// Legacy pins retain their replacement policy.
+pub(crate) const CURRENT_QUANTUM_PIN: u8 = 0b1000_0000;
+const INSTALLED_PINS: u8 = 0b0000_0111 | CURRENT_QUANTUM_PIN;
 const PENDING_PINS: u8 = 0b0111_0000;
 
 #[derive(Clone, Copy, Debug)]
@@ -121,6 +123,12 @@ pub(crate) struct Endpoint {
     pending_mask: usize,
     /// Occupied `pending` slots; gates speculative prefetch.
     pending_count: usize,
+    // At most one speculative request; its ready buffer remains owned by the queue.
+    prefetch_key: Option<ResourcePageKey>,
+    // Direct callers have no cancellation receipt; readiness roles clear their
+    // own bits on cancellation so other consumers keep their pending page.
+    prefetch_direct_demand: bool,
+    prefetch_readiness_mask: u8,
     source_keys: Vec<StreamResourceKey>,
     request_tx: Producer<PageRequest>,
     ready_rx: Consumer<Box<PageBuffer>>,
@@ -228,6 +236,9 @@ impl Endpoint {
             pending,
             pending_mask: pending_count - 1,
             pending_count: 0,
+            prefetch_key: None,
+            prefetch_direct_demand: false,
+            prefetch_readiness_mask: 0,
             source_keys: sources,
             request_tx: queues.request_tx,
             ready_rx: queues.ready_rx,
@@ -247,6 +258,21 @@ impl Endpoint {
         })
     }
 
+    #[cfg(test)]
+    pub(crate) fn test_speculative_request(&self, key: ResourcePageKey) -> bool {
+        self.prefetch_key == Some(key)
+    }
+
+    #[cfg(feature = "test-support")]
+    pub(crate) fn test_coalesced_prefetch(&self, key: ResourcePageKey) -> bool {
+        self.prefetch_key == Some(key) && self.prefetch_readiness_mask != 0
+    }
+
+    #[cfg(feature = "test-support")]
+    pub(crate) fn test_ready_page(&self, key: ResourcePageKey) -> bool {
+        self.ready_rx.peek().is_ok_and(|page| page.key == Some(key))
+    }
+
     pub fn pump_ready(&mut self, limit: usize) -> usize {
         self.pump_ready_for_pending(limit, &[])
     }
@@ -261,12 +287,42 @@ impl Endpoint {
         self.flush_held_returns();
         let mut installed = 0;
         for _ in 0..limit {
+            // Keep a speculative ready page out of the cache until the actual
+            // readiness demand names it. While current demand is resident this
+            // avoids evicting a page needed later in the same callback. If a
+            // different demand is missing, release the speculative buffer so
+            // the worker can service it rather than blocking behind lookahead.
+            if !pending.is_empty()
+                && !self.prefetch_direct_demand
+                && self.cache_count >= self.max_cached_pages
+                && let Some(key) = self.prefetch_key
+                && self.source_keys.binary_search(&key.source).is_ok()
+                && self.ready_rx.peek().is_ok_and(|page| page.key == Some(key))
+                && !pending.iter().any(|(_, rows)| {
+                    rows.iter()
+                        .any(|row| row.source == key.source && row.page_index == key.page_index)
+                })
+            {
+                let missing = pending
+                    .iter()
+                    .any(|(_, rows)| rows.iter().any(|row| !self.has_extent(*row)));
+                if !missing && self.pending_count == 1 {
+                    break;
+                }
+                if let Ok(page) = self.ready_rx.pop() {
+                    self.pending_remove(key);
+                    self.return_buffer(page);
+                }
+                continue;
+            }
             let Ok(page) = self.ready_rx.pop() else { break };
             let Some(key) = page.key else {
                 self.stale_pages = self.stale_pages.saturating_add(1);
                 self.return_buffer(page);
                 continue;
             };
+            let prefetched = self.prefetch_key == Some(key);
+            let direct_demand = self.prefetch_direct_demand;
             self.pending_remove(key);
             if self.source_keys.binary_search(&key.source).is_err() {
                 self.stale_pages = self.stale_pages.saturating_add(1);
@@ -289,7 +345,12 @@ impl Endpoint {
                     }
                 }
             }
-            if self.insert_ready_with_mask(page, pending_mask) {
+            let keep =
+                (prefetched && pending_mask == 0 && !direct_demand).then_some(ResourcePageKey {
+                    source: key.source,
+                    page_index: key.page_index.wrapping_sub(1),
+                });
+            if self.insert_ready_with_mask_keeping(page, pending_mask, keep) {
                 installed += 1;
             }
         }
@@ -452,6 +513,11 @@ impl Endpoint {
 
     fn pending_remove(&mut self, key: impl Into<ResourcePageKey>) {
         let key = key.into();
+        if self.prefetch_key == Some(key) {
+            self.prefetch_key = None;
+            self.prefetch_direct_demand = false;
+            self.prefetch_readiness_mask = 0;
+        }
         let mut slot = page_slot(key, self.pending_mask);
         for _ in 0..self.pending.len() {
             #[cfg(test)]
@@ -486,6 +552,44 @@ impl Endpoint {
             }
             scan = (scan + 1) & self.pending_mask;
         }
+    }
+
+    fn queue_demand(&mut self, key: ResourcePageKey) {
+        self.queue_demand_inner(key, true, 0);
+    }
+
+    pub(crate) fn queue_readiness_demand(&mut self, key: ResourcePageKey, mask: u8) {
+        self.queue_demand_inner(key, false, mask);
+    }
+
+    pub(crate) fn cancel_readiness_demand(&mut self, mask: u8) {
+        self.prefetch_readiness_mask &= !mask;
+    }
+
+    fn queue_demand_inner(&mut self, key: ResourcePageKey, direct: bool, mask: u8) {
+        if let Some(prefetched) = self.prefetch_key {
+            if prefetched == key {
+                // Preserve the request origin even if a readiness intent later cancels.
+                self.prefetch_direct_demand |= direct;
+                self.prefetch_readiness_mask |= mask;
+            } else if !self.prefetch_direct_demand
+                && self.prefetch_readiness_mask == 0
+                && self.source_keys.binary_search(&key.source).is_ok()
+                && self.cache_lookup(key).is_none()
+                && self
+                    .ready_rx
+                    .peek()
+                    .is_ok_and(|page| page.key == Some(prefetched))
+                && let Ok(page) = self.ready_rx.pop()
+            {
+                // Return the already decoded speculative page before the worker
+                // observes a different demand for the reserved turnover buffer.
+                self.pending_remove(prefetched);
+                self.return_buffer(page);
+                self.flush_held_returns();
+            }
+        }
+        self.queue_request(key);
     }
 
     fn queue_request(&mut self, key: impl Into<ResourcePageKey>) {
@@ -538,10 +642,11 @@ impl Endpoint {
     /// pending and unknown sources (without counting a rejection). The page
     /// arrives unpinned, so readiness reclaim and ordinary eviction can take
     /// it back: a prefetch never holds pool pages against demand. To make
-    /// room in a full cache it evicts at most one unpinned page other than
-    /// the one being read, so it cannot evict the playhead's own page. A full
-    /// request queue drops it like any rejected request; the callback never
-    /// waits.
+    /// room in a full cache it requires an unpinned victim other than the
+    /// page being read, but never evicts while scheduling the request.
+    /// Readiness may retain one speculative ready buffer in its bounded queue
+    /// or return it when a different missing demand needs worker turnover.
+    /// A full request queue drops it; the callback never waits.
     pub(crate) fn prefetch(&mut self, key: impl Into<ResourcePageKey>) {
         let key = key.into();
         if self.pending_count != 0
@@ -554,26 +659,25 @@ impl Endpoint {
             source: key.source,
             page_index: key.page_index.wrapping_sub(1),
         };
-        if self.cache_count >= self.max_cached_pages {
-            let Some(index) = self.unpinned_victim_except(reading) else {
-                return;
-            };
-            if let Some((page, _)) = self.cache_remove(index) {
-                self.return_buffer(page);
-            }
+        if self.cache_count >= self.max_cached_pages
+            && self.unpinned_victim_except(reading).is_none()
+        {
+            return;
         }
         self.prefetched_requests = self.prefetched_requests.saturating_add(1);
         self.queue_request(key);
+        if self.pending_count != 0 {
+            self.prefetch_key = Some(key);
+        }
     }
 
-    fn unpinned_victim_except(&mut self, keep: ResourcePageKey) -> Option<usize> {
+    fn unpinned_victim_except(&self, keep: ResourcePageKey) -> Option<usize> {
         let mask = self.cache.len() - 1;
         for offset in 0..self.cache.len() {
             let index = (self.eviction_cursor + offset) & mask;
             if let CacheSlot::Occupied { page, pinned: 0 } = &self.cache[index]
                 && page.key != Some(keep)
             {
-                self.eviction_cursor = (index + 1) & mask;
                 return Some(index);
             }
         }
@@ -601,7 +705,16 @@ impl Endpoint {
     fn insert_ready(&mut self, page: Box<PageBuffer>) -> bool {
         self.insert_ready_with_mask(page, 0)
     }
+    #[cfg(test)]
     fn insert_ready_with_mask(&mut self, page: Box<PageBuffer>, pending_mask: u8) -> bool {
+        self.insert_ready_with_mask_keeping(page, pending_mask, None)
+    }
+    fn insert_ready_with_mask_keeping(
+        &mut self,
+        page: Box<PageBuffer>,
+        pending_mask: u8,
+        keep: Option<ResourcePageKey>,
+    ) -> bool {
         let Some(key) = page.key else {
             self.stale_pages = self.stale_pages.saturating_add(1);
             self.return_buffer(page);
@@ -644,7 +757,16 @@ impl Endpoint {
             return true;
         }
         if self.cache_count >= self.max_cached_pages {
-            let Some(index) = self.unpinned_victim() else {
+            let victim = if let Some(keep) = keep {
+                let victim = self.unpinned_victim_except(keep);
+                if let Some(index) = victim {
+                    self.eviction_cursor = (index + 1) & (self.cache.len() - 1);
+                }
+                victim
+            } else {
+                self.unpinned_victim()
+            };
+            let Some(index) = victim else {
                 self.return_buffer(page);
                 return false;
             };
@@ -762,10 +884,11 @@ impl MediaPages for Endpoint {
     }
 
     fn request_page(&mut self, key: StreamSourceKey, page_index: u64) {
-        self.queue_request(ResourcePageKey {
+        let key = ResourcePageKey {
             source: key.into(),
             page_index,
-        });
+        };
+        self.queue_demand(key);
     }
 
     fn prefetch_page(&mut self, key: StreamSourceKey, page_index: u64) {
@@ -797,10 +920,11 @@ impl MediaPages for Endpoint {
         None
     }
     fn request_scalar_page(&mut self, key: ScalarSourceKey, page_index: u64) {
-        self.queue_request(ResourcePageKey {
+        let key = ResourcePageKey {
             source: key.into(),
             page_index,
-        });
+        };
+        self.queue_demand(key);
     }
 }
 
@@ -837,6 +961,9 @@ impl Endpoint {
             pending,
             pending_mask: _,
             pending_count: _,
+            prefetch_key: _,
+            prefetch_direct_demand: _,
+            prefetch_readiness_mask: _,
             source_keys,
             request_tx: _,
             ready_rx: _,
@@ -969,6 +1096,90 @@ mod tests {
         page.valid_frames = 1;
         page.frames[0] = [key.page_index as f32, -(key.page_index as f32)];
         page
+    }
+
+    #[test]
+    fn same_asset_derived_identities_do_not_alias_in_page_cache() {
+        let mut test = endpoint(8, 8, 8);
+        let raw = source();
+        let up = StreamSourceKey::plain_pitch(73, raw.asset(), 700, hex_project::WarpResampler::V2)
+            .unwrap();
+        let down =
+            StreamSourceKey::plain_pitch(73, raw.asset(), -700, hex_project::WarpResampler::V2)
+                .unwrap();
+        let metadata = hex_engine::StreamedSourceMetadata::new(
+            raw,
+            48_000,
+            48_000,
+            4096,
+            4096,
+            hex_project::IDENTITY_CONVERSION,
+            [7; 32],
+        )
+        .unwrap();
+        let map = |source_end| {
+            hex_warp::TimeMap::new(
+                vec![hex_warp::MapSegment {
+                    output_start: 0,
+                    output_end: 4096,
+                    source_start_q32: 0,
+                    source_end_q32: source_end,
+                }],
+                4096,
+            )
+            .unwrap()
+        };
+        let a = hex_engine::RepitchStreamIdentity::new(
+            &metadata,
+            &map(4096_i128 << 32),
+            hex_warp::Resampler::V2,
+        )
+        .unwrap();
+        let b = hex_engine::RepitchStreamIdentity::new(
+            &metadata,
+            &map(2048_i128 << 32),
+            hex_warp::Resampler::V2,
+        )
+        .unwrap();
+        let warped = StreamSourceKey::repitch(a);
+        let other_warp = StreamSourceKey::repitch(b);
+        let entries = [
+            (raw, 1.0),
+            (up, 2.0),
+            (down, 3.0),
+            (warped, 4.0),
+            (other_warp, 5.0),
+        ];
+        test.endpoint.source_keys = entries.iter().map(|(key, _)| (*key).into()).collect();
+        test.endpoint.source_keys.sort_unstable();
+        for (key, _) in entries {
+            test.endpoint.request_page(key, 0);
+        }
+        for (key, _) in entries {
+            assert_eq!(
+                test.requests.pop().unwrap().0,
+                PageKey {
+                    source: key,
+                    page_index: 0
+                }
+                .into()
+            );
+        }
+        assert!(test.requests.pop().is_err());
+        for (key, value) in entries {
+            let mut buffer = page(PageKey {
+                source: key,
+                page_index: 0,
+            });
+            buffer.frames[0] = [value, -value];
+            assert!(test.endpoint.insert_ready(buffer));
+        }
+        for (key, value) in entries {
+            assert_eq!(
+                test.endpoint.page(key, 0).unwrap().frames,
+                &[[value, -value]]
+            );
+        }
     }
 
     #[test]
@@ -1332,6 +1543,15 @@ mod tests {
             test.endpoint.cache[index],
             CacheSlot::Occupied { pinned: 0, .. }
         ));
+        test.endpoint
+            .replace_protection(CURRENT_QUANTUM_PIN, &[extent.into()]);
+        let mut longer = page(key);
+        longer.valid_frames = 9;
+        assert!(!test.endpoint.insert_ready_with_mask(longer, 16));
+        assert!(
+            matches!(&test.endpoint.cache[index], CacheSlot::Occupied { page, pinned } if page.frames.as_ptr() == original && *pinned == CURRENT_QUANTUM_PIN)
+        );
+        test.endpoint.replace_protection(CURRENT_QUANTUM_PIN, &[]);
     }
 
     #[test]

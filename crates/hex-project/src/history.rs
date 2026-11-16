@@ -31,18 +31,11 @@ pub struct Editor {
     capacity: usize,
 }
 impl Editor {
+    /// Start history for an already validated project, including retained source
+    /// paths. Subsequent edits validate source and receiver bindings before commit.
     pub fn new(project: Project, capacity: usize) -> Result<Self, Invalid> {
         if !(1..=128).contains(&capacity) {
             return Err(Invalid("history capacity must be 1..128"));
-        }
-        if project
-            .tracks()
-            .iter()
-            .any(crate::Track::retained_source_path)
-        {
-            return Err(Invalid(
-                "retained source path editing is not supported yet; keep the original project",
-            ));
         }
         Ok(Self {
             project,
@@ -313,6 +306,7 @@ impl Editor {
         candidate.validate_retained_audio_roots()?;
         candidate.validate_device_asset_references()?;
         candidate.validate_device_automation()?;
+        candidate.validate_device_modulation()?;
         candidate.validate_midi_volumes()?;
         candidate.validate_playable_routes()?;
         let effect = plan.and_then(|p| p.finish(result, &self.project, &candidate));
@@ -466,6 +460,7 @@ impl Editor {
         candidate.validate_retained_audio_roots()?;
         candidate.validate_device_asset_references()?;
         candidate.validate_device_automation()?;
+        candidate.validate_device_modulation()?;
         candidate.validate_midi_volumes()?;
         candidate.validate_playable_routes()?;
         // Reserve before preparation/commit. No history allocation follows it.
@@ -653,11 +648,7 @@ mod retained_source_batch_tests {
         if retained {
             snapshot.retained_source_paths.push(receiver.value());
         }
-        // The public constructor intentionally refuses retained projects until
-        // the complete editing and UI lifecycle is implemented.
-        editor.project = Project::from_snapshot(snapshot).unwrap();
-        editor.undo.clear();
-        editor.redo.clear();
+        let editor = Editor::new(Project::from_snapshot(snapshot).unwrap(), 16).unwrap();
         (editor, receiver, source)
     }
 

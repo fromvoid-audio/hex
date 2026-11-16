@@ -62,6 +62,17 @@ requested development delivery may use `--dev-profile` with its resolved scoped
 merge report; identify it as scoped development evidence, not full qualification.
 Build-only delivery is source-only and does not claim passing tests.
 
+For an explicitly fresh release target, create an empty directory at an
+absolute path before starting delivery, set `CARGO_TARGET_DIR` to that path and
+set `CARGO_CACHE_RUSTC_INFO=0`, then add `--fresh-release-target` to the command.
+Set `CARGO_CACHE_RUSTC_INFO=0` for the qualifying CI run too: the cache setting
+is part of the recorded build environment and must match delivery. The target
+directory may differ from the CI target. Delivery reserves the existing empty
+directory before Cargo metadata and retains its lock through release ownership
+and artifact consumption. Missing, populated, replaced or mismatched targets
+are refused without cleanup. This option cannot adopt or recover an owner;
+creating an absent target as part of admission is not supported.
+
 The configured stable target is `artifacts/hex.app` in the primary checkout,
 identity `org.portalsurfer.hex.dev`. `HEX_DEV_APP_PATH` may configure one persistent
 machine-specific path; do not create revision-named copies. Packaging builds

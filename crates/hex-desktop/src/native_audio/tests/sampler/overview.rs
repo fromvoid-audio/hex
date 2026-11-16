@@ -269,7 +269,7 @@ pub(super) fn fresh(
             loop_end,
         );
         let play = visual
-            .debug_bounds("play or pause · space")
+            .debug_bounds("play or pause · space · right-click for history playback")
             .unwrap()
             .center();
         visual.simulate_click(play, Modifiers::default());

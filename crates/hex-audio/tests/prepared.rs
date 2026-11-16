@@ -1128,3 +1128,62 @@ fn midi_cue_callback_ack_retains_clocks_pause_and_unrelated_route() {
     callback.begin_block();
     control.reclaim();
 }
+
+#[test]
+fn transport_observation_tracks_one_published_owner_and_becomes_unavailable_on_shutdown() {
+    let (mut control, mut callback) = prepared::channel(48_000).unwrap();
+    assert_eq!(control.status.transport_observation(), None);
+    let revision = control
+        .publish_with_policy_and_context_generation(
+            graph(48_000, 0.25),
+            prepared::PublicationPolicy::InstallFreshRuntime,
+            17,
+        )
+        .unwrap();
+    control.command(PlaybackCommand::Play).unwrap();
+    callback.begin_block();
+    callback.render(&mut [[0.0; 2]; 16]).unwrap();
+    let first = control.status.transport_observation().unwrap();
+    assert_eq!(
+        first.loop_state, None,
+        "legacy playback cannot report a session pass"
+    );
+    assert_eq!(
+        (first.audio_revision, first.control_generation),
+        (revision, 17)
+    );
+    assert_eq!(
+        (
+            first.arrangement_frame,
+            first.performance_frame,
+            first.playing
+        ),
+        (16, 16, true)
+    );
+    let next = control
+        .publish_with_policy_and_context_generation(
+            graph(48_000, 0.5),
+            prepared::PublicationPolicy::InstallFreshRuntime,
+            19,
+        )
+        .unwrap();
+    callback.begin_block();
+    let replacement = control.status.transport_observation().unwrap();
+    assert_eq!(
+        (replacement.audio_revision, replacement.control_generation),
+        (next, 19)
+    );
+    assert_eq!(
+        (
+            replacement.arrangement_frame,
+            replacement.performance_frame,
+            replacement.playing
+        ),
+        (0, 0, false)
+    );
+    control.request_shutdown();
+    assert_eq!(control.status.transport_observation(), None);
+    callback.begin_block();
+    assert_eq!(control.status.transport_observation(), None);
+    control.reclaim();
+}

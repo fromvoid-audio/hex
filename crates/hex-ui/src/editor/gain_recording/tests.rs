@@ -968,7 +968,7 @@ fn os_quit_during_active_gain_recording_is_cancelled_with_the_error(cx: &mut Tes
     editor.update(&mut visual, |view, _| {
         assert_eq!(
             view.error.as_deref(),
-            Some("finish or cancel gain recording before quitting")
+            Some("finish pending work or recover the automation take before closing")
         );
         view.gain_recorder.mode = Mode::Idle;
     });

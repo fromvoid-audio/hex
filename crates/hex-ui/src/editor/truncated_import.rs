@@ -324,3 +324,25 @@ fn recovery_detail(truncation: &ImportTruncation) -> String {
 #[cfg(all(test, feature = "ui-test-support"))]
 #[path = "truncated_import_tests.rs"]
 mod tests;
+
+#[cfg(all(test, not(feature = "ui-test-support")))]
+mod unit_tests {
+    use super::{ImportIntent, Request, TruncatedImportRecovery};
+
+    #[test]
+    fn recovery_intent_retains_the_exact_captured_gain_and_destination() {
+        let path = std::path::PathBuf::from("/mixed Case/source.wav");
+        let request = Request::ImportToNewTrackWithGain {
+            path: path.clone(),
+            before_track: None,
+            start: 37,
+            gain: 0.25,
+        };
+        let intent = ImportIntent::capture(&request).expect("single-file intent");
+        let recovered = intent.into_request();
+        assert!(
+            matches!(&recovered, Request::ImportToNewTrackWithGain { path: actual, before_track: None, start: 37, gain } if actual == &path && *gain == 0.25)
+        );
+        assert!(TruncatedImportRecovery::new(recovered).is_ok());
+    }
+}

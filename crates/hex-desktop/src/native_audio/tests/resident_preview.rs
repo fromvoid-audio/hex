@@ -1,6 +1,8 @@
 //! Exercise the production-default consumer, with only native output creation
 //! substituted. Session transactions, prospective admission, publication and callback stay real.
 use super::*;
+mod native_automation;
+mod native_source_effect;
 use hex_engine::{
     PreparedPlaybackObservation,
     native_device_resources::{DeviceResourceAdmission, PreparedDeviceResources},
@@ -11,6 +13,34 @@ use hex_session::service::{
     ResidentPublicationRefusal,
 };
 use std::sync::atomic::AtomicU8;
+
+// At 48 kHz the arrangement loop tapers its final 128 frames. Compare every
+// sample against that envelope independently of publication scheduling.
+fn assert_loop_pcm(h: &ResidentHarness, level: f32) -> [hex_engine::Frame; 64] {
+    let start = h
+        .audio
+        .as_ref()
+        .unwrap()
+        .status()
+        .unwrap()
+        .position
+        .load(Acquire);
+    let pcm = h.render();
+    for (offset, frame) in pcm.iter().enumerate() {
+        let position = (start + offset as u64) % 8192;
+        let gain = if position >= 8192 - 128 {
+            (8191 - position) as f32 / 127.0
+        } else {
+            1.0
+        };
+        let expected = level * gain;
+        assert!(
+            frame.iter().all(|sample| (*sample - expected).abs() < 1e-5),
+            "loop frame {position}: {frame:?}, expected {expected}"
+        );
+    }
+    pcm
+}
 
 // Native fixture parameters are uninhabited on targets without the host; the
 // portable harness can still use its ordinary constructor with None.
@@ -25,6 +55,1197 @@ enum PluginFixture {}
 type PluginFacts = crate::native_audio::plugins::FactsGate;
 #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
 enum PluginFacts {}
+
+#[test]
+fn held_single_midi_move_reschedules_the_note_before_commit() {
+    use hex_project::{BeatTime, ClipGroupPosition, Command, Created};
+    use hex_session::service::{ArrangementMoveAudition, ArrangementMoveMode};
+    let _native = native_fixture();
+    let mut h = ResidentHarness::with_frame_limit(262_144);
+    assert!(h.next().error.is_none());
+    let (applied, _) = h.applied(0);
+    let added = h.run(Request::Edit(Command::AddTrack {
+        name: "midi".into(),
+    }));
+    let Some(Created::Track(track)) = added.created else {
+        panic!("track")
+    };
+    let (applied, _) = h.applied(applied);
+    h.run(Request::AddNativeDevice {
+        track,
+        class: hex_engine::NativeDeviceClass::Instrument,
+        type_id: Box::new(hex_engine::DeviceTypeId::from_static("hex.instrument.sine")),
+        before: None,
+    });
+    let (applied, _) = h.applied(applied);
+    let beat = |q| BeatTime::from_quarters(q).unwrap();
+    let placed = h.run(Request::Edit(Command::PlaceMidiClip {
+        track,
+        start: BeatTime::ZERO,
+        length: beat(4),
+    }));
+    let Some(Created::Clip(clip)) = placed.created else {
+        panic!("clip")
+    };
+    let (applied, _) = h.applied(applied);
+    let before = h.run(Request::Edit(Command::AddMidiNote {
+        clip,
+        start: beat(1),
+        duration: beat(1),
+        pitch: 60,
+        channel: 0,
+        velocity: 127,
+    }));
+    let (applied, metadata) = h.applied(applied);
+    let original = before.state.project.snapshot();
+    let target = ArrangementMoveAudition {
+        context: metadata.context,
+        gesture: 11,
+        sequence: 1,
+        clips: vec![clip].into(),
+        anchor: clip,
+        destination: hex_session::service::ArrangementMoveDestination::Existing(track),
+        position: ClipGroupPosition::Midi(beat(1)),
+        mode: ArrangementMoveMode::Move,
+    };
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    assert!(h.service.audition_arrangement_move(Some(target.clone())));
+    let (preview, preview_metadata) = h.applied(applied);
+    assert_eq!(preview_metadata.clip_preview, Some(target.identity()));
+    assert_eq!(
+        preview_metadata.source_origin,
+        hex_session::service::ResidentSourceOrigin::ClipMovePreview
+    );
+    let position = |h: &ResidentHarness| {
+        h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .position
+            .load(Acquire)
+    };
+    for _ in 0..800 {
+        if position(&h) >= 24_128 {
+            break;
+        }
+        assert!(h.render().iter().all(|frame| frame[0].abs() < 1e-5));
+    }
+    assert!((24_128..48_000).contains(&position(&h)));
+    assert!(h.render().iter().all(|frame| frame[0].abs() < 1e-5));
+    for _ in 0..800 {
+        if position(&h) >= 48_128 {
+            break;
+        }
+        h.render();
+    }
+    assert!(position(&h) >= 48_128);
+    assert!(h.render().iter().any(|frame| frame[0].abs() > 0.005));
+    assert!(h.service.try_event().is_err());
+    h.service.finish_arrangement_move_audition();
+    let committed = h.run(Request::MoveExistingClips {
+        project_generation: target.context.project_generation,
+        revision: target.context.editor_revision,
+        command: Command::MoveMidiClipWithOverwrite {
+            clip,
+            track,
+            start: beat(1),
+        },
+    });
+    assert!(committed.error.is_none());
+    h.service.retire_arrangement_move_audition();
+    let (committed_audio, _) = h.applied(preview);
+    assert_eq!(h.run(Request::Undo).state.project.snapshot(), original);
+    h.applied(committed_audio);
+}
+
+#[test]
+fn held_single_audio_move_uses_single_commit_and_restores_on_cancel() {
+    use hex_project::{ClipGroupPosition, Command};
+    use hex_session::service::{ArrangementMoveAudition, ArrangementMoveMode};
+    let _native = native_fixture();
+    let files = Files::new();
+    let mut h = ResidentHarness::with_frame_limit(262_144);
+    assert!(h.next().error.is_none());
+    let (applied, _) = h.applied(0);
+    let imported = h.run(Request::Import(files.wav(48_000, 96_000)));
+    let (applied, _) = h.applied(applied);
+    let track = imported.state.project.tracks()[0].id();
+    let clip = imported.state.project.tracks()[0].clips()[0].id();
+    let looped = h.run(Request::Edit(Command::SetLoopRegion {
+        start: 0,
+        end: 8192,
+        enabled: true,
+    }));
+    let (applied, metadata) = h.applied(applied);
+    let original = looped.state.project.snapshot();
+    let target = ArrangementMoveAudition {
+        context: metadata.context,
+        gesture: 11,
+        sequence: 1,
+        clips: vec![clip].into(),
+        anchor: clip,
+        destination: hex_session::service::ArrangementMoveDestination::Existing(track),
+        position: ClipGroupPosition::Audio(48_000),
+        mode: ArrangementMoveMode::Move,
+    };
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    assert_loop_pcm(&h, 0.25);
+    assert!(h.service.audition_arrangement_move(Some(target.clone())));
+    let (preview, preview_metadata) = h.applied(applied);
+    assert_eq!(preview_metadata.clip_preview, Some(target.identity()));
+    assert!(h.render().iter().all(|f| *f == [0.0; 2]));
+    // A refused newer move must leave the previously admitted preview and the
+    // canonical project untouched; the FIFO request remains serviceable.
+    let (entered, resume, _) = h.probe_next_native_publication();
+    h.refuse.store(true, std::sync::atomic::Ordering::Release);
+    assert!(
+        h.service
+            .audition_arrangement_move(Some(ArrangementMoveAudition {
+                sequence: 2,
+                position: ClipGroupPosition::Audio(24_000),
+                ..target.clone()
+            }))
+    );
+    entered.recv_timeout(Duration::from_secs(2)).unwrap();
+    resume.send(()).unwrap();
+    let unchanged = h.run(Request::QueryDeviceAutomationCloseSafety { request_id: 1 });
+    h.refuse.store(false, std::sync::atomic::Ordering::Release);
+    assert_eq!(unchanged.state.project.snapshot(), original);
+    assert_eq!(
+        h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .applied_revision
+            .load(Acquire),
+        preview
+    );
+    assert!(h.render().iter().all(|f| *f == [0.0; 2]));
+    assert!(!h.service.audition_arrangement_move(None));
+    let (restored, restored_metadata) = h.applied(preview);
+    assert!(restored_metadata.clip_preview.is_none());
+    assert_loop_pcm(&h, 0.25);
+    assert!(h.service.audition_arrangement_move(Some(target.clone())));
+    let (preview, _) = h.applied(restored);
+    h.service.finish_arrangement_move_audition();
+    let committed = h.run(Request::MoveExistingClips {
+        project_generation: target.context.project_generation,
+        revision: target.context.editor_revision,
+        command: Command::MoveClipWithOverwrite {
+            clip,
+            track,
+            start: 48_000,
+        },
+    });
+    assert!(committed.error.is_none());
+    h.service.retire_arrangement_move_audition();
+    let (committed_audio, committed_metadata) = h.applied(preview);
+    assert!(committed_metadata.clip_preview.is_none());
+    assert!(h.render().iter().all(|f| *f == [0.0; 2]));
+    assert_eq!(h.run(Request::Undo).state.project.snapshot(), original);
+    h.applied(committed_audio);
+    assert_loop_pcm(&h, 0.25);
+}
+
+#[test]
+fn held_audio_move_to_new_track_is_transient_and_commits_once() {
+    use hex_project::{ClipGroupPosition, Command};
+    use hex_session::service::{
+        ArrangementMoveAudition, ArrangementMoveDestination, ArrangementMoveMode,
+        ClipMovePreviewDestination, NewTrackMoveDestination,
+    };
+    let _native = native_fixture();
+    let files = Files::new();
+    let mut h = ResidentHarness::with_frame_limit(262_144);
+    assert!(h.next().error.is_none());
+    let (initial, _) = h.applied(0);
+    let imported = h.run(Request::Import(files.wav(48_000, 96_000)));
+    let (applied, _) = h.applied(initial);
+    let track = imported.state.project.tracks()[0].id();
+    let clip = imported.state.project.tracks()[0].clips()[0].id();
+    let looped = h.run(Request::Edit(Command::SetLoopRegion {
+        start: 0,
+        end: 8192,
+        enabled: true,
+    }));
+    let (applied, metadata) = h.applied(applied);
+    let original = looped.state.project.snapshot();
+    let destination = NewTrackMoveDestination::new(Arc::from("track 2"), Some(track), 0.5).unwrap();
+    let mut target = ArrangementMoveAudition {
+        context: metadata.context,
+        gesture: 25,
+        sequence: 1,
+        clips: vec![clip].into(),
+        anchor: clip,
+        destination: ArrangementMoveDestination::NewTrack(destination),
+        position: ClipGroupPosition::Audio(48_000),
+        mode: ArrangementMoveMode::Move,
+    };
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    assert_loop_pcm(&h, 0.25);
+    assert!(h.service.audition_arrangement_move(Some(target.clone())));
+    let (preview, preview_metadata) = h.applied(applied);
+    assert_eq!(preview_metadata.clip_preview, Some(target.identity()));
+    assert_eq!(
+        target.identity().destination,
+        ClipMovePreviewDestination::NewTrack {
+            before_track: Some(track)
+        }
+    );
+    assert!(h.render().iter().all(|f| *f == [0.0; 2]));
+    assert!(h.service.try_event().is_err());
+    assert!(!h.service.audition_arrangement_move(None));
+    let (restored, _) = h.applied(preview);
+    assert_loop_pcm(&h, 0.25);
+    target.sequence = 2;
+    target.position = ClipGroupPosition::Audio(0);
+    assert!(h.service.audition_arrangement_move(Some(target.clone())));
+    let (preview, _) = h.applied(restored);
+    assert_loop_pcm(&h, 0.125);
+    h.service.finish_arrangement_move_audition();
+    let committed = h.run(Request::MoveExistingClips {
+        project_generation: target.context.project_generation,
+        revision: target.context.editor_revision,
+        command: Command::MoveClipToNewTrack {
+            clip,
+            name: "track 2".into(),
+            before_track: Some(track),
+            start: 0,
+            initial_gain: Some(0.5),
+        },
+    });
+    assert!(committed.error.is_none(), "{:?}", committed.error);
+    assert_eq!(committed.state.revision, looped.state.revision + 1);
+    assert_eq!(committed.state.project.tracks().len(), 2);
+    assert_eq!(committed.state.project.tracks()[0].gain(), 0.5);
+    h.service.retire_arrangement_move_audition();
+    let (committed_audio, _) = h.applied(preview);
+    assert_loop_pcm(&h, 0.125);
+    let mut expected_undo = original;
+    expected_undo.next_id = committed.state.project.snapshot().next_id;
+    assert_eq!(h.run(Request::Undo).state.project.snapshot(), expected_undo);
+    h.applied(committed_audio);
+    assert_loop_pcm(&h, 0.25);
+    for _ in 0..128 {
+        if h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .position
+            .load(Acquire)
+            == 8128
+        {
+            break;
+        }
+        h.render();
+    }
+    assert_eq!(
+        h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .position
+            .load(Acquire),
+        8128
+    );
+    let seam = assert_loop_pcm(&h, 0.25);
+    assert_eq!(seam[63], [0.0; 2]);
+    assert_loop_pcm(&h, 0.25);
+}
+
+#[test]
+fn held_group_move_auditions_both_clips_and_commits_once() {
+    use hex_project::{ClipGroupPosition, Command};
+    use hex_session::service::{ArrangementMoveAudition, ArrangementMoveMode};
+
+    let _native = native_fixture();
+    let files = Files::new();
+    let mut h = ResidentHarness::with_frame_limit(262_144);
+    assert!(h.next().error.is_none());
+    let (applied, _) = h.applied(0);
+    let source = files.wav(48_000, 96_000);
+    let first = h.run(Request::Import(source.clone()));
+    let a = first.state.project.tracks()[0].clips()[0].id();
+    let (applied, _) = h.applied(applied);
+    let second = h.run(Request::Import(source));
+    let (applied, metadata) = h.applied(applied);
+    let b = second.state.project.tracks()[1].clips()[0].id();
+    let original = second.state.project.snapshot();
+    let target = ArrangementMoveAudition {
+        context: metadata.context,
+        gesture: 11,
+        sequence: 1,
+        clips: vec![a, b].into(),
+        anchor: a,
+        destination: hex_session::service::ArrangementMoveDestination::Existing(
+            second.state.project.tracks()[0].id(),
+        ),
+        position: ClipGroupPosition::Audio(48_000),
+        mode: ArrangementMoveMode::Move,
+    };
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    assert!(h.render().iter().all(|f| (f[0] - 0.5).abs() < 1e-5));
+    assert!(h.service.audition_arrangement_move(Some(target.clone())));
+    let advance = |h: &mut ResidentHarness, previous| {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            h.pump();
+            h.render();
+            let status = h.audio.as_ref().unwrap().status().unwrap();
+            let revision = status.applied_revision.load(Acquire);
+            if revision > previous {
+                break revision;
+            }
+            assert!(Instant::now() < deadline, "group preview did not apply");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    };
+    let preview = advance(&mut h, applied);
+    assert!(h.render().iter().all(|f| *f == [0.0; 2]));
+    assert!(h.service.try_event().is_err());
+    assert!(!h.service.audition_arrangement_move(None));
+    let restored = advance(&mut h, preview);
+    assert!(h.render().iter().all(|f| (f[0] - 0.5).abs() < 1e-5));
+    assert!(h.service.audition_arrangement_move(Some(target.clone())));
+    let preview = advance(&mut h, restored);
+    assert!(h.render().iter().all(|f| *f == [0.0; 2]));
+    h.service.finish_arrangement_move_audition();
+    let committed = h.run(Request::MoveExistingClips {
+        project_generation: target.context.project_generation,
+        revision: target.context.editor_revision,
+        command: Command::MoveClipsWithOverwrite {
+            clips: target.clips.to_vec(),
+            anchor: a,
+            track: second.state.project.tracks()[0].id(),
+            position: target.position,
+            copy: false,
+        },
+    });
+    assert!(committed.error.is_none());
+    assert_eq!(committed.state.revision, second.state.revision + 1);
+    h.service.retire_arrangement_move_audition();
+    let committed_audio = advance(&mut h, preview);
+    assert!(h.render().iter().all(|f| *f == [0.0; 2]));
+    assert_eq!(h.run(Request::Undo).state.project.snapshot(), original);
+    let undone_audio = advance(&mut h, committed_audio);
+    assert!(h.render().iter().all(|f| (f[0] - 0.5).abs() < 1e-5));
+    assert_eq!(
+        h.run(Request::Redo).state.project.snapshot(),
+        committed.state.project.snapshot()
+    );
+    let redone_audio = advance(&mut h, undone_audio);
+    assert!(h.render().iter().all(|f| *f == [0.0; 2]));
+
+    let undone = h.run(Request::Undo);
+    assert_eq!(undone.state.project.snapshot(), original);
+    let restored_audio = advance(&mut h, redone_audio);
+    let copy = ArrangementMoveAudition {
+        context: hex_engine::AudioSourceContext {
+            project_generation: target.context.project_generation,
+            editor_revision: undone.state.revision,
+        },
+        position: ClipGroupPosition::Audio(120_000),
+        mode: ArrangementMoveMode::Copy,
+        ..target.clone()
+    };
+    assert!(h.service.audition_arrangement_move(Some(copy.clone())));
+    let copied_preview = advance(&mut h, restored_audio);
+    assert!(h.render().iter().all(|f| (f[0] - 0.5).abs() < 1e-5));
+    // The original ends before the new position, so PCM there proves the copy.
+    for _ in 0..2_000 {
+        if h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .position
+            .load(Acquire)
+            >= 121_000
+        {
+            break;
+        }
+        h.render();
+    }
+    assert!(
+        h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .position
+            .load(Acquire)
+            >= 121_000
+    );
+    assert!(h.render().iter().all(|f| (f[0] - 0.5).abs() < 1e-5));
+    h.service.finish_arrangement_move_audition();
+    let copied = h.run(Request::MoveExistingClips {
+        project_generation: copy.context.project_generation,
+        revision: copy.context.editor_revision,
+        command: Command::MoveClipsWithOverwrite {
+            clips: copy.clips.to_vec(),
+            anchor: copy.anchor,
+            track: second.state.project.tracks()[0].id(),
+            position: copy.position,
+            copy: true,
+        },
+    });
+    assert!(copied.error.is_none());
+    assert_eq!(copied.state.project.tracks()[0].clips().len(), 2);
+    assert_eq!(copied.state.project.tracks()[1].clips().len(), 2);
+    h.service.retire_arrangement_move_audition();
+    let copied_audio = advance(&mut h, copied_preview);
+    assert!(h.render().iter().all(|f| (f[0] - 0.5).abs() < 1e-5));
+    let mut expected_after_copy_undo = original.clone();
+    expected_after_copy_undo.next_id = copied.state.project.snapshot().next_id;
+    let copy_undone = h.run(Request::Undo);
+    assert_eq!(
+        copy_undone.state.project.snapshot(),
+        expected_after_copy_undo
+    );
+    let restored_audio = advance(&mut h, copied_audio);
+    assert!(h.render().iter().all(|f| *f == [0.0; 2]));
+
+    let alias = ArrangementMoveAudition {
+        context: hex_engine::AudioSourceContext {
+            project_generation: target.context.project_generation,
+            editor_revision: copy_undone.state.revision,
+        },
+        position: ClipGroupPosition::Audio(120_000),
+        mode: ArrangementMoveMode::AliasCopy,
+        ..target.clone()
+    };
+    assert!(h.service.audition_arrangement_move(Some(alias.clone())));
+    let alias_preview = advance(&mut h, restored_audio);
+    assert!(h.render().iter().all(|f| (f[0] - 0.5).abs() < 1e-5));
+    h.service.finish_arrangement_move_audition();
+    let aliased = h.run(Request::MoveExistingClips {
+        project_generation: alias.context.project_generation,
+        revision: alias.context.editor_revision,
+        command: Command::DuplicateAliasClipsAt {
+            clips: alias.clips.to_vec(),
+            anchor: alias.anchor,
+            track: second.state.project.tracks()[0].id(),
+            position: alias.position,
+        },
+    });
+    assert!(aliased.error.is_none());
+    assert!(aliased.state.project.clip_alias(a).is_some());
+    assert!(aliased.state.project.clip_alias(b).is_some());
+    h.service.retire_arrangement_move_audition();
+    let alias_audio = advance(&mut h, alias_preview);
+    assert!(h.render().iter().all(|f| (f[0] - 0.5).abs() < 1e-5));
+    let mut expected_after_alias_undo = original;
+    expected_after_alias_undo.next_id = aliased.state.project.snapshot().next_id;
+    assert_eq!(
+        h.run(Request::Undo).state.project.snapshot(),
+        expected_after_alias_undo
+    );
+    advance(&mut h, alias_audio);
+    assert!(h.render().iter().all(|f| *f == [0.0; 2]));
+}
+
+#[test]
+fn held_stretch_audition_reaches_playing_callback_and_releases_once() {
+    use hex_session::service::ArrangementStretchAudition;
+
+    let _native = native_fixture();
+    let files = Files::new();
+    let mut h = ResidentHarness::with_frame_limit(262_144);
+    assert!(h.next().error.is_none());
+    let (initial, _) = h.applied(0);
+    let imported = h.run(Request::Import(files.wav(48_000, 96_000)));
+    let (applied, metadata) = h.applied(initial);
+    assert_eq!(
+        metadata.source_origin,
+        hex_session::service::ResidentSourceOrigin::CanonicalCandidate
+    );
+    let before = imported.state.project.snapshot();
+    let clip = imported.state.project.tracks()[0].clips()[0].id();
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    for _ in 0..438 {
+        h.render();
+    }
+    assert!(h.render().iter().all(|f| (f[0] - 0.25).abs() < 1e-5));
+
+    let target = ArrangementStretchAudition {
+        context: metadata.context,
+        clip,
+        edge: hex_project::TrimEdge::Right,
+        frame: 24_000,
+    };
+    let advance = |h: &mut ResidentHarness, previous| {
+        let start = Instant::now();
+        loop {
+            h.pump();
+            let before = h
+                .audio
+                .as_ref()
+                .unwrap()
+                .status()
+                .unwrap()
+                .position
+                .load(Acquire);
+            let pcm = h.render();
+            let status = h.audio.as_ref().unwrap().status().unwrap();
+            assert!(status.playing.load(Acquire));
+            assert_eq!(status.position.load(Acquire), before + 64);
+            let revision = status.applied_revision.load(Acquire);
+            if revision > previous {
+                break (revision, pcm);
+            }
+            assert!(
+                start.elapsed() < Duration::from_secs(2),
+                "preview did not apply"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    };
+
+    h.service
+        .audition_arrangement_stretch(Some(ArrangementStretchAudition {
+            frame: 84_000,
+            ..target
+        }));
+    h.service.audition_arrangement_stretch(Some(target));
+    let previous = applied;
+    let (applied, pcm) = advance(&mut h, previous);
+    let (reported, preview_metadata) = h.applied(previous);
+    assert_eq!(reported, applied);
+    assert_eq!(preview_metadata.clip_preview, None);
+    assert_eq!(
+        preview_metadata.source_origin,
+        hex_session::service::ResidentSourceOrigin::ClipStretchPreview
+    );
+    assert!(
+        pcm.iter().all(|f| *f == [0.0; 2]),
+        "latest held target is audible before release"
+    );
+    assert!(
+        h.service.try_event().is_err(),
+        "held preview does not edit the project"
+    );
+
+    let (entered, resume, _) = h.probe_next_native_publication();
+    h.refuse.store(true, std::sync::atomic::Ordering::Release);
+    h.service
+        .audition_arrangement_stretch(Some(ArrangementStretchAudition {
+            frame: 36_000,
+            ..target
+        }));
+    entered.recv_timeout(Duration::from_secs(2)).unwrap();
+    resume.send(()).unwrap();
+    let unchanged = h.run(Request::QueryDeviceAutomationCloseSafety { request_id: 1 });
+    h.refuse.store(false, std::sync::atomic::Ordering::Release);
+    assert_eq!(unchanged.state.revision, imported.state.revision);
+    assert_eq!(unchanged.state.project.snapshot(), before);
+    assert!(h.render().iter().all(|f| *f == [0.0; 2]));
+    assert_eq!(
+        h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .applied_revision
+            .load(Acquire),
+        applied
+    );
+    h.service.audition_arrangement_stretch(None);
+    let (restored, pcm) = advance(&mut h, applied);
+    assert!(pcm.iter().all(|f| (f[0] - 0.25).abs() < 1e-5));
+
+    h.service.audition_arrangement_stretch(Some(target));
+    let (held, _) = advance(&mut h, restored);
+    h.service.finish_arrangement_stretch_audition();
+    assert!(h.render().iter().all(|f| *f == [0.0; 2]));
+    let committed = h.run(Request::Edit(hex_project::Command::StretchAudioClipEdge {
+        clip,
+        edge: target.edge,
+        frame: target.frame,
+    }));
+    assert_eq!(committed.state.revision, imported.state.revision + 1);
+    assert_eq!(
+        committed.state.project.clip(clip).unwrap().duration(),
+        target.frame
+    );
+    h.service.audition_arrangement_stretch(None);
+    let (committed_audio, pcm) = advance(&mut h, held);
+    assert!(pcm.iter().all(|f| *f == [0.0; 2]));
+    let undone = h.run(Request::Undo);
+    assert_eq!(undone.state.project.snapshot(), before);
+    let (undone_audio, pcm) = advance(&mut h, committed_audio);
+    assert!(pcm.iter().all(|f| (f[0] - 0.25).abs() < 1e-5));
+    let redone = h.run(Request::Redo);
+    assert_eq!(
+        redone.state.project.snapshot(),
+        committed.state.project.snapshot()
+    );
+    let (redone_audio, pcm) = advance(&mut h, undone_audio);
+    assert!(pcm.iter().all(|f| *f == [0.0; 2]));
+
+    let (entered, _resume, _) = h.probe_next_native_publication();
+    h.service
+        .audition_arrangement_stretch(Some(ArrangementStretchAudition {
+            frame: 84_000,
+            ..target
+        }));
+    assert!(matches!(
+        entered.recv_timeout(Duration::from_millis(120)),
+        Err(mpsc::RecvTimeoutError::Timeout)
+    ));
+    assert!(h.render().iter().all(|f| *f == [0.0; 2]));
+    assert_eq!(
+        h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .applied_revision
+            .load(Acquire),
+        redone_audio
+    );
+}
+
+#[test]
+fn held_audio_play_start_changes_only_its_clip_during_arrangement_playback() {
+    use hex_project::{AudioViewResizeOperation, Command};
+    use hex_session::service::{ArrangementPlayStartAudition, PlayStartEdit};
+
+    let _native = native_fixture();
+    let files = Files::new();
+    let mut h = ResidentHarness::with_frame_limit(262_144);
+    assert!(h.next().error.is_none());
+    let (initial, _) = h.applied(0);
+    let source = files.wav(48_000, 96_000);
+    let imported = h.run(Request::Import(source.clone()));
+    let clip = imported.state.project.tracks()[0].clips()[0].id();
+    let (applied, _) = h.applied(initial);
+    let mixed = h.run(Request::Import(source));
+    let (applied, metadata) = h.applied(applied);
+    assert_eq!(mixed.state.project.tracks().len(), 2);
+    let original = mixed.state.project.snapshot();
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+
+    let target = ArrangementPlayStartAudition {
+        context: metadata.context,
+        edit: PlayStartEdit::Audio {
+            clip,
+            position: 48_000,
+        },
+    };
+    let render = |h: &ResidentHarness, gain: f32| {
+        assert!(
+            h.render().iter().all(|f| (f[0] - gain).abs() < 1e-5),
+            "mix should be {gain}"
+        );
+    };
+    let advance = |h: &mut ResidentHarness, previous| {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            h.pump();
+            let status = h.audio.as_ref().unwrap().status().unwrap();
+            let before = status.position.load(Acquire);
+            h.render();
+            assert!(status.playing.load(Acquire));
+            assert_eq!(status.position.load(Acquire), before + 64);
+            let revision = status.applied_revision.load(Acquire);
+            if revision > previous {
+                break revision;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "play-start preview did not apply"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    };
+
+    render(&h, 0.5);
+    h.service.audition_arrangement_play_start(Some(target));
+    let preview = advance(&mut h, applied);
+    let (reported, preview_metadata) = h.applied(applied);
+    assert_eq!(reported, preview);
+    assert_eq!(preview_metadata.clip_preview, None);
+    assert_eq!(
+        preview_metadata.source_origin,
+        hex_session::service::ResidentSourceOrigin::ClipPlayStartPreview
+    );
+    render(&h, 0.25);
+    assert!(
+        h.service.try_event().is_err(),
+        "preview must leave canonical history alone"
+    );
+
+    h.service.audition_arrangement_play_start(None);
+    let restored = advance(&mut h, preview);
+    render(&h, 0.5);
+
+    h.service.audition_arrangement_play_start(Some(target));
+    let preview = advance(&mut h, restored);
+    h.service.finish_arrangement_play_start_audition();
+    render(&h, 0.25);
+    let committed = h.run(Request::Edit(Command::ResizeAudioClipView {
+        clip,
+        operation: AudioViewResizeOperation::PlayStart { position: 48_000 },
+    }));
+    assert_eq!(committed.state.revision, mixed.state.revision + 1);
+    h.service.retire_arrangement_play_start_audition();
+    let committed = advance(&mut h, preview);
+    render(&h, 0.25);
+    assert_eq!(h.run(Request::Undo).state.project.snapshot(), original);
+    let (undone, metadata) = h.applied(committed);
+    render(&h, 0.5);
+
+    h.service
+        .audition_arrangement_play_start(Some(ArrangementPlayStartAudition {
+            context: metadata.context,
+            ..target
+        }));
+    let preview = advance(&mut h, undone);
+    h.service.finish_arrangement_play_start_audition();
+    h.service
+        .submit(Request::Edit(Command::ResizeAudioClipView {
+            clip,
+            operation: AudioViewResizeOperation::PlayStart { position: u64::MAX },
+        }))
+        .unwrap();
+    let refused = h.next();
+    assert!(refused.error.is_some());
+    assert_eq!(refused.state.project.snapshot(), original);
+    h.service.retire_arrangement_play_start_audition();
+    advance(&mut h, preview);
+    render(&h, 0.5);
+}
+
+#[test]
+fn held_midi_play_start_reschedules_notes_in_the_playing_arrangement() {
+    use hex_project::{BeatTime, Command, Created};
+    use hex_session::service::{ArrangementPlayStartAudition, PlayStartEdit};
+
+    let _native = native_fixture();
+    let files = Files::new();
+    let mut h = ResidentHarness::with_frame_limit(262_144);
+    assert!(h.next().error.is_none());
+    let (mut applied, _) = h.applied(0);
+    h.run(Request::Import(files.wav(48_000, 96_000)));
+    (applied, _) = h.applied(applied);
+    let added = h.run(Request::Edit(Command::AddTrack {
+        name: "midi".into(),
+    }));
+    let Some(Created::Track(track)) = added.created else {
+        panic!("midi track")
+    };
+    (applied, _) = h.applied(applied);
+    h.run(Request::AddNativeDevice {
+        track,
+        class: hex_engine::NativeDeviceClass::Instrument,
+        type_id: Box::new(hex_engine::DeviceTypeId::from_static("hex.instrument.sine")),
+        before: None,
+    });
+    (applied, _) = h.applied(applied);
+    let beat = |quarters| BeatTime::from_quarters(quarters).unwrap();
+    let placed = h.run(Request::Edit(Command::PlaceMidiClip {
+        track,
+        start: BeatTime::ZERO,
+        length: beat(4),
+    }));
+    let Some(Created::Clip(clip)) = placed.created else {
+        panic!("midi clip")
+    };
+    (applied, _) = h.applied(applied);
+    h.run(Request::Edit(Command::AddMidiNote {
+        clip,
+        start: beat(2),
+        duration: beat(1),
+        pitch: 60,
+        channel: 0,
+        velocity: 127,
+    }));
+    (applied, _) = h.applied(applied);
+    let source_edit = |source_start| Command::SetMidiClipSource {
+        clip,
+        source_length: beat(4),
+        source_start,
+        loop_start: BeatTime::ZERO,
+        loop_end: beat(4),
+        looping: true,
+        length: beat(4),
+    };
+    let before = h.run(Request::Edit(source_edit(BeatTime::ZERO)));
+    let (applied, metadata) = h.applied(applied);
+    let first_note_frame = before
+        .state
+        .project
+        .tempo_map()
+        .beat_to_frame(beat(1))
+        .unwrap();
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    let before_preview = h.render();
+    assert!(before_preview.iter().all(|f| (f[0] - 0.25).abs() < 1e-5));
+    let position = |h: &ResidentHarness| {
+        h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .position
+            .load(Acquire)
+    };
+    h.service
+        .audition_arrangement_play_start(Some(ArrangementPlayStartAudition {
+            context: metadata.context,
+            edit: PlayStartEdit::from_midi_command(&source_edit(beat(1))).unwrap(),
+        }));
+    let start = position(&h);
+    let (_, held_metadata) = h.applied(applied);
+    assert_eq!(held_metadata.context, metadata.context);
+    assert!((start..first_note_frame).contains(&position(&h)));
+    let frames_to_note = first_note_frame - position(&h);
+    for _ in 0..frames_to_note.div_ceil(64) {
+        h.render();
+    }
+    assert!((first_note_frame..first_note_frame + 64).contains(&position(&h)));
+    let mixed = h.render();
+    assert!(
+        mixed.iter().any(|f| (f[0] - 0.25).abs() > 0.005),
+        "the shifted MIDI note should sound over the backing audio a beat earlier"
+    );
+    assert!(h.service.try_event().is_err());
+}
+
+#[test]
+fn browser_insert_audition_survives_publication_after_the_entire_clip() {
+    for (quantized, looped) in [(false, false), (true, false), (false, true)] {
+        late_browser_audition(quantized, looped);
+    }
+}
+
+fn late_browser_audition(quantized: bool, looped: bool) {
+    use hex_engine::playback::BrowserAuditionTiming;
+    use hex_project::{BeatTime, Command, ResolvedInputGrid};
+    use hex_session::import_batch_decode::AudioBatchContext;
+
+    let _native = native_fixture();
+    let files = Files::new();
+    let mut h = ResidentHarness::with_frame_limit(16_384);
+    assert!(h.next().error.is_none());
+    let (initial, _) = h.applied(0);
+    let added = h.run(Request::Edit(Command::AddTrack {
+        name: "audition".into(),
+    }));
+    let (applied, _) = h.applied(initial);
+    let track = added.state.project.tracks()[0].id();
+    let mixed = h.run(Request::Edit(Command::Gain { track, gain: 0.5 }));
+    let (applied, metadata) = h.applied(applied);
+    let (revision, applied) = if looped {
+        let looped = h.run(Request::Edit(Command::SetLoopRegion {
+            start: 0,
+            end: 512,
+            enabled: true,
+        }));
+        (looped.state.revision, h.applied(applied).0)
+    } else {
+        (mixed.state.revision, applied)
+    };
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    assert!(h.render().iter().all(|frame| *frame == [0.0; 2]));
+    let press = h
+        .audio
+        .as_ref()
+        .unwrap()
+        .status()
+        .unwrap()
+        .position
+        .load(Acquire);
+    let grid = if quantized {
+        ResolvedInputGrid::fixed(mixed.state.project.meter_map(), BeatTime::ONE).unwrap()
+    } else {
+        ResolvedInputGrid::off()
+    };
+    let start = grid
+        .snap_frame(mixed.state.project.tempo_map(), press)
+        .unwrap();
+    assert_eq!(start, if quantized { 0 } else { press });
+
+    let (entered, resume, _) = h.probe_next_native_publication();
+    let (request, _) = Request::browser_audio_batch(
+        files.wav(48_000, 256),
+        track,
+        start,
+        AudioBatchContext {
+            project_generation: metadata.context.project_generation,
+            revision,
+            active_gesture: false,
+        },
+        Some(BrowserAuditionTiming {
+            grid,
+            transport_epoch: h
+                .audio
+                .as_ref()
+                .unwrap()
+                .status()
+                .unwrap()
+                .transport_epoch
+                .load(Acquire),
+        }),
+    )
+    .unwrap();
+    h.service.submit(request).unwrap();
+    entered.recv_timeout(Duration::from_secs(2)).unwrap();
+    for _ in 0..6 {
+        assert!(h.render().iter().all(|frame| *frame == [0.0; 2]));
+    }
+    let position = |h: &ResidentHarness| {
+        h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .position
+            .load(Acquire)
+    };
+    assert!(position(&h) >= start + 256);
+    resume.send(()).unwrap();
+    let imported = h.next();
+    assert!(imported.error.is_none(), "{:?}", imported.error);
+    let clip = &imported.state.project.track(track).unwrap().clips()[0];
+    assert_eq!((clip.start(), clip.duration()), (start, 256));
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut audible = 0;
+    let mut onset = None;
+    loop {
+        let before = h
+            .audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .performance_frame
+            .load(Acquire);
+        let pcm = h.render();
+        let status = h.audio.as_ref().unwrap().status().unwrap();
+        assert!(status.playing.load(Acquire));
+        assert_eq!(status.performance_frame.load(Acquire), before + 64);
+        assert_eq!(
+            position(&h),
+            if looped {
+                (before + 64) % 512
+            } else {
+                before + 64
+            }
+        );
+        if status.applied_revision.load(Acquire) > applied {
+            let expected = *onset.get_or_insert(if quantized { 24_000 } else { before });
+            for (index, frame) in pcm.into_iter().enumerate() {
+                let at = before + index as u64;
+                if (expected..expected + 256).contains(&at) {
+                    assert_eq!(frame, [0.125; 2], "wrong sample at {at}");
+                    audible += 1;
+                } else {
+                    assert_eq!(frame, [0.0; 2], "sample duplicated at {at}");
+                }
+            }
+            if before >= expected + 256 {
+                break;
+            }
+        }
+        assert!(Instant::now() < deadline, "import did not apply");
+        std::thread::yield_now();
+    }
+    assert_eq!(audible, 256, "monitor must hear the whole late sample");
+    if looped {
+        // The live read survives the first wrap, then the saved clip plays
+        // normally on a later pass from its authored onset.
+        assert!(onset.unwrap() < 512 && onset.unwrap() + 256 > 512);
+        let mut waits = 0;
+        while position(&h) != start {
+            assert!(waits < 8, "saved clip never reached");
+            assert_eq!(h.render(), [[0.0; 2]; 64]);
+            waits += 1;
+        }
+        assert_eq!(h.render(), [[0.125; 2]; 64]);
+    }
+    let undone = h.run(Request::Undo);
+    assert!(
+        undone
+            .state
+            .project
+            .track(track)
+            .unwrap()
+            .clips()
+            .is_empty()
+    );
+}
+
+#[test]
+fn browser_insert_audition_replaces_the_voice_and_does_not_restart_after_stop() {
+    use hex_engine::playback::BrowserAuditionTiming;
+    use hex_project::{Command, ResolvedInputGrid};
+    use hex_session::import_batch_decode::AudioBatchContext;
+
+    let _native = native_fixture();
+    let files = Files::new();
+    let mut h = ResidentHarness::with_frame_limit(16_384);
+    assert!(h.next().error.is_none());
+    let (initial, _) = h.applied(0);
+    let added = h.run(Request::Edit(Command::AddTrack {
+        name: "audition".into(),
+    }));
+    let (applied, metadata) = h.applied(initial);
+    let track = added.state.project.tracks()[0].id();
+    let gain = added.state.project.track(track).unwrap().gain();
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    h.render();
+
+    let request = |h: &ResidentHarness, path, revision| {
+        let status = h.audio.as_ref().unwrap().status().unwrap();
+        let frame = status.position.load(Acquire);
+        let epoch = status.transport_epoch.load(Acquire);
+        let (request, _) = Request::browser_audio_batch(
+            path,
+            track,
+            frame,
+            AudioBatchContext {
+                project_generation: metadata.context.project_generation,
+                revision,
+                active_gesture: false,
+            },
+            Some(BrowserAuditionTiming {
+                grid: ResolvedInputGrid::off(),
+                transport_epoch: epoch,
+            }),
+        )
+        .unwrap();
+        (request, frame, epoch)
+    };
+    let first_block = |h: &mut ResidentHarness, after| {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let pcm = h.render();
+            let revision = h
+                .audio
+                .as_ref()
+                .unwrap()
+                .status()
+                .unwrap()
+                .applied_revision
+                .load(Acquire);
+            if revision > after {
+                break (revision, pcm);
+            }
+            assert!(Instant::now() < deadline, "import did not apply");
+            std::thread::yield_now();
+        }
+    };
+
+    let (initial, _, _) = request(&h, files.wav(48_000, 1024), added.state.revision);
+    let first = h.run(initial);
+    let (applied, pcm) = first_block(&mut h, applied);
+    assert_eq!(pcm, [[0.25 * gain; 2]; 64]);
+
+    let (replacement, _, _) = request(
+        &h,
+        files.constant_wav("replacement.wav", 48_000, 128, &[16_384]),
+        first.state.revision,
+    );
+    let second = h.run(replacement);
+    let (applied, pcm) = first_block(&mut h, applied);
+    assert_eq!(pcm, [[0.5 * gain; 2]; 64]);
+    assert_eq!(h.render(), [[0.5 * gain; 2]; 64]);
+    // The previous authored sample may leave a right-hand overwrite fragment.
+    // The two blocks above must contain only the new voice.
+
+    let (entered, resume, _) = h.probe_next_native_publication();
+    let (pending, captured_frame, epoch) = request(
+        &h,
+        files.constant_wav("late.wav", 48_000, 512, &[8192]),
+        second.state.revision,
+    );
+    h.service.submit(pending).unwrap();
+    entered.recv_timeout(Duration::from_secs(2)).unwrap();
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Stop)
+        .unwrap();
+    for _ in 0..8 {
+        h.render();
+    }
+    let status = h.audio.as_ref().unwrap().status().unwrap();
+    assert!(!status.playing.load(Acquire));
+    assert_ne!(status.transport_epoch.load(Acquire), epoch);
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::PlayFrom(12_000))
+        .unwrap();
+    assert_eq!(h.render(), [[0.0; 2]; 64]);
+    resume.send(()).unwrap();
+    let committed = h.next();
+    assert!(committed.error.is_none(), "{:?}", committed.error);
+    assert!(
+        committed
+            .state
+            .project
+            .track(track)
+            .unwrap()
+            .clips()
+            .iter()
+            .any(|clip| clip.start() == captured_frame),
+        "the original placement remains a valid authored edit"
+    );
+    assert_eq!(first_block(&mut h, applied).1, [[0.0; 2]; 64]);
+}
 
 #[test]
 fn track_gain_gesture_reaches_callback_without_a_pcm_step() {
@@ -164,10 +1385,25 @@ pub(super) static CONFIRMED_TEST_NOOPS: AtomicU64 = AtomicU64::new(0);
 pub(super) static SESSION_RECORDING_OBSERVATIONS: Mutex<
     Vec<hex_session::service::PluginParameterObservation>,
 > = Mutex::new(Vec::new());
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub(super) enum EditorRecordingProbe {
+    Prepare(
+        hex_session::service::PluginEditorRecordingInput,
+        SyncSender<Result<hex_session::service::PluginParameterObservation, String>>,
+    ),
+    Start(
+        hex_session::device_gesture::GestureKey,
+        SyncSender<Result<(), String>>,
+    ),
+    Take(SyncSender<Option<hex_session::service::PluginParameterObservation>>),
+}
+
 struct ResidentSink {
     inner: NativeAudioSink,
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     control_polls: Arc<AtomicU64>,
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    editor_recording_probe: Arc<Mutex<Option<EditorRecordingProbe>>>,
     initial_rate: u32,
     refuse: Arc<AtomicBool>,
     budget_refuse: Arc<AtomicBool>,
@@ -176,6 +1412,11 @@ struct ResidentSink {
     file_publication_waiting: Arc<AtomicBool>,
     pending_observation_generation: Arc<AtomicU64>,
     publication_probe: Arc<Mutex<Option<PublicationProbe>>>,
+    confirmation_probe: Arc<Mutex<Option<ConfirmationProbe>>>,
+}
+struct ConfirmationProbe {
+    ready: SyncSender<()>,
+    resume: mpsc::Receiver<()>,
 }
 struct PublicationProbe {
     ready: SyncSender<()>,
@@ -183,11 +1424,11 @@ struct PublicationProbe {
     busy: SyncSender<()>,
 }
 impl WorkerAudioSink for ResidentSink {
-    fn capture_plugin_states_for_save(
+    fn capture_plugin_states(
         &mut self,
-        input: hex_session::service::PluginStateSaveInput<'_>,
+        input: hex_session::service::PluginStateCaptureInput<'_>,
     ) -> Result<Vec<hex_session::service::PluginStateCapture>, String> {
-        self.inner.capture_plugin_states_for_save(input)
+        self.inner.capture_plugin_states(input)
     }
     fn begin_request(&mut self, cancellation: hex_session::service::RequestCancellation) {
         self.inner.begin_request(cancellation);
@@ -201,8 +1442,12 @@ impl WorkerAudioSink for ResidentSink {
     fn plugin_state_restore_ready(&self) -> Option<AudioSourceContext> {
         self.inner.plugin_state_restore_ready()
     }
-    fn finish_plugin_state_restore(&mut self, context: AudioSourceContext, accepted: bool) {
-        self.inner.finish_plugin_state_restore(context, accepted);
+    fn finish_plugin_state_restore(
+        &mut self,
+        context: AudioSourceContext,
+        result: Result<(), &str>,
+    ) {
+        self.inner.finish_plugin_state_restore(context, result);
     }
     fn plugin_parameter_requires_stopped_restore(
         &mut self,
@@ -283,6 +1528,9 @@ impl WorkerAudioSink for ResidentSink {
             while let Some(observation) = self.inner.take_plugin_parameter_observation() {
                 use hex_session::service::PluginParameterObservation as Observation;
                 match observation {
+                    Observation::Grouped(_) => {
+                        panic!("generic parameter gesture emitted a grouped editor observation");
+                    }
                     Observation::Ready {
                         key,
                         context,
@@ -359,15 +1607,40 @@ impl WorkerAudioSink for ResidentSink {
         }
         result
     }
+    fn prepare_plugin_editor_recording(
+        &mut self,
+        input: hex_session::service::PluginEditorRecordingInput,
+    ) -> Result<hex_session::service::PluginParameterObservation, String> {
+        self.inner.prepare_plugin_editor_recording(input)
+    }
+    fn start_plugin_editor_recording(
+        &mut self,
+        key: hex_session::device_gesture::GestureKey,
+    ) -> Result<(), String> {
+        self.inner.start_plugin_editor_recording(key)
+    }
+    fn cancel_plugin_editor_recording(
+        &mut self,
+        key: hex_session::device_gesture::GestureKey,
+    ) -> bool {
+        self.inner.cancel_plugin_editor_recording(key)
+    }
     fn take_plugin_parameter_observation(
         &mut self,
     ) -> Option<hex_session::service::PluginParameterObservation> {
         let observation = self.inner.take_plugin_parameter_observation();
-        if std::env::var("HEX_DESKTOP_INSTRUMENT_TAKEOVER_CASE").is_ok_and(|case| {
-            case.starts_with("session_record")
-                || case == "session_recover"
-                || case.starts_with("session_writer_")
-        }) && let Some(observation) = observation
+        if (std::env::var("HEX_DESKTOP_ORIGINAL_EDITOR_RECORDING_CHILD")
+            .is_ok_and(|case| case == "session" || case.starts_with("group-"))
+            || std::env::var("HEX_DESKTOP_INSTRUMENT_TAKEOVER_CASE").is_ok_and(|case| {
+                case.starts_with("session_record")
+                    || matches!(
+                        case.as_str(),
+                        "session_first_lane" | "session_first_lane_with_other"
+                    )
+                    || case == "session_recover"
+                    || case.starts_with("session_writer_")
+            }))
+            && let Some(observation) = observation
         {
             let mut originals = SESSION_RECORDING_OBSERVATIONS.lock().unwrap();
             assert!(originals.len() < 8, "one bounded recording oracle");
@@ -387,8 +1660,29 @@ impl WorkerAudioSink for ResidentSink {
         context: AudioSourceContext,
         acceptance: hex_session::service::ResidentPublicationAcceptance,
     ) -> Result<(), hex_session::service::PluginParameterGestureError> {
+        let probe = self.confirmation_probe.lock().unwrap().take();
+        if let Some(probe) = probe {
+            probe.ready.send(()).unwrap();
+            probe.resume.recv_timeout(Duration::from_secs(10)).unwrap();
+        }
         self.inner
             .confirm_plugin_parameter_publication(context, acceptance)
+    }
+    fn confirm_source_effect_publication(
+        &mut self,
+        context: AudioSourceContext,
+        acceptance: ResidentPublicationAcceptance,
+    ) -> Result<(), String> {
+        // A headless fixture must pump the real callback while the service
+        // waits for the source graph's exact publication acknowledgement.
+        self.file_publication_waiting
+            .store(true, std::sync::atomic::Ordering::Release);
+        let result = self
+            .inner
+            .confirm_source_effect_publication(context, acceptance);
+        self.file_publication_waiting
+            .store(false, std::sync::atomic::Ordering::Release);
+        result
     }
     fn finish_plugin_parameter_commit(
         &mut self,
@@ -411,6 +1705,20 @@ impl WorkerAudioSink for ResidentSink {
     }
     fn take_plugin_parameters(&mut self) -> Option<hex_session::service::PluginParameterResult> {
         self.inner.take_plugin_parameters()
+    }
+    fn query_plugin_parameter_conversion(
+        &mut self,
+        query: hex_session::service::PluginParameterConversionQuery,
+    ) -> Result<(), String> {
+        self.inner.query_plugin_parameter_conversion(query)
+    }
+    fn plugin_parameter_conversion_ready(&self) -> bool {
+        self.inner.plugin_parameter_conversion_ready()
+    }
+    fn take_plugin_parameter_conversion(
+        &mut self,
+    ) -> Option<hex_session::service::PluginParameterConversionResult> {
+        self.inner.take_plugin_parameter_conversion()
     }
     fn plugin_editor_ready(&self) -> bool {
         self.inner.plugin_editor_ready()
@@ -444,8 +1752,9 @@ impl WorkerAudioSink for ResidentSink {
     fn prepare_offline_bounce(
         &mut self,
         input: hex_session::service::ResidentEffectPreparation<'_>,
+        control: &hex_export::ExportControl,
     ) -> Result<Option<Box<dyn hex_session::service::OfflineBounceSource>>, String> {
-        self.inner.prepare_offline_bounce(input)
+        self.inner.prepare_offline_bounce(input, control)
     }
     fn ordinary_source_reservation(&self) -> Option<hex_session::SourcePlanReservation> {
         self.inner.ordinary_source_reservation()
@@ -540,13 +1849,22 @@ impl WorkerAudioSink for ResidentSink {
                     source.editor_revision += 1;
                 }
             }
-            5 => actual.section_loop = None,
+            5 => {
+                actual.section_loop = if actual.section_loop.is_some() {
+                    None
+                } else {
+                    Some(hex_project::LoopRegion::new(0, 48_000, true).unwrap())
+                };
+            }
             6 => {
                 if let Some(region) = actual.section_loop {
                     actual.section_loop = Some(
                         hex_project::LoopRegion::new(region.start() + 1, region.end(), true)
                             .unwrap(),
                     );
+                } else {
+                    actual.section_loop =
+                        Some(hex_project::LoopRegion::new(1, 48_000, true).unwrap());
                 }
             }
             _ => {}
@@ -612,7 +1930,21 @@ impl WorkerAudioSink for ResidentSink {
         context: AudioSourceContext,
         allow_playing: bool,
     ) -> Result<(), String> {
-        self.inner.begin_section_edit(context, allow_playing)
+        WorkerAudioSink::begin_section_edit(&mut self.inner, context, allow_playing)
+    }
+    fn begin_recoverable_section_edit(
+        &mut self,
+        context: AudioSourceContext,
+    ) -> Result<(), String> {
+        self.inner.begin_recoverable_section_edit(context)
+    }
+    fn confirm_section_edit_recovery(
+        &mut self,
+        context: AudioSourceContext,
+        acceptance: ResidentPublicationAcceptance,
+    ) -> Result<(), String> {
+        self.inner
+            .confirm_section_edit_recovery(context, acceptance)
     }
     fn section_edit_ready(
         &mut self,
@@ -644,6 +1976,26 @@ impl WorkerAudioSink for ResidentSink {
     }
     fn poll(&mut self) {
         self.inner.poll();
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        if let Some(probe) = self.editor_recording_probe.lock().unwrap().take() {
+            match probe {
+                EditorRecordingProbe::Prepare(input, reply) => {
+                    reply
+                        .try_send(self.inner.prepare_plugin_editor_recording(input))
+                        .unwrap();
+                }
+                EditorRecordingProbe::Start(key, reply) => {
+                    reply
+                        .try_send(self.inner.start_plugin_editor_recording(key))
+                        .unwrap();
+                }
+                EditorRecordingProbe::Take(reply) => {
+                    reply
+                        .try_send(self.inner.take_plugin_parameter_observation())
+                        .unwrap();
+                }
+            }
+        }
         self.pending_observation_generation.store(
             match self.inner.pending_observation.as_ref() {
                 Some(EditorAudioEvent::Publication { context, .. }) => {
@@ -671,6 +2023,8 @@ pub(super) struct ResidentHarness {
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     pub(super) control_polls: Arc<AtomicU64>,
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub(super) editor_recording_probe: Arc<Mutex<Option<EditorRecordingProbe>>>,
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     event_sender: mpsc::SyncSender<EditorAudioEvent>,
     events: mpsc::Receiver<EditorAudioEvent>,
     pub(super) callback: Arc<Mutex<Option<HeadlessBackend>>>,
@@ -684,6 +2038,7 @@ pub(super) struct ResidentHarness {
     file_publication_waiting: Arc<AtomicBool>,
     pub(super) pending_observation_generation: Arc<AtomicU64>,
     publication_probe: Arc<Mutex<Option<PublicationProbe>>>,
+    confirmation_probe: Arc<Mutex<Option<ConfirmationProbe>>>,
     allow_unavailable: bool,
     pub(super) unavailable: Vec<String>,
     pub(super) publication_refusals: Vec<String>,
@@ -736,11 +2091,14 @@ impl ResidentHarness {
         Self::with_plugin_fixture(frame_limit, gate, capacity, rate, None, None, None, None)
     }
     pub(super) fn with_recovery(frame_limit: u64, recovery: PathBuf) -> Self {
+        Self::with_recovery_at_rate(frame_limit, recovery, 48_000)
+    }
+    pub(super) fn with_recovery_at_rate(frame_limit: u64, recovery: PathBuf, rate: u32) -> Self {
         Self::with_plugin_fixture(
             frame_limit,
             Arc::new(AtomicBool::new(true)),
             4,
-            48_000,
+            rate,
             None,
             None,
             None,
@@ -820,11 +2178,12 @@ impl ResidentHarness {
         host: hex_audio::plugin_effects::Hosting,
         presentation: Option<hex_audio::plugin_effects::EffectPresentation>,
         rate: u32,
+        frame_limit: u64,
         catalog: PathBuf,
         recovery: PathBuf,
     ) -> Self {
         Self::with_plugin_fixture(
-            8192,
+            frame_limit,
             Arc::new(AtomicBool::new(true)),
             4,
             rate,
@@ -912,8 +2271,11 @@ impl ResidentHarness {
         let file_publication_waiting = Arc::new(AtomicBool::new(false));
         let pending_observation_generation = Arc::new(AtomicU64::new(0));
         let publication_probe = Arc::new(Mutex::new(None));
+        let confirmation_probe = Arc::new(Mutex::new(None));
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         let control_polls = Arc::new(AtomicU64::new(0));
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        let editor_recording_probe = Arc::new(Mutex::new(None));
         let service = Service::with_audio_sink_and_native_reservation(
             16,
             frame_limit,
@@ -922,6 +2284,8 @@ impl ResidentHarness {
                 inner,
                 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
                 control_polls: Arc::clone(&control_polls),
+                #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                editor_recording_probe: Arc::clone(&editor_recording_probe),
                 initial_rate: rate,
                 refuse: Arc::clone(&refuse),
                 budget_refuse: Arc::clone(&budget_refuse),
@@ -930,6 +2294,7 @@ impl ResidentHarness {
                 file_publication_waiting: Arc::clone(&file_publication_waiting),
                 pending_observation_generation: Arc::clone(&pending_observation_generation),
                 publication_probe: Arc::clone(&publication_probe),
+                confirmation_probe: Arc::clone(&confirmation_probe),
             }),
             AudioPolicy::new().unwrap().resident_native,
         )
@@ -938,6 +2303,8 @@ impl ResidentHarness {
             service,
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             control_polls,
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            editor_recording_probe,
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             event_sender: sender,
             events,
@@ -952,6 +2319,7 @@ impl ResidentHarness {
             file_publication_waiting,
             pending_observation_generation,
             publication_probe,
+            confirmation_probe,
             allow_unavailable,
             unavailable: Vec::new(),
             publication_refusals: Vec::new(),
@@ -1256,6 +2624,21 @@ impl ResidentHarness {
             assert_eq!(result, Some(Ok(())));
         })
     }
+    pub(super) fn probe_next_parameter_confirmation(&self) -> (mpsc::Receiver<()>, SyncSender<()>) {
+        let (ready, entered) = mpsc::sync_channel(1);
+        let (resume, resumed) = mpsc::sync_channel(1);
+        assert!(
+            self.confirmation_probe
+                .lock()
+                .unwrap()
+                .replace(ConfirmationProbe {
+                    ready,
+                    resume: resumed
+                })
+                .is_none()
+        );
+        (entered, resume)
+    }
     pub(super) fn probe_next_native_publication(
         &self,
     ) -> (mpsc::Receiver<()>, SyncSender<()>, mpsc::Receiver<()>) {
@@ -1334,6 +2717,110 @@ fn default_audio_policy_admits_the_actual_stream_workspace_on_startup() {
 }
 
 #[test]
+fn refused_unpublished_gain_releases_the_fader_and_restart_retires_a_real_preview() {
+    use hex_project::{Command, Created};
+    use hex_session::device_gesture::{
+        GestureKey, GesturePhase, GestureRequest, GestureTarget, ParameterValue,
+    };
+    use std::sync::atomic::Ordering::Release;
+
+    let _native = native_fixture();
+    let mut h = ResidentHarness::new();
+    assert!(h.next().error.is_none());
+    let (applied, _) = h.applied(0);
+    let before = h.run(Request::Edit(Command::AddTrack {
+        name: "gain".into(),
+    }));
+    let Some(Created::Track(track)) = before.created else {
+        panic!("track");
+    };
+    let (mut applied, _) = h.applied(applied);
+    let key = |token| GestureKey {
+        generation: 0,
+        token,
+    };
+    let begin = |token| {
+        Request::DeviceGesture(GestureRequest::Begin {
+            key: key(token),
+            target: GestureTarget::TrackGain { track },
+        })
+    };
+    let change = |token| {
+        Request::DeviceGesture(GestureRequest::Change {
+            key: key(token),
+            sequence: 1,
+            value: ParameterValue::Float(0.5),
+        })
+    };
+    let commit = |token, value| {
+        Request::DeviceGesture(GestureRequest::Commit {
+            manual_edit: true,
+            key: key(token),
+            sequence: 2,
+            value: ParameterValue::Float(value),
+        })
+    };
+
+    assert!(h.run(begin(1)).gesture_ack.unwrap().accepted);
+    h.refuse.store(true, Release);
+    let refused = h.run(change(1));
+    assert!(!refused.gesture_ack.unwrap().accepted);
+    assert!(refused.device_preview.is_none());
+    let refused = h.run(commit(1, 0.25));
+    let ack = refused.gesture_ack.unwrap();
+    assert_eq!((ack.key, ack.phase), (key(1), GesturePhase::Commit));
+    assert!(!ack.accepted && !ack.preview_retained && ack.reason.is_some());
+    assert!(refused.active_device_gesture.is_none());
+    assert!(refused.device_preview.is_none());
+    assert_eq!(refused.state.revision, before.state.revision);
+    assert_eq!(refused.state.project, before.state.project);
+
+    h.refuse.store(false, Release);
+    assert!(h.run(begin(2)).gesture_ack.unwrap().accepted);
+    assert!(h.run(change(2)).gesture_ack.unwrap().accepted);
+    (applied, _) = h.applied(applied);
+    let committed = h.run(commit(2, 0.25));
+    assert!(committed.gesture_ack.unwrap().accepted);
+    assert_eq!(committed.state.project.track(track).unwrap().gain(), 0.25);
+    assert_eq!(committed.state.revision, before.state.revision + 1);
+    (applied, _) = h.applied(applied);
+
+    assert!(h.run(begin(3)).gesture_ack.unwrap().accepted);
+    assert!(h.run(change(3)).gesture_ack.unwrap().accepted);
+    let (_, metadata) = h.applied(applied);
+    assert_eq!(metadata.device_preview.unwrap().key, key(3));
+    h.refuse.store(true, Release);
+    let retained = h.run(commit(3, 0.75));
+    assert!(retained.gesture_ack.unwrap().preview_retained);
+    assert!(retained.device_preview.is_some());
+    h.refuse.store(false, Release);
+    let old_output = h.audio.as_ref().unwrap().control.output_identity().unwrap();
+    let restarted = h.run(Request::RestartAudio {
+        project_generation: 0,
+        request_id: 1,
+    });
+    let retired = restarted.gesture_ack.unwrap();
+    assert_eq!((retired.key, retired.phase), (key(3), GesturePhase::Cancel));
+    assert!(!retired.preview_retained);
+    assert!(restarted.active_device_gesture.is_none());
+    assert!(restarted.device_preview.is_none());
+    assert_eq!(restarted.state.revision, committed.state.revision);
+    assert_eq!(restarted.state.project, committed.state.project);
+    h.release_relinquished_output();
+    h.wait_fresh_output(old_output);
+    let (applied, metadata) = h.applied(0);
+    assert_eq!(metadata.context.editor_revision, committed.state.revision);
+    assert!(metadata.device_preview.is_none());
+
+    let undone = h.run(Request::Undo);
+    assert_eq!(undone.state.project, before.state.project);
+    let (applied, _) = h.applied(applied);
+    let redone = h.run(Request::Redo);
+    assert_eq!(redone.state.project, committed.state.project);
+    h.applied(applied);
+}
+
+#[test]
 fn loaded_resident_preview_refused_commit_keeps_pcm_and_cancel_restores_canonical() {
     use hex_project::{Command, Created};
     use hex_session::device_gesture::ParameterValue;
@@ -1356,7 +2843,9 @@ fn loaded_resident_preview_refused_commit_keeps_pcm_and_cancel_restores_canonica
         project_generation: 0,
         revision: added.state.revision,
         track,
-        empty_sampler: None,
+        slot: hex_session::service::SamplerLoadSlot::New(
+            hex_project::InstrumentLoadPlacement::First,
+        ),
         path: files.wav(48_000, 8192),
         cancel: Arc::new(AtomicBool::new(false)),
     });
@@ -1545,12 +3034,14 @@ impl ResidentHarness {
             destination_frame: 129,
             start_playing: true,
             section: None,
+            locator_quantization: None,
             fence: hex_session::service::ResidentFreshRuntimeFence {
                 output_identity: control.output_identity().unwrap(),
                 active_audio_revision: fence.expected_active_revision(),
                 route_generation: fence.route_state_generation(),
                 admitted_command_ticket: fence.admitted_command_ticket(),
                 output_fault_epoch: fence.output_fault_epoch(),
+                consumed_stop_generation: fence.consumed_stop_generation(),
             },
             device_preview,
             tuning_preview,
@@ -1626,7 +3117,9 @@ fn loaded_resident_tuning_and_preview_seek_use_actual_sources_and_keep_refused_o
         project_generation: 0,
         revision: added.state.revision,
         track,
-        empty_sampler: None,
+        slot: hex_session::service::SamplerLoadSlot::New(
+            hex_project::InstrumentLoadPlacement::First,
+        ),
         path: files.wav(48_000, 8192),
         cancel: Arc::new(AtomicBool::new(false)),
     });
@@ -1662,7 +3155,12 @@ fn loaded_resident_tuning_and_preview_seek_use_actual_sources_and_keep_refused_o
         sequence: 1,
         value: ParameterValue::Float(0.5),
     }));
-    (applied, _) = h.applied(applied);
+    let (device_audio, device_metadata) = h.applied(applied);
+    applied = device_audio;
+    assert_eq!(
+        device_metadata.source_origin,
+        hex_session::service::ResidentSourceOrigin::DevicePreview
+    );
     let identity = preview.device_preview.as_ref().unwrap().identity;
 
     // An explicit input request during a live overlay must not publish the canonical gain.
@@ -1677,6 +3175,10 @@ fn loaded_resident_tuning_and_preview_seek_use_actual_sources_and_keep_refused_o
     });
     let (keyboard_audio, metadata) = h.applied(applied);
     assert_eq!(metadata.device_preview, Some(identity));
+    assert_eq!(
+        metadata.source_origin,
+        hex_session::service::ResidentSourceOrigin::DevicePreview
+    );
     assert_eq!(metadata.computer_keyboard_request, Some(9));
     assert_eq!(keyboard.device_preview.as_ref().unwrap().identity, identity);
     // The preview was published while stopped; monitoring advances its ramp.
@@ -1851,7 +3353,12 @@ fn loaded_resident_tuning_and_preview_seek_use_actual_sources_and_keep_refused_o
         sequence: 1,
         tuning: tuned,
     }));
-    (applied, _) = h.applied(applied);
+    let (tuning_audio, tuning_metadata) = h.applied(applied);
+    applied = tuning_audio;
+    assert_eq!(
+        tuning_metadata.source_origin,
+        hex_session::service::ResidentSourceOrigin::TuningPreview
+    );
     let identity = preview.tuning_preview.as_ref().unwrap().identity;
     assert_eq!(
         preview
@@ -1875,6 +3382,10 @@ fn loaded_resident_tuning_and_preview_seek_use_actual_sources_and_keep_refused_o
     let (next_applied, metadata) = h.applied(applied);
     applied = next_applied;
     assert_eq!(metadata.tuning_preview, Some(identity));
+    assert_eq!(
+        metadata.source_origin,
+        hex_session::service::ResidentSourceOrigin::TuningPreview
+    );
     assert_eq!(prepared.tuning_preview.as_ref().unwrap().identity, identity);
     assert!(!next.is_cancelled());
     assert_eq!(h.render(), [[0.25; 2]; 64]);
@@ -2258,7 +3769,8 @@ fn midi_recording_wire_and_physical_input_deliver_then_commit_one_native_history
 #[test]
 fn sealed_native_take_recovery_uses_canonical_publication_and_one_undo() {
     use hex_session::service::{
-        DeviceAutomationTakeProgress, DeviceAutomationTakeScope, DeviceCaptureTarget,
+        AutomationRecoveryFileIdentity, DeviceAutomationTakeProgress, DeviceAutomationTakeScope,
+        DeviceCaptureTarget,
     };
     use hex_storage::automation_draft::{
         AppliedEvent, CaptureClock, DraftClock, DraftProvenance, DraftTarget, DraftTerminal,
@@ -2332,15 +3844,25 @@ fn sealed_native_take_recovery_uses_canonical_publication_and_one_undo() {
         .unwrap();
     drop(writer);
     let bytes = std::fs::read(&path).unwrap();
-    let recovered = h.run(Request::RecoverDeviceAutomationTake {
+    let inspected = h.run(Request::InspectSealedAutomationRecovery {
         request_id: 41,
-        target: DraftTarget::Device {
-            device,
-            target: target.target(),
-        },
-        expected: scope.stamp,
         path: path.clone(),
+    });
+    assert!(inspected.error.is_none(), "{:?}", inspected.error);
+    assert_eq!(inspected.state.project, inserted.state.project);
+    assert_eq!(inspected.state.revision, inserted.state.revision);
+    let DeviceAutomationTakeProgress::SealedFile(selected) =
+        inspected.device_automation_take_complete.unwrap().progress
+    else {
+        panic!("finished recovery file did not produce an exact selection");
+    };
+    let recovered = h.run(Request::RecoverDeviceAutomationTake {
+        request_id: 42,
+        target: selected.target,
+        expected: selected.provenance,
+        path: selected.path,
         context,
+        identity: AutomationRecoveryFileIdentity::Sealed(selected.identity),
     });
     assert_eq!(
         recovered.device_automation_take_complete.unwrap().progress,

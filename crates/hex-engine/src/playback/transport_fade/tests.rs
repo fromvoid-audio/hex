@@ -320,11 +320,80 @@ fn seek_while_playing_fades_out_jumps_and_ramps_in_for_every_block_size() {
 }
 
 #[test]
+fn session_seek_while_playing_declicks_across_blocks() {
+    assert_seek_action(PlaybackAction::Session(
+        crate::SessionPlaybackCommand::Seek(5000),
+    ));
+}
+
+#[test]
+fn play_from_while_playing_declicks_across_blocks() {
+    assert_seek_action(PlaybackAction::Transport(PlaybackCommand::PlayFrom(5000)));
+}
+
+fn assert_seek_action(action: PlaybackAction) {
+    let mut reference = None;
+    for block in [1, 7, 64, 100, 512] {
+        let mut playback = session_playback();
+        let mut output = Vec::new();
+        declicked(&mut playback, PlaybackCommand::Play);
+        render(&mut playback, block, 1000, &mut output);
+        playback.try_apply_declicked_action(action).unwrap();
+        assert_eq!(playback.pending_transport_fade(), Some(action));
+        render(&mut playback, block, 1000, &mut output);
+        assert!(playback.playing());
+        assert_eq!(playback.position(), 5000 + 1000 - F as u64);
+        assert_eq!(
+            playback.take_transport_fade_completion(),
+            Some(TransportFadeCompletion {
+                action,
+                audible_end_frame: 1000 + F as u64,
+                applied: true,
+            })
+        );
+        let step = largest_step(&output[1..]);
+        assert!(step <= 1.0 / F as f32 + 1e-6, "{action:?}: step {step}");
+        assert_eq!(output[1000 + F - 1], [0.0; 2]);
+        assert_eq!(output[1000 + F][0], 1.0 / F as f32);
+        match &reference {
+            None => reference = Some(output),
+            Some(reference) => assert_eq!(&output, reference, "{action:?}, block {block}"),
+        }
+    }
+}
+
+#[test]
 fn a_paused_seek_stays_immediate() {
     let mut playback = session_playback();
     declicked(&mut playback, PlaybackCommand::Seek(700));
     assert_eq!(playback.pending_transport_fade(), None);
     assert_eq!(playback.position(), 700);
+}
+
+#[test]
+fn session_seek_and_play_from_stopped_are_immediate_and_invalid_play_from_refuses() {
+    let mut playback = session_playback();
+    let seek = PlaybackAction::Session(crate::SessionPlaybackCommand::Seek(700));
+    playback.try_apply_declicked_action(seek).unwrap();
+    assert_eq!(playback.position(), 700);
+    assert_eq!(playback.pending_transport_fade(), None);
+    let play = PlaybackAction::Transport(PlaybackCommand::PlayFrom(900));
+    playback.try_apply_declicked_action(play).unwrap();
+    assert!(playback.playing());
+    assert_eq!(playback.position(), 900);
+    assert_eq!(playback.pending_transport_fade(), None);
+    let invalid = PlaybackAction::Transport(PlaybackCommand::PlayFrom(u64::MAX));
+    assert!(playback.try_apply_declicked_action(invalid).is_err());
+    assert!(playback.playing());
+    assert_eq!(playback.position(), 900);
+    assert_eq!(playback.pending_transport_fade(), None);
+    let mut linear = linear_playback();
+    declicked(&mut linear, PlaybackCommand::Play);
+    assert_eq!(
+        linear.try_apply_declicked_action(seek),
+        Err(PlaybackActionError::SessionNotPrepared)
+    );
+    assert_eq!(linear.pending_transport_fade(), None);
 }
 
 #[test]
@@ -355,6 +424,80 @@ fn immediate_actions_and_stopped_transports_are_not_deferred() {
 }
 
 #[test]
+fn interleaved_immediate_transport_actions_match_sample_oracle_across_blocks() {
+    let (project, mut media) = dc_project();
+    let asset = *media.keys().next().unwrap();
+    // Every source position has a distinct, exactly representable amplitude.
+    let samples: Vec<Frame> = (0..CLIP)
+        .map(|frame| {
+            let value = frame as f32 / 32768.0;
+            [value, -value]
+        })
+        .collect();
+    media.insert(asset, Audio::new(RATE, samples.clone()).unwrap());
+    let linear = Arc::new(crate::compile::project(&project, &media).unwrap());
+    let session = Arc::new(
+        PreparedRevision::prepare(&project, &media, Arc::new(SineTable::new()), None).unwrap(),
+    );
+    let actions = [
+        (0, PlaybackCommand::PlayFrom(300)),
+        (11, PlaybackCommand::Seek(100)),
+        (23, PlaybackCommand::Stop),
+        (29, PlaybackCommand::PlayFrom(600)),
+        (41, PlaybackCommand::Pause),
+        (47, PlaybackCommand::Play),
+    ];
+    let mut expected = Vec::new();
+    expected.extend_from_slice(&samples[300..311]);
+    expected.extend_from_slice(&samples[100..112]);
+    expected.extend_from_slice(&[[0.0; 2]; 6]);
+    expected.extend_from_slice(&samples[600..612]);
+    expected.extend_from_slice(&[[0.0; 2]; 6]);
+    expected.extend_from_slice(&samples[612..1589]);
+    assert_eq!(expected.len(), 1024);
+
+    for prepared in [false, true] {
+        for block in [1, 7, 64, 128, 256, 512] {
+            let mut playback = if prepared {
+                Playback::from_prepared(Arc::clone(&session))
+            } else {
+                Playback::from_shared(Arc::clone(&linear))
+            };
+            let mut actual = [[0.0; 2]; 1024];
+            let mut cursor = 0;
+            let mut next_action = 0;
+            while cursor < actual.len() {
+                let block_end = (cursor + block).min(actual.len());
+                while cursor < block_end {
+                    if actions
+                        .get(next_action)
+                        .is_some_and(|(at, _)| *at == cursor)
+                    {
+                        playback
+                            .try_apply_action(PlaybackAction::Transport(actions[next_action].1))
+                            .unwrap();
+                        next_action += 1;
+                    }
+                    let end = actions
+                        .get(next_action)
+                        .map_or(block_end, |(at, _)| block_end.min(*at));
+                    playback.render(&mut actual[cursor..end]).unwrap();
+                    cursor = end;
+                }
+            }
+            assert_eq!(next_action, actions.len());
+            assert!(playback.playing());
+            assert_eq!(playback.position(), 1589);
+            assert_eq!(
+                actual.as_slice(),
+                expected,
+                "prepared={prepared}, block={block}"
+            );
+        }
+    }
+}
+
+#[test]
 fn project_taps_observe_each_render_part_at_its_callback_offset() {
     let mut playback = session_playback();
     declicked(&mut playback, PlaybackCommand::Play);
@@ -372,4 +515,28 @@ fn project_taps_observe_each_render_part_at_its_callback_offset() {
         .render_with_signal_observers(&mut output, None, Some(&mut tap))
         .unwrap();
     assert_eq!(seen, [(0, F), (F, 512 - F)]);
+}
+
+#[test]
+fn project_tap_offsets_compose_and_restore_across_nested_declick_parts() {
+    let mut playback = session_playback();
+    declicked(&mut playback, PlaybackCommand::Play);
+    playback.render(&mut [[0.0; 2]; 512]).unwrap();
+    declicked(&mut playback, PlaybackCommand::Pause);
+    let mut seen = Vec::new();
+    let mut observe = |signal: ProjectSignal, offset: usize, frames: &[Frame]| {
+        if signal == ProjectSignal::Master {
+            seen.push((offset, frames.len()));
+        }
+    };
+    let mut tap = ProjectOutputTap::new(&[], &mut observe).unwrap();
+    crate::playback::with_part_offset(Some(&mut tap), 31, |tap| {
+        playback
+            .render_with_signal_observers(&mut [[0.0; 2]; 512], None, tap)
+            .unwrap();
+    });
+    playback
+        .render_with_signal_observers(&mut [[0.0; 2]; 2], None, Some(&mut tap))
+        .unwrap();
+    assert_eq!(seen, [(31, F), (31 + F, 512 - F), (0, 2)]);
 }

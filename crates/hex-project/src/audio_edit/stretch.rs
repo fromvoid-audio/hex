@@ -111,7 +111,8 @@ pub(super) fn retime(
         old_fade.in_curve(),
         old_fade.out_curve(),
     )?
-    .with_curve_positions(old_fade.in_position(), old_fade.out_position())?;
+    .with_curve_positions(old_fade.in_position(), old_fade.out_position())?
+    .with_curve_laws(old_fade.curve_laws());
     domain.fade_projection = Some(AudioFadeProjection {
         tempo: tempo.clone(),
         origin_beat_raw: origin + i128::from(domain.fade_start),

@@ -39,7 +39,7 @@ pub use eligible::{
     AudioCandidatePublicationReservation,
 };
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-pub(crate) use eligible::{NativeEndpointBank, NativeEndpointEnvelope};
+pub(crate) use eligible::{EndpointReturnFence, NativeEndpointBank, NativeEndpointEnvelope};
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub use eligible::{
     NativeSourceDataReservation, NativeSourcePreparationProgress, NativeSourcePreparationReturn,
@@ -1289,6 +1289,18 @@ impl CandidateRoot {
     pub(crate) fn ordinary_streams_configured(&self) -> bool {
         self.0.eligible.ordinary_streams_configured()
     }
+    pub(crate) fn configure_combined_ordinary_streams(
+        &self,
+        extents: usize,
+        metadata_bytes: usize,
+    ) -> Result<(), &'static str> {
+        self.0
+            .eligible
+            .configure_combined_ordinary_streams(eligible::OrdinaryReservation {
+                extents,
+                metadata_bytes,
+            })
+    }
     pub(crate) fn prepare_ordinary_streams(
         &self,
         playback: &hex_engine::playback::Playback,
@@ -1306,7 +1318,9 @@ impl CandidateRoot {
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub(crate) use eligible::native_sources::OrdinaryNativeReferences;
-pub(crate) use eligible::{ActiveView as StreamActiveView, OrdinaryStreams};
+pub(crate) use eligible::{
+    ActiveView as StreamActiveView, OrdinaryStreams, QuantumFailure, QuantumPins,
+};
 
 #[cfg(test)]
 mod tests {

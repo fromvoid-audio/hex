@@ -14,8 +14,8 @@ use hex_audio::prepared::PublicationPolicy;
 use hex_engine::playback::{PlaybackAction, PlaybackCommand};
 use hex_session::device_gesture::GestureKey;
 use hex_session::service::{
-    DeviceClipboardAction, DevicePreviewIdentity, Event, Request, SubmitError,
-    TrackClipboardAction, ViewState,
+    ArrangementEditViewKind, DeviceClipboardAction, DevicePreviewIdentity, Event, Request,
+    SubmitError, TrackClipboardAction, ViewState,
 };
 use hex_session::tuning_gesture::TuningLibraryOperation;
 use std::{
@@ -33,107 +33,15 @@ mod submission;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod verified_gain_tests;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum AudioEventDisposition {
-    Current,
-    Future,
-    Ignore,
-}
+mod session_feedback;
+use session_feedback::{SessionTicketOutcome, reconcile_session_receipt, reconcile_session_ticket};
 
-fn audio_event_disposition(
-    current_generation: u64,
-    pending_restart: Option<(u64, u64)>,
-    event_generation: u64,
-    restart_request: Option<u64>,
-) -> AudioEventDisposition {
-    if event_generation < current_generation {
-        return AudioEventDisposition::Ignore;
-    }
-    if event_generation == current_generation {
-        return match restart_request {
-            Some(request_id) if pending_restart == Some((event_generation, request_id)) => {
-                AudioEventDisposition::Current
-            }
-            Some(_) => AudioEventDisposition::Ignore,
-            None if pending_restart
-                .is_some_and(|(generation, _)| generation == event_generation) =>
-            {
-                AudioEventDisposition::Ignore
-            }
-            None => AudioEventDisposition::Current,
-        };
-    }
-    match restart_request {
-        Some(request_id) if pending_restart == Some((event_generation, request_id)) => {
-            AudioEventDisposition::Future
-        }
-        Some(_) => AudioEventDisposition::Ignore,
-        None => AudioEventDisposition::Future,
-    }
-}
-
-fn future_audio_result_replaces(slot_generation: Option<u64>, event_generation: u64) -> bool {
-    slot_generation.is_none_or(|slot_generation| event_generation >= slot_generation)
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum PublicationObservationDisposition {
-    Apply,
-    Wait,
-    Stale,
-}
-
-fn publication_observation_replaces(
-    existing: Option<hex_engine::AudioSourceContext>,
-    incoming: hex_engine::AudioSourceContext,
-) -> bool {
-    existing.is_none_or(|existing| {
-        (incoming.project_generation, incoming.editor_revision)
-            >= (existing.project_generation, existing.editor_revision)
-    })
-}
-
-fn publication_observation_disposition(
-    current_generation: u64,
-    current_revision: Option<u64>,
-    current_context: Option<hex_engine::AudioSourceContext>,
-    current_output_identity: Option<u64>,
-    observation_context: hex_engine::AudioSourceContext,
-    observation_output_identity: u64,
-) -> PublicationObservationDisposition {
-    let observed = (
-        observation_context.project_generation,
-        observation_context.editor_revision,
-    );
-    if observation_context.project_generation < current_generation
-        || current_revision.is_some_and(|revision| {
-            observation_context.project_generation == current_generation
-                && observation_context.editor_revision < revision
-        })
-    {
-        return PublicationObservationDisposition::Stale;
-    }
-    let Some(current_context) = current_context else {
-        return PublicationObservationDisposition::Wait;
-    };
-    let current = (
-        current_context.project_generation,
-        current_context.editor_revision,
-    );
-    if observed < current {
-        return PublicationObservationDisposition::Stale;
-    }
-    if observed > current {
-        return PublicationObservationDisposition::Wait;
-    }
-    match current_output_identity {
-        Some(identity) if identity == observation_output_identity => {
-            PublicationObservationDisposition::Apply
-        }
-        Some(_) => PublicationObservationDisposition::Stale,
-        None => PublicationObservationDisposition::Wait,
-    }
-}
+mod audio_event_correlation;
+pub(super) use audio_event_correlation::PublicationObservationDisposition;
+use audio_event_correlation::{
+    AudioEventDisposition, audio_event_disposition, future_audio_result_replaces,
+    publication_observation_disposition, publication_observation_replaces,
+};
 
 // A comparison may retain its exact source context while authoring advances. Normalize only
 // contexts accepted by the sealed comparison binding; intermediate revisions remain stale.
@@ -209,6 +117,7 @@ impl EditorView {
             candidate.seek_request_id.is_none()
                 && candidate.device_preview_identity.is_none()
                 && candidate.tuning_preview_identity.is_none()
+                && candidate.clip_preview_identity.is_none()
         };
         let resident_applied = self.document_audio_mode == hex_session::DocumentAudioMode::Resident
             && self.audible_playback.as_ref().is_some_and(|candidate| {
@@ -334,7 +243,11 @@ impl EditorView {
         self.prepared_seek = None;
         self.latched_seek_intent = None;
         self.pending_recovery_generation = None;
-        self.recovery.fail();
+        super::recovery::clear_recovery(
+            &mut self.recovery,
+            &mut self.pending_sample_drop,
+            &mut self.pending_time_range_move,
+        );
         self.pending_playback = None;
         self.pending_resident_publication = None;
         self.pending_audio_commands.clear();
@@ -535,6 +448,8 @@ impl EditorView {
     }
 
     fn reset_output_publication_tracking(&mut self, output_identity: Option<u64>) {
+        self.cancel_held_clip_move_audition();
+        self.clip_preview_may_apply = false;
         self.device_panel.spectrum_results.clear();
         self.invalidate_prepared_seek();
         self.prepared_seek = None;
@@ -579,6 +494,7 @@ impl EditorView {
                     && self.playback_candidates.len() < super::PLAYBACK_CANDIDATE_CAPACITY
                 {
                     self.playback_candidates.push_back(PlaybackCandidate {
+                        clip_preview_identity: None,
                         worker_requires_preroll: None,
                         observation: None,
                         audio_revision,
@@ -616,7 +532,13 @@ impl EditorView {
                     return;
                 }
                 if metadata.is_some_and(|metadata| {
-                    metadata.device_preview.is_some() && metadata.tuning_preview.is_some()
+                    u8::from(metadata.device_preview.is_some())
+                        + u8::from(metadata.tuning_preview.is_some())
+                        + u8::from(metadata.clip_preview.is_some())
+                        > 1
+                        || metadata
+                            .clip_preview
+                            .is_some_and(|identity| identity.context != context)
                 }) {
                     self.error =
                         Some("audio publication has conflicting preview identities".into());
@@ -634,6 +556,7 @@ impl EditorView {
                     && self.playback_candidates.len() < super::PLAYBACK_CANDIDATE_CAPACITY
                 {
                     self.playback_candidates.push_back(PlaybackCandidate {
+                        clip_preview_identity: metadata.and_then(|metadata| metadata.clip_preview),
                         worker_requires_preroll: metadata.map(|metadata| metadata.requires_preroll),
                         observation,
                         audio_revision,
@@ -647,8 +570,14 @@ impl EditorView {
                             .and_then(|metadata| metadata.tuning_preview),
                     });
                 }
+                // A section seek repairing a refused loop leaves the current
+                // admission in place until the callback applies the seek.
                 if metadata.is_none_or(|metadata| {
-                    metadata.device_preview.is_none() && metadata.tuning_preview.is_none()
+                    metadata.device_preview.is_none()
+                        && metadata.tuning_preview.is_none()
+                        && metadata.clip_preview.is_none()
+                        && (metadata.seek_request.is_none()
+                            || self.applied_project_revision == Some(authoring_revision))
                 }) {
                     self.audio_admission.published(
                         super::audio_admission::ProjectRevision {
@@ -746,9 +675,10 @@ impl EditorView {
                     device,
                     parameter,
                     sequence,
+                    value,
                 } => {
                     super::device_panel::vst3_parameters::touched(
-                        self, source, binding, device, parameter, sequence,
+                        self, source, binding, device, parameter, sequence, value,
                     );
                     changed = true;
                 }
@@ -1091,6 +1021,7 @@ impl EditorView {
                         .published(project_revision, audio_revision);
                 }
                 self.playback_candidates.push_back(PlaybackCandidate {
+                    clip_preview_identity: None,
                     worker_requires_preroll: None,
                     observation: None,
                     audio_revision,
@@ -1207,9 +1138,26 @@ impl EditorView {
             .worker_requests_pending
             .saturating_add(self.pending_requests.len());
         let mut visible_change = self.poll_audio_recovery() || logging_changed;
-        if let Ok(view) = self.service.try_solo_view() {
-            visible_change |= self.observe_solo_view(view);
+        visible_change |= self.tick_automation_close(cx);
+        if let Ok(view) = self.service.try_track_switch_view() {
+            visible_change |= self.observe_track_switch_view(view);
         }
+        let paste_view = match self.service.try_arrangement_edit_view() {
+            Ok(view) if matches!(view.kind, ArrangementEditViewKind::Paste) => Some(view),
+            Ok(view) if matches!(view.kind, ArrangementEditViewKind::LocatorAdd(_)) => {
+                visible_change |= self.observe_locator_add_view(view);
+                None
+            }
+            Ok(view) if matches!(view.kind, ArrangementEditViewKind::TimeRangeCopy) => {
+                visible_change |= self.observe_time_range_copy_view(view);
+                None
+            }
+            Ok(view) => {
+                visible_change |= self.observe_duplicate_view(view);
+                None
+            }
+            Err(_) => None,
+        };
         visible_change |= self.poll_retired_action_outcomes();
         if self.retired_action_outcomes.is_none()
             && self.audio.as_ref().is_some_and(|audio| {
@@ -1219,10 +1167,15 @@ impl EditorView {
             visible_change |= self.retire_audio_preserving_gain_take();
         }
         visible_change |= self.poll_update(cx);
+        visible_change |= self.sync_held_clip_move_audition();
+        self.sync_held_stretch_audition();
+        self.sync_held_play_start_audition();
         visible_change |= self.poll_browser_sample_playback();
         visible_change |= self.tick_gain_recording();
         visible_change |= self.tick_native_automation_recording();
+        visible_change |= self.tick_automation_take_recovery();
         visible_change |= self.tick_midi_recording();
+        visible_change |= self.tick_audio_recording();
         visible_change |= self.tick_sampler_parameter();
         visible_change |= self.tick_computer_keyboard();
         visible_change |= self.tick_tuning_audition();
@@ -1272,6 +1225,7 @@ impl EditorView {
                     visible_change = true;
                 }
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    visible_change |= self.automation_close_disconnected(cx);
                     if self.state.is_none() {
                         let reason = self
                             .service
@@ -1284,6 +1238,16 @@ impl EditorView {
                     }
                     self.midi_service_disconnected();
                     self.gain_take_service_disconnected();
+                    if let Some(path) = self.audio_recorder.pending_commit_path.take() {
+                        self.error = Some(
+                            format!(
+                                "audio recording commit outcome unknown · take retained at {}",
+                                hex_session::service::text::verbatim(path.display())
+                            )
+                            .into(),
+                        );
+                        visible_change = true;
+                    }
                     if self.cancel_new_preparation() {
                         visible_change |= replace_error(
                             &mut self.error,
@@ -1294,12 +1258,19 @@ impl EditorView {
                     self.midi_step.cancel_pending();
                     visible_change |= self.retire_pending_trim();
                     visible_change |= self.duplicate_intent.reject();
+                    visible_change |= self.pending_time_range_move.take().is_some();
+                    visible_change |= self.ahead_time_range_move.take().is_some();
                     visible_change |= self.pending_track_clipboard.take().is_some();
+                    visible_change |= self.locators.clear_adds();
                     visible_change |= self.pending_group_copy.take().is_some();
+                    visible_change |= self.committed_paste_view.take().is_some();
+                    visible_change |= self.committed_time_range_copy_view.take().is_some();
                     visible_change |= self.retire_clip_detail();
                     visible_change |= self.retire_pending_audio_events();
                     visible_change |= self.retire_pending_clip_loop();
                     visible_change |= self.clear_pending_bypass();
+                    visible_change |= self.cancel_modulation_target_drag();
+                    visible_change |= self.retire_pending_modulation_depth();
                     visible_change |= self.cancel_audio_loop_gesture();
                     visible_change |= self.retire_pending_clip_move();
                     visible_change |= self.retire_pending_clip_paint();
@@ -1308,14 +1279,20 @@ impl EditorView {
                     visible_change |= self.retire_pending_midi_drag();
                     visible_change |= self.retire_pending_fade();
                     visible_change |= self.retire_clip_gain();
+                    visible_change |= self.retire_clip_activation();
                     visible_change |= self.retire_pending_gain();
                     visible_change |= self.retire_pending_device_automation();
                     visible_change |= self.retire_all_eq_creations();
                     visible_change |= self.pending_loop.take().is_some();
+                    visible_change |= self.section_launch_after_loop.take().is_some();
                     break;
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => break,
             }
+        }
+        // Earlier terminals may have been queued when this paste committed.
+        if let Some(view) = paste_view {
+            visible_change |= self.observe_paste_view(view);
         }
         if !self.edit_pending() {
             self.midi_step.cancel_pending();
@@ -1359,14 +1336,18 @@ impl EditorView {
         visible_change |= self.pump_device_gesture();
         visible_change |= self.tick_stopped_vst3_restore();
         visible_change |= self.retire_abandoned_bypass();
+        visible_change |= self.retire_abandoned_modulation_depth();
         visible_change |= self.retire_abandoned_duplicate();
         visible_change |= self.retire_abandoned_track_clipboard();
+        visible_change |= self.retire_abandoned_device_duplicate();
         visible_change |= self.retire_abandoned_group_copy();
+        visible_change |= self.retire_abandoned_locator_adds();
         visible_change |= self.retire_abandoned_clip_detail();
         visible_change |= self.retire_abandoned_clip_move();
         visible_change |= self.retire_abandoned_midi_drag();
         visible_change |= self.retire_abandoned_fade();
         visible_change |= self.retire_abandoned_clip_gain();
+        visible_change |= self.retire_abandoned_clip_activation();
         let now = Instant::now();
         visible_change |= self.tick_time_gesture_autoscroll(now);
         visible_change |= self.tick_clip_gesture_autoscroll(now, cx);
@@ -1410,6 +1391,7 @@ impl EditorView {
         {
             self.invalidate_prepared_seek();
         }
+        visible_change |= self.tick_section_launch();
         visible_change |= self.tick_prepared_arrangement_seek();
         visible_change |= self.tick_scrub();
         visible_change |= self.poll_resident_publication();
@@ -1421,6 +1403,11 @@ impl EditorView {
             .prepared_seek
             .as_ref()
             .and_then(|pending| self.native_seek_applied_source(pending));
+        let applied_section_source = applied_seek_source.filter(|_| {
+            self.prepared_seek.as_ref().is_some_and(|pending| {
+                pending.kind.section().is_some() && pending.device_preview_identity.is_none()
+            })
+        });
         let current_seek_source = self
             .prepared_seek
             .as_ref()
@@ -1475,12 +1462,12 @@ impl EditorView {
                 self.prepared_seek
                     .as_ref()
                     .filter(|seek| Some(seek.request_id) == pending.seek_request_id)
-                    .and_then(|seek| seek.kind.section())
+                    .and_then(|seek| seek.kind.quantization())
                     .map_or(
                         PublicationPolicy::InstallFreshRuntimeIfUnchanged(fence),
-                        |section| PublicationPolicy::InstallSectionWhenReady {
+                        |quantization| PublicationPolicy::InstallQuantizedSeekWhenReady {
                             fence,
-                            quantization: section.quantization,
+                            quantization,
                         },
                     )
             } else if pending.install_fresh_runtime {
@@ -1602,7 +1589,16 @@ impl EditorView {
             .control
             .status()
             .and_then(|status| status.rejected_revision())
-            .filter(|(revision, _)| *revision > self.observed_rejected_revision);
+            .filter(|(revision, _)| {
+                // The callback can refuse before the worker sends the view
+                // metadata. Reconcile that exact candidate when it arrives.
+                *revision > self.observed_rejected_revision
+                    || (*revision == self.observed_rejected_revision
+                        && self
+                            .playback_candidates
+                            .iter()
+                            .any(|candidate| candidate.audio_revision == *revision))
+            });
         if let Some((audio_revision, reason)) = rejected_revision {
             if reason == hex_engine::PlaybackHandoffRejection::LatencyLayoutChanged
                 && let Some(output) = audio.control.output_identity()
@@ -1744,6 +1740,37 @@ impl EditorView {
         );
         visible_change |= reconciled;
 
+        // Submission metadata can lag or be coalesced independently of the
+        // callback. During a held move, an unknown newer applied revision must
+        // not leave the previously audible canonical graph reported as current.
+        if self.clip_preview_may_apply
+            && applied != 0
+            && (self
+                .audible_playback
+                .as_ref()
+                .is_some_and(|candidate| candidate.audio_revision != applied)
+                || self
+                    .applied_clip_preview
+                    .is_some_and(|(revision, _)| revision != applied)
+                || (self.audible_playback.is_none()
+                    && self.applied_clip_preview.is_none()
+                    && self.applied_project_revision.is_some()
+                    && self
+                        .audio_admission
+                        .current()
+                        .and_then(|current| current.audio_revision)
+                        != Some(applied)))
+            && !self
+                .playback_candidates
+                .iter()
+                .any(|candidate| candidate.audio_revision == applied)
+        {
+            visible_change |= self.applied_project_revision.take().is_some();
+            visible_change |= self.applied_clip_preview.take().is_some();
+            visible_change |= self.audible_playback.take().is_some();
+            visible_change |= self.audio_admission.preview_applied(applied);
+        }
+
         if let Some((project, audio_revision)) = latest_applied_canonical_candidate(
             &self.playback_candidates,
             applied,
@@ -1762,8 +1789,25 @@ impl EditorView {
                     .seek_request_id
                     .map(|request| (request, candidate.audio_revision))
         });
-        if let Some(candidate) = audible {
-            let source = if candidate.seek_request_id.is_some_and(|request_id| {
+        if let Some(candidate) = audible.filter(|candidate| {
+            candidate.clip_preview_identity.is_none() || candidate.audio_revision == applied
+        }) {
+            if candidate.clip_preview_identity.is_some() {
+                self.applied_project_revision = None;
+                visible_change |= self
+                    .audio_admission
+                    .preview_applied(candidate.audio_revision);
+            }
+            let source = if let Some(identity) = candidate.clip_preview_identity {
+                applied_clip_candidate_source(
+                    &candidate,
+                    identity,
+                    applied,
+                    self.project_generation,
+                    self.state.as_ref().map(|state| state.revision),
+                    self.expected_clip_preview,
+                )
+            } else if candidate.seek_request_id.is_some_and(|request_id| {
                 current_seek_source != Some((request_id, candidate.device_preview_identity))
             }) {
                 AppliedCandidateSource::SupersededPreview
@@ -1783,7 +1827,19 @@ impl EditorView {
                     )
                 })
             };
-            if source == AppliedCandidateSource::Current {
+            if candidate.clip_preview_identity.is_some() {
+                let actual = (source == AppliedCandidateSource::Current)
+                    .then(|| {
+                        candidate
+                            .clip_preview_identity
+                            .map(|identity| (applied, identity))
+                    })
+                    .flatten();
+                visible_change |= self.applied_clip_preview != actual;
+                self.applied_clip_preview = actual;
+                visible_change |= self.audible_playback.take().is_some();
+            } else if source == AppliedCandidateSource::Current {
+                visible_change |= self.applied_clip_preview.take().is_some();
                 if candidate.tuning_preview_identity.is_some() {
                     self.tuning.broadcast.observe(
                         candidate.project_generation,
@@ -1791,8 +1847,21 @@ impl EditorView {
                         candidate.state.project.tuning(),
                     );
                 }
-                if candidate.project_generation == self.project_generation
+                let applied_section = candidate.seek_request_id.is_some_and(|request| {
+                    applied_section_source == Some((request, candidate.audio_revision))
+                });
+                if candidate.project_generation == self.project_generation && applied_section {
+                    self.applied_project_revision = Some(candidate.state.revision);
+                    visible_change |= self.audio_admission.applied(
+                        super::audio_admission::ProjectRevision {
+                            generation: candidate.project_generation,
+                            revision: candidate.state.revision,
+                        },
+                        candidate.audio_revision,
+                    );
+                } else if candidate.project_generation == self.project_generation
                     && candidate.seek_request_id.is_none()
+                    && candidate.clip_preview_identity.is_none()
                 {
                     self.applied_project_revision = Some(candidate.state.revision);
                     if matches!(
@@ -1830,6 +1899,7 @@ impl EditorView {
                         || candidate.project_generation != source.context.project_generation
                 }) {
                     self.audible_playback = Some(PlaybackCandidate {
+                        clip_preview_identity: None,
                         worker_requires_preroll: None,
                         observation: None,
                         audio_revision: source.audio_revision,
@@ -1873,7 +1943,11 @@ impl EditorView {
             self.pending_metronome_ticket = None;
             self.pending_session_ticket = None;
             self.play_intent.clear();
-            self.recovery.fail();
+            super::recovery::clear_recovery(
+                &mut self.recovery,
+                &mut self.pending_sample_drop,
+                &mut self.pending_time_range_move,
+            );
             self.pending_recovery_generation = None;
             visible_change |= replace_error(
                 &mut self.error,
@@ -2360,22 +2434,31 @@ impl EditorView {
             return None;
         }
         if self
-            .solo_observation
+            .track_switch_observation
             .as_ref()
             .is_some_and(|view| event.project_replaced || event.state.revision >= view.revision)
         {
-            self.solo_observation = None;
+            self.track_switch_observation = None;
         }
         if event.request_complete && event.error.is_some() {
             self.cancel_new_preparation();
         }
         self.document_format_upgrade_required = event.document_format_upgrade_required;
         self.recovery_failure = event.recovery_failure.clone();
+        self.observe_automation_close(&event);
         let sampler_edit_complete = event.sampler_edit_complete;
         self.plugin_effect_complete(&event);
         self.native_automation_take_completion(&event);
+        self.observe_automation_take_recovery(&event);
         if let Some(result) = event.plugin_parameters.take() {
             super::device_panel::vst3_parameters::install_result(
+                self,
+                result,
+                event.state.revision,
+            );
+        }
+        if let Some(result) = event.plugin_parameter_conversion.take() {
+            super::device_panel::vst3_parameters::install_conversion_result(
                 self,
                 result,
                 event.state.revision,
@@ -2392,7 +2475,8 @@ impl EditorView {
         let audio_placement_selection = self.audio_events_request_complete(&event);
         self.clip_loop_request_complete(&event);
         self.bypass_request_complete(&event);
-        self.clip_move_request_complete(&event);
+        self.modulation_depth_complete(&event);
+        let clip_drop_cursor = self.clip_move_request_complete(&event);
         self.clip_paint_request_complete(&event);
         self.truncated_import
             .observe(self.project_generation, &event);
@@ -2401,10 +2485,19 @@ impl EditorView {
             .observe(self.project_generation, &event);
         self.track_reorder_complete(&event);
         self.sample_drop_complete(&event);
-        self.midi_drag_request_complete(&event);
+        let midi_edit_audition = self.midi_drag_request_complete(&event);
         self.advance_midi_origin_view(&event);
         self.fade_request_complete(&event);
+        if event.project_replaced {
+            self.expected_clip_preview = None;
+            self.applied_clip_preview = None;
+            self.clip_preview_may_apply = false;
+            self.pending_requests
+                .retain(|request| self.locators.queued_add_frame(request).is_none());
+        }
+        self.locators.observe(self.project_generation, &event);
         self.clip_gain_complete(&event);
+        self.clip_activation_complete(&event);
         self.gain_request_complete(&event);
         self.gain_take_request_complete(&event);
         self.device_automation_complete(&event);
@@ -2418,6 +2511,7 @@ impl EditorView {
         let track_clipboard_completion = self.take_track_clipboard_completion(&mut event);
         if event.project_replaced {
             self.time_selection_key_held = false;
+            self.section_loop_key = Default::default();
             self.pending_plugin_effect.take();
             self.retire_sampler_parameter();
             self.retire_first_sampler_load();
@@ -2444,7 +2538,11 @@ impl EditorView {
                 self.pending_restart_request = None;
             }
             self.pending_recovery_generation = None;
-            self.recovery.fail();
+            super::recovery::clear_recovery(
+                &mut self.recovery,
+                &mut self.pending_sample_drop,
+                &mut self.pending_time_range_move,
+            );
             self.pending_playback = None;
             self.pending_resident_publication = None;
             self.prepared_seek = None;
@@ -2473,6 +2571,7 @@ impl EditorView {
         {
             self.gain_recorder.arm_failed();
         }
+        let mut recorded_audio_failed_path = None;
         if event
             .audio_batch_complete
             .as_ref()
@@ -2482,17 +2581,27 @@ impl EditorView {
                     .is_some_and(|active| Arc::ptr_eq(active, completed))
             })
         {
+            if event.error.is_some() {
+                recorded_audio_failed_path = self.audio_recorder.pending_commit_path.take();
+            } else {
+                self.audio_recorder.pending_commit_path = None;
+            }
             self.audio_batch = None;
             self.audio_batch_progress = None;
         }
         self.reconcile_group_selection(&event);
-        if event.bounce_complete.as_ref().is_some_and(|completed| {
+        let bounce_drop_cursor = if event.bounce_complete.as_ref().is_some_and(|completed| {
             self.bounce_control
                 .as_ref()
                 .is_some_and(|active| active.same_job(completed))
         }) {
             self.bounce_control = None;
-        }
+            self.pending_bounce_drop
+                .take()
+                .and_then(|p| p.complete(&event))
+        } else {
+            None
+        };
         if event.project_replaced
             && let Some(control) = self.bounce_control.take()
         {
@@ -2670,12 +2779,21 @@ impl EditorView {
             event.project_replaced,
             resize_owns_viewport,
         );
-        if event.project_replaced {
+        let time_range_was_pending = self.pending_time_range_move.is_some();
+        let recovery_before_time_completion = self.recovery.generation();
+        let time_duplicate_repeats = if event.project_replaced {
             self.time_range_move_gesture = None;
             self.pending_time_range_move = None;
-        } else if !event.gesture_request && !event.tuning_gesture_request {
-            self.move_time_selection_complete(&event);
-        }
+            self.ahead_time_range_move = None;
+            0
+        } else {
+            self.complete_time_duplicate_pair(&event)
+        };
+        let recovering_refused_time_copy = event.range_copy_source_unavailable.is_some()
+            && recovery_before_time_completion.is_none()
+            && self.recovery.deferred_edit.as_ref().is_some_and(|edit| {
+                edit.kind == super::recovery_state::DeferredEditKind::TimeDuplicate
+            });
         if !event.project_replaced {
             super::loop_rail::cancel_stale(
                 self,
@@ -2717,7 +2835,28 @@ impl EditorView {
             .as_ref()
             .and_then(|state| state.project.loop_region())
             .is_some_and(|region| region.enabled());
+        self.complete_device_duplicate(&event);
+        if event.project_replaced
+            || self
+                .committed_paste_view
+                .as_ref()
+                .is_some_and(|view| event.state.revision >= view.revision)
+        {
+            self.committed_paste_view = None;
+        }
+        if event.project_replaced
+            || (time_range_was_pending
+                && self.pending_time_range_move.is_none()
+                && event.request_complete
+                && !event.plugin_parameter_observation)
+        {
+            self.committed_time_range_copy_view = None;
+        }
         self.state = Some(event.state);
+        if let Some(state) = &self.state {
+            self.audio_recorder
+                .reconcile_audio_arm(&state.project, event.project_replaced);
+        }
         if let Some(selection) = audio_placement_selection {
             self.install_audio_placement_selection(selection);
         }
@@ -2822,7 +2961,10 @@ impl EditorView {
             self.device_gesture_barriers.clear();
             self.refuse_effect_bus_barriers("effect insertion canceled · project replaced");
             self.edit_cursor = None;
+            self.clip_drop_cursor_epoch = None;
             self.locked_play_start = None;
+            self.play_start_at_beginning = false;
+            self.escape_stop_armed = false;
             self.loop_start_over_clip = None;
             self.selection_loop_start = None;
             self.clip_paint_gesture = None;
@@ -2832,6 +2974,7 @@ impl EditorView {
             self.time_selection_gesture = None;
             self.time_range_move_gesture = None;
             self.pending_time_range_move = None;
+            self.ahead_time_range_move = None;
             self.suppress_cursor_click = false;
             self.applied_project_revision = None;
             self.playback_candidates
@@ -3118,6 +3261,18 @@ impl EditorView {
         if let Some(result) = event.tuning_library.as_ref() {
             self.tuning_library_complete(result);
         }
+        if event.active_device_gesture.is_none()
+            && let Some(ack) = event.gesture_ack.as_ref()
+            && self.device_gesture.snapshot().is_some_and(|snapshot| {
+                snapshot.key == ack.key
+                    && matches!(
+                        snapshot.target,
+                        hex_session::device_gesture::GestureTarget::PluginParameter { .. }
+                    )
+            })
+        {
+            self.probe_failed_plugin_automation();
+        }
         let mut matched_scroll_ack = None;
         if event.gesture_protocol_ack
             && let Some(ack) = event.gesture_ack.as_ref()
@@ -3132,6 +3287,12 @@ impl EditorView {
         {
             self.error = Some(reason.clone().into());
         }
+        self.observe_vst3_automation_arm(
+            event.project_replaced,
+            event.gesture_ack.as_ref(),
+            event.active_device_gesture.is_some(),
+            revision,
+        );
         if super::device_gesture::actor_retired_gesture(
             event.project_replaced,
             event.active_device_gesture.is_some(),
@@ -3268,12 +3429,20 @@ impl EditorView {
             self.status = status;
             self.error = None;
         }
-        if let Some(error) = event.error {
-            self.error = Some(
-                event
-                    .audio_batch_failure
-                    .map_or_else(|| error.into(), Into::into),
-            );
+        if recovering_refused_time_copy {
+            self.status = "restarting audio · time will be duplicated when ready".into();
+        }
+        if let Some(error) = event.error.filter(|_| !recovering_refused_time_copy) {
+            let mut displayed: super::display_error::DisplayError = event
+                .audio_batch_failure
+                .map_or_else(|| error.into(), Into::into);
+            if let Some(path) = recorded_audio_failed_path {
+                displayed = displayed.with_context(&format!(
+                    "take retained at {}",
+                    hex_session::service::text::verbatim(path.display())
+                ));
+            }
+            self.error = Some(displayed);
         } else if let Some(error) = stopped_restore_error {
             self.error = Some(error.into());
         }
@@ -3301,11 +3470,23 @@ impl EditorView {
         // Canonical state, generation, gain/loop display extent and selection
         // have now been installed. Normalize only the locally retired owner.
         self.normalize_completed_trim_viewport(retired_trim);
-        self.apply_created_note_selection(created_note_selection);
+        use super::midi_pending_drag::EditAudition;
+        let clip = self.detail_clip_id();
+        let audition_created =
+            matches!(midi_edit_audition, Some(EditAudition::Created(id)) if clip == Some(id));
+        self.apply_created_note_selection(created_note_selection, audition_created);
+        if matches!(midi_edit_audition, Some(EditAudition::Moved(id)) if clip == Some(id)) {
+            self.audition_midi_selection();
+        }
         self.apply_completed_midi_step(midi_step_complete);
+        if let Some(cursor) = clip_drop_cursor.or(bounce_drop_cursor) {
+            self.install_drop_cursor(cursor);
+        }
         if let Some(path) = &successfully_opened_path {
             self.check_leftover_recovery(Some(path.clone()));
         }
+        self.start_ahead_time_duplicate();
+        self.continue_time_duplicate(time_duplicate_repeats);
         successfully_opened_path
     }
 
@@ -3318,6 +3499,11 @@ impl EditorView {
                 return false;
             }
         };
+        self.enqueue_with_clip_scope(request, false)
+    }
+
+    /// Recorded takes retain their own no-warp policy, not the browser-import preference.
+    pub(super) fn enqueue_recorded_audio(&mut self, request: Request) -> bool {
         self.enqueue_with_clip_scope(request, false)
     }
 
@@ -3405,6 +3591,15 @@ impl EditorView {
         let independent_edit = matches!(
             request,
             Request::Edit(_)
+                | Request::BindUnassignedNativeSource { .. }
+                | Request::RebindNativeSource { .. }
+                | Request::ChooseNativeSourceReceiver { .. }
+                | Request::AppendSourceUtility { .. }
+                | Request::RemoveSourceUtility { .. }
+                | Request::MoveSourceUtility { .. }
+                | Request::DeleteRetainedSource { .. }
+                | Request::CreateRetainedNativeSource { .. }
+                | Request::RenameRetainedSource { .. }
                 | Request::ChangeProjectSampleRate { .. }
                 | Request::Import(_)
                 | Request::ImportAudioBatch { .. }
@@ -3430,6 +3625,8 @@ impl EditorView {
                 | Request::ReorderTracks { .. }
                 | Request::ReparentTracks { .. }
                 | Request::DropNativeDevice { .. }
+                | Request::MoveTrackDevices { .. }
+                | Request::ReorderDevices { .. }
                 | Request::AddNativeDevice { .. }
                 | Request::ReplaceNativeDevice { .. }
                 | Request::DropBrowserDeviceOnArrangement { .. }
@@ -3468,9 +3665,17 @@ impl EditorView {
         true
     }
 
-    fn enqueue_request(&mut self, request: Request, duplicate_continuation: bool) -> bool {
+    /// Enqueue a request with any import policy already captured.
+    pub(super) fn enqueue_request(
+        &mut self,
+        request: Request,
+        duplicate_continuation: bool,
+    ) -> bool {
         self.wake_poll();
-        if matches!(&request, Request::QueryPluginParameters(_)) {
+        if matches!(
+            &request,
+            Request::QueryPluginParameters(_) | Request::QueryPluginParameterConversion(_)
+        ) {
             // The panel owns retryable read intent. A full/busy service must
             // not move observations into the edit queue or interrupt a gesture.
             return match self.submit_to_service(request) {
@@ -3507,6 +3712,7 @@ impl EditorView {
                 &request,
                 Request::SaveCurrent
                     | Request::SaveNew(_)
+                    | Request::SaveProjectAs { .. }
                     | Request::SaveCurrentWithFormatUpgrade { .. }
             );
         // An already-started recovery must finish while a picker/confirmation
@@ -3522,9 +3728,14 @@ impl EditorView {
             return false;
         }
         if self.native_automation_recorder.busy()
+            && !self
+                .native_automation_recorder
+                .permits_original_editor_window(&request)
             && !matches!(
                 &request,
                 Request::DeviceAutomationTake { .. }
+                    | Request::StartPluginEditorRecording { .. }
+                    | Request::StopPluginEditorRecording { .. }
                     | Request::RestartAudio { .. }
                     | Request::RestartRecovery(_)
             )
@@ -3545,6 +3756,10 @@ impl EditorView {
             self.error = Some(
                 "finish or explicitly discard the midi take before another project action".into(),
             );
+            return false;
+        }
+        if self.audio_recorder.blocks_edits() {
+            self.error = Some("finish the audio recording before another project action".into());
             return false;
         }
         let own_gain_take = self.pending_gain_take_matches(&request);
@@ -3751,7 +3966,18 @@ impl EditorView {
         if matches!(
             &request,
             Request::DeviceGesture(_)
+                | Request::BindUnassignedNativeSource { .. }
+                | Request::RebindNativeSource { .. }
+                | Request::ChooseNativeSourceReceiver { .. }
+                | Request::AppendSourceUtility { .. }
+                | Request::RemoveSourceUtility { .. }
+                | Request::MoveSourceUtility { .. }
+                | Request::DeleteRetainedSource { .. }
+                | Request::CreateRetainedNativeSource { .. }
+                | Request::RenameRetainedSource { .. }
                 | Request::DropNativeDevice { .. }
+                | Request::MoveTrackDevices { .. }
+                | Request::ReorderDevices { .. }
                 | Request::DropBrowserDeviceOnArrangement { .. }
                 | Request::InsertBrowserInstrumentTrack { .. }
                 | Request::InsertEffectBusDevice { .. }
@@ -3833,6 +4059,9 @@ impl EditorView {
             }
             self.pending_requests.push_back(request);
             return true;
+        }
+        if let Some(kind) = self.recoverable_graph_edit(&request) {
+            return self.recover_before_graph_edit(kind, request);
         }
         if self.holds_stopped_vst3_requests() || !self.pending_requests.is_empty() {
             if self.pending_requests.len() + self.device_gesture_barriers.len()
@@ -3954,6 +4183,7 @@ impl EditorView {
 
     pub(super) fn seek_pending(&self) -> bool {
         if self.recovery.generation().is_some()
+            || self.section_launch_waiting()
             || self.prepared_seek.is_some()
             || self.latched_seek_intent.is_some()
             || self.retired_seek_result.is_some()
@@ -3982,6 +4212,7 @@ impl EditorView {
 
     pub(super) fn cancel_duplicate_chain(&mut self) {
         self.duplicate_intent.cancel_chain();
+        self.cancel_time_duplicate_repeats();
     }
 
     pub(super) fn zoom_timeline(&mut self, inward: bool) {
@@ -4214,6 +4445,120 @@ impl EditorView {
         }
     }
 
+    /// Starts only on the source that actually accepted this committed copy.
+    /// A full UI or audio queue refuses visibly rather than dropping the fence.
+    pub(super) fn queue_section_copy_play(
+        &mut self,
+        frame: u64,
+        source: hex_audio::prepared::AppliedAudioSource,
+    ) {
+        self.queue_applied_source_play(frame, source, false);
+    }
+
+    pub(super) fn queue_applied_source_play(
+        &mut self,
+        frame: u64,
+        source: hex_audio::prepared::AppliedAudioSource,
+        allow_playing: bool,
+    ) {
+        self.wake_poll();
+        let playing = self
+            .audio
+            .as_ref()
+            .and_then(|audio| audio.control.status())
+            .is_some_and(|status| status.playing.load(Acquire));
+        if (!allow_playing && self.desired_playing(playing))
+            || (allow_playing && self.desired_playing(playing) != playing)
+            || !self.pending_audio_commands.is_empty()
+            || self.stopped_playback_restore.is_some()
+        {
+            self.error = Some("applying edit · wait for audio".into());
+            return;
+        }
+        let token = match super::play_intent::prepare_admission(
+            &mut self.play_intent,
+            Some(true),
+            0,
+            UI_REQUEST_CAPACITY,
+        ) {
+            Ok(token) => token,
+            Err(AdmissionError::QueueFull) => {
+                self.error = Some("playback command queue full".into());
+                return;
+            }
+            Err(AdmissionError::TokenExhausted) => {
+                self.report_intent_exhausted();
+                return;
+            }
+        };
+        self.latency_rebuild = None;
+        self.sampler_edit_resume = None;
+        self.deferred_play = None;
+        self.cancel_section_launch_wait();
+        self.invalidate_prepared_seek();
+        let Some(ticket) = self.audio.as_mut().and_then(|audio| {
+            audio
+                .control
+                .play_from_source_with_ticket(frame, source)
+                .ok()
+        }) else {
+            self.error = Some("playback unavailable · retry".into());
+            return;
+        };
+        let command = PlaybackCommand::PlayFrom(frame);
+        self.admit_play_intent(
+            PendingPlaybackAction {
+                action: PlaybackAction::Transport(command),
+                generation: self.project_generation,
+                revision: None,
+                intent_token: token,
+            },
+            Some(true),
+            Some(ticket),
+        );
+        self.pending_seek_ticket = Some(ticket);
+        #[cfg(test)]
+        {
+            self.last_transport_command = Some(command);
+        }
+    }
+
+    /// Seek only if the callback still owns the observed source. Never place a
+    /// rejected fenced action on the ordinary, generation-only UI queue.
+    pub(super) fn queue_applied_source_seek(
+        &mut self,
+        frame: u64,
+        source: hex_audio::prepared::AppliedAudioSource,
+    ) {
+        self.wake_poll();
+        if !self.pending_audio_commands.is_empty()
+            || self.stopped_playback_restore.is_some()
+            || self.seek_pending()
+        {
+            self.error = Some("applying edit · wait for audio".into());
+            return;
+        }
+        self.latency_rebuild = None;
+        self.sampler_edit_resume = None;
+        self.deferred_play = None;
+        self.cancel_section_launch_wait();
+        self.invalidate_prepared_seek();
+        let Some(ticket) = self.audio.as_mut().and_then(|audio| {
+            audio
+                .control
+                .seek_from_source_with_ticket(frame, source)
+                .ok()
+        }) else {
+            self.error = Some("playback unavailable · retry".into());
+            return;
+        };
+        self.pending_seek_ticket = Some(ticket);
+        #[cfg(test)]
+        {
+            self.last_transport_command = Some(PlaybackCommand::Seek(frame));
+        }
+    }
+
     fn queue_playback_action(&mut self, action: PlaybackAction, revision: Option<u64>) {
         self.wake_poll();
         if !matches!(action, PlaybackAction::SetMetronome(_)) {
@@ -4242,6 +4587,7 @@ impl EditorView {
             return;
         }
         if !matches!(action, PlaybackAction::SetMetronome(_)) {
+            self.cancel_section_launch_wait();
             self.invalidate_prepared_seek();
         }
         if self.audio.is_none() {
@@ -4770,7 +5116,30 @@ impl EditorView {
     }
 
     pub(super) fn stop(&mut self) {
+        self.escape_stop_armed = false;
+        if self.finish_audio_recording_before_stop() {
+            return;
+        }
         self.stop_transport(true);
+    }
+
+    pub(super) fn stop_at_beginning(&mut self) {
+        self.play_start_at_beginning = true;
+        self.stop();
+    }
+
+    /// Only an Escape that reaches the transport arms the next keyboard stop.
+    /// Use desired state so the second stop can reset before callback feedback.
+    pub(super) fn stop_from_escape(&mut self) {
+        let playing = self
+            .audio_status()
+            .is_some_and(|status| status.playing.load(Acquire));
+        if self.escape_stop_armed && !self.desired_playing(playing) {
+            self.stop_at_beginning();
+        } else {
+            self.stop();
+        }
+        self.escape_stop_armed = true;
     }
 
     fn tick_stopped_vst3_restore(&mut self) -> bool {
@@ -4864,8 +5233,35 @@ impl EditorView {
                 })
             });
         self.finish_midi_recording();
+        // A healthy stopped output can be renewing its VST3 epochs after
+        // Stop or staging its first graph after restart. In either case a
+        // priority Stop would revoke the fresh endpoints. Keep the transport
+        // intent below and let the graph install before accepting Play.
+        use super::audio_admission::StoppedPlaybackRestore;
+        let restore_owns_stopped_output = self.audio_status().is_some_and(|status| {
+            if status.playing.load(Acquire)
+                || status.device_fault.load(Acquire)
+                || status.render_fault.load(Acquire)
+            {
+                return false;
+            }
+            if self.recovery.generation().is_some() {
+                return self.has_resident_vst3() && status.applied_revision.load(Acquire) == 0;
+            }
+            matches!(
+                self.stopped_playback_restore,
+                Some(
+                    StoppedPlaybackRestore::Preparing
+                        | StoppedPlaybackRestore::Ready
+                        | StoppedPlaybackRestore::Published(_)
+                )
+            )
+        });
         // Publish the MIDI finish intent before any input prefix is revoked.
-        if stop_output && let Some(audio) = &self.audio {
+        if stop_output
+            && !restore_owns_stopped_output
+            && let Some(audio) = &self.audio
+        {
             if let Some(trace) = &self.transport_trace {
                 trace.stop(audio);
             }
@@ -4874,6 +5270,7 @@ impl EditorView {
         self.cancel_tuning_audition();
         self.stop_computer_keyboard();
         self.cancel_scrub();
+        self.cancel_section_launch_wait();
         self.invalidate_prepared_seek();
         self.offline_cursor = 0;
         self.recovery.stop();
@@ -4883,7 +5280,12 @@ impl EditorView {
         self.pending_session_ticket = None;
         self.play_intent.priority_stop();
         self.deferred_play = None;
-        self.status = "stopped · returned to start".into();
+        self.status = if self.play_start_at_beginning {
+            "stopped · play start at beginning"
+        } else {
+            "stopped"
+        }
+        .into();
         if restart_degraded && !self.update_preparing() {
             // A revoked worker cannot be renewed on the applied graph. Start a
             // new output from the current project, at the explicit Stop cursor.
@@ -5028,6 +5430,7 @@ fn latest_applied_canonical_candidate(
                 && Some(candidate.audio_revision) != rejected_audio_revision
                 && candidate.device_preview_identity.is_none()
                 && candidate.tuning_preview_identity.is_none()
+                && candidate.clip_preview_identity.is_none()
         })
         .map(|candidate| {
             (
@@ -5051,6 +5454,7 @@ fn rejected_candidate_project(
                 && candidate.seek_request_id.is_none()
                 && candidate.device_preview_identity.is_none()
                 && candidate.tuning_preview_identity.is_none()
+                && candidate.clip_preview_identity.is_none()
         })
         .map(|candidate| super::audio_admission::ProjectRevision {
             generation: candidate.project_generation,
@@ -5100,6 +5504,31 @@ enum AppliedCandidateSource {
     Current,
     SupersededPreview,
     InvalidPreview,
+}
+
+fn applied_clip_candidate_source(
+    candidate: &PlaybackCandidate,
+    identity: hex_session::service::ClipMovePreviewIdentity,
+    applied_audio_revision: u64,
+    generation: u64,
+    revision: Option<u64>,
+    expected: Option<hex_session::service::ClipMovePreviewIdentity>,
+) -> AppliedCandidateSource {
+    if candidate.audio_revision == applied_audio_revision
+        && identity.context.project_generation == generation
+        && candidate.project_generation == generation
+        && identity.context.editor_revision == candidate.state.revision
+        && revision == Some(candidate.state.revision)
+        && expected.is_some_and(|current| {
+            current.context == identity.context
+                && current.gesture == identity.gesture
+                && (identity.sequence < current.sequence || identity == current)
+        })
+    {
+        AppliedCandidateSource::Current
+    } else {
+        AppliedCandidateSource::SupersededPreview
+    }
 }
 
 fn applied_candidate_source(
@@ -5266,58 +5695,6 @@ fn queued_action_is_current(
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum SessionTicketOutcome {
-    Consumed,
-    Rejected,
-    Superseded,
-    Interrupted,
-}
-
-fn reconcile_session_receipt(
-    pending: Option<(u64, u64)>,
-    current_generation: u64,
-    receipt: hex_audio::prepared::ActionOutcomeReceipt,
-) -> (Option<(u64, u64)>, Option<SessionTicketOutcome>) {
-    let Some((ticket, generation)) = pending else {
-        return (None, None);
-    };
-    if generation != current_generation {
-        return (None, None);
-    }
-    if ticket != receipt.ticket {
-        return (Some((ticket, generation)), None);
-    }
-    let outcome = match receipt.outcome {
-        hex_audio::prepared::ActionOutcome::Applied => SessionTicketOutcome::Consumed,
-        hex_audio::prepared::ActionOutcome::Rejected(_) => SessionTicketOutcome::Rejected,
-        hex_audio::prepared::ActionOutcome::Superseded => SessionTicketOutcome::Superseded,
-        hex_audio::prepared::ActionOutcome::Interrupted => SessionTicketOutcome::Interrupted,
-    };
-    (None, Some(outcome))
-}
-
-fn reconcile_session_ticket(
-    pending: Option<(u64, u64)>,
-    current_generation: u64,
-    consumed_high_water: u64,
-    rejected_ticket: Option<u64>,
-) -> (Option<(u64, u64)>, Option<SessionTicketOutcome>) {
-    let Some((ticket, generation)) = pending else {
-        return (None, None);
-    };
-    if generation != current_generation {
-        return (None, None);
-    }
-    if rejected_ticket == Some(ticket) {
-        return (None, Some(SessionTicketOutcome::Rejected));
-    }
-    if consumed_high_water >= ticket {
-        return (None, Some(SessionTicketOutcome::Consumed));
-    }
-    (Some((ticket, generation)), None)
-}
-
 fn fault_with_action_errors(
     existing: &Option<super::display_error::DisplayError>,
     diagnostic: &str,
@@ -5379,642 +5756,19 @@ fn allows_non_open_request(
     !opening_project && (!close_prompt_open || duplicate_continuation)
 }
 
-#[cfg(test)]
-mod audio_event_correlation_tests {
-    use super::{
-        AudioEventDisposition as D, PublicationObservationDisposition as P,
-        audio_event_disposition, future_audio_result_replaces, publication_observation_disposition,
-        publication_observation_replaces,
-    };
-    use hex_engine::AudioSourceContext;
+#[cfg(all(test, not(feature = "ui-test-support")))]
+#[path = "controller/publication_unit_tests.rs"]
+mod publication_unit_tests;
 
-    fn context(generation: u64, revision: u64) -> AudioSourceContext {
-        AudioSourceContext {
-            project_generation: generation,
-            editor_revision: revision,
-        }
-    }
+#[cfg(all(test, not(feature = "ui-test-support")))]
+#[path = "controller/session_action_unit_tests.rs"]
+mod session_action_unit_tests;
 
-    #[test]
-    fn automatic_same_generation_result_cannot_replace_explicit_restart() {
-        let pending = Some((7, 41));
-        assert_eq!(audio_event_disposition(7, pending, 7, None), D::Ignore);
-        // Both automatic success and automatic failure use the same correlation rule.
-        assert_eq!(audio_event_disposition(7, pending, 7, Some(41)), D::Current);
-        assert_eq!(audio_event_disposition(7, pending, 7, Some(40)), D::Ignore);
-    }
-
-    #[test]
-    fn future_unavailable_result_is_current_after_canonical_generation_advances() {
-        assert_eq!(audio_event_disposition(7, None, 8, None), D::Future);
-        assert_eq!(audio_event_disposition(8, None, 8, None), D::Current);
-    }
-
-    #[test]
-    fn stale_results_and_unmatched_restart_requests_are_ignored() {
-        assert_eq!(audio_event_disposition(8, None, 7, None), D::Ignore);
-        assert_eq!(
-            audio_event_disposition(8, Some((8, 41)), 8, Some(40)),
-            D::Ignore
-        );
-        assert_eq!(
-            audio_event_disposition(8, Some((8, 41)), 9, Some(41)),
-            D::Ignore
-        );
-    }
-
-    #[test]
-    fn future_auto_result_supersedes_older_restart_and_replays_on_new_generation() {
-        let older_restart = Some((7, 41));
-        assert_eq!(
-            audio_event_disposition(7, older_restart, 8, None),
-            D::Future
-        );
-        assert!(future_audio_result_replaces(Some(7), 8));
-        assert_eq!(audio_event_disposition(8, None, 8, None), D::Current);
-        assert!(!future_audio_result_replaces(Some(9), 8));
-    }
-
-    #[test]
-    fn future_result_stays_queued_until_its_generation_and_replaces_only_older_results() {
-        assert!(future_audio_result_replaces(None, 10));
-        assert!(!future_audio_result_replaces(Some(10), 9));
-        assert!(future_audio_result_replaces(Some(10), 11));
-        assert_eq!(audio_event_disposition(8, None, 10, None), D::Future);
-        assert_eq!(audio_event_disposition(10, None, 10, None), D::Current);
-    }
-
-    #[test]
-    fn submitted_waits_for_state_and_opened_client_in_either_order_then_consumes_once() {
-        let submitted = context(5, 12);
-
-        let mut pending = Some((submitted, 70));
-        assert_eq!(
-            publication_observation_disposition(
-                5,
-                Some(11),
-                Some(context(5, 11)),
-                None,
-                submitted,
-                70
-            ),
-            P::Wait
-        );
-        assert_eq!(
-            publication_observation_disposition(5, Some(12), Some(submitted), None, submitted, 70),
-            P::Wait
-        );
-        assert_eq!(
-            publication_observation_disposition(
-                5,
-                Some(12),
-                Some(submitted),
-                Some(70),
-                submitted,
-                70
-            ),
-            P::Apply
-        );
-        if pending.is_some_and(|(context, identity)| {
-            publication_observation_disposition(
-                5,
-                Some(12),
-                Some(submitted),
-                Some(70),
-                context,
-                identity,
-            ) == P::Apply
-        }) {
-            pending.take();
-        }
-        assert!(
-            pending.is_none(),
-            "a matching submitted observation is consumed"
-        );
-
-        // The reverse arrival order (matching client before the canonical state).
-        assert_eq!(
-            publication_observation_disposition(
-                5,
-                Some(11),
-                Some(context(5, 11)),
-                Some(70),
-                submitted,
-                70
-            ),
-            P::Wait
-        );
-        assert_eq!(
-            publication_observation_disposition(
-                5,
-                Some(12),
-                Some(submitted),
-                Some(70),
-                submitted,
-                70
-            ),
-            P::Apply
-        );
-    }
-
-    #[test]
-    fn same_document_newer_revision_is_held_until_that_revision_arrives() {
-        let newer = context(5, 13);
-        assert_eq!(
-            publication_observation_disposition(
-                5,
-                Some(12),
-                Some(context(5, 12)),
-                Some(70),
-                newer,
-                70
-            ),
-            P::Wait
-        );
-        assert_eq!(
-            publication_observation_disposition(5, Some(13), Some(newer), Some(70), newer, 70),
-            P::Apply
-        );
-    }
-
-    #[test]
-    fn stale_contexts_and_wrong_output_roots_are_discarded() {
-        let current = context(5, 13);
-        assert_eq!(
-            publication_observation_disposition(
-                5,
-                Some(13),
-                Some(current),
-                Some(70),
-                context(4, 99),
-                70
-            ),
-            P::Stale
-        );
-        assert_eq!(
-            publication_observation_disposition(
-                5,
-                Some(13),
-                Some(current),
-                Some(70),
-                context(5, 12),
-                70
-            ),
-            P::Stale
-        );
-        assert_eq!(
-            publication_observation_disposition(5, Some(13), Some(current), Some(71), current, 70),
-            P::Stale
-        );
-    }
-
-    #[test]
-    fn newer_publication_context_cannot_be_overwritten_by_an_older_observation() {
-        let newest = context(6, 2);
-        let older = context(5, 900);
-        assert!(publication_observation_replaces(None, newest));
-        assert!(!publication_observation_replaces(Some(newest), older));
-        assert!(publication_observation_replaces(Some(older), newest));
-        assert!(publication_observation_replaces(Some(newest), newest));
-    }
-}
-
-#[cfg(test)]
+#[cfg(all(test, feature = "ui-test-support"))]
 mod tests {
-    use super::{
-        SessionTicketOutcome, allows_non_open_request, clear_rejected_scene_duplicate,
-        intent_desired_playing, latest_applied_canonical_candidate, pending_playback_for_state,
-        preview_source_is_current, promote_playback_candidates, queued_action_is_current,
-        reconcile_session_receipt, reconcile_session_ticket, rejected_candidate_project,
-        rejected_preview_candidate, retained_install_fresh_policy,
-    };
-    use crate::editor::audio_admission::{AudioAdmissionStatus, ProjectRevision};
-    use crate::editor::{PendingPlaybackAction, PendingSceneDuplicate, PlaybackCandidate};
+    use super::{SessionTicketOutcome, reconcile_session_receipt};
+    use hex_engine::PlaybackAction;
     use hex_engine::playback::Playback;
-    use hex_engine::{PlaybackAction, PlaybackCommand, SessionPlaybackCommand};
-    use hex_project::{Command, Created, Editor, Project};
-    use hex_session::device_gesture::GestureKey;
-
-    #[test]
-    fn delayed_preview_application_distinguishes_superseded_and_invalid_current_sources() {
-        use super::{AppliedCandidateSource, applied_candidate_source};
-        let preview = preview_candidate(17, 40, 3);
-        let identity = preview.device_preview_identity.unwrap();
-        let active = Some((identity.key, identity.sequence));
-        let mut queued = VecDeque::from([candidate(16, 40, 3), preview.clone()]);
-        let applied = promote_playback_candidates(&mut queued, 17, None).unwrap();
-        assert_eq!(
-            applied_candidate_source(&applied, 3, Some(40), active),
-            AppliedCandidateSource::Current
-        );
-        for (generation, revision, active) in [
-            (3, Some(40), None),   // cancel/commit terminal retired the gesture
-            (3, Some(41), active), // canonical commit overtook callback receipt
-            (4, Some(40), active), // project/owner replaced
-            (3, Some(40), Some((identity.key, identity.sequence + 1))),
-            (
-                3,
-                Some(40),
-                Some((
-                    GestureKey {
-                        generation: 3,
-                        token: identity.key.token + 1,
-                    },
-                    identity.sequence,
-                )),
-            ),
-        ] {
-            assert_eq!(
-                applied_candidate_source(&applied, generation, revision, active),
-                AppliedCandidateSource::SupersededPreview
-            );
-        }
-        let mut wrong_generation = preview.clone();
-        wrong_generation.project_generation = 2;
-        assert_eq!(
-            applied_candidate_source(&wrong_generation, 3, Some(40), active),
-            AppliedCandidateSource::InvalidPreview
-        );
-        let mut wrong_revision = preview_candidate(18, 39, 3);
-        wrong_revision.device_preview_identity = Some(identity);
-        assert_eq!(
-            applied_candidate_source(&wrong_revision, 3, Some(40), active),
-            AppliedCandidateSource::InvalidPreview
-        );
-        let mut rejected = VecDeque::from([preview]);
-        assert!(promote_playback_candidates(&mut rejected, 17, Some(17)).is_none());
-        assert_eq!(
-            applied_candidate_source(&candidate(18, 40, 3), 3, Some(40), None),
-            AppliedCandidateSource::Current
-        );
-    }
-    use hex_session::service::{DevicePreviewIdentity, Request, ViewState};
-    use std::{collections::VecDeque, sync::Arc};
-
-    #[test]
-    fn fresh_project_publication_survives_same_generation_candidate_coalescing_only() {
-        assert!(retained_install_fresh_policy(true, 4, None));
-        assert!(retained_install_fresh_policy(false, 4, Some((4, true))));
-        assert!(!retained_install_fresh_policy(false, 4, None));
-        assert!(!retained_install_fresh_policy(false, 4, Some((4, false))));
-        assert!(!retained_install_fresh_policy(false, 5, Some((4, true))));
-        assert!(retained_install_fresh_policy(true, 5, Some((4, true))));
-    }
-
-    #[test]
-    fn exact_rejection_mapping_precedes_coalesced_applied_candidate_promotion() {
-        let old = ProjectRevision {
-            generation: 8,
-            revision: 40,
-        };
-        let current = ProjectRevision {
-            generation: 9,
-            revision: 0,
-        };
-        let mut candidates = VecDeque::from([candidate(17, 40, 8), candidate(18, 0, 9)]);
-        let rejected = rejected_candidate_project(&candidates, 17)
-            .expect("rejected audio revision maps before candidate pruning");
-        assert_eq!(rejected, old);
-
-        let mut status = AudioAdmissionStatus::default();
-        status.canonical_revision(current);
-        status.published(current, 18);
-        assert!(!status.rejected(rejected, 17, "stale generation rejection"));
-
-        let audible = promote_playback_candidates(&mut candidates, 18, Some(17))
-            .expect("new accepted candidate survives older rejection telemetry");
-        assert_eq!(audible.audio_revision, 18);
-        assert_eq!(audible.project_generation, current.generation);
-        status.applied(current, audible.audio_revision);
-        assert_eq!(
-            status.current().unwrap().state,
-            crate::editor::audio_admission::AdmissionState::Applied
-        );
-        assert_eq!(status.last_audible().unwrap().project, current);
-    }
-
-    #[test]
-    fn same_revision_preview_apply_reject_and_cancel_do_not_change_canonical_admission() {
-        let canonical = ProjectRevision {
-            generation: 3,
-            revision: 40,
-        };
-        let mut status = AudioAdmissionStatus::default();
-        status.canonical_revision(canonical);
-        status.published(canonical, 16);
-
-        let mut preview = preview_candidate(17, 40, 3);
-        let active = Some((
-            GestureKey {
-                generation: 3,
-                token: 1,
-            },
-            1,
-        ));
-        assert!(rejected_candidate_project(&VecDeque::from([preview.clone()]), 17).is_none());
-        assert!(rejected_preview_candidate(
-            &VecDeque::from([preview.clone()]),
-            17,
-            3,
-            Some(40),
-            active,
-        ));
-        let current_identity = preview.device_preview_identity.expect("preview identity");
-        assert!(preview_source_is_current(
-            current_identity,
-            3,
-            40,
-            3,
-            Some(40),
-            active,
-        ));
-        let stale_generation = preview_candidate(18, 40, 2);
-        assert!(!rejected_preview_candidate(
-            &VecDeque::from([stale_generation]),
-            18,
-            3,
-            Some(40),
-            active,
-        ));
-        assert!(!preview_source_is_current(
-            current_identity,
-            3,
-            40,
-            4,
-            Some(0),
-            active,
-        ));
-        let mut stale_sequence = preview_candidate(19, 40, 3);
-        stale_sequence
-            .device_preview_identity
-            .as_mut()
-            .expect("preview identity")
-            .sequence = 0;
-        assert!(!rejected_preview_candidate(
-            &VecDeque::from([stale_sequence]),
-            19,
-            3,
-            Some(40),
-            active,
-        ));
-        // Cancel/commit retires the active gesture, so a delayed terminal
-        // preview refusal cannot overwrite a newer status message.
-        assert!(!rejected_preview_candidate(
-            &VecDeque::from([preview.clone()]),
-            17,
-            3,
-            Some(40),
-            None,
-        ));
-        assert!(!preview_source_is_current(
-            current_identity,
-            3,
-            40,
-            3,
-            Some(40),
-            None,
-        ));
-        assert!(!rejected_preview_candidate(
-            &VecDeque::from([preview.clone()]),
-            17,
-            4,
-            Some(0),
-            active,
-        ));
-
-        // A valid preview can become audible for this exact canonical source,
-        // while its transient audio revision remains outside canonical status.
-        let mut preview_candidates = VecDeque::from([candidate(16, 40, 3), preview.clone()]);
-        let (applied_project, applied_audio) =
-            latest_applied_canonical_candidate(&preview_candidates, 17, None)
-                .expect("the canonical candidate applied before the transient preview");
-        status.applied(applied_project, applied_audio);
-        let audible_preview = promote_playback_candidates(&mut preview_candidates, 17, None)
-            .expect("the callback promoted the preview graph");
-        assert!(audible_preview.device_preview_identity.is_some());
-        assert_eq!(
-            status.current().unwrap().state,
-            crate::editor::audio_admission::AdmissionState::Applied
-        );
-        assert_eq!(status.last_audible().unwrap().audio_revision, 16);
-
-        // Cancellation restores canonical playback at the same project
-        // revision; that terminal canonical candidate remains identifiable.
-        preview = candidate(18, 40, 3);
-        let mut restore_candidates = VecDeque::from([preview]);
-        let restored = promote_playback_candidates(&mut restore_candidates, 18, None)
-            .expect("cancel restored the canonical graph");
-        assert_eq!(
-            rejected_candidate_project(&VecDeque::from([restored]), 18),
-            Some(canonical)
-        );
-        status.published(canonical, 18);
-        status.applied(canonical, 18);
-        assert_eq!(
-            status.current().unwrap().state,
-            crate::editor::audio_admission::AdmissionState::Applied
-        );
-        assert_eq!(status.last_audible().unwrap().audio_revision, 18);
-
-        // A newer canonical revision stays pending when only its numeric
-        // preview is accepted, then becomes applied on the terminal commit.
-        let committed = ProjectRevision {
-            generation: 3,
-            revision: 41,
-        };
-        status.canonical_revision(committed);
-        status.published(committed, 19);
-        let preview = preview_candidate(20, 41, 3);
-        let mut candidates = VecDeque::from([preview.clone()]);
-        assert!(rejected_candidate_project(&candidates, 20).is_none());
-        assert!(latest_applied_canonical_candidate(&candidates, 20, None).is_none());
-        let audible_preview = promote_playback_candidates(&mut candidates, 20, None)
-            .expect("the callback promoted the latest numeric preview");
-        assert!(audible_preview.device_preview_identity.is_some());
-        assert_eq!(status.current().unwrap().project, committed);
-        assert_eq!(
-            status.current().unwrap().state,
-            crate::editor::audio_admission::AdmissionState::Pending
-        );
-
-        let canonical_candidate = candidate(21, 41, 3);
-        assert_eq!(
-            rejected_candidate_project(&VecDeque::from([canonical_candidate.clone()]), 21),
-            Some(committed)
-        );
-        status.published(committed, 21);
-        let applied =
-            latest_applied_canonical_candidate(&VecDeque::from([canonical_candidate]), 21, None)
-                .expect("terminal canonical candidate applied");
-        status.applied(applied.0, applied.1);
-        assert_eq!(
-            status.current().unwrap().state,
-            crate::editor::audio_admission::AdmissionState::Applied
-        );
-        assert_eq!(status.last_audible().unwrap().audio_revision, 21);
-    }
-
-    #[test]
-    fn rejected_scene_duplicate_clears_only_its_completion_selection_intent() {
-        let mut editor = Editor::new(Project::new(48_000).expect("project"), 4).expect("editor");
-        let Created::Scene(scene) = editor
-            .execute(Command::AddScene {
-                name: "source".into(),
-            })
-            .expect("scene")
-        else {
-            panic!("scene creation returns a scene id")
-        };
-        let intent = || {
-            Some(PendingSceneDuplicate {
-                source_scene: scene,
-                project_generation: 3,
-                select_on_completion: true,
-            })
-        };
-        let mut pending = intent();
-
-        clear_rejected_scene_duplicate(
-            &mut pending,
-            &Request::Edit(Command::DuplicateScene(scene)),
-        );
-        assert!(pending.is_none());
-
-        let mut pending = intent();
-        clear_rejected_scene_duplicate(
-            &mut pending,
-            &Request::Edit(Command::MoveScene {
-                scene,
-                before: None,
-            }),
-        );
-        assert!(pending.is_some());
-    }
-
-    fn candidate(audio_revision: u64, project_revision: u64, generation: u64) -> PlaybackCandidate {
-        let project = Arc::new(Project::new(48_000).expect("project"));
-        PlaybackCandidate {
-            worker_requires_preroll: None,
-            observation: None,
-            audio_revision,
-            project_generation: generation,
-            state: Arc::new(ViewState {
-                canonical_audio_source: None,
-                comparison_audio: None,
-                project,
-                waveforms: Default::default(),
-                source_overviews: Default::default(),
-                audio_clip_waveforms: std::collections::BTreeMap::new(),
-                midi_preview: Arc::new(hex_engine::MidiArrangementPreview::default()),
-                gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
-                timeline_frames: 0,
-                can_undo: false,
-                can_redo: false,
-                revision: project_revision,
-                unsaved: false,
-                document_path: None,
-            }),
-            prepared_revision: None,
-            seek_request_id: None,
-            device_preview_identity: None,
-            tuning_preview_identity: None,
-        }
-    }
-
-    fn preview_candidate(
-        audio_revision: u64,
-        project_revision: u64,
-        generation: u64,
-    ) -> PlaybackCandidate {
-        let mut candidate = candidate(audio_revision, project_revision, generation);
-        candidate.device_preview_identity = Some(DevicePreviewIdentity {
-            project_generation: generation,
-            key: GestureKey {
-                generation,
-                token: 1,
-            },
-            sequence: 1,
-            canonical_revision: project_revision,
-        });
-        candidate
-    }
-
-    #[test]
-    fn event_playback_retains_its_exact_read_only_view_until_publication_retry() {
-        let captured = candidate(3, 12, 4).state;
-        let exact = Arc::clone(&captured);
-        let playback = Playback::new(hex_engine::Project::new(48_000, Vec::new()).unwrap());
-        let pending = pending_playback_for_state(captured, 4, playback);
-        assert!(Arc::ptr_eq(&pending.state, &exact));
-        assert_eq!(pending.project_revision, 12);
-        assert_eq!(pending.project_generation, 4);
-    }
-
-    #[test]
-    fn applied_candidates_promote_before_coalesced_rejection_pruning() {
-        let mut candidates = VecDeque::from([
-            candidate(4, 40, 2),
-            candidate(5, 50, 2),
-            candidate(6, 60, 2),
-            candidate(7, 70, 2),
-        ]);
-        assert!(promote_playback_candidates(&mut candidates, 3, None).is_none());
-        let audible = promote_playback_candidates(&mut candidates, 5, None).expect("accepted view");
-        assert_eq!(audible.audio_revision, 5);
-        assert_eq!(audible.state.revision, 50);
-        candidates.retain(|item| item.audio_revision > 7);
-        assert!(candidates.is_empty());
-        assert_eq!(audible.project_generation, 2);
-    }
-
-    #[test]
-    fn rejected_unapplied_candidate_never_becomes_audible() {
-        let mut candidates = VecDeque::from([candidate(4, 40, 2)]);
-        assert!(promote_playback_candidates(&mut candidates, 3, None).is_none());
-        candidates.retain(|item| item.audio_revision > 4);
-        assert!(candidates.is_empty());
-    }
-
-    #[test]
-    fn project_edit_backpressure_preserves_transport_but_invalidates_session_actions() {
-        let project = Project::new(48_000).expect("project");
-        let transport = PendingPlaybackAction {
-            action: PlaybackAction::Transport(PlaybackCommand::Pause),
-            generation: 8,
-            revision: None,
-            intent_token: None,
-        };
-        let session = PendingPlaybackAction {
-            action: PlaybackAction::Session(SessionPlaybackCommand::StopAllClips {
-                quantization: hex_engine::LaunchQuantization::Immediate,
-            }),
-            generation: 8,
-            revision: Some(12),
-            intent_token: None,
-        };
-
-        assert!(queued_action_is_current(
-            transport,
-            true,
-            8,
-            Some(&project),
-            Some(12),
-        ));
-        assert!(!queued_action_is_current(
-            session,
-            true,
-            8,
-            Some(&project),
-            Some(12),
-        ));
-        assert!(!queued_action_is_current(
-            transport,
-            false,
-            9,
-            Some(&project),
-            Some(12),
-        ));
-    }
 
     #[test]
     fn earlier_session_rejection_is_not_reported_as_consumed() {
@@ -6051,190 +5805,6 @@ mod tests {
             .unwrap();
         callback.begin_block();
         control.reclaim();
-    }
-
-    #[test]
-    fn session_ticket_feedback_clears_on_consumption_or_matching_rejection() {
-        assert_eq!(
-            reconcile_session_ticket(Some((5, 7)), 7, 4, None),
-            (Some((5, 7)), None)
-        );
-        assert_eq!(
-            reconcile_session_ticket(Some((5, 7)), 7, 5, None),
-            (None, Some(SessionTicketOutcome::Consumed))
-        );
-        assert_eq!(
-            reconcile_session_ticket(Some((5, 7)), 7, 5, Some(5)),
-            (None, Some(SessionTicketOutcome::Rejected))
-        );
-        assert_eq!(
-            reconcile_session_ticket(Some((5, 7)), 8, 5, None),
-            (None, None)
-        );
-    }
-
-    #[test]
-    fn launch_and_transport_actions_have_explicit_play_intents() {
-        let mut editor = Editor::new(Project::new(48_000).expect("project"), 1).expect("editor");
-        let Created::Scene(scene) = editor
-            .execute(Command::AddScene {
-                name: "scene".into(),
-            })
-            .expect("scene")
-        else {
-            panic!("scene")
-        };
-        assert_eq!(
-            intent_desired_playing(PlaybackAction::LaunchAndPlay(
-                SessionPlaybackCommand::LaunchScene {
-                    scene,
-                    quantization: hex_engine::LaunchQuantization::Immediate,
-                }
-            )),
-            Some(true)
-        );
-        assert_eq!(
-            intent_desired_playing(PlaybackAction::Transport(PlaybackCommand::Play)),
-            Some(true)
-        );
-        assert_eq!(
-            intent_desired_playing(PlaybackAction::Transport(PlaybackCommand::Pause)),
-            Some(false)
-        );
-        assert_eq!(
-            intent_desired_playing(PlaybackAction::Transport(PlaybackCommand::Seek(1))),
-            None
-        );
-    }
-
-    #[test]
-    fn close_prompt_allows_only_owned_duplicate_continuations() {
-        assert!(allows_non_open_request(true, false, true));
-        assert!(!allows_non_open_request(true, false, false));
-        assert!(allows_non_open_request(false, false, false));
-        assert!(!allows_non_open_request(true, true, true));
-    }
-}
-
-#[cfg(test)]
-mod verified_actual_applied_tests {
-    use super::*;
-    #[test]
-    fn actual_current_ack_restores_recovery_without_a_submitted_event() {
-        let mut recovery = super::super::recovery_state::RecoveryState::default();
-        let generation = recovery.begin(640).unwrap();
-        assert!(recovery.opened(generation));
-        assert_eq!(recovery.seek_needed(true), None);
-        restore_verified_recovery_from_applied(&mut recovery, Some(generation + 1));
-        assert_eq!(recovery.seek_needed(true), None);
-        restore_verified_recovery_from_applied(&mut recovery, Some(generation));
-        restore_verified_recovery_from_applied(&mut recovery, Some(generation));
-        assert_eq!(recovery.seek_needed(true), Some(640));
-        assert_eq!(recovery.seek_needed(false), None);
-    }
-
-    #[test]
-    fn coalesced_submission_keeps_actual_audible_context_when_newer_edit_refuses() {
-        use super::super::audio_admission::{AudioAdmissionStatus, ProjectRevision};
-        let mut admission = AudioAdmissionStatus::default();
-        let mode = hex_session::DocumentAudioMode::VerifiedStreaming;
-        let source = hex_audio::prepared::AppliedAudioSource {
-            context: hex_engine::AudioSourceContext {
-                project_generation: 2,
-                editor_revision: 7,
-            },
-            audio_revision: 11,
-            output_identity: 13,
-        };
-        // Submitted(A) was never received; B is already canonical/refused.
-        admission.canonical_revision(ProjectRevision {
-            generation: 2,
-            revision: 8,
-        });
-        assert!(admission.unpublished_refusal(
-            ProjectRevision {
-                generation: 2,
-                revision: 8
-            },
-            "audio publication refused",
-        ));
-        let (changed, current) = reconcile_verified_applied_source(
-            &mut admission,
-            mode,
-            Some(13),
-            2,
-            Some(8),
-            Some(source),
-        );
-        assert!(changed && current.is_none());
-        assert_eq!(admission.last_audible().unwrap().project.revision, 7);
-        assert_eq!(admission.current().unwrap().project.revision, 8);
-        assert!(admission.label().contains("rev 8 rejected"));
-        assert!(admission.label().contains("rev 7 audible"));
-        assert_eq!(
-            reconcile_verified_applied_source(&mut admission, mode, Some(13), 2, Some(8), None),
-            (false, None)
-        );
-        assert!(admission.label().contains("rev 7 audible"));
-        // Only exact current state/client correlation may recover seek metadata.
-        assert_eq!(
-            reconcile_verified_applied_source(
-                &mut admission,
-                mode,
-                Some(99),
-                2,
-                Some(7),
-                Some(source)
-            ),
-            (false, None)
-        );
-        let (_, current) = reconcile_verified_applied_source(
-            &mut admission,
-            mode,
-            Some(13),
-            2,
-            Some(7),
-            Some(source),
-        );
-        assert_eq!(current, Some(source));
-        assert_eq!(
-            reconcile_verified_applied_source(
-                &mut admission,
-                mode,
-                Some(13),
-                3,
-                Some(7),
-                Some(source)
-            ),
-            (false, None)
-        );
-        let actual_b = hex_audio::prepared::AppliedAudioSource {
-            context: hex_engine::AudioSourceContext {
-                project_generation: 2,
-                editor_revision: 8,
-            },
-            audio_revision: 12,
-            ..source
-        };
-        reconcile_verified_applied_source(
-            &mut admission,
-            mode,
-            Some(13),
-            2,
-            Some(8),
-            Some(actual_b),
-        );
-        assert_eq!(
-            admission.current().unwrap().state,
-            super::super::audio_admission::AdmissionState::Applied
-        );
-        assert!(!admission.unpublished_refusal(
-            ProjectRevision {
-                generation: 2,
-                revision: 8
-            },
-            "late refusal"
-        ));
     }
 }
 
@@ -6305,7 +5875,7 @@ mod tuning_audition_error_tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "ui-test-support"))]
 mod comparison_source_binding_tests {
     use super::super::audio_admission::{AdmissionState, AudioAdmissionStatus, ProjectRevision};
     use super::*;
@@ -6456,10 +6026,21 @@ mod comparison_source_binding_tests {
             status.current().unwrap().project.revision,
             audio.state.revision
         );
+        let audible = status
+            .last_audible()
+            .expect("the historical source remains audible");
+        assert_eq!(
+            audible.project,
+            ProjectRevision {
+                generation: actual.context.project_generation,
+                revision: actual.context.editor_revision,
+            }
+        );
+        assert_eq!(audible.audio_revision, actual.audio_revision);
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "ui-test-support"))]
 mod sampler_native_ui_protocol_tests {
     use super::*;
     #[cfg(feature = "ui-test-support")]
@@ -6566,7 +6147,9 @@ mod sampler_native_ui_protocol_tests {
                     track,
                     path: path.clone(),
                     revision: event.state.revision,
-                    empty_sampler: None,
+                    slot: hex_session::service::SamplerLoadSlot::New(
+                        hex_project::InstrumentLoadPlacement::First,
+                    ),
                     cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 })
                 .unwrap();
@@ -6638,10 +6221,9 @@ mod sampler_native_ui_protocol_tests {
         let client = output.take_client().unwrap();
         assert!(client.worker_owns_graph_publication());
         let publish = |output: &mut hex_audio::WorkerPreparedOutput| {
-            output
-                .publication
-                .control()
-                .unwrap()
+            let control = output.publication.control().unwrap();
+            control.reclaim();
+            control
                 .publish_with_policy_and_context_generation(
                     hex_engine::playback::Playback::try_from_prepared_with_device_resources(
                         Arc::clone(&prepared),
@@ -6725,6 +6307,8 @@ mod sampler_native_ui_protocol_tests {
             assert!(view.applied_project_revision.is_none());
             assert_eq!(view.audio_admission, before);
             let mut metadata = hex_session::service::ResidentPublicationMetadata {
+                source_origin: hex_session::service::ResidentSourceOrigin::DevicePreview,
+                clip_preview: None,
                 context,
                 device_preview: Some(identity),
                 tuning_preview: None,
@@ -6779,6 +6363,156 @@ mod sampler_native_ui_protocol_tests {
             let audible = view.audible_playback.as_ref().unwrap();
             assert_eq!(audible.audio_revision, canonical_revision);
             assert!(audible.device_preview_identity.is_none());
+
+            let clip_identity = hex_session::service::ClipMovePreviewIdentity {
+                context,
+                gesture: 13,
+                sequence: 2,
+                destination: hex_session::service::ClipMovePreviewDestination::Existing(
+                    canonical.project.tracks()[0].id(),
+                ),
+                position: hex_project::ClipGroupPosition::Audio(1_000),
+                mode: hex_session::service::ArrangementMoveMode::Move,
+            };
+            let canonical_project = super::super::audio_admission::ProjectRevision {
+                generation: context.project_generation,
+                revision: canonical.revision,
+            };
+            view.audio_admission.canonical_revision(canonical_project);
+            view.audio_admission
+                .published(canonical_project, canonical_revision);
+            view.audio_admission
+                .applied(canonical_project, canonical_revision);
+            view.expected_clip_preview = Some(clip_identity);
+            view.clip_preview_may_apply = true;
+            metadata.clip_preview = Some(clip_identity);
+            let clip_revision = publish(&mut output);
+            view.retain_publication_observation(
+                context,
+                output_identity.wrapping_add(1),
+                crate::EditorPublicationState::ResidentSubmitted {
+                    audio_revision: clip_revision,
+                    observation: Arc::clone(&observation),
+                    metadata,
+                },
+            );
+            assert!(
+                !view
+                    .playback_candidates
+                    .iter()
+                    .any(|candidate| candidate.audio_revision == clip_revision)
+            );
+            view.tick(cx);
+            assert_eq!(
+                view.audible_playback.as_ref().unwrap().audio_revision,
+                canonical_revision
+            );
+            backend.render(&mut [[0.0; 2]; 64]).unwrap();
+            view.tick(cx);
+            assert_eq!(
+                backend.status().unwrap().applied_revision.load(Acquire),
+                clip_revision
+            );
+            assert!(view.audible_playback.is_none());
+            assert!(view.applied_project_revision.is_none());
+            view.retain_publication_observation(
+                context,
+                output_identity,
+                crate::EditorPublicationState::ResidentSubmitted {
+                    audio_revision: clip_revision,
+                    observation: Arc::clone(&observation),
+                    metadata,
+                },
+            );
+            view.tick(cx);
+            assert!(view.audible_playback.is_none());
+            assert_eq!(
+                view.applied_clip_preview,
+                Some((clip_revision, clip_identity))
+            );
+            assert!(view.applied_project_revision.is_none());
+            assert_ne!(
+                view.audio_admission.current().unwrap().state,
+                super::super::audio_admission::AdmissionState::Applied
+            );
+
+            let stale_revision = publish(&mut output);
+            let next_identity = hex_session::service::ClipMovePreviewIdentity {
+                sequence: clip_identity.sequence + 1,
+                position: hex_project::ClipGroupPosition::Midi(hex_project::BeatTime::ONE),
+                mode: hex_session::service::ArrangementMoveMode::Copy,
+                ..clip_identity
+            };
+            view.expected_clip_preview = Some(next_identity);
+            assert_eq!(
+                view.applied_clip_preview,
+                Some((clip_revision, clip_identity))
+            );
+            for _ in 0..128 {
+                backend.render(&mut [[0.0; 2]; 64]).unwrap();
+                view.tick(cx);
+                if backend.status().unwrap().applied_revision.load(Acquire) == stale_revision {
+                    break;
+                }
+            }
+            assert_eq!(
+                backend.status().unwrap().applied_revision.load(Acquire),
+                stale_revision,
+                "rejected: {:?}",
+                backend.status().unwrap().rejected_revision()
+            );
+            assert!(view.audible_playback.is_none());
+            assert!(view.applied_clip_preview.is_none());
+            assert!(view.applied_project_revision.is_none());
+            metadata.clip_preview = Some(next_identity);
+            view.retain_publication_observation(
+                context,
+                output_identity,
+                crate::EditorPublicationState::ResidentSubmitted {
+                    audio_revision: stale_revision,
+                    observation: Arc::clone(&observation),
+                    metadata,
+                },
+            );
+            view.tick(cx);
+            assert_eq!(
+                view.applied_clip_preview,
+                Some((stale_revision, next_identity))
+            );
+            metadata.clip_preview = Some(clip_identity);
+            view.retain_publication_observation(
+                context,
+                output_identity,
+                crate::EditorPublicationState::ResidentSubmitted {
+                    audio_revision: clip_revision,
+                    observation: Arc::clone(&observation),
+                    metadata,
+                },
+            );
+            view.tick(cx);
+            assert_eq!(
+                view.applied_clip_preview,
+                Some((stale_revision, next_identity))
+            );
+            view.expected_clip_preview = None;
+            metadata.clip_preview = None;
+            let restored_revision = publish(&mut output);
+            view.retain_publication_observation(
+                context,
+                output_identity,
+                crate::EditorPublicationState::ResidentSubmitted {
+                    audio_revision: restored_revision,
+                    observation: Arc::clone(&observation),
+                    metadata,
+                },
+            );
+            backend.render(&mut [[0.0; 2]; 64]).unwrap();
+            view.tick(cx);
+            assert_eq!(
+                view.audible_playback.as_ref().unwrap().audio_revision,
+                restored_revision
+            );
+            assert!(view.applied_clip_preview.is_none());
             if loaded_sampler {
                 view.audio = None;
                 return;
@@ -6847,9 +6581,9 @@ mod sampler_native_ui_protocol_tests {
                 .control()
                 .unwrap()
                 .publish_with_policy_and_context_generation(
-                    hex_engine::playback::Playback::try_from_prepared_with_session(
-                        runtime_prepared,
-                    )
+                    hex_engine::playback::Playback::try_from_prepared_with_session(Arc::clone(
+                        &runtime_prepared,
+                    ))
                     .unwrap(),
                     PublicationPolicy::InheritRuntime,
                     context.project_generation,
@@ -6861,7 +6595,7 @@ mod sampler_native_ui_protocol_tests {
                 output_identity,
                 crate::EditorPublicationState::ResidentSubmitted {
                     audio_revision: runtime_revision,
-                    observation: runtime_observation,
+                    observation: Arc::clone(&runtime_observation),
                     metadata,
                 },
             );
@@ -6880,6 +6614,48 @@ mod sampler_native_ui_protocol_tests {
                 runtime_revision
             );
             assert_eq!(view.applied_project_revision, Some(authored.revision));
+
+            // Deliver a callback refusal before its protected worker metadata.
+            let control = output.publication.control().unwrap();
+            control.reclaim();
+            let fence = control.capture_fresh_runtime_fence().unwrap();
+            let rejected = control
+                .publish_with_policy_and_context_generation(
+                    hex_engine::playback::Playback::try_from_prepared_with_session(
+                        runtime_prepared,
+                    )
+                    .unwrap(),
+                    PublicationPolicy::InstallFreshRuntimeIfUnchanged(fence),
+                    context.project_generation,
+                )
+                .unwrap();
+            assert_eq!(
+                control.cancel_fresh_runtime_publication(rejected),
+                hex_audio::prepared::FreshRuntimeCancellationResult::Cancelled
+            );
+            backend.render(&mut [[0.0; 2]; 64]).unwrap();
+            view.tick(cx);
+            assert_eq!(view.observed_rejected_revision, rejected);
+            view.retain_publication_observation(
+                runtime_context,
+                output_identity,
+                crate::EditorPublicationState::ResidentSubmitted {
+                    audio_revision: rejected,
+                    observation: runtime_observation,
+                    metadata,
+                },
+            );
+            view.tick(cx);
+            assert!(matches!(
+                view.audio_admission.current().unwrap().state,
+                super::super::audio_admission::AdmissionState::Rejected(_)
+            ));
+            assert!(view.playback_candidates.is_empty());
+            assert_eq!(
+                view.audible_playback.as_ref().unwrap().audio_revision,
+                runtime_revision
+            );
+
             view.audio = None;
         });
         backend.close();
@@ -6955,6 +6731,8 @@ mod sampler_native_ui_protocol_tests {
                 canonical_revision: canonical.revision,
             };
             let metadata = hex_session::service::ResidentPublicationMetadata {
+                source_origin: hex_session::service::ResidentSourceOrigin::DevicePreview,
+                clip_preview: None,
                 context,
                 device_preview: Some(identity),
                 tuning_preview: None,
@@ -7076,35 +6854,6 @@ mod sampler_native_ui_protocol_tests {
     }
 
     #[test]
-    fn targeted_release_ignores_newer_authoring_other_output_and_other_document() {
-        let context = hex_engine::AudioSourceContext {
-            project_generation: 4,
-            editor_revision: 7,
-        };
-        assert!(relinquish_client_matches(4, Some(6), Some(12), 12, context));
-        assert!(!relinquish_client_matches(
-            4,
-            Some(8),
-            Some(12),
-            12,
-            context
-        ));
-        assert!(!relinquish_client_matches(
-            4,
-            Some(7),
-            Some(13),
-            12,
-            context
-        ));
-        assert!(!relinquish_client_matches(
-            5,
-            Some(7),
-            Some(12),
-            12,
-            context
-        ));
-    }
-    #[test]
     fn native_sampler_applied_source_recovers_lost_submitted_metadata_without_legacy_promotion() {
         // UI protocol metadata only; actual native proof/PCM is covered by the
         // Service/Desktop eligible publication and callback integration probes.
@@ -7218,5 +6967,40 @@ mod sampler_native_ui_protocol_tests {
             .1,
             None
         );
+    }
+}
+
+#[cfg(all(test, not(feature = "ui-test-support")))]
+mod source_binding_unit_tests {
+    use super::relinquish_client_matches;
+
+    #[test]
+    fn targeted_release_ignores_newer_authoring_other_output_and_other_document() {
+        let context = hex_engine::AudioSourceContext {
+            project_generation: 4,
+            editor_revision: 7,
+        };
+        assert!(relinquish_client_matches(4, Some(6), Some(12), 12, context));
+        assert!(!relinquish_client_matches(
+            4,
+            Some(8),
+            Some(12),
+            12,
+            context
+        ));
+        assert!(!relinquish_client_matches(
+            4,
+            Some(7),
+            Some(13),
+            12,
+            context
+        ));
+        assert!(!relinquish_client_matches(
+            5,
+            Some(7),
+            Some(12),
+            12,
+            context
+        ));
     }
 }

@@ -791,7 +791,7 @@ fn device_comparison_numeric_draft_and_eq_graph_own_p(cx: &mut TestAppContext) {
             format!("eq-response-{}", device.value()).into_boxed_str(),
         ))
         .unwrap();
-    visual.simulate_click(graph.center(), Modifiers::default());
+    eq_ui_tests::eq_double_click(&mut visual, graph.center());
     pump_until(&editor, cx, settled);
     let before = editor.read_with(cx, |view, _| view.state.as_ref().unwrap().project.clone());
     visual.simulate_keystrokes("p");
@@ -1358,6 +1358,7 @@ fn comparison_callback_fixture(cx: &mut TestAppContext, recovery_error: bool) {
         );
         view.playback_candidates
             .push_back(crate::editor::PlaybackCandidate {
+                clip_preview_identity: None,
                 worker_requires_preroll: None,
                 observation: None,
                 audio_revision,

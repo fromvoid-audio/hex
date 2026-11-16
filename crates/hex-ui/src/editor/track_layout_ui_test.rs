@@ -93,7 +93,7 @@ fn track_meter_uses_own_peak_and_stays_inside_compact_header(cx: &mut TestAppCon
             "track-pan",
             "track-mute",
             "track-solo",
-            "track-arm-unavailable",
+            "track-audio-arm",
         ] {
             let control = bounds(&mut visual, prefix, tracks[0]);
             assert!(
@@ -101,7 +101,7 @@ fn track_meter_uses_own_peak_and_stays_inside_compact_header(cx: &mut TestAppCon
                 "{prefix} {control:?} overlaps {meter:?}"
             );
         }
-        let arm = bounds(&mut visual, "track-arm-unavailable", tracks[0]);
+        let arm = bounds(&mut visual, "track-audio-arm", tracks[0]);
         let pan = bounds(&mut visual, "track-pan", tracks[0]);
         assert_eq!(arm.right(), pan.right());
     }
@@ -498,7 +498,11 @@ fn empty_project_main_header_width_handle_uses_current_window_limit(cx: &mut Tes
     let ruler = visual.debug_bounds("timeline-ruler").unwrap();
     let lane = visual.debug_bounds("main-track-lane").unwrap();
     assert_eq!(ruler.size.width, lane.size.width);
-    assert!(lane.size.width >= px(super::browser::MIN_WORKSPACE_WIDTH - TRACK_HEADER_WIDTH));
+    assert!(
+        lane.size.width >= px(super::browser::MIN_WORKSPACE_WIDTH - TRACK_HEADER_WIDTH),
+        "lane={lane:?}, main={main:?}, ruler={ruler:?}, content={:?}",
+        visual.debug_bounds("arrangement-content")
+    );
     assert!(main.size.width >= px(TRACK_HEADER_WIDTH));
     editor.read_with(&visual, |view, _| {
         assert!(view.last_enqueued_edit.is_none())
@@ -973,6 +977,23 @@ fn h_enabled_keyboard_owns_note_69_and_release_while_pending_edits_block_overvie
     pump(&editor, &mut visual);
     focus_workspace(&mut visual, &editor);
     visual.simulate_keystrokes("m");
+    let before = editor.read_with(&visual, |view, _| view.worker_requests_pending);
+    visual.simulate_event(KeyDownEvent {
+        keystroke: Keystroke::parse("t").unwrap(),
+        is_held: false,
+    });
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(
+            view.worker_requests_pending, before,
+            "MIDI note must not add a track"
+        );
+        let notes: Vec<_> = view.computer_keyboard.physical_notes().collect();
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes[0].pitch, 66);
+    });
+    visual.simulate_event(KeyUpEvent {
+        keystroke: Keystroke::parse("t").unwrap(),
+    });
     visual.simulate_event(KeyDownEvent {
         keystroke: Keystroke::parse("h").unwrap(),
         is_held: false,
@@ -1097,8 +1118,8 @@ fn arrangement_z_fits_selected_track_span_and_v_restores_both_axes(cx: &mut Test
         view.selected_track = Some(tracks[7]);
         view.track_selection.replace(&tracks[6..8]);
         view.time_selection = Some(super::time_selection::TimeSelection {
-            anchor_track: tracks[6],
-            end_track: tracks[7],
+            anchor_track: Some(tracks[6]),
+            end_track: Some(tracks[7]),
             anchor_frame: 48_000,
             end_frame: 96_000,
         });

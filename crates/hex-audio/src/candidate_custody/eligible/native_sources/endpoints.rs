@@ -38,6 +38,60 @@ pub(crate) struct NativeEndpointBank {
     ordinary_requirements: bool,
 }
 impl NativeEndpointBank {
+    /// Borrow only the currently installed exact pair. An observed return
+    /// request, stale input, revocation or contention refuses. A return request
+    /// may race this observation; it does not authorize a commit.
+    pub(crate) fn reserve_observed_parameter_input(
+        &self,
+        binding: Binding,
+        source: &hex_plugin_host::transport::ParameterInputSource,
+    ) -> Option<(
+        hex_plugin_host::transport::ParameterInputFence<'_>,
+        EndpointReturnFence<'_>,
+    )> {
+        if self.cycle.revoked() {
+            return None;
+        }
+        let position = self.routing[..self.routing_len]
+            .binary_search_by_key(&Some(binding), |slot| {
+                self.entries[*slot].as_ref().map(|entry| entry.0.binding)
+            })
+            .ok()?;
+        let envelope = self.entries[self.routing[position]].as_ref()?;
+        if envelope.return_requested() || !envelope.0.signal.installed.load(Ordering::Acquire) {
+            return None;
+        }
+        let return_fence = envelope.0.signal.reserve()?;
+        let input_fence = envelope
+            .0
+            .callback
+            .as_ref()?
+            .callback()
+            .reserve_observed_parameter_input(source)?;
+        Some((input_fence, return_fence))
+    }
+
+    pub(crate) fn take_accepted_editor_quantum(
+        &mut self,
+        binding: Binding,
+    ) -> Result<
+        Option<hex_plugin_host::transport::AcceptedEditorQuantum>,
+        hex_plugin_host::transport::Fault,
+    > {
+        use hex_plugin_host::transport::Fault;
+        let index = self.routing[..self.routing_len]
+            .binary_search_by_key(&Some(binding), |slot| {
+                self.entries[*slot].as_ref().map(|entry| entry.0.binding)
+            })
+            .map_err(|_| Fault::Revoked)?;
+        let entry = self.entries[self.routing[index]]
+            .as_mut()
+            .and_then(|entry| entry.0.callback.as_mut())
+            .filter(|entry| entry.transport_is_live())
+            .ok_or(Fault::Revoked)?;
+        Ok(entry.take_accepted_editor_quantum())
+    }
+
     pub(crate) fn take_accepted_manual_parameter(
         &mut self,
         binding: Binding,
@@ -177,6 +231,20 @@ impl NativeEndpointBank {
             .capacity()
             .checked_mul(std::mem::size_of::<Option<NativeEndpointEnvelope>>())
     }
+    #[cfg(test)]
+    pub(crate) fn install_for_test(
+        &mut self,
+        callback: crate::plugin_effects::NativeEffectCallback,
+    ) {
+        let binding = callback.binding();
+        let endpoint = NativeEndpointEnvelope(Box::new(Endpoint {
+            slot: 0,
+            binding,
+            callback: Some(NativeEffectEntry::new(callback)),
+            signal: Arc::new(EndpointSignal::new()),
+        }));
+        assert!(self.install(binding.root, endpoint).is_ok());
+    }
     pub(crate) fn install(
         &mut self,
         root: u64,
@@ -258,7 +326,7 @@ impl NativeEndpointBank {
     pub(crate) fn request_epoch_return(&mut self) {
         self.reject_rendering();
         for endpoint in self.entries.iter().flatten() {
-            endpoint.0.signal.store(true, Ordering::Release);
+            endpoint.0.signal.request_return();
         }
         self.epoch_returned = true;
     }
@@ -382,7 +450,7 @@ impl Custody {
         slot.endpoint_loaned = loaned;
         if loaned {
             if slot.retiring {
-                signal.store(true, Ordering::Release);
+                signal.request_return();
             }
             slot.endpoint_return = Some(signal);
         }

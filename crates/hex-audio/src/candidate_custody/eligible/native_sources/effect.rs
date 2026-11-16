@@ -59,6 +59,7 @@ impl Custody {
                     max_data_bytes,
                     authored.map(AuthoredSelection::parameters),
                     cell.renewal.take(),
+                    authored.and_then(AuthoredSelection::dense_parameter),
                 ) {
                     Ok(owner) => cell.owner = Some(Owner::Effect(owner)),
                     Err(owner) => {

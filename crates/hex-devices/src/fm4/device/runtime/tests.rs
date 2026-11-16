@@ -124,6 +124,190 @@ fn automated(
     )
 }
 #[test]
+fn oscillator_phase_changes_at_sample_offsets_and_returns_to_authored_after_handoff() {
+    struct Phases<'a>(&'a [f32]);
+    impl NativeParameterAutomation for Phases<'_> {
+        fn parameter_ids(&self) -> &[ParameterId] {
+            const IDS: [ParameterId; 1] = [parameter::oscillator_phase(2)];
+            &IDS
+        }
+        fn value_at(&self, id: ParameterId, offset: usize) -> Option<ParameterValue> {
+            if id != parameter::oscillator_phase(2) {
+                return None;
+            }
+            self.0.get(offset).copied().map(ParameterValue::Float)
+        }
+        fn has_sample_rate_modulation(&self, id: ParameterId) -> bool {
+            id == parameter::oscillator_phase(2)
+        }
+    }
+    let resources = BorrowedDeviceResources(&[]);
+    let tuning = hex_lattice::TuningTable::default();
+    let mut settings = Fm4Settings::defaults();
+    settings.envelope = [0.0, 0.0, 1.0, 0.02];
+    // These valid authored turns quantize to the same DSP phase as zero.
+    let authored_turns = f32::MIN_POSITIVE;
+    settings.oscillators[1][2] = authored_turns;
+    settings.modulation[1][0] = 0.25;
+    let (factory, instrument) = prepared(48_000, settings, &tuning);
+    let authored = instrument.prepare_note(60, 127).unwrap();
+    let expected = [0.0, 0.25, 0.5].map(|phase| {
+        let mut settings = settings;
+        settings.oscillators[1][2] = phase;
+        prepared(48_000, settings, &tuning)
+            .1
+            .prepare_note(60, 127)
+            .unwrap()
+    });
+    let phase_id = parameter::oscillator_phase(2);
+    let phase = [0.0, 0.25, 0.5, 0.0, 0.25, 0.5, 0.0, 0.25, 0.5];
+    let mut pair = NativeInstrumentRuntimePair::new(factory.as_ref(), LIMITS).unwrap();
+    let mut output = [[0.0; 2]; 9];
+    pair.begin_block();
+    pair.process_block_with_clock_and_automation(
+        &[on(1, 0, 60, 127)],
+        &mut output[..4],
+        None,
+        &[],
+        &Phases(&phase[..4]),
+        &resources,
+    )
+    .unwrap();
+    pair.process_block_with_clock_and_automation(
+        &[],
+        &mut output[4..],
+        None,
+        &[],
+        &Phases(&phase[4..]),
+        &resources,
+    )
+    .unwrap();
+    pair.commit_block();
+    for (age, frame) in output.into_iter().enumerate() {
+        assert_eq!(
+            frame,
+            expected[age % 3].sample(age as u64, u64::MAX, &resources)
+        );
+    }
+    let ids = TARGETS.map(|target| target.id);
+    let phase_index = ids.iter().position(|&id| id == phase_id).unwrap();
+    let mut values = [None; TARGETS.len()];
+    pair.copy_committed_parameter_targets(&ids, &mut values)
+        .unwrap();
+    assert_eq!(values[phase_index], Some(ParameterValue::Float(0.5)));
+    let mut successor = NativeInstrumentRuntimePair::new(factory.as_ref(), LIMITS).unwrap();
+    successor.inherit_from(&pair).unwrap();
+    let mut restored = [[0.0; 2]; 5];
+    successor.begin_block();
+    successor
+        .process_block(&[], &mut restored, &resources)
+        .unwrap();
+    successor.commit_block();
+    for (offset, frame) in restored.into_iter().enumerate() {
+        assert_eq!(
+            frame,
+            authored.sample((output.len() + offset) as u64, u64::MAX, &resources)
+        );
+    }
+    successor
+        .copy_committed_parameter_targets(&ids, &mut values)
+        .unwrap();
+    assert_eq!(
+        values[phase_index],
+        Some(ParameterValue::Float(authored_turns))
+    );
+}
+
+#[test]
+fn oscillator_level_reveals_an_fm_ancestor_even_with_a_pressure_revealed_carrier() {
+    use std::num::NonZeroU64;
+
+    struct Levels;
+    impl NativeParameterAutomation for Levels {
+        fn parameter_ids(&self) -> &[ParameterId] {
+            const IDS: [ParameterId; 1] = [parameter::oscillator_level(2)];
+            &IDS
+        }
+
+        fn value_at(&self, id: ParameterId, offset: usize) -> Option<ParameterValue> {
+            (id == parameter::oscillator_level(2)).then_some(ParameterValue::Float(
+                if offset.is_multiple_of(2) { 0.0 } else { 0.5 },
+            ))
+        }
+
+        fn has_sample_rate_modulation(&self, id: ParameterId) -> bool {
+            id == parameter::oscillator_level(2)
+        }
+    }
+
+    let tuning = hex_lattice::TuningTable::default();
+    let resources = BorrowedDeviceResources(&[]);
+    let mut settings = Fm4Settings::defaults();
+    settings.envelope = [0.0, 0.0, 1.0, 0.02];
+    settings.oscillators[1][1] = 0.0;
+    settings.modulation[1][0] = 0.25;
+    let oracle = [0.0, 0.5].map(|level| {
+        let mut authored = settings;
+        authored.oscillators[1][1] = level;
+        let (_, instrument) = prepared(48_000, authored, &tuning);
+        instrument.prepare_note(60, 127).unwrap()
+    });
+    for use_pressure in [false, true] {
+        let mut authored = settings;
+        if use_pressure {
+            authored.carriers = [0.0; 4];
+        }
+        let (mut factory, instrument) = prepared(48_000, authored, &tuning);
+        let mut events = vec![on(1, 0, 60, 127)];
+        if use_pressure {
+            let carrier = CARRIERS[0];
+            let route = PreparedPressureRoute::new(
+                carrier,
+                modulation_semantics(carrier.id).unwrap(),
+                0.5,
+                [0.0, 1.0],
+            )
+            .unwrap();
+            factory = instrument
+                .prepare_mutable_note_pressure(
+                    hex_lattice_contract::ModulationSourceId::new(1).unwrap(),
+                    Some(route),
+                )
+                .unwrap();
+            events.push(NativeInstrumentEvent::NotePressure {
+                frame_offset: 0,
+                occurrence_id: NonZeroU64::new(1).unwrap(),
+                value: 127,
+            });
+        }
+        let mut pair = NativeInstrumentRuntimePair::new(factory.as_ref(), LIMITS).unwrap();
+        let mut frames = [[0.0; 2]; 138];
+        pair.begin_block();
+        pair.process_block_with_clock_and_automation(
+            &events,
+            &mut frames,
+            None,
+            &[],
+            &Levels,
+            &resources,
+        )
+        .unwrap();
+        pair.commit_block();
+        for (index, actual) in frames.into_iter().enumerate() {
+            assert_eq!(
+                actual,
+                oracle[index % 2].sample(index as u64, u64::MAX, &resources),
+                "pressure={use_pressure}, frame {index}",
+            );
+        }
+        let mut effective = [None; TARGETS.len()];
+        pair.copy_committed_parameter_targets(&TARGETS.map(|target| target.id), &mut effective)
+            .unwrap();
+        assert_eq!(effective[2], Some(ParameterValue::Float(0.5)));
+    }
+}
+
+#[test]
 fn carrier_automation_reveals_inaudible_operator_on_held_note_then_restores_base() {
     let rate = 48000;
     let tuning = hex_lattice::TuningTable::default();
@@ -296,7 +480,10 @@ fn occurrence_gain_is_applied_after_original_velocity_law_and_released_ids_retir
     let note = source.prepare_note(60, 23).unwrap();
     let mut pair = NativeInstrumentRuntimePair::new(factory.as_ref(), LIMITS).unwrap();
     let resources = BorrowedDeviceResources(&[]);
-    let gain = NativeInstrumentOccurrenceGain::new(8, 0.25, 0.75, 32, 0).unwrap();
+    let gain = NativeInstrumentOccurrenceGain::new(8, 0.25, 0.75, 32, 0)
+        .unwrap()
+        .with_attenuation(1.0, 0.25, 32, 0)
+        .unwrap();
     pair.begin_block();
     let mut frames = [[0.0; 2]; 32];
     pair.process_block_with_clock_and_occurrence_gains(
@@ -315,8 +502,10 @@ fn occurrence_gain_is_applied_after_original_velocity_law_and_released_ids_retir
     .unwrap();
     pair.commit_block();
     for (age, actual) in frames.iter().enumerate() {
+        let clip_gain = 0.25 + 0.5 * age as f64 / 32.0;
+        let attenuation = 1.0 - 0.75 * age as f64 / 32.0;
         let expected = (f64::from(note.sample(age as u64, 12, &resources)[0])
-            * gain.value_at_offset(age as u64)) as f32;
+            * (clip_gain * attenuation)) as f32;
         assert_eq!(*actual, [expected; 2]);
     }
     assert!(pair.committed_is_quiescent());
@@ -402,7 +591,13 @@ fn committed_target_snapshot_finishes_existing_ramp_and_preserves_resolved_base_
     let (factory, _) = prepared(48000, settings, &tuning);
     let mut original = NativeInstrumentRuntimePair::new(factory.as_ref(), LIMITS).unwrap();
     let mut frozen = NativeInstrumentRuntimePair::new(factory.as_ref(), LIMITS).unwrap();
-    let ids = CARRIERS.map(|descriptor| descriptor.id);
+    let read_carriers = |pair: &NativeInstrumentRuntimePair| {
+        let ids = TARGETS.map(|descriptor| descriptor.id);
+        let mut values = [None; TARGETS.len()];
+        pair.copy_committed_parameter_targets(&ids, &mut values)
+            .unwrap();
+        <[Option<ParameterValue>; 4]>::try_from(&values[values.len() - CARRIERS.len()..]).unwrap()
+    };
     let base = settings
         .carriers
         .map(|value| Some(ParameterValue::Float(value)));
@@ -412,9 +607,7 @@ fn committed_target_snapshot_finishes_existing_ramp_and_preserves_resolved_base_
     };
     for pair in [&mut original, &mut frozen] {
         assert!(pair.supports_committed_parameter_targets());
-        let mut copied = [None; 4];
-        pair.copy_committed_parameter_targets(&ids, &mut copied)
-            .unwrap();
+        let copied = read_carriers(pair);
         assert_eq!(
             copied, base,
             "authored Base differs from descriptor defaults"
@@ -442,15 +635,14 @@ fn committed_target_snapshot_finishes_existing_ramp_and_preserves_resolved_base_
             &targets,
         )
         .unwrap();
-        pair.copy_committed_parameter_targets(&ids, &mut copied)
-            .unwrap();
-        assert_eq!(copied, base, "open speculative ramp is not committed");
+        assert_eq!(
+            read_carriers(pair),
+            base,
+            "open speculative ramp is not committed"
+        );
         pair.commit_block();
     }
-    let mut copied = [None; 4];
-    frozen
-        .copy_committed_parameter_targets(&ids, &mut copied)
-        .unwrap();
+    let copied = read_carriers(&frozen);
     assert_eq!(
         copied,
         [-0.25, 0.5, 0.5, 0.0].map(|value| Some(ParameterValue::Float(value)))
@@ -472,18 +664,14 @@ fn committed_target_snapshot_finishes_existing_ramp_and_preserves_resolved_base_
     };
     let mut next = NativeInstrumentRuntimePair::new(next_factory.as_ref(), LIMITS).unwrap();
     next.retarget_from(&frozen, proof.as_ref()).unwrap();
-    let mut after_retarget = [None; 4];
-    next.copy_committed_parameter_targets(&ids, &mut after_retarget)
-        .unwrap();
+    let after_retarget = read_carriers(&next);
     assert_eq!(
         after_retarget, copied,
         "observation must not resolve a new prepared Base"
     );
     next.reset();
-    next.copy_committed_parameter_targets(&ids, &mut after_retarget)
-        .unwrap();
     assert_eq!(
-        after_retarget,
+        read_carriers(&next),
         next_settings
             .carriers
             .map(|value| Some(ParameterValue::Float(value)))
@@ -523,8 +711,83 @@ fn committed_target_snapshot_finishes_existing_ramp_and_preserves_resolved_base_
     assert!(actual[..64].iter().any(|frame| frame[0] != 0.0));
     assert_eq!(&actual[actual.len() - 16..], &[[0.0; 2]; 16]);
     frozen.reset();
-    frozen
-        .copy_committed_parameter_targets(&ids, &mut copied)
+    assert_eq!(read_carriers(&frozen), base);
+}
+
+#[test]
+fn an_unmapped_pressure_slot_retains_held_readings_until_its_identity_changes() {
+    use hex_lattice_contract::ModulationSourceId;
+    use std::num::NonZeroU64;
+
+    let settings = Fm4Settings::defaults();
+    let resources = BorrowedDeviceResources(&[]);
+    let tuning = hex_lattice::TuningTable::default();
+    let (_, instrument) = prepared(48_000, settings, &tuning);
+    let target = CARRIERS[0];
+    let route = PreparedPressureRoute::new(
+        target,
+        modulation_semantics(target.id).unwrap(),
+        -0.25,
+        [0.0, 1.0],
+    )
+    .unwrap();
+    let first = ModulationSourceId::new(7).unwrap();
+    let replacement = ModulationSourceId::new(8).unwrap();
+    let pair = |id, route| {
+        let factory = instrument.prepare_mutable_note_pressure(id, route).unwrap();
+        NativeInstrumentRuntimePair::new(factory.as_ref(), LIMITS).unwrap()
+    };
+    let mut listening = pair(first, None);
+    let mut mapped = pair(first, Some(route));
+    let mut replaced = pair(replacement, Some(route));
+    let mut initial = [[0.0; 2]; 11];
+    listening.begin_block();
+    listening
+        .process_block(
+            &[
+                on(1, 0, 60, 127),
+                NativeInstrumentEvent::NotePressure {
+                    frame_offset: 2,
+                    occurrence_id: NonZeroU64::new(1).unwrap(),
+                    value: 127,
+                },
+            ],
+            &mut initial,
+            &resources,
+        )
         .unwrap();
-    assert_eq!(copied, base);
+    listening.commit_block();
+
+    let mut modified = settings;
+    modified.carriers[0] = 0.5;
+    let (_, expected) = prepared(48_000, modified, &tuning);
+    let expected = expected.prepare_note(60, 127).unwrap();
+    let original = instrument.prepare_note(60, 127).unwrap();
+    for (index, frame) in initial.into_iter().enumerate() {
+        assert_eq!(frame, original.sample(index as u64, u64::MAX, &resources));
+    }
+
+    let mut pcm = [[0.0; 2]; 19];
+    mapped.inherit_from(&listening).unwrap();
+    mapped.begin_block();
+    mapped.process_block(&[], &mut pcm, &resources).unwrap();
+    mapped.commit_block();
+    for (index, frame) in pcm.into_iter().enumerate() {
+        assert_eq!(
+            frame,
+            expected.sample(11 + index as u64, u64::MAX, &resources)
+        );
+    }
+
+    let mut pcm = [[0.0; 2]; 13];
+    replaced.inherit_from(&mapped).unwrap();
+    replaced.begin_block();
+    replaced.process_block(&[], &mut pcm, &resources).unwrap();
+    replaced.commit_block();
+    for (index, frame) in pcm.into_iter().enumerate() {
+        assert_eq!(
+            frame,
+            original.sample(30 + index as u64, u64::MAX, &resources)
+        );
+    }
 }

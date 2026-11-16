@@ -71,7 +71,7 @@ pub struct CanonicalBasesCapture {
     presentation: hex_plugin_host::protocol::PresentationPlan,
     prepared: PreparedForeignProcessor,
     sample_rate: u32,
-    steps: [u32; hex_plugin_host::transport::MAX_PARAMETER_POINTS],
+    steps: [u32; MAX_FOREIGN_AUTOMATION_TARGETS],
     values: automation::CanonicalParameterBases,
     phase: Phase,
 }
@@ -157,15 +157,15 @@ impl Hosting {
             presentation: original.presentation,
             prepared: original.prepared,
             sample_rate: rate,
-            steps: [0; hex_plugin_host::transport::MAX_PARAMETER_POINTS],
-            values: [None; hex_plugin_host::transport::MAX_PARAMETER_POINTS],
+            steps: [0; MAX_FOREIGN_AUTOMATION_TARGETS],
+            values: [None; MAX_FOREIGN_AUTOMATION_TARGETS],
             phase: Phase::Prepare,
         })
     }
 }
 
 impl CanonicalBasesCapture {
-    #[cfg(test)]
+    #[cfg(all(test, feature = "allocation-probe"))]
     pub(crate) fn awaiting_processing_approval(&self) -> bool {
         matches!(self.phase, Phase::Verify)
     }
@@ -238,8 +238,10 @@ impl CanonicalBasesCapture {
             Some(Progress::Facts(_)) => {
                 output.complete_native_source_preparation(self.scratch, self.presentation)
             }
-            Some(Progress::Prepared { .. }) => output
-                .start_native_effect_with_authored_selection(self.scratch, Some(&self.selection)),
+            Some(Progress::Prepared { .. }) => output.start_native_effect_with_authored_selection(
+                self.scratch,
+                (!self.selection.parameters().1.is_empty()).then_some(&self.selection),
+            ),
             Some(Progress::Effect { prepared }) => self
                 .read_bases(output, prepared)
                 .map(|()| self.phase = Phase::Retire(Ok(()))),
@@ -324,6 +326,12 @@ impl CanonicalBasesCapture {
             self.selection.parameters().1,
             metadata.authored_base_values(),
         )?;
+        // The private restored instance has already established the exact
+        // class and compatible processing profile. An unlaned state has no
+        // parameter capabilities to read or claim.
+        if self.selection.parameters().1.is_empty() {
+            return Ok(());
+        }
         let canonical = self
             .canonical
             .as_ref()
@@ -346,7 +354,7 @@ impl CanonicalBasesCapture {
                 {
                     return Err("native canonical capabilities differ".into());
                 }
-                let mut steps = [0; hex_plugin_host::transport::MAX_PARAMETER_POINTS];
+                let mut steps = [0; MAX_FOREIGN_AUTOMATION_TARGETS];
                 for ((slot, parameter), &expected) in steps
                     .iter_mut()
                     .zip(source.parameters)
@@ -384,7 +392,7 @@ fn copy_values(
     expected: &[u32],
     mut values: impl Iterator<Item = (u32, f64)>,
 ) -> Result<automation::CanonicalParameterBases, &'static str> {
-    let mut result = [None; hex_plugin_host::transport::MAX_PARAMETER_POINTS];
+    let mut result = [None; MAX_FOREIGN_AUTOMATION_TARGETS];
     if expected.len() > result.len() {
         return Err("native canonical base selection exceeds capacity");
     }

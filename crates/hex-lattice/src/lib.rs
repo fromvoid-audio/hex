@@ -14,15 +14,29 @@ mod bypass_ramp;
 #[cfg(any(test, feature = "conformance"))]
 pub mod conformance;
 pub use aux_input::{AuxiliaryBlockError, StereoAuxiliaryBlock};
+mod foreign_modulation;
 mod foreign_processor;
+mod host_input_gain_modulation;
 mod host_output_gain_ramp;
 mod matrix_ramp;
 mod meter;
 mod modulation;
+mod modulation_adsr;
+mod modulation_ahd_release;
+#[cfg(test)]
+mod modulation_graph_tests;
+mod modulation_note_counter;
+mod modulation_note_events;
+mod modulation_note_gate;
+mod modulation_ramp;
 mod modulation_runtime;
+mod modulation_source_routes;
 mod modulation_sources;
+mod modulation_steps;
 mod owned_processor;
 mod parameter_automation;
+mod prepared_modulation;
+pub use prepared_modulation::{MAX_PREPARED_MODULATION_BYTES, PreparedModulationState};
 #[cfg(test)]
 mod static_processing_tests;
 mod tail_split;
@@ -42,6 +56,10 @@ pub use parameter_automation::{
 pub use tail_split::{TailSplit, TailSplitObserver};
 mod resources;
 mod runtime_ownership;
+pub use foreign_modulation::{
+    ForeignModulationRuntime, ForeignModulationSamples, PreparedForeignModulation,
+};
+pub use hex_dsp::LfoWaveform;
 pub use hex_lattice_contract::ModulationSourceId;
 use hex_lattice_contract::{
     DeviceContractError, DeviceTypeId, MAX_NATIVE_DEVICE_TYPES, NativeDeviceMetadata,
@@ -50,11 +68,17 @@ use hex_lattice_contract::{
 pub use hex_tuning::{TuningTable, Waveform as TuningWaveform};
 pub use meter::{DeviceMeter, DevicePeaks, DynamicsMeter, RenderWorkMeter, RenderWorkSample};
 pub use modulation::{
-    MAX_MODULATION_BLOCK_FRAMES, MAX_MODULATION_ROUTES, MAX_MODULATION_SOURCES, ModulationBlock,
-    ModulationRoute, ModulationTarget, PreparedModulation,
+    ForeignModulationRoute, HostGainModulationRoute, MAX_MODULATION_BLOCK_FRAMES,
+    MAX_MODULATION_ROUTES, MAX_MODULATION_SOURCES, ModulationBlock, ModulationRoute,
+    ModulationTarget, PreparedModulation, PreparedPressureRoute,
 };
+pub use modulation_ramp::ModulationRampCurve;
 pub use modulation_runtime::ModulationRuntime;
-pub use modulation_sources::{ModulationLfoBank, PreparedLfoSource};
+pub use modulation_source_routes::{SourceModulationParameter, SourceModulationRoute};
+pub use modulation_sources::{
+    ModulationMathOperation, ModulationSourceBank, PreparedModulationSource,
+};
+pub use modulation_steps::{MAX_MODULATION_STEPS, ModulationStepDirection};
 pub use owned_processor::{
     MAX_RESERVED_BYPASS_FRAMES, OwnedProcessorRuntime, PreparedOwnedProcessorRuntime,
     PreparedProcessorFactory, PreparedRuntimeDevice, PreparedRuntimeInstance,
@@ -77,6 +101,13 @@ pub use analytic_continuation::{
 /// A registered memoryless linear effect definition. Implementations own their
 /// parameter codec in the contract trait and prepare a validated matrix here.
 pub trait NativeDeviceDefinition: NativeDeviceMetadata {
+    /// Bound for the immutable factory of an asset-free source effect with no
+    /// host automation or modulation. Include its Arc backing and owned/shared
+    /// children, but not the separately charged state, meter or runtime.
+    /// Unknown providers cannot publish as compiled source effects.
+    fn source_effect_factory_bytes(&self) -> Option<usize> {
+        None
+    }
     /// Control-only explicit shared-envelope capability, independent of older
     /// device-local envelope metadata. Default providers do not opt in.
     fn supports_parameter_automation(
@@ -228,6 +259,14 @@ pub trait PreparedNativeProcessor: Send + Sync {
     fn supports_parameter_automation(&self, _parameter: hex_lattice_contract::ParameterId) -> bool {
         false
     }
+    /// Exact semantics for sample-rate modulation through this prepared factory.
+    /// Absence refuses delivery, independently of automation support.
+    fn parameter_modulation_semantics(
+        &self,
+        _parameter: hex_lattice_contract::ParameterId,
+    ) -> Option<hex_lattice_contract::ParameterSemantics> {
+        None
+    }
     fn runtime_version(&self) -> u32;
     /// Total bytes owned by one runtime: object plus every heap allocation,
     /// including reserved capacities, buffers and nested owned allocations.
@@ -288,6 +327,29 @@ pub trait NativeProcessorRuntime: StdAny + Send {
     /// Opt in when the host can ramp changed input matrix coefficients while
     /// the processor retains its committed history and authored settings.
     fn supports_manual_host_matrix_retarget(&self) -> bool {
+        false
+    }
+
+    /// Prove that only the host input matrix changed while this processor's
+    /// authored processing configuration remains identical. Both candidate
+    /// twins must accept the same committed donor before a source handoff.
+    /// This callback-side query must be bounded, allocation-free and read-only.
+    fn can_retarget_source_host_matrix_from(&self, _previous: &dyn NativeProcessorRuntime) -> bool {
+        false
+    }
+
+    /// Prove that an internal source parameter change can copy the donor's
+    /// history and transition continuously. The host independently requires
+    /// the same input matrix, identity and an unautomated source. Both twins
+    /// must accept the committed donor. This query is bounded and read-only.
+    fn can_retarget_source_parameters_from(&self, _previous: &dyn NativeProcessorRuntime) -> bool {
+        false
+    }
+
+    /// This native provider can replace an equivalent static matrix at a
+    /// source modulation handoff without losing any filter or signal history.
+    /// The host still requires the exact same authored configuration and rate.
+    fn permits_memoryless_modulation_handoff(&self) -> bool {
         false
     }
 
@@ -522,19 +584,21 @@ pub enum NodeSignalPhase {
 }
 
 /// Typed owner identity for a prepared effect chain. Numeric IDs share the
-/// canonical project allocator, while this tag keeps track and return owners
-/// distinct during runtime history handoff.
+/// canonical project allocator, while this tag keeps track, return and source
+/// owners distinct during runtime history handoff. A source retains its identity
+/// when the receiving track changes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProcessorChainOwner {
     Main,
     Track(u64),
     Return(u64),
+    Source(u64),
 }
 
 impl ProcessorChainOwner {
     fn is_valid(self) -> bool {
         match self {
-            Self::Track(id) | Self::Return(id) => id != 0,
+            Self::Track(id) | Self::Return(id) | Self::Source(id) => id != 0,
             Self::Main => true,
         }
     }
@@ -697,7 +761,108 @@ impl ExternalParameterAutomation for ExternalSegment<'_> {
     }
 }
 
+struct OffsetParameterValues<'a> {
+    values: &'a dyn NativeParameterAutomation,
+    offset: usize,
+}
+impl NativeParameterAutomation for OffsetParameterValues<'_> {
+    fn parameter_ids(&self) -> &[hex_lattice_contract::ParameterId] {
+        self.values.parameter_ids()
+    }
+    fn value_at(
+        &self,
+        id: hex_lattice_contract::ParameterId,
+        offset: usize,
+    ) -> Option<hex_lattice_contract::ParameterValue> {
+        self.values.value_at(id, self.offset.checked_add(offset)?)
+    }
+    fn values_at(
+        &self,
+        offset: usize,
+        output: &mut [Option<hex_lattice_contract::ParameterValue>],
+    ) -> Result<(), DeviceContractError> {
+        self.values.values_at(
+            self.offset
+                .checked_add(offset)
+                .ok_or(DeviceContractError::InvalidParameterValue)?,
+            output,
+        )
+    }
+}
+
+/// Borrowed exact old/new state identities for a possible foreign effect continuation.
+/// The comparison allows only the same unautomated, unmodulated effect with
+/// unchanged host gains, bypass and prepared endpoint. This matcher owns no
+/// source, endpoint, graph, or publication authority. The
+/// host must independently authenticate and fence its particular candidate and
+/// predecessor before passing it to a handoff; it must retain both states and
+/// all associated resources until the callback returns the graph on control.
+pub struct ForeignConfigurationContinuation<'a> {
+    identity: ProcessorInstanceIdentity,
+    binding: hex_lattice_contract::ForeignProcessorBinding,
+    previous: &'a NativeDeviceState,
+    candidate: &'a NativeDeviceState,
+}
+
+impl<'a> ForeignConfigurationContinuation<'a> {
+    pub fn new(
+        identity: ProcessorInstanceIdentity,
+        binding: hex_lattice_contract::ForeignProcessorBinding,
+        previous: &'a NativeDeviceState,
+        candidate: &'a NativeDeviceState,
+    ) -> Result<Self, DeviceContractError> {
+        if !binding.is_valid() || binding.instance != identity.device_id() {
+            return Err(DeviceContractError::InvalidId);
+        }
+        previous.require_asset_free_processing()?;
+        candidate.require_asset_free_processing()?;
+        if previous.type_id() != candidate.type_id()
+            || previous.state_version() != candidate.state_version()
+            || previous.input_gain_millidb() != candidate.input_gain_millidb()
+            || previous.output_gain_millidb() != candidate.output_gain_millidb()
+        {
+            return Err(DeviceContractError::InvalidDescriptor);
+        }
+        Ok(Self {
+            identity,
+            binding,
+            previous,
+            candidate,
+        })
+    }
+
+    fn matches(
+        &self,
+        previous: &RuntimeEntry,
+        candidate: &RuntimeEntry,
+        previous_state: &NativeDeviceState,
+        candidate_state: &NativeDeviceState,
+    ) -> bool {
+        previous.owner == self.identity.owner()
+            && previous.device_id == self.identity.device_id()
+            && previous.bypassed == candidate.bypassed
+            && previous.input_gain == candidate.input_gain
+            && previous.output_gain == candidate.output_gain
+            && previous.automation.is_empty()
+            && candidate.automation.is_empty()
+            && previous.modulation.is_none()
+            && candidate.modulation.is_none()
+            && previous.runtime.foreign_modulation().is_none()
+            && candidate.runtime.foreign_modulation().is_none()
+            && matches!((&previous.runtime, &candidate.runtime),
+                (RuntimeOwnership::Foreign(old), RuntimeOwnership::Foreign(new))
+                    if old.prepared == new.prepared
+                        && !old.prepared.is_instrument_profile()
+                        && old.prepared.binding() == Some(self.binding))
+            && previous_state.shares_payload_storage_with(self.previous)
+            && candidate_state.shares_payload_storage_with(self.candidate)
+            && previous_state == self.previous
+            && candidate_state == self.candidate
+    }
+}
+
 struct RuntimeEntry {
+    modulation: Option<ModulationRuntime>,
     automation: PreparedParameterAutomation,
     automation_frozen: bool,
     // Host effective trims are transactional too: a late render refusal cannot
@@ -734,6 +899,46 @@ struct RuntimeEntry {
 }
 
 impl RuntimeEntry {
+    fn modulates_host_input(&self) -> bool {
+        !self.bypassed
+            && !self.automation_frozen
+            && self
+                .modulation
+                .as_ref()
+                .is_some_and(|value| value.program().host_input_base().is_some())
+    }
+
+    fn modulates_host_output(&self) -> bool {
+        !self.bypassed
+            && !self.automation_frozen
+            && self
+                .modulation
+                .as_ref()
+                .is_some_and(|value| value.program().host_output_base().is_some())
+    }
+
+    fn matches_memoryless_modulation_handoff(&self, old: &Self) -> bool {
+        self.owner == old.owner
+            && self.device_id == old.device_id
+            && self.device_type == old.device_type
+            && self.sample_rate == old.sample_rate
+            && self.algorithmic_latency_frames == Some(0)
+            && old.algorithmic_latency_frames == Some(0)
+            && !old.committed_matrix_ramp.is_active()
+            && !old.committed_output_gain_ramp.active()
+            && !old.committed_bypass_ramp.is_active()
+            && self
+                .runtime
+                .permits_memoryless_modulation_handoff_from(&old.runtime)
+            && self
+                .configuration
+                .as_ref()
+                .zip(old.configuration.as_ref())
+                .is_some_and(|(new, old)| {
+                    std::sync::Arc::ptr_eq(new, old) || new.processing_eq_on_callback(old)
+                })
+    }
+
     fn can_smooth_bypass_from(&self, old: &Self) -> bool {
         if self.algorithmic_latency_frames == Some(0) && old.algorithmic_latency_frames == Some(0) {
             self.supports_smoothed_bypass && old.supports_smoothed_bypass
@@ -834,6 +1039,10 @@ impl NativeInstrumentClock for OffsetClock<'_> {
 /// operates on `scratch` and `commit_block` is called only after the entire
 /// containing block succeeds. Construction and final destruction are control
 /// side responsibilities.
+/// Modulation advances per processed frame, including bypass. Detached output
+/// tails hold their last effective controls. `reset` retriggers sources at their
+/// prepared initial phase/rate; graph handoff matches source IDs within a stable
+/// device owner/id/type/rate independently of the provider's DSP layout version.
 pub struct NativeRuntimeChain {
     entries: Vec<RuntimeEntry>,
     stateful_count: usize,
@@ -865,6 +1074,7 @@ impl<'a> NativeRuntimeStorage<'a> {
 impl<'a> NativeRuntimeEntryStorage<'a> {
     fn new(entry: &RuntimeEntry) -> NativeRuntimeEntryStorage<'_> {
         let RuntimeEntry {
+            modulation: _,
             automation: _,
             automation_frozen: _,
             committed_host_gains: _,
@@ -903,6 +1113,13 @@ impl<'a> NativeRuntimeEntryStorage<'a> {
     pub fn automation(&self) -> &'a PreparedParameterAutomation {
         &self.entry.automation
     }
+    pub fn modulation_storage_bytes(&self) -> Option<usize> {
+        self.entry
+            .modulation
+            .as_ref()
+            .map_or(Some(0), ModulationRuntime::heap_storage_bytes)?
+            .checked_add(self.entry.runtime.foreign_modulation_bytes()?)
+    }
     pub fn runtime_box_identities(&self) -> (Option<usize>, Option<usize>) {
         self.entry
             .runtime
@@ -919,6 +1136,16 @@ impl<'a> NativeRuntimeEntryStorage<'a> {
     pub fn is_owned_transaction(&self) -> bool {
         matches!(self.entry.runtime, RuntimeOwnership::Owned(_))
     }
+    /// Read-only typed view of the actual owned transaction. The caller retains
+    /// the closed constructor's independent factory and storage custody proofs.
+    pub fn owned_runtime<T: OwnedProcessorRuntime>(&self) -> Option<&T> {
+        let RuntimeOwnership::Owned(runtime) = &self.entry.runtime else {
+            return None;
+        };
+        let concrete: &dyn std::any::Any = runtime.as_ref();
+        concrete.downcast_ref()
+    }
+
     /// Borrow only actual scalar foreign facts. This transfers no endpoint or
     /// source custody and cannot classify another runtime family as foreign.
     pub fn foreign_processor(&self) -> Option<PreparedForeignProcessor> {
@@ -956,7 +1183,24 @@ impl<'a> NativeRuntimeEntryStorage<'a> {
             .is_some_and(|(a, b)| a.as_any().is::<T>() && b.as_any().is::<T>())
     }
     pub fn matches_prepared_runtime_storage(&self, prepared: &PreparedRuntimeInstance) -> bool {
-        self.entry.automation == prepared.automation
+        (match (
+            &self.entry.modulation,
+            self.entry.runtime.foreign_modulation(),
+            &prepared.modulation,
+        ) {
+            (Some(runtime), None, Some(declaration)) => {
+                declaration.foreign_effect().is_none() && declaration.matches_runtime(runtime)
+            }
+            (None, Some(runtime), Some(declaration)) => {
+                declaration.foreign_effect().is_some_and(|target| {
+                    self.foreign_processor()
+                        .and_then(PreparedForeignProcessor::binding)
+                        == Some(target.binding)
+                }) && runtime.matches_prepared(declaration)
+            }
+            (None, None, None) => true,
+            _ => false,
+        }) && self.entry.automation == prepared.automation
             && self.entry.owner == prepared.owner
             && self.entry.device_id == prepared.device_id
             && self.entry.device_type == prepared.device_type
@@ -971,7 +1215,9 @@ impl<'a> NativeRuntimeEntryStorage<'a> {
     /// Compare against an already borrowed prepared owner. The view never
     /// returns or clones either shared owning field.
     pub fn matches_prepared_storage(&self, prepared: &PreparedProcessorInstance) -> bool {
-        self.entry.owner == prepared.owner
+        self.entry.modulation.is_none()
+            && self.entry.runtime.foreign_modulation().is_none()
+            && self.entry.owner == prepared.owner
             && self.entry.device_id == prepared.device_id
             && self.entry.device_type == prepared.device_type
             && self.entry.sample_rate == prepared.sample_rate
@@ -1017,17 +1263,59 @@ impl NativeRuntimeChain {
     }
 
     pub fn new(instances: Vec<PreparedProcessorInstance>) -> Result<Self, DeviceContractError> {
-        Self::from_prepared(instances.into_iter().map(PreparedRuntimeInstance::from))
+        Self::new_prepared_iter(instances.into_iter().map(PreparedRuntimeInstance::from))
     }
 
     pub fn new_prepared(
         instances: Vec<PreparedRuntimeInstance>,
     ) -> Result<Self, DeviceContractError> {
-        Self::from_prepared(instances.into_iter())
+        Self::new_prepared_iter(instances.into_iter())
     }
 
-    fn from_prepared(
+    fn new_prepared_iter(
         instances: impl ExactSizeIterator<Item = PreparedRuntimeInstance>,
+    ) -> Result<Self, DeviceContractError> {
+        Self::from_prepared(instances.map(|instance| (instance, None)))
+    }
+
+    /// Build a source receiver's runtime on control from its retained native
+    /// recipe. The recipe keeps its declaration; the exclusive runtime
+    /// owns its automation program and any mutable modulation history.
+    pub fn new_from_source_recipe(
+        instances: &[PreparedRuntimeInstance],
+    ) -> Result<Self, DeviceContractError> {
+        if instances.iter().any(|instance| {
+            !matches!(instance.owner, ProcessorChainOwner::Source(_))
+                || instance.automation.foreign().is_some()
+                || instance
+                    .modulation
+                    .as_ref()
+                    .is_some_and(|modulation| modulation.foreign_effect().is_some())
+        }) {
+            return Err(DeviceContractError::UnsupportedProcessingClass);
+        }
+        Self::from_prepared(instances.iter().map(|instance| {
+            let entry = PreparedRuntimeInstance {
+                modulation: None,
+                automation: instance.automation.clone(),
+                meter: std::sync::Arc::clone(&instance.meter),
+                owner: instance.owner,
+                device_id: instance.device_id,
+                device_type: instance.device_type,
+                matrix: instance.matrix,
+                bypassed: instance.bypassed,
+                sample_rate: instance.sample_rate,
+                configuration: instance.configuration.clone(),
+                definition: instance.definition.clone(),
+            };
+            (entry, instance.modulation.as_ref())
+        }))
+    }
+
+    fn from_prepared<'a>(
+        instances: impl ExactSizeIterator<
+            Item = (PreparedRuntimeInstance, Option<&'a PreparedModulationState>),
+        >,
     ) -> Result<Self, DeviceContractError> {
         let mut entries = Vec::new();
         entries
@@ -1036,7 +1324,11 @@ impl NativeRuntimeChain {
         let mut declared_pair_bytes = 0_usize;
         let mut stateful_count = 0_usize;
         let mut automation_bytes = 0usize;
-        for instance in instances {
+        for (instance, borrowed_modulation) in instances {
+            let prepared_modulation = borrowed_modulation.or(instance.modulation.as_ref());
+            if let Some(prepared) = prepared_modulation {
+                prepared.validate_sample_rate(instance.sample_rate)?;
+            }
             automation_bytes = automation_bytes
                 .checked_add(
                     instance
@@ -1157,7 +1449,100 @@ impl NativeRuntimeChain {
             } else {
                 (None, None)
             };
-            let runtime = RuntimeOwnership::prepare(instance.definition.as_ref())?;
+            let mut runtime = RuntimeOwnership::prepare(instance.definition.as_ref())?;
+            let modulation = match prepared_modulation {
+                Some(prepared) if prepared.foreign_effect().is_some() => {
+                    let (RuntimeOwnership::Foreign(effect), Some(target)) =
+                        (&mut runtime, prepared.foreign_effect())
+                    else {
+                        return Err(DeviceContractError::ForeignProcessingUnavailable);
+                    };
+                    if effect.prepared.binding() != Some(target.binding)
+                        || target.binding.instance != instance.device_id
+                        || matches!(instance.owner, ProcessorChainOwner::Source(_))
+                        || effect.prepared.is_instrument_profile()
+                        || usize::from(effect.prepared.quantum_frames())
+                            > foreign_modulation::MAX_FOREIGN_MODULATION_CHUNK
+                        || !instance.automation.parameter_ids().is_empty()
+                    {
+                        return Err(DeviceContractError::ForeignProcessingUnavailable);
+                    }
+                    let modulation = prepared.prepare_foreign_effect()?;
+                    automation_bytes = automation_bytes
+                        .checked_add(
+                            modulation
+                                .storage_bytes()
+                                .ok_or(DeviceContractError::RuntimeBudgetExceeded)?,
+                        )
+                        .filter(|bytes| *bytes <= MAX_PROCESSOR_BANK_RUNTIME_BYTES * 2)
+                        .ok_or(DeviceContractError::RuntimeBudgetExceeded)?;
+                    effect.modulation = Some(Box::new(modulation));
+                    None
+                }
+                Some(prepared) => Some(prepared.prepare()?),
+                None => None,
+            };
+            if let Some(modulation) = &modulation {
+                let input = modulation.program().host_input_base();
+                let output = modulation.program().host_output_base();
+                if (input.is_some() || output.is_some())
+                    && (latency != Some(0)
+                        || instance.configuration.as_ref().is_none_or(|state| {
+                            input.is_some_and(|base| state.input_gain_millidb() != base.millidb())
+                                || output.is_some_and(|base| {
+                                    state.output_gain_millidb() != base.millidb()
+                                })
+                        }))
+                {
+                    return Err(DeviceContractError::UnsupportedProcessingClass);
+                }
+                if (!modulation.program().parameter_ids().is_empty()
+                    && !instance.matrix.is_identity())
+                    || matches!(
+                        instance.definition,
+                        Some(PreparedProcessorFactory::Foreign(_))
+                    )
+                {
+                    return Err(DeviceContractError::UnsupportedProcessingClass);
+                }
+                for &parameter in modulation.program().parameter_ids() {
+                    let program = modulation.program();
+                    if instance.definition.as_ref().is_none_or(|factory| {
+                        !factory.supports_parameter_automation(parameter)
+                            || factory.parameter_automation_descriptor(parameter)
+                                != program.descriptor(parameter)
+                            || (program.has_routes(parameter)
+                                && factory.parameter_modulation_semantics(parameter).filter(
+                                    |semantics| {
+                                        semantics.modulation
+                                            == hex_lattice_contract::ParameterModulation::SampleRate
+                                    },
+                                ) != program.semantics(parameter))
+                    }) || !runtime.supports_parameter_automation(parameter)
+                    {
+                        return Err(DeviceContractError::UnsupportedProcessingClass);
+                    }
+                }
+                if instance.automation.parameter_ids().iter().any(|id| {
+                    modulation
+                        .program()
+                        .parameter_ids()
+                        .binary_search(id)
+                        .is_err()
+                }) {
+                    return Err(DeviceContractError::UnknownParameter);
+                }
+                automation_bytes = automation_bytes
+                    .checked_add(
+                        modulation
+                            .heap_storage_bytes()
+                            .ok_or(DeviceContractError::RuntimeBudgetExceeded)?,
+                    )
+                    .ok_or(DeviceContractError::RuntimeBudgetExceeded)?;
+                if automation_bytes > MAX_PROCESSOR_BANK_RUNTIME_BYTES * 2 {
+                    return Err(DeviceContractError::RuntimeBudgetExceeded);
+                }
+            }
             for &parameter in instance.automation.parameter_ids() {
                 if instance.definition.as_ref().is_none_or(|factory| {
                     !factory.supports_parameter_automation(parameter)
@@ -1169,6 +1554,7 @@ impl NativeRuntimeChain {
                 }
             }
             entries.push(RuntimeEntry {
+                modulation,
                 automation: instance.automation,
                 automation_frozen: false,
                 committed_host_gains: instance.configuration.as_ref().map_or([1.0; 2], |state| {
@@ -1264,7 +1650,14 @@ impl NativeRuntimeChain {
             )?
             .checked_add(self.declared_pair_bytes)?
             .checked_add(self.entries.iter().try_fold(0usize, |sum, entry| {
-                sum.checked_add(entry.automation.storage_bytes()?)
+                sum.checked_add(entry.automation.storage_bytes()?)?
+                    .checked_add(
+                        entry
+                            .modulation
+                            .as_ref()
+                            .map_or(Some(0), ModulationRuntime::heap_storage_bytes)?,
+                    )?
+                    .checked_add(entry.runtime.foreign_modulation_bytes()?)
             })?)
     }
 
@@ -1298,7 +1691,13 @@ impl NativeRuntimeChain {
             )
         })?;
         let programs = instances.iter().try_fold(0usize, |sum, instance| {
-            sum.checked_add(instance.automation.storage_bytes()?)
+            sum.checked_add(instance.automation.storage_bytes()?)?
+                .checked_add(
+                    instance
+                        .modulation
+                        .as_ref()
+                        .map_or(Some(0), PreparedModulationState::quoted_runtime_heap_bytes)?,
+                )
         })?;
         Self::preflight_bytes(instances.len(), payloads)?.checked_add(programs)
     }
@@ -1313,9 +1712,11 @@ impl NativeRuntimeChain {
     }
 
     pub fn has_stateful_processors(&self) -> bool {
-        self.entries
-            .iter()
-            .any(|entry| entry.runtime.is_stateful() || !entry.automation.is_empty())
+        self.entries.iter().any(|entry| {
+            entry.runtime.is_stateful()
+                || !entry.automation.is_empty()
+                || entry.modulation.is_some()
+        })
     }
 
     /// Preflight and apply a transient audition to the exact current processor
@@ -1467,6 +1868,7 @@ impl NativeRuntimeChain {
                 && entry.algorithmic_latency_frames == Some(0)
                 && entry.output_tail == (OutputTail::Finite { max_tail_frames: 0 })
                 && entry.automation.is_empty()
+                && entry.modulation.is_none()
                 && !entry.committed_matrix_ramp.is_active()
                 && !entry.committed_bypass_ramp.is_active()
                 && !entry.committed_output_gain_ramp.active()
@@ -1503,6 +1905,27 @@ impl NativeRuntimeChain {
     /// `range.len() * MAX_NATIVE_DEVICE_STATE_BYTES` payload bytes in the
     /// worst case. Larger VST3 state must share its immutable payload allocation.
     pub fn configuration_matches_range(&self, other: &Self, range: std::ops::Range<usize>) -> bool {
+        self.configuration_matches_range_inner(other, range, None)
+    }
+
+    /// Compare a single host-authenticated foreign continuation alongside the
+    /// ordinary immutable graph rules. This is comparison only: it neither
+    /// validates the host's witness nor transfers source or tail custody.
+    pub fn configuration_matches_range_with_foreign_continuation(
+        &self,
+        other: &Self,
+        range: std::ops::Range<usize>,
+        continuation: &ForeignConfigurationContinuation<'_>,
+    ) -> bool {
+        self.configuration_matches_range_inner(other, range, Some(continuation))
+    }
+
+    fn configuration_matches_range_inner(
+        &self,
+        other: &Self,
+        range: std::ops::Range<usize>,
+        continuation: Option<&ForeignConfigurationContinuation<'_>>,
+    ) -> bool {
         if range.start > range.end
             || range.end > self.entries.len()
             || range.end > other.entries.len()
@@ -1541,12 +1964,175 @@ impl NativeRuntimeChain {
                         })
                     && left.matrix == right.matrix
                     && match (&left.configuration, &right.configuration) {
-                        (Some(left), Some(right)) => {
-                            std::sync::Arc::ptr_eq(left, right) || left.processing_eq_on_callback(right)
+                        (Some(previous_state), Some(candidate_state)) => {
+                            std::sync::Arc::ptr_eq(previous_state, candidate_state)
+                                || previous_state.processing_eq_on_callback(candidate_state)
+                                || continuation.is_some_and(|proof| {
+                                    proof.matches(left, right, previous_state, candidate_state)
+                                })
                         }
                         _ => false,
                     }
             })
+    }
+
+    /// Preflight a retiring-donor transfer for a source effect recipe. The
+    /// native provider, trims and topology must still match. A live edit may
+    /// replace a static matrix with a provider that explicitly proves it has
+    /// no signal history to carry, or retarget a matching unautomated,
+    /// memoryless source matrix through the existing host ramp. A stateful
+    /// provider may also admit a changed host matrix if both candidate twins
+    /// explicitly prove that their own processing configuration is unchanged
+    /// and the ordinary history and retarget preflights succeed. Compatible
+    /// automation changes keep the existing DSP history under the same
+    /// configuration and tail bound.
+    /// A live continuation may append one new, memoryless identity matrix
+    /// after an exactly matching nonempty prefix. The new stage has neutral
+    /// trims, no automation/modulation, latency or tail, and a distinct source
+    /// device identity. Strict continuation compares the entire declaration.
+    pub fn can_transfer_source_recipe_history_from(
+        &self,
+        previous: &Self,
+        allow_control_edit: bool,
+    ) -> bool {
+        // An identity-only final stage adds no signal or control history. Keep
+        // the old prefix exact and transfer it to the candidate before use.
+        // The candidate's new identity must not alias any donor entry.
+        let neutral_append = allow_control_edit
+            && !previous.is_empty()
+            && previous.len().checked_add(1) == Some(self.len())
+            && self.entries.last().is_some_and(|appended| {
+                matches!(appended.owner, ProcessorChainOwner::Source(_))
+                    && previous.entries.iter().all(|old| {
+                        old.owner == appended.owner
+                            && old.sample_rate == appended.sample_rate
+                            && old.device_id != appended.device_id
+                    })
+                    && matches!(appended.runtime, RuntimeOwnership::Memoryless)
+                    && appended.configuration.is_some()
+                    && !appended.bypassed
+                    && appended.input_gain == 1.0
+                    && appended.output_gain == 1.0
+                    && appended.matrix == StereoMatrix::identity()
+                    && appended.algorithmic_latency_frames == Some(0)
+                    && appended.output_tail == (OutputTail::Finite { max_tail_frames: 0 })
+                    && appended.automation.is_empty()
+                    && appended.modulation.is_none()
+                    && appended.committed_transient_output_gain
+                        == host_output_gain_ramp::TransientGain::Follow
+                    && appended.scratch_transient_output_gain
+                        == host_output_gain_ramp::TransientGain::Follow
+                    && appended.committed_host_gains == [1.0, 1.0]
+                    && appended.scratch_host_gains == [1.0, 1.0]
+                    && !appended.scratch_matrix_ramp.is_active()
+                    && !appended.scratch_output_gain_ramp.active()
+                    && !appended.scratch_bypass_ramp.is_active()
+                    && !appended.committed_matrix_ramp.is_active()
+                    && !appended.committed_output_gain_ramp.active()
+                    && !appended.committed_bypass_ramp.is_active()
+            });
+        if neutral_append {
+            return self.entries.iter().zip(&previous.entries).enumerate().all(
+                |(index, (left, right))| {
+                    !matches!(left.runtime, RuntimeOwnership::Foreign(_))
+                        && !matches!(right.runtime, RuntimeOwnership::Foreign(_))
+                        && left.bypassed == right.bypassed
+                        && left.input_gain == right.input_gain
+                        && left.output_gain == right.output_gain
+                        && left.algorithmic_latency_frames == right.algorithmic_latency_frames
+                        && left.output_tail == right.output_tail
+                        && self.configuration_matches_range(previous, index..index + 1)
+                        && left.runtime.same_foreign_modulation(&right.runtime)
+                        && match (&left.modulation, &right.modulation) {
+                            (None, None) => true,
+                            (Some(left), Some(right)) => left.same_declaration(right),
+                            _ => false,
+                        }
+                },
+            ) && !self.transition_busy_from(previous)
+                && self.can_inherit_from(previous);
+        }
+        self.len() == previous.len()
+            && self.entries.iter().zip(&previous.entries).enumerate().all(
+                |(index, (left, right))| {
+                    !matches!(left.runtime, RuntimeOwnership::Foreign(_))
+                        && !matches!(right.runtime, RuntimeOwnership::Foreign(_))
+                        && left.bypassed == right.bypassed
+                        && left.input_gain == right.input_gain
+                        && left.output_gain == right.output_gain
+                        && left.algorithmic_latency_frames == right.algorithmic_latency_frames
+                        && ((left.output_tail == right.output_tail
+                            && self.configuration_matches_range(previous, index..index + 1))
+                            || allow_control_edit
+                                && left.matches_memoryless_modulation_handoff(right)
+                            // A static, zero-latency source matrix has no DSP
+                            // history to retarget, even when different authored
+                            // settings resolve to the same matrix. The existing identity preflight
+                            // and inherited matrix ramp preserve its live signal.
+                            || allow_control_edit
+                                && matches!(left.owner, ProcessorChainOwner::Source(_))
+                                && matches!(left.runtime, RuntimeOwnership::Memoryless)
+                                && matches!(right.runtime, RuntimeOwnership::Memoryless)
+                                && left.configuration.is_some()
+                                && right.configuration.is_some()
+                                && left.algorithmic_latency_frames == Some(0)
+                                && right.algorithmic_latency_frames == Some(0)
+                                && left.output_tail == (OutputTail::Finite { max_tail_frames: 0 })
+                                && right.output_tail == (OutputTail::Finite { max_tail_frames: 0 })
+                                && left.automation.is_empty()
+                                && right.automation.is_empty()
+                                && left.modulation.is_none()
+                                && right.modulation.is_none()
+                                && self.can_retarget_parameters_from_range(previous, index..index + 1)
+                            || allow_control_edit
+                                && matches!(left.owner, ProcessorChainOwner::Source(_))
+                                && left.configuration.is_some()
+                                && right.configuration.is_some()
+                                && left.output_tail == right.output_tail
+                                && left.automation.is_empty()
+                                && right.automation.is_empty()
+                                && left.modulation.is_none()
+                                && right.modulation.is_none()
+                                && left.runtime.can_retarget_source_host_matrix_from(&right.runtime)
+                                && self.can_retarget_parameters_from_range(previous, index..index + 1)
+                            || allow_control_edit
+                                && matches!(left.owner, ProcessorChainOwner::Source(_))
+                                && !left.bypassed
+                                && left.configuration.is_some()
+                                && right.configuration.is_some()
+                                && left.output_tail == right.output_tail
+                                && left.matrix == right.matrix
+                                && left.automation.is_empty()
+                                && right.automation.is_empty()
+                                && left.modulation.is_none()
+                                && right.modulation.is_none()
+                                && left.runtime.can_retarget_source_parameters_from(&right.runtime)
+                                && self.can_retarget_parameters_from_range(previous, index..index + 1)
+                            || allow_control_edit
+                                && left.output_tail == right.output_tail
+                                && left.matrix == right.matrix
+                                && left
+                                    .configuration
+                                    .as_ref()
+                                    .zip(right.configuration.as_ref())
+                                    .is_some_and(|(new, old)| {
+                                        std::sync::Arc::ptr_eq(new, old)
+                                            || new.processing_eq_on_callback(old)
+                                    })
+                                && self
+                                    .can_retarget_parameters_from_range(previous, index..index + 1))
+                        && (allow_control_edit
+                            || left.runtime.same_foreign_modulation(&right.runtime))
+                        && (allow_control_edit
+                            || match (&left.modulation, &right.modulation) {
+                                (None, None) => true,
+                                (Some(left), Some(right)) => left.same_declaration(right),
+                                _ => false,
+                            })
+                },
+            )
+            && !self.transition_busy_from(previous)
+            && self.can_inherit_from(previous)
     }
 
     /// Whether a same-position processor range can keep history across an
@@ -1916,6 +2502,7 @@ impl NativeRuntimeChain {
     ) {
         self.inherit_host_stage_ramps(previous, &excluded_old_range);
         self.inherit_bypass_ramps(previous, &excluded_old_range);
+        self.inherit_modulation(previous, &excluded_old_range);
         for entry in &mut self.entries {
             if let Some((index, old)) = previous.entries.iter().enumerate().find(|(_, old)| {
                 Self::same_runtime_identity(entry, old) && old.runtime.is_stateful()
@@ -1954,12 +2541,28 @@ impl NativeRuntimeChain {
     ) {
         self.inherit_host_stage_ramps(previous, &excluded);
         self.inherit_bypass_ramps(previous, &excluded);
+        self.inherit_modulation(previous, &excluded);
         for entry in &mut self.entries {
             if let Some((index, old)) = previous.entries.iter_mut().enumerate().find(|(_, old)| {
                 Self::same_runtime_identity(entry, old) && old.runtime.is_stateful()
             }) && !excluded.contains(&index)
             {
                 entry.runtime.transfer_history_from(&mut old.runtime);
+            }
+        }
+    }
+
+    fn inherit_modulation(&mut self, previous: &Self, excluded: &std::ops::Range<usize>) {
+        for entry in &mut self.entries {
+            if let Some((index, old)) = previous.entries.iter().enumerate().find(|(_, old)| {
+                entry.owner == old.owner
+                    && entry.device_id == old.device_id
+                    && entry.device_type == old.device_type
+                    && entry.sample_rate == old.sample_rate
+            }) && !excluded.contains(&index)
+                && let (Some(current), Some(old)) = (&mut entry.modulation, &old.modulation)
+            {
+                current.inherit_graph_committed(old);
             }
         }
     }
@@ -2078,6 +2681,9 @@ impl NativeRuntimeChain {
     /// Start a transactional block by copying committed histories into twins.
     pub fn begin_block(&mut self) {
         for entry in &mut self.entries {
+            if let Some(modulation) = &mut entry.modulation {
+                modulation.begin();
+            }
             entry.scratch_host_gains = entry.committed_host_gains;
             entry.scratch_output_gain_ramp = entry.committed_output_gain_ramp;
             entry.scratch_transient_output_gain = entry.committed_transient_output_gain;
@@ -2977,10 +3583,11 @@ impl NativeRuntimeChain {
         {
             return Err(DeviceContractError::UnsupportedProcessingClass);
         }
-        if !entry.bypassed && !is_foreign {
+        let modulates_input = entry.modulates_host_input();
+        if !entry.bypassed && !is_foreign && !modulates_input {
             Self::apply_host_gain(entry, frames, clock, true, input, external)?;
         }
-        if entry.metering {
+        if entry.metering && !modulates_input {
             if is_foreign {
                 entry
                     .meter
@@ -2991,26 +3598,17 @@ impl NativeRuntimeChain {
         }
         let mut foreign_applies_output_gain = false;
         if let Some(key) = key {
-            if !entry.bypassed {
+            if !entry.bypassed && !modulates_input {
                 entry.scratch_matrix_ramp.apply_block(entry.matrix, frames);
             }
-            let values = (!entry.automation.parameter_ids().is_empty() && !entry.automation_frozen)
-                .then(|| {
-                    entry.automation.block_with_optional_external(
-                        clock,
-                        frames.len(),
-                        input,
-                        external,
-                    )
-                })
-                .transpose()?;
-            entry.runtime.process_auxiliary(
-                StereoAuxiliaryBlock::paired(frames, key),
+            Self::process_native_provider(
+                entry,
+                frames,
+                Some(key),
                 clock,
-                values
-                    .as_ref()
-                    .map(|value| value as &dyn NativeParameterAutomation),
-                entry.bypassed,
+                output_clock,
+                input,
+                external,
             )?;
         } else if let RuntimeOwnership::Foreign(runtime) = &mut entry.runtime {
             let configuration = entry
@@ -3047,26 +3645,33 @@ impl NativeRuntimeChain {
             } else {
                 clock
             };
-            foreign.process_segment(node, frame_offset, frames, clock)?;
+            if let Some(modulation) = &mut runtime.modulation {
+                modulation.process_effect_segment(
+                    node,
+                    frame_offset,
+                    frames,
+                    clock,
+                    foreign,
+                    entry.automation_frozen,
+                )?;
+            } else {
+                foreign.process_segment(node, frame_offset, frames, clock)?;
+            }
             runtime.scratch_drained =
                 matches!(runtime.prepared.output_tail(), OutputTail::Finite { .. })
                     && foreign.committed_tail_is_drained(node);
         } else if entry.bypassed {
-            if entry.runtime.is_stateful() {
+            if entry.runtime.is_stateful() || entry.modulation.is_some() {
                 if entry.matrix.is_identity() {
-                    if !entry.automation.parameter_ids().is_empty() && !entry.automation_frozen {
-                        let values = entry.automation.block_with_optional_external(
-                            clock,
-                            frames.len(),
-                            input,
-                            external,
-                        )?;
-                        entry
-                            .runtime
-                            .process_automation(frames, clock, &values, true)?;
-                    } else {
-                        entry.runtime.process_bypassed_with_clock(frames, clock)?;
-                    }
+                    Self::process_native_provider(
+                        entry,
+                        frames,
+                        None,
+                        clock,
+                        output_clock,
+                        input,
+                        external,
+                    )?;
                 } else {
                     for (frame_index, frame) in frames.iter_mut().enumerate() {
                         let audible = *frame;
@@ -3077,35 +3682,49 @@ impl NativeRuntimeChain {
                             clock,
                             offset: frame_index,
                         });
-                        entry.runtime.process_bypassed_with_clock(
-                            std::slice::from_mut(&mut internal),
-                            shifted
-                                .as_ref()
-                                .map(|clock| clock as &dyn NativeInstrumentClock),
-                        )?;
+                        let shifted = shifted
+                            .as_ref()
+                            .map(|clock| clock as &dyn NativeInstrumentClock);
+                        if entry.modulation.is_some() {
+                            // A nonidentity matrix can coexist only with an
+                            // unassigned bank. Advance it while the processor
+                            // sees the same private input it would without it.
+                            Self::process_native_provider(
+                                entry,
+                                std::slice::from_mut(&mut internal),
+                                None,
+                                shifted,
+                                None,
+                                None,
+                                None,
+                            )?;
+                        } else {
+                            entry.runtime.process_bypassed_with_clock(
+                                std::slice::from_mut(&mut internal),
+                                shifted,
+                            )?;
+                        }
                         *frame = audible;
                     }
                 }
             }
         } else {
-            entry.scratch_matrix_ramp.apply_block(entry.matrix, frames);
-            if !entry.automation.parameter_ids().is_empty() && !entry.automation_frozen {
-                let values = entry.automation.block_with_optional_external(
-                    clock,
-                    frames.len(),
-                    input,
-                    external,
-                )?;
-                entry
-                    .runtime
-                    .process_automation(frames, clock, &values, false)?;
-            } else {
-                entry.runtime.process_with_clock(frames, clock)?;
+            if !modulates_input {
+                entry.scratch_matrix_ramp.apply_block(entry.matrix, frames);
             }
+            Self::process_native_provider(
+                entry,
+                frames,
+                None,
+                clock,
+                output_clock,
+                input,
+                external,
+            )?;
         }
-        if !entry.bypassed && !foreign_applies_output_gain {
+        if !entry.bypassed && !foreign_applies_output_gain && !entry.modulates_host_output() {
             Self::apply_host_gain(entry, frames, output_clock, false, input, external)?;
-        } else if !entry.bypassed && !frames.is_empty() {
+        } else if !entry.bypassed && foreign_applies_output_gain && !frames.is_empty() {
             entry.scratch_host_gains[1] = if entry.automation_frozen {
                 entry.committed_host_gains[1]
             } else {
@@ -3116,6 +3735,171 @@ impl NativeRuntimeChain {
             entry.meter.observe_output(frames);
         }
         Ok(())
+    }
+
+    fn process_native_provider(
+        entry: &mut RuntimeEntry,
+        frames: &mut [StereoFrame],
+        key: Option<&[StereoFrame]>,
+        clock: Option<&dyn NativeInstrumentClock>,
+        output_clock: Option<&dyn NativeInstrumentClock>,
+        input: Option<NativeTransientValue>,
+        external: Option<&dyn ExternalParameterAutomation>,
+    ) -> Result<(), DeviceContractError> {
+        let modulates_input = entry.modulates_host_input();
+        let values = (modulates_input
+            || (!entry.automation.parameter_ids().is_empty() && !entry.automation_frozen))
+            .then(|| {
+                entry
+                    .automation
+                    .block_with_optional_external(clock, frames.len(), input, external)
+            })
+            .transpose()?;
+        let input_stage = values.as_ref().filter(|_| modulates_input);
+        let upstream = values
+            .as_ref()
+            .map(|value| value as &dyn NativeParameterAutomation);
+        use host_output_gain_ramp::TransientGain;
+        let host_values = entry
+            .modulates_host_output()
+            .then(|| {
+                entry.automation.block_with_optional_external(
+                    output_clock,
+                    frames.len(),
+                    input,
+                    external,
+                )
+            })
+            .transpose()?;
+        let transient = entry.scratch_transient_output_gain;
+        let host_target = hex_lattice_contract::DeviceAutomationTarget::HostOutputGain;
+        if host_values.is_some()
+            && !frames.is_empty()
+            && transient == TransientGain::Follow
+            && (entry.automation.has_host_target(host_target)
+                || input.is_some_and(|input| input.target() == host_target))
+        {
+            entry.scratch_output_gain_ramp = host_output_gain_ramp::OutputGainRamp::INACTIVE;
+        }
+        let runtime = &mut entry.runtime;
+        if let Some(modulation) = entry
+            .modulation
+            .as_mut()
+            .filter(|_| !entry.automation_frozen)
+        {
+            let tap_required = input_stage.is_some() && modulation.follows_input();
+            let chunk_frames = if tap_required {
+                modulation
+                    .chunk_frames()
+                    .min(host_input_gain_modulation::TAP_FRAMES)
+            } else {
+                modulation.chunk_frames()
+            };
+            let mut offset = 0usize;
+            for chunk in frames.chunks_mut(chunk_frames) {
+                let end = offset
+                    .checked_add(chunk.len())
+                    .ok_or(DeviceContractError::InvalidDescriptor)?;
+                let shifted = clock.map(|clock| OffsetClock { clock, offset });
+                let chunk_clock = shifted
+                    .as_ref()
+                    .map(|clock| clock as &dyn NativeInstrumentClock);
+                let shifted_values =
+                    upstream.map(|values| OffsetParameterValues { values, offset });
+                let chunk_values = shifted_values
+                    .as_ref()
+                    .map(|values| values as &dyn NativeParameterAutomation);
+                let chunk_key = key
+                    .map(|key| {
+                        key.get(offset..end)
+                            .ok_or(DeviceContractError::InvalidDescriptor)
+                    })
+                    .transpose()?;
+                let mut tap;
+                let follower_input = if let Some(input) = input_stage.filter(|_| tap_required) {
+                    tap = [[0.0; 2]; host_input_gain_modulation::TAP_FRAMES];
+                    let tap = &mut tap[..chunk.len()];
+                    host_input_gain_modulation::prepare_tap(
+                        tap,
+                        chunk,
+                        entry.input_gain,
+                        input,
+                        offset,
+                        entry.scratch_matrix_ramp,
+                        entry.matrix,
+                    );
+                    Some(&*tap)
+                } else {
+                    None
+                };
+                modulation.render_audio_chunk(
+                    chunk,
+                    follower_input,
+                    chunk_values,
+                    chunk_clock,
+                    |chunk, values| {
+                        if let Some(input) = input_stage {
+                            if let Some(gain) =
+                                host_input_gain_modulation::apply(input, values, offset, chunk)?
+                            {
+                                entry.scratch_host_gains[0] = gain;
+                            }
+                            if entry.metering {
+                                entry.meter.observe_input(chunk);
+                            }
+                            entry.scratch_matrix_ramp.apply_block(entry.matrix, chunk);
+                        }
+                        if let Some(key) = chunk_key {
+                            runtime.process_auxiliary(
+                                StereoAuxiliaryBlock::paired(chunk, key),
+                                chunk_clock,
+                                (!values.parameter_ids().is_empty()).then_some(values),
+                                entry.bypassed,
+                            )
+                        } else if values.parameter_ids().is_empty() {
+                            if entry.bypassed {
+                                runtime.process_bypassed_with_clock(chunk, chunk_clock)
+                            } else {
+                                runtime.process_with_clock(chunk, chunk_clock)
+                            }
+                        } else {
+                            runtime.process_automation(chunk, chunk_clock, values, entry.bypassed)
+                        }?;
+                        if let Some(host) = host_values.as_ref()
+                            && let Some(gain) = host_output_gain_ramp::apply_modulated(
+                                &mut entry.scratch_output_gain_ramp,
+                                transient,
+                                host,
+                                values,
+                                offset,
+                                chunk,
+                            )?
+                        {
+                            entry.scratch_host_gains[1] = gain;
+                        }
+                        Ok(())
+                    },
+                )?;
+                offset = end;
+            }
+            if host_values.is_some() && !frames.is_empty() {
+                host_output_gain_ramp::finish_release(entry);
+            }
+            Ok(())
+        } else if let Some(key) = key {
+            runtime.process_auxiliary(
+                StereoAuxiliaryBlock::paired(frames, key),
+                clock,
+                upstream,
+                entry.bypassed,
+            )
+        } else if let Some(values) = upstream {
+            runtime.process_automation(frames, clock, values, entry.bypassed)
+        } else if entry.bypassed {
+            runtime.process_bypassed_with_clock(frames, clock)
+        } else {
+            runtime.process_with_clock(frames, clock)
+        }
     }
 
     fn apply_host_gain(
@@ -3147,7 +3931,7 @@ impl NativeRuntimeChain {
                     .automation
                     .block_with_external(clock, frames.len(), None, external)?;
             }
-            if let Some(applied) = entry.scratch_output_gain_ramp.apply(gain, frames) {
+            if let Some(applied) = entry.scratch_output_gain_ramp.apply(gain.linear(), frames) {
                 entry.scratch_host_gains[index] = applied;
             }
             return Ok(());
@@ -3209,6 +3993,11 @@ impl NativeRuntimeChain {
     /// Commit histories after all render chunks and source reads succeeded.
     pub fn commit_block(&mut self) {
         for entry in &mut self.entries {
+            if let Some(modulation) = &mut entry.modulation {
+                // Commit follows successful rendering of every provider; a
+                // refused render aborts the enclosing transaction instead.
+                let _ = modulation.commit();
+            }
             entry.committed_host_gains = entry.scratch_host_gains;
             entry.committed_output_gain_ramp = entry.scratch_output_gain_ramp;
             entry.committed_transient_output_gain = entry.scratch_transient_output_gain;
@@ -3225,6 +4014,9 @@ impl NativeRuntimeChain {
     /// Restore every speculative effect after a later host render stage refuses.
     pub fn rollback_block(&mut self) {
         for entry in &mut self.entries {
+            if let Some(modulation) = &mut entry.modulation {
+                modulation.rollback();
+            }
             entry.scratch_host_gains = entry.committed_host_gains;
             entry.scratch_output_gain_ramp = entry.committed_output_gain_ramp;
             entry.scratch_transient_output_gain = entry.committed_transient_output_gain;
@@ -3238,6 +4030,9 @@ impl NativeRuntimeChain {
     /// Reset both committed and speculative state at a hard discontinuity.
     pub fn reset(&mut self) {
         for entry in &mut self.entries {
+            if let Some(modulation) = &mut entry.modulation {
+                modulation.reset_all();
+            }
             entry.committed_host_gains = [entry.input_gain, entry.output_gain];
             entry.scratch_host_gains = entry.committed_host_gains;
             entry.committed_output_gain_ramp = host_output_gain_ramp::OutputGainRamp::INACTIVE;
@@ -3583,6 +4378,20 @@ mod tests {
     use super::*;
     use hex_lattice_contract::{ParameterDescriptor, ParameterId, ParameterValue};
 
+    #[test]
+    fn source_processor_identity_is_nonzero_and_independent_of_track_and_return() {
+        let source = ProcessorInstanceIdentity::new(ProcessorChainOwner::Source(4), 7).unwrap();
+        assert_eq!(source.owner(), ProcessorChainOwner::Source(4));
+        assert_ne!(
+            source,
+            ProcessorInstanceIdentity::new(ProcessorChainOwner::Track(4), 7).unwrap()
+        );
+        assert_ne!(
+            source,
+            ProcessorInstanceIdentity::new(ProcessorChainOwner::Return(4), 7).unwrap()
+        );
+        assert!(ProcessorInstanceIdentity::new(ProcessorChainOwner::Source(0), 7).is_err());
+    }
     const DYNAMICS_METER_TYPE: DeviceTypeId = DeviceTypeId::from_static("test.dynamics-meter");
 
     struct DynamicsMeterPrepared;
@@ -5040,5 +5849,268 @@ mod tests {
         active_reference.commit_block();
 
         assert_eq!(resumed_bypassed, resumed_reference);
+    }
+
+    #[test]
+    fn source_neutral_append_requires_exact_prefix_and_fresh_identity() {
+        let device_type = DeviceTypeId::from_static("test.source-matrix");
+        let entry = |source, id, gain: f32, config: u8| PreparedProcessorInstance {
+            meter: Default::default(),
+            owner: ProcessorChainOwner::Source(source),
+            device_id: id,
+            device_type,
+            matrix: StereoMatrix::new([[gain, 0.0], [0.0, gain]]).unwrap(),
+            bypassed: false,
+            sample_rate: 48_000,
+            configuration: Some(std::sync::Arc::new(
+                NativeDeviceState::new(device_type, 1, vec![config]).unwrap(),
+            )),
+            definition: None,
+        };
+        let old = NativeRuntimeChain::new(vec![entry(1, 4, 1.0, 1)]).unwrap();
+        let candidate =
+            NativeRuntimeChain::new(vec![entry(1, 4, 1.0, 1), entry(1, 5, 1.0, 2)]).unwrap();
+        assert!(candidate.can_transfer_source_recipe_history_from(&old, true));
+        assert!(!candidate.can_transfer_source_recipe_history_from(&old, false));
+        for bad in [
+            vec![entry(1, 4, 1.0, 1), entry(1, 5, 2.0, 2)],
+            vec![entry(1, 4, 1.0, 1), entry(1, 4, 1.0, 2)],
+            vec![entry(1, 4, 1.0, 1), entry(2, 5, 1.0, 2)],
+            vec![entry(1, 4, 1.0, 2), entry(1, 5, 1.0, 2)],
+            vec![entry(1, 5, 1.0, 2), entry(1, 4, 1.0, 1)],
+        ] {
+            let candidate = NativeRuntimeChain::new(bad).unwrap();
+            assert!(!candidate.can_transfer_source_recipe_history_from(&old, true));
+        }
+        let mixed_owner =
+            NativeRuntimeChain::new(vec![entry(1, 4, 1.0, 1), entry(2, 6, 1.0, 3)]).unwrap();
+        let mixed_owner_candidate = NativeRuntimeChain::new(vec![
+            entry(1, 4, 1.0, 1),
+            entry(2, 6, 1.0, 3),
+            entry(1, 5, 1.0, 2),
+        ])
+        .unwrap();
+        assert!(!mixed_owner_candidate.can_transfer_source_recipe_history_from(&mixed_owner, true));
+        let mut other_rate = entry(1, 6, 1.0, 3);
+        other_rate.sample_rate = 44_100;
+        let mixed_rate = NativeRuntimeChain::new(vec![entry(1, 4, 1.0, 1), other_rate]).unwrap();
+        let mut other_rate_candidate = entry(1, 6, 1.0, 3);
+        other_rate_candidate.sample_rate = 44_100;
+        let mixed_rate_candidate = NativeRuntimeChain::new(vec![
+            entry(1, 4, 1.0, 1),
+            other_rate_candidate,
+            entry(1, 5, 1.0, 2),
+        ])
+        .unwrap();
+        assert!(!mixed_rate_candidate.can_transfer_source_recipe_history_from(&mixed_rate, true));
+        let mut wrong_rate = entry(1, 5, 1.0, 2);
+        wrong_rate.sample_rate = 44_100;
+        let wrong_rate = NativeRuntimeChain::new(vec![entry(1, 4, 1.0, 1), wrong_rate]).unwrap();
+        assert!(!wrong_rate.can_transfer_source_recipe_history_from(&old, true));
+        let mut automated =
+            NativeRuntimeChain::new(vec![entry(1, 4, 1.0, 1), entry(1, 5, 1.0, 2)]).unwrap();
+        automated.entries[1]
+            .automation
+            .arm_host_gain_input(hex_lattice_contract::DeviceAutomationTarget::HostOutputGain)
+            .unwrap();
+        assert!(!automated.can_transfer_source_recipe_history_from(&old, true));
+        let mut stateful = entry(1, 5, 1.0, 2);
+        stateful.definition = Some(std::sync::Arc::new(DelayedTailPrepared));
+        let stateful = NativeRuntimeChain::new(vec![entry(1, 4, 1.0, 1), stateful]).unwrap();
+        assert!(!stateful.can_transfer_source_recipe_history_from(&old, true));
+        let mut transient =
+            NativeRuntimeChain::new(vec![entry(1, 4, 1.0, 1), entry(1, 5, 1.0, 2)]).unwrap();
+        transient.entries[1].committed_transient_output_gain =
+            host_output_gain_ramp::TransientGain::Releasing;
+        assert!(!transient.can_transfer_source_recipe_history_from(&old, true));
+        let empty = NativeRuntimeChain::new(vec![]).unwrap();
+        assert!(!old.can_transfer_source_recipe_history_from(&empty, true));
+    }
+
+    #[test]
+    fn source_matrix_retarget_requires_matching_known_memoryless_identity() {
+        let device_type = DeviceTypeId::from_static("test.source-matrix");
+        let make = |source, id, rate, gain: f32, config: Option<u8>, bypassed, definition| {
+            NativeRuntimeChain::new(vec![PreparedProcessorInstance {
+                meter: Default::default(),
+                owner: ProcessorChainOwner::Source(source),
+                device_id: id,
+                device_type,
+                matrix: StereoMatrix::new([[gain, 0.0], [0.0, gain]]).unwrap(),
+                bypassed,
+                sample_rate: rate,
+                configuration: config.map(|n| {
+                    std::sync::Arc::new(NativeDeviceState::new(device_type, 1, vec![n]).unwrap())
+                }),
+                definition,
+            }])
+            .unwrap()
+        };
+        let old = make(1, 4, 48_000, 1.0, Some(1), false, None);
+        let candidate = make(1, 4, 48_000, 2.0, Some(2), false, None);
+        assert!(candidate.can_transfer_source_recipe_history_from(&old, true));
+        assert!(!candidate.can_transfer_source_recipe_history_from(&old, false));
+        let equivalent = make(1, 4, 48_000, 1.0, Some(2), false, None);
+        assert!(equivalent.can_transfer_source_recipe_history_from(&old, true));
+        assert!(!equivalent.can_transfer_source_recipe_history_from(&old, false));
+        for bad in [
+            make(2, 4, 48_000, 1.0, Some(2), false, None),
+            make(1, 5, 48_000, 1.0, Some(2), false, None),
+            make(1, 4, 48_000, 1.0, None, false, None),
+            make(2, 4, 48_000, 2.0, Some(2), false, None),
+            make(1, 5, 48_000, 2.0, Some(2), false, None),
+            make(1, 4, 44_100, 2.0, Some(2), false, None),
+            make(1, 4, 48_000, 2.0, None, false, None),
+            make(1, 4, 48_000, 2.0, Some(2), true, None),
+        ] {
+            assert!(!bad.can_transfer_source_recipe_history_from(&old, true));
+        }
+        let unknown_old = make(1, 4, 48_000, 1.0, None, false, None);
+        assert!(!candidate.can_transfer_source_recipe_history_from(&unknown_old, true));
+        let mut automated = make(1, 4, 48_000, 2.0, Some(2), false, None);
+        automated.entries[0]
+            .automation
+            .arm_host_gain_input(hex_lattice_contract::DeviceAutomationTarget::HostOutputGain)
+            .unwrap();
+        assert!(!automated.can_transfer_source_recipe_history_from(&old, true));
+        automated.entries[0].matrix = old.entries[0].matrix;
+        assert!(!automated.can_transfer_source_recipe_history_from(&old, true));
+        let factory: std::sync::Arc<dyn PreparedNativeProcessor> =
+            std::sync::Arc::new(DelayedTailPrepared);
+        let stateful_old = make(
+            1,
+            4,
+            48_000,
+            1.0,
+            Some(1),
+            false,
+            Some(std::sync::Arc::clone(&factory)),
+        );
+        let stateful_new = make(1, 4, 48_000, 2.0, Some(2), false, Some(factory));
+        assert!(!stateful_new.can_transfer_source_recipe_history_from(&stateful_old, true));
+        let mut equivalent_stateful = stateful_new;
+        equivalent_stateful.entries[0].matrix = stateful_old.entries[0].matrix;
+        assert!(!equivalent_stateful.can_transfer_source_recipe_history_from(&stateful_old, true));
+    }
+
+    struct SourceMatrixWitness(bool);
+    impl NativeProcessorRuntime for SourceMatrixWitness {
+        fn process_block(
+            &mut self,
+            _frames: &mut [StereoFrame],
+            _resources: &dyn crate::DeviceResources,
+        ) {
+        }
+        fn reset(&mut self) {}
+        fn can_copy_history_from(&self, previous: &dyn NativeProcessorRuntime) -> bool {
+            previous.as_any().is::<Self>()
+        }
+        fn copy_history_from(&mut self, _previous: &dyn NativeProcessorRuntime) {}
+        fn can_retarget_source_host_matrix_from(
+            &self,
+            previous: &dyn NativeProcessorRuntime,
+        ) -> bool {
+            self.0 && previous.as_any().is::<Self>()
+        }
+        fn can_retarget_source_parameters_from(
+            &self,
+            previous: &dyn NativeProcessorRuntime,
+        ) -> bool {
+            self.0 && previous.as_any().is::<Self>()
+        }
+        fn as_any(&self) -> &dyn StdAny {
+            self
+        }
+    }
+
+    #[test]
+    fn source_matrix_provider_proof_requires_both_candidate_twins() {
+        let legacy = |primary, scratch| RuntimeOwnership::Legacy {
+            primary: Box::new(SourceMatrixWitness(primary)),
+            scratch: Box::new(SourceMatrixWitness(scratch)),
+        };
+        let old = legacy(true, true);
+        assert!(legacy(true, true).can_retarget_source_host_matrix_from(&old));
+        assert!(!legacy(false, true).can_retarget_source_host_matrix_from(&old));
+        assert!(!legacy(true, false).can_retarget_source_host_matrix_from(&old));
+        assert!(!RuntimeOwnership::Memoryless.can_retarget_source_host_matrix_from(&old));
+        assert!(legacy(true, true).can_retarget_source_parameters_from(&old));
+        assert!(!legacy(false, true).can_retarget_source_parameters_from(&old));
+        assert!(!legacy(true, false).can_retarget_source_parameters_from(&old));
+        assert!(!RuntimeOwnership::Memoryless.can_retarget_source_parameters_from(&old));
+    }
+
+    struct SourceParameterPrepared;
+    impl PreparedNativeProcessor for SourceParameterPrepared {
+        fn runtime_version(&self) -> u32 {
+            1
+        }
+        fn declared_runtime_bytes(&self) -> usize {
+            std::mem::size_of::<SourceParameterRuntime>()
+        }
+        fn create_runtime(&self) -> Box<dyn NativeProcessorRuntime> {
+            Box::new(SourceParameterRuntime)
+        }
+    }
+    struct SourceParameterRuntime;
+    impl NativeProcessorRuntime for SourceParameterRuntime {
+        fn process_block(&mut self, _: &mut [StereoFrame], _: &dyn crate::DeviceResources) {}
+        fn reset(&mut self) {}
+        fn can_copy_history_from(&self, old: &dyn NativeProcessorRuntime) -> bool {
+            old.as_any().is::<Self>()
+        }
+        fn can_retarget_parameters_from(&self, old: &dyn NativeProcessorRuntime) -> bool {
+            old.as_any().is::<Self>()
+        }
+        fn can_retarget_source_parameters_from(&self, old: &dyn NativeProcessorRuntime) -> bool {
+            old.as_any().is::<Self>()
+        }
+        fn copy_history_from(&mut self, _: &dyn NativeProcessorRuntime) {}
+        fn as_any(&self) -> &dyn StdAny {
+            self
+        }
+    }
+
+    #[test]
+    fn source_parameter_proof_requires_same_identity_matrix_and_no_automation() {
+        let device_type = DeviceTypeId::from_static("test.source-parameter");
+        let make = |source, id, rate, gain: f32, config: Option<u8>, bypassed| {
+            NativeRuntimeChain::new(vec![PreparedProcessorInstance {
+                meter: Default::default(),
+                owner: ProcessorChainOwner::Source(source),
+                device_id: id,
+                device_type,
+                matrix: StereoMatrix::new([[gain, 0.0], [0.0, gain]]).unwrap(),
+                bypassed,
+                sample_rate: rate,
+                configuration: config.map(|value| {
+                    std::sync::Arc::new(
+                        NativeDeviceState::new(device_type, 1, vec![value]).unwrap(),
+                    )
+                }),
+                definition: Some(std::sync::Arc::new(SourceParameterPrepared)),
+            }])
+            .unwrap()
+        };
+        let old = make(1, 4, 48_000, 1.0, Some(1), false);
+        let candidate = make(1, 4, 48_000, 1.0, Some(2), false);
+        assert!(candidate.can_transfer_source_recipe_history_from(&old, true));
+        assert!(!candidate.can_transfer_source_recipe_history_from(&old, false));
+        for bad in [
+            make(2, 4, 48_000, 1.0, Some(2), false),
+            make(1, 5, 48_000, 1.0, Some(2), false),
+            make(1, 4, 44_100, 1.0, Some(2), false),
+            make(1, 4, 48_000, 2.0, Some(2), false),
+            make(1, 4, 48_000, 1.0, None, false),
+            make(1, 4, 48_000, 1.0, Some(2), true),
+        ] {
+            assert!(!bad.can_transfer_source_recipe_history_from(&old, true));
+        }
+        let mut automated = make(1, 4, 48_000, 1.0, Some(2), false);
+        automated.entries[0]
+            .automation
+            .arm_host_gain_input(hex_lattice_contract::DeviceAutomationTarget::HostOutputGain)
+            .unwrap();
+        assert!(!automated.can_transfer_source_recipe_history_from(&old, true));
     }
 }

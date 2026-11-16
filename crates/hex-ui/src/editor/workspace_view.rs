@@ -94,8 +94,13 @@ impl EditorView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
+        let reverse = event.keystroke.modifiers
+            == Modifiers {
+                shift: true,
+                ..Modifiers::default()
+            };
         if event.keystroke.key != "tab"
-            || event.keystroke.modifiers != Modifiers::default()
+            || (event.keystroke.modifiers != Modifiers::default() && !reverse)
             || event.is_held
             || !(self.focus.is_focused(window) || self.track_header_focused(window))
             || self.track_name.is_editing()
@@ -139,6 +144,10 @@ impl EditorView {
             || self.scrub_active()
         {
             return false;
+        }
+        if reverse {
+            return super::device_panel::focus_source_picker_from_workspace(self, window)
+                || super::device_panel::focus_source_manager_from_workspace(self, window);
         }
         self.set_mode(match self.mode {
             EditorMode::Arrangement => EditorMode::Session,

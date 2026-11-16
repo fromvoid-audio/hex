@@ -609,8 +609,8 @@ fn compact_time_range_copy_projects_named_audio_and_midi_fragments_without_mutat
     // rendered handle and uses normal Option-copy routing.
     f.editor.update(&mut f.visual, |view, cx| {
         view.time_selection = Some(super::time_selection::TimeSelection {
-            anchor_track: f.tracks[0],
-            end_track: f.tracks[1],
+            anchor_track: Some(f.tracks[0]),
+            end_track: Some(f.tracks[1]),
             anchor_frame: 0,
             end_frame: 120_000,
         });

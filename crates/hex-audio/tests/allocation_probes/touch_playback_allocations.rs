@@ -106,3 +106,96 @@ fn saved_touch_ramp_renders_without_callback_allocation() {
         }
     }
 }
+
+#[test]
+fn long_native_device_touch_replays_late_steps_without_callback_allocation() {
+    use hex_lattice_contract::{DeviceAutomationTarget, NativeDeviceMetadata};
+    use hex_project::{AutomationValue, DeviceAutomationTouchSpan, DeviceAutomationTouchStep};
+    const STRIDE: u64 = 32;
+    const COUNT: u64 = 1_101;
+    const FRAMES: u64 = (COUNT + 1) * STRIDE;
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+    let Created::Imported { track, asset, .. } = editor
+        .execute(Command::ImportPreparedAudioTrack {
+            name: "long recorded device touch".into(),
+            path: "memory.wav".into(),
+            source_sample_rate: 48_000,
+            source_frames: FRAMES,
+            playback_frames: FRAMES,
+            conversion_version: hex_project::IDENTITY_CONVERSION,
+        })
+        .unwrap()
+    else {
+        panic!("media source")
+    };
+    let Created::Device(device) = editor
+        .execute(Command::InsertDevice {
+            track,
+            before: None,
+            state: hex_devices::utility::UTILITY_DEFINITION
+                .default_state()
+                .unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("utility")
+    };
+    let timing = editor.project().tempo_map();
+    let at = |frame| timing.frame_to_beat(frame).unwrap();
+    let span = DeviceAutomationTouchSpan {
+        start: BeatTime::ZERO,
+        end: at(COUNT * STRIDE),
+        steps: (0..COUNT)
+            .map(|index| DeviceAutomationTouchStep {
+                beat: at(index * STRIDE),
+                value: AutomationValue::new(if index % 2 == 0 { 1.0 } else { 0.0 }).unwrap(),
+            })
+            .collect(),
+    };
+    editor
+        .execute(Command::SpliceDeviceAutomationTouch {
+            device,
+            target: DeviceAutomationTarget::Parameter(hex_devices::utility::parameter::MUTE),
+            vst3_class: None,
+            spans: vec![span],
+        })
+        .unwrap();
+    let media = BTreeMap::from([(
+        asset,
+        Audio::new(48_000, vec![[0.25, -0.5]; FRAMES as usize]).unwrap(),
+    )]);
+    let revision = Arc::new(
+        PreparedRevision::prepare(editor.project(), &media, Arc::new(SineTable::new()), None)
+            .unwrap(),
+    );
+    let (mut control, mut callback) = prepared::channel(48_000).unwrap();
+    control
+        .publish(Playback::try_from_prepared_with_session(revision).unwrap())
+        .unwrap();
+    let origin = (COUNT - 1) * STRIDE - 4;
+    // Clear the normal transport ramp before comparing exact dry values at
+    // the late automation step and its exclusive restoration boundary.
+    control
+        .command(PlaybackCommand::Seek(origin - 256))
+        .unwrap();
+    control.command(PlaybackCommand::Play).unwrap();
+    callback.begin_block();
+    callback.render(&mut [[0.0; 2]; 256]).unwrap();
+    let mut output = [[0.0; 2]; 40];
+    let counts = measure(|| {
+        callback.begin_block();
+        callback.render(&mut output).unwrap();
+    });
+    assert_eq!(
+        (
+            counts.count_total,
+            counts.bytes_total,
+            counts.count_current,
+            counts.bytes_current
+        ),
+        (0, 0, 0, 0)
+    );
+    assert_eq!(output[..4], [[0.25, -0.5]; 4]);
+    assert_eq!(output[4..36], [[0.0; 2]; 32]);
+    assert_eq!(output[36..], [[0.25, -0.5]; 4]);
+}

@@ -1,17 +1,9 @@
 //! One random rank in the current filtered file projection. This owner never
 //! builds another pool, inserts project content or prepares audio. Existing row
 //! offsets/history, UniformList and selection audition retain those contracts.
+use super::random_rank::audio_index;
 use super::*;
 use gpui::{Bounds, Pixels, fill, point, size};
-
-fn audio_index(entries: &[LibraryEntry], rank: usize) -> Option<usize> {
-    entries
-        .iter()
-        .enumerate()
-        .filter(|(_, entry)| entry.kind == EntryKind::WaveAudio)
-        .nth(rank)
-        .map(|(index, _)| index)
-}
 
 impl EditorView {
     pub(in crate::editor) fn browser_random_sample(
@@ -100,34 +92,5 @@ impl EditorView {
                     view.browser_random_sample(window, cx);
                 }),
             )
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn audio_rank_uses_the_filtered_projection_and_excludes_other_kinds() {
-        let entries: Vec<_> = [
-            EntryKind::Directory,
-            EntryKind::WaveAudio,
-            EntryKind::Project,
-            EntryKind::WaveAudio,
-        ]
-        .into_iter()
-        .enumerate()
-        .map(|(i, kind)| LibraryEntry {
-            name: i.to_string(),
-            path: PathBuf::from(i.to_string()),
-            kind,
-        })
-        .collect();
-        assert_eq!(audio_index(&entries, 0), Some(1));
-        assert_eq!(audio_index(&entries, 1), Some(3));
-        assert_eq!(audio_index(&entries, 2), None);
-        assert_eq!(audio_index(&entries[2..], 0), Some(1));
-        assert_eq!(audio_index(&entries[..1], 0), None);
-        assert_eq!(audio_index(&[], 0), None);
     }
 }

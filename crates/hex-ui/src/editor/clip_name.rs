@@ -252,6 +252,30 @@ impl EditorView {
     ) -> impl IntoElement + use<> {
         self.clip_name_strip(track, clip, name, fill, true, false, false, cx)
     }
+
+    pub(super) fn clip_name_is_editing(&self, clip: ClipId) -> bool {
+        self.clip_name_edit
+            .as_ref()
+            .is_some_and(|edit| edit.clip == clip && edit.generation == self.project_generation)
+    }
+
+    pub(super) fn narrow_clip_header(
+        &self,
+        track: hex_project::TrackId,
+        clip: ClipId,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
+        let header = div()
+            .absolute()
+            .top_0()
+            .left_0()
+            .right_0()
+            .h(px(CLIP_NAME_HEIGHT))
+            .id(("clip-name", clip.value()))
+            .debug_selector(move || format!("clip-name-{}", clip.value()));
+        self.bind_clip_name_click(header, track, clip, cx)
+    }
+
     /// The canonical frame paints the same header fill under this content.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn clip_name_header_on_backdrop(
@@ -308,25 +332,7 @@ impl EditorView {
             .id(("clip-name", clip.value()))
             .debug_selector(move || format!("clip-name-{}", clip.value()))
             .when(interactive, |header| {
-                header.cursor_pointer().on_click(cx.listener(
-                    move |view, event: &gpui::ClickEvent, window, cx| {
-                        cx.stop_propagation();
-                        if view
-                            .clip_name_edit
-                            .as_ref()
-                            .is_some_and(|edit| edit.clip == clip)
-                        {
-                            cx.stop_propagation();
-                            return;
-                        }
-                        if view.clip_name_edit.is_some() {
-                            view.finish_clip_name(true, window, cx);
-                        }
-                        view.select_clip_header(track, clip, event.modifiers(), window, cx);
-                        view.focus.focus(window);
-                        cx.notify();
-                    },
-                ))
+                self.bind_clip_name_click(header, track, clip, cx)
             })
             .when(notched, |header| header.pr(px(6.0)))
             .when(self.clip_has_alias(clip), |header| {
@@ -337,6 +343,29 @@ impl EditorView {
                 self.clip_alias_indicator(clip, fill)
                     .map(|indicator| indicator.when(notched, |indicator| indicator.right(px(7.0)))),
             )
+    }
+
+    fn bind_clip_name_click(
+        &self,
+        header: gpui::Stateful<gpui::Div>,
+        track: hex_project::TrackId,
+        clip: ClipId,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        header.cursor_pointer().on_click(cx.listener(
+            move |view, event: &gpui::ClickEvent, window, cx| {
+                cx.stop_propagation();
+                if view.clip_name_is_editing(clip) {
+                    return;
+                }
+                if view.clip_name_edit.is_some() {
+                    view.finish_clip_name(true, window, cx);
+                }
+                view.select_clip_header(track, clip, event.modifiers(), window, cx);
+                view.focus.focus(window);
+                cx.notify();
+            },
+        ))
     }
 }
 

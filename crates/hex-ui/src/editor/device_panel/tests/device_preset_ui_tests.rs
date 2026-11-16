@@ -98,7 +98,7 @@ fn sidebar_menu_keyboard_saves_default_to_configured_disk_and_retires_when_hidde
     assert!(root.starts_with(&directory.0));
     let file = root.join("device-defaults/v1/effect/device-hex.utility.hex-device-preset.json");
     let json: serde_json::Value = serde_json::from_slice(&std::fs::read(file).unwrap()).unwrap();
-    assert_eq!(json["payload"], serde_json::json!(expected));
+    assert_eq!(json["nodes"][0]["payload"], serde_json::json!(expected));
     visual.run_until_parked();
     let button = save_button(&mut visual, device);
     visual.simulate_click(button.center(), Modifiers::default());
@@ -226,7 +226,10 @@ fn return_and_main_menu_ownership_refuses_a_stale_action_and_saves_the_main_stat
         .unwrap(),
     )
     .unwrap();
-    assert_eq!(json["payload"], serde_json::json!(main_state.payload()));
+    assert_eq!(
+        json["nodes"][0]["payload"],
+        serde_json::json!(main_state.payload())
+    );
 }
 
 #[gpui::test]
@@ -552,4 +555,67 @@ fn device_preset_operator_header_saves_complete_native_state(cx: &mut TestAppCon
         assert_eq!(view.state.as_ref().unwrap().project, original);
     });
     std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[gpui::test]
+fn nested_device_control_and_preset_menu_target_the_child(cx: &mut TestAppContext) {
+    cx.update(hex_widgets::bind_numeric_control_keys);
+    let directory = Directory::new();
+    let (service, state, track, parent, _, _) = actor_utility_fixture();
+    let original = state.project.device(parent).unwrap().state().clone();
+    let gain = hex_engine::native_device_view(&original)
+        .unwrap()
+        .parameters
+        .into_iter()
+        .find(|parameter| parameter.descriptor.label == "gain")
+        .unwrap()
+        .descriptor
+        .id;
+    service
+        .submit(Request::Edit(Command::InsertNestedDevice {
+            parent,
+            state: original.clone(),
+        }))
+        .unwrap();
+    let event = receive_service_event(&service);
+    assert!(event.error.is_none(), "{:?}", event.error);
+    let Some(Created::Device(child)) = event.created else {
+        panic!("nested device")
+    };
+    let (handle, editor) = directory.window(cx, service, event.state, track, None);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    enter_typed_value(&mut visual, child, gain, "6 db");
+    editor.update(cx, |view, cx| {
+        assert!(super::super::finalize_controls(view, cx))
+    });
+    pump_until(&editor, cx, |view| {
+        matches!(
+            parameter_value(view.state.as_ref().unwrap(), track, child, gain),
+            ParameterValue::Float(value) if (value - 10.0_f32.powf(6.0 / 20.0)).abs() < 0.000_01
+        )
+    });
+    visual.run_until_parked();
+    let button = save_button(&mut visual, child);
+    visual.simulate_click(button.center(), Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert_eq!(view.device_panel.selected_device, Some(child));
+        assert!(view.context_menu.is_some());
+        let project = &view.state.as_ref().unwrap().project;
+        assert_eq!(project.device(parent).unwrap().state(), &original);
+        assert_eq!(project.device(child).unwrap().parent(), Some(parent));
+    });
+    visual.simulate_keystrokes("escape");
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+    pump_until(&editor, cx, |view| {
+        view.state
+            .as_ref()
+            .unwrap()
+            .project
+            .device(child)
+            .unwrap()
+            .state()
+            == &original
+    });
 }

@@ -26,6 +26,23 @@ impl FencedNativeQuantum {
     }
 }
 
+/// Exact control-side input and canonical contexts for one ordinary native
+/// parameter continuation. This describes the requested transaction; it is
+/// not a callback, native source, or graph publication acknowledgement.
+#[derive(Clone, Copy)]
+pub struct NativeParameterContinuationRequest<'a> {
+    pub source: AppliedAudioSource,
+    pub transport_epoch: u64,
+    pub playing: bool,
+    pub successor: hex_engine::AudioSourceContext,
+    pub identity: ProcessorInstanceIdentity,
+    pub binding: Binding,
+    pub previous_state: &'a NativeDeviceState,
+    pub capture: &'a crate::plugin_worker::NativeWorkerStateAfterParameter,
+    pub parameter: u32,
+    pub normalized: f64,
+}
+
 impl PublicationControl {
     fn stopped_native_quantum_fence_matches(
         &self,
@@ -33,15 +50,9 @@ impl PublicationControl {
         fence: StoppedEditFence,
     ) -> bool {
         self.native_custody
-            && !self.status.closing.load(Acquire)
-            && !self.status.playing.load(Acquire)
-            && self.status.pending_stop_marker.load(Acquire) == 0
-            && self.status.transport_epoch.load(Acquire)
-                == self.status.sampler_edit.ready_transport_epoch.load(Acquire)
-            && self.status.native_effect_source() == Some(source)
-            && self.status.sampler_edit.native_epoch_active()
-            && self.status.sampler_edit.matches_source(fence, source)
-            && self.stopped_edit_fence_state(fence) == StoppedEditFenceState::Ready
+            && self
+                .status
+                .stopped_native_source_fence_matches(source, fence)
     }
 
     /// Read only while the exact stopped native fence remains ready. The
@@ -76,6 +87,103 @@ impl PublicationControl {
         self.stopped_native_quantum_fence_matches(checkpoint.source, checkpoint.fence)
     }
 
+    /// Admit and enqueue one exact original-worker continuation. The candidate
+    /// owns both states, and the publication owns the source observation and
+    /// matching native references until returned on control. The callback still
+    /// revalidates the source, endpoint and transport before preview and commit.
+    #[allow(clippy::result_large_err)] // Refusal returns the actual unpublished graph to control.
+    pub fn publish_native_parameter_continuation_on_control<E>(
+        &mut self,
+        mut playback: Playback,
+        request: NativeParameterContinuationRequest<'_>,
+        admit: impl FnOnce(
+            hex_engine::native_device_resources::DeviceResourceAdmission<'_>,
+        ) -> Result<(), E>,
+    ) -> Result<u64, AdmittedPublishError<E>> {
+        let failure = |reason, playback| {
+            AdmittedPublishError::Publication(PublishError {
+                kind: PublishErrorKind::Other,
+                reason,
+                playback,
+            })
+        };
+        if self.status.device_fault.load(Acquire)
+            || self.status.render_fault.load(Acquire)
+            || request.binding.root != request.source.output_identity
+            || request.identity.device_id() != request.binding.instance
+            || request.successor.project_generation != request.source.context.project_generation
+            || request.source.context.editor_revision.checked_add(1)
+                != Some(request.successor.editor_revision)
+            || self.status.native_parameter_source(request.playing)
+                != Some((request.source, request.transport_epoch))
+            || request.capture.parameter() != request.parameter
+            || request.capture.normalized_input().to_bits() != request.normalized.to_bits()
+        {
+            return Err(failure(
+                "native continuation source or input differs",
+                playback,
+            ));
+        }
+        let matching = playback.foreign_nodes_on_control().filter(|node| {
+            node.owner == request.identity.owner() && node.device_id == request.identity.device_id()
+                && node.configuration.as_ref().is_some_and(|state| state.shares_payload_storage_with(request.capture.state()) && **state == *request.capture.state())
+                && matches!(&node.definition, Some(hex_lattice::PreparedProcessorFactory::Foreign(prepared)) if prepared.binding() == Some(request.binding) && !prepared.is_instrument_profile())
+        }).count();
+        if matching != 1 {
+            return Err(failure("native continuation candidate differs", playback));
+        }
+        let observation = match self
+            .observe_native_sequenced_capture_input_on_control(request.binding, request.capture)
+        {
+            Ok(Some(observation)) => observation,
+            Ok(None) => {
+                return Err(failure(
+                    "native continuation input is no longer current",
+                    playback,
+                ));
+            }
+            Err(reason) => return Err(failure(reason, playback)),
+        };
+        if playback.has_foreign_continuation_states() {
+            if !playback.foreign_continuation_states_match_on_control(
+                request.identity,
+                request.binding,
+                request.previous_state,
+                request.capture.state(),
+            ) {
+                return Err(failure(
+                    "native continuation candidate states differ",
+                    playback,
+                ));
+            }
+        } else if playback
+            .retain_foreign_continuation_states_on_control(
+                request.identity,
+                request.binding,
+                request.previous_state.clone(),
+                request.capture.state().clone(),
+            )
+            .is_err()
+        {
+            return Err(failure(
+                "native continuation state retention refused",
+                playback,
+            ));
+        }
+        self.publish_admitted_with_source(
+            playback,
+            PublicationPolicy::InheritUnderNativeParameter {
+                source: request.source,
+                transport_epoch: request.transport_epoch,
+                playing: request.playing,
+            },
+            request.successor.project_generation,
+            Some(request.successor),
+            Some(observation),
+            admit,
+        )
+    }
+
     /// Definite correspondence or a specific unavailable/busy observation.
     /// A control caller must not turn contention into a negative approval or
     /// use this observation as graph/native admission authority.
@@ -90,6 +198,25 @@ impl PublicationControl {
         self.candidate_root
             .try_native_source_approves_captured_state(binding, state)
     }
+    /// Mark the exact original worker's completed capture as source-corresponding.
+    /// This is not a processing-profile approval or graph publication permit.
+    pub fn approve_native_sequenced_capture_on_control(
+        &self,
+        binding: Binding,
+        fact: &crate::plugin_worker::NativeWorkerStateAfterParameter,
+    ) -> Result<NativeDeviceState, &'static str> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native captured-state output is closing");
+        }
+        let state = self
+            .candidate_root
+            .approve_native_sequenced_capture(binding, fact)?;
+        if self.status.closing.load(Acquire) {
+            return Err("native captured-state output is closing");
+        }
+        Ok(state)
+    }
+
     pub(crate) fn approve_native_canonical_processing_on_control(
         &self,
         facts: &crate::plugin_effects::CapturedCanonicalBases,
@@ -363,6 +490,123 @@ impl PublicationControl {
         Ok(())
     }
 
+    /// Passive observation of a verified playing worker. This does not
+    /// authorize a value change, retain the Root, or consume controller edits.
+    pub fn arm_native_source_editor_delivery_on_control(
+        &mut self,
+        source: AppliedAudioSource,
+        binding: Binding,
+    ) -> Result<crate::foreign_parameter_delivery::editor::Target, &'static str> {
+        self.require_parameter_delivery_source(source, binding)?;
+        self.foreign_editor_delivery
+            .as_mut()
+            .ok_or("vst3 editor delivery reader is retired")?
+            .begin(&self.status, source, binding, None, None, |scope| {
+                self.candidate_root
+                    .arm_native_editor_pcm(binding, scope, None)
+            })
+    }
+
+    /// Arm one exclusive original SDK editor target for compensated delivery.
+    /// While live, the existing native parameter input reservation excludes
+    /// another host gesture from taking the same output.
+    pub fn arm_native_source_editor_touch_delivery_on_control(
+        &mut self,
+        source: AppliedAudioSource,
+        transport_epoch: u64,
+        binding: Binding,
+        touch: crate::foreign_parameter_delivery::editor::TouchPlan,
+    ) -> Result<crate::foreign_parameter_delivery::editor::Target, &'static str> {
+        self.require_parameter_delivery_source(source, binding)?;
+        self.foreign_editor_delivery
+            .as_mut()
+            .ok_or("vst3 editor delivery reader is retired")?
+            .begin(
+                &self.status,
+                source,
+                binding,
+                Some(transport_epoch),
+                Some(Arc::clone(&self.status)),
+                |scope| {
+                    self.candidate_root.arm_native_editor_pcm(
+                        binding,
+                        scope,
+                        Some(
+                            crate::foreign_parameter_delivery::editor::TouchAdmission::Single(
+                                touch,
+                            ),
+                        ),
+                    )
+                },
+            )
+    }
+
+    /// Arm the exact prepared group on its original source. Targets must
+    /// already have owned read/Base anchors, including unlaned Base values.
+    pub fn arm_native_source_editor_group_delivery_on_control(
+        &mut self,
+        source: AppliedAudioSource,
+        transport_epoch: u64,
+        binding: Binding,
+        targets: &[hex_plugin_host::protocol::EditorTouchTarget],
+    ) -> Result<crate::foreign_parameter_delivery::editor::Target, &'static str> {
+        self.require_parameter_delivery_source(source, binding)?;
+        self.foreign_editor_delivery
+            .as_mut()
+            .ok_or("vst3 editor delivery reader is retired")?
+            .begin(
+                &self.status,
+                source,
+                binding,
+                Some(transport_epoch),
+                Some(Arc::clone(&self.status)),
+                |scope| {
+                    self.candidate_root.arm_native_editor_pcm(
+                        binding,
+                        scope,
+                        Some(
+                            crate::foreign_parameter_delivery::editor::TouchAdmission::Group(
+                                targets,
+                            ),
+                        ),
+                    )
+                },
+            )
+    }
+
+    pub fn cancel_native_source_editor_delivery_on_control(
+        &mut self,
+        target: crate::foreign_parameter_delivery::editor::Target,
+    ) -> bool {
+        self.foreign_editor_delivery
+            .as_ref()
+            .is_some_and(|delivery| delivery.cancel(target))
+    }
+
+    pub fn try_native_source_editor_delivery_on_control(
+        &mut self,
+    ) -> Option<crate::foreign_parameter_delivery::editor::Receipt> {
+        self.foreign_editor_delivery.as_mut()?.try_receipt()
+    }
+
+    pub fn native_source_editor_confirmed_sequence_on_control(
+        &self,
+        target: crate::foreign_parameter_delivery::editor::Target,
+    ) -> Option<u64> {
+        self.foreign_editor_delivery
+            .as_ref()?
+            .confirmed_sequence(target)
+    }
+
+    /// Detach the exact editor scope's observation before output relinquish.
+    /// This publication cannot admit another editor scope after transfer.
+    pub fn retire_native_source_editor_delivery_on_control(
+        &mut self,
+    ) -> Option<crate::foreign_parameter_delivery::editor::Retired> {
+        self.foreign_editor_delivery.as_ref()?.target()?;
+        self.foreign_editor_delivery.take()?.retire()
+    }
+
     pub fn cancel_native_source_parameter_delivery_on_control(
         &mut self,
         target: crate::foreign_parameter_delivery::Target,
@@ -556,8 +800,10 @@ impl PublicationControl {
     /// original effect or loan control. None is pending; Some consumes at most
     /// eight receipts. Call regularly while observing an editor: bounded full
     /// queues backpressure, never coalesce gesture boundaries. Wrong/closed/
-    /// revoked sources refuse. Native receipts grant no canonical automation or
-    /// future-liveness authority; source terminal cancels pending observations.
+    /// revoked sources refuse admission. Once admitted, a pending read or
+    /// consumed receipt is returned even if close races the call. Native
+    /// receipts grant no canonical automation or future-liveness authority;
+    /// source terminal cancels pending observations.
     pub fn poll_native_source_parameter_edits_on_control(
         &mut self,
         binding: Binding,
@@ -565,11 +811,7 @@ impl PublicationControl {
         if !self.native_custody || self.status.closing.load(Acquire) {
             return Err("native edit output is closing");
         }
-        let result = self.candidate_root.native_source_parameter_edits(binding)?;
-        if self.status.closing.load(Acquire) {
-            return Err("native edit output is closing");
-        }
-        Ok(result)
+        self.candidate_root.native_source_parameter_edits(binding)
     }
     /// Observe the exact live worker's edit receipts and uncovered latency
     /// restart. Opt in only when the consumer can restore the stopped source.
@@ -584,6 +826,20 @@ impl PublicationControl {
         }
         self.candidate_root
             .native_source_recovery_edits(binding, !self.status.playing.load(Acquire))
+    }
+    /// Recover only an earlier admitted edit read from the exact stopped
+    /// worker while its original source remains accepted by this output.
+    /// The returned batch belongs to the caller even if close races the read.
+    pub fn poll_native_source_stopped_edits_on_control(
+        &mut self,
+        binding: Binding,
+        recovery: bool,
+    ) -> Result<crate::plugin_worker::StoppedEditProgress, &'static str> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native edit output is closing");
+        }
+        self.candidate_root
+            .native_source_stopped_edits(binding, recovery)
     }
     /// Inspect latest processor parameter values through the actual original
     /// Root-held effect or its unique loan control. Wrong/closed/revoked sources
@@ -635,6 +891,84 @@ impl PublicationControl {
         let result = self
             .candidate_root
             .poll_live_native_capture(binding, request)?;
+        if self.status.closing.load(Acquire) {
+            return Err("native capture output is closing");
+        }
+        Ok(result)
+    }
+    /// Admit a capture ordered after the exact original worker's processed
+    /// parameter input. This fact does not grant graph or canonical authority.
+    pub fn begin_native_capture_after_parameter_on_control(
+        &mut self,
+        binding: Binding,
+        input: &crate::plugin_worker::NativeWorkerParameterChange,
+    ) -> Result<crate::plugin_worker::NativeWorkerCapture, &'static str> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native capture output is closing");
+        }
+        self.candidate_root
+            .begin_capture_after_parameter(binding, input)
+    }
+    /// Admit capture after an idle flush on the exact live worker. This does
+    /// not assert PCM processing, output delivery, or publication authority.
+    pub fn begin_native_capture_after_idle_parameter_on_control(
+        &mut self,
+        binding: Binding,
+        input: &crate::plugin_worker::NativeWorkerParameterChange,
+    ) -> Result<crate::plugin_worker::NativeWorkerCapture, &'static str> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native capture output is closing");
+        }
+        self.candidate_root
+            .begin_capture_after_idle_parameter(binding, input)
+    }
+    pub fn poll_native_capture_after_parameter_on_control(
+        &mut self,
+        binding: Binding,
+        request: &crate::plugin_worker::NativeWorkerCapture,
+    ) -> Result<crate::plugin_worker::NativeWorkerSequencedCaptureProgress, &'static str> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native capture output is closing");
+        }
+        let result = self
+            .candidate_root
+            .poll_capture_after_parameter(binding, request)?;
+        if self.status.closing.load(Acquire) {
+            return Err("native capture output is closing");
+        }
+        Ok(result)
+    }
+    pub fn native_sequenced_capture_is_current_on_control(
+        &mut self,
+        binding: Binding,
+        fact: &crate::plugin_worker::NativeWorkerStateAfterParameter,
+    ) -> Result<bool, &'static str> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native capture output is closing");
+        }
+        let result = self
+            .candidate_root
+            .sequenced_capture_is_current(binding, fact)?;
+        if self.status.closing.load(Acquire) {
+            return Err("native capture output is closing");
+        }
+        Ok(result)
+    }
+    /// Observe the original endpoint of an exact processed input and capture.
+    /// This weak control-owned observation can become stale immediately; it
+    /// does not admit a candidate, identify its state, or authorize a handoff.
+    /// Return and destroy it on control, outside the audio callback.
+    pub fn observe_native_sequenced_capture_input_on_control(
+        &mut self,
+        binding: Binding,
+        fact: &crate::plugin_worker::NativeWorkerStateAfterParameter,
+    ) -> Result<Option<hex_plugin_host::transport::ParameterInputSource>, &'static str> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native capture output is closing");
+        }
+        let result = self
+            .candidate_root
+            .observe_sequenced_capture_input(binding, fact)?;
         if self.status.closing.load(Acquire) {
             return Err("native capture output is closing");
         }
@@ -1093,20 +1427,18 @@ impl PublicationControl {
         }
         self.candidate_root.native_source_received_program(binding)
     }
-    /// Retryable observation on the exact original live worker. `Ok(None)`
-    /// means no coherent pickup is available yet; only `Some(received)` whose
-    /// `program` is None proves an observed empty frontier. Busy observations
-    /// are distinct from a stale, revoked or closing source. No admission or
-    /// callback/graph custody is granted by this query.
-    pub fn try_native_source_received_program_on_control(
+    /// Retryable observation on the exact original worker. An empty frontier
+    /// requires either an unprogrammed pickup or an observed zero pickup
+    /// prefix on the live pair. Unknown grants no graph or pruning authority.
+    pub fn try_native_source_program_frontier_on_control(
         &self,
         binding: Binding,
-    ) -> Result<Option<crate::plugin_worker::ReceivedProgram>, &'static str> {
+    ) -> Result<hex_engine::ForeignProgramFrontier, &'static str> {
         if !self.native_custody || self.status.closing.load(Acquire) {
             return Err("native automation output is closing");
         }
         self.candidate_root
-            .try_native_source_received_program(binding)
+            .try_native_source_program_frontier(binding)
     }
     /// Observe the last accepted quantum of the exact live loaned endpoint.
     /// None means no coherent callback observation; busy, stale, retired and
@@ -1187,7 +1519,62 @@ impl PublicationControl {
         Ok(())
     }
 }
+/// Bounded observation of the exact paired input and endpoint return signal.
+/// This grants no graph or publication authority; the caller must additionally
+/// validate the source, candidate, transport and actual native custody.
+pub(super) struct NativeParameterInputFence<'a> {
+    input: hex_plugin_host::transport::ParameterInputFence<'a>,
+    endpoint: crate::candidate_custody::EndpointReturnFence<'a>,
+    closing: &'a std::sync::atomic::AtomicBool,
+}
+impl NativeParameterInputFence<'_> {
+    pub(super) fn is_live(&self) -> bool {
+        self.input.is_live() && self.endpoint.is_live() && !self.closing.load(Acquire)
+    }
+    /// Order one decision before source revocation, endpoint return, and output
+    /// shutdown. The later atomic decisions are sticky with respect to the
+    /// first decision; the caller must still authenticate and commit its graph.
+    pub(super) fn try_order_before_revocation(&mut self) -> bool {
+        self.input.try_order_before_revocation()
+            && self.endpoint.try_order_before_return()
+            && self
+                .closing
+                .compare_exchange(false, false, AcqRel, Acquire)
+                .is_ok()
+    }
+}
+
+pub(super) fn reserve_parameter_observation<'a>(
+    sources: &'a crate::candidate_custody::NativeEndpointBank,
+    status: &'a Status,
+    binding: Binding,
+    source: &hex_plugin_host::transport::ParameterInputSource,
+) -> Option<NativeParameterInputFence<'a>> {
+    if status.closing.load(Acquire) {
+        return None;
+    }
+    let (input, endpoint) = sources.reserve_observed_parameter_input(binding, source)?;
+    let fence = NativeParameterInputFence {
+        input,
+        endpoint,
+        closing: &status.closing,
+    };
+    fence.is_live().then_some(fence)
+}
+
 impl Callback {
+    /// Borrow the installed original endpoint's input observation without
+    /// waiting, allocation, or ownership transfer. This is not graph, source,
+    /// transport, state, or publication authority; callers must validate each.
+    #[cfg(all(test, feature = "allocation-probe"))]
+    pub(super) fn reserve_native_parameter_input_observation(
+        &self,
+        binding: Binding,
+        source: &hex_plugin_host::transport::ParameterInputSource,
+    ) -> Option<NativeParameterInputFence<'_>> {
+        reserve_parameter_observation(&self.native_sources, &self.status, binding, source)
+    }
+
     #[cfg(feature = "allocation-probe")]
     pub(crate) fn native_root_for_control_fixture(
         &self,

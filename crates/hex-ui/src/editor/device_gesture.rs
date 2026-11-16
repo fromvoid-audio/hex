@@ -68,6 +68,7 @@ pub(super) fn retire_failed_finalize_barriers(
     while let Some(request) = deferred.pop_front() {
         match request {
             Request::SaveNew(_)
+            | Request::SaveProjectAs { .. }
             | Request::SaveCurrent
             | Request::SaveCurrentWithFormatUpgrade { .. } => effects.save_refused = true,
             Request::Export(_) => effects.export_refused = true,
@@ -113,6 +114,12 @@ impl EditorView {
         target: GestureTarget,
         initial: ParameterValue,
     ) -> Result<(), &'static str> {
+        if self.audio_recorder.blocks_edits() {
+            return Err("finish the audio recording before changing a device");
+        }
+        if self.automation_close_preflight.frozen() {
+            return Err("close is pending · device gestures are unavailable");
+        }
         if self.native_automation_recorder.busy() {
             return Err("finish the current automation touch first");
         }
@@ -128,6 +135,12 @@ impl EditorView {
         second: hex_lattice_contract::ParameterId,
         initial: ParameterPairValue,
     ) -> Result<(), &'static str> {
+        if self.audio_recorder.blocks_edits() {
+            return Err("finish the audio recording before changing a device");
+        }
+        if self.automation_close_preflight.frozen() {
+            return Err("close is pending · device gestures are unavailable");
+        }
         self.device_gesture
             .begin_pair(self.project_generation, device, first, second, initial)?;
         Ok(())
@@ -213,7 +226,7 @@ impl EditorView {
         ack: &hex_session::device_gesture::GestureAck,
         snapshot: Option<hex_session::device_gesture::GestureSnapshot>,
     ) -> bool {
-        let committed_plugin = (ack.phase == GesturePhase::Commit
+        let committed_display = (ack.phase == GesturePhase::Commit
             && ack.accepted
             && !ack.preview_retained
             && !ack.source_lost)
@@ -226,6 +239,7 @@ impl EditorView {
                 .then_some(active)
             })
             .flatten();
+        let committed_plugin = committed_display.filter(|_| !self.owns_vst3_recording(ack.key));
         let terminal =
             matches!(ack.phase, GesturePhase::Commit | GesturePhase::Cancel) || ack.source_lost;
         let plugin = self.device_gesture.snapshot().is_some_and(|active| {
@@ -245,7 +259,7 @@ impl EditorView {
             && !ack.preview_retained
             && (terminal || ack.phase == GesturePhase::Begin && !ack.accepted)
         {
-            super::device_panel::vst3_parameters::refresh(self);
+            super::device_panel::vst3_parameters::refresh_after_gesture(self, committed_display);
         }
         if terminal {
             self.settle_effect_bus_barriers(ack);
@@ -389,16 +403,10 @@ impl EditorView {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "ui-test-support"))]
 mod tests {
-    use super::{
-        FailedBarrierEffects, actor_retired_gesture, defer_request, release_deferred,
-        retire_deferred, retire_failed_finalize_barriers,
-    };
     use hex_session::service::Request;
-    use std::collections::VecDeque;
 
-    #[cfg(feature = "ui-test-support")]
     #[gpui::test]
     fn plugin_source_loss_on_change_releases_edits_and_refuses_deferred_save(
         cx: &mut gpui::TestAppContext,
@@ -491,7 +499,6 @@ mod tests {
         });
     }
 
-    #[cfg(feature = "ui-test-support")]
     #[gpui::test]
     fn retained_preview_refusal_keeps_edit_barrier_until_cancel(cx: &mut gpui::TestAppContext) {
         use hex_lattice_contract::ParameterValue;
@@ -599,6 +606,16 @@ mod tests {
             ));
         });
     }
+}
+
+#[cfg(all(test, not(feature = "ui-test-support")))]
+mod unit_tests {
+    use super::{
+        FailedBarrierEffects, actor_retired_gesture, defer_request, release_deferred,
+        retire_deferred, retire_failed_finalize_barriers,
+    };
+    use hex_session::service::Request;
+    use std::collections::VecDeque;
 
     #[test]
     fn unrelated_event_does_not_retire_a_pending_begin_or_terminal() {

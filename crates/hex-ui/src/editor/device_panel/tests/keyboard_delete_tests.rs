@@ -553,7 +553,7 @@ fn device_backspace_keeps_eq_graph_removal_local(cx: &mut TestAppContext) {
             format!("eq-response-{}", device.value()).into_boxed_str(),
         ))
         .unwrap();
-    visual.simulate_click(graph.center(), Modifiers::default());
+    eq_ui_tests::eq_double_click(&mut visual, graph.center());
     pump_until(&editor, cx, |view| {
         settled(view)
             && hex_engine::eq::EqState::decode(

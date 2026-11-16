@@ -30,9 +30,15 @@ fn project_tempo_layout_is_first_compact_and_keeps_neighbors_at_supported_widths
             let toolbar = visual.debug_bounds("editor-toolbar").unwrap();
             let tempo = visual.debug_bounds("project-tempo-field").unwrap();
             let tuning = visual.debug_bounds("project tuning · cmd+alt+t").unwrap();
-            let play = visual.debug_bounds("play or pause · space").unwrap();
+            let play = visual
+                .debug_bounds(if mode == EditorMode::Arrangement {
+                    "play or pause · space · right-click for history playback"
+                } else {
+                    "play or pause · space"
+                })
+                .unwrap();
             let output = visual.debug_bounds("audio output status").unwrap();
-            assert_eq!(tempo.origin.x, toolbar.origin.x);
+            assert!(tempo.left() >= toolbar.left() + px(crate::theme::TITLEBAR_LEADING_INSET));
             assert!(tempo.size.width <= px(82.0));
             assert!(tempo.right() <= tuning.origin.x && tuning.right() < play.origin.x);
             assert!(play.right() <= toolbar.right());
@@ -279,7 +285,9 @@ fn playback_vector_controls_follow_actual_transport_status(cx: &mut TestAppConte
     let (mut output, mut backend) =
         held_pointer_tests::attach_actual_output(&editor, cx, &mut visual);
     visual.run_until_parked();
-    let play = visual.debug_bounds("play or pause · space").unwrap();
+    let play = visual
+        .debug_bounds("play or pause · space · right-click for history playback")
+        .unwrap();
     let stop = visual.debug_bounds("stop · escape").unwrap();
     assert!(
         !visual
@@ -357,7 +365,10 @@ fn playback_vector_controls_follow_actual_transport_status(cx: &mut TestAppConte
         };
         assert!(!visual.rendered_monochrome_colors(shown).is_empty());
         assert!(visual.debug_bounds(hidden).is_none());
-        assert_eq!(visual.debug_bounds("play or pause · space"), Some(play));
+        assert_eq!(
+            visual.debug_bounds("play or pause · space · right-click for history playback"),
+            Some(play)
+        );
         assert_eq!(visual.debug_bounds("stop · escape"), Some(stop));
     }
 }

@@ -4,31 +4,146 @@ use super::*;
 #[test]
 fn editor_receipt_requires_exact_controller_operation_and_discriminant() {
     let config = config();
-    let request = ControllerRequest::ToggleEditor;
-    let wire = parameter_page_request(&config, 1, 7, request, false).unwrap();
-    assert_eq!(&wire[..4], b"HXVM");
-    assert_eq!(wire[82], 6);
-    assert!(wire[83..].iter().all(|byte| *byte == 0));
+    for (request, code) in [
+        (ControllerRequest::ToggleEditor, 6),
+        (ControllerRequest::DetachEditor, 11),
+        (ControllerRequest::ReopenEditor(None), 12),
+    ] {
+        let wire = parameter_page_request(&config, 1, 7, request, false).unwrap();
+        assert_eq!(&wire[..4], b"HXVM");
+        assert_eq!(wire[82], code);
+        assert!(wire[83..].iter().all(|byte| *byte == 0));
+        let mut reply = Vec::new();
+        stamp(&mut reply, config.binding);
+        for value in [1_u64, u64::from(config.quantum), 7] {
+            reply.extend(value.to_le_bytes());
+        }
+        reply.extend([4, 1]);
+        assert_eq!(
+            parameter_page(&reply, &config, 1, 7, request).unwrap(),
+            ParameterPageProgress::Editor(PluginEditorState::Open)
+        );
+        assert!(parameter_page(&reply, &config, 1, 8, request).is_err());
+        assert!(parameter_page(&reply, &config, 1, 7, ParameterPageQuery::default()).is_err());
+        reply.push(0);
+        assert!(parameter_page(&reply, &config, 1, 7, request).is_err());
+    }
+}
+#[test]
+fn live_editor_detach_refusal_is_bound_to_its_new_wire_operation() {
+    let config = config();
+    let guarded = ControllerRequest::DetachEditorWhenIdle;
+    let wire = parameter_page_request(&config, 1, 7, guarded, false).unwrap();
+    assert_eq!(wire[82], 14);
     let mut reply = Vec::new();
     stamp(&mut reply, config.binding);
     for value in [1_u64, u64::from(config.quantum), 7] {
         reply.extend(value.to_le_bytes());
     }
-    reply.extend([4, 1]);
+    reply.extend([4, 4]);
     assert_eq!(
-        parameter_page(&reply, &config, 1, 7, request).unwrap(),
+        parameter_page(&reply, &config, 1, 7, guarded).unwrap(),
+        ParameterPageProgress::Editor(PluginEditorState::GestureActive)
+    );
+    assert!(parameter_page(&reply, &config, 1, 7, ControllerRequest::DetachEditor).is_err());
+    *reply.last_mut().unwrap() = 1;
+    assert_eq!(
+        parameter_page(&reply, &config, 1, 7, guarded).unwrap(),
         ParameterPageProgress::Editor(PluginEditorState::Open)
     );
+    *reply.last_mut().unwrap() = 2;
+    assert!(parameter_page(&reply, &config, 1, 7, guarded).is_err());
+    *reply.last_mut().unwrap() = 0;
+    assert_eq!(
+        parameter_page(&reply, &config, 1, 7, guarded).unwrap(),
+        ParameterPageProgress::Editor(PluginEditorState::Closed)
+    );
+}
+
+#[test]
+fn editor_seal_receipt_is_bound_to_its_operation_and_discriminant() {
+    let config = config();
+    let request = ControllerRequest::SealEditorEdits;
+    for poll in [false, true] {
+        let wire = parameter_page_request(&config, 1, 7, request, poll).unwrap();
+        assert_eq!(wire[82], 13);
+        assert!(wire[83..].iter().all(|byte| *byte == 0));
+    }
+    let mut reply = Vec::new();
+    stamp(&mut reply, config.binding);
+    for value in [1_u64, u64::from(config.quantum), 7] {
+        reply.extend(value.to_le_bytes());
+    }
+    reply.extend([5, 1]);
+    assert_eq!(
+        parameter_page(&reply, &config, 1, 7, request).unwrap(),
+        ParameterPageProgress::EditorSeal(EditorSealState::Sealed)
+    );
     assert!(parameter_page(&reply, &config, 1, 8, request).is_err());
-    assert!(parameter_page(&reply, &config, 1, 7, ParameterPageQuery::default()).is_err());
-    reply.push(0);
+    assert!(parameter_page(&reply, &config, 1, 7, ControllerRequest::CloseEditor).is_err());
+    *reply.last_mut().unwrap() = 0;
+    assert_eq!(
+        parameter_page(&reply, &config, 1, 7, request).unwrap(),
+        ParameterPageProgress::EditorSeal(EditorSealState::NotSealed)
+    );
+    *reply.last_mut().unwrap() = 2;
     assert!(parameter_page(&reply, &config, 1, 7, request).is_err());
+    reply.pop();
+    assert!(parameter_page(&reply, &config, 1, 7, request).is_err());
+}
+#[test]
+fn editor_detach_placement_is_bounded_and_reopen_copies_its_exact_coordinates() {
+    let config = config();
+    let x = -342.25_f64;
+    let y = 809.5_f64;
+    let position = PluginEditorPosition::new(x, y).unwrap();
+    let reopen = ControllerRequest::ReopenEditor(Some(position));
+    for poll in [false, true] {
+        let wire = parameter_page_request(&config, 1, 7, reopen, poll).unwrap();
+        assert_eq!(wire[82], 12);
+        assert_eq!(&wire[74..82], &x.to_le_bytes());
+        assert_eq!(&wire[83..87], &1_u32.to_le_bytes());
+        assert_eq!(&wire[87..95], &y.to_le_bytes());
+        assert!(wire[95..].iter().all(|&byte| byte == 0));
+    }
+
+    let mut reply = Vec::new();
+    stamp(&mut reply, config.binding);
+    for value in [1_u64, u64::from(config.quantum), 7] {
+        reply.extend(value.to_le_bytes());
+    }
+    reply.extend([4, 3]);
+    let prefix = reply.len();
+    reply.extend(x.to_le_bytes());
+    reply.extend(y.to_le_bytes());
+    let detach = ControllerRequest::DetachEditor;
+    assert_eq!(
+        parameter_page(&reply, &config, 1, 7, detach).unwrap(),
+        ParameterPageProgress::Editor(PluginEditorState::Detached(position))
+    );
+    assert_eq!(
+        parameter_page(
+            &reply,
+            &config,
+            1,
+            7,
+            ControllerRequest::DetachEditorWhenIdle
+        )
+        .unwrap(),
+        ParameterPageProgress::Editor(PluginEditorState::Detached(position))
+    );
+    assert!(parameter_page(&reply, &config, 1, 7, reopen).is_err());
+    assert!(parameter_page(&reply[..reply.len() - 1], &config, 1, 7, detach).is_err());
+    for invalid in [f64::NAN, f64::INFINITY, -1_000_001.0] {
+        reply[prefix..prefix + 8].copy_from_slice(&invalid.to_le_bytes());
+        assert!(parameter_page(&reply, &config, 1, 7, detach).is_err());
+    }
 }
 #[path = "protocol_tests/conversion.rs"]
 mod conversion;
 use crate::transport::{Events, MidiEvent};
 use hex_plugin_state::{BinaryIdentity, ClassId, State};
-fn config() -> Configuration {
+pub(super) fn config() -> Configuration {
     Configuration {
         binding: Binding {
             root: 1,
@@ -857,6 +972,46 @@ fn recovery_edit_receipts_keep_exact_prefix_and_versioned_ordinal() {
 }
 
 #[test]
+fn ordered_sdk_group_markers_are_distinct_from_raw_zero() {
+    let config = config();
+    let mut body = Vec::new();
+    stamp(&mut body, config.binding);
+    for value in [2_u64, 16, 3] {
+        body.extend(value.to_le_bytes());
+    }
+    for value in [0_u16, 0, 5] {
+        body.extend(value.to_le_bytes());
+    }
+    let rows = [
+        (1_u64, 1_u64, 0.0_f64, 4_u32, 0_u64),
+        (2, 2, 0.0, 1, 0),
+        (3, 2, 0.75, 2, 8),
+        (4, 2, 0.0, 3, 16),
+        (5, 1, 0.0, 5, 16),
+    ];
+    for (sequence, gesture, value, kind, frame) in rows {
+        body.extend(sequence.to_le_bytes());
+        body.extend(gesture.to_le_bytes());
+        body.extend(value.to_le_bytes());
+        body.extend(0_u32.to_le_bytes());
+        body.extend(kind.to_le_bytes());
+        body.extend(frame.to_le_bytes());
+    }
+    let parsed = parameter_edits(&body, &config, 2, 3, (0, 0)).unwrap();
+    let rows = parsed.as_slice();
+    assert_eq!(rows[0].kind, ParameterEditKind::GroupBegin);
+    assert_eq!(rows[2].kind, ParameterEditKind::Perform);
+    assert_eq!((rows[2].id, rows[2].normalized), (0, 0.75));
+    assert_eq!(rows[4].kind, ParameterEditKind::GroupEnd);
+    assert_eq!(rows[0].gesture, rows[4].gesture);
+    assert_ne!(rows[0].gesture, rows[2].gesture);
+    let mut malformed = body.clone();
+    // The first marker must have an empty ParamID field.
+    malformed[64 + 24..64 + 28].copy_from_slice(&11_u32.to_le_bytes());
+    assert!(parameter_edits(&malformed, &config, 2, 3, (0, 0)).is_err());
+}
+
+#[test]
 fn edit_receipts_bind_source_prefix_operation_order_and_gesture_without_coalescing() {
     let config = config();
     let request = edit_request(&config, 2, 3).unwrap();
@@ -902,7 +1057,7 @@ fn edit_receipts_bind_source_prefix_operation_order_and_gesture_without_coalesci
         (62, 9),
         (64, 0),
         (72, 0),
-        (92, 4),
+        (92, 7),
         (96, 17),
     ] {
         let mut bad = body.clone();
@@ -952,6 +1107,7 @@ fn controller_pages_preserve_sdk_ids_text_and_explicit_conversion_states() {
         out.push(3);
         text(out, "−∞ db");
         text(out, "sdk default");
+        out.extend(17_u64.to_le_bytes());
     }
     let config = config();
     let query = ParameterPageQuery {
@@ -1036,6 +1192,7 @@ fn controller_pages_preserve_sdk_ids_text_and_explicit_conversion_states() {
     assert_eq!(page.descriptor_signature, std::array::from_fn(|n| n as u8));
     let value = page.as_slice()[0];
     assert_eq!(value.id, 0);
+    assert_eq!(value.editor_sequence, 17);
     assert!(value.is_editable());
     assert!(value.supports_authored_automation());
     assert_eq!(value.plain, ParameterPlainValue::NegativeInfinity);

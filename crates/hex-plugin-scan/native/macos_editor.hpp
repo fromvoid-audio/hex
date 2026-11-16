@@ -2,6 +2,7 @@
 #pragma once
 #import <AppKit/AppKit.h>
 #include "pluginterfaces/gui/iplugview.h"
+#include "macos_editor_position.hpp"
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -13,7 +14,7 @@
 
 namespace hex_instance {
 using namespace Steinberg;
-enum class EditorState : uint8_t { Closed, Open, Unavailable };
+enum class EditorState : uint8_t { Closed, Open, Unavailable, GestureActive=4 };
 
 class EditorFrame final : public IPlugFrame {
     std::atomic<uint32> references{1};
@@ -165,6 +166,29 @@ inline bool is_editor_foreground_group(pid_t foreground,pid_t editor,pid_t owner
         info.pbi_ppid==static_cast<uint32_t>(owner);
 }
 
+inline std::optional<EditorPosition> editor_window_position(NSWindow* window) {
+    if(!window) return std::nullopt;
+    const auto frame=[window frame];
+    const EditorPosition position{NSMinX(frame),NSMaxY(frame)};
+    return position.valid()?std::optional<EditorPosition>(position):std::nullopt;
+}
+
+inline void restore_editor_window_position(NSWindow* window,EditorPosition position) {
+    if(position.valid()) {
+        const auto frame=[window frame];
+        const auto content=[window contentRectForFrameRect:frame];
+        const auto title_height=NSHeight(frame)-NSHeight(content);
+        const auto title=NSMakeRect(position.x,position.y-title_height,NSWidth(frame),title_height);
+        for(NSScreen* screen in [NSScreen screens]) {
+            if(NSIntersectsRect(title,[screen visibleFrame])) {
+                [window setFrameTopLeftPoint:NSMakePoint(position.x,position.y)];
+                return;
+            }
+        }
+    }
+    [window center]; // The old display can disappear during replacement.
+}
+
 // Owns the window and one SDK reference. Explicit teardown precedes controller
 // release. On a refused detach the isolated process retains foreign resources.
 class EditorWindow {
@@ -203,7 +227,11 @@ public:
         return true;
     }
     bool is_open() const { return visibility.is_open(window); }
-    std::optional<EditorState> open(IPlugView* editor) {
+    std::optional<EditorPosition> position() const {
+        return is_open()?editor_window_position(window):std::nullopt;
+    }
+    std::optional<EditorState> open(IPlugView* editor,bool activate,
+                                    std::optional<EditorPosition> placement=std::nullopt) {
         view=editor;
         if(!view) return EditorState::Unavailable;
         ViewRect rect{};
@@ -226,7 +254,7 @@ public:
         EditorPanelVisibility::configure(window);
         [window setReleasedWhenClosed:NO];
         [window setTitle:@"vst3 editor"];
-        [window center];
+        if(!placement) [window center];
         frame=new(std::nothrow) EditorFrame(window,view);
         if(!frame) return unavailable();
         const auto frame_result=view->setFrame(frame);
@@ -239,8 +267,15 @@ public:
             if(!resize_delegate) return unavailable();
             [window setDelegate:resize_delegate];
         }
-        [window makeKeyAndOrderFront:nil];
-        [NSApp activateIgnoringOtherApps:YES];
+        // Apply the original top-left after attachment, when the SDK view
+        // has supplied its final size. Ordering the panel keeps Hex focused.
+        if(placement) restore_editor_window_position(window,*placement);
+        if(activate) {
+            [window makeKeyAndOrderFront:nil];
+            [NSApp activateIgnoringOtherApps:YES];
+        } else {
+            [window orderFrontRegardless];
+        }
         next_application_check=std::chrono::steady_clock::now()+std::chrono::milliseconds(100);
         return is_open()?std::optional<EditorState>(EditorState::Open):unavailable();
     }

@@ -580,6 +580,85 @@ fn accepted_waveforms_share_cropped_pcm_keep_gain_outside_and_failed_edit_keeps_
 }
 
 #[test]
+fn long_dense_clip_edge_stretch_commits_and_renders_late_attacks_through_history() {
+    const RATE: u32 = 44_100;
+    const SOURCE_FRAMES: u64 = RATE as u64 * 27;
+    const STRETCHED_END: u64 = 1_209_600;
+    const ATTACK: [f32; 2] = [0.9, -0.45];
+    let mut source = vec![[0.0; 2]; SOURCE_FRAMES as usize];
+    for frame in source.iter_mut().skip(1_000).step_by(1_000) {
+        *frame = ATTACK;
+    }
+    let audio = Audio::new(RATE, source).unwrap();
+    let waveform = waveform::summarize(&audio, 1_024).unwrap();
+    let mut session = Session::new(RATE, 32, SOURCE_FRAMES + 192).unwrap();
+    let (Created::Imported { clip, .. }, previous) = session
+        .import_prepared_revision(
+            PreparedImport {
+                path: "long-dense.wav".into(),
+                source_sample_rate: RATE,
+                source_frames: SOURCE_FRAMES,
+                conversion_version: hex_project::IDENTITY_CONVERSION,
+                source_audio: audio.clone(),
+                audio,
+                waveform,
+                file_identity: None,
+            },
+            None,
+        )
+        .unwrap()
+    else {
+        panic!("import")
+    };
+    let before = session.project().snapshot();
+    let (_, stretched) = session
+        .command_prepared_revision(
+            Command::StretchAudioClipEdge {
+                clip,
+                edge: hex_project::TrimEdge::Right,
+                frame: STRETCHED_END,
+            },
+            Some(&previous),
+        )
+        .unwrap();
+    let after = session.project().snapshot();
+    assert_eq!(
+        session.project().clip(clip).unwrap().duration(),
+        STRETCHED_END
+    );
+    assert_eq!(
+        session.audio_clip_waveforms.borrow()[&clip].length,
+        STRETCHED_END
+    );
+
+    let render_late_attack = |revision: &hex_engine::PreparedRevision| {
+        let expected = 1_150_000 * STRETCHED_END / SOURCE_FRAMES;
+        let mut renderer = hex_engine::Renderer::new(revision.arrangement());
+        renderer.seek(expected - 64);
+        renderer.play();
+        let mut pcm = [[0.0; 2]; 128];
+        renderer.render(&mut pcm).unwrap();
+        assert!(
+            pcm[60..68].contains(&ATTACK),
+            "the late attack must survive the stretch"
+        );
+        pcm
+    };
+    let pcm = render_late_attack(&stretched);
+    let undone = session
+        .undo_prepared_revision(Some(&stretched))
+        .unwrap()
+        .unwrap();
+    assert_eq!(session.project().snapshot(), before);
+    let redone = session
+        .redo_prepared_revision(Some(&undone))
+        .unwrap()
+        .unwrap();
+    assert_eq!(session.project().snapshot(), after);
+    assert_eq!(render_late_attack(&redone), pcm);
+}
+
+#[test]
 fn excessive_stretch_is_refused_before_project_or_undo_commit() {
     let (mut session, clip, previous) = fixture();
     let before = session.project().snapshot();
@@ -682,12 +761,45 @@ fn grouped_repeat_transaction_prepares_complete_multi_source_waveform_root() {
     assert_eq!(views[&group].offset, 0);
     assert_eq!(views[&group].waveform.source_frames(), 10_000);
     assert!(!Arc::ptr_eq(&views[&group].waveform, &root.waveform));
+    let root_waveform = Arc::clone(&root.waveform);
     drop(views);
     let mut renderer = hex_engine::Renderer::new(cropped.arrangement());
     renderer.play();
     let mut output = [[0.0; 2]; 257];
     renderer.render(&mut output).unwrap();
     assert!(output.iter().any(|frame| *frame != [0.0; 2]));
+
+    let (_, muted) = session
+        .command_prepared_revision(
+            Command::EditClips {
+                clips: vec![group],
+                edit: hex_project::ClipEdit::Active { active: false },
+            },
+            Some(&cropped),
+        )
+        .unwrap();
+    assert!(Arc::ptr_eq(
+        &session.audio_clip_waveforms.borrow()[&group]
+            .preview_root
+            .as_ref()
+            .unwrap()
+            .waveform,
+        &root_waveform,
+    ));
+    let mut renderer = hex_engine::Renderer::new(muted.arrangement());
+    renderer.play();
+    let mut samples = [[1.0; 2]; 257];
+    renderer.render(&mut samples).unwrap();
+    assert_eq!(samples, [[0.0; 2]; 257]);
+
+    let restored = session
+        .undo_prepared_revision(Some(&muted))
+        .unwrap()
+        .unwrap();
+    let mut renderer = hex_engine::Renderer::new(restored.arrangement());
+    renderer.play();
+    renderer.render(&mut samples).unwrap();
+    assert_eq!(samples, output);
 }
 
 #[test]
@@ -1057,6 +1169,44 @@ fn accepted_sparse_root_peaks_keep_exact_samples_and_silence_at_distant_edges() 
             min: s.min(0.0),
             max: s.max(0.0)
         })
+    );
+    let mut visited = Vec::new();
+    let over = waveform
+        .bounded_overrange(3_999_997..4_000_001, 4, |frame| {
+            visited.push(frame);
+            Some((1.0, 100.0))
+        })
+        .unwrap();
+    assert_eq!(visited, vec![3_999_997, 3_999_998, 3_999_999, 4_000_000]);
+    for (channel, value) in sample.iter().copied().enumerate() {
+        assert_eq!(over.positive[channel], value * 100.0 > 1.0);
+        assert_eq!(over.negative[channel], value * 100.0 < -1.0);
+    }
+    let (offset, loud) = prepared.audio.frames()[7_000..]
+        .iter()
+        .enumerate()
+        .find(|(_, frame)| frame[0].abs() > 0.02 && frame[1].abs() > 0.02)
+        .expect("occupied sparse event has audible samples");
+    let logical = 4_000_000 + offset;
+    let loud_result = waveform
+        .bounded_overrange(logical..logical + 1, 1, |_| Some((1.0, 100.0)))
+        .unwrap();
+    for (channel, value) in loud.iter().copied().enumerate() {
+        assert_eq!(loud_result.positive[channel], value * 100.0 > 1.0);
+        assert_eq!(loud_result.negative[channel], value * 100.0 < -1.0);
+    }
+    assert!(loud_result.positive.into_iter().any(|present| present));
+    assert!(loud_result.negative.into_iter().any(|present| present));
+    assert!(
+        waveform
+            .bounded_overrange(3_999_997..4_000_001, 3, |_| Some((1.0, 100.0)))
+            .is_none()
+    );
+    assert!(
+        waveform
+            .bounded_overrange(3_999_997..4_000_001, 4, |frame| (frame != 3_999_998)
+                .then_some((1.0, 1.0)))
+            .is_none()
     );
 }
 

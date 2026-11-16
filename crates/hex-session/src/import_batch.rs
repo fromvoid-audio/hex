@@ -15,6 +15,14 @@ pub struct AudioImportOptions {
     /// Captured linear gain for newly created Arrangement or Console tracks.
     pub new_track_gain: Option<f32>,
 }
+
+/// One captured existing-asset placement.
+pub(crate) struct ProjectSampleImport {
+    pub asset: hex_project::AssetId,
+    pub destination: AudioBatchDestination,
+    pub warp: hex_project::AudioImportWarp,
+    pub new_track_gain: Option<f32>,
+}
 impl Default for AudioImportOptions {
     fn default() -> Self {
         Self {
@@ -89,6 +97,123 @@ pub(crate) fn prepare_asset_free(
 }
 
 impl Session {
+    /// Place one already-resident asset through the same audio import
+    /// transaction as a decoded batch. Its identity and media owners stay put.
+    pub(crate) fn place_existing_asset_revision_using(
+        &mut self,
+        import: ProjectSampleImport,
+        previous: Option<&hex_engine::PreparedRevision>,
+        mut admit: impl FnMut() -> Result<(), SessionError>,
+        prepare: impl FnOnce(
+            Preparation<'_>,
+            &mut dyn FnMut() -> Result<(), SessionError>,
+        ) -> Result<Arc<hex_engine::PreparedRevision>, SessionError>,
+    ) -> Result<(Created, Arc<hex_engine::PreparedRevision>), SessionError> {
+        let ProjectSampleImport {
+            asset,
+            destination,
+            warp,
+            new_track_gain,
+        } = import;
+        admit()?;
+        let frames = self.project().existing_import_frames(asset)?;
+        if !self.media.contains_key(&asset) {
+            return Err(SessionError::Invalid("project sample is not resident"));
+        }
+        AudioImportOptions {
+            warp,
+            overwrite: true,
+            new_track_gain,
+        }
+        .validate()?;
+        let path = self
+            .project()
+            .asset(asset)
+            .ok_or(SessionError::Invalid("project sample no longer exists"))?
+            .path();
+        let name = crate::imported_clip_name(path);
+        let (mut commands, cell) =
+            console::prefix(self.project(), destination, 1, &name, new_track_gain)?;
+        let placement = match destination {
+            AudioBatchDestination::Track { track, start } => ExistingAudioPlacement::Clip {
+                track,
+                start,
+                overwrite: true,
+            },
+            AudioBatchDestination::NewTracks {
+                before_track,
+                start,
+            } => ExistingAudioPlacement::NewTrack {
+                name: "imported audio".into(),
+                before_track,
+                start,
+            },
+            AudioBatchDestination::Console(_) => {
+                let cell = cell.ok_or(SessionError::Invalid("console import target missing"))?;
+                ExistingAudioPlacement::Session {
+                    track: cell.track,
+                    scene: cell.scene,
+                    name,
+                    source_start: 0,
+                    source_end: frames,
+                }
+            }
+        };
+        commands.push(Command::ImportExistingAudio { asset, placement });
+        let media = self.media_bank();
+        let waveforms = std::cell::RefCell::new(self.audio_clip_waveforms()?);
+        let table = self.sine_table();
+        let native = &self.native_assets;
+        let transforms = &self.audio_transforms;
+        let legacy = self
+            .media
+            .values()
+            .flat_map(|resident| [&resident.source_audio, &resident.audio])
+            .collect::<Vec<_>>();
+        let limits = self.native_reservation;
+        let max_frames = self.max_resident_frames;
+        let shutdown = &self.shutdown;
+        let (_, (created, revision)) = self.editor.execute_audio_imports_with_track_gain_prepared(
+            commands,
+            warp,
+            if matches!(destination, AudioBatchDestination::NewTracks { .. }) {
+                new_track_gain
+            } else {
+                None
+            },
+            |candidate, results| {
+                let created = console::normalize(candidate, results, cell, 1)?
+                    .into_iter()
+                    .next()
+                    .ok_or(SessionError::Invalid(
+                        "project sample import result missing",
+                    ))?;
+                if !matches!(created, Created::Imported { asset: actual, .. } if actual == asset) {
+                    return Err(SessionError::Invalid("project sample identity differs"));
+                }
+                let revision = prepare(
+                    Preparation {
+                        project: candidate,
+                        media: &media,
+                        native,
+                        table,
+                        transforms,
+                        waveforms: &waveforms,
+                        legacy: &legacy,
+                        limits,
+                        max_frames,
+                        shutdown,
+                        previous,
+                    },
+                    &mut admit,
+                )?;
+                Ok::<_, SessionError>((created, revision))
+            },
+        )?;
+        *self.audio_clip_waveforms.get_mut() = waveforms.into_inner();
+        Ok((created, revision))
+    }
+
     /// Commit one prepared batch, compiling exactly once and making one Undo.
     /// `expected_project` must be the captured project. The caller owns generation
     /// and active-gesture admission; `admit` checks these and cancellation again

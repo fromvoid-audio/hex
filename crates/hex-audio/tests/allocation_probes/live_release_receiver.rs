@@ -42,12 +42,17 @@ fn prepare(
 fn released_live_source_rejoin_and_new_generation_have_zero_callback_allocations() {
     for key_up in ["before-disable", "while-disabled", "after-reenable"] {
         for block in [1, 7, 64, 512] {
-            check(key_up, block);
+            check(key_up, block, false);
         }
     }
 }
 
-fn check(key_up: &str, block: usize) {
+#[test]
+fn loaded_sampler_host_trim_and_detached_release_have_zero_callback_allocations() {
+    check("before-disable", 64, true);
+}
+
+fn check(key_up: &str, block: usize, host_output: bool) {
     let mut editor = Editor::new(Project::new(8000).unwrap(), 32).unwrap();
     let Created::Asset(asset) = editor
         .execute(Command::ImportDeviceAsset {
@@ -96,6 +101,44 @@ fn check(key_up: &str, block: usize) {
         .instrument()
         .unwrap()
         .id();
+    if host_output {
+        use hex_project::{
+            DeviceAutomationTarget, DeviceModulation, DeviceModulationRoute, ModulationAmount,
+            ModulationDestination, ModulationOutputId, ModulationRange, ModulationRouteId,
+            ModulationSourceId, Modulator,
+        };
+        let next = editor.project().next_identity();
+        let source = ModulationSourceId::new(next).unwrap();
+        editor
+            .execute(Command::ReplaceDeviceModulation {
+                device,
+                modulation: DeviceModulation::new(
+                    vec![Modulator {
+                        id: source,
+                        enabled: true,
+                        color: Default::default(),
+                        state: hex_devices::modulation::macro_value::Settings { value: 1.0 }
+                            .encode()
+                            .unwrap(),
+                    }],
+                    vec![DeviceModulationRoute {
+                        id: ModulationRouteId::new(next + 1).unwrap(),
+                        source,
+                        output: ModulationOutputId::MAIN,
+                        destination: ModulationDestination::Device {
+                            device_type: hex_devices::sampler::state::TYPE_ID,
+                            target: DeviceAutomationTarget::HostOutputGain,
+                            vst3_class: None,
+                        },
+                        amount: ModulationAmount::new(-6.0 / 84.0).unwrap(),
+                        range: ModulationRange::default(),
+                        enabled: true,
+                    }],
+                )
+                .unwrap(),
+            })
+            .unwrap();
+    }
     let Created::Track(unrelated) = editor
         .execute(Command::AddMidiTrack {
             name: "unrelated".into(),

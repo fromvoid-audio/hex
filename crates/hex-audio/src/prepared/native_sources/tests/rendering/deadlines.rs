@@ -57,7 +57,12 @@ fn held_worker_misses_pipeline(location: usize) {
         .stage_eligible_audio_candidate(owner, vec![], PublicationPolicy::InheritRuntime, 41)
         .unwrap_or_else(|r| panic!("held native graph: {}", r.reason));
     control.command(PlaybackCommand::Play).unwrap();
-    for block in 0..2 {
+    let expected = if location == 1 {
+        [0.5, -1.0]
+    } else {
+        [0.25, -0.5]
+    };
+    for block in 0..3 {
         let mut frames = [[9.0; 2]; 8];
         let mut host = [9.0_f32; 16];
         allocation_free(|| {
@@ -66,6 +71,7 @@ fn held_worker_misses_pipeline(location: usize) {
                 callback.begin_native_effect_callback(8).unwrap();
                 let rendered = callback.render(&mut frames);
                 assert!(rendered.is_ok());
+                assert_eq!(callback.native_source_fault_for_test(binding), None);
                 assert!(crate::device::finish_host_chunk(
                     callback,
                     &mut host,
@@ -81,7 +87,9 @@ fn held_worker_misses_pipeline(location: usize) {
                 );
             })
         });
-        assert_eq!(host, [0.0; 16]);
+        for frame in host.chunks_exact(2) {
+            assert_eq!(frame, if block == 2 { expected } else { [0.0; 2] });
+        }
         if block == 0 {
             // The original producer committed a complete request. Observe
             // its consumption by the real worker; the held component can
@@ -123,21 +131,16 @@ fn held_worker_misses_pipeline(location: usize) {
                 &mut frames,
                 2,
                 &rendered,
-                16,
+                24,
                 Instant::now()
             ));
             assert_eq!(
                 callback.native_sources.test_committed_frames(binding),
-                Some(16)
+                Some(24)
             );
             assert!(!callback.native_sources.rendering_revoked());
         })
     });
-    let expected = if location == 1 {
-        [0.5, -1.0]
-    } else {
-        [0.25, -0.5]
-    };
     for frame in host.chunks_exact(2) {
         assert_eq!(
             frame, expected,

@@ -204,6 +204,7 @@ pub(super) fn render(
         .px(px(5.0))
         .text_xs()
         .bg(rgb(theme::color(theme::PaletteRole::Surface)))
+        .children(std::iter::once(source_manager::button(view, window, cx)))
         .child(track_name_view)
         .child(add_button);
     let chain = super::return_drag::render_chain(view, window, cx, owner, &devices);
@@ -282,7 +283,7 @@ pub(super) fn render_return_effect(
     let rendered = match &device_view {
         _ if device.state().type_id().as_str() == Ok("hex.vst3") => {
             let body = vst3_status_body(view, device, cx);
-            device_frame(
+            hex_widgets::device_frame_with_modulators(
                 device_drag_title(
                     view,
                     cx,
@@ -294,6 +295,7 @@ pub(super) fn render_return_effect(
                 leading,
                 actions,
                 body,
+                super::modulators::vst3_panel(view, cx, device),
             )
         }
         Ok(device_view) => {
@@ -356,7 +358,7 @@ pub(super) fn render_return_effect(
                     device_view,
                 )
             };
-            device_frame(
+            hex_widgets::device_frame_with_modulators(
                 device_drag_title(
                     view,
                     cx,
@@ -368,6 +370,7 @@ pub(super) fn render_return_effect(
                 leading,
                 actions,
                 body,
+                super::modulators::panel(view, cx, device, device_view, true),
             )
         }
         Err(error) => {

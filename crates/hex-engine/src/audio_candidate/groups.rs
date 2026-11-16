@@ -101,6 +101,7 @@ impl<'a> Transfer<'a> {
         for entry in view.entries() {
             bytes = bytes
                 .checked_add(entry.automation().storage_bytes().ok_or(invalid)?)
+                .and_then(|bytes| bytes.checked_add(entry.modulation_storage_bytes()?))
                 .ok_or(invalid)?;
             if let Some((a, b)) =
                 crate::native_effect_storage::pair_bytes(&entry).map_err(|_| invalid)?
@@ -484,6 +485,43 @@ mod tests {
         (runtime, anchors, pointer, capacity)
     }
     #[test]
+    fn claimed_preview_reports_continuation_without_consuming_the_predecessor() {
+        if !crate::audio_storage_constructor_layout_supported() {
+            eprintln!("claimed constructor layout unsupported; fixture not exercised");
+            return;
+        }
+        let project = crate::audio_preparation::candidate_test_project();
+        let (mut old, _old_anchors, _, _) = owner(&project);
+        let (mut next, _next_anchors, _, _) = owner(&project);
+        old.apply_action(crate::PlaybackAction::Transport(
+            crate::PlaybackCommand::Play,
+        ))
+        .unwrap();
+        old.render(&mut [[0.0; 2]; 2]).unwrap();
+        let before = old.status().unwrap();
+        let (window, report) = next
+            .stream_playback()
+            .preview_stream_handoff_with_report(
+                &mut old.stream_playback(),
+                4,
+                None,
+                &mut |_| Ok(()),
+            )
+            .unwrap();
+        assert!(!report.running_audio_restart());
+        assert_eq!(window.frames, 4);
+        assert_eq!(old.status().unwrap().position, before.position);
+        let mut previous = Some(old);
+        let mut retired = None;
+        let mut manifest = None;
+        next.try_inherit_and_retire_in_place(&mut previous, &mut retired, &mut manifest)
+            .unwrap();
+        assert!(previous.is_none());
+        assert!(retired.is_some());
+        assert!(manifest.is_some());
+    }
+
+    #[test]
     fn real_utility_chains_fan_out_by_actual_tail_lifetime_not_history_copy() {
         if !crate::audio_storage_constructor_layout_supported() {
             return;
@@ -544,6 +582,7 @@ mod tests {
                 )
                 .unwrap();
             track.devices.push(hex_project::DeviceSnapshot {
+                modulation: Default::default(),
                 parent: None,
                 automation: Vec::new(),
                 comparison: None,

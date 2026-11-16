@@ -5,7 +5,9 @@ use super::{
 };
 use crate::theme;
 use gpui::{Context, Div, Window, div, prelude::*, px, rgb};
-use hex_session::service::{ArrangementDeviceDestination, Request};
+use hex_plugin_catalog::PluginRole;
+use hex_project::TrackDeviceSlot;
+use hex_session::service::{ArrangementDeviceDestination, PluginEffectDestination, Request};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) enum ArrangementDropTarget {
@@ -60,15 +62,12 @@ impl EditorView {
             return;
         }
         self.arrangement_device_preview = None;
-        // Existing-device moves retain their rail/card contract. Plugin
-        // effects can target a track, while creating a track requires a
-        // separate atomic plugin-preparation contract.
-        let plugin_effect = match &drag.source {
-            NativeDeviceDragSource::Browser { .. } => false,
+        let plugin_role = match &drag.source {
+            NativeDeviceDragSource::Browser { .. } => None,
             NativeDeviceDragSource::PluginEffect(selection)
-                if selection.role == hex_plugin_catalog::PluginRole::Effect =>
+                if self.pending_plugin_effect.is_none() =>
             {
-                true
+                Some(selection.role)
             }
             _ => return,
         };
@@ -78,7 +77,9 @@ impl EditorView {
         let Some(target) = self.painted_arrangement_drop_target(x, y) else {
             return;
         };
-        if plugin_effect && matches!(target, ArrangementDropTarget::NewTrack { .. }) {
+        if plugin_role == Some(PluginRole::Instrument)
+            && matches!(target, ArrangementDropTarget::ExistingTrack { .. })
+        {
             return;
         }
         let destination = match target {
@@ -119,13 +120,6 @@ impl EditorView {
             });
         let captured = self.arrangement_device_preview;
         let pointer = window.mouse_position();
-        let unsupported_new_track = owns
-            && self.native_device_drag_is_current(drag)
-            && matches!(drag.source, NativeDeviceDragSource::PluginEffect(_))
-            && matches!(
-                self.painted_arrangement_drop_target(f32::from(pointer.x), f32::from(pointer.y)),
-                Some(ArrangementDropTarget::NewTrack { .. })
-            );
         self.update_arrangement_device_drop(drag, f32::from(pointer.x), f32::from(pointer.y));
         let current = self.arrangement_device_preview;
         let valid = owns
@@ -148,14 +142,35 @@ impl EditorView {
         cx.set_active_drag_cursor_style(gpui::CursorStyle::Arrow, window);
         if let (true, Some(preview), NativeDeviceDragSource::PluginEffect(selection)) =
             (valid, captured, source)
-            && let ArrangementDeviceDestination::ExistingTrack { track, .. } = preview.destination
         {
-            self.insert_plugin_effect(
-                selection,
-                hex_session::service::PluginEffectDestination::Track(track),
-                None,
-                cx,
-            );
+            let destination = match preview.destination {
+                ArrangementDeviceDestination::ExistingTrack { track, .. } => {
+                    PluginEffectDestination::Track(track)
+                }
+                ArrangementDeviceDestination::NewTrack { before_track } => {
+                    let Some(state) = self.state.as_ref() else {
+                        return;
+                    };
+                    let gain = match self.track_defaults.captured_gain() {
+                        Ok(gain) => gain,
+                        Err(error) => {
+                            self.error = Some(error.into());
+                            cx.notify();
+                            return;
+                        }
+                    };
+                    PluginEffectDestination::NewTrack {
+                        before_track,
+                        slot: match selection.role {
+                            PluginRole::Instrument => TrackDeviceSlot::Instrument,
+                            PluginRole::Effect => TrackDeviceSlot::Effect,
+                        },
+                        gain,
+                        track_identity: state.project.next_identity(),
+                    }
+                }
+            };
+            self.insert_plugin_effect(selection, destination, None, cx);
         } else if let (true, Some(preview), NativeDeviceDragSource::Browser { class, type_id }) =
             (valid, captured, source)
         {
@@ -179,14 +194,8 @@ impl EditorView {
                 self.status = "adding device to arrangement".into();
             }
         } else {
-            self.error = Some(
-                if unsupported_new_track {
-                    "creating a track with a vst3 is not supported yet"
-                } else {
-                    "device drop canceled · target or project changed, or editing is busy"
-                }
-                .into(),
-            );
+            self.error =
+                Some("device drop canceled · target or project changed, or editing is busy".into());
         }
         cx.notify();
     }

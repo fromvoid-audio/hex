@@ -10,6 +10,8 @@ use std::collections::VecDeque;
 struct Sink {
     observations: VecDeque<PluginParameterObservation>,
     restorations: usize,
+    editor: Option<GestureKey>,
+    editor_cancelled: bool,
 }
 impl WorkerAudioSink for Sink {
     fn initialize(&mut self, _: &AtomicBool) -> Result<u32, String> {
@@ -20,7 +22,12 @@ impl WorkerAudioSink for Sink {
     fn canonical_changed(&mut self, _: Arc<CanonicalAudioSourceSnapshot>) {
         panic!("no publication in writer fixture");
     }
+    fn cancel_plugin_editor_recording(&mut self, key: GestureKey) -> bool {
+        self.editor_cancelled |= self.editor == Some(key);
+        self.editor_cancelled
+    }
     fn take_plugin_parameter_observation(&mut self) -> Option<PluginParameterObservation> {
+        assert!(self.editor.is_none() || self.editor_cancelled);
         self.observations.pop_front()
     }
     fn prepare_plugin_parameter_gesture(
@@ -94,6 +101,9 @@ fn active(scope: DeviceAutomationTakeScope, source: DeviceAutomationSource) -> S
             released: false,
             ended: false,
             failed_observations: [None; 2],
+            failed_editor: None,
+            editor_request: None,
+            editor_start_error: None,
             interrupted: false,
             sealing: false,
             outcome: None,
@@ -483,6 +493,143 @@ fn failed_recovery_dispatch_copies_receipts_without_releasing_custody() {
 }
 
 #[test]
+fn keeping_verified_copy_resolves_only_exact_custody_and_preserves_each_outcome() {
+    use crate::service::native_automation_recording::tests::failed_lane_for_test;
+    use hex_storage::automation_draft::{
+        DraftAbortReason, DraftClock, DraftReadLimits, DraftReader, DraftTerminal,
+    };
+
+    let mut previous_receipt = None;
+    for terminal in [
+        DraftTerminal::Finished(DraftClock {
+            performance_frame: 32,
+            content_frame: 24,
+            loop_pass: 0,
+        }),
+        DraftTerminal::Interrupted,
+        DraftTerminal::Aborted(DraftAbortReason::Cancelled),
+    ] {
+        let (files, session, scope, source) = fixture();
+        let original_path = files.0.join("keep-original");
+        let mut lane = failed_lane_for_test(&session, scope, source, &original_path, terminal);
+        let original = std::fs::read(&original_path).unwrap();
+        let before = session.project().clone();
+        let mut state = active(scope, source);
+        let mut failed = state.active.take().unwrap();
+        failed.ended = true;
+        failed.path = original_path.clone();
+        state.failed = Some(failed);
+        assert!(inspect_failed_copy(&state, &lane, scope, false).is_err());
+        let output = files.0.join("kept-copy");
+        start_failed_copy(&state, &mut lane, scope, &output, 1, false).unwrap();
+        assert!(inspect_failed_copy(&state, &lane, scope, false).is_err());
+        let deadline = Instant::now() + crate::test_wait::HANG_BOUND;
+        let receipt = loop {
+            match lane
+                .receive(
+                    &session,
+                    None,
+                    scope.context(),
+                    scope,
+                    &DeviceAutomationTakeAction::PollFailedCopy,
+                )
+                .unwrap()
+            {
+                Step::Progress(DeviceAutomationTakeProgress::Pending) => {
+                    assert!(Instant::now() < deadline);
+                    std::thread::yield_now();
+                }
+                Step::Progress(DeviceAutomationTakeProgress::VerifiedCopy { receipt, .. }) => {
+                    break receipt;
+                }
+                _ => panic!("unexpected copy outcome"),
+            }
+        };
+        assert_eq!(receipt.terminal(), terminal);
+        let keep = |state: &mut State, lane: &mut Lane, scope, max_events, gesture_active| {
+            keep_failed_copy(
+                state,
+                lane,
+                scope,
+                &output,
+                receipt,
+                max_events,
+                gesture_active,
+            )
+        };
+        assert!(
+            keep_failed_copy(
+                &mut state,
+                &mut lane,
+                scope,
+                &files.0.join("another-copy"),
+                receipt,
+                1,
+                false
+            )
+            .is_err()
+        );
+        if let Some(stale) = previous_receipt.replace(receipt) {
+            assert!(
+                keep_failed_copy(&mut state, &mut lane, scope, &output, stale, 1, false).is_err()
+            );
+        }
+        let copy = std::fs::read(&output).unwrap();
+        let mut wrong = scope;
+        wrong.stamp.gesture_serial += 1;
+        assert!(keep(&mut state, &mut lane, wrong, 1, false).is_err());
+        assert!(keep(&mut state, &mut lane, scope, 0, false).is_err());
+        assert!(keep(&mut state, &mut lane, scope, 1, true).is_err());
+        state.failed.as_mut().unwrap().path = files.0.join("another-original");
+        assert!(keep(&mut state, &mut lane, scope, 1, false).is_err());
+        state.failed.as_mut().unwrap().path = original_path.clone();
+        state.failed.as_mut().unwrap().ended = false;
+        assert!(keep(&mut state, &mut lane, scope, 1, false).is_err());
+        state.failed.as_mut().unwrap().ended = true;
+        state.failed.as_mut().unwrap().failed_observations[0] =
+            Some(PluginParameterObservation::Unchanged {
+                key: gesture(scope).key,
+            });
+        assert!(keep(&mut state, &mut lane, scope, 1, false).is_err());
+        state.failed.as_mut().unwrap().failed_observations[0] = None;
+        std::fs::remove_file(&output).unwrap();
+        assert!(keep(&mut state, &mut lane, scope, 1, false).is_err());
+        for changed in [&b"malformed"[..], original.as_slice()] {
+            std::fs::write(&output, changed).unwrap();
+            assert!(keep(&mut state, &mut lane, scope, 1, false).is_err());
+            assert!(!lane.close_safe());
+            assert!(!state.close_safe());
+            assert!(lane.begin(&session, None, scope, source, &files.0).is_err());
+            assert_eq!(session.project(), &before);
+            assert_eq!(std::fs::read(&original_path).unwrap(), original);
+        }
+        std::fs::write(&output, &copy).unwrap();
+        assert!(matches!(
+            keep(&mut state, &mut lane, scope, 1, false).unwrap(),
+            Step::Progress(DeviceAutomationTakeProgress::CopyKept(path)) if path == output
+        ));
+        assert!(lane.close_safe());
+        assert!(state.close_safe());
+        assert!(generic_sealed_recovery_idle(&state, &lane));
+        assert!(keep(&mut state, &mut lane, scope, 1, false).is_err());
+        assert_eq!(session.project(), &before);
+        assert_eq!(std::fs::read(&original_path).unwrap(), original);
+        assert_eq!(std::fs::read(&output).unwrap(), copy);
+        let reader = DraftReader::open(
+            &output,
+            DraftReadLimits {
+                max_source_bytes: 65536,
+            },
+        )
+        .unwrap();
+        assert_eq!(reader.progress().durable_terminal, Some(terminal));
+        assert_eq!(reader.progress().durable_events, 1);
+        drop(reader);
+        lane.begin(&session, None, scope, source, &files.0).unwrap();
+    }
+}
+
+#[test]
 fn failed_recovery_dispatch_preserves_already_admitted_terminal_without_late_receipts() {
     use crate::service::native_automation_recording::tests::failed_lane_for_test;
     use hex_storage::automation_draft::{
@@ -654,6 +801,140 @@ fn failed_writer_retains_late_point_and_actual_terminal_without_fabricating_rele
     assert!(sink.observations.is_empty());
     assert_eq!(sink.restorations, 0);
 }
+#[test]
+fn failed_editor_writer_copies_its_whole_confirmed_prefix_before_releasing_custody() {
+    use crate::service::native_automation_recording::tests::failed_lane_for_test;
+    use hex_storage::automation_draft::{
+        DraftOutcome, DraftReadLimits, DraftReader, DraftTerminal,
+    };
+    let (files, session, scope, source) = fixture();
+    let original = files.0.join("original");
+    let mut lane = failed_lane_for_test(
+        &session,
+        scope,
+        source,
+        &original,
+        DraftTerminal::Interrupted,
+    );
+    let original_bytes = std::fs::read(&original).unwrap();
+    let mut state = active(scope, source);
+    let active = state.active.as_mut().unwrap();
+    active.path = original.clone();
+    active.outcome = Some(Err("actual injected writer refusal".into()));
+    let key = active.key;
+    let DeviceCaptureTarget::Vst3(target) = scope.target else {
+        panic!("foreign fixture")
+    };
+    let point = |index: usize| {
+        let frame = (index as u64 + 1) * 8;
+        PluginParameterObservation::Delivered(delivery(
+            scope,
+            source,
+            frame,
+            Vst3ApplicationValue::Value((index % 16) as f64 / 16.0),
+        ))
+    };
+    active.pending = Some(DeviceAutomationTakeAction::PluginObservation(Box::new(
+        point(0),
+    )));
+    let count = MAX_FAILED_PLUGIN_EDITOR_OBSERVATIONS - 1;
+    let mut sink = Sink {
+        editor: Some(key),
+        observations: (1..count)
+            .map(point)
+            .chain([PluginParameterObservation::Interrupted {
+                key,
+                context: scope.context(),
+                target,
+                source,
+                sequence: count as u64 * 8 + 1,
+            }])
+            .collect(),
+        ..Sink::default()
+    };
+    let copy = files.0.join("copied");
+    while state.active.is_some() {
+        let left = sink.observations.len();
+        Preparation {
+            state: &mut state,
+            lane: &mut lane,
+            document_base: None,
+            recovery: None,
+            may_defer: false,
+            deferred: false,
+        }
+        .drive(&session, scope.context(), &mut sink);
+        assert!((1..=4).contains(&(left - sink.observations.len())));
+        if state.active.is_some() {
+            assert!(start_failed_copy(&state, &mut lane, scope, &copy, 100, false).is_err());
+        }
+    }
+    assert!(sink.editor_cancelled);
+    assert!(sink.observations.is_empty());
+    assert_eq!(sink.restorations, 0);
+    assert!(!state.close_safe());
+    assert!(!lane.close_safe());
+    let mut full = state.failed_observations(scope, source).unwrap();
+    assert_eq!(full.len(), count + 1);
+    full.push(point(count));
+    assert_eq!(
+        prepare_failed_plugin_continuation(scope, source, None, &full).err(),
+        Some("failed plugin continuation has invalid scope or capacity"),
+    );
+    assert!(matches!(
+        start_failed_copy(&state, &mut lane, scope, &copy, 100, false).unwrap(),
+        Step::Progress(DeviceAutomationTakeProgress::Pending),
+    ));
+    let until = Instant::now() + Duration::from_secs(1);
+    let receipt = loop {
+        let step = lane
+            .receive(
+                &session,
+                None,
+                scope.context(),
+                scope,
+                &DeviceAutomationTakeAction::PollFailedCopy,
+            )
+            .unwrap();
+        if let Step::Progress(DeviceAutomationTakeProgress::VerifiedCopy { path, receipt }) = step {
+            assert_eq!(path, copy);
+            break receipt;
+        }
+        assert!(Instant::now() < until);
+        std::thread::yield_now();
+    };
+    let mut reader = DraftReader::open(
+        &copy,
+        DraftReadLimits {
+            max_source_bytes: 64 * 1024,
+        },
+    )
+    .unwrap();
+    assert_eq!(reader.outcome(), DraftOutcome::Interrupted);
+    let mut page = [None; 16];
+    let mut rows = Vec::new();
+    loop {
+        let read = reader.read_events(rows.len() as u64, &mut page).unwrap();
+        if read == 0 {
+            break;
+        }
+        rows.extend(page.iter().take(read).flatten().copied());
+    }
+    drop(reader);
+    assert_eq!(rows.len(), count + 1); // Includes the original writer prefix.
+    for (index, row) in rows.iter().skip(1).enumerate() {
+        assert_eq!(row.sequence, (index as u64 + 1) * 8);
+        assert_eq!(row.value.get(), (index % 16) as f32 / 16.0);
+    }
+    assert!(!state.close_safe());
+    assert!(matches!(
+        keep_failed_copy(&mut state, &mut lane, scope, &copy, receipt, 100, false).unwrap(),
+        Step::Progress(DeviceAutomationTakeProgress::CopyKept(_)),
+    ));
+    assert!(state.close_safe() && lane.close_safe());
+    assert_eq!(std::fs::read(original).unwrap(), original_bytes);
+}
+
 #[test]
 fn another_sources_terminal_does_not_prove_this_recording_released() {
     let (_files, session, scope, source) = fixture();
@@ -1115,4 +1396,219 @@ fn cached_interruption_retires_the_exact_gesture_without_claiming_a_retained_pre
     assert!(machine.snapshot().is_none());
     assert!(client.acknowledge_with_snapshot(&ended.ack, machine.snapshot()));
     assert!(client.begin_plugin_recording(origin).is_ok());
+}
+
+#[cfg(feature = "recording-fault-test-support")]
+#[test]
+fn grouped_editor_writer_failure_retains_late_restorations_until_explicit_keep() {
+    use crate::service::automation_draft::{
+        DraftClock, DraftTerminal, GroupApplication, GroupDraftEvent, Vst3GroupCaptureTarget,
+        Vst3GroupTarget,
+    };
+    use hex_storage::automation_draft::DraftReadLimits;
+
+    let (files, session, mut scope, mut source) = fixture();
+    let DeviceCaptureTarget::Vst3(scalar) = scope.target else {
+        panic!("foreign fixture");
+    };
+    let target = Vst3GroupCaptureTarget {
+        draft: Vst3GroupTarget::new(scalar.device, scalar.class, &[0, 11]).unwrap(),
+        binding: scalar.binding,
+    };
+    scope.target = DeviceCaptureTarget::Vst3Group(target);
+    source.target = scope.target;
+    let key = GestureKey {
+        generation: scope.stamp.project_generation,
+        token: scope.stamp.gesture_serial,
+    };
+    let current = scope.context();
+    let observe = |receipt| {
+        PluginParameterObservation::Grouped(Vst3EditorGroupObservation {
+            key,
+            context: current,
+            source,
+            receipt,
+        })
+    };
+    let row = |ordinal, parameter, sdk_gesture, content, application| GroupDraftEvent {
+        ordinal,
+        parameter,
+        sdk_gesture,
+        sdk_sequence: ordinal + 18,
+        clock: DraftClock {
+            performance_frame: 8 + content,
+            content_frame: content,
+            loop_pass: 0,
+        },
+        application,
+    };
+    let rows = [
+        row(1, 0, 10, 0, GroupApplication::Value(0.25)),
+        row(2, 11, 11, 0, GroupApplication::Value(0.75)),
+        row(3, 0, 10, 8, GroupApplication::Restored),
+        row(4, 11, 11, 16, GroupApplication::Restored),
+    ];
+    let applied = |rows: &[GroupDraftEvent]| {
+        let mut batch = [None; MAX_VST3_EDITOR_GROUP_MEMBERS];
+        for (slot, row) in batch.iter_mut().zip(rows) {
+            *slot = Some(*row);
+        }
+        observe(Vst3EditorGroupReceipt::Applied(
+            Vst3EditorGroupRows::new(batch, rows[0].clock.performance_frame + 9).unwrap(),
+        ))
+    };
+    let mut state = State::default();
+    let mut lane = Lane::default();
+    let recovery = files.0.join("recovery.hex");
+    Preparation {
+        state: &mut state,
+        lane: &mut lane,
+        document_base: None,
+        recovery: Some(&recovery),
+        may_defer: false,
+        deferred: false,
+    }
+    .admit_ready(
+        &session,
+        current,
+        key,
+        observe(Vst3EditorGroupReceipt::Ready),
+    )
+    .unwrap();
+    state.active.as_mut().unwrap().editor_request = Some(7);
+    let original = lane.path().unwrap().to_owned();
+    let original_bytes = std::fs::read(&original).unwrap();
+    assert!(!state.close_safe() && !lane.close_safe());
+    lane.receive(
+        &session,
+        None,
+        current,
+        scope,
+        &DeviceAutomationTakeAction::InjectWriterFailure,
+    )
+    .unwrap();
+
+    let drive = |state: &mut State, lane: &mut Lane, sink: &mut Sink| {
+        Preparation {
+            state,
+            lane,
+            document_base: None,
+            recovery: None,
+            may_defer: false,
+            deferred: false,
+        }
+        .drive(&session, current, sink);
+    };
+    let mut sink = Sink {
+        observations: VecDeque::from([applied(&rows[..2])]),
+        ..Sink::default()
+    };
+    let until = Instant::now() + Duration::from_secs(2);
+    loop {
+        drive(&mut state, &mut lane, &mut sink);
+        if state
+            .active
+            .as_ref()
+            .is_some_and(|active| active.outcome.as_ref().is_some_and(Result::is_err))
+        {
+            break;
+        }
+        assert!(Instant::now() < until);
+        crate::test_wait::pause();
+    }
+    assert!(sink.observations.is_empty());
+    sink.editor = Some(key);
+    sink.observations.extend([
+        applied(&rows[2..3]),
+        applied(&rows[3..]),
+        observe(Vst3EditorGroupReceipt::Finished(rows[3].clock)),
+    ]);
+    drive(&mut state, &mut lane, &mut sink);
+    assert!(sink.editor_cancelled);
+    let settled = state.finish_editor(7, &lane).unwrap();
+    assert!(settled.result.is_err());
+    assert!(!state.close_safe() && !lane.close_safe());
+    assert_eq!(std::fs::read(&original).unwrap(), original_bytes);
+
+    let destination = files.0.join("verified.hex-automation-draft");
+    assert!(matches!(
+        start_failed_copy(&state, &mut lane, scope, &destination, 8, false).unwrap(),
+        Step::Progress(DeviceAutomationTakeProgress::Pending)
+    ));
+    let until = Instant::now() + Duration::from_secs(2);
+    let receipt = loop {
+        match lane
+            .receive(
+                &session,
+                None,
+                current,
+                scope,
+                &DeviceAutomationTakeAction::PollFailedCopy,
+            )
+            .unwrap()
+        {
+            Step::Progress(DeviceAutomationTakeProgress::VerifiedCopy { path, receipt }) => {
+                assert_eq!(path, destination);
+                break receipt;
+            }
+            Step::Progress(DeviceAutomationTakeProgress::Pending) => {
+                assert!(Instant::now() < until);
+                crate::test_wait::pause();
+            }
+            _ => panic!("unexpected recovery result"),
+        }
+    };
+    assert_eq!(receipt.terminal(), DraftTerminal::Finished(rows[3].clock));
+    let mut completed = receipt
+        .open_completed_group_on_control(
+            &destination,
+            DraftReadLimits {
+                max_source_bytes: 65_536,
+            },
+            8,
+        )
+        .unwrap();
+    let mut copied = [None; 4];
+    assert_eq!(completed.read_events(0, &mut copied).unwrap(), 4);
+    assert_eq!(copied, rows.map(Some));
+    drop(completed);
+    assert!(matches!(
+        keep_failed_copy(&mut state, &mut lane, scope, &destination, receipt, 8, false).unwrap(),
+        Step::Progress(DeviceAutomationTakeProgress::CopyKept(path)) if path == destination
+    ));
+    assert!(state.close_safe() && lane.close_safe());
+    assert_eq!(std::fs::read(original).unwrap(), original_bytes);
+    let selected = native_automation_recording::inspect_sealed_file(&destination).unwrap();
+    assert_eq!(selected.target, scope.target.draft_target());
+    let (edit, _) = native_automation_recording::recover_sealed(
+        &session,
+        None,
+        selected.target,
+        selected.provenance,
+        &destination,
+        AutomationRecoveryFileIdentity::Sealed(selected.identity),
+    )
+    .unwrap();
+    assert!(
+        matches!(edit.as_ref(), Command::SpliceVst3AutomationTouchGroup { lanes, .. } if lanes.len() == 2)
+    );
+
+    use std::io::Write as _;
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(&destination)
+        .unwrap()
+        .write_all(&[0])
+        .unwrap();
+    assert!(
+        native_automation_recording::recover_sealed(
+            &session,
+            None,
+            selected.target,
+            selected.provenance,
+            &destination,
+            AutomationRecoveryFileIdentity::Sealed(selected.identity),
+        )
+        .is_err()
+    );
 }

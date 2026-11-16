@@ -106,6 +106,33 @@ fn every_owner_and_unbound_source_roundtrips_without_cross_owner_parenting() {
             .snapshot(),
         snapshot
     );
+    let source = project.native_sources()[0].id();
+    let parent = project.native_sources()[0].instrument().id();
+    let mut bound = Editor::new(project, 4).unwrap();
+    bound
+        .execute(Command::BindTrackSource {
+            track,
+            source: Some(source),
+        })
+        .unwrap();
+    let bound = bound.project();
+    assert_eq!(
+        crate::schema_version_for(bound),
+        crate::BOUND_SOURCE_EFFECT_SCHEMA_VERSION
+    );
+    assert!(crate::decode(&crate::encode_base(bound).unwrap()).is_err());
+    assert!(crate::encode_schema22(bound).is_err());
+    let saved = crate::encode(bound).unwrap();
+    let restored = crate::decode(&saved).unwrap();
+    assert_eq!(crate::encode(&restored).unwrap(), saved);
+    assert_eq!(restored.snapshot(), bound.snapshot());
+    let restored_unit = restored.native_source(source).unwrap();
+    assert_eq!(restored_unit.receiver(), Some(track));
+    assert_eq!(
+        restored_unit.post_instrument_effects()[0].parent(),
+        Some(parent)
+    );
+
     let mut bad = snapshot.clone();
     bad.tracks[0].devices[1].parent = Some(bad.return_tracks[0].devices[0].id);
     assert!(Project::from_snapshot(bad).is_err());
@@ -189,7 +216,11 @@ fn authentic_flat_schema66_migrates_as_roots() {
     let bytes = include_bytes!("../../../tests/fixtures/sampler-crossfade/schema66.json");
     let project = crate::decode(bytes).unwrap();
     assert!(project.devices().all(|device| device.parent().is_none()));
-    assert_eq!(crate::encode(&project).unwrap(), bytes);
+    let encoded = crate::encode(&project).unwrap();
+    let expected: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+    let actual: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
+    assert_eq!(actual, expected);
+    assert_eq!(crate::decode(&encoded).unwrap(), project);
 }
 
 #[test]

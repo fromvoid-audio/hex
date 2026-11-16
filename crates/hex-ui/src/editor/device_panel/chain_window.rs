@@ -9,6 +9,7 @@ pub(super) struct ChainWindow {
     cards: Vec<(DeviceId, f32, f32)>,
     focus: HashMap<DeviceId, FocusHandle>,
     selection_focus: Option<FocusHandle>,
+    reveal_after_prepare: Option<DeviceId>,
     pub(super) refused_delete: Option<super::keyboard::RefusedDelete>,
     width: Rc<Cell<f32>>,
 }
@@ -41,6 +42,13 @@ impl ChainWindow {
                 .retain(|id, _| devices.iter().any(|device| device.0 == *id));
             self.cards = cards;
         }
+        if let Some(device) = self.reveal_after_prepare.take() {
+            self.reveal(device);
+        }
+    }
+
+    pub(super) fn reveal_after_prepare(&mut self, device: DeviceId) {
+        self.reveal_after_prepare = Some(device);
     }
 
     pub(super) fn focus(&mut self, device: DeviceId, cx: &App) -> FocusHandle {
@@ -184,7 +192,7 @@ pub(super) fn rail(view: &mut EditorView, cx: &Context<EditorView>) -> Div {
     super::keyboard::rail(view, cx, rail)
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "ui-test-support")))]
 mod tests {
     use super::*;
 

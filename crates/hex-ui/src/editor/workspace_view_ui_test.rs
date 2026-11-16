@@ -420,8 +420,8 @@ fn fixture(
                 v.selected_clip = Some(clip);
                 v.clip_selection.only(track_id, clip);
                 v.time_selection = Some(super::time_selection::TimeSelection {
-                    anchor_track: track_id,
-                    end_track: track_id,
+                    anchor_track: Some(track_id),
+                    end_track: Some(track_id),
                     anchor_frame: 2,
                     end_frame: 6,
                 });

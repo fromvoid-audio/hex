@@ -1,9 +1,8 @@
-"""Read-only macOS Cargo target volume identification, before cache mutation.
+"""Cargo target volume identification.
 
 Probe the nearest existing ancestor for a not-yet-created target. Resolve its
 device with df, then read diskutil's structured filesystem metadata. Neither
 tool writes the volume, moves executables, changes permissions or owns cleanup.
-Other platforms retain the existing runner behavior, without a storage claim.
 """
 
 from pathlib import Path

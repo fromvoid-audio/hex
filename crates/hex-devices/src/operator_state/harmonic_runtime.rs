@@ -449,6 +449,9 @@ impl EventProof {
             return self.apply_global(factory, event);
         }
         match event {
+            NativeInstrumentEvent::NotePressure { .. } => {
+                return Err(Error::UnsupportedNotePressure);
+            }
             NativeInstrumentEvent::Expression { .. } => return Err(Error::InvalidEventBatch),
             NativeInstrumentEvent::NoteOn {
                 occurrence_id,
@@ -626,6 +629,9 @@ impl Runtime {
             return self.apply_global(event, origin, beat, running);
         }
         match event {
+            NativeInstrumentEvent::NotePressure { .. } => {
+                return Err(Error::UnsupportedNotePressure);
+            }
             NativeInstrumentEvent::Expression { .. } => return Err(Error::InvalidEventBatch),
             NativeInstrumentEvent::NoteOn {
                 occurrence_id,
@@ -903,11 +909,7 @@ impl MutableInstrumentRuntime for Runtime {
         let mut proof = EventProof::new(self);
         let mut offset = 0;
         for event in events {
-            let at = match *event {
-                NativeInstrumentEvent::NoteOn { frame_offset, .. }
-                | NativeInstrumentEvent::NoteOff { frame_offset, .. }
-                | NativeInstrumentEvent::Expression { frame_offset, .. } => frame_offset,
-            };
+            let at = event.frame_offset();
             if at < offset || at >= frames {
                 return Err(Error::InvalidEventBatch);
             }
@@ -1013,6 +1015,7 @@ impl MutableInstrumentRuntime for Runtime {
             .any(|voice| voice.id != 0 && voice.gate.is_some());
         let companion = self.factory.settings.companion;
         let needs_companion_beat = companion.needs_clock();
+        let has_modulation = self.factory.configuration.has_modulation();
         let needs_companion_transport = companion.needs_running();
         for (offset, frame) in frames.iter_mut().enumerate() {
             let beat = if needs_companion_beat {
@@ -1044,11 +1047,7 @@ impl MutableInstrumentRuntime for Runtime {
             }
             let mut voices_changed = false;
             while let Some(event) = events.get(cursor) {
-                let at = match *event {
-                    NativeInstrumentEvent::NoteOn { frame_offset, .. }
-                    | NativeInstrumentEvent::NoteOff { frame_offset, .. }
-                    | NativeInstrumentEvent::Expression { frame_offset, .. } => frame_offset,
-                };
+                let at = event.frame_offset();
                 if at != offset {
                     break;
                 }
@@ -1179,6 +1178,7 @@ impl MutableInstrumentRuntime for Runtime {
                             }),
                             std::array::from_fn(|i| parameters[4 + i]),
                             std::array::from_fn(|i| parameters[8 + i]),
+                            has_modulation,
                             (if quality {
                                 voice
                                     .modulated_filter
@@ -1224,18 +1224,26 @@ impl MutableInstrumentRuntime for Runtime {
                         sample
                     };
                     voice.previous = previous;
-                    for (i, step) in steps.iter().enumerate() {
-                        let step = if law.active() && law.selected(i) {
-                            (*step as f64 * multiplier).round() as u64
-                        } else {
-                            *step
-                        };
-                        let step = if quality {
-                            step / 2 + if subframe == 1 { step % 2 } else { 0 }
-                        } else {
-                            step
-                        };
-                        voice.phases[i] = voice.phases[i].wrapping_add(step);
+                    if quality && !law.active() {
+                        // Both subframes must sum to the original step, including odd steps.
+                        for (phase, step) in voice.phases.iter_mut().zip(steps) {
+                            let step = step / 2 + if subframe == 1 { step % 2 } else { 0 };
+                            *phase = phase.wrapping_add(step);
+                        }
+                    } else {
+                        for (i, step) in steps.iter().enumerate() {
+                            let step = if law.active() && law.selected(i) {
+                                (*step as f64 * multiplier).round() as u64
+                            } else {
+                                *step
+                            };
+                            let step = if quality {
+                                step / 2 + if subframe == 1 { step % 2 } else { 0 }
+                            } else {
+                                step
+                            };
+                            voice.phases[i] = voice.phases[i].wrapping_add(step);
+                        }
                     }
                 }
                 let pan_gains = if quality { voice.pan_gains } else { [1.0, 1.0] };
@@ -1330,7 +1338,18 @@ impl MutableInstrumentRuntime for Runtime {
         if let Some(p) = previous.as_any().downcast_ref::<Self>()
             && self.can_copy_history_from(p)
         {
-            self.voices.copy_from_slice(&p.voices);
+            // Empty slots are reset wholesale on construction, expiry and
+            // compaction. The legacy note-off path can still set the gate of an
+            // ID-zero slot, so copy those slots too to preserve its history.
+            for (target, source) in self.voices.iter_mut().zip(&p.voices) {
+                if target.id != 0
+                    || source.id != 0
+                    || target.gate.is_some()
+                    || source.gate.is_some()
+                {
+                    *target = *source;
+                }
+            }
             self.source = p.source;
             self.elapsed = p.elapsed;
             self.frames = p.frames;
@@ -1362,39 +1381,44 @@ impl MutableInstrumentRuntime for Runtime {
             .as_any()
             .downcast_ref::<Target>()
             .is_some_and(|t| t.0 == self.factory.configuration.configuration_id())
-            && Legacy::read(previous).is_some_and(|p| {
+            && Admission::read(previous).is_some_and(|p| {
                 self.factory.rate == p.rate
-                    && (p.voices().all(|voice| voice.id == 0)
+                    && (p.admission_voices().all(|(id, _)| id == 0)
                         || self.factory.settings.companion == p.companion)
                     && compatible_base(
                         &self.factory.base,
                         &p.base,
                         self.factory.settings.global.active,
                     )
-                    && p.voices().filter(|v| v.id != 0).count() <= self.factory.capacity()
+                    && p.admission_voices().filter(|(id, _)| *id != 0).count()
+                        <= self.factory.capacity()
                     && ((p.tuning == self.factory.tuning.as_ref()
                         && p.fine_offsets == self.factory.settings.fine.values()
                         && p.pitch_keytrack == self.factory.settings.pitch_keytrack.values())
-                        || p.voices().filter(|v| v.id != 0).all(|v| {
-                            self.factory.retuned_note(v.note).is_ok_and(|note| {
-                                (!self.factory.settings.lfo.active()
-                                    || PreparedOperatorConfiguration::lfo_steps(&note)
-                                        .iter()
-                                        .all(|step| *step < (1u64 << 62)))
-                                    && (!self.factory.settings.global.active
-                                        || self
-                                            .factory
-                                            .effective(note, expression)
-                                            .and_then(|e| self.factory.modulated_filter(e))
-                                            .is_ok())
-                            })
-                        }))
+                        || p.admission_voices()
+                            .filter(|(id, _)| *id != 0)
+                            .all(|(_, note)| {
+                                self.factory.retuned_note(note).is_ok_and(|note| {
+                                    (!self.factory.settings.lfo.active()
+                                        || PreparedOperatorConfiguration::lfo_steps(&note)
+                                            .iter()
+                                            .all(|step| *step < (1u64 << 62)))
+                                        && (!self.factory.settings.global.active
+                                            || self
+                                                .factory
+                                                .effective(note, expression)
+                                                .and_then(|e| self.factory.modulated_filter(e))
+                                                .is_ok())
+                                })
+                            }))
                     && (!self.factory.settings.lfo.active()
-                        || p.voices().filter(|v| v.id != 0).all(|v| {
-                            PreparedOperatorConfiguration::lfo_steps(&v.note)
-                                .iter()
-                                .all(|step| *step < (1u64 << 62))
-                        }))
+                        || p.admission_voices()
+                            .filter(|(id, _)| *id != 0)
+                            .all(|(_, note)| {
+                                PreparedOperatorConfiguration::lfo_steps(&note)
+                                    .iter()
+                                    .all(|step| *step < (1u64 << 62))
+                            }))
             })
     }
     fn retarget_history_from(
@@ -1483,10 +1507,16 @@ impl MutableInstrumentRuntime for Runtime {
 // one voice at a time, so no adapter materializes a 64-machine-bank temporary.
 pub(super) trait VoiceHistory {
     fn voice(&self, index: usize) -> Option<Voice>;
+    fn admission_voice(&self, index: usize) -> Option<(u64, PreparedOperatorNote)> {
+        self.voice(index).map(|voice| (voice.id, voice.note))
+    }
 }
 impl VoiceHistory for Runtime {
     fn voice(&self, index: usize) -> Option<Voice> {
         self.voices.get(index).copied()
+    }
+    fn admission_voice(&self, index: usize) -> Option<(u64, PreparedOperatorNote)> {
+        self.voices.get(index).map(|voice| (voice.id, voice.note))
     }
 }
 
@@ -1507,6 +1537,46 @@ pub(super) struct Legacy<'a> {
     pub filter: FilterTrajectory,
     pub companion: companion::Settings,
     pub local_frame: u64,
+}
+
+struct Admission<'a> {
+    fine_offsets: [f32; 4],
+    pitch_keytrack: [f32; 4],
+    tuning: Option<&'a hex_lattice::TuningTable>,
+    rate: u32,
+    base: [u8; ENABLE_PAYLOAD_BYTES],
+    voices: &'a dyn VoiceHistory,
+    companion: companion::Settings,
+}
+
+impl<'a> Admission<'a> {
+    fn admission_voices(&self) -> impl Iterator<Item = (u64, PreparedOperatorNote)> + '_ {
+        (0..VOICES).filter_map(|index| self.voices.admission_voice(index))
+    }
+
+    fn read(previous: &'a dyn MutableInstrumentRuntime) -> Option<Self> {
+        if let Some(p) = previous.as_any().downcast_ref::<Runtime>() {
+            return Some(Self {
+                fine_offsets: p.factory.settings.fine.values(),
+                pitch_keytrack: p.factory.settings.pitch_keytrack.values(),
+                tuning: p.factory.tuning.as_ref(),
+                rate: p.factory.rate,
+                base: p.factory.base,
+                voices: p,
+                companion: p.factory.settings.companion,
+            });
+        }
+        let p = Legacy::read(previous)?;
+        Some(Self {
+            fine_offsets: p.fine_offsets,
+            pitch_keytrack: p.pitch_keytrack,
+            tuning: p.tuning,
+            rate: p.rate,
+            base: p.base,
+            voices: p.voices,
+            companion: p.companion,
+        })
+    }
 }
 pub(super) fn builtin_spectrum(base: &[u8; ENABLE_PAYLOAD_BYTES]) -> Option<Spectrum> {
     let mut out = Spectrum {

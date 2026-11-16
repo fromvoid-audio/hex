@@ -174,7 +174,7 @@ pub(super) fn displayed(
     Some((preview.drive, preview.radii))
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "ui-test-support")))]
 mod tests {
     use super::*;
     #[test]

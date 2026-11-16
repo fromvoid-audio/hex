@@ -291,6 +291,22 @@ impl Fence {
     }
 }
 impl Status {
+    pub(super) fn stopped_native_source_fence_matches(
+        &self,
+        source: AppliedAudioSource,
+        fence: StoppedEditFence,
+    ) -> bool {
+        !self.closing.load(Acquire)
+            && !self.device_fault.load(Acquire)
+            && !self.render_fault.load(Acquire)
+            && !self.playing.load(Acquire)
+            && self.pending_stop_marker.load(Acquire) == 0
+            && self.transport_epoch.load(Acquire)
+                == self.sampler_edit.ready_transport_epoch.load(Acquire)
+            && self.native_effect_source() == Some(source)
+            && self.sampler_edit.native_epoch_active()
+            && self.sampler_edit.matches_source(fence, source)
+    }
     pub(super) fn retire_stopped_edit_on_control(&self) {
         self.sampler_edit.retire_abort_on_control();
         if !self.sampler_edit.active() {
@@ -546,6 +562,7 @@ mod tests {
             ticket,
             sampler_edit_gate,
             project_generation: None,
+            expected_source: None,
             transport_epoch: 1,
             action: PlaybackAction::Transport(PlaybackCommand::Play),
         }

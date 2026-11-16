@@ -150,7 +150,7 @@ fn parse_bpm(value: f64) -> Result<hex_project::Tempo, hex_project::Invalid> {
     hex_project::Tempo::new((value * 1_000_000.0).round() as u32)
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "ui-test-support")))]
 mod tests {
     use super::*;
     #[test]

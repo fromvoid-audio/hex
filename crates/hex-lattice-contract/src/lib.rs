@@ -17,12 +17,14 @@ pub use automation_target::DeviceAutomationTarget;
 mod host_gain;
 mod modulation_source_id;
 pub use host_gain::HostGain;
-pub use modulation_source_id::ModulationSourceId;
+pub use modulation_source_id::{ModulationOutputId, ModulationSourceId};
 mod foreign_binding;
 mod foreign_parameter;
 mod vst3_state_approval;
 pub use foreign_binding::ForeignProcessorBinding;
-pub use foreign_parameter::ForeignParameterPoint;
+pub use foreign_parameter::{
+    ForeignParameterPoint, MAX_FOREIGN_AUTOMATION_TARGETS, MAX_FOREIGN_PARAMETER_POINTS,
+};
 pub use vst3_state_approval::{Vst3StateAuthority, Vst3StateVerifier};
 #[cfg(test)]
 mod device_assets_tests;
