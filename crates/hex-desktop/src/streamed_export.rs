@@ -38,8 +38,37 @@ pub(crate) fn render_with_config(
     request: &StreamedExportRequest<'_>,
     config: StreamConfig,
 ) -> Result<ExportReport, ExportError> {
+    render_with_config_and_foreign(request, config, None)
+}
+
+/// The job retains exclusive custody of the supplied offline processors; the
+/// independent verified page worker and WAV publisher retain their own owners.
+pub(crate) fn render_with_config_and_foreign(
+    request: &StreamedExportRequest<'_>,
+    config: StreamConfig,
+    foreign: Option<&mut dyn ForeignBounceRenderer>,
+) -> Result<ExportReport, ExportError> {
     check(request.control())?;
+    if foreign.is_some() && !matches!(request.signal(), hex_export::ExportSignal::Main) {
+        return Err(ExportError::Invalid(
+            "offline vst3 export supports main only",
+        ));
+    }
     let mut pages = VerifiedPages::capture(request, config)?;
+    if let Some(foreign) = foreign {
+        return hex_export::render_linear_main_with_foreign(
+            request.path(),
+            Arc::clone(request.prepared()),
+            request.resources(),
+            request.start(),
+            request.frames(),
+            request.format(),
+            request.control(),
+            request.publication(),
+            Some(&mut pages),
+            foreign,
+        );
+    }
     hex_export::render_prepared_with_pages_and_policy(
         request.path(),
         Arc::clone(request.prepared()),
