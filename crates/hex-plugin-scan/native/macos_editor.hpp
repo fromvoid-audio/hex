@@ -47,6 +47,12 @@ public:
         if(code>=key_owners.size()) return false;
         auto& owner=key_owners[code];
         if([event type]==NSEventTypeKeyUp && !owner) return false;
+        // An unhandled down gives the complete pair, including repeats and
+        // release, to AppKit. Never offer those later events to both owners.
+        if(owner==1) {
+            if([event type]==NSEventTypeKeyUp) owner=0;
+            return false;
+        }
         int16 key=owner?key_values[code]:0;
         if(!owner) {
             NSString* characters=[event charactersIgnoringModifiers];
@@ -61,17 +67,8 @@ public:
             (flags&NSEventModifierFlagControl?kControlKey:0);
         id responder=[window firstResponder];
         if([responder respondsToSelector:@selector(hasMarkedText)] &&
-           [(id<NSTextInputClient>)responder hasMarkedText] && owner!=2) {
-            if([event type]==NSEventTypeKeyUp && owner) {
-                view->onKeyUp(0,key,modifiers);
-                owner=0;
-            }
-            return false;
-        }
+           [(id<NSTextInputClient>)responder hasMarkedText] && !owner) return false;
         if([event type]==NSEventTypeKeyDown) {
-            // Once AppKit has the down, a repeat must not also be consumed
-            // by the SDK even if its response changes during the hold.
-            if(owner==1) return false;
             const auto handled=view->onKeyDown(0,key,modifiers)==kResultTrue;
             if(!owner) { key_values[code]=key;owner=handled?2:1; }
             return owner==2;
