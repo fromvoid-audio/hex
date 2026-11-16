@@ -95,10 +95,10 @@ pub use audio_sink::{
     PluginParameterGestureInput, PluginParameterGestureResult, PluginParameterObservation,
     PluginParameterOverride, ResidentEffectPreparation, ResidentFileInput, ResidentFileMetadata,
     ResidentFilePitch, ResidentFilePublication, ResidentFileSeekPreparer, ResidentFileSeekRequest,
-    ResidentFileSet, ResidentFreshRuntimeFence, ResidentPublicationAcceptance,
-    ResidentPublicationFailure, ResidentPublicationMetadata, ResidentPublicationPolicy,
-    ResidentPublicationReadiness, ResidentPublicationRefusal, ResidentRuntimeLoop,
-    ResidentSourceOrigin, WorkerAudioSink,
+    ResidentFileSet, ResidentFreshRuntimeFence, ResidentGraphSubmission,
+    ResidentPublicationAcceptance, ResidentPublicationFailure, ResidentPublicationMetadata,
+    ResidentPublicationPolicy, ResidentPublicationReadiness, ResidentPublicationRefusal,
+    ResidentRuntimeLoop, ResidentSourceOrigin, WorkerAudioSink,
 };
 pub use comparison_audio::ComparisonAudioBinding;
 use export_lane::ExportLane;

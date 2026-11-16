@@ -516,6 +516,25 @@ pub enum ResidentPublicationAcceptance {
     },
     OfflineRetained,
 }
+/// A control-side receipt for one exact prepared graph submission. It does not
+/// acknowledge callback application, retain a graph, or grant a source fence.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ResidentGraphSubmission {
+    pub output_identity: u64,
+    pub audio_revision: u64,
+    pub context: hex_engine::AudioSourceContext,
+}
+impl ResidentGraphSubmission {
+    /// Compare with the callback's correlated publication observation. A pending
+    /// successor is not a stable source for a stopped edit. The caller must still
+    /// establish and hold the exact fence before using this as a predecessor.
+    pub fn matches_applied(self, readiness: ResidentPublicationReadiness) -> bool {
+        matches!(readiness, ResidentPublicationReadiness::Applied {
+            submission: ResidentRuntimeLoop { output_identity, audio_revision, source_context: Some(context), .. },
+            publication_in_flight: false,
+        } if output_identity == self.output_identity && audio_revision == self.audio_revision && context == self.context)
+    }
+}
 /// Reason category for a refused resident publication. The unavailable
 /// category describes source custody only; it does not imply a deadline fault.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
