@@ -30,6 +30,20 @@ pub(super) struct ExportLane {
     dispatched_control: Option<hex_export::ExportControl>,
 }
 impl ExportLane {
+    pub(super) fn preflight_private_job(&mut self, job: &ExportJob) -> Result<(), String> {
+        self.poll();
+        if job
+            .controlled
+            .as_ref()
+            .is_some_and(|c| !matches!(c.signal, hex_export::ExportSignal::Main))
+        {
+            return Err("private vst3 export requires main output".into());
+        }
+        if self.worker.is_none() || self.active.is_some() {
+            return Err("export worker or resource custody is unavailable".into());
+        }
+        Ok(())
+    }
     pub(super) fn new(
         work: SyncSender<ExportWork>,
         finished: Receiver<u64>,
@@ -151,7 +165,7 @@ impl ExportLane {
                     !matches!(controlled.signal, hex_export::ExportSignal::Main)
                 }))
         {
-            return Err("private vst3 export requires streamed main output".into());
+            return Err("private vst3 export requires main output".into());
         }
         if job.prepared.requires_device_resources() && resident.is_none() {
             return Err("export requires its matching resident resource snapshot".into());
@@ -183,6 +197,7 @@ impl ExportLane {
                 sink,
                 seeks,
                 preview,
+                None,
             );
         }
         let mut registered = Vec::new();
@@ -308,6 +323,7 @@ impl ExportLane {
         sink: &dyn WorkerAudioSink,
         seeks: Option<&super::resident_seek::Lane>,
         preview: Option<&super::resident_preview::Preview>,
+        live: Option<&resident_audio::Snapshot>,
     ) -> Result<(), String> {
         if current_sources.is_some()
             || job.sources.is_some()
@@ -353,6 +369,9 @@ impl ExportLane {
             .and_then(|bytes| bytes.checked_add(base))
             .ok_or("export capture allowance overflow")?;
         let mut registered = vec![snapshot.admission()];
+        if let Some(live) = live {
+            registered.push(live.admission());
+        }
         registered.extend(sink.resident_admission());
         if let Some(seeks) = seeks {
             registered.extend(seeks.views());
@@ -439,6 +458,36 @@ impl ExportLane {
             dispatch: DispatchState::Pending(None),
         });
         Ok(())
+    }
+
+    /// Admit an independently compiled offline graph alongside the live graph.
+    #[allow(clippy::too_many_arguments)] // Both graph owners and the existing admission lanes remain explicit.
+    pub(super) fn prepare_private_job(
+        &mut self,
+        job: &mut ExportJob,
+        session: &Session,
+        snapshot: &resident_audio::Snapshot,
+        live: Option<&resident_audio::Snapshot>,
+        sink: &dyn WorkerAudioSink,
+        seeks: Option<&super::resident_seek::Lane>,
+        preview: Option<&super::resident_preview::Preview>,
+    ) -> Result<(), String> {
+        self.poll();
+        if job.foreign.is_none()
+            || job
+                .controlled
+                .as_ref()
+                .is_some_and(|c| !matches!(c.signal, hex_export::ExportSignal::Main))
+        {
+            return Err("private vst3 export requires streamed main output".into());
+        }
+        if self.worker.is_none() || self.active.is_some() {
+            return Err("export worker or resource custody is unavailable".into());
+        }
+        let id = self.next_id;
+        self.next_id = id.checked_add(1).ok_or("export job identity exhausted")?;
+        job.job_id = id;
+        self.prepare_resident_job(job, session, None, snapshot, sink, seeks, preview, live)
     }
     pub(super) fn submit(&mut self, job: ExportJob) -> Result<(), ExportEvent> {
         let job_id = job.job_id;

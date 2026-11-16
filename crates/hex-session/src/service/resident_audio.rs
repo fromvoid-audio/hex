@@ -80,6 +80,79 @@ impl Snapshot {
         ))
     }
 }
+
+/// Build an export-only graph from captured live plug-in state and private
+/// processors. The canonical snapshot remains admitted and is never published
+/// or mutated by this preparation.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn prepare_private_export(
+    session: &Session,
+    context: hex_engine::AudioSourceContext,
+    sink: &mut dyn WorkerAudioSink,
+    admission: sampler_export::Admission<'_>,
+    current: Option<&Snapshot>,
+    cancellation: &RequestCancellation,
+    control: &hex_export::ExportControl,
+) -> Result<(Snapshot, Box<dyn OfflineBounceSource>), String> {
+    let inputs = session
+        .resident_seek_inputs(admission, current, None)
+        .map_err(|error| error.to_string())?;
+    let project = plugin_state_save::project_for_export_with_capture(
+        session.project(),
+        context,
+        cancellation,
+        sink,
+    )?;
+    let input = ResidentEffectPreparation {
+        project: &project,
+        context,
+        restoring_plugin_state: false,
+        preparing_edit: false,
+    };
+    let owner = sink
+        .prepare_offline_bounce(input, control)?
+        .ok_or("private vst3 export processor unavailable")?;
+    let mut snapshot = inputs
+        .prepare_with_gain(
+            &project,
+            sink,
+            &session.media_bank(),
+            session.sine_table(),
+            &session.audio_transforms,
+            &session.audio_clip_waveforms,
+            None,
+            None,
+            context,
+            Some(owner.as_ref()),
+        )
+        .map_err(|error| error.to_string())?;
+    snapshot.inputs = RuntimeInputs::default();
+    if cancellation.is_cancelled() {
+        return Err("export cancelled".into());
+    }
+    let runtime = hex_engine::SessionPlayback::linear_export_runtime_allowance(&snapshot.prepared)
+        .map_err(|error| error.to_string())?
+        .checked_add(
+            hex_export::control_storage_allowance(None).map_err(|error| error.to_string())?,
+        )
+        .and_then(|bytes| bytes.checked_add(owner.retained_data_bytes()))
+        .and_then(|bytes| bytes.checked_add(sink.native_sampler_hold().construction_bytes))
+        .ok_or("export runtime allowance overflow")?;
+    inputs
+        .admit_with_repitch(
+            &snapshot.resources,
+            Some(&snapshot.prepared),
+            &sink.resident_admission(),
+            runtime,
+            0,
+            snapshot
+                .file_sources
+                .as_ref()
+                .map(|files| files.repitches()),
+        )
+        .map_err(|error| error.to_string())?;
+    Ok((snapshot, owner))
+}
 fn canonical_metadata(
     snapshot: &Snapshot,
     context: hex_engine::AudioSourceContext,
@@ -487,7 +560,9 @@ impl Inputs<'_> {
                 media.prepare_with_device_resources_and_catalog(
                     project,
                     Arc::clone(&table),
-                    self.current.map(|s| s.prepared.session().as_ref()),
+                    self.current
+                        .filter(|_| offline.is_none())
+                        .map(|s| s.prepared.session().as_ref()),
                     transforms,
                     &resources,
                     work,
@@ -548,7 +623,7 @@ impl Inputs<'_> {
         };
         // A queued preview can already own a newer program received by the
         // worker. Keep its history while preparing the canonical edit.
-        let predecessor = self.current.map(|current| {
+        let predecessor = self.current.filter(|_| offline.is_none()).map(|current| {
             self.admission
                 .preview
                 .filter(|preview| preview.follows(current))
