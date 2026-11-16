@@ -4,10 +4,11 @@
 use super::{EditorMode, EditorView};
 use hex_audio::{
     input_capture::{
-        CoordinatedJob, CoordinatedOutcome, InputCapture, InputConfig, spawn_coordinated_take,
+        CoordinatedJob, CoordinatedOutcome, InputCapture, InputConfig, MonitorStream,
+        spawn_coordinated_take, spawn_coordinated_take_gated,
     },
     input_devices::{InputDevice, InputDeviceId, input_devices_on_control},
-    prepared::AppliedAudioSource,
+    prepared::{AppliedAudioSource, input_monitor::MonitorStatus},
     sample_recording::Reader,
 };
 use hex_session::{import_batch_decode::AudioBatchContext, service::Request};
@@ -31,6 +32,49 @@ struct Binding {
     context: AudioBatchContext,
 }
 
+struct PreparedTake {
+    job: CoordinatedJob,
+    monitor: Option<Box<MonitorStream>>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Monitoring {
+    Hardware,
+    Waiting,
+    Active,
+    Failed,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MonitorAction {
+    Wait,
+    StartInput,
+    Continue,
+    Failed(&'static str),
+}
+
+fn monitor_action(phase: Monitoring, status: Option<MonitorStatus>) -> MonitorAction {
+    match status {
+        Some(MonitorStatus::Pending) => MonitorAction::Wait,
+        Some(MonitorStatus::Priming | MonitorStatus::Running) if phase == Monitoring::Waiting => {
+            MonitorAction::StartInput
+        }
+        Some(MonitorStatus::Priming | MonitorStatus::Running) => MonitorAction::Continue,
+        Some(MonitorStatus::SourceChanged) => MonitorAction::Failed("audio source changed"),
+        Some(MonitorStatus::Unsupported) => {
+            MonitorAction::Failed("output configuration is unsupported")
+        }
+        Some(MonitorStatus::InputEnded) => MonitorAction::Failed("audio input ended"),
+        Some(MonitorStatus::Underrun) => MonitorAction::Failed("input monitor underrun"),
+        Some(MonitorStatus::Overrun) => MonitorAction::Failed("input monitor overrun"),
+        Some(MonitorStatus::Discontinuity) => MonitorAction::Failed("input monitor discontinuity"),
+        Some(MonitorStatus::OutputFault) => MonitorAction::Failed("audio output failed"),
+        Some(MonitorStatus::Idle | MonitorStatus::Stopped) | None => {
+            MonitorAction::Failed("audio output is unavailable")
+        }
+    }
+}
+
 #[derive(Default)]
 enum Stage {
     #[default]
@@ -38,7 +82,7 @@ enum Stage {
     Opening {
         binding: Binding,
         cancel: Arc<AtomicBool>,
-        result: Receiver<Result<CoordinatedJob, String>>,
+        result: Receiver<Result<PreparedTake, String>>,
     },
     Capturing {
         binding: Binding,
@@ -46,6 +90,8 @@ enum Stage {
         started: bool,
         stopping: bool,
         invalidated: bool,
+        monitoring: Monitoring,
+        monitor_error: Option<&'static str>,
     },
 }
 
@@ -56,6 +102,7 @@ pub(super) struct Recorder {
     pub(super) pending_commit_path: Option<PathBuf>,
     input: Option<(InputDeviceId, gpui::SharedString)>,
     listing_inputs: bool,
+    pub(super) software_monitor: bool,
     armed_track: Option<(u64, hex_project::TrackId)>,
 }
 impl Recorder {
@@ -65,11 +112,9 @@ impl Recorder {
     pub(super) fn label(&self) -> &'static str {
         match self.stage {
             Stage::Idle if self.armed_track.is_some() => {
-                "record armed track from chosen audio input · use hardware monitoring"
+                "record armed track from chosen audio input"
             }
-            Stage::Idle => {
-                "record selected track from chosen audio input · use hardware monitoring"
-            }
+            Stage::Idle => "record selected track from chosen audio input",
             Stage::Opening { .. } => "cancel audio recording preparation",
             Stage::Capturing {
                 started: false,
@@ -91,8 +136,13 @@ impl Recorder {
 
     fn input_status(&self, action: &str) -> String {
         format!(
-            "{action} · {} · use hardware monitoring",
-            hex_session::service::text::verbatim(self.input_label())
+            "{action} · {} · {} monitoring",
+            hex_session::service::text::verbatim(self.input_label()),
+            if self.software_monitor {
+                "software"
+            } else {
+                "hardware"
+            }
         )
     }
 
@@ -130,7 +180,8 @@ fn open_selected_take(
     document: Option<PathBuf>,
     cancel: &AtomicBool,
     selected: Option<InputDeviceId>,
-) -> Result<CoordinatedJob, String> {
+    software_monitor: bool,
+) -> Result<PreparedTake, String> {
     let inputs = input_devices_on_control().map_err(|error| error.to_string())?;
     let device = inputs
         .resolve_requested(selected.as_ref())
@@ -148,14 +199,22 @@ fn open_selected_take(
     if cancel.load(Acquire) {
         return Err("audio recording canceled".into());
     }
-    let input = InputCapture::open_on_control(
-        id,
-        InputConfig {
-            sample_rate: rate,
-            channels,
-        },
-    )
-    .map_err(|error| error.to_string())?;
+    let config = InputConfig {
+        sample_rate: rate,
+        channels,
+    };
+    let (input, monitor) = if software_monitor {
+        let (input, monitor) = InputCapture::open_with_monitor_on_control(id, config)
+            .map_err(|error| error.to_string())?;
+        let stream = MonitorStream::new_on_control(monitor, rate)
+            .map_err(|_| "input and output sample rates differ".to_string())?;
+        (input, Some(Box::new(stream)))
+    } else {
+        (
+            InputCapture::open_on_control(id, config).map_err(|error| error.to_string())?,
+            None,
+        )
+    };
     let root = hex_session::service::sample_take_root(document.as_deref())?;
     std::fs::create_dir_all(&root).map_err(|error| error.to_string())?;
     let stamp = SystemTime::now()
@@ -166,11 +225,16 @@ fn open_selected_take(
     if cancel.load(Acquire) {
         return Err("audio recording canceled".into());
     }
-    let job = spawn_coordinated_take(input, reader, path).map_err(|error| error.to_string())?;
+    let job = if software_monitor {
+        spawn_coordinated_take_gated(input, reader, path)
+    } else {
+        spawn_coordinated_take(input, reader, path)
+    }
+    .map_err(|error| error.to_string())?;
     if cancel.load(Acquire) {
         job.stop_on_control();
     }
-    Ok(job)
+    Ok(PreparedTake { job, monitor })
 }
 
 impl EditorView {
@@ -307,7 +371,7 @@ impl EditorView {
             previous_focus,
             items,
         });
-        self.status = "choose audio input · use hardware monitoring".into();
+        self.status = "choose audio input".into();
     }
 
     pub(super) fn select_audio_input(
@@ -324,6 +388,20 @@ impl EditorView {
             "audio input · {}",
             hex_session::service::text::verbatim(&name)
         );
+    }
+
+    pub(super) fn toggle_software_monitor(&mut self) {
+        if self.audio_recorder.blocks_edits() {
+            self.error = Some("finish audio recording before changing monitoring".into());
+            return;
+        }
+        self.audio_recorder.software_monitor = !self.audio_recorder.software_monitor;
+        self.status = if self.audio_recorder.software_monitor {
+            "software monitoring during recording"
+        } else {
+            "hardware monitoring during recording"
+        }
+        .into();
     }
 
     pub(super) fn toggle_audio_recording(&mut self) {
@@ -433,11 +511,19 @@ impl EditorView {
         let cancel = Arc::new(AtomicBool::new(false));
         let worker_cancel = Arc::clone(&cancel);
         let input = self.audio_recorder.input.as_ref().map(|(id, _)| id.clone());
+        let software_monitor = self.audio_recorder.software_monitor;
         let (sender, result) = mpsc::sync_channel(1);
         if let Err(error) = std::thread::Builder::new()
             .name("hex-record-input-setup".into())
             .spawn(move || {
-                let job = open_selected_take(reader, rate, document, &worker_cancel, input);
+                let job = open_selected_take(
+                    reader,
+                    rate,
+                    document,
+                    &worker_cancel,
+                    input,
+                    software_monitor,
+                );
                 let _ = sender.send(job);
             })
         {
@@ -495,8 +581,50 @@ impl EditorView {
                 cancel,
                 result,
             } => match result.try_recv() {
-                Ok(Ok(job)) => {
-                    let stopping = cancel.load(Acquire);
+                Ok(Ok(PreparedTake { job, monitor })) => {
+                    let mut stopping = cancel.load(Acquire)
+                        || self.project_generation != binding.context.project_generation
+                        || self
+                            .state
+                            .as_ref()
+                            .is_none_or(|state| state.revision != binding.context.revision);
+                    let mut monitoring = Monitoring::Hardware;
+                    let mut monitor_error = None;
+                    if let Some(stream) = monitor {
+                        monitoring = Monitoring::Failed;
+                        if !stopping {
+                            let installed = self
+                                .audio
+                                .as_mut()
+                                .filter(|audio| {
+                                    audio.control.output_identity()
+                                        == Some(binding.source.output_identity)
+                                        && audio
+                                            .control
+                                            .status()
+                                            .and_then(|status| status.recording_source())
+                                            == Some(binding.source)
+                                })
+                                .and_then(|audio| audio.control.input_monitor())
+                                .is_some_and(|control| {
+                                    control.reclaim();
+                                    control
+                                        .publish(
+                                            stream,
+                                            binding.source,
+                                            hex_engine::OutputCaptureId::Track(binding.track),
+                                        )
+                                        .is_ok()
+                                });
+                            if installed {
+                                monitoring = Monitoring::Waiting;
+                            } else {
+                                self.error = Some("software monitoring is unavailable · recording was not started".into());
+                                monitor_error = Some("output is unavailable or busy");
+                                stopping = true;
+                            }
+                        }
+                    }
                     if stopping {
                         job.stop_on_control();
                     }
@@ -506,6 +634,8 @@ impl EditorView {
                         started: false,
                         stopping,
                         invalidated: stopping,
+                        monitoring,
+                        monitor_error,
                     };
                     self.status = if stopping {
                         "canceling audio recording".into()
@@ -570,6 +700,8 @@ impl EditorView {
                 mut started,
                 mut stopping,
                 mut invalidated,
+                mut monitoring,
+                mut monitor_error,
             } => {
                 if self.project_generation != binding.context.project_generation
                     || self
@@ -593,6 +725,52 @@ impl EditorView {
                         .audio_recorder
                         .input_status("recording audio input · click to stop");
                 }
+                let mut monitor_changed = false;
+                if monitoring != Monitoring::Hardware && monitoring != Monitoring::Failed {
+                    let monitor_status = self
+                        .audio
+                        .as_mut()
+                        .filter(|audio| {
+                            audio.control.output_identity() == Some(binding.source.output_identity)
+                        })
+                        .and_then(|audio| audio.control.input_monitor())
+                        .map(|control| {
+                            if stopping {
+                                control.stop();
+                            }
+                            let status = control.status();
+                            if stopping {
+                                control.reclaim();
+                            }
+                            status
+                        });
+                    if !stopping {
+                        match monitor_action(monitoring, monitor_status) {
+                            MonitorAction::StartInput => {
+                                job.permit_input_start_on_control();
+                                monitoring = Monitoring::Active;
+                                monitor_changed = true;
+                            }
+                            MonitorAction::Failed(reason) => {
+                                self.error =
+                                    Some(format!("software monitoring ended · {reason}").into());
+                                monitor_error = Some(reason);
+                                if started {
+                                    self.status =
+                                        "recording audio input · monitoring unavailable".into();
+                                }
+                                if !started {
+                                    job.stop_on_control();
+                                    stopping = true;
+                                    invalidated = true;
+                                }
+                                monitoring = Monitoring::Failed;
+                                monitor_changed = true;
+                            }
+                            MonitorAction::Wait | MonitorAction::Continue => {}
+                        }
+                    }
+                }
                 match job.try_result_on_control() {
                     Ok(None) => {
                         self.audio_recorder.stage = Stage::Capturing {
@@ -601,10 +779,25 @@ impl EditorView {
                             started,
                             stopping,
                             invalidated,
+                            monitoring,
+                            monitor_error,
                         };
-                        became_started
+                        became_started || monitor_changed
                     }
                     Ok(Some(outcome)) => {
+                        if let Some(control) = self
+                            .audio
+                            .as_mut()
+                            .filter(|audio| {
+                                audio.control.output_identity()
+                                    == Some(binding.source.output_identity)
+                            })
+                            .and_then(|audio| audio.control.input_monitor())
+                            && monitoring != Monitoring::Hardware
+                        {
+                            control.stop();
+                            control.reclaim();
+                        }
                         if let Some(audio) = self.audio.as_mut().filter(|audio| {
                             audio.control.output_identity() == Some(binding.source.output_identity)
                         }) {
@@ -615,10 +808,33 @@ impl EditorView {
                         if stop_after {
                             self.stop();
                         }
+                        let failed_path = invalidated.then(|| job.path().to_owned());
                         self.finish_audio_take(binding, outcome, invalidated);
+                        if let (Some(reason), Some(path)) = (monitor_error, failed_path) {
+                            self.error = Some(
+                                format!(
+                                    "software monitoring failed · {reason} · take path {}",
+                                    hex_session::service::text::verbatim(path.display())
+                                )
+                                .into(),
+                            );
+                        }
                         true
                     }
                     Err(_) => {
+                        if let Some(control) = self
+                            .audio
+                            .as_mut()
+                            .filter(|audio| {
+                                audio.control.output_identity()
+                                    == Some(binding.source.output_identity)
+                            })
+                            .and_then(|audio| audio.control.input_monitor())
+                            && monitoring != Monitoring::Hardware
+                        {
+                            control.stop();
+                            control.reclaim();
+                        }
                         if let Some(audio) = self.audio.as_mut().filter(|audio| {
                             audio.control.output_identity() == Some(binding.source.output_identity)
                         }) {
@@ -858,6 +1074,76 @@ mod tests {
                     .as_ref()
                     .unwrap()
                     .contains("ordinary resident arrangement track")
+            );
+        });
+    }
+
+    #[test]
+    fn software_monitor_waits_for_priming_and_reports_terminal_states() {
+        assert_eq!(
+            monitor_action(Monitoring::Waiting, Some(MonitorStatus::Pending)),
+            MonitorAction::Wait
+        );
+        assert_eq!(
+            monitor_action(Monitoring::Waiting, Some(MonitorStatus::Priming)),
+            MonitorAction::StartInput
+        );
+        assert_eq!(
+            monitor_action(Monitoring::Active, Some(MonitorStatus::Running)),
+            MonitorAction::Continue
+        );
+        assert_eq!(
+            monitor_action(Monitoring::Active, Some(MonitorStatus::Underrun)),
+            MonitorAction::Failed("input monitor underrun")
+        );
+        assert_eq!(
+            monitor_action(Monitoring::Waiting, Some(MonitorStatus::SourceChanged)),
+            MonitorAction::Failed("audio source changed")
+        );
+        assert_eq!(
+            monitor_action(Monitoring::Waiting, None),
+            MonitorAction::Failed("audio output is unavailable")
+        );
+    }
+
+    #[gpui::test]
+    fn software_monitor_toggle_is_explicit_and_locked_during_setup(cx: &mut TestAppContext) {
+        let (project, track, _, _) = audio_project();
+        let (window, editor) = editor_window(cx, project, Default::default());
+        let mut visual = VisualTestContext::from_window(window, cx);
+        editor.update(&mut visual, |view, _| {
+            assert!(!view.audio_recorder.software_monitor);
+            view.toggle_software_monitor();
+            assert!(view.audio_recorder.software_monitor);
+            let (_sender, result) = mpsc::sync_channel(1);
+            let context = AudioBatchContext {
+                project_generation: view.project_generation,
+                revision: view.state.as_ref().unwrap().revision,
+                active_gesture: false,
+            };
+            view.audio_recorder.stage = Stage::Opening {
+                binding: Binding {
+                    source: AppliedAudioSource {
+                        context: hex_engine::AudioSourceContext {
+                            project_generation: context.project_generation,
+                            editor_revision: context.revision,
+                        },
+                        audio_revision: 1,
+                        output_identity: 2,
+                    },
+                    track,
+                    context,
+                },
+                cancel: Arc::new(AtomicBool::new(false)),
+                result,
+            };
+            view.toggle_software_monitor();
+            assert!(view.audio_recorder.software_monitor);
+            assert!(
+                view.error
+                    .as_ref()
+                    .unwrap()
+                    .contains("finish audio recording")
             );
         });
     }
