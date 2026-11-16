@@ -191,6 +191,10 @@ impl RateChange<'_> {
             domain.fade_start = self.frame(domain.fade_start)?;
             edit.view_start = self.frame(edit.view_start)?;
             edit.view_end = self.frame(edit.view_end)?;
+            edit.repeat_period = edit
+                .repeat_period
+                .map(|period| self.frame(period))
+                .transpose()?;
             self.placement(&mut edit.placement)?;
             if let Some(view) = &mut edit.content_view {
                 view.base_view_start = self.frame(view.base_view_start)?;
@@ -284,4 +288,54 @@ fn span(start: u64, end: u64) -> Result<u64, Invalid> {
         .ok_or(Invalid(
             "sample rate change would collapse an audio interval",
         ))
+}
+
+#[cfg(test)]
+mod silent_repeat_tests {
+    use crate::{AudioViewProjection, AudioViewResizeOperation, Command, Created, Editor, Project};
+
+    #[test]
+    fn sample_rate_change_rescales_silent_repeat_period_and_retains_source() {
+        let mut editor = Editor::new(Project::new(32_000).unwrap(), 8).unwrap();
+        let Created::Imported { clip, asset, .. } = editor
+            .execute(Command::ImportAudioTrack {
+                name: "source".into(),
+                path: "source.wav".into(),
+                sample_rate: 32_000,
+                frames: 8_000,
+            })
+            .unwrap()
+        else {
+            panic!("audio fixture")
+        };
+        for operation in [
+            AudioViewResizeOperation::RepeatOuterEnd {
+                project_frame: 22_000,
+            },
+            AudioViewResizeOperation::CycleEnd {
+                project_frame: 10_000,
+            },
+        ] {
+            editor
+                .execute(Command::ResizeAudioClipView { clip, operation })
+                .unwrap();
+        }
+        let before = editor.project().snapshot();
+        for (rate, span, period, outer) in [
+            (16_000, 4_000, 5_000, 11_000),
+            (48_000, 12_000, 15_000, 33_000),
+        ] {
+            let converted = editor.project().at_sample_rate(rate).unwrap();
+            let clip = converted.clip(clip).unwrap();
+            let edit = clip.audio_edit().unwrap();
+            assert_eq!(edit.repeat_period, Some(period));
+            assert_eq!(edit.view_end - edit.view_start, span);
+            assert_eq!(clip.duration(), outer);
+            assert_eq!(clip.asset(), asset);
+            let projection = AudioViewProjection::new(clip, converted.tempo_map()).unwrap();
+            assert!(projection.root_position_for_frame(span).unwrap().is_none());
+            assert_eq!(projection.root_position_for_frame(period).unwrap(), Some(0));
+        }
+        assert_eq!(editor.project().snapshot(), before);
+    }
 }
