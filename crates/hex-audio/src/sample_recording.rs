@@ -4,6 +4,7 @@
 //! capture endpoint to control. Stop uses a take-local atomic, independent of
 //! both command and PCM queue pressure. The reader belongs to a non-audio
 //! consumer and must recycle packets or the take ends with its confirmed prefix.
+//! Source-bound input recording retains timing and clock evidence without PCM.
 
 use hex_engine::{Frame, Invalid, ProjectSignal};
 use rtrb::{Consumer, Producer, PushError, RingBuffer};
@@ -70,6 +71,7 @@ pub(crate) struct Layout {
     // the engine's borrowed Return tap.
     pub(crate) returns: Box<[hex_engine::ReturnId]>,
     main: bool,
+    pub(crate) timing_only: bool,
 }
 
 impl Layout {
@@ -173,14 +175,20 @@ impl Control {
         outputs: &[OutputCaptureId],
         main: bool,
     ) -> Result<Reader, Invalid> {
-        self.start_inner(generation, outputs, main, None)
+        self.start_inner(generation, outputs, main, None, false)
     }
 
     pub(crate) fn start_bound(
         &mut self,
         source: crate::prepared::AppliedAudioSource,
     ) -> Result<Reader, Invalid> {
-        self.start_inner(source.context.project_generation, &[], true, Some(source))
+        self.start_inner(
+            source.context.project_generation,
+            &[],
+            false,
+            Some(source),
+            true,
+        )
     }
 
     fn start_inner(
@@ -189,12 +197,15 @@ impl Control {
         outputs: &[OutputCaptureId],
         main: bool,
         expected_source: Option<crate::prepared::AppliedAudioSource>,
+        timing_only: bool,
     ) -> Result<Reader, Invalid> {
         self.reclaim();
         if self.active.is_some() || self.incoming.is_abandoned() {
             return Err(Invalid("sample recording output is busy or unavailable"));
         }
-        if outputs.len() > hex_engine::MAX_OUTPUT_CAPTURES || (outputs.is_empty() && !main) {
+        if outputs.len() > hex_engine::MAX_OUTPUT_CAPTURES
+            || (outputs.is_empty() && !main && !timing_only)
+        {
             return Err(Invalid(
                 "select one or more sample sources within the capture limit",
             ));
@@ -231,6 +242,7 @@ impl Control {
             tracks: tracks.into(),
             returns: returns.into(),
             main,
+            timing_only,
         };
         let (mut recycle, free) = RingBuffer::new(PACKETS);
         let (full, captured) = RingBuffer::new(PACKETS);
@@ -491,9 +503,10 @@ impl Callback {
         }
         if let Some(packet) = active.stage.packet.as_ref()
             && (!active.stage.valid
-                || !active.stage.seen_main[..packet.frames]
-                    .iter()
-                    .all(|seen| *seen)
+                || (!active.layout.timing_only
+                    && !active.stage.seen_main[..packet.frames]
+                        .iter()
+                        .all(|seen| *seen))
                 || packet.pcm.chunks_exact(FRAMES).any(|layer| {
                     layer[..packet.frames]
                         .iter()
@@ -614,7 +627,7 @@ impl Stage {
                     return;
                 }
                 self.seen_main[offset..end].fill(true);
-                layout.main.then_some(layout.layers() - 1)
+                layout.main.then(|| layout.layers() - 1)
             }
             ProjectSignal::Unavailable => {
                 self.valid = false;

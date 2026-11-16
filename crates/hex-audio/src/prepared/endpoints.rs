@@ -493,7 +493,8 @@ impl Client {
             .start(project_generation, outputs, main)
     }
 
-    /// Reserve main-output timing for exactly the currently applied source.
+    /// Reserve output timing for exactly the currently applied source. The
+    /// returned reader contains timing and clock evidence, not PCM sources.
     /// Callback validation remains authoritative if the source changes after admission.
     pub fn start_bound_output_recording(
         &mut self,
