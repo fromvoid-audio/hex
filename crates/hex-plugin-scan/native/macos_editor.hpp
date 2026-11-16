@@ -88,6 +88,7 @@ public:
         }
         id responder=[window firstResponder];
         const bool text_responder=[responder respondsToSelector:@selector(hasMarkedText)];
+        if(key_epoch!=focus_epoch || key_serial!=key_serials[code]) return appkit_pair();
         int16 key=owner?key_values[code]:0;
         char16 character=owner?key_characters[code]:0;
         if(owner==2 && character && [event type]==NSEventTypeKeyDown) {
@@ -133,7 +134,9 @@ public:
                 key=CharToVirtualKeyCode(upper);
             }
         }
-        if(text_responder && [(id<NSTextInputClient>)responder hasMarkedText] && !owner) return appkit_pair();
+        const bool marked=text_responder && [(id<NSTextInputClient>)responder hasMarkedText];
+        if(key_epoch!=focus_epoch || key_serial!=key_serials[code]) return appkit_pair();
+        if(marked && !owner) return appkit_pair();
         if([event type]==NSEventTypeKeyDown) {
             const auto previous_owner=owner;
             const auto epoch=focus_epoch;
