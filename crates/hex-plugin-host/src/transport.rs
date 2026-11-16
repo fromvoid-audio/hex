@@ -95,6 +95,15 @@ pub enum CommittedQuantumState {
     OpenProgram(NonZeroU64),
 }
 
+/// A bounded snapshot from the exact callback pair. Untouched means no
+/// callback stage was accepted at observation time; a later callback can change
+/// it immediately. This grants no worker, graph or publication authority.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QuantumObservation {
+    Untouched(Binding),
+    Committed(CommittedQuantum),
+}
+
 /// A coherent diagnostic snapshot from the original constructor-paired callback.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CommittedQuantum {
@@ -154,14 +163,22 @@ impl Revocation {
     fn publish_quantum(&self, quantum: CommittedQuantumState) {
         use std::sync::atomic::Ordering::SeqCst;
         let serial = self.quantum_serial.load(SeqCst);
-        let Some(next) = serial.checked_add(2) else {
-            self.quantum_serial.store(u64::MAX, SeqCst);
-            return;
+        // Serial 1 is reserved for the first accepted-stage transition. It
+        // was marked before callback acceptance, so an observer cannot mistake
+        // the acceptance/publication gap for an untouched callback.
+        let next = if serial == 1 {
+            2
+        } else {
+            if serial & 1 != 0 {
+                return;
+            }
+            let Some(next) = serial.checked_add(2) else {
+                self.quantum_serial.store(u64::MAX, SeqCst);
+                return;
+            };
+            self.quantum_serial.store(serial + 1, SeqCst);
+            next
         };
-        if serial & 1 != 0 {
-            return;
-        }
-        self.quantum_serial.store(serial + 1, SeqCst);
         let (state, key) = match quantum {
             CommittedQuantumState::Closed => (1, 0),
             CommittedQuantumState::OpenUnprogrammed => (2, 0),
@@ -553,6 +570,22 @@ impl Control {
             signal: Arc::clone(&self.revoked),
             serial,
         })
+    }
+
+    /// Distinguish an untouched paired callback from a committed quantum.
+    /// None includes a concurrent first acceptance, contention, revocation,
+    /// and exhausted observation serial. Neither result stays valid by itself.
+    pub fn quantum_observation(&self) -> Option<QuantumObservation> {
+        use std::sync::atomic::Ordering::SeqCst;
+        if self.revoked.is_revoked() {
+            return None;
+        }
+        let serial = self.revoked.quantum_serial.load(SeqCst);
+        if serial == 0 {
+            return (self.revoked.quantum_serial.load(SeqCst) == 0 && !self.revoked.is_revoked())
+                .then_some(QuantumObservation::Untouched(self.revoked.binding));
+        }
+        self.committed_quantum().map(QuantumObservation::Committed)
     }
 
     /// Read one bounded snapshot of the exact paired callback's most recently
@@ -1476,6 +1509,12 @@ impl Callback {
     /// Call only after final host-format validation. Refusal terminates this
     /// epoch; consumed replies and foreign DSP are never rolled back/replayed.
     pub fn finish(&mut self, host_accepted: bool) -> Result<(), Fault> {
+        if self.committed_quantum.is_none() {
+            // Mark the first transition before any state can be accepted.
+            self.revoked
+                .quantum_serial
+                .store(1, std::sync::atomic::Ordering::SeqCst);
+        }
         if !host_accepted {
             return self.fail(Fault::Protocol);
         }

@@ -1643,6 +1643,45 @@ fn received_program_snapshot_is_coherent_during_worker_slot_reuse() {
 }
 
 #[test]
+fn untouched_quantum_witness_refuses_a_started_or_revoked_callback() {
+    let (control, mut callback, _worker) = channel(BINDING, 8).unwrap();
+    assert_eq!(control.committed_quantum(), None);
+    assert_eq!(
+        control.quantum_observation(),
+        Some(QuantumObservation::Untouched(BINDING))
+    );
+    let mut output = [[0.0; 2]; 8];
+    callback
+        .stage(&[[0.0; 2]; 3], &[], &mut output[..3])
+        .unwrap();
+    assert_eq!(
+        control.quantum_observation(),
+        Some(QuantumObservation::Untouched(BINDING))
+    );
+    callback.finish(true).unwrap();
+    assert_eq!(
+        control.quantum_observation(),
+        Some(QuantumObservation::Committed(CommittedQuantum {
+            binding: BINDING,
+            state: CommittedQuantumState::OpenUnprogrammed,
+        }))
+    );
+    control.revoke();
+    assert_eq!(control.quantum_observation(), None);
+    let (in_progress, _, _) = channel(BINDING, 8).unwrap();
+    in_progress
+        .revoked
+        .quantum_serial
+        .store(1, std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(in_progress.quantum_observation(), None);
+    in_progress
+        .revoked
+        .quantum_serial
+        .store(u64::MAX, std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(in_progress.quantum_observation(), None);
+}
+
+#[test]
 fn committed_quantum_is_published_only_after_accepted_callback() {
     let (control, mut callback, _worker) = channel(BINDING, 8).unwrap();
     let (other, _, _) = channel(BINDING, 8).unwrap();
@@ -1739,6 +1778,12 @@ fn committed_quantum_snapshot_is_bounded_and_coherent() {
         );
         barrier.wait();
         while !finished.load(Acquire) {
+            if let Some(observation) = control.quantum_observation() {
+                assert!(
+                    matches!(observation, QuantumObservation::Committed(_)),
+                    "a callback with published quanta cannot become untouched"
+                );
+            }
             if let Some(snapshot) = control.committed_quantum() {
                 assert_eq!(snapshot.binding, BINDING);
                 assert!(matches!(

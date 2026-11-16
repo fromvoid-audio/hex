@@ -473,6 +473,14 @@ impl NativeEffectReference<'_> {
             Self::Loaned(control) => control.worker.program_frontier_on_control(),
         }
     }
+    pub(crate) fn quantum_observation_on_control(
+        &self,
+    ) -> Option<hex_plugin_host::transport::QuantumObservation> {
+        match self {
+            Self::Unsplit(effect) => effect.worker.quantum_observation_on_control(),
+            Self::Loaned(control) => control.worker.quantum_observation_on_control(),
+        }
+    }
     pub(crate) fn committed_quantum_on_control(
         &self,
     ) -> Option<crate::plugin_worker::CommittedQuantum> {
