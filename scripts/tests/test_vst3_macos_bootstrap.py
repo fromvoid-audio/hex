@@ -22,6 +22,33 @@ finally:
     sys.path.pop(0)
 
 
+@unittest.skipUnless(os.environ.get("HEX_VST3_INSTANCE_RECEIPT"), "explicit instance helper receipt required")
+class InstanceDisplayTests(unittest.TestCase):
+    def test_source_bound_editor_helper_declares_high_resolution(self):
+        receipt = Path(os.environ["HEX_VST3_INSTANCE_RECEIPT"]).resolve()
+        BOOT.verify(receipt)
+        info = plistlib.loads((receipt.parent / BOOT.INSTANCE_APP / "Contents/Info.plist").read_bytes())
+        self.assertEqual(info["CFBundleIdentifier"], "org.portalsurfer.hex.vst3.instance")
+        self.assertIs(info.get("LSUIElement"), True)
+        self.assertIs(info.get("NSHighResolutionCapable"), True)
+
+    def test_resealed_manifest_cannot_mask_missing_high_resolution_capability(self):
+        original = Path(os.environ["HEX_VST3_INSTANCE_RECEIPT"]).resolve()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            shutil.copytree(original.parent / BOOT.INSTANCE_APP, root / BOOT.INSTANCE_APP)
+            receipt = root / "controlled-macos.json"
+            data = json.loads(original.read_text())
+            info_path = root / BOOT.INSTANCE_APP / "Contents/Info.plist"
+            info = plistlib.loads(info_path.read_bytes())
+            del info["NSHighResolutionCapable"]
+            info_path.write_bytes(plistlib.dumps(info))
+            data["bundle_files"] = BOOT.inventory(root / BOOT.INSTANCE_APP)
+            receipt.write_text(json.dumps(data))
+            with self.assertRaisesRegex(ValueError, "lacks high-resolution support"):
+                BOOT.verify(receipt)
+
+
 @unittest.skipUnless(
     sys.platform == "darwin" and os.environ.get("HEX_VST3_MACOS_SDK"),
     "explicit macOS VST3 SDK required for the hidden AppKit fixture",
