@@ -167,3 +167,74 @@ impl VerifiedGainLane {
         false
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::service::verified_source_tests::{Files, next, reservation, run};
+
+    #[test]
+    fn transformed_event_preview_requires_the_active_resident_binding() {
+        let files = Files::new();
+        let wav = files.wav("event.wav", 48_000, 512, 8192);
+        let service = Service::new(48_000, 16, 4096).unwrap();
+        next(&service);
+        for mode in [
+            DocumentAudioMode::Resident,
+            DocumentAudioMode::VerifiedStreaming,
+        ] {
+            run(
+                &service,
+                Request::NewWithAudioMode {
+                    mode,
+                    reservation: Some(reservation(2)),
+                },
+            );
+            let imported = run(&service, Request::Import(wav.clone()));
+            let source = imported.state.canonical_audio_source.as_ref().unwrap();
+            let project = imported.state.project.as_ref();
+            let clip = &project.tracks()[0].clips()[0];
+            let event = clip.audio_events().events[0].id;
+            let gain = hex_project::ClipGain::new(-6000).unwrap();
+            let target = ArrangementGainAudition {
+                context: source.context(),
+                edit: GainEdit::Event {
+                    clip: clip.id(),
+                    sources: Arc::from([]),
+                    event,
+                    gain,
+                },
+            };
+            match mode {
+                DocumentAudioMode::Resident => {
+                    let preview =
+                        VerifiedArrangementGainSource::capture(source, project, &target, 1)
+                            .unwrap();
+                    assert!(Arc::ptr_eq(preview.canonical(), source));
+                    assert_eq!(
+                        preview
+                            .project
+                            .clip(clip.id())
+                            .unwrap()
+                            .audio_events()
+                            .events[0]
+                            .gain,
+                        gain
+                    );
+                    assert_eq!(
+                        clip.audio_events().events[0].gain,
+                        hex_project::ClipGain::UNITY
+                    );
+                }
+                DocumentAudioMode::VerifiedStreaming => {
+                    assert!(matches!(
+                        VerifiedArrangementGainSource::capture(source, project, &target, 1),
+                        Err(SessionError::Invalid(
+                            "gain audition event source is unavailable for streaming"
+                        ))
+                    ));
+                }
+            }
+        }
+    }
+}

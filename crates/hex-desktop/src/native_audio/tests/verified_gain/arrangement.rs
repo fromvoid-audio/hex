@@ -10,9 +10,12 @@ fn verified_arrangement_gain_auditions_cancels_commits_and_undoes() {
     let mut h = open_verified();
     let path = files.wav(48_000, 100_000);
     let original = fs::read(&path).unwrap();
-    let base = h.run(Request::Import(path.clone()));
+    let imported = h.run(Request::Import(path.clone()));
+    let clip = imported.state.project.tracks()[0].clips()[0].id();
+    // A supported transformed clip must keep using the verified raw source
+    // with its authored reverse read direction.
+    let base = h.run(Request::Edit(Command::ReverseClips(vec![clip])));
     let context = h.context.unwrap();
-    let clip = base.state.project.tracks()[0].clips()[0].id();
     assert!(matches!(
         base.state
             .canonical_audio_source
@@ -47,8 +50,10 @@ fn verified_arrangement_gain_auditions_cancels_commits_and_undoes() {
         .as_ref()
         .unwrap()
         .finish_arrangement_gain_audition();
-    for _ in 0..4 {
+    let release_wait = Instant::now() + Duration::from_millis(45);
+    while Instant::now() < release_wait {
         assert!(matches_gain(h.render()[63], half));
+        std::thread::sleep(Duration::from_millis(1));
     }
     let committed = h.run(Request::Edit(Command::SetAudioClipGain {
         clip,
