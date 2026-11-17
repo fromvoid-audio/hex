@@ -1776,3 +1776,116 @@ fn verified_repitch_edit_commits_and_survives_undo_redo_without_resident_pcm() {
     assert_eq!(quote.source_capacity, 2);
     assert_eq!(quote.prepared_pcm_frames, 0);
 }
+
+#[test]
+fn verified_stream_and_builtin_effect_share_candidate_reservation() {
+    let files = Files::new();
+    let source = files.wav("saturator.wav", 16_000, 8_000, 1024);
+    let service = Service::new(16_000, 16, 0).unwrap();
+    next(&service);
+    run(
+        &service,
+        Request::NewWithAudioMode {
+            mode: DocumentAudioMode::VerifiedStreaming,
+            reservation: Some(reservation(2)),
+        },
+    );
+    let imported = run(&service, Request::Import(source));
+    let clip = imported.state.project.tracks()[0].clips()[0].id();
+    let asset = imported.state.project.clip(clip).unwrap().asset();
+    let neutral = run(
+        &service,
+        Request::Edit(Command::SetClipFades {
+            clip,
+            fade_in: 0,
+            fade_out: 0,
+        }),
+    );
+    let warp = hex_project::default_audio_warp(
+        neutral.state.project.clip(clip).unwrap(),
+        neutral.state.project.tempo_map(),
+        hex_project::WarpMode::RePitch,
+    )
+    .unwrap();
+    run(
+        &service,
+        Request::Edit(Command::SetAudioClipWarp {
+            clip,
+            settings: Some(warp),
+        }),
+    );
+    let saturator = hex_engine::default_native_device_state_for_class(
+        hex_engine::NativeDeviceClass::Effect,
+        hex_engine::DeviceTypeId::from_static("hex.saturator"),
+    )
+    .unwrap();
+    let edited = run(
+        &service,
+        Request::Edit(Command::InsertMainDevice {
+            before: None,
+            state: saturator,
+        }),
+    );
+    let snapshot = edited.state.canonical_audio_source.as_ref().unwrap();
+    let AudioSourceBinding::VerifiedFile(file) = snapshot.sources().get(&asset).unwrap() else {
+        panic!("verified source")
+    };
+    let raw = file.source_metadata(asset, 19).unwrap();
+    let edit = edited
+        .state
+        .project
+        .clip(clip)
+        .unwrap()
+        .audio_edit()
+        .unwrap();
+    let (map, law) = hex_engine::audio_transform::streamed_repitch_map(
+        edit,
+        edited.state.project.tempo_map(),
+        raw.playback_frames(),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let derived = raw.with_repitch(&map, law).unwrap();
+    hex_engine::AudioCandidateEffects::with_host_definitions(&[], |effects| {
+        let quote = snapshot.reservation_quote_with_effects(effects).unwrap();
+        assert_eq!(quote.source_capacity, 2);
+        assert_eq!(quote.prepared_pcm_frames, 0);
+        assert!(matches!(
+            effects.quote_with_pitched_streams(
+                &edited.state.project,
+                1,
+                &[raw.clone(), derived.clone()]
+            ),
+            Err(hex_engine::AudioStorageError::Capacity)
+        ));
+        let reservation = quote.storage_reservation(0).unwrap();
+        let mut missing = hex_engine::AudioCandidatePreparation::try_new_on_control(
+            quote.source_capacity,
+            reservation,
+        )
+        .unwrap();
+        missing.add_streamed_source_on_control(raw.clone()).unwrap();
+        assert!(
+            snapshot
+                .prepare_candidate_with_effects_on_control(19, &mut missing, effects)
+                .is_err()
+        );
+        missing.cleanup_on_control().unwrap();
+        let mut candidate = hex_engine::AudioCandidatePreparation::try_new_on_control(
+            quote.source_capacity,
+            reservation,
+        )
+        .unwrap();
+        candidate.add_streamed_source_on_control(raw).unwrap();
+        candidate
+            .add_repitch_streamed_source_on_control(derived)
+            .unwrap();
+        snapshot
+            .prepare_candidate_with_effects_on_control(19, &mut candidate, effects)
+            .unwrap();
+        assert_eq!(candidate.resident_pcm_capacity_frames().unwrap(), 0);
+        candidate.cleanup_on_control().unwrap();
+        Ok(())
+    })
+    .unwrap();
+}

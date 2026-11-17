@@ -52,6 +52,23 @@ impl AudioCandidateReservationQuote {
         )?;
         Self::for_project_counts(project, sources, true, &[])
     }
+    /// Quote effects and verified raw/derived streams together. The registry
+    /// is borrowed only for validation; the host retains all source custody.
+    pub(crate) fn for_project_with_effects_and_streams(
+        project: &hex_project::Project,
+        sources: usize,
+        streams: &[crate::StreamedSourceMetadata],
+        effects: &hex_lattice::NativeDeviceRegistry<'_>,
+    ) -> Result<Self, AudioStorageError> {
+        crate::audio_preparation::validate_constructor_project_with_effects(
+            project,
+            Some(effects),
+        )?;
+        if streams.len() > sources {
+            return Err(AudioStorageError::Capacity);
+        }
+        Self::for_project_counts(project, sources, true, streams)
+    }
     fn for_project_counts(
         project: &hex_project::Project,
         sources: usize,

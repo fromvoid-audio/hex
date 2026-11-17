@@ -124,6 +124,20 @@ impl<'a, 'definitions> AudioCandidateEffects<'a, 'definitions> {
             self.registry,
         )
     }
+    /// Quote a candidate containing both effects and verified derived streams.
+    pub fn quote_with_pitched_streams(
+        &self,
+        project: &Project,
+        sources: usize,
+        streams: &[crate::StreamedSourceMetadata],
+    ) -> Result<super::AudioCandidateReservationQuote, AudioStorageError> {
+        super::AudioCandidateReservationQuote::for_project_with_effects_and_streams(
+            project,
+            sources,
+            streams,
+            self.registry,
+        )
+    }
     /// Add only the armed slot/growth delta to the existing complete caller quote.
     /// Existing device row envelopes already reserve each automation vector family.
     pub fn quote_with_native_parameter_input(
