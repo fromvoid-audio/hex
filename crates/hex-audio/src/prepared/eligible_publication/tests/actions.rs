@@ -1087,6 +1087,11 @@ fn fed_track_session_scene_waits_for_pages_and_renders_without_allocations() {
     real_immediate_scene(true, true, false, true);
 }
 
+#[test]
+fn grouped_fed_track_session_scene_waits_for_pages_and_renders_without_allocations() {
+    real_immediate_scene(true, true, true, true);
+}
+
 fn real_immediate_scene(with_latency: bool, upstream: bool, grouped: bool, feed: bool) {
     let _serial = serial();
     if !hex_engine::audio_storage_constructor_layout_supported() {

@@ -904,8 +904,6 @@ fn main_only_latency_and_retired_main_history_keep_batched_ordinary_stream_deman
     }
 }
 
-// Keep the production group admission guard intact while exercising the actual
-// compensated stream seam with a prepared graph and the same canonical IDs.
 #[test]
 fn closed_group_latency_stream_demand_matches_resident() {
     use hex_project::{Command, Created, TrackSelectionIds};
@@ -1059,50 +1057,54 @@ fn closed_group_latency_stream_demand_matches_resident() {
                 );
             }
         }
-        f.editor
-            .execute(Command::SetAudioFeed {
-                source: hex_project::RoutingOwner::Track(f.tracks[1]),
-                destination: f.tracks[0],
-                gain: 0.5,
-            })
-            .unwrap();
-        let routed = Arc::new(
-            PreparedRevision::prepare_with_source_bank(
-                f.editor.project(),
-                crate::compile::SourceBank::Mixed(&sources, 41),
-                Arc::new(SineTable::new()),
-                None,
-                &hex_devices::native_registry().unwrap(),
-                &hex_devices::native_instrument_registry().unwrap(),
-                &crate::audio_transform::AudioTransformPreparation::default(),
-                None,
-                None,
-                &[],
-            )
-            .unwrap(),
-        );
-        let mut refused = crate::SessionPlayback::new(routed).unwrap();
-        refused.apply(SessionPlaybackCommand::Play).unwrap();
-        assert!(
-            refused
-                .visit_next_stream_chunk(32, None, &mut |_| Ok(()))
-                .is_err()
-        );
     }
 }
 
 #[test]
 fn closed_flat_feed_latency_stream_demand_matches_resident() {
-    flat_feed_stream_demand_matches_resident(true);
+    feed_stream_demand_matches_resident(FeedTopology::Flat, true);
 }
 
 #[test]
 fn closed_flat_feed_zero_latency_stream_demand_matches_resident() {
-    flat_feed_stream_demand_matches_resident(false);
+    feed_stream_demand_matches_resident(FeedTopology::Flat, false);
 }
 
-fn flat_feed_stream_demand_matches_resident(limiter: bool) {
-    use hex_project::Command;
+#[derive(Clone, Copy)]
+enum FeedTopology {
+    Flat,
+    Siblings,
+    GroupSource,
+    GroupDestination,
+}
+
+#[test]
+fn closed_grouped_sibling_feed_latency_matches_resident() {
+    feed_stream_demand_matches_resident(FeedTopology::Siblings, true);
+}
+#[test]
+fn closed_grouped_sibling_feed_zero_latency_matches_resident() {
+    feed_stream_demand_matches_resident(FeedTopology::Siblings, false);
+}
+#[test]
+fn closed_group_source_feed_latency_matches_resident() {
+    feed_stream_demand_matches_resident(FeedTopology::GroupSource, true);
+}
+#[test]
+fn closed_group_source_feed_zero_latency_matches_resident() {
+    feed_stream_demand_matches_resident(FeedTopology::GroupSource, false);
+}
+#[test]
+fn closed_group_destination_feed_latency_matches_resident() {
+    feed_stream_demand_matches_resident(FeedTopology::GroupDestination, true);
+}
+#[test]
+fn closed_group_destination_feed_zero_latency_matches_resident() {
+    feed_stream_demand_matches_resident(FeedTopology::GroupDestination, false);
+}
+
+fn feed_stream_demand_matches_resident(topology: FeedTopology, limiter: bool) {
+    use hex_project::{Command, Created, TrackSelectionIds};
     for limiter_on_receiver in [false, true] {
         if !limiter && limiter_on_receiver {
             continue;
@@ -1111,10 +1113,41 @@ fn flat_feed_stream_demand_matches_resident(limiter: bool) {
             let mut f = crate::signal_graph::tests::fixture(&[&[], &[]], 1024);
             let asset = *f.media.keys().nth(stream_index).unwrap();
             let key = StreamSourceKey::new(41, asset);
+            let source = f.tracks[1];
+            let destination = f.tracks[0];
+            let group_tracks = match topology {
+                FeedTopology::Flat => None,
+                FeedTopology::Siblings => Some(vec![source, destination]),
+                FeedTopology::GroupSource => Some(vec![source]),
+                FeedTopology::GroupDestination => Some(vec![destination]),
+            };
+            let group = group_tracks.map(|tracks| {
+                let Created::Track(group) = f
+                    .editor
+                    .execute(Command::GroupTracks {
+                        tracks: TrackSelectionIds::new(&tracks).unwrap(),
+                        name: "group".into(),
+                    })
+                    .unwrap()
+                else {
+                    panic!("group")
+                };
+                group
+            });
+            let source = if matches!(topology, FeedTopology::GroupSource) {
+                group.unwrap()
+            } else {
+                source
+            };
+            let destination = if matches!(topology, FeedTopology::GroupDestination) {
+                group.unwrap()
+            } else {
+                destination
+            };
             f.editor
                 .execute(Command::SetAudioFeed {
-                    source: hex_project::RoutingOwner::Track(f.tracks[1]),
-                    destination: f.tracks[0],
+                    source: hex_project::RoutingOwner::Track(source),
+                    destination,
                     gain: 0.5,
                 })
                 .unwrap();

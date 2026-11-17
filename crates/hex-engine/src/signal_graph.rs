@@ -938,9 +938,8 @@ impl SignalGraph {
         }
         false
     }
-    /// The closed streamed constructor may enumerate zero-latency group routes
-    /// using the same source frontier as its per-frame render. Authored feeds
-    /// remain outside that constructor's admitted graph class.
+    /// The original zero-latency group class excludes authored feeds; the
+    /// audio-only compensated class below handles them under tighter checks.
     pub(crate) fn supports_closed_group_stream(&self) -> bool {
         self.plan.max_latency_frames() == 0
             && self.has_group_outputs
@@ -950,9 +949,8 @@ impl SignalGraph {
                 .all(|track| track.audio_feeds.is_empty() && track.printed_merge.is_none())
             && self.returns.iter().all(|bus| bus.audio_feeds.is_empty())
     }
-    /// Grouped audio reads its local sources at the current transport frontier;
-    /// edge delays retain PCM, not additional stream pages. Other source and
-    /// routing families require separate admission evidence.
+    /// Grouped audio and track feeds read local sources at the current
+    /// transport frontier; edge delays retain PCM, not additional pages.
     pub(crate) fn supports_closed_compensated_audio_groups(&self) -> bool {
         self.has_group_outputs
             && self.key_stages.is_empty()
@@ -960,7 +958,6 @@ impl SignalGraph {
             && self.tracks.iter().all(|track| {
                 track.generator.is_none()
                     && track.printed_merge.is_none()
-                    && track.audio_feeds.is_empty()
                     && track.group_output_mutes.is_empty()
             })
     }
