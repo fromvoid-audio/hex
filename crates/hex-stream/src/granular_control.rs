@@ -67,8 +67,9 @@ pub struct GranularWorkerStopped {
 /// owner wakes or joins its thread. Explicit shutdown is required to observe
 /// join/custody failures and reclaim accepted buffers; Drop stops and joins as
 /// a fallback, destroying retained objects on control. OS I/O can delay join.
-/// StreamRuntime will retain this component during live integration; this type
-/// does not implement MediaPages or create a competing publication path.
+/// StreamRuntime retains this component on its ordinary worker; that joining
+/// parent keeps raw/scalar service live and returns the original pool's PCM.
+/// This type does not implement MediaPages or create another publication path.
 pub struct GranularWorkerControl {
     requests: Option<Producer<GranularWorkerRequest>>,
     results: Option<Consumer<GranularWorkerOutcome>>,
@@ -109,6 +110,20 @@ impl GranularWorkerControl {
         queue_capacity: usize,
         allowance: GranularWorkerAllowance,
     ) -> Result<Self, StreamRuntimeError> {
+        Self::try_start_inner(
+            bank,
+            queue_capacity,
+            allowance,
+            #[cfg(feature = "test-support")]
+            None,
+        )
+    }
+    pub(crate) fn try_start_inner(
+        bank: GranularWorkerBank,
+        queue_capacity: usize,
+        allowance: GranularWorkerAllowance,
+        #[cfg(feature = "test-support")] gate: Option<crate::test_support::PageGate>,
+    ) -> Result<Self, StreamRuntimeError> {
         let data = Self::data_bound(&bank, queue_capacity)?;
         if data
             .bytes()
@@ -128,6 +143,24 @@ impl GranularWorkerControl {
         let worker = thread::Builder::new()
             .name("hex-granular-worker".into())
             .spawn(move || {
+                #[cfg(feature = "test-support")]
+                if let Some(gate) = gate {
+                    let mut gate = Some(gate);
+                    return crate::granular_worker::run_with_step_hook(
+                        bank,
+                        GranularWorkerQueues {
+                            requests: request_rx,
+                            results: result_tx,
+                        },
+                        &worker_stop,
+                        &worker_demand,
+                        || {
+                            if let Some(gate) = gate.take() {
+                                let _ = gate.wait(&worker_stop);
+                            }
+                        },
+                    );
+                }
                 run_granular_worker(
                     bank,
                     GranularWorkerQueues {

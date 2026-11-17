@@ -118,6 +118,15 @@ impl GranularWorkerBank {
         }
         Ok(data)
     }
+    pub(crate) fn validate_for_catalog(
+        &mut self,
+        stop: &std::sync::atomic::AtomicBool,
+    ) -> Result<(), crate::StreamFailureKind> {
+        for source in &mut self.sources {
+            source.validate_for_catalog(stop)?;
+        }
+        Ok(())
+    }
     pub fn data(&self) -> GranularBankData {
         self.data
     }

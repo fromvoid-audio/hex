@@ -72,6 +72,38 @@ pub(crate) struct GranularSourceData {
     pub kernel_reserved_bytes: usize,
 }
 impl VerifiedGranularSource {
+    pub(crate) fn validate_for_catalog(
+        &mut self,
+        stop: &std::sync::atomic::AtomicBool,
+    ) -> Result<(), StreamFailureKind> {
+        // Decode the complete float source, including data outside the chosen
+        // granular region, before granting catalog eligibility.
+        if self.reader.encoding() == 3 {
+            crate::worker::validate_finite_source(
+                &mut self.reader,
+                &mut self.buffers.source,
+                stop,
+            )?;
+        } else {
+            // A fresh verified read also checks file metadata/digest after the
+            // earlier preparation, without claiming a whole-file snapshot.
+            let count = self
+                .buffers
+                .source
+                .len()
+                .min(self.reader.max_window_frames())
+                .min(1);
+            if count == 0 {
+                return Err(StreamFailureKind::DecodeFailed);
+            }
+            self.reader
+                .read_frames_into_with_cancel(0, &mut self.buffers.source[..count], || {
+                    stop.load(std::sync::atomic::Ordering::Acquire)
+                })
+                .map_err(crate::worker::map_import_error)?;
+        }
+        Ok(())
+    }
     pub(crate) fn holds_page(&self) -> bool {
         self.pages.holds_page()
     }
