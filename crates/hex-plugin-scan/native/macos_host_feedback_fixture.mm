@@ -7,6 +7,7 @@ using namespace hex_instance;
 class Controller final : public IEditController {
 public:
     ParamValue value=0.25;
+    uint32 setter_calls=0;
     Host* late_edit_host=nullptr;
     tresult PLUGIN_API queryInterface(const TUID,void**) override { return kNoInterface; }
     uint32 PLUGIN_API addRef() override { return 1; }
@@ -28,12 +29,45 @@ public:
     ParamValue PLUGIN_API getParamNormalized(ParamID) override { return value; }
     tresult PLUGIN_API setParamNormalized(ParamID,ParamValue v) override {
         if(late_edit_host) assert(late_edit_host->beginEdit(7)==kResultFalse);
+        ++setter_calls;
         value=v; return kResultOk;
     }
     tresult PLUGIN_API setComponentHandler(IComponentHandler*) override { return kResultOk; }
     IPlugView* PLUGIN_API createView(FIDString) override { return nullptr; }
 };
-int main() { @autoreleasepool {
+int main(int argc,char** argv) { @autoreleasepool {
+    // Each scenario can also be run independently against an unfixed host.
+    if(argc==1 || !std::strcmp(argv[1],"redundant-setter")) {
+        Controller unchanged;
+        Host controls;
+        assert(controls.refresh_on_control(&unchanged).disposition==HostDisposition::Refreshed);
+        ParameterFeedback repeat;
+        assert(repeat.put(7,0.25) && controls.publish_parameter_feedback(repeat));
+        assert(controls.synchronize_parameter_feedback(&unchanged));
+        assert(unchanged.setter_calls==0);
+        assert(repeat.put(7,0.5) && controls.publish_parameter_feedback(repeat));
+        assert(controls.synchronize_parameter_feedback(&unchanged));
+        assert(unchanged.value==0.5 && unchanged.setter_calls==1);
+    }
+    if(argc==1 || !std::strcmp(argv[1],"held-native-value")) {
+        Controller delayed;
+        Host controls;
+        assert(controls.refresh_on_control(&delayed).disposition==HostDisposition::Refreshed);
+        assert(controls.beginEdit(7)==kResultOk && controls.performEdit(7,0.5)==kResultOk);
+        const auto older=controls.editor_frontier_on_worker();
+        assert(controls.performEdit(7,0.75)==kResultOk);
+        const auto latest=controls.editor_frontier_on_worker();
+        ParameterFeedback pending;
+        assert(pending.put(7,0.5,older,true) && controls.publish_parameter_feedback(pending));
+        assert(controls.synchronize_parameter_feedback(&delayed));
+        assert(delayed.value==0.25 && delayed.setter_calls==0);
+        assert(pending.put(7,0.75,latest,true) && controls.publish_parameter_feedback(pending));
+        assert(controls.synchronize_parameter_feedback(&delayed));
+        assert(delayed.value==0.75 && delayed.setter_calls==1);
+        assert(controls.endEdit(7)==kResultOk && controls.synchronize_parameter_feedback(&delayed));
+        assert(delayed.value==0.75 && delayed.setter_calls==1);
+    }
+    if(argc>1) return 0;
     Controller controller;
     Host host;
     assert(host.refresh_on_control(&controller).disposition==HostDisposition::Refreshed);
