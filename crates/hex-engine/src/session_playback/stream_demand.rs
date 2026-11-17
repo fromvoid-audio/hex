@@ -64,7 +64,7 @@ impl SessionPlayback {
                         && native_audio_only())
                     || (runtime.graph.supports_closed_compensated_track_feeds()
                         && native_audio_only())
-                    || (runtime.graph.supports_closed_compensated_return_feeds()
+                    || (runtime.graph.supports_closed_compensated_audio_returns()
                         && native_audio_only())
                     || (runtime.graph.independent_main_routes()
                         && ((!runtime.graph.needs_upstream_frame_routing()

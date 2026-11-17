@@ -585,6 +585,15 @@ fn foreign_content_origin_routes_track_return_main_and_latency_preserving_bypass
 
 #[test]
 fn closed_stream_demand_refuses_foreign_return_to_track_feed() {
+    closed_stream_demand_refuses_foreign_return(true);
+}
+
+#[test]
+fn closed_stream_demand_refuses_foreign_return_send() {
+    closed_stream_demand_refuses_foreign_return(false);
+}
+
+fn closed_stream_demand_refuses_foreign_return(feed: bool) {
     let mut f = fixture(&[&[], &[]], 64);
     let Created::ReturnTrack(bus) = f
         .editor
@@ -602,13 +611,15 @@ fn closed_stream_demand_refuses_foreign_return_to_track_feed() {
             gain: 1.0,
         })
         .unwrap();
-    f.editor
-        .execute(Command::SetAudioFeed {
-            source: hex_project::RoutingOwner::Return(bus),
-            destination: f.tracks[1],
-            gain: 0.5,
-        })
-        .unwrap();
+    if feed {
+        f.editor
+            .execute(Command::SetAudioFeed {
+                source: hex_project::RoutingOwner::Return(bus),
+                destination: f.tracks[1],
+                gain: 0.5,
+            })
+            .unwrap();
+    }
     let Created::Device(device) = f
         .editor
         .execute(Command::InsertReturnDevice {
