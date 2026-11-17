@@ -253,6 +253,36 @@ pub(super) fn trim_retained_view(
     Ok(result)
 }
 
+pub(crate) const DEFAULT_WARP_MODE: WarpMode = WarpMode::Beats {
+    preserve: BeatsPreserve::Transients,
+    tail: BeatsTail::Forward,
+    decay: 100,
+};
+
+/// Initial Warp settings for the clip panel and edge stretch. Eligible long
+/// clips start in a pitch-preserving mode that can read verified file pages.
+pub(crate) fn initial_audio_warp(
+    clip: &Clip,
+    tempo: &TempoMap,
+    asset_frames: u64,
+) -> Result<WarpSettings, Invalid> {
+    let long_neutral_source = clip.duration() > MAX_AUDIO_DOMAIN_FRAMES
+        && clip.source_offset() == 0
+        && clip.source_length() == clip.duration()
+        && clip.source_length() == asset_frames
+        && !clip.looping()
+        && clip.retained_fade().is_neutral()
+        && clip
+            .audio_edit()
+            .is_none_or(|edit| edit.is_plain_pitch_capture(clip));
+    let mode = if long_neutral_source {
+        WarpMode::Tones { grain_ms: 40 }
+    } else {
+        DEFAULT_WARP_MODE
+    };
+    default_audio_warp(clip, tempo, mode)
+}
+
 pub fn default_audio_warp(
     clip: &Clip,
     tempo: &TempoMap,
