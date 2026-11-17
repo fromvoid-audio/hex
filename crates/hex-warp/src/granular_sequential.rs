@@ -149,6 +149,19 @@ impl SequentialGranular {
         Ok(result)
     }
 
+    /// A fresh renderer has not analyzed any grain or committed output.
+    pub fn is_pristine(&self) -> bool {
+        !self.poisoned
+            && self.index == 0
+            && self.center == -(self.nominal as i128)
+            && self.position() == 0
+    }
+
+    /// Validated complete output extent in frames.
+    pub fn total_frames(&self) -> u64 {
+        self.total
+    }
+
     /// Project rate and chosen reference channel used by this renderer.
     pub fn source_parameters(&self) -> (u32, usize) {
         (self.config.sample_rate, self.config.reference_channel)
