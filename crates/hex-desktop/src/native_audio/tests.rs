@@ -4,6 +4,7 @@ use super::*;
 mod bypass_latency;
 mod delay_bypass;
 mod discrete_automation;
+mod granular_source_projection;
 mod limiter;
 mod limiter_bypass;
 mod manual_host_gain;
