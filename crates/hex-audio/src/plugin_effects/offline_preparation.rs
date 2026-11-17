@@ -312,7 +312,7 @@ mod tests {
                 panic!("device")
             };
             stages.push(
-                host.prepare_offline_processor_on_control(
+                host.prepare_offline_effect_on_control(
                     EffectSelection {
                         module: &module,
                         executable: "Contents/MacOS/fixture",

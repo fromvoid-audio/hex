@@ -172,14 +172,6 @@ impl<'a> ResidentEffectPreparation<'a> {
     pub fn restoring_plugin_state(&self) -> bool {
         self.restoring_plugin_state
     }
-    /// Canonical bypass state of one exact plugin visited by this preparation.
-    /// This copied display/control fact grants no native source or admission.
-    pub fn plugin_device_bypassed(&self, id: u64) -> Option<bool> {
-        self.project
-            .automation_devices()
-            .find(|device| device.id().value() == id && is_plugin_effect(device))
-            .map(|device| device.bypassed())
-    }
     /// Whether the saved document needs the fixed-quantum plugin output profile.
     pub fn requires_plugin_profile(&self) -> bool {
         requires_plugin_profile(self.project)
@@ -349,13 +341,6 @@ impl<'a> ResidentEffectPreparation<'a> {
 /// rendering and is dropped before Session adopts any of the output media.
 pub trait OfflineBounceSource: hex_export::ForeignBounceRenderer + Send {
     fn retained_data_bytes(&self) -> usize;
-    /// Finalize this private source against the one compiled graph before any
-    /// render or publication. Failure aborts the export/bounce without adoption.
-    fn finalize_on_control(
-        &mut self,
-        revision: &hex_engine::PreparedRevision,
-        control: &hex_export::ExportControl,
-    ) -> Result<(), String>;
     fn prepare(
         &self,
         compile: &mut dyn FnMut(

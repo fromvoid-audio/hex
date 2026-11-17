@@ -94,7 +94,8 @@ pub struct NativeEffect {
     state_authority: hex_lattice_contract::Vst3StateAuthority,
 }
 
-/// Private original-source facts retained by Root while the SDK lease renews.
+/// Original-source facts retained by Root or private offline preparation while
+/// the same SDK lease renews.
 /// No copied metadata or external caller can construct this authority packet.
 pub(crate) struct NativeEffectRenewal {
     binding: Binding,

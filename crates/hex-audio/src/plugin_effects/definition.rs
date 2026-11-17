@@ -10,7 +10,9 @@ use hex_lattice_contract::{
 /// Borrow actual constructor-paired owners, or Root's original worker while
 /// its endpoint is loaned, during pure graph preparation. Copied IDs or equal
 /// state cannot construct these instances. Root/publication retains the same
-/// resources through the endpoint's actual return.
+/// resources through the endpoint's actual return. Private offline preparation
+/// may borrow an actual stopped lease and reserved epoch; it must complete that
+/// epoch before rendering. Neither view grants live Root source admission.
 pub struct NativeEffectDefinition<'a> {
     // Borrow only immutable configuration across pure compiler threads. The
     // lifetime retains each original owner; joining workers are not Sync.

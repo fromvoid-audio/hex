@@ -433,15 +433,6 @@ impl Quiescent {
         next: Binding,
         presentation: Option<PresentationLatency>,
     ) -> Result<Prepared> {
-        self.resume_with_plan_on_control(next, presentation.into())
-    }
-    /// Same joined control-side completion with an explicit known/unknown plan.
-    /// Retained failure custody and native ACK validation are unchanged.
-    pub fn resume_with_plan_on_control(
-        self,
-        next: Binding,
-        presentation: protocol::PresentationPlan,
-    ) -> Result<Prepared> {
         self.resume_retained_on_control(next, presentation)
             .map_err(PreparationFailure::finish_on_control)
     }

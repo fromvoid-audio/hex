@@ -75,8 +75,7 @@ impl Hosting {
         profile: PluginProfile,
         state: &NativeDeviceState,
         authored: Option<&AuthoredSelection>,
-        bypassed: bool,
-    ) -> Result<OfflineEffectPreparation, String> {
+    ) -> Result<NativeEffect, String> {
         let identity =
             ProcessorInstanceIdentity::new(owner, device_id).map_err(|e| e.to_string())?;
         let pending = native::Pending::prepare_offline_restored_on_control(
@@ -103,16 +102,13 @@ impl Hosting {
             native::TrustUserCode::Acknowledged,
         )
         .map_err(|e| e.to_string())?;
-        // Bootstrap one real offline source before its graph exists. It will
-        // be stopped at zero PCM and completed from that graph before rendering.
+        // A private bounce has no device presentation and this source is
+        // configured before the isolated downstream graph has been compiled.
         let instance = pending
             .complete_with_plan_on_control(PresentationPlan::AllowUnknown)
             .map_err(|e| e.to_string())?;
-        if !instance.is_offline_on_control() {
-            return Err("offline vst3 source profile differs".into());
-        }
         let data_limit = Self::source_data_reservation()?.max_retained_data_bytes;
-        let effect = NativeEffect::prepare_with_renewal_on_control(
+        NativeEffect::prepare_with_renewal_on_control(
             identity,
             instance,
             data_limit,
@@ -120,10 +116,34 @@ impl Hosting {
             None,
             authored.and_then(AuthoredSelection::dense_parameter),
         )
-        .map_err(|e| e.finish_on_control().to_string())?;
+        .map_err(|e| e.finish_on_control().to_string())
+    }
+    /// Hold a real private offline source at zero PCM while its sole graph is
+    /// compiled. Completion applies graph timing and constructs the final pair.
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_offline_effect_on_control(
+        &self,
+        selection: EffectSelection<'_>,
+        owner: ProcessorChainOwner,
+        device_id: u64,
+        sample_rate: u32,
+        profile: PluginProfile,
+        state: &NativeDeviceState,
+        authored: Option<&AuthoredSelection>,
+        bypassed: bool,
+    ) -> Result<OfflineEffectPreparation, String> {
+        let effect = self.prepare_offline_processor_on_control(
+            selection,
+            owner,
+            device_id,
+            sample_rate,
+            profile,
+            state,
+            authored,
+        )?;
         OfflineEffectPreparation::from_effect_on_control(
             effect,
-            data_limit,
+            Self::source_data_reservation()?.max_retained_data_bytes,
             authored.cloned(),
             bypassed,
         )
