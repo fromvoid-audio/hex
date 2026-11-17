@@ -22,17 +22,20 @@ pub(super) enum ScalarOriginHistory<'a> {
 impl SessionPlayback {
     /// This is derived from the retained runtime graph, not a caller-declared
     /// readiness mode. Serial Main-only latency reads the ordinary source
-    /// frontier for Arrangement-only content. Flat audio-only tracks may also
-    /// use upstream compensation with closed native effects; Session audio,
-    /// instruments, foreign effects, routed upstream graphs and keyboard remain excluded.
+    /// frontier for Arrangement and Session audio. Flat audio-only tracks may
+    /// use upstream compensation with closed native effects when Session audio
+    /// is absent. Instruments, foreign effects, routed upstream graphs and
+    /// keyboard remain excluded from these compensated extensions.
     pub(super) fn supports_closed_stream_demand(&self) -> bool {
         self.computer_keyboard.is_none()
             && self.compensation.as_ref().is_none_or(|runtime| {
                 runtime.graph.supports_closed_group_stream()
                     || (runtime.graph.independent_main_routes()
-                        && self.revision.session().audio_clips().is_empty()
-                        && (!runtime.graph.needs_upstream_frame_routing()
-                            || (self.revision.session().midi_clips().is_empty()
+                        && ((!runtime.graph.needs_upstream_frame_routing()
+                            && self.revision.session().audio_clips().is_empty())
+                            || ((!runtime.graph.needs_upstream_frame_routing()
+                                || self.revision.session().audio_clips().is_empty())
+                                && self.revision.session().midi_clips().is_empty()
                                 && runtime.graph.tracks.iter().enumerate().all(|(index, _)| {
                                     runtime.graph.resident_main_alignment(index).is_some()
                                 })
