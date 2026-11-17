@@ -46,6 +46,22 @@ fn fixture() -> (Project, Project) {
         editor
             .execute(Command::SetAudioClipPitch { clip, cents: 300 })
             .unwrap();
+        let fade = editor
+            .project()
+            .clip(clip)
+            .unwrap()
+            .retained_fade()
+            .with_shape(0, 0, 111, -333)
+            .unwrap()
+            .with_curve_positions(123, 888)
+            .unwrap()
+            .with_curve_laws([
+                hex_project::FadeCurveLaw::SmoothStep,
+                hex_project::FadeCurveLaw::Linear,
+            ]);
+        editor
+            .execute(Command::SetClipFadeEnvelope { clip, fade })
+            .unwrap();
         let start = editor.project().clip(clip).unwrap().start();
         editor
             .execute(Command::TrimClipEdge {

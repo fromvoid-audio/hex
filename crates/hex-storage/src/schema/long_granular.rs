@@ -4,6 +4,7 @@
 //! Supported older documents migrate in memory through their existing codecs
 //! without changes. The actual format comparison in FileToken retains Save As,
 //! cancel and explicit overwrite custody. No original file/media is rewritten.
+use super::s_curve_fades::Curve;
 use crate::{LONG_GRANULAR_SCHEMA_VERSION, Project, StorageError, audio_edit::AudioEditDto};
 use hex_project::{MAX_AUDIO_DOMAIN_FRAMES, MAX_CLIPS, TrackContentSnapshot};
 use serde::{Deserialize, Serialize, de};
@@ -28,6 +29,11 @@ struct Row {
     edit: Option<AudioEditDto>,
     #[serde(deserialize_with = "required_alias")]
     alias_source: Option<u64>,
+    #[serde(deserialize_with = "required_curve")]
+    curve: Option<Curve>,
+}
+fn required_curve<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Curve>, D::Error> {
+    Option::deserialize(d)
 }
 fn required_edit<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<AudioEditDto>, D::Error> {
     Option::deserialize(d)
@@ -115,6 +121,13 @@ pub(crate) fn encode(project: &Project) -> Result<Vec<u8>, StorageError> {
         };
         for clip in clips {
             if ids.contains(&clip.id) {
+                let curve = if long_ids.contains(&clip.id) {
+                    clip.edit
+                        .as_ref()
+                        .map(|edit| Curve::capture(edit.domain.fade))
+                } else {
+                    None
+                };
                 let edit = if long_ids.contains(&clip.id) {
                     Some(
                         clip.edit
@@ -129,6 +142,7 @@ pub(crate) fn encode(project: &Project) -> Result<Vec<u8>, StorageError> {
                     clip: clip.id,
                     edit,
                     alias_source: members.get(&clip.id).copied(),
+                    curve,
                 });
             }
         }
@@ -168,7 +182,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
     let mut wanted: BTreeMap<_, _> = document
         .clips
         .into_iter()
-        .map(|row| (row.clip, (row.edit, row.alias_source)))
+        .map(|row| (row.clip, (row.edit, row.alias_source, row.curve)))
         .collect();
     let project = crate::decode(base)?;
     let tempo = project.tempo_map().clone();
@@ -182,14 +196,18 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
             TrackContentSnapshot::Instrument(_) => continue,
         };
         for clip in clips {
-            if let Some((edit, alias)) = wanted.remove(&clip.id) {
+            if let Some((edit, alias, curve)) = wanted.remove(&clip.id) {
                 let edit = if let Some(edit) = edit {
                     if clip.edit.is_some() {
                         return Err(StorageError::Invalid(
                             "long granular base clip is not plain",
                         ));
                     }
-                    let edit = hex_project::AudioClipEdit::try_from(edit)?;
+                    let mut edit = hex_project::AudioClipEdit::try_from(edit)?;
+                    let curve =
+                        curve.ok_or(StorageError::Invalid("long granular fade curve missing"))?;
+                    std::sync::Arc::make_mut(&mut edit.domain).fade =
+                        curve.restore(edit.domain.fade)?;
                     if !edit.is_streamed_granular_root()
                         || !edit
                             .projected_domain(&tempo)
@@ -202,7 +220,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
                     }
                     edit
                 } else {
-                    if alias.is_none() {
+                    if alias.is_none() || curve.is_some() {
                         return Err(StorageError::Invalid("missing long granular edit"));
                     }
                     clip.edit
