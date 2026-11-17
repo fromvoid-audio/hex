@@ -179,9 +179,9 @@ mod stream_miss_fade;
 pub use stream_miss_fade::{STREAM_MISS_FADE_VOICES, StreamMissFades};
 mod return_feed_plan;
 mod signal_graph;
-pub use signal_graph::OutputLatency;
 #[cfg(feature = "instrument-test-support")]
 pub use signal_graph::PrintedBranchProbe;
+pub use signal_graph::{OutputLatency, ProcessorGraphLatency};
 mod stream_demand;
 pub use stream_demand::{
     StreamChunkWindow, StreamPageExtent, StreamResourceExtent, visit_scalar_page_range,
