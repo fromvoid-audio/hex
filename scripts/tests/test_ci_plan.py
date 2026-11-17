@@ -2001,10 +2001,13 @@ class BaseAdvanceCarryTests(unittest.TestCase):
         def check(root, current, evidence, **_):
             report = root / "artifacts/old.json"
             report.parent.mkdir()
+            report.write_text(json.dumps(evidence))
+            runner = ci.LocalCiRunner(root, mode="merge", plan=current, carry_report=report)
+            runner._prepare_carry()
+            self.assertIsNotNone(runner._carry)
             evidence["steps"].pop()
             raw = json.dumps(evidence).encode()
             report.write_bytes(raw)
-            runner = ci.LocalCiRunner(root, mode="merge", plan=current, carry_report=report)
             runner._prepare_carry()
             self.assertIsNone(runner._carry)
             self.assertIn("every step runs fresh", runner.summary["carry"]["refused"])

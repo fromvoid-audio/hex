@@ -630,6 +630,12 @@ mod tests {
                 None,
             )
             .unwrap();
+            let mut short = allowance(bound);
+            short.max_retained_data_bytes -= 1;
+            assert!(matches!(
+                PendingStreamDomain::try_start_on_control(config, definitions.clone(), None, short,),
+                Err(StreamRuntimeError::InvalidConfiguration)
+            ));
             let mut pending = PendingStreamDomain::try_start_on_control(
                 config,
                 definitions,
