@@ -192,11 +192,18 @@ fn active_audio_track_add_preserves_pcm_without_callback_allocations() -> Result
     verify_added_audio_track(AddedAudio::Active)
 }
 
+#[test]
+fn looped_active_audio_track_add_preserves_pcm_without_callback_allocations()
+-> Result<(), Box<dyn Error>> {
+    verify_added_audio_track(AddedAudio::LoopActive)
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum AddedAudio {
     Future,
     Ended,
     Active,
+    LoopActive,
 }
 
 fn verify_added_audio_track(case: AddedAudio) -> Result<(), Box<dyn Error>> {
@@ -215,6 +222,13 @@ fn verify_added_audio_track(case: AddedAudio) -> Result<(), Box<dyn Error>> {
         before: None,
         state: hex_engine::default_native_device_state(DeviceTypeId::from_static("hex.limiter"))?,
     })?;
+    if case == AddedAudio::LoopActive {
+        editor.execute(Command::SetLoopRegion {
+            start: 0,
+            end: 4096,
+            enabled: true,
+        })?;
+    }
     let mut media = BTreeMap::from([(asset, Audio::new(RATE, vec![[0.25, -0.125]; 4096])?)]);
     let table = Arc::new(SineTable::new());
     let first = Arc::new(PreparedRevision::prepare(
@@ -272,7 +286,7 @@ fn verify_added_audio_track(case: AddedAudio) -> Result<(), Box<dyn Error>> {
         .map_err(|_| "updated publication")?;
     measured_block(&mut callback, &mut actual);
     oracle.render(&mut expected)?;
-    if case == AddedAudio::Active {
+    if matches!(case, AddedAudio::Active | AddedAudio::LoopActive) {
         assert!(latency > 0 && latency < actual.len());
         for (index, (actual, expected)) in actual.iter().zip(&expected).enumerate() {
             let added = if index < latency { 0.0 } else { 0.125 };

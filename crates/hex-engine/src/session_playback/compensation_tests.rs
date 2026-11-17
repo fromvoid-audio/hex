@@ -163,21 +163,36 @@ fn adding_ended_audio_track_preserves_existing_compensated_pcm() {
 #[test]
 #[ignore = "explicit optimized handoff timing profile"]
 fn ended_audio_track_handoff_profile() {
-    profile_added_audio_track(16);
+    profile_added_audio_track(16, false);
 }
 
 #[test]
 #[ignore = "explicit optimized handoff timing profile"]
 fn active_audio_track_handoff_profile() {
-    profile_added_audio_track(256);
+    profile_added_audio_track(256, false);
 }
 
-fn profile_added_audio_track(frames: u64) {
+#[test]
+#[ignore = "explicit optimized handoff timing profile"]
+fn looped_active_audio_track_handoff_profile() {
+    profile_added_audio_track(256, true);
+}
+
+fn profile_added_audio_track(frames: u64, looped: bool) {
     use hex_project::{Command, Created};
     use std::time::Instant;
     const WARMUP: usize = 20;
     const SAMPLES: usize = 100;
     let mut f = fixture(&[&[7]], 512);
+    if looped {
+        f.editor
+            .execute(Command::SetLoopRegion {
+                start: 0,
+                end: 64,
+                enabled: true,
+            })
+            .unwrap();
+    }
     let old_revision = prepare(&f).unwrap();
     let Created::Imported { asset, .. } = f
         .editor
@@ -211,7 +226,7 @@ fn profile_added_audio_track(frames: u64) {
     }
     samples.sort_unstable();
     eprintln!(
-        "audio_handoff rate=48000 tracks=1+1 delay=7 cut=32 clip_frames={frames} warmup={WARMUP} samples={SAMPLES} p50_ns={} p95_ns={}",
+        "audio_handoff rate=48000 tracks=1+1 delay=7 cut=32 clip_frames={frames} looped={looped} warmup={WARMUP} samples={SAMPLES} p50_ns={} p95_ns={}",
         samples[SAMPLES / 2],
         samples[SAMPLES * 95 / 100]
     );
@@ -334,6 +349,136 @@ fn adding_future_audio_track_during_loop_keeps_compensated_pcm() {
 }
 
 #[test]
+fn adding_an_active_track_during_a_loop_preserves_audio_without_its_past() {
+    use hex_project::{Command, Created};
+    for (loop_end, elapsed, stateful_main) in [
+        (64, 32, false),
+        (64, 60, false),
+        (64, 64, false),
+        (64, 66, false),
+        (64, 96, false),
+        (64, 124, false),
+        (4, 8, false),
+        (4, 10, false),
+        (4, 12, false),
+        (64, 32, true),
+        (64, 64, true),
+        (4, 12, true),
+    ] {
+        for (start, frames) in [
+            (0, 1024),
+            ((elapsed % loop_end) as u64, 1024),
+            (((elapsed + 1) % loop_end) as u64, 1024),
+            (0, 16),
+        ] {
+            for partition in [1, 257] {
+                let mut f = fixture(&[&[7]], 1024);
+                if stateful_main {
+                    f.editor
+                        .execute(Command::InsertMainDevice {
+                            before: None,
+                            state: crate::signal_graph::tests::state(3).unwrap(),
+                        })
+                        .unwrap();
+                }
+                for audio in f.media.values_mut() {
+                    let frames = (0..1024)
+                        .map(|i| [(i % 64) as f32 / 128.0, -0.25])
+                        .collect();
+                    *audio = Audio::new(48_000, frames).unwrap();
+                }
+                f.editor
+                    .execute(Command::SetLoopRegion {
+                        start: 0,
+                        end: loop_end as u64,
+                        enabled: true,
+                    })
+                    .unwrap();
+                let revision = prepare(&f).unwrap();
+                let mut old = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+                let mut reference = SessionPlayback::new(revision).unwrap();
+                for runtime in [&mut old, &mut reference] {
+                    runtime.apply(SessionPlaybackCommand::Play).unwrap();
+                    runtime.render(&mut vec![[0.0; 2]; elapsed]).unwrap();
+                }
+                let Created::Imported { track, asset, clip } = f
+                    .editor
+                    .execute(Command::ImportAudioTrack {
+                        name: "added".into(),
+                        path: "added.wav".into(),
+                        sample_rate: 48_000,
+                        frames,
+                    })
+                    .unwrap()
+                else {
+                    panic!("import")
+                };
+                if start != 0 {
+                    f.editor
+                        .execute(Command::MoveClip { clip, track, start })
+                        .unwrap();
+                }
+                f.media.insert(
+                    asset,
+                    Audio::new(48_000, vec![[0.25; 2]; frames as usize]).unwrap(),
+                );
+                let revision = prepare(&f).unwrap();
+                let mut full_reference = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+                full_reference.apply(SessionPlaybackCommand::Play).unwrap();
+                full_reference.render(&mut vec![[0.0; 2]; elapsed]).unwrap();
+                let mut next = SessionPlayback::new(revision).unwrap();
+                next.try_inherit_state_from(&mut old).unwrap();
+                let horizon = if stateful_main { 10 } else { 7 };
+                for delay in 0..=horizon {
+                    assert_eq!(
+                        next.compensation
+                            .as_ref()
+                            .unwrap()
+                            .delays
+                            .stamp_at_delay(delay),
+                        reference
+                            .compensation
+                            .as_ref()
+                            .unwrap()
+                            .delays
+                            .stamp_at_delay(delay),
+                        "elapsed {elapsed} initial stamp {delay}"
+                    );
+                }
+                let mut actual = [[0.0; 2]; 257];
+                let mut expected = actual;
+                let mut complete = actual;
+                for ((a, b), c) in actual
+                    .chunks_mut(partition)
+                    .zip(expected.chunks_mut(partition))
+                    .zip(complete.chunks_mut(partition))
+                {
+                    next.render(a).unwrap();
+                    reference.render(b).unwrap();
+                    full_reference.render(c).unwrap();
+                    assert_eq!(
+                        next.compensation.as_ref().unwrap().delays.stamp_at_delay(0),
+                        reference
+                            .compensation
+                            .as_ref()
+                            .unwrap()
+                            .delays
+                            .stamp_at_delay(0)
+                    );
+                }
+                for (i, ((a, b), c)) in actual.iter().zip(expected).zip(complete).enumerate() {
+                    assert_eq!(
+                        *a,
+                        if i < horizon as usize { b } else { c },
+                        "loop {loop_end}, elapsed {elapsed}, start {start}, frames {frames}, main {stateful_main}, partition {partition}, frame {i}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn newly_added_clip_near_cut_keeps_compensated_onset_in_time() {
     use hex_project::{Command, Created};
     for start in [33, 34, 39] {
@@ -387,10 +532,7 @@ fn future_audio_handoff_keeps_unsafe_cases_on_restart_path() {
     for case in [
         "underflow",
         "recent_seek",
-        "loop_active",
-        "loop_historical",
-        "loop_replayed",
-        "loop_at_cut",
+        "loop_seek",
         "loop_change",
         "routed",
         "latency",
@@ -411,10 +553,7 @@ fn future_audio_handoff_keeps_unsafe_cases_on_restart_path() {
         } else {
             None
         };
-        if matches!(
-            case,
-            "loop_active" | "loop_historical" | "loop_replayed" | "loop_at_cut" | "loop_change"
-        ) {
+        if matches!(case, "loop_seek" | "loop_change") {
             f.editor
                 .execute(Command::SetLoopRegion {
                     start: 0,
@@ -427,11 +566,10 @@ fn future_audio_handoff_keeps_unsafe_cases_on_restart_path() {
         old.apply(SessionPlaybackCommand::Play).unwrap();
         let elapsed = match case {
             "underflow" => 4,
-            "loop_replayed" => 96,
             _ => 32,
         };
         old.render(&mut vec![[0.0; 2]; elapsed]).unwrap();
-        if case == "recent_seek" {
+        if matches!(case, "recent_seek" | "loop_seek") {
             old.apply(SessionPlaybackCommand::Seek(32)).unwrap();
             old.render(&mut [[0.0; 2]; 1]).unwrap();
         }
@@ -445,7 +583,7 @@ fn future_audio_handoff_keeps_unsafe_cases_on_restart_path() {
                 .unwrap();
         }
         let frames = match case {
-            "loop_historical" | "loop_replayed" | "recent_seek" => 16,
+            "recent_seek" | "loop_seek" => 16,
             "underflow" => 1,
             _ => 1024,
         };
@@ -462,9 +600,8 @@ fn future_audio_handoff_keeps_unsafe_cases_on_restart_path() {
             panic!("import")
         };
         let start = match case {
-            "underflow" | "recent_seek" | "loop_active" | "loop_historical" | "loop_replayed" => 0,
+            "underflow" | "recent_seek" | "loop_seek" => 0,
             "loop_change" => 50,
-            "loop_at_cut" => 32,
             _ => 1024,
         };
         if start != 0 {
