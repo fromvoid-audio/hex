@@ -1064,15 +1064,20 @@ fn seek_pause_stop_case(grouped: bool) {
 
 #[test]
 fn real_immediate_scene_waits_before_route_and_play_then_restarts_actual_clip() {
-    real_immediate_scene(false);
+    real_immediate_scene(false, false);
 }
 
 #[test]
 fn main_latency_session_scene_waits_for_pages_and_renders_without_allocations() {
-    real_immediate_scene(true);
+    real_immediate_scene(true, false);
 }
 
-fn real_immediate_scene(main_latency: bool) {
+#[test]
+fn upstream_latency_session_scene_waits_for_pages_and_renders_without_allocations() {
+    real_immediate_scene(true, true);
+}
+
+fn real_immediate_scene(with_latency: bool, upstream: bool) {
     let _serial = serial();
     if !hex_engine::audio_storage_constructor_layout_supported() {
         return;
@@ -1109,18 +1114,29 @@ fn real_immediate_scene(main_latency: bool) {
             ),
         });
     let project = hex_project::Project::from_snapshot(snapshot).unwrap();
-    let project = if main_latency {
+    let project = if with_latency {
         let mut editor = hex_project::Editor::new(project, 8).unwrap();
         let state = hex_engine::default_native_device_state(hex_engine::DeviceTypeId::from_static(
-            "hex.saturator",
+            if upstream {
+                "hex.limiter"
+            } else {
+                "hex.saturator"
+            },
         ))
         .unwrap();
-        editor
-            .execute(hex_project::Command::InsertMainDevice {
+        let command = if upstream {
+            hex_project::Command::InsertDevice {
+                track: editor.project().tracks()[0].id(),
                 before: None,
                 state,
-            })
-            .unwrap();
+            }
+        } else {
+            hex_project::Command::InsertMainDevice {
+                before: None,
+                state,
+            }
+        };
+        editor.execute(command).unwrap();
         editor.project().clone()
     } else {
         project
@@ -1135,7 +1151,7 @@ fn real_immediate_scene(main_latency: bool) {
         if f < 2048 { 8192 } else { 16384 }
     });
     let definition = wav.definition(asset, 11);
-    let make_owner = if main_latency {
+    let make_owner = if with_latency {
         stream_fixture::owner_with_effects
     } else {
         stream_fixture::owner_with_context
@@ -1219,7 +1235,7 @@ fn real_immediate_scene(main_latency: bool) {
         assert!(std::time::Instant::now() < deadline);
         std::thread::yield_now();
     }
-    if !main_latency {
+    if !with_latency {
         assert_eq!(output, [[0.5; 2]; 8]);
     }
     assert_eq!(control.status.performance_frame.load(Acquire), 8);
@@ -1241,7 +1257,7 @@ fn real_immediate_scene(main_latency: bool) {
             hex_engine::SessionPlaybackOwner::Session { clip }
         )
     });
-    if main_latency {
+    if with_latency {
         while output.iter().all(|frame| frame[0] == 0.0) {
             zero(allocation_counter::measure(|| {
                 data.owner_mut().unwrap().run(|c, _| {
@@ -1269,7 +1285,7 @@ fn real_immediate_scene(main_latency: bool) {
     let restarted: Vec<_> = (0..8)
         .map(|frame| [0.5 + 0.5 * (128 - frame) as f32 / 128.0; 2])
         .collect();
-    if main_latency {
+    if with_latency {
         assert!(output.iter().flatten().any(|sample| *sample != 0.0));
     } else {
         assert_eq!(output.as_slice(), restarted.as_slice());

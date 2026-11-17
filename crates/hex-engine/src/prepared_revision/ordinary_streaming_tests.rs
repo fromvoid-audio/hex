@@ -1477,8 +1477,23 @@ fn closed_latency_demand_matches_resident(upstream: bool) {
 
 #[test]
 fn closed_main_latency_session_audio_demand_matches_resident_routes() {
+    closed_session_audio_demand_matches_resident(None);
+}
+
+#[test]
+fn closed_upstream_latency_session_audio_demand_matches_resident_routes() {
+    for latency_track in [0, 1] {
+        closed_session_audio_demand_matches_resident(Some(latency_track));
+    }
+}
+
+fn closed_session_audio_demand_matches_resident(latency_track: Option<usize>) {
     use hex_project::{Command, Created};
-    let mut f = crate::signal_graph::tests::fixture(&[&[]], 1024);
+    let mut f = if latency_track.is_some() {
+        crate::signal_graph::tests::fixture(&[&[], &[]], 1024)
+    } else {
+        crate::signal_graph::tests::fixture(&[&[]], 1024)
+    };
     let asset = *f.media.keys().next().unwrap();
     let key = StreamSourceKey::new(40, asset);
     let Created::Scene(scene) = f
@@ -1519,16 +1534,32 @@ fn closed_main_latency_session_audio_demand_matches_resident_routes() {
         .unwrap();
     let state = crate::default_native_device_state_for_class(
         crate::NativeDeviceClass::Effect,
-        crate::DeviceTypeId::from_static("hex.saturator"),
+        crate::DeviceTypeId::from_static(if latency_track.is_some() {
+            "hex.limiter"
+        } else {
+            "hex.saturator"
+        }),
     )
     .unwrap();
-    f.editor
-        .execute(Command::InsertMainDevice {
+    let command = if let Some(index) = latency_track {
+        Command::InsertDevice {
+            track: f.tracks[index],
             before: None,
             state,
-        })
-        .unwrap();
-    let sources = BTreeMap::from([(
+        }
+    } else {
+        Command::InsertMainDevice {
+            before: None,
+            state,
+        }
+    };
+    f.editor.execute(command).unwrap();
+    let mut sources: BTreeMap<_, _> = f
+        .media
+        .iter()
+        .map(|(id, audio)| (*id, PreparedAudioSource::Resident(audio.clone())))
+        .collect();
+    sources.insert(
         asset,
         PreparedAudioSource::Streamed(Arc::new(
             StreamedSourceMetadata::new(
@@ -1542,7 +1573,7 @@ fn closed_main_latency_session_audio_demand_matches_resident_routes() {
             )
             .unwrap(),
         )),
-    )]);
+    );
     let streamed = Arc::new(
         PreparedRevision::prepare_with_source_bank(
             f.editor.project(),
@@ -1655,8 +1686,8 @@ fn closed_main_latency_session_audio_demand_matches_resident_routes() {
 }
 
 #[test]
-fn closed_routed_upstream_or_session_audio_latency_stream_demand_remains_refused() {
-    for (upstream, session_audio) in [(true, false), (false, true)] {
+fn closed_routed_upstream_latency_with_or_without_session_audio_remains_refused() {
+    for session_audio in [false, true] {
         let mut f = crate::signal_graph::tests::fixture(&[&[]], 1024);
         let asset = *f.media.keys().next().unwrap();
         let key = StreamSourceKey::new(39, asset);
@@ -1665,26 +1696,18 @@ fn closed_routed_upstream_or_session_audio_latency_stream_demand_remains_refused
             crate::DeviceTypeId::from_static("hex.saturator"),
         )
         .unwrap();
-        let command = if upstream || session_audio {
-            hex_project::Command::InsertDevice {
+        f.editor
+            .execute(hex_project::Command::InsertDevice {
                 track: f.tracks[0],
                 before: None,
                 state: saturator,
-            }
-        } else {
-            hex_project::Command::InsertMainDevice {
-                before: None,
-                state: saturator,
-            }
-        };
-        f.editor.execute(command).unwrap();
-        if upstream {
-            f.editor
-                .execute(hex_project::Command::AddReturnTrack {
-                    name: "unproven route".into(),
-                })
-                .unwrap();
-        }
+            })
+            .unwrap();
+        f.editor
+            .execute(hex_project::Command::AddReturnTrack {
+                name: "unproven route".into(),
+            })
+            .unwrap();
         if session_audio {
             let hex_project::Created::Scene(scene) = f
                 .editor
