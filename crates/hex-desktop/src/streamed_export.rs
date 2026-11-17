@@ -112,7 +112,7 @@ pub(crate) fn bounce_with_config(
             ))
         },
         request.repitches(),
-        GranularCapture::Captured(request.granulars()),
+        GranularCapture::Bounce(request),
         Some(request.path()),
         config,
         request.control(),
@@ -171,6 +171,7 @@ fn media(error: impl std::fmt::Display) -> ExportError {
 enum GranularCapture<'a> {
     Canonical(&'a hex_session::service::CanonicalAudioSourceSnapshot),
     Captured(&'a [hex_engine::audio_transform::StreamedGranularRequirement]),
+    Bounce(&'a hex_session::StreamedBounceRequest<'a>),
 }
 impl GranularCapture<'_> {
     fn root_for(
@@ -185,7 +186,7 @@ impl GranularCapture<'_> {
         if !expected.is_granular_of(&raw) {
             return Err(ExportError::Invalid("granular export source facts differ"));
         }
-        match self {
+        let captured = match self {
             Self::Canonical(source) => {
                 for result in source.required_granular_roots(expected.key().generation()) {
                     check(control)?;
@@ -194,19 +195,30 @@ impl GranularCapture<'_> {
                         return Ok(root);
                     }
                 }
+                &[]
             }
-            Self::Captured(requirements) => {
-                for requirement in *requirements {
+            Self::Captured(requirements) => *requirements,
+            Self::Bounce(request) => {
+                let key = expected.key();
+                for result in request.projected_granular_roots(key.asset(), key.generation()) {
                     check(control)?;
-                    if requirement
-                        .metadata_for(&raw)
-                        .is_ok_and(|metadata| &metadata == expected)
-                    {
-                        return requirement
-                            .try_owned_root(&raw, &AtomicBool::new(false))
-                            .map_err(ExportError::Render);
+                    let root = result.map_err(ExportError::Render)?;
+                    if root.metadata() == expected {
+                        return Ok(root);
                     }
                 }
+                request.granulars()
+            }
+        };
+        for requirement in captured {
+            check(control)?;
+            if requirement
+                .metadata_for(&raw)
+                .is_ok_and(|metadata| &metadata == expected)
+            {
+                return requirement
+                    .try_owned_root(&raw, &AtomicBool::new(false))
+                    .map_err(ExportError::Render);
             }
         }
         Err(ExportError::Invalid(
