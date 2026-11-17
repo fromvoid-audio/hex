@@ -1064,25 +1064,30 @@ fn seek_pause_stop_case(grouped: bool) {
 
 #[test]
 fn real_immediate_scene_waits_before_route_and_play_then_restarts_actual_clip() {
-    real_immediate_scene(false, false, false);
+    real_immediate_scene(false, false, false, false);
 }
 
 #[test]
 fn main_latency_session_scene_waits_for_pages_and_renders_without_allocations() {
-    real_immediate_scene(true, false, false);
+    real_immediate_scene(true, false, false, false);
 }
 
 #[test]
 fn upstream_latency_session_scene_waits_for_pages_and_renders_without_allocations() {
-    real_immediate_scene(true, true, false);
+    real_immediate_scene(true, true, false, false);
 }
 
 #[test]
 fn grouped_latency_session_scene_waits_for_pages_and_renders_without_allocations() {
-    real_immediate_scene(true, true, true);
+    real_immediate_scene(true, true, true, false);
 }
 
-fn real_immediate_scene(with_latency: bool, upstream: bool, grouped: bool) {
+#[test]
+fn fed_track_session_scene_waits_for_pages_and_renders_without_allocations() {
+    real_immediate_scene(true, true, false, true);
+}
+
+fn real_immediate_scene(with_latency: bool, upstream: bool, grouped: bool, feed: bool) {
     let _serial = serial();
     if !hex_engine::audio_storage_constructor_layout_supported() {
         return;
@@ -1157,6 +1162,29 @@ fn real_immediate_scene(with_latency: bool, upstream: bool, grouped: bool) {
             }
         };
         editor.execute(command).unwrap();
+        if feed {
+            let hex_project::Created::Track(receiver) = editor
+                .execute(hex_project::Command::InsertTrackWithDevice {
+                    name: "receiver".into(),
+                    before_track: None,
+                    slot: hex_project::TrackDeviceSlot::Instrument,
+                    state: hex_project::default_instrument_state().unwrap(),
+                })
+                .unwrap()
+            else {
+                panic!("receiver")
+            };
+            editor
+                .execute(hex_project::Command::RemoveInstrument { track: receiver })
+                .unwrap();
+            editor
+                .execute(hex_project::Command::SetAudioFeed {
+                    source: hex_project::RoutingOwner::Track(source_track),
+                    destination: receiver,
+                    gain: 0.5,
+                })
+                .unwrap();
+        }
         editor.project().clone()
     } else {
         project

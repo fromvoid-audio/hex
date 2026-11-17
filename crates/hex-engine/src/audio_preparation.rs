@@ -108,7 +108,7 @@ pub(crate) fn validate_constructor_project_with_effects(
         return Err(AudioStorageError::UnsupportedGraph);
     }
     // Only flat track feeds have constructor custody evidence. Stream demand
-    // applies its own narrower gate until routed page readiness is proven.
+    // independently checks its supported source and routing class.
     if (!project.audio_feeds().is_empty()
         && (project.has_group_tracks()
             || !project.return_tracks().is_empty()
