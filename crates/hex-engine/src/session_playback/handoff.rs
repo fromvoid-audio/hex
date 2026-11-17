@@ -1297,13 +1297,19 @@ impl SessionPlayback {
                         || !same_base_timing
                         || self.revision.arrangement().tracks().len().checked_add(1)
                             != Some(previous.revision.arrangement().tracks().len())
-                        || old_loop_region.is_some()
-                        || new_loop_region.is_some()
+                        || old_loop_region != new_loop_region
                         || self.revision.contains_streamed_sources()
                         || previous.revision.contains_streamed_sources()
                         || !old.delays.history_ready()
-                        || previous.arrangement_frame
-                            < u64::from(candidate.horizon().max(old.horizon()))
+                        // The Arrangement cursor wraps, so it cannot prove
+                        // history age inside a loop. A ready donor with the
+                        // same horizon carries the loop-stamped history instead.
+                        || if old_loop_region.is_some() {
+                            candidate.horizon() != old.horizon()
+                        } else {
+                            previous.arrangement_frame
+                                < u64::from(candidate.horizon().max(old.horizon()))
+                        }
                     {
                         return None;
                     }
