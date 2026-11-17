@@ -742,7 +742,9 @@ fn held_clip_and_event_gains_reach_the_callback_without_editing_history() {
 
     let _native = native_fixture();
     let files = Files::new();
-    let mut h = ResidentHarness::with_frame_limit(262_144);
+    // The event preview can retain the original, canonical composed root
+    // and newly gained root together while the callback replaces its graph.
+    let mut h = ResidentHarness::with_frame_limit(524_288);
     h.next();
     let (initial, _) = h.applied(0);
     let imported = h.run(Request::Import(files.wav(48_000, 96_000)));
@@ -789,11 +791,33 @@ fn held_clip_and_event_gains_reach_the_callback_without_editing_history() {
                 edit,
             }));
     };
+    let advance = |h: &mut ResidentHarness, after| {
+        let deadline = Instant::now() + Duration::from_millis(750);
+        loop {
+            h.pump();
+            let status = h.audio.as_ref().unwrap().status().unwrap();
+            let applied = status.applied_revision.load(Acquire);
+            if let Some((revision, metadata)) = h.submitted
+                && revision == applied
+                && revision > after
+            {
+                break (revision, metadata);
+            }
+            assert!(
+                Instant::now() < deadline,
+                "gain preview did not reach the callback"
+            );
+            if applied <= after {
+                h.render_worker_step();
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    };
     assert_audio(&h, ClipGain::UNITY);
     for millidb in [-6_000, -12_000] {
         let gain = ClipGain::new(millidb).unwrap();
         hold(&h, GainEdit::Clip { clip, gain });
-        let (revision, report) = h.applied(applied);
+        let (revision, report) = advance(&mut h, applied);
         applied = revision;
         assert_eq!(report.source_origin, ResidentSourceOrigin::ClipGainPreview);
         assert_audio(&h, gain);
@@ -803,7 +827,7 @@ fn held_clip_and_event_gains_reach_the_callback_without_editing_history() {
         );
     }
     h.service.audition_arrangement_gain(None);
-    let (applied, _) = h.applied(applied);
+    let (applied, _) = advance(&mut h, applied);
     assert_audio(&h, ClipGain::UNITY);
 
     let gain = ClipGain::new(-3_000).unwrap();
@@ -816,7 +840,7 @@ fn held_clip_and_event_gains_reach_the_callback_without_editing_history() {
             gain,
         },
     );
-    let (preview, report) = h.applied(applied);
+    let (preview, report) = advance(&mut h, applied);
     assert_eq!(report.source_origin, ResidentSourceOrigin::ClipGainPreview);
     assert_audio(&h, gain);
     h.service.finish_arrangement_gain_audition();
@@ -828,11 +852,11 @@ fn held_clip_and_event_gains_reach_the_callback_without_editing_history() {
     assert!(committed.error.is_none(), "{:?}", committed.error);
     assert_eq!(committed.state.revision, split.state.revision + 1);
     h.service.retire_arrangement_gain_audition();
-    let (committed, _) = h.applied(preview);
+    let (committed, _) = advance(&mut h, preview);
     assert_audio(&h, gain);
     let undone = h.run(Request::Undo);
     assert_eq!(undone.state.project.snapshot(), original);
-    h.applied(committed);
+    advance(&mut h, committed);
     assert_audio(&h, ClipGain::UNITY);
 }
 
