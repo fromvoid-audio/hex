@@ -7,6 +7,8 @@ use super::*;
 use hex_project::{AssetId, BounceAdoption, BounceTarget, TimeRange};
 use std::path::Path;
 
+mod long_reverse;
+
 const FRAMES: u32 = 24_000;
 /// 16-bit mono ramp: every frame differs, so any offset or crop error shows.
 fn ramp(path: &Path, step: i32) {
