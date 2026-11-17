@@ -9,7 +9,7 @@ use std::{
     sync::atomic::Ordering::{Acquire, Release},
     sync::{Arc, atomic::AtomicU64},
     thread::{self, JoinHandle},
-    time::Duration,
+    time::{Duration, Instant},
 };
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 mod capture;
@@ -98,6 +98,19 @@ struct OfflineProgress {
 // also lets both sides check revocation, cancellation, or a failed worker.
 const OFFLINE_IDLE: Duration = Duration::from_millis(10);
 const LIVE_POLL: Duration = Duration::from_micros(50);
+const QUIET_TRANSPORT: Duration = Duration::from_millis(40);
+const LIVE_IDLE_POLL: Duration = Duration::from_millis(1);
+
+// Keep fast polling during ordinary PCM delivery. A stopped instance still
+// checks revocation, input and control work every millisecond without a
+// callback wake or another handoff.
+fn live_poll_wait(empty_since: &mut Option<Instant>, now: Instant) -> Duration {
+    if now.saturating_duration_since(*empty_since.get_or_insert(now)) >= QUIET_TRANSPORT {
+        LIVE_IDLE_POLL
+    } else {
+        LIVE_POLL
+    }
+}
 
 impl Signal {
     fn new(offline: bool) -> Self {
@@ -642,6 +655,7 @@ fn transport_runner_with_setup(
                 };
             }
         }
+        let mut empty_since = None;
         loop {
             let Some(state) = guard.owner_mut() else {
                 fault = Some(Fault::Protocol);
@@ -656,6 +670,7 @@ fn transport_runner_with_setup(
                     manual_origin_available,
                     editor_scope,
                 })) => {
+                    empty_since = None;
                     let dense = dense_parameter.as_ref().map(|request| request.lane());
                     let authored = authored_program.is_some() || dense.is_some();
                     #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
@@ -790,7 +805,7 @@ fn transport_runner_with_setup(
                     if published.offline.is_some() {
                         thread::park_timeout(OFFLINE_IDLE);
                     } else {
-                        thread::sleep(LIVE_POLL);
+                        thread::sleep(live_poll_wait(&mut empty_since, Instant::now()));
                     }
                 }
                 Err(Fault::Revoked) => break,
@@ -1246,7 +1261,12 @@ mod tests {
         assert!(signal.take_slow_exchange().is_none());
     }
 
-    fn run_offline_transport(offline: bool, blocks: u64, fail_at: Option<u64>) -> Duration {
+    fn run_fixed_pipeline(
+        offline: bool,
+        blocks: u64,
+        fail_at: Option<u64>,
+        idle_before_start: Duration,
+    ) -> Duration {
         const QUANTUM: u16 = 256;
         let (control, mut callback, worker) = channel(
             Binding {
@@ -1270,7 +1290,8 @@ mod tests {
         }));
         let mut reaper = spawn_processor_with(control, worker, processor, offline, spawn_transport)
             .unwrap_or_else(|failure| panic!("transport spawn: {}", failure.error));
-        let start = std::time::Instant::now();
+        thread::sleep(idle_before_start);
+        let start = Instant::now();
         for index in 0..blocks {
             let input = [(index % 4 + 1) as f32 / 8.0; 2];
             let mut output = [[0.0; 2]; QUANTUM as usize];
@@ -1304,17 +1325,42 @@ mod tests {
     }
 
     #[test]
+    fn live_worker_backs_off_only_after_a_quiet_request_window() {
+        let start = Instant::now();
+        let mut empty_since = None;
+        assert_eq!(live_poll_wait(&mut empty_since, start), LIVE_POLL);
+        assert_eq!(
+            live_poll_wait(&mut empty_since, start + QUIET_TRANSPORT - LIVE_POLL),
+            LIVE_POLL
+        );
+        assert_eq!(
+            live_poll_wait(&mut empty_since, start + QUIET_TRANSPORT),
+            LIVE_IDLE_POLL
+        );
+        empty_since = None; // A new PCM request resets the quiet window.
+        assert_eq!(
+            live_poll_wait(&mut empty_since, start + QUIET_TRANSPORT),
+            LIVE_POLL
+        );
+    }
+
+    #[test]
+    fn live_transport_keeps_its_reply_prefix_after_idle() {
+        run_fixed_pipeline(false, 16, None, QUIET_TRANSPORT * 2);
+    }
+
+    #[test]
     fn offline_worker_publishes_exact_replies_and_joins_on_failure() {
-        run_offline_transport(true, 16, None);
-        run_offline_transport(true, 16, Some(5));
+        run_fixed_pipeline(true, 16, None, Duration::ZERO);
+        run_fixed_pipeline(true, 16, Some(5), Duration::ZERO);
     }
 
     #[test]
     #[ignore = "release transport timing, run explicitly"]
     fn measure_offline_worker_wakeup() {
         for _ in 0..3 {
-            let polling = run_offline_transport(false, 6000, None);
-            let wakeups = run_offline_transport(true, 6000, None);
+            let polling = run_fixed_pipeline(false, 6000, None, Duration::ZERO);
+            let wakeups = run_fixed_pipeline(true, 6000, None, Duration::ZERO);
             eprintln!("6000 x 256 frames: polling={polling:?}, wakeups={wakeups:?}");
         }
     }
