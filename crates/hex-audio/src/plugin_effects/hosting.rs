@@ -118,6 +118,36 @@ impl Hosting {
         )
         .map_err(|e| e.finish_on_control().to_string())
     }
+    /// Hold a real private offline source at zero PCM while its sole graph is
+    /// compiled. Completion applies graph timing and constructs the final pair.
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_offline_effect_on_control(
+        &self,
+        selection: EffectSelection<'_>,
+        owner: ProcessorChainOwner,
+        device_id: u64,
+        sample_rate: u32,
+        profile: PluginProfile,
+        state: &NativeDeviceState,
+        authored: Option<&AuthoredSelection>,
+        bypassed: bool,
+    ) -> Result<OfflineEffectPreparation, String> {
+        let effect = self.prepare_offline_processor_on_control(
+            selection,
+            owner,
+            device_id,
+            sample_rate,
+            profile,
+            state,
+            authored,
+        )?;
+        OfflineEffectPreparation::from_effect_on_control(
+            effect,
+            Self::source_data_reservation()?.max_retained_data_bytes,
+            authored.cloned(),
+            bypassed,
+        )
+    }
     /// Maximum payload for the single pending native capture response.
     pub const CAPTURE_RESPONSE_DATA_BYTES: usize = hex_plugin_state::MAX_ENVELOPE_BYTES;
     /// Inspect the saved envelope's copied class/binary identity. This resolves
