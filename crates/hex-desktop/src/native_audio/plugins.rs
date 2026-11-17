@@ -218,16 +218,18 @@ impl Plugins {
                     .with_file_name("plugin-catalog.json")
             })
             .filter(|path| path.is_absolute() && path.as_os_str().len() <= 4096);
-        self.transport_space = std::env::var_os("HOME").is_some_and(|home| {
-            let path = hex_preferences::vst3_editor_preferences_path(std::path::Path::new(&home));
-            match hex_preferences::load_vst3_editor_preferences(&path) {
-                Ok(preferences) => preferences.spacebar_controls_transport,
-                Err(error) => {
-                    eprintln!("could not load vst3 editor preferences: {error}");
-                    false
+        let preferences = std::env::var_os("HOME")
+            .map(|home| hex_preferences::vst3_editor_preferences_path(std::path::Path::new(&home)))
+            .map_or_else(hex_preferences::Vst3EditorPreferences::default, |path| {
+                match hex_preferences::load_vst3_editor_preferences(&path) {
+                    Ok(preferences) => preferences,
+                    Err(error) => {
+                        eprintln!("could not load vst3 editor preferences: {error}");
+                        hex_preferences::Vst3EditorPreferences::default()
+                    }
                 }
-            }
-        });
+            });
+        self.transport_space = preferences.spacebar_controls_transport;
         match Hosting::current_on_control() {
             Ok(host) => {
                 let host = host.with_grouped_editor_callbacks();
