@@ -35,18 +35,85 @@ fn play(h: &mut ResidentHarness) {
         .unwrap();
 }
 #[test]
+fn enabling_default_warp_on_long_file_publishes_pcm_and_preserves_history() {
+    let _native = native_fixture();
+    let files = Files::new();
+    let path = super::granular_playback::long_source_at_rate(&files, 48_000);
+    let mut h = ResidentHarness::with_frame_limit_at_rate(16_000, 48_000);
+    h.next();
+    let (applied, _) = h.applied(0);
+    let imported = h.run(Request::ImportToNewTrack {
+        path,
+        before_track: None,
+        start: 0,
+    });
+    let (applied, _) = h.applied(applied);
+    let source = &imported.state.project.tracks()[0].clips()[0];
+    let clip = source.id();
+    assert_eq!(source.source_length(), 20_000_000);
+    assert!(source.retained_fade().is_neutral());
+    let settings = imported
+        .state
+        .project
+        .audio_warp_settings_for_enable(clip)
+        .unwrap();
+    assert!(matches!(settings.mode, hex_project::WarpMode::Tones { .. }));
+    let enabled = h.run(Request::Edit(hex_project::Command::SetAudioClipWarp {
+        clip,
+        settings: Some(settings),
+    }));
+    let canonical = enabled.state.canonical_audio_source.as_ref().unwrap();
+    let AudioSourceBinding::VerifiedFile(before) = &imported
+        .state
+        .canonical_audio_source
+        .as_ref()
+        .unwrap()
+        .sources()[&source.asset()]
+    else {
+        panic!("import must remain file-backed");
+    };
+    let AudioSourceBinding::VerifiedFile(after) = &canonical.sources()[&source.asset()] else {
+        panic!("warping must retain the verified media");
+    };
+    assert_eq!(after.fingerprint(), before.fingerprint());
+    assert_eq!(
+        canonical
+            .candidate_reservation_quote()
+            .unwrap()
+            .prepared_pcm_frames,
+        0
+    );
+    let (applied, _) = h.applied(applied);
+    play(&mut h);
+    let undone = h.run(Request::Undo);
+    assert_eq!(
+        undone.state.project.snapshot(),
+        imported.state.project.snapshot()
+    );
+    let (applied, _) = h.applied(applied);
+    play(&mut h);
+    let redone = h.run(Request::Redo);
+    assert_eq!(
+        redone.state.project.snapshot(),
+        enabled.state.project.snapshot()
+    );
+    h.applied(applied);
+    play(&mut h);
+}
+
+#[test]
 fn ordinary_long_tones_file_renders_history_tempo_and_save_reopen() {
-    ordinary_long_granular(None);
+    ordinary_long_granular(hex_project::WarpMode::Tones { grain_ms: 32 });
 }
 #[test]
 fn ordinary_long_texture_file_renders_history_tempo_and_save_reopen() {
-    ordinary_long_granular(Some(hex_project::WarpMode::Texture {
+    ordinary_long_granular(hex_project::WarpMode::Texture {
         grain_ms: 32,
         fluctuation: 35,
         seed: 42,
-    }));
+    });
 }
-fn ordinary_long_granular(authored_mode: Option<hex_project::WarpMode>) {
+fn ordinary_long_granular(mode: hex_project::WarpMode) {
     let _native = native_fixture();
     let files = Files::new();
     let path = super::granular_playback::long_converted_source(&files);
@@ -66,16 +133,12 @@ fn ordinary_long_granular(authored_mode: Option<hex_project::WarpMode>) {
         fade_out: 0,
     }));
     (applied, _) = h.applied(applied);
-    let project = &neutral.state.project;
-    let warp = if let Some(mode) = authored_mode {
-        hex_project::default_audio_warp(project.clip(clip).unwrap(), project.tempo_map(), mode)
-            .unwrap()
-    } else {
-        let settings = project.audio_warp_settings_for_enable(clip).unwrap();
-        assert!(matches!(settings.mode, hex_project::WarpMode::Tones { .. }));
-        settings
-    };
-    let mode = warp.mode;
+    let warp = hex_project::default_audio_warp(
+        neutral.state.project.clip(clip).unwrap(),
+        neutral.state.project.tempo_map(),
+        mode,
+    )
+    .unwrap();
     let edited = h.run(Request::Edit(hex_project::Command::SetAudioClipWarp {
         clip,
         settings: Some(warp),
