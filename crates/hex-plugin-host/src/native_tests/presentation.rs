@@ -109,7 +109,7 @@ fn mixed_directions_preserve_optional_absence_and_setter_refusal() {
         PresentationPlan::KnownInput(77),
         PresentationPlan::KnownOutput(91),
     ] {
-        for variant in [16, 17] {
+        for variant in [112, 17] {
             let case = Case::new();
             let pending = Pending::prepare(
                 &build(),
@@ -119,7 +119,7 @@ fn mixed_directions_preserve_optional_absence_and_setter_refusal() {
                 case.setup(variant),
             )
             .unwrap();
-            if variant == 16 {
+            if variant == 112 {
                 let instance = pending.complete_with_plan_on_control(plan).unwrap();
                 assert_eq!(instance.ready().presentation, Presentation::Absent);
                 let stopped = instance.quiesce_retained_on_control().unwrap();
