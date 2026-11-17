@@ -47,7 +47,7 @@ impl EditorView {
             .is_some_and(|status| status.playing.load(std::sync::atomic::Ordering::Relaxed));
         let can_undo = self.state().is_some_and(|state| state.can_undo);
         let can_redo = self.state().is_some_and(|state| state.can_redo);
-        let loop_hint = "toggle loop · cmd+l · l/w set selection or toggle matching loop";
+        let loop_hint = "toggle looping · cmd+l · l/w set scope or toggle matching scope";
         let loop_enabled = self
             .pending_loop_region()
             .or_else(|| self.state().and_then(|state| state.project.loop_region()))

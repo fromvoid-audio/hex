@@ -1,4 +1,4 @@
-//! Audio clip loop brace in the event editor's retained-root viewport.
+//! Audio clip scope bar in the event editor's retained-root viewport.
 //! Window input capture ends independently of the existing clip-loop receipt.
 use super::*;
 use crate::editor::audio_event_editor::{editor_bounds, event_grid_origin};
@@ -196,9 +196,24 @@ impl EditorView {
         }
         self.clip_loop.audio_gesture = Some(g);
     }
-    /// The Arrangement title shares the detail editor's held and released
-    /// cycle edit. Reuse its validated operation on just the displayed clip.
-    pub(in crate::editor) fn audio_header_loop_clip<'a>(
+    pub(in crate::editor) fn audio_scope_preview_active(
+        &self,
+        clip: ClipId,
+        state: &super::super::ViewState,
+    ) -> bool {
+        self.pending_clip_loop_audio(clip).is_some()
+            || self.clip_loop.audio_gesture.as_ref().is_some_and(|g| {
+                g.clip == clip
+                    && g.generation == self.project_generation
+                    && g.revision == state.revision
+                    && g.preview != (g.root.view_start, g.root.view_end)
+            })
+            || (self.detail_clip_id() == Some(clip)
+                && self.held_audio_play_start_position().is_some())
+    }
+    /// Arrangement geometry and peaks share the detail editor's held and
+    /// released scope/start edit through its ordinary receipt.
+    pub(in crate::editor) fn audio_scope_display_clip<'a>(
         &'a self,
         clip: &'a Clip,
         state: &super::super::ViewState,
@@ -218,6 +233,18 @@ impl EditorView {
                     end: g.preview.1,
                     looping: g.looping,
                 },
+            )
+        {
+            return std::borrow::Cow::Owned(preview);
+        }
+        if self.detail_clip_id() == Some(clip.id())
+            && let Some(position) = self.held_audio_play_start_position()
+            && let Some(asset) = state.project.asset(clip.asset())
+            && let Ok(preview) = hex_project::preview_audio_view_resize(
+                clip,
+                state.project.tempo_map(),
+                asset.playback_frames(),
+                AudioViewResizeOperation::PlayStart { position },
             )
         {
             return std::borrow::Cow::Owned(preview);
@@ -285,10 +312,10 @@ impl EditorView {
             .debug_selector(|| "audio-loop-ruler".into())
             .w_full()
             .track_focus(&self.audio_event_focus);
-        let description=refusal.unwrap_or_else(||format!("clip loop {} · drag ends · w/l uses time selection · hold cmd/control to invert snap",if looping {"on"} else {"off"}));
+        let description=refusal.unwrap_or_else(||format!("clip scope · looping {} · drag ends · w/l uses time selection · hold cmd/control to invert snap",if looping {"on"} else {"off"}));
         ruler = ruler.tooltip(move |_, cx| {
             cx.new(|_| crate::editor::transport::MiniTooltip {
-                kind: crate::tooltips::Kind::control("clip loop"),
+                kind: crate::tooltips::Kind::control("scope bar"),
                 description: description.clone().into(),
             })
             .into()

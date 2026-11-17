@@ -6,11 +6,9 @@ fn marker_fraction(visual: &mut VisualTestContext) -> f32 {
     let marker = visual.debug_bounds("audio-play-start-marker").unwrap();
     f32::from(marker.left() - body.left()) / f32::from(body.size.width)
 }
-/// Live's unlooped region begins at its start marker: a later marker moves
-/// the Arrangement clip start later while its end keeps its project time.
-fn assert_region_starts_later(span: (u64, u64), source: &hex_project::Clip) {
-    assert_eq!(source.start() + source.duration(), span.0 + span.1);
-    assert!(source.start() > span.0, "{span:?} -> {}", source.start());
+/// Playback start slips the read while the arrangement gate stays fixed.
+fn assert_region_fixed(span: (u64, u64), source: &hex_project::Clip) {
+    assert_eq!((source.start(), source.duration()), span);
 }
 fn terminal(
     visual: &mut VisualTestContext,
@@ -202,6 +200,7 @@ fn audio_saved_start_hover_drag_delayed_ack_history_and_reopen(cx: &mut TestAppC
                 assert!(v.audio_event_editor.gesture.is_none());
                 assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
                 assert_eq!(v.audio_event_editor.cursor, cursor);
+                assert_region_fixed(span, v.pending_clip_loop_audio(clip).unwrap());
             });
         }
         editor.update(&mut visual, |v, cx| {
@@ -232,12 +231,18 @@ fn audio_saved_start_hover_drag_delayed_ack_history_and_reopen(cx: &mut TestAppC
                 .root_frame_at(position, state.project.tempo_map())
                 .unwrap();
             let skip = usize::try_from(root_start - root_first).unwrap();
-            assert_region_starts_later(span, source);
+            assert_region_fixed(span, source);
             let pcm = render_accepted_event(v, clip);
             assert_eq!(
-                &pcm[..],
+                &pcm[..before_pcm.len() - skip],
                 &before_pcm[skip..],
-                "prepared audio starts at the marker and keeps its project time: {scenario}"
+                "prepared audio shifts to the fixed gate start: {scenario}"
+            );
+            assert_eq!(pcm.len(), before_pcm.len());
+            assert!(
+                pcm[before_pcm.len() - skip..]
+                    .iter()
+                    .all(|frame| *frame == [0.0; 2])
             );
             assert!(matches!(
                 v.last_enqueued_edit,
@@ -489,7 +494,7 @@ fn frozen_start_outside_release_retains_a_readable_last_source_frame(cx: &mut Te
         assert!(v.error.is_none(), "{:?}", v.error);
         let state = v.state.as_ref().unwrap();
         let source = state.project.clip(clip).unwrap();
-        assert_region_starts_later(span, source);
+        assert_region_fixed(span, source);
         let root = source.audio_event_root();
         let end = root
             .root_frame_at(root.view_end, state.project.tempo_map())
@@ -577,7 +582,7 @@ fn live_musical_start_keeps_grabbed_marker_visible_through_ack_and_history(
     let after = editor.read_with(&visual, |v, _| {
         let state = v.state.as_ref().unwrap();
         let source = state.project.clip(clip).unwrap();
-        assert_region_starts_later(span, source);
+        assert_region_fixed(span, source);
         state.project.snapshot()
     });
     editor.update(&mut visual, |v, _| assert!(v.enqueue(Request::Undo)));
@@ -655,7 +660,7 @@ fn live_musical_outside_start_release_keeps_a_readable_source_quantum(cx: &mut T
         assert!(v.error.is_none(), "{:?}", v.error);
         let state = v.state.as_ref().unwrap();
         let source = state.project.clip(clip).unwrap();
-        assert_region_starts_later(span, source);
+        assert_region_fixed(span, source);
         let projection = AudioViewProjection::new(source, state.project.tempo_map()).unwrap();
         assert_eq!(projection.play_start_position().unwrap(), Some(held));
         assert!(!projection.has_subframe_intro());
@@ -667,10 +672,9 @@ fn live_musical_outside_start_release_keeps_a_readable_source_quantum(cx: &mut T
             "the first placed sample must remain readable"
         );
         let first_end = projection.occurrence(0).unwrap().destination_end;
-        assert_eq!(
-            first_end,
-            source.start() + source.duration(),
-            "the moved region reads through to its fixed end"
+        assert!(
+            first_end < source.start() + source.duration(),
+            "the shifted finite read ends before the fixed gate"
         );
         state.project.snapshot()
     });
@@ -724,6 +728,14 @@ fn directed_frame_repeat_start_matches_processed_pcm_through_receipt_and_roundtr
                     looping: true,
                 },
             },
+            // Scope selection now defines one 24_000-frame gate. Extend it
+            // explicitly so this directed-read test still covers many repeats.
+            Command::ResizeAudioClipView {
+                clip,
+                operation: AudioViewResizeOperation::RepeatOuterEnd {
+                    project_frame: 108_000,
+                },
+            },
             Command::ReverseClips(vec![clip]),
         ] {
             editor.update(&mut visual, |v, _| {
@@ -736,7 +748,7 @@ fn directed_frame_repeat_start_matches_processed_pcm_through_receipt_and_roundtr
                 assert!(v.enqueue(Request::Edit(Command::TrimClipEdge {
                     clip,
                     edge: hex_project::TrimEdge::Left,
-                    frame: 5_000
+                    frame: 17_000
                 })))
             });
             pump(&editor, &mut visual);
