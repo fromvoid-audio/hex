@@ -187,6 +187,12 @@ fn pair_data_with_handles(
             .as_ref()
             .and_then(|r| r.as_ref().ok())
             .ok_or(AudioStreamStorageError::UnknownData)?;
+        // Granular runtime routing has a second joining worker and additional
+        // handles/readers. Refuse native custody until this owner explicitly
+        // closes those obligations; DATA alone cannot establish that closure.
+        if catalog.data.granular.is_some() {
+            return Err(AudioStreamStorageError::UnknownData);
+        }
         if Arc::strong_count(catalog) != 1 || Arc::weak_count(catalog) != 0 {
             return Err(AudioStreamStorageError::UnregisteredLease);
         }
@@ -258,6 +264,9 @@ impl Domain<'_> {
         }
         // Both guards are local: callers receive scalar copies only. In
         // particular they may immediately query the catalog without reentry.
+        if data.granular.is_some() {
+            return Err(AudioStreamStorageError::UnknownData);
+        }
         Ok(crate::StreamDataFootprint {
             endpoint: endpoint.data_footprint(),
             transport: *transport_data,

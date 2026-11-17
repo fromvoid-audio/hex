@@ -270,6 +270,9 @@ pub struct PageKey {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CatalogFootprint {
+    /// Dedicated granular worker, metadata and original-pool loan DATA. Opaque
+    /// native/thread costs and earlier source preparation are excluded.
+    pub granular_data_bytes: usize,
     pub sources: usize,
     pub catalog_path_bytes: usize,
     pub manifest_bytes: usize,
