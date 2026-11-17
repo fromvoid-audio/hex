@@ -130,6 +130,9 @@ pub(super) struct NativeAudioSink {
     /// One route-change notice for the delivered output (#4131).
     pending_route_event: Option<EditorAudioEvent>,
     pending_degraded_event: Option<EditorAudioEvent>,
+    pending_editor_windows: Option<EditorAudioEvent>,
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    editor_windows: Option<(u64, u64, Vec<u64>)>,
     pending_latency_event: Option<EditorAudioEvent>,
     pending_parameter_event: Option<EditorAudioEvent>,
     pending_plugin_transport: Option<EditorAudioEvent>,
@@ -216,6 +219,9 @@ impl NativeAudioSink {
             pending_status_observation: None,
             pending_route_event: None,
             pending_degraded_event: None,
+            pending_editor_windows: None,
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            editor_windows: None,
             pending_latency_event: None,
             pending_parameter_event: None,
             pending_plugin_transport: None,
@@ -314,6 +320,11 @@ impl NativeAudioSink {
         self.pending_status_observation = None;
         self.pending_route_event = None;
         self.pending_degraded_event = None;
+        self.pending_editor_windows = None;
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        {
+            self.editor_windows = None;
+        }
         self.pending_latency_event = None;
         self.pending_parameter_event = None;
         self.pending_plugin_transport = None;
@@ -591,6 +602,7 @@ impl NativeAudioSink {
             &mut self.pending_status_observation,
             &mut self.pending_route_event,
             &mut self.pending_degraded_event,
+            &mut self.pending_editor_windows,
             &mut self.pending_latency_event,
             &mut self.pending_plugin_transport,
             &mut self.pending_parameter_event,
@@ -614,6 +626,29 @@ impl NativeAudioSink {
             self.pending_release_event = None;
             self.relinquish_output();
         }
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn observe_plugin_editor_windows(&mut self, generation: u64, output: u64) {
+        if self.editor_windows.as_ref().is_some_and(
+            |(previous_generation, previous_output, devices)| {
+                *previous_generation == generation
+                    && *previous_output == output
+                    && self
+                        .plugins
+                        .open_editor_devices(generation)
+                        .eq(devices.iter().copied())
+            },
+        ) {
+            return;
+        }
+        let devices: Vec<_> = self.plugins.open_editor_devices(generation).collect();
+        self.editor_windows = Some((generation, output, devices.clone()));
+        self.pending_editor_windows = Some(EditorAudioEvent::PluginEditorWindows {
+            project_generation: generation,
+            output_identity: output,
+            devices,
+        });
     }
     /// Compares newly confirmed default routes with the delivered output's
     /// route and queues one `OutputRouteChanged` notice when it moved.
@@ -2202,6 +2237,18 @@ impl WorkerAudioSink for NativeAudioSink {
                 if let Some(desired) = self.desired.as_deref() {
                     self.plugins.close_removed_editor(desired);
                 }
+                #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                if let Some(desired) = self.desired.as_deref()
+                    && let Some(output_identity) = output
+                        .publication
+                        .control()
+                        .and_then(|control| control.output_identity())
+                {
+                    self.observe_plugin_editor_windows(
+                        desired.context().project_generation,
+                        output_identity,
+                    );
+                }
                 if let Some(desired) = self.desired.as_ref() {
                     let recovery = self.sampler.is_none()
                         && desired.audio_mode() == DocumentAudioMode::Resident;
@@ -2256,6 +2303,7 @@ impl WorkerAudioSink for NativeAudioSink {
             && self.pending_status_observation.is_none()
             && self.pending_route_event.is_none()
             && self.pending_degraded_event.is_none()
+            && self.pending_editor_windows.is_none()
             && self.pending_latency_event.is_none()
             && self.pending_parameter_event.is_none()
             && self.pending_plugin_transport.is_none()

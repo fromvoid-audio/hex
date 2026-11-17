@@ -1219,6 +1219,8 @@ int main(int argc,char** argv) {
                                         editor_state=hex_instance::EditorState::GestureActive;
                                     else if(kind==hex_instance::SEAL_EDITOR_EDITS)
                                         editor_edits_sealed=instance.seal_editor_edits_on_control();
+                                    else if(kind==hex_instance::EDITOR_VISIBILITY)
+                                        editor_state=was_open?hex_instance::EditorState::Open:hex_instance::EditorState::Closed;
                                     else if(kind==hex_instance::REOPEN_EDITOR && was_open)
                                         editor_state=hex_instance::EditorState::Open;
                                     else if(!editor.close()) page_failure=Teardown;
