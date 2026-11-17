@@ -1316,7 +1316,7 @@ fn map_pitch_error(error: hex_warp::Error) -> StreamFailureKind {
     }
 }
 
-fn map_import_error(error: hex_media::ImportError) -> StreamFailureKind {
+pub(crate) fn map_import_error(error: hex_media::ImportError) -> StreamFailureKind {
     match error {
         hex_media::ImportError::SourceChanged => StreamFailureKind::SourceChanged,
         hex_media::ImportError::Cancelled => StreamFailureKind::Cancelled,

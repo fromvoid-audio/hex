@@ -176,6 +176,11 @@ impl ResamplePlan {
         self.kernel.target_rate()
     }
 
+    /// The immutable kernel version; identity conversion does not use weights.
+    pub fn version(&self) -> ResampleVersion {
+        self.kernel.version()
+    }
+
     pub const fn source_frames(&self) -> u64 {
         self.source_frames
     }
