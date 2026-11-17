@@ -90,15 +90,18 @@ fn fresh_selected_lookup_finds_raw_zero_beyond_the_first_page_without_inventory(
                 .complete_on_control(
                     control,
                     binding,
-                    Some(EffectPresentation {
-                        input_frames: 0,
-                        output_frames: 512,
-                    }),
+                    hex_audio::plugin_effects::EffectPresentationPlan::KnownOutput(512),
                 )
                 .unwrap(),
-            Some(hex_audio::NativeSourcePreparationProgress::Prepared { .. }) => control
-                .start_native_effect_with_authored_selection(binding, None)
-                .unwrap(),
+            Some(hex_audio::NativeSourcePreparationProgress::Prepared { presentation, .. }) => {
+                assert_eq!(
+                    presentation,
+                    hex_audio::plugin_effects::EffectPresentationReceipt::OutputKnown,
+                );
+                control
+                    .start_native_effect_with_authored_selection(binding, None)
+                    .unwrap();
+            }
             Some(hex_audio::NativeSourcePreparationProgress::Effect { .. }) => break,
             _ => {
                 assert!(Instant::now() < until);

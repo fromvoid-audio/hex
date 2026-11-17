@@ -35,6 +35,9 @@ mod offline_preparation;
 pub use offline_preparation::OfflineEffectPreparation;
 pub(crate) mod manual_base_capture;
 pub use hex_lattice_contract::ForeignProcessorBinding as EffectBinding;
+pub use hex_plugin_host::protocol::{
+    Presentation as EffectPresentationReceipt, PresentationPlan as EffectPresentationPlan,
+};
 pub use hosting::{EffectPresentation, EffectSelection, Hosting, PluginProfile};
 pub(crate) use manual_base_capture::BaseCaptureSource;
 pub use manual_base_capture::ManualBaseCapture;

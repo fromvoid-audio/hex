@@ -4,7 +4,10 @@ use super::*;
 use hex_audio::plugin_effects::EffectBinding as Binding;
 use hex_audio::{
     NativeSourcePreparationProgress as Progress,
-    plugin_effects::{AuthoredSelection, EffectSelection, Hosting, PluginProfile},
+    plugin_effects::{
+        AuthoredSelection, EffectPresentation, EffectPresentationPlan, EffectSelection, Hosting,
+        PluginProfile,
+    },
 };
 use hex_engine::{PreparedRevision, ProcessorChainOwner};
 use hex_session::service::{NativeDeviceState, ResidentEffectPreparation};
@@ -69,6 +72,9 @@ struct Pending {
     binding: Binding,
     context: AudioSourceContext,
     result: Option<Result<NativeDeviceState, String>>,
+    facts_ready_for_session: bool,
+    #[cfg(all(test, feature = "allocation-probe"))]
+    facts_attempt_from_session: bool,
 }
 #[cfg(all(test, feature = "allocation-probe"))]
 pub(super) struct FactsGate {
@@ -119,6 +125,7 @@ pub(super) struct PreparationObservation {
     pub(super) retiring: bool,
     pub(super) native: Option<Progress>,
     pub(super) attempts: u64,
+    pub(super) facts_attempt_from_session: bool,
     pub(super) restore_refused: bool,
     pub(super) observed_latency_receipt: bool,
     pub(super) editor_receipts: [Option<hex_audio::plugin_worker::ParameterEdit>; 8],
@@ -436,7 +443,9 @@ impl Plugins {
     pub fn ready(&self) -> bool {
         // Session queries this only for its held insertion. No Root binding yet
         // means a contended admission must retry, not wait for nonexistent facts.
-        self.pending.as_ref().is_none_or(|p| p.result.is_some())
+        self.pending
+            .as_ref()
+            .is_none_or(|p| p.result.is_some() || p.facts_ready_for_session)
     }
     pub fn prepare(
         &mut self,
@@ -537,9 +546,12 @@ impl Plugins {
                 binding,
                 context: input.insertion.context,
                 result: None,
+                facts_ready_for_session: false,
+                #[cfg(all(test, feature = "allocation-probe"))]
+                facts_attempt_from_session: false,
             });
         }
-        self.poll_for_context(output, Some(input.insertion.context), None);
+        self.poll_for_context(output, Some(input.insertion.context), None, Some(&input));
         match self.pending.as_ref().and_then(|p| p.result.as_ref()) {
             Some(Ok(state)) => Ok(PluginEffectPreparationState::Ready(state.clone())),
             Some(Err(error)) => Err(error.clone()),
@@ -582,6 +594,7 @@ impl Plugins {
             output,
             desired.map(CanonicalAudioSourceSnapshot::context),
             desired,
+            None,
         );
     }
 
@@ -590,6 +603,7 @@ impl Plugins {
         output: &mut WorkerPreparedOutput,
         context: Option<AudioSourceContext>,
         desired: Option<&CanonicalAudioSourceSnapshot>,
+        insertion: Option<&PluginEffectPreparation<'_>>,
     ) {
         let Some(control) = output.publication.control() else {
             self.output_closed();
@@ -698,11 +712,12 @@ impl Plugins {
                 .iter_mut()
                 .find(|s| s.binding == pending.binding)
             {
+                // Sample the progress once. Re-reading it after the continuation
+                // check could advance newly arrived Facts during background poll.
+                let progress = control.native_source_preparation_progress(source.binding);
+                let at_facts = matches!(progress, Some(Progress::Facts(_)));
                 #[cfg(all(test, feature = "allocation-probe"))]
-                let held = if matches!(
-                    control.native_source_preparation_progress(source.binding),
-                    Some(Progress::Facts(_))
-                ) {
+                let held = if at_facts {
                     let held = self
                         .facts_gate
                         .as_mut()
@@ -716,21 +731,37 @@ impl Plugins {
                 };
                 #[cfg(not(all(test, feature = "allocation-probe")))]
                 let held = false;
-                #[cfg(not(all(test, feature = "allocation-probe")))]
-                let presentation = None;
-                #[cfg(all(test, feature = "allocation-probe"))]
-                let presentation = self.presentation;
-                let result = if held {
+
+                let matching_insertion = insertion.is_some_and(|input| {
+                    input.insertion.context == pending.context
+                        && Arc::ptr_eq(&input.insertion.control, &pending.operation)
+                        && input.device_id == source.device
+                        && input.insertion.destination.owner() == source.owner
+                });
+                // Only the Session continuation has the validated insertion and
+                // its prepared baseline borrow. Background poll wakes that
+                // continuation without taking the native source or its Facts.
+                pending.facts_ready_for_session = at_facts && !held && insertion.is_none();
+                let result = if held || pending.facts_ready_for_session {
                     Ok(None)
+                } else if at_facts && !matching_insertion {
+                    Err("vst3 preparation differs from the pending insertion".into())
                 } else {
+                    #[cfg(not(all(test, feature = "allocation-probe")))]
+                    let plan = EffectPresentationPlan::AllowUnknown;
+                    #[cfg(all(test, feature = "allocation-probe"))]
+                    let plan = fixture_presentation_plan(self.presentation);
                     #[cfg(all(test, feature = "allocation-probe"))]
                     {
                         source.attempts = source.attempts.saturating_add(1);
+                        pending.facts_attempt_from_session |= at_facts;
                     }
                     self.host
                         .as_ref()
                         .ok_or_else(|| "qualified vst3 helper unavailable".to_owned())
-                        .and_then(|host| advance_source(host, presentation, control, source))
+                        .and_then(|host| {
+                            advance_source_at_progress(host, plan, control, source, progress)
+                        })
                 };
                 match result {
                     Ok(Some(state)) => pending.result = Some(Ok(state)),
@@ -792,6 +823,10 @@ impl Plugins {
                     accepted: source.is_some_and(|source| source.accepted),
                     retiring: source.is_some_and(|source| source.retiring),
                     attempts: source.map_or(0, |source| source.attempts),
+                    facts_attempt_from_session: self
+                        .pending
+                        .as_ref()
+                        .is_some_and(|p| p.facts_attempt_from_session),
                     native: source.and_then(|source| {
                         control.native_source_preparation_progress(source.binding)
                     }),
@@ -1017,11 +1052,35 @@ fn bounded_error(error: String) -> String {
 /// stopped renewal. Returning captured state never admits a canonical graph.
 fn advance_source(
     host: &Hosting,
-    presentation: Option<hex_audio::plugin_effects::EffectPresentation>,
+    presentation: Option<EffectPresentation>,
     control: &mut hex_audio::prepared::PublicationControl,
     source: &mut Source,
 ) -> Result<Option<NativeDeviceState>, String> {
-    match control.native_source_preparation_progress(source.binding) {
+    let progress = control.native_source_preparation_progress(source.binding);
+    advance_source_at_progress(
+        host,
+        fixture_presentation_plan(presentation),
+        control,
+        source,
+        progress,
+    )
+}
+
+fn fixture_presentation_plan(presentation: Option<EffectPresentation>) -> EffectPresentationPlan {
+    presentation.map_or(
+        EffectPresentationPlan::AllowUnknown,
+        EffectPresentation::plan,
+    )
+}
+
+fn advance_source_at_progress(
+    host: &Hosting,
+    presentation: EffectPresentationPlan,
+    control: &mut hex_audio::prepared::PublicationControl,
+    source: &mut Source,
+    progress: Option<Progress>,
+) -> Result<Option<NativeDeviceState>, String> {
+    match progress {
         Some(Progress::Facts(_)) => {
             match host.complete_on_control(control, source.binding, presentation) {
                 Ok(()) => {}
