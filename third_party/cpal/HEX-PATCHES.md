@@ -3,8 +3,9 @@
 Baseline: the published crates.io `cpal` 0.17.3 archive, SHA-256
 `d8942da362c0f0d895d7cac616263f2f9424edc5687364dfd1d25ef7eba506d7`,
 with upstream VCS revision `fd3b945bffcaa493fa7cb5ceddf9db1f9330fd30`.
-The published archive and Apache-2.0 license are retained. The only source
-change is `src/host/coreaudio/macos/device.rs`.
+The published archive and Apache-2.0 license are retained. Source changes are
+`src/host/coreaudio/macos/device.rs` and its three public re-export locations
+(`macos/mod.rs`, `coreaudio/mod.rs`, `platform/mod.rs`).
 
 The macOS default-output-configuration query now reads the device buffer-frame range
 directly from the Core Audio device property instead of constructing a temporary
@@ -45,3 +46,40 @@ its published lockfile; workspace consumers use the root `Cargo.lock`.
 `hex-patches.diff` records the source delta. Reassess this backport when upgrading
 CPAL; do not edit the Cargo registry cache. Run `python3 scripts/check-cpal-patch.py`
 to verify the complete extracted archive against `hex-provenance.json`.
+
+## Control-side declared output timing
+
+The safe macOS-only `Stream::output_timing_on_control` query uses the actual
+AudioUnit and its pinned device. `platform::CoreAudioOutputTiming` reports the
+buffer, safety offset, device latency, uniform output-stream latency (hardware
+frames), device/client rates, and the separate AudioUnit latency (seconds).
+It locks and calls native properties on control, never on an audio callback.
+Enumeration is capped at 16 streams. Two equal snapshots detect observed changes;
+missing, malformed, nonuniform or changed observations refuse. This bounds query
+work, not OS call latency, and does not make multiple property reads atomic.
+
+The checked `hardware_path_client_frames` conversion includes only the declared
+buffer/safety/device/stream path and rounds up once with exact integer arithmetic.
+Fractional nominal rates refuse instead of introducing floating-point rounding. It deliberately excludes the
+AudioUnit value: its overlap with device latency is not established by this query.
+Do not add that value blindly or treat the record as complete physical latency.
+The query grants no ongoing route validity. A future source-bound live presentation
+consumer must establish composition and invalidate on relevant rate, buffer,
+stream, safety and latency changes before reporting known timing. No current
+playback, callback timestamp or VST presentation behavior changes here.
+
+This extends the existing excluded CPAL/Core Audio property boundary; no Hex
+unsafe code, new device owner, callback native query, scheduling or UI shell is
+introduced. New FFI reads remain inside the dependency with checked sizes and
+initialized fixed storage. Existing publication and lifecycle owners remain.
+
+```sh
+cargo test --manifest-path third_party/cpal/Cargo.toml --lib --locked -- output_timing_regression route_probe_regression input_disconnect_regression --nocapture --test-threads=1
+```
+
+The native probe constructs a pinned, unstarted output Stream and reads its real
+properties without changing hardware buffer/rate or rendering audio. It verifies
+the public typed control API, not audible or physical latency. Pure cases cover
+unit conversion, overflow, invalid inventory, changed snapshots, unavailable
+properties and nonuniform streams. Research provenance is recorded in
+`research/catalog/coreaudio-output-timing-2026-11-17.json` in the Hex repository.
