@@ -1538,6 +1538,36 @@ fn completed_foreign_track_does_not_discard_native_suffix_history() {
 mod shared_source_release;
 
 mod instruments;
+mod streamed_scope;
+
+fn foreign_chain_with_configuration(
+    owner: ProcessorChainOwner,
+    binding: hex_lattice_contract::ForeignProcessorBinding,
+    state: Arc<NativeDeviceState>,
+) -> hex_lattice::NativeRuntimeChain {
+    hex_lattice::NativeRuntimeChain::new_prepared(vec![hex_lattice::PreparedRuntimeInstance {
+        meter: Default::default(),
+        owner,
+        device_id: binding.instance,
+        device_type: Definition.type_id(),
+        matrix: StereoMatrix::identity(),
+        bypassed: false,
+        sample_rate: 48_000,
+        configuration: Some(state),
+        modulation: None,
+        automation: Default::default(),
+        definition: Some(PreparedProcessorFactory::Foreign(
+            PreparedForeignProcessor::new(8, 0, 16)
+                .unwrap()
+                .with_output_tail(hex_lattice::OutputTail::Finite {
+                    max_tail_frames: 16,
+                })
+                .with_binding(binding)
+                .unwrap(),
+        )),
+    }])
+    .unwrap()
+}
 
 #[test]
 fn exact_foreign_continuation_keeps_track_return_and_main_tail_in_the_running_chain() {
@@ -1569,32 +1599,7 @@ fn exact_foreign_continuation_keeps_track_return_and_main_tail_in_the_running_ch
         };
         let previous = Arc::new(state(19).unwrap());
         let candidate = Arc::new(state(20).unwrap());
-        let chain = |state: Arc<NativeDeviceState>| {
-            hex_lattice::NativeRuntimeChain::new_prepared(vec![
-                hex_lattice::PreparedRuntimeInstance {
-                    meter: Default::default(),
-                    owner: endpoint.owner,
-                    device_id: endpoint.device,
-                    device_type: Definition.type_id(),
-                    matrix: StereoMatrix::identity(),
-                    bypassed: false,
-                    sample_rate: 48_000,
-                    configuration: Some(state),
-                    modulation: None,
-                    automation: Default::default(),
-                    definition: Some(PreparedProcessorFactory::Foreign(
-                        PreparedForeignProcessor::new(8, 0, 16)
-                            .unwrap()
-                            .with_output_tail(hex_lattice::OutputTail::Finite {
-                                max_tail_frames: 16,
-                            })
-                            .with_binding(binding)
-                            .unwrap(),
-                    )),
-                },
-            ])
-            .unwrap()
-        };
+        let chain = |state| foreign_chain_with_configuration(endpoint.owner, binding, state);
         let mut old = SessionPlayback::new(Arc::clone(&revision)).unwrap();
         let mut next = SessionPlayback::new(Arc::clone(&revision)).unwrap();
         let mut refused = SessionPlayback::new(Arc::clone(&revision)).unwrap();
