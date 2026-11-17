@@ -20,7 +20,9 @@
 mod budget;
 mod content;
 mod events;
+mod granular_requirements;
 mod group;
+pub use granular_requirements::{StreamedGranularRequirement, StreamedGranularRequirements};
 pub(crate) use group::{GroupSource, sparse_group_plan};
 mod mapping;
 mod view;
