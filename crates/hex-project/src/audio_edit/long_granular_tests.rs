@@ -1,4 +1,85 @@
-use crate::{Command, Created, Editor, Project, TrimEdge, WarpMode};
+use crate::{ClipEdit, Command, Created, Editor, Project, TrimEdge, WarpMode};
+
+#[test]
+fn enabling_warp_chooses_modes_per_source_and_keeps_one_history_step() {
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+    let [short, long] = [48_000, 20_000_000].map(|frames| {
+        let Created::Imported { clip, .. } = editor
+            .execute(Command::ImportAudioTrack {
+                name: "audio".into(),
+                path: format!("{frames}.wav").into(),
+                sample_rate: 48_000,
+                frames,
+            })
+            .unwrap()
+        else {
+            panic!("fixture import");
+        };
+        editor
+            .execute(Command::SetClipFades {
+                clip,
+                fade_in: 0,
+                fade_out: 0,
+            })
+            .unwrap();
+        clip
+    });
+    let before = editor.project().snapshot();
+    let enable = Command::EditClips {
+        clips: vec![short, long],
+        edit: ClipEdit::WarpEnabled { enabled: true },
+    };
+    editor.execute(enable.clone()).unwrap();
+    let mode = |clip| {
+        let item = editor.project().clip(clip).unwrap();
+        let domain = &item.audio_edit().unwrap().domain;
+        assert!(domain.warp_enabled);
+        domain.warp.as_ref().unwrap().mode
+    };
+    assert!(matches!(mode(short), WarpMode::Beats { .. }));
+    assert!(matches!(mode(long), WarpMode::Tones { .. }));
+    let long_clip = editor.project().clip(long).unwrap();
+    assert_eq!(long_clip.source_length(), 20_000_000);
+    assert_eq!(long_clip.duration(), 20_000_000);
+    let after = editor.project().snapshot();
+    assert!(editor.undo());
+    assert_eq!(editor.project().snapshot(), before);
+    assert!(editor.redo());
+    assert_eq!(editor.project().snapshot(), after);
+
+    let authored = WarpMode::Texture {
+        grain_ms: 32,
+        fluctuation: 35,
+        seed: 42,
+    };
+    editor
+        .execute(Command::EditClips {
+            clips: vec![long],
+            edit: ClipEdit::WarpMode { mode: authored },
+        })
+        .unwrap();
+    assert_eq!(
+        editor
+            .project()
+            .audio_warp_settings_for_enable(long)
+            .unwrap()
+            .mode,
+        authored
+    );
+
+    assert!(editor.undo());
+    assert!(editor.undo());
+    editor
+        .execute(Command::SetClipFades {
+            clip: long,
+            fade_in: 64,
+            fade_out: 0,
+        })
+        .unwrap();
+    let faded = editor.project().snapshot();
+    assert!(editor.execute(enable).is_err());
+    assert_eq!(editor.project().snapshot(), faded);
+}
 
 #[test]
 fn long_streamable_warp_stretch_keeps_preview_command_and_history_aligned() {

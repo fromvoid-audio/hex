@@ -36,17 +36,17 @@ fn play(h: &mut ResidentHarness) {
 }
 #[test]
 fn ordinary_long_tones_file_renders_history_tempo_and_save_reopen() {
-    ordinary_long_granular(hex_project::WarpMode::Tones { grain_ms: 32 });
+    ordinary_long_granular(None);
 }
 #[test]
 fn ordinary_long_texture_file_renders_history_tempo_and_save_reopen() {
-    ordinary_long_granular(hex_project::WarpMode::Texture {
+    ordinary_long_granular(Some(hex_project::WarpMode::Texture {
         grain_ms: 32,
         fluctuation: 35,
         seed: 42,
-    });
+    }));
 }
-fn ordinary_long_granular(mode: hex_project::WarpMode) {
+fn ordinary_long_granular(authored_mode: Option<hex_project::WarpMode>) {
     let _native = native_fixture();
     let files = Files::new();
     let path = super::granular_playback::long_converted_source(&files);
@@ -66,12 +66,16 @@ fn ordinary_long_granular(mode: hex_project::WarpMode) {
         fade_out: 0,
     }));
     (applied, _) = h.applied(applied);
-    let warp = hex_project::default_audio_warp(
-        neutral.state.project.clip(clip).unwrap(),
-        neutral.state.project.tempo_map(),
-        mode,
-    )
-    .unwrap();
+    let project = &neutral.state.project;
+    let warp = if let Some(mode) = authored_mode {
+        hex_project::default_audio_warp(project.clip(clip).unwrap(), project.tempo_map(), mode)
+            .unwrap()
+    } else {
+        let settings = project.audio_warp_settings_for_enable(clip).unwrap();
+        assert!(matches!(settings.mode, hex_project::WarpMode::Tones { .. }));
+        settings
+    };
+    let mode = warp.mode;
     let edited = h.run(Request::Edit(hex_project::Command::SetAudioClipWarp {
         clip,
         settings: Some(warp),

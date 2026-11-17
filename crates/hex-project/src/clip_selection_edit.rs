@@ -5,10 +5,17 @@
 //! edited in isolation, and complete restored rows undergo final validation. No
 //! partial history, intermediate cuts, source transplantation or DSP work occurs.
 use crate::{
-    BeatsPreserve, BeatsTail, ClipFlavor, ClipId, Command, Created, Invalid, MAX_CLIPS, NoteId,
-    Project, Tempo, TrackContent, WarpMode,
+    BeatsPreserve, BeatsTail, ClipFlavor, ClipId, Command, Created, Invalid,
+    MAX_AUDIO_DOMAIN_FRAMES, MAX_CLIPS, NoteId, Project, Tempo, TrackContent, WarpMode,
+    WarpSettings,
 };
 use std::collections::BTreeSet;
+
+const DEFAULT_WARP_MODE: WarpMode = WarpMode::Beats {
+    preserve: BeatsPreserve::Transients,
+    tail: BeatsTail::Forward,
+    decay: 100,
+};
 
 /// A clip-wide value applied to one frozen Arrangement selection. Audio-only
 /// values explicitly leave selected MIDI clips unchanged; zero eligible clips refuse.
@@ -60,6 +67,40 @@ pub enum ClipEdit {
         name: String,
     },
     Delete,
+}
+
+impl Project {
+    /// Retain authored Warp markers. For a new neutral full-source long clip,
+    /// choose a pitch-preserving mode with bounded file-backed playback.
+    /// The edit and its worker still validate the resulting source and map.
+    pub fn audio_warp_settings_for_enable(&self, clip: ClipId) -> Result<WarpSettings, Invalid> {
+        let source = self
+            .clip(clip)
+            .ok_or(Invalid("selected audio clip no longer exists"))?;
+        if let Some(settings) = source
+            .audio_edit()
+            .and_then(|edit| edit.domain.warp.as_ref())
+        {
+            return Ok(settings.clone());
+        }
+        let long_neutral_source = source.duration() > MAX_AUDIO_DOMAIN_FRAMES
+            && source.source_offset() == 0
+            && source.source_length() == source.duration()
+            && !source.looping()
+            && source.retained_fade().is_neutral()
+            && self
+                .asset(source.asset())
+                .is_some_and(|asset| asset.playback_frames() == source.source_length())
+            && source
+                .audio_edit()
+                .is_none_or(|edit| edit.is_plain_pitch_capture(source));
+        let mode = if long_neutral_source {
+            WarpMode::Tones { grain_ms: 40 }
+        } else {
+            DEFAULT_WARP_MODE
+        };
+        crate::default_audio_warp(source, self.tempo_map(), mode)
+    }
 }
 
 /// Relative algorithm controls retain every member's other settings and markers.
@@ -206,30 +247,26 @@ impl ClipEdit {
                 clip,
                 settings: None,
             },
-            Self::WarpEnabled { enabled: true } | Self::WarpMode { .. } => {
+            Self::WarpEnabled { enabled: true } => Command::SetAudioClipWarp {
+                clip,
+                settings: Some(project.audio_warp_settings_for_enable(clip)?),
+            },
+            Self::WarpMode { mode } => {
                 let source = project
                     .clip(clip)
                     .ok_or(Invalid("selected audio clip no longer exists"))?;
+                mode.validate()?;
                 let mut settings = match source
                     .audio_edit()
                     .and_then(|edit| edit.domain.warp.as_ref())
                 {
                     Some(settings) => settings.clone(),
-                    None => crate::default_audio_warp(
-                        source,
-                        project.tempo_map(),
-                        WarpMode::Beats {
-                            preserve: BeatsPreserve::Transients,
-                            tail: BeatsTail::Forward,
-                            decay: 100,
-                        },
-                    )?,
-                };
-                if let Self::WarpMode { mode } = self {
-                    mode.validate()?;
-                    if std::mem::discriminant(mode) != std::mem::discriminant(&settings.mode) {
-                        settings.mode = *mode;
+                    None => {
+                        crate::default_audio_warp(source, project.tempo_map(), DEFAULT_WARP_MODE)?
                     }
+                };
+                if std::mem::discriminant(mode) != std::mem::discriminant(&settings.mode) {
+                    settings.mode = *mode;
                 }
                 Command::SetAudioClipWarp {
                     clip,
