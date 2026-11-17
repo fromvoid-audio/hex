@@ -2477,10 +2477,15 @@ impl EditorView {
         }
         let sampler_load_complete = event.sampler_load_complete;
         let sampler_load_succeeded = event.error.is_none();
+        let gain_control_preview = self.audio_clip_controls.has_gain_preview();
         if self
             .audio_clip_controls
             .observe(self.project_generation, &event)
         {
+            if gain_control_preview {
+                self.set_held_gain_audition(None);
+                self.service.retire_arrangement_gain_audition();
+            }
             self.retire_sample_bpm_control();
         }
         let audio_placement_selection = self.audio_events_request_complete(&event);

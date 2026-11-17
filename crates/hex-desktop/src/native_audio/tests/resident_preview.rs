@@ -736,6 +736,107 @@ fn held_stretch_audition_reaches_playing_callback_and_releases_once() {
 }
 
 #[test]
+fn held_clip_and_event_gains_reach_the_callback_without_editing_history() {
+    use hex_project::{AudioEventEdit, ClipGain, Command};
+    use hex_session::service::{ArrangementGainAudition, GainEdit, ResidentSourceOrigin};
+
+    let _native = native_fixture();
+    let files = Files::new();
+    let mut h = ResidentHarness::with_frame_limit(262_144);
+    h.next();
+    let (initial, _) = h.applied(0);
+    let imported = h.run(Request::Import(files.wav(48_000, 96_000)));
+    let clip = imported.state.project.tracks()[0].clips()[0].id();
+    let (applied, _) = h.applied(initial);
+    let split = h.run(Request::Edit(Command::EditAudioEvents {
+        clip,
+        operation: AudioEventEdit::Split { at: 48_000 },
+    }));
+    assert!(split.error.is_none(), "{:?}", split.error);
+    let (mut applied, metadata) = h.applied(applied);
+    let event = split
+        .state
+        .project
+        .clip(clip)
+        .unwrap()
+        .audio_events()
+        .events[0]
+        .id;
+    let original = split.state.project.snapshot();
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+
+    let assert_audio = |h: &ResidentHarness, gain: ClipGain| {
+        let expected = 0.25 * gain.linear();
+        let status = h.audio.as_ref().unwrap().status().unwrap();
+        let before = status.position.load(Acquire);
+        let output = h.render();
+        assert!(status.playing.load(Acquire));
+        assert_eq!(status.position.load(Acquire), before + 64);
+        assert!(
+            output.iter().all(|f| (f[0] - expected).abs() < 1e-5),
+            "audio should be {expected}"
+        );
+    };
+    let hold = |h: &ResidentHarness, edit| {
+        h.service
+            .audition_arrangement_gain(Some(ArrangementGainAudition {
+                context: metadata.context,
+                edit,
+            }));
+    };
+    assert_audio(&h, ClipGain::UNITY);
+    for millidb in [-6_000, -12_000] {
+        let gain = ClipGain::new(millidb).unwrap();
+        hold(&h, GainEdit::Clip { clip, gain });
+        let (revision, report) = h.applied(applied);
+        applied = revision;
+        assert_eq!(report.source_origin, ResidentSourceOrigin::ClipGainPreview);
+        assert_audio(&h, gain);
+        assert!(
+            h.service.try_event().is_err(),
+            "held values must never edit the project"
+        );
+    }
+    h.service.audition_arrangement_gain(None);
+    let (applied, _) = h.applied(applied);
+    assert_audio(&h, ClipGain::UNITY);
+
+    let gain = ClipGain::new(-3_000).unwrap();
+    hold(
+        &h,
+        GainEdit::Event {
+            clip,
+            sources: Default::default(),
+            event,
+            gain,
+        },
+    );
+    let (preview, report) = h.applied(applied);
+    assert_eq!(report.source_origin, ResidentSourceOrigin::ClipGainPreview);
+    assert_audio(&h, gain);
+    h.service.finish_arrangement_gain_audition();
+    assert_audio(&h, gain);
+    let committed = h.run(Request::Edit(Command::EditAudioEvents {
+        clip,
+        operation: AudioEventEdit::SetGain { event, gain },
+    }));
+    assert!(committed.error.is_none(), "{:?}", committed.error);
+    assert_eq!(committed.state.revision, split.state.revision + 1);
+    h.service.retire_arrangement_gain_audition();
+    let (committed, _) = h.applied(preview);
+    assert_audio(&h, gain);
+    let undone = h.run(Request::Undo);
+    assert_eq!(undone.state.project.snapshot(), original);
+    h.applied(committed);
+    assert_audio(&h, ClipGain::UNITY);
+}
+
+#[test]
 fn held_audio_play_start_changes_only_its_clip_during_arrangement_playback() {
     use hex_project::{AudioViewResizeOperation, Command};
     use hex_session::service::{ArrangementPlayStartAudition, PlayStartEdit};

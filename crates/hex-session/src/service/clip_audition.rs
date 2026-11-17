@@ -23,6 +23,151 @@ pub struct ArrangementPlayStartAudition {
     pub edit: PlayStartEdit,
 }
 
+/// Latest absolute gain or relative selection gain against one authored revision.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ArrangementGainAudition {
+    pub context: hex_engine::AudioSourceContext,
+    pub edit: GainEdit,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum GainEdit {
+    Clip {
+        clip: ClipId,
+        gain: hex_project::ClipGain,
+    },
+    Selection {
+        clips: Arc<[ClipId]>,
+        millidb: i32,
+    },
+    Event {
+        clip: ClipId,
+        sources: Arc<[u64]>,
+        event: u64,
+        gain: hex_project::ClipGain,
+    },
+}
+
+impl GainEdit {
+    fn command(&self) -> Command {
+        match self {
+            Self::Clip { clip, gain } => Command::SetAudioClipGain {
+                clip: *clip,
+                millidb: gain.millidb(),
+            },
+            Self::Selection { clips, millidb } => Command::EditClips {
+                clips: clips.to_vec(),
+                edit: hex_project::ClipEdit::GainBy { millidb: *millidb },
+            },
+            Self::Event {
+                clip,
+                sources,
+                event,
+                gain,
+            } => Command::EditAudioEvents {
+                clip: *clip,
+                operation: if sources.is_empty() {
+                    hex_project::AudioEventEdit::SetGain {
+                        event: *event,
+                        gain: *gain,
+                    }
+                } else {
+                    hex_project::AudioEventEdit::SetRetainedGain {
+                        sources: sources.to_vec(),
+                        event: *event,
+                        gain: *gain,
+                    }
+                },
+            },
+        }
+    }
+
+    pub(super) fn valid(&self) -> bool {
+        match self {
+            Self::Selection { clips, .. } => {
+                !clips.is_empty() && clips.len() <= hex_project::MAX_CLIPS
+            }
+            Self::Event { sources, .. } => sources.len() <= hex_project::MAX_RETAINED_AUDIO_DEPTH,
+            Self::Clip { .. } => true,
+        }
+    }
+
+    fn same_gesture(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Clip { clip: a, .. }, Self::Clip { clip: b, .. }) => a == b,
+            (Self::Selection { clips: a, .. }, Self::Selection { clips: b, .. }) => a == b,
+            (
+                Self::Event {
+                    clip: a,
+                    sources: sa,
+                    event: ea,
+                    ..
+                },
+                Self::Event {
+                    clip: b,
+                    sources: sb,
+                    event: eb,
+                    ..
+                },
+            ) => (a, sa, ea) == (b, sb, eb),
+            _ => false,
+        }
+    }
+
+    fn matches_release(&self, command: &Command) -> bool {
+        use hex_project::AudioEventEdit;
+        match (self, command) {
+            (Self::Clip { clip: a, .. }, Command::SetAudioClipGain { clip: b, .. }) => a == b,
+            (
+                Self::Selection { clips: a, .. },
+                Command::EditClips {
+                    clips: b,
+                    edit: hex_project::ClipEdit::GainBy { .. },
+                },
+            ) => a.as_ref() == b,
+            (
+                Self::Event {
+                    clip: a,
+                    sources,
+                    event: ea,
+                    ..
+                },
+                Command::EditAudioEvents {
+                    clip: b,
+                    operation: AudioEventEdit::SetGain { event: eb, .. },
+                },
+            ) => a == b && sources.is_empty() && ea == eb,
+            (
+                Self::Event {
+                    clip: a,
+                    sources: sa,
+                    event: ea,
+                    ..
+                },
+                Command::EditAudioEvents {
+                    clip: b,
+                    operation:
+                        AudioEventEdit::SetRetainedGain {
+                            sources: sb,
+                            event: eb,
+                            ..
+                        },
+                },
+            ) => a == b && sa.as_ref() == sb && ea == eb,
+            _ => false,
+        }
+    }
+
+    fn retained_bytes(&self) -> usize {
+        let payload = match self {
+            Self::Clip { .. } => return 0,
+            Self::Selection { clips, .. } => std::mem::size_of_val(clips.as_ref()),
+            Self::Event { sources, .. } => std::mem::size_of_val(sources.as_ref()),
+        };
+        payload.saturating_add(2 * std::mem::size_of::<usize>())
+    }
+}
+
 /// A resident-playback clip move or copy. Callers freeze the full selection
 /// and reuse its allocation as the pointer target changes. Project validation
 /// owns destination, duplicate-ID and clip compatibility checks.
@@ -268,6 +413,7 @@ pub(super) enum Target {
     Stretch(ArrangementStretchAudition),
     PlayStart(ArrangementPlayStartAudition),
     Move(ArrangementMoveAudition),
+    Gain(ArrangementGainAudition),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -275,6 +421,7 @@ pub(super) enum Kind {
     Stretch,
     PlayStart,
     Move,
+    Gain,
 }
 
 impl Target {
@@ -283,6 +430,7 @@ impl Target {
             Self::Stretch(_) => Kind::Stretch,
             Self::PlayStart(_) => Kind::PlayStart,
             Self::Move(_) => Kind::Move,
+            Self::Gain(_) => Kind::Gain,
         }
     }
 
@@ -291,6 +439,7 @@ impl Target {
             Self::Stretch(target) => target.context,
             Self::PlayStart(target) => target.context,
             Self::Move(target) => target.context,
+            Self::Gain(target) => target.context,
         }
     }
 
@@ -309,6 +458,7 @@ impl Target {
                 frame: target.frame,
             },
             Self::PlayStart(target) => target.edit.command(),
+            Self::Gain(target) => target.edit.command(),
             Self::Move(target) => match &target.destination {
                 ArrangementMoveDestination::Existing(track) => {
                     match (target.clips.len(), target.mode, target.position) {
@@ -436,6 +586,7 @@ impl Target {
             (Self::Move(a), Self::Move(b)) => {
                 a.gesture == b.gesture && a.anchor == b.anchor && a.clips == b.clips
             }
+            (Self::Gain(a), Self::Gain(b)) => a.edit.same_gesture(&b.edit),
             _ => false,
         }
     }
@@ -492,11 +643,13 @@ impl Target {
             Self::PlayStart(target) => PlayStartEdit::from_command(command)
                 .is_some_and(|edit| edit.clip() == target.edit.clip()),
             Self::Move(_) => false,
+            Self::Gain(target) => target.edit.matches_release(command),
         }
     }
 
     pub(super) fn retained_bytes(&self) -> usize {
         match self {
+            Self::Gain(target) => target.edit.retained_bytes(),
             Self::Move(target) => target
                 .clips
                 .len()
@@ -580,7 +733,13 @@ impl Mailbox {
 
     fn replace(state: &mut State, intent: Intent) {
         if state.intent != intent {
-            if let Some(job) = state.preparing.take() {
+            // A continuous gain drag must not starve the audio preview by
+            // cancelling every in-progress value. Keep at most that one
+            // preparation and the latest requested value.
+            let continues_gain = matches!((&state.intent, &intent),
+                (Intent::Held(a @ Target::Gain(_)), Intent::Held(b @ Target::Gain(_)))
+                    if a.same_gesture(b));
+            if !continues_gain && let Some(job) = state.preparing.take() {
                 job.store(true, Ordering::Release);
             }
             state.intent = intent;
@@ -818,6 +977,31 @@ impl Lane {
 mod tests {
     use super::*;
     use hex_project::{BeatTime, ClipGroupPosition, Created, Editor, Project};
+
+    #[test]
+    fn newer_gain_values_coalesce_without_cancelling_the_running_preparation() {
+        let source = target();
+        let gain_target = |millidb| {
+            Target::Gain(ArrangementGainAudition {
+                context: source.context,
+                edit: GainEdit::Clip {
+                    clip: source.anchor,
+                    gain: hex_project::ClipGain::new(millidb).unwrap(),
+                },
+            })
+        };
+        let mailbox = Mailbox::default();
+        let first = gain_target(-3_000);
+        mailbox.set(first.clone());
+        let preparing = mailbox.claim(first).unwrap();
+        let latest = gain_target(-12_000);
+        mailbox.set(gain_target(-6_000));
+        mailbox.set(latest.clone());
+        assert!(!preparing.load(Ordering::Acquire));
+        assert!(mailbox.lock().intent == Intent::Held(latest));
+        mailbox.release(Kind::Gain);
+        assert!(preparing.load(Ordering::Acquire));
+    }
 
     fn target() -> ArrangementMoveAudition {
         let mut editor = Editor::new(Project::new(48_000).unwrap(), 4).unwrap();

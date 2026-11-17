@@ -621,6 +621,7 @@ impl EditorView {
     fn event_update_gain(&mut self, y: f32, fine: bool) {
         if !y.is_finite() || !self.event_context_current() || self.edit_pending() {
             self.audio_event_editor.gesture = None;
+            self.set_held_gain_audition(None);
             return;
         }
         let Some(gesture) = self.audio_event_editor.gesture.as_mut() else {
@@ -647,7 +648,7 @@ impl EditorView {
         } else {
             event.gain.millidb()
         };
-        gesture.operation = hex_project::ClipGain::new(millidb)
+        let operation = hex_project::ClipGain::new(millidb)
             .ok()
             .filter(|gain| *gain != event.gain)
             .map(|gain| match &self.audio_event_editor.retained_selection {
@@ -661,6 +662,53 @@ impl EditorView {
                     gain,
                 },
             });
+        if gesture.operation != operation {
+            gesture.operation = operation;
+            let edit = self.audio_event_editor.owner.and_then(|(clip, _)| {
+                use hex_session::service::GainEdit;
+                match self
+                    .audio_event_editor
+                    .gesture
+                    .as_ref()?
+                    .operation
+                    .as_ref()?
+                {
+                    AudioEventEdit::SetGain { event, gain } => Some(GainEdit::Event {
+                        clip,
+                        sources: Default::default(),
+                        event: *event,
+                        gain: *gain,
+                    }),
+                    AudioEventEdit::SetRetainedGain {
+                        sources,
+                        event,
+                        gain,
+                    } => Some(GainEdit::Event {
+                        clip,
+                        sources: sources.as_slice().into(),
+                        event: *event,
+                        gain: *gain,
+                    }),
+                    _ => None,
+                }
+            });
+            self.set_held_gain_audition(edit);
+        }
+    }
+    pub(super) fn event_gain_held(&self) -> bool {
+        self.mode == super::EditorMode::Arrangement
+            && self
+                .state
+                .as_ref()
+                .is_some_and(|state| state.revision == self.audio_event_editor.revision)
+            && self.detail_clip_id().is_some_and(|clip| {
+                self.audio_event_editor.owner == Some((clip, self.project_generation))
+            })
+            && self
+                .audio_event_editor
+                .gesture
+                .as_ref()
+                .is_some_and(|gesture| matches!(gesture.kind, Kind::Gain { .. }))
     }
     fn event_update_pointer(&mut self, x: f32, platform: bool) {
         if let Some(Kind::Fade(fade)) = self.audio_event_editor.gesture.as_ref().map(|g| g.kind) {
