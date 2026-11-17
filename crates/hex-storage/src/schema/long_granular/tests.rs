@@ -185,3 +185,69 @@ fn prior_flat_schema_cannot_smuggle_long_granular_states() {
     let error = crate::decode(&serde_json::to_vec(&older).unwrap()).unwrap_err();
     assert!(error.to_string().contains("long granular"), "{error}");
 }
+
+#[test]
+fn long_inactive_warp_wraps_schema120_and_round_trips_with_overwrite_warning() {
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+    let clips = ["a", "b"].map(|name| {
+        let Created::Imported { clip, .. } = editor
+            .execute(Command::ImportAudioTrack {
+                name: name.into(),
+                path: format!("{name}.wav").into(),
+                sample_rate: 48_000,
+                frames: 20_000_000,
+            })
+            .unwrap()
+        else {
+            panic!("fixture import");
+        };
+        let settings = editor
+            .project()
+            .audio_warp_settings_for_enable(clip)
+            .unwrap();
+        editor
+            .execute(Command::SetAudioClipWarp {
+                clip,
+                settings: Some(settings),
+            })
+            .unwrap();
+        clip
+    });
+    let active = editor.project().clone();
+    let older = crate::encode(&active).unwrap();
+    assert_eq!(
+        crate::schema_version_for(&active),
+        LONG_GRANULAR_SCHEMA_VERSION
+    );
+    assert_eq!(crate::decode(&older).unwrap(), active);
+    editor
+        .execute(Command::SetAudioClipWarp {
+            clip: clips[0],
+            settings: None,
+        })
+        .unwrap();
+    let inactive = editor.project();
+    let bytes = crate::encode(inactive).unwrap();
+    assert_eq!(
+        crate::schema_version_for(inactive),
+        crate::LONG_INACTIVE_WARP_SCHEMA_VERSION
+    );
+    let envelope: Document<'_> = serde_json::from_slice(&bytes).unwrap();
+    let base: serde_json::Value = serde_json::from_str(envelope.base.get()).unwrap();
+    assert_eq!(base["version"], LONG_GRANULAR_SCHEMA_VERSION);
+    assert_eq!(&crate::decode(&bytes).unwrap(), inactive);
+    assert_eq!(
+        crate::encode(&crate::decode(&bytes).unwrap()).unwrap(),
+        bytes
+    );
+    let token = crate::FileToken::from_validated_bytes(older.into());
+    assert!(token.requires_save_confirmation(inactive).unwrap());
+    let token = crate::FileToken::from_validated_bytes(bytes.clone().into());
+    assert!(!token.requires_save_confirmation(inactive).unwrap());
+
+    let flat = super::super::content_view_resampler::encode(inactive).unwrap();
+    assert!(crate::decode(&serde_json::to_vec(&flat).unwrap()).is_err());
+    let mut malformed: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    malformed["clips"][0]["edit"]["domain"]["warp_enabled"] = true.into();
+    assert!(crate::decode(&serde_json::to_vec(&malformed).unwrap()).is_err());
+}

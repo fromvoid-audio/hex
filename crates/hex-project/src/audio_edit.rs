@@ -1020,6 +1020,41 @@ impl AudioClipEdit {
             && self.repeat_period.is_none()
     }
 
+    /// A full-view inactive Warp edit whose audio can read directly from the
+    /// original source at unity speed. The musical placement still owns the
+    /// clip extent. Retained mode and markers participate only when enabled.
+    /// Supply the projected domain length; a validated full-view clip has the
+    /// same duration. Asset identity and full-file extent are checked separately.
+    pub fn is_long_inactive_warp_root(&self, length: u64) -> bool {
+        let domain = &self.domain;
+        length > MAX_AUDIO_DOMAIN_FRAMES
+            && length <= MAX_SPARSE_AUDIO_TIMELINE_FRAMES
+            && !domain.warp_enabled
+            && domain.warp.as_ref().is_some_and(|warp| {
+                matches!(
+                    warp.mode,
+                    WarpMode::RePitch | WarpMode::Tones { .. } | WarpMode::Texture { .. }
+                )
+            })
+            && matches!(domain.clock, AudioDomainClock::Beats(_))
+            && matches!(self.timing, AudioClipTiming::Musical(_))
+            && self.view_start == 0
+            && self.view_end == domain.clock.length()
+            && self.repeat_period.is_none()
+            && self.placement.is_none()
+            && self.content_view.is_none()
+            && self.processing_projection.is_none()
+            && domain.source_offset == 0
+            && (1..=MAX_SPARSE_AUDIO_TIMELINE_FRAMES).contains(&domain.source_length)
+            && domain.source_phase == 0
+            && !domain.looping
+            && domain.pitch_cents == 0
+            && domain.events.is_none()
+            && domain.musical_event_source.is_none()
+            && domain.source_gain.is_empty()
+            && domain.fade.is_neutral()
+    }
+
     pub(crate) fn accepts_projected_extent(&self, length: u64, clip: &Clip) -> bool {
         if length <= MAX_AUDIO_DOMAIN_FRAMES {
             return true;
@@ -1029,6 +1064,7 @@ impl AudioClipEdit {
                 || self.is_plain_pitch_capture(clip)
                 || self.is_streamed_repitch_root()
                 || self.is_streamed_granular_root()
+                || self.is_long_inactive_warp_root(length)
                 || (self.plain_frame_event_root()
                     && self.domain.events.as_ref().is_some_and(|events| {
                         events
@@ -1229,6 +1265,11 @@ impl AudioClipEdit {
             && clip.source_length != asset_frames
         {
             return Err(Invalid("long repitch requires the complete audio source"));
+        }
+        if self.is_long_inactive_warp_root(length) && clip.source_length != asset_frames {
+            return Err(Invalid(
+                "long inactive warp requires the complete audio source",
+            ));
         }
         if length == 0 || view_start >= view_end {
             return Err(EMPTY_DOMAIN_CROP);

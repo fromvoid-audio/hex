@@ -1065,6 +1065,9 @@ impl AudioTransformPreparation {
             return direct_clip(clip, source).map(Some);
         };
         edit.validate(clip, tempo_map, asset.playback_frames())?;
+        if edit.is_long_inactive_warp_root(clip.duration()) {
+            return direct_clip(clip, source).map(Some);
+        }
         if let PreparedAudioSourceRef::StreamedWithPitch(raw, derived_sources) = source
             && let Ok((map, law)) =
                 streamed_repitch_map(edit, tempo_map, raw.playback_frames(), &self.shutdown)

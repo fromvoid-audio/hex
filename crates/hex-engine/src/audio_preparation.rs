@@ -1681,7 +1681,8 @@ impl AudioPreparationCustody {
                 let repitch_source = transformed::repitch_source_index(project, inputs, clip);
                 let granular_source = transformed::granular_source_index(project, inputs, clip);
                 let derived_source = pitch_source.or(repitch_source).or(granular_source);
-                let transformed = clip.audio_edit().is_some() && derived_source.is_none();
+                let transformed =
+                    transformed::requires_transformed_origin(clip) && derived_source.is_none();
                 if derived_source.is_none() {
                     transformed::validate_sources(project, inputs, clip)?;
                 }

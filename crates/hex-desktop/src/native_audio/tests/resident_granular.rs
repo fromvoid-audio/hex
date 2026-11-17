@@ -4,11 +4,15 @@ use super::*;
 mod transport;
 
 fn play(h: &mut ResidentHarness) {
+    play_level_at(h, 0, 0.25);
+}
+
+fn play_level_at(h: &mut ResidentHarness, frame: u64, level: f32) {
     h.audio
         .as_mut()
         .unwrap()
         .control
-        .command(PlaybackCommand::PlayFrom(0))
+        .command(PlaybackCommand::PlayFrom(frame))
         .unwrap();
     let end = Instant::now() + Duration::from_secs(3);
     loop {
@@ -17,13 +21,14 @@ fn play(h: &mut ResidentHarness) {
         if pcm
             .iter()
             .flatten()
-            .all(|sample| (*sample - 0.25).abs() < 0.0001)
+            .all(|sample| (*sample - level).abs() < 0.0001)
         {
             break;
         }
         assert!(
             Instant::now() < end,
-            "ordinary granular pages did not reach the callback"
+            "expected {level} near frame {frame}, recent block started with {:?}",
+            pcm[0]
         );
         std::thread::sleep(Duration::from_millis(1));
     }
@@ -34,6 +39,128 @@ fn play(h: &mut ResidentHarness) {
         .command(PlaybackCommand::Stop)
         .unwrap();
 }
+
+#[test]
+fn long_warp_off_uses_raw_pcm_and_reopens_with_authored_settings() {
+    use hex_project::{Command, Tempo, WarpMode};
+    use std::io::{Seek, SeekFrom, Write};
+    let _native = native_fixture();
+    let files = Files::new();
+    let path = super::granular_playback::long_source_at_rate(&files, 48_000);
+    let mut wav = fs::OpenOptions::new().write(true).open(&path).unwrap();
+    wav.seek(SeekFrom::Start(44 + 12_000 * 2)).unwrap();
+    wav.write_all(&(-8192_i16).to_le_bytes().repeat(12_000))
+        .unwrap();
+    drop(wav);
+    let mut h = ResidentHarness::with_frame_limit_at_rate(16_000, 48_000);
+    h.next();
+    let (mut applied, _) = h.applied(0);
+    let imported = h.run(Request::ImportToNewTrack {
+        path,
+        before_track: None,
+        start: 0,
+    });
+    (applied, _) = h.applied(applied);
+    let project = &imported.state.project;
+    let clip = project.tracks()[0].clips()[0].id();
+    let asset = project.clip(clip).unwrap().asset();
+    let settings = hex_project::default_audio_warp(
+        project.clip(clip).unwrap(),
+        project.tempo_map(),
+        WarpMode::RePitch,
+    )
+    .unwrap();
+    h.run(Request::Edit(Command::SetAudioClipWarp {
+        clip,
+        settings: Some(settings.clone()),
+    }));
+    (applied, _) = h.applied(applied);
+    let active = h.run(Request::Edit(Command::SetProjectTempo {
+        tempo: Tempo::new(90_000_000).unwrap(),
+    }));
+    (applied, _) = h.applied(applied);
+    // 13,600 reads source frame 10,200 at 3/4 speed, before the sign change.
+    play_level_at(&mut h, 13_600, 0.25);
+    let inactive = h.run(Request::Edit(Command::SetAudioClipWarp {
+        clip,
+        settings: None,
+    }));
+    let raw = &inactive
+        .state
+        .canonical_audio_source
+        .as_ref()
+        .unwrap()
+        .sources()[&asset];
+    let prior = &imported
+        .state
+        .canonical_audio_source
+        .as_ref()
+        .unwrap()
+        .sources()[&asset];
+    let (AudioSourceBinding::VerifiedFile(raw), AudioSourceBinding::VerifiedFile(prior)) =
+        (raw, prior)
+    else {
+        panic!("same file-backed source required");
+    };
+    assert_eq!(raw.fingerprint(), prior.fingerprint());
+    assert_eq!(
+        inactive
+            .state
+            .canonical_audio_source
+            .as_ref()
+            .unwrap()
+            .candidate_reservation_quote()
+            .unwrap()
+            .prepared_pcm_frames,
+        0
+    );
+    (applied, _) = h.applied(applied);
+    play_level_at(&mut h, 13_600, -0.25);
+    assert_eq!(
+        h.run(Request::Undo).state.project.snapshot(),
+        active.state.project.snapshot()
+    );
+    (applied, _) = h.applied(applied);
+    play_level_at(&mut h, 13_600, 0.25);
+    assert_eq!(
+        h.run(Request::Redo).state.project.snapshot(),
+        inactive.state.project.snapshot()
+    );
+    h.applied(applied);
+
+    let saved = files.0.join("inactive.hex");
+    assert!(h.run(Request::SaveNew(saved.clone())).save_complete);
+    let output = h.audio.as_ref().unwrap().control.output_identity().unwrap();
+    let reopened = h.run(Request::Open(saved));
+    assert!(reopened.open_complete);
+    assert_eq!(
+        reopened.state.project.snapshot(),
+        inactive.state.project.snapshot()
+    );
+    super::resident_lifecycle::finish_replacement(&mut h, &reopened, output);
+    play_level_at(&mut h, 13_600, -0.25);
+    let restored = reopened
+        .state
+        .project
+        .audio_warp_settings_for_enable(clip)
+        .unwrap();
+    assert_eq!(restored, settings);
+    let applied = h
+        .audio
+        .as_ref()
+        .unwrap()
+        .status()
+        .unwrap()
+        .applied_revision
+        .load(Acquire);
+    h.run(Request::Edit(Command::SetAudioClipWarp {
+        clip,
+        settings: Some(restored),
+    }));
+    h.applied(applied);
+    play_level_at(&mut h, 13_600, 0.25);
+}
+
 #[test]
 fn enabling_default_warp_on_long_file_publishes_pcm_and_preserves_history() {
     let _native = native_fixture();
