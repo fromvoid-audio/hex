@@ -125,6 +125,9 @@ impl VerifiedGranularPages {
             .backing_bytes()?
             .checked_add(self.cache.reserved_budget())
     }
+    pub(crate) fn holds_page(&self) -> bool {
+        self.pending.is_some()
+    }
     pub fn metadata(&self) -> &StreamedSourceMetadata {
         &self.metadata
     }

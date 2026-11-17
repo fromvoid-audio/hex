@@ -3,9 +3,10 @@ use super::*;
 use hex_engine::{STREAM_PAGE_FRAMES, audio_transform::streamed_granular_root};
 use hex_project::{WarpMode, default_audio_warp};
 use hex_stream::{
-    GranularSourceBuffers, GranularSourcePreparation, GranularWorkerError,
-    GranularWorkerExitReason, GranularWorkerKey, GranularWorkerQueues, GranularWorkerRequest,
-    GranularWorkerResult, GranularWorkerSeek, VerifiedGranularSource, run_granular_worker,
+    GranularBankAllowance, GranularBankError, GranularSourceBuffers, GranularSourcePreparation,
+    GranularWorkerBank, GranularWorkerError, GranularWorkerExitReason, GranularWorkerKey,
+    GranularWorkerQueues, GranularWorkerRequest, GranularWorkerResult, GranularWorkerSeek,
+    VerifiedGranularSource, run_granular_worker,
 };
 use std::{
     sync::{
@@ -16,16 +17,47 @@ use std::{
     time::{Duration, Instant},
 };
 
+pub(super) fn admit(sources: Vec<VerifiedGranularSource>) -> GranularWorkerBank {
+    GranularWorkerBank::try_new_on_control(
+        sources,
+        GranularBankAllowance {
+            max_sources: 512,
+            max_data_bytes: 64 * 1024 * 1024,
+        },
+    )
+    .unwrap()
+}
 fn source(mode: WarpMode) -> (Wav, VerifiedGranularSource, Vec<[f32; 2]>) {
+    source_at_rate(mode, 48_000)
+}
+fn source_at_rate(mode: WarpMode, rate: u32) -> (Wav, VerifiedGranularSource, Vec<[f32; 2]>) {
     let (wav, pcm) = Wav::create(8192, false);
-    let (reader, plan, _) = setup(&wav, 8192, 48_000, ResampleVersion::V1);
-    let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+    let version = if rate == 48_000 {
+        ResampleVersion::V1
+    } else {
+        ResampleVersion::V2
+    };
+    let (reader, plan, _) = setup(&wav, 8192, rate, version);
+    let converted_frames = plan.output_frames();
+    let pcm = resample_with_version(
+        &Audio::new(48_000, pcm).unwrap(),
+        rate,
+        ResampleLimits {
+            max_source_frames: 8192,
+            max_output_frames: 16384,
+        },
+        version,
+    )
+    .unwrap()
+    .frames()
+    .to_vec();
+    let mut editor = Editor::new(Project::new(rate).unwrap(), 8).unwrap();
     let Created::Imported { clip, asset, .. } = editor
         .execute(Command::ImportAudioTrack {
             name: "granular".into(),
             path: wav.0.clone(),
-            sample_rate: 48_000,
-            frames: 8192,
+            sample_rate: rate,
+            frames: converted_frames,
         })
         .unwrap()
     else {
@@ -59,10 +91,14 @@ fn source(mode: WarpMode) -> (Wav, VerifiedGranularSource, Vec<[f32; 2]>) {
     let raw = StreamedSourceMetadata::new(
         StreamSourceKey::new(7, asset),
         48_000,
-        48_000,
+        rate,
         8192,
-        8192,
-        IDENTITY_CONVERSION,
+        converted_frames,
+        if rate == 48_000 {
+            IDENTITY_CONVERSION
+        } else {
+            SINC_CONVERSION_V2
+        },
         *reader.fingerprint(),
     )
     .unwrap();
@@ -81,7 +117,7 @@ fn source(mode: WarpMode) -> (Wav, VerifiedGranularSource, Vec<[f32; 2]>) {
             attacks: &[],
             input: hex_warp::Input {
                 frames: &pcm,
-                sample_rate: 48_000,
+                sample_rate: rate,
                 region_start: region.start(),
                 region_length: region.length(),
                 phase: region.phase(),
@@ -149,9 +185,10 @@ fn dispatch_preserves_distinct_pcm_and_each_sources_history() {
     }
     let stop = Arc::new(AtomicBool::new(false));
     let worker_stop = Arc::clone(&stop);
+    let bank = admit(vec![tones, texture]);
     let join = thread::spawn(move || {
         run_granular_worker(
-            vec![tones, texture],
+            bank,
             GranularWorkerQueues {
                 requests: rx,
                 results: ready,
@@ -230,44 +267,30 @@ fn dispatch_preserves_distinct_pcm_and_each_sources_history() {
 }
 
 #[test]
-fn invalid_banks_leave_sources_and_queued_pages_with_control() {
+fn invalid_banks_return_all_sources_before_worker_start() {
     let (_wav_a, a, _) = source(WarpMode::Tones { grain_ms: 32 });
     let (_wav_b, b, _) = source(WarpMode::Tones { grain_ms: 32 });
     assert_eq!(a.metadata().key(), b.metadata().key());
     let mut oversized = Vec::with_capacity(513);
     let (_wav_c, c, _) = source(WarpMode::Tones { grain_ms: 32 });
     oversized.push(c);
-    for bank in [vec![], vec![a, b], oversized] {
-        let count = bank.len();
-        let (mut tx, rx) = rtrb::RingBuffer::new(1);
-        let (ready, mut results) = rtrb::RingBuffer::new(1);
-        let key = GranularWorkerKey {
-            source: StreamSourceKey::new(7, asset(8192)),
-            epoch: 1,
-            page_index: 0,
-            seek: GranularWorkerSeek::Strict {
-                max_preroll_frames: 0,
+    for sources in [vec![], vec![a, b], oversized] {
+        let count = sources.len();
+        let pointer = sources.as_ptr();
+        let capacity = sources.capacity();
+        let Err(refusal) = GranularWorkerBank::try_new_on_control(
+            sources,
+            GranularBankAllowance {
+                max_sources: 512,
+                max_data_bytes: 64 * 1024 * 1024,
             },
+        ) else {
+            panic!("invalid bank was admitted")
         };
-        let frames = vec![[19.0; 2]; STREAM_PAGE_FRAMES].into_boxed_slice();
-        let pointer = frames.as_ptr();
-        assert!(tx.push(GranularWorkerRequest { key, frames }).is_ok());
-        let mut exit = run_granular_worker(
-            bank,
-            GranularWorkerQueues {
-                requests: rx,
-                results: ready,
-            },
-            &AtomicBool::new(false),
-            &AtomicU64::new(1),
-        );
-        assert_eq!(exit.reason, GranularWorkerExitReason::InvalidSourceBank);
-        assert_eq!(exit.sources.len(), count);
-        assert!(exit.held.is_none() && exit.interrupted.is_none());
-        assert!(results.pop().is_err());
-        let request = exit.queues.requests.pop().unwrap();
-        assert_eq!(request.frames.as_ptr(), pointer);
-        assert!(request.frames.iter().all(|frame| *frame == [19.0; 2]));
+        assert_eq!(refusal.reason, GranularBankError::InvalidSources);
+        assert_eq!(refusal.sources.len(), count);
+        assert_eq!(refusal.sources.capacity(), capacity);
+        assert_eq!(refusal.sources.as_ptr(), pointer);
     }
 }
 
@@ -301,9 +324,10 @@ fn stop_reclaims_active_second_source_and_keeps_the_next_request_queued() {
     let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
     let stop = Arc::new(AtomicBool::new(false));
     let worker_stop = Arc::clone(&stop);
+    let bank = admit(vec![tones, texture]);
     let join = thread::spawn(move || {
         hex_stream::test_support::run_granular_worker_with_step_hook(
-            vec![tones, texture],
+            bank,
             GranularWorkerQueues {
                 requests: rx,
                 results: ready,
@@ -341,4 +365,95 @@ fn stop_reclaims_active_second_source_and_keeps_the_next_request_queued() {
             .iter_mut()
             .all(|source| source.reclaim().is_none())
     );
+}
+
+#[test]
+fn aggregate_admission_includes_reader_kernel_and_processing_data() {
+    let (_wav_a, a, _) = source(WarpMode::Tones { grain_ms: 32 });
+    let (_wav_b, b, _) = source_at_rate(
+        WarpMode::Texture {
+            grain_ms: 32,
+            fluctuation: 35,
+            seed: 42,
+        },
+        44_100,
+    );
+    let processing = a.reserved_processing_bytes() + b.reserved_processing_bytes();
+    let bank = admit(vec![a, b]);
+    let data = bank.data();
+    assert_eq!(data.processing_reserved_bytes, processing);
+    assert_eq!(data.source_readers, 2);
+    assert_eq!(data.manifest_handles, 2);
+    assert_eq!(data.kernel_handles, 2);
+    assert!(
+        data.reader_heap_bytes >= 2 * (32 + hex_media::VerifiedWavManifest::owner_payload_bytes()),
+        "both verified manifests are charged"
+    );
+    let kernel = ResampleKernel::with_version(48_000, 44_100, ResampleVersion::V2).unwrap();
+    assert!(kernel.table_payload_bytes() > 0);
+    assert!(
+        data.kernel_reserved_bytes
+            >= 2 * ResampleKernel::owner_payload_bytes() + kernel.table_payload_bytes()
+    );
+    let bytes = data.bytes().unwrap();
+    assert!(bytes > processing + data.kernel_reserved_bytes + data.reader_heap_bytes);
+    let keys = bank
+        .metadata()
+        .map(StreamedSourceMetadata::key)
+        .collect::<Vec<_>>();
+    let Err(refusal) = GranularWorkerBank::try_new_on_control(
+        bank.into_sources(),
+        GranularBankAllowance {
+            max_sources: 2,
+            max_data_bytes: bytes - 1,
+        },
+    ) else {
+        panic!("insufficient aggregate allowance was admitted")
+    };
+    assert_eq!(refusal.reason, GranularBankError::DataLimit);
+    let bank = GranularWorkerBank::try_new_on_control(
+        refusal.sources,
+        GranularBankAllowance {
+            max_sources: 2,
+            max_data_bytes: bytes,
+        },
+    )
+    .unwrap();
+    assert_eq!(bank.data(), data);
+    assert_eq!(
+        bank.metadata()
+            .map(StreamedSourceMetadata::key)
+            .collect::<Vec<_>>(),
+        keys
+    );
+}
+
+#[test]
+fn admission_returns_sources_holding_pending_or_complete_pages() {
+    for complete in [false, true] {
+        let (_wav, mut source, _) = source(WarpMode::Tones { grain_ms: 32 });
+        let frames = vec![[0.0; 2]; STREAM_PAGE_FRAMES].into_boxed_slice();
+        let pointer = frames.as_ptr();
+        source.begin_page(0, frames, 0, || false).unwrap();
+        if complete {
+            loop {
+                if source.step(|| false).unwrap() == hex_stream::GranularPageProgress::Complete {
+                    break;
+                }
+            }
+        }
+        let Err(mut refusal) = GranularWorkerBank::try_new_on_control(
+            vec![source],
+            GranularBankAllowance {
+                max_sources: 1,
+                max_data_bytes: 64 * 1024 * 1024,
+            },
+        ) else {
+            panic!("bank took custody of a caller page")
+        };
+        assert_eq!(refusal.reason, GranularBankError::SourceHoldsPage);
+        let frames = refusal.sources[0].reclaim().unwrap();
+        assert_eq!(frames.as_ptr(), pointer);
+        assert_eq!(admit(refusal.sources).metadata().count(), 1);
+    }
 }
