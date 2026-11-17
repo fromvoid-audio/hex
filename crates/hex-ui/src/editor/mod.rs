@@ -2066,14 +2066,13 @@ impl EditorView {
                 .is_some_and(|status| status.playing.load(std::sync::atomic::Ordering::Acquire))
         });
         let start_frame = self.playback_start_frame();
-        if !self.desired_playing(device_playing) && self.recover_degraded_play_at(start_frame) {
-            return;
-        }
         let command = match self.play_toggle_action(device_playing, start_frame) {
             arrangement_seek::ToggleAction::Pause => PlaybackCommand::Pause,
             arrangement_seek::ToggleAction::PlayFrom(frame) => PlaybackCommand::PlayFrom(frame),
             arrangement_seek::ToggleAction::Unavailable => {
-                self.error = Some("playback source is unavailable · cannot seek safely".into());
+                if !self.recover_degraded_play_at(start_frame) {
+                    self.error = Some("playback source is unavailable · cannot seek safely".into());
+                }
                 return;
             }
         };
