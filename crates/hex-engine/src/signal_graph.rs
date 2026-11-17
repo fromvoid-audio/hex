@@ -950,6 +950,20 @@ impl SignalGraph {
                 .all(|track| track.audio_feeds.is_empty() && track.printed_merge.is_none())
             && self.returns.iter().all(|bus| bus.audio_feeds.is_empty())
     }
+    /// Grouped audio reads its local sources at the current transport frontier;
+    /// edge delays retain PCM, not additional stream pages. Other source and
+    /// routing families require separate admission evidence.
+    pub(crate) fn supports_closed_compensated_audio_groups(&self) -> bool {
+        self.has_group_outputs
+            && self.key_stages.is_empty()
+            && self.returns.is_empty()
+            && self.tracks.iter().all(|track| {
+                track.generator.is_none()
+                    && track.printed_merge.is_none()
+                    && track.audio_feeds.is_empty()
+                    && track.group_output_mutes.is_empty()
+            })
+    }
     /// Serial Main latency needs clock history, but does not require rendering
     /// all upstream sources and effects one sample at a time. Typed audio feeds
     /// and pre-Main latency still use the general compensated routing kernel.

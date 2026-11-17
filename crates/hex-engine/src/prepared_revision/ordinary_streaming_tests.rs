@@ -907,6 +907,191 @@ fn main_only_latency_and_retired_main_history_keep_batched_ordinary_stream_deman
 // Keep the production group admission guard intact while exercising the actual
 // compensated stream seam with a prepared graph and the same canonical IDs.
 #[test]
+fn closed_group_latency_stream_demand_matches_resident() {
+    use hex_project::{Command, Created, TrackSelectionIds};
+    for on_group in [false, true] {
+        let mut f = crate::signal_graph::tests::fixture(&[&[], &[]], 1024);
+        let asset = *f.media.keys().next().unwrap();
+        let key = StreamSourceKey::new(41, asset);
+        let Created::Track(group) = f
+            .editor
+            .execute(Command::GroupTracks {
+                tracks: TrackSelectionIds::new(&f.tracks).unwrap(),
+                name: "group".into(),
+            })
+            .unwrap()
+        else {
+            panic!("group")
+        };
+        let state = crate::default_native_device_state_for_class(
+            crate::NativeDeviceClass::Effect,
+            crate::DeviceTypeId::from_static("hex.limiter"),
+        )
+        .unwrap();
+        f.editor
+            .execute(Command::InsertDevice {
+                track: if on_group { group } else { f.tracks[0] },
+                before: None,
+                state,
+            })
+            .unwrap();
+        f.editor
+            .execute(Command::SetLoopRegion {
+                start: 0,
+                end: 127,
+                enabled: true,
+            })
+            .unwrap();
+        let mut sources: BTreeMap<_, _> = f
+            .media
+            .iter()
+            .map(|(id, audio)| (*id, PreparedAudioSource::Resident(audio.clone())))
+            .collect();
+        sources.insert(
+            asset,
+            PreparedAudioSource::Streamed(Arc::new(
+                StreamedSourceMetadata::new(
+                    key,
+                    48_000,
+                    48_000,
+                    1024,
+                    1024,
+                    hex_project::IDENTITY_CONVERSION,
+                    [41; 32],
+                )
+                .unwrap(),
+            )),
+        );
+        let streamed = Arc::new(
+            PreparedRevision::prepare_with_source_bank(
+                f.editor.project(),
+                crate::compile::SourceBank::Mixed(&sources, 41),
+                Arc::new(SineTable::new()),
+                None,
+                &hex_devices::native_registry().unwrap(),
+                &hex_devices::native_instrument_registry().unwrap(),
+                &crate::audio_transform::AudioTransformPreparation::default(),
+                None,
+                None,
+                &[],
+            )
+            .unwrap(),
+        );
+        let resident = Arc::new(
+            PreparedRevision::prepare(
+                f.editor.project(),
+                &f.media,
+                Arc::new(SineTable::new()),
+                None,
+            )
+            .unwrap(),
+        );
+        for partition in [1, 257] {
+            let mut actual = crate::SessionPlayback::new(Arc::clone(&streamed)).unwrap();
+            let mut oracle = crate::SessionPlayback::new(Arc::clone(&resident)).unwrap();
+            actual.apply(SessionPlaybackCommand::Play).unwrap();
+            oracle.apply(SessionPlaybackCommand::Play).unwrap();
+            for step in 0..3 {
+                if step == 1 {
+                    let token = actual
+                        .prepare_stream_action(PlaybackAction::Transport(PlaybackCommand::Seek(17)))
+                        .unwrap();
+                    let before = (actual.performance_frame(), actual.arrangement_frame());
+                    let mut demand = Vec::new();
+                    actual
+                        .visit_prepared_stream_action(&token, 32, &mut |row| {
+                            demand.push(row);
+                            Ok(())
+                        })
+                        .unwrap();
+                    assert!(!demand.is_empty());
+                    assert_eq!(
+                        (actual.performance_frame(), actual.arrangement_frame()),
+                        before
+                    );
+                    actual.apply(SessionPlaybackCommand::Seek(17)).unwrap();
+                    oracle.apply(SessionPlaybackCommand::Seek(17)).unwrap();
+                } else if step == 2 {
+                    let mut next = crate::SessionPlayback::new(Arc::clone(&streamed)).unwrap();
+                    let mut next_oracle =
+                        crate::SessionPlayback::new(Arc::clone(&resident)).unwrap();
+                    next.preview_stream_handoff(&mut actual, 32, None, &mut |_| Ok(()))
+                        .unwrap();
+                    next.try_inherit_state_from(&mut actual).unwrap();
+                    next_oracle.try_inherit_state_from(&mut oracle).unwrap();
+                    actual = next;
+                    oracle = next_oracle;
+                }
+                let mut expected = vec![[0.0; 2]; 514];
+                for block in expected.chunks_mut(partition) {
+                    oracle.render(block).unwrap();
+                }
+                let mut observed = vec![[0.0; 2]; expected.len()];
+                let mut offset = 0;
+                while offset < observed.len() {
+                    let mut extents = Vec::new();
+                    let window = actual
+                        .visit_next_stream_chunk(
+                            (observed.len() - offset).min(partition),
+                            None,
+                            &mut |row| {
+                                extents.push(row);
+                                Ok(())
+                            },
+                        )
+                        .unwrap();
+                    assert!(window.frames > 0);
+                    actual
+                        .render_with_pages(
+                            &mut observed[offset..offset + window.frames],
+                            &mut Pages {
+                                samples: &f.samples,
+                                key,
+                                extents: &extents,
+                            },
+                        )
+                        .unwrap();
+                    offset += window.frames;
+                }
+                assert_eq!(
+                    observed, expected,
+                    "on_group={on_group} partition={partition} step={step}"
+                );
+            }
+        }
+        f.editor
+            .execute(Command::SetAudioFeed {
+                source: hex_project::RoutingOwner::Track(f.tracks[1]),
+                destination: f.tracks[0],
+                gain: 0.5,
+            })
+            .unwrap();
+        let routed = Arc::new(
+            PreparedRevision::prepare_with_source_bank(
+                f.editor.project(),
+                crate::compile::SourceBank::Mixed(&sources, 41),
+                Arc::new(SineTable::new()),
+                None,
+                &hex_devices::native_registry().unwrap(),
+                &hex_devices::native_instrument_registry().unwrap(),
+                &crate::audio_transform::AudioTransformPreparation::default(),
+                None,
+                None,
+                &[],
+            )
+            .unwrap(),
+        );
+        let mut refused = crate::SessionPlayback::new(routed).unwrap();
+        refused.apply(SessionPlaybackCommand::Play).unwrap();
+        assert!(
+            refused
+                .visit_next_stream_chunk(32, None, &mut |_| Ok(()))
+                .is_err()
+        );
+    }
+}
+
+#[test]
 fn closed_zero_latency_group_demand_matches_render_through_loop_and_seek() {
     let mut f = crate::signal_graph::tests::fixture(&[&[]], 1024);
     let asset = *f.media.keys().next().unwrap();

@@ -13,6 +13,10 @@ fn track_limiter_closed_stream_buffers_then_renders_without_callback_allocations
     first_play(false, false, true);
 }
 #[test]
+fn group_limiter_closed_stream_buffers_then_renders_without_callback_allocations() {
+    first_play(true, false, true);
+}
+#[test]
 fn priority_stop_revokes_buffered_play_before_installation() {
     assert!(
         hex_engine::audio_storage_constructor_layout_supported(),
@@ -34,22 +38,7 @@ fn first_play(grouped: bool, stop_pending: bool, limiter: bool) {
     let mut snapshot = project.snapshot();
     snapshot.tracks[0].devices.clear();
     let project = hex_project::Project::from_snapshot(snapshot).unwrap();
-    let project = if limiter {
-        let mut editor = hex_project::Editor::new(project, 8).unwrap();
-        let track = editor.project().tracks()[0].id();
-        let state = hex_engine::default_native_device_state(hex_engine::DeviceTypeId::from_static(
-            "hex.limiter",
-        ))
-        .unwrap();
-        editor
-            .execute(hex_project::Command::InsertDevice {
-                track,
-                before: None,
-                state,
-            })
-            .unwrap();
-        editor.project().clone()
-    } else if grouped {
+    let project = if grouped {
         let mut editor = hex_project::Editor::new(project, 8).unwrap();
         let track = editor.project().tracks()[0].id();
         let hex_project::Created::Track(group) = editor
@@ -65,6 +54,34 @@ fn first_play(grouped: bool, stop_pending: bool, limiter: bool) {
             .execute(hex_project::Command::Gain {
                 track: group,
                 gain: 0.5,
+            })
+            .unwrap();
+        if limiter {
+            let state = hex_engine::default_native_device_state(
+                hex_engine::DeviceTypeId::from_static("hex.limiter"),
+            )
+            .unwrap();
+            editor
+                .execute(hex_project::Command::InsertDevice {
+                    track: group,
+                    before: None,
+                    state,
+                })
+                .unwrap();
+        }
+        editor.project().clone()
+    } else if limiter {
+        let mut editor = hex_project::Editor::new(project, 8).unwrap();
+        let track = editor.project().tracks()[0].id();
+        let state = hex_engine::default_native_device_state(hex_engine::DeviceTypeId::from_static(
+            "hex.limiter",
+        ))
+        .unwrap();
+        editor
+            .execute(hex_project::Command::InsertDevice {
+                track,
+                before: None,
+                state,
             })
             .unwrap();
         editor.project().clone()
