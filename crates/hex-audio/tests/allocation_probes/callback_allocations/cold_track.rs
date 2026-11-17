@@ -83,6 +83,16 @@ fn cold_track_add_and_remove_preserve_pcm_without_callback_allocations()
 #[test]
 fn sounding_track_removal_preserves_other_pcm_without_callback_allocations()
 -> Result<(), Box<dyn Error>> {
+    verify_sounding_track_removal(false)
+}
+
+#[test]
+fn looped_sounding_track_removal_preserves_other_pcm_without_callback_allocations()
+-> Result<(), Box<dyn Error>> {
+    verify_sounding_track_removal(true)
+}
+
+fn verify_sounding_track_removal(looped: bool) -> Result<(), Box<dyn Error>> {
     let mut editor = Editor::new(Project::new(RATE)?, 8)?;
     let Created::Imported { track, asset, .. } = editor.execute(Command::ImportAudioTrack {
         name: "source".into(),
@@ -98,6 +108,13 @@ fn sounding_track_removal_preserves_other_pcm_without_callback_allocations()
         before: None,
         state: hex_engine::default_native_device_state(DeviceTypeId::from_static("hex.limiter"))?,
     })?;
+    if looped {
+        editor.execute(Command::SetLoopRegion {
+            start: 0,
+            end: 384,
+            enabled: true,
+        })?;
+    }
     let mut media = BTreeMap::from([(asset, Audio::new(RATE, vec![[0.25, -0.125]; 4096])?)]);
     let table = Arc::new(SineTable::new());
     let reference = Arc::new(PreparedRevision::prepare(
