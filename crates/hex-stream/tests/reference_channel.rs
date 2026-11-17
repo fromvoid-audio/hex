@@ -411,7 +411,12 @@ fn verified_prefix(
     plan: &ResamplePlan,
 ) -> Vec<[f32; 2]> {
     let mut raw = vec![[0.0; 2]; 8192];
-    let mut cache = vec![[0.0; 2]; 2048];
+    let cache_frames = if reference.region().is_some() {
+        8192
+    } else {
+        2048
+    };
+    let mut cache = vec![[0.0; 2]; cache_frames];
     let mut grain = vec![[0.0; 2]; state.max_source_frames()];
     let mut result = vec![[0.0; 2]; 256];
     while state.position() < 256 {
@@ -521,7 +526,7 @@ fn verified_granular_refuses_mismatch_capacity_cancel_and_changed_media() {
     let (wav, _) = Wav::create(8192, false);
     let (mut reader, plan, meta) = setup(&wav, 8192, 48_000, ResampleVersion::V1);
     let mut raw = vec![[0.0; 2]; 8192];
-    let mut cache = vec![[0.0; 2]; 2048];
+    let mut cache = vec![[0.0; 2]; 8192];
     let reference =
         scan_reference_channel_on_control(&meta, &mut reader, &plan, &mut raw, &mut cache, || {
             false
@@ -692,4 +697,251 @@ fn verified_granular_refuses_mismatch_capacity_cancel_and_changed_media() {
         }
     }
     assert!(changed);
+}
+
+fn independent_region_channel(
+    pcm: &[[f32; 2]],
+    start: usize,
+    length: usize,
+    phase: usize,
+    looping: bool,
+    gain: &[hex_warp::GainPoint],
+) -> usize {
+    let count = length.min(4096);
+    let stride = (length / count).max(1);
+    let mut energy = [0.0_f64; 2];
+    for i in 0..count {
+        let position = i * stride + phase;
+        let local = if looping { position % length } else { position };
+        let index = start + local;
+        let next = gain.partition_point(|p| p.source_frame <= index as u64);
+        let factor = match (
+            next.checked_sub(1).and_then(|j| gain.get(j)),
+            gain.get(next),
+        ) {
+            (Some(a), Some(b)) => {
+                let span = b.source_frame - a.source_frame;
+                let offset = index as u64 - a.source_frame;
+                (u128::from(a.gain_q16) * u128::from(span - offset)
+                    + u128::from(b.gain_q16) * u128::from(offset)) as f64
+                    / span as f64
+                    / 65_536.0
+            }
+            (Some(a), None) => f64::from(a.gain_q16) / 65_536.0,
+            (None, Some(b)) => f64::from(b.gain_q16) / 65_536.0,
+            _ => 1.0,
+        };
+        for channel in 0..2 {
+            let v = f64::from(pcm[index][channel]) * factor;
+            energy[channel] += v * v;
+        }
+    }
+    usize::from(energy[1] > energy[0])
+}
+
+#[test]
+fn verified_region_loop_and_gain_match_resident_analysis_and_pcm() {
+    use hex_warp::{GainPoint, Input, Mode, Request, Resampler, SourceRegion};
+    for rate in [48_000, 44_100] {
+        let (wav, pcm) = Wav::create(8192, false);
+        let law = if rate == 48_000 {
+            ResampleVersion::V1
+        } else {
+            ResampleVersion::V2
+        };
+        let (mut reader, plan, metadata) = setup(&wav, 8192, rate, law);
+        let resident = if rate == 48_000 {
+            pcm
+        } else {
+            resample_with_version(
+                &Audio::new(48_000, pcm).unwrap(),
+                rate,
+                ResampleLimits {
+                    max_source_frames: 8192,
+                    max_output_frames: 16384,
+                },
+                ResampleVersion::V2,
+            )
+            .unwrap()
+            .frames()
+            .to_vec()
+        };
+        let gain = vec![
+            GainPoint {
+                source_frame: 0,
+                gain_q16: 65_536,
+            },
+            GainPoint {
+                source_frame: 2000,
+                gain_q16: 20_000,
+            },
+            GainPoint {
+                source_frame: 6000,
+                gain_q16: 120_000,
+            },
+        ];
+        for looping in [false, true] {
+            let phase = if looping { 4900 } else { 0 };
+            let region = SourceRegion::new(
+                plan.output_frames(),
+                197,
+                5000,
+                phase,
+                looping,
+                gain.clone(),
+            )
+            .unwrap();
+            let mut raw = vec![[0.0; 2]; 8192];
+            let mut cache = vec![[0.0; 2]; 8192];
+            let started = std::time::Instant::now();
+            let before = reader.raw_page_reads();
+            let reference = hex_stream::scan_verified_granular_region_on_control(
+                &metadata,
+                region,
+                &mut reader,
+                &plan,
+                &mut raw,
+                &mut cache,
+                || false,
+            )
+            .unwrap();
+            assert!(reference.region().is_some());
+            let mut probe = granular_state(
+                plan.output_frames(),
+                rate,
+                Mode::Tones { grain_ms: 8 },
+                Resampler::V1,
+                reference.channel(),
+            );
+            let mut grain = vec![[0.0; 2]; probe.max_source_frames()];
+            let reads = reader.raw_page_reads();
+            assert_eq!(
+                hex_stream::advance_verified_granular_on_control(
+                    &mut probe,
+                    &reference,
+                    &mut reader,
+                    &plan,
+                    hex_stream::VerifiedGranularBuffers {
+                        source: &mut raw,
+                        cache: &mut cache[..2048],
+                        grain: &mut grain
+                    },
+                    || false
+                ),
+                Err(hex_stream::VerifiedGranularStepError::Source(
+                    StreamFailureKind::CapacityExhausted
+                ))
+            );
+            assert_eq!(reader.raw_page_reads(), reads);
+            assert_eq!(
+                reference.channel(),
+                independent_region_channel(&resident, 197, 5000, phase as usize, looping, &gain)
+            );
+            for mode in [
+                Mode::Tones { grain_ms: 8 },
+                Mode::Texture {
+                    grain_ms: 8,
+                    fluctuation: 35,
+                    seed: 42,
+                },
+            ] {
+                for filter in [Resampler::V1, Resampler::V2] {
+                    let map = granular_map(1024);
+                    let expected = hex_warp::render_with_resampler(
+                        &Request {
+                            attacks: &[],
+                            input: Input {
+                                frames: &resident,
+                                sample_rate: rate,
+                                region_start: 197,
+                                region_length: 5000,
+                                phase,
+                                looping,
+                                envelope: &gain,
+                            },
+                            map: &map,
+                            output_frames: 1024,
+                            pitch_cents: 300,
+                            mode,
+                        },
+                        filter,
+                        &mut || false,
+                    )
+                    .unwrap();
+                    let mut state = granular_state(
+                        plan.output_frames(),
+                        rate,
+                        mode,
+                        filter,
+                        reference.channel(),
+                    );
+                    assert_eq!(
+                        verified_prefix(&mut state, &reference, &mut reader, &plan),
+                        expected.frames[..256],
+                        "{rate} {looping} {mode:?} {filter:?}"
+                    );
+                }
+            }
+            eprintln!(
+                "verified_region rate={rate} looping={looping} region=5000 phase={phase} prefix=256 modes=2 laws=2 elapsed_ms={} verified_reads={}",
+                started.elapsed().as_millis(),
+                reader.raw_page_reads() - before
+            );
+        }
+    }
+}
+
+#[test]
+fn verified_region_rejects_mismatched_source_extent_and_cancel() {
+    let (wav, _) = Wav::create(8192, false);
+    let (mut reader, plan, metadata) = setup(&wav, 8192, 48_000, ResampleVersion::V1);
+    let mut raw = vec![[0.0; 2]; 8192];
+    let mut cache = vec![[0.0; 2]; 8192];
+    let before = reader.raw_page_reads();
+    let wrong = hex_warp::SourceRegion::new(8191, 0, 100, 0, false, vec![]).unwrap();
+    assert_eq!(
+        hex_stream::scan_verified_granular_region_on_control(
+            &metadata,
+            wrong,
+            &mut reader,
+            &plan,
+            &mut raw,
+            &mut cache,
+            || false
+        ),
+        Err(hex_stream::VerifiedGranularStepError::Source(
+            StreamFailureKind::UnknownSource
+        ))
+    );
+    let region = hex_warp::SourceRegion::new(8192, 0, 100, 0, false, vec![]).unwrap();
+    assert_eq!(
+        hex_stream::scan_verified_granular_region_on_control(
+            &metadata,
+            region,
+            &mut reader,
+            &plan,
+            &mut raw,
+            &mut cache[..2048],
+            || false
+        ),
+        Err(hex_stream::VerifiedGranularStepError::Source(
+            StreamFailureKind::CapacityExhausted
+        ))
+    );
+    let region = hex_warp::SourceRegion::new(8192, 0, 100, 0, false, vec![]).unwrap();
+    assert_eq!(
+        hex_stream::scan_verified_granular_region_on_control(
+            &metadata,
+            region,
+            &mut reader,
+            &plan,
+            &mut raw,
+            &mut cache,
+            || true
+        ),
+        Err(hex_stream::VerifiedGranularStepError::Source(
+            StreamFailureKind::Cancelled
+        ))
+    );
+    assert_eq!(reader.raw_page_reads(), before);
 }
