@@ -8,7 +8,9 @@ class Controller final : public IEditController {
 public:
     ParamValue value=0.25;
     uint32 setter_calls=0;
+    uint32 descriptor_reads=0;
     Host* late_edit_host=nullptr;
+    Host* recursive_value_host=nullptr;
     tresult PLUGIN_API queryInterface(const TUID,void**) override { return kNoInterface; }
     uint32 PLUGIN_API addRef() override { return 1; }
     uint32 PLUGIN_API release() override { return 1; }
@@ -19,6 +21,7 @@ public:
     tresult PLUGIN_API getState(IBStream*) override { return kNotImplemented; }
     int32 PLUGIN_API getParameterCount() override { return 1; }
     tresult PLUGIN_API getParameterInfo(int32 n,ParameterInfo& info) override {
+        ++descriptor_reads;
         if(n) return kInvalidArgument; info={}; info.id=7; info.flags=ParameterInfo::kCanAutomate;
         info.defaultNormalizedValue=0.25; return kResultOk;
     }
@@ -26,7 +29,11 @@ public:
     tresult PLUGIN_API getParamValueByString(ParamID,TChar*,ParamValue&) override { return kNotImplemented; }
     ParamValue PLUGIN_API normalizedParamToPlain(ParamID,ParamValue v) override { return v; }
     ParamValue PLUGIN_API plainParamToNormalized(ParamID,ParamValue v) override { return v; }
-    ParamValue PLUGIN_API getParamNormalized(ParamID) override { return value; }
+    ParamValue PLUGIN_API getParamNormalized(ParamID) override {
+        if(recursive_value_host)
+            assert(recursive_value_host->restartComponent(kParamValuesChanged)==kResultFalse);
+        return value;
+    }
     tresult PLUGIN_API setParamNormalized(ParamID,ParamValue v) override {
         if(late_edit_host) assert(late_edit_host->beginEdit(7)==kResultFalse);
         ++setter_calls;
@@ -66,6 +73,35 @@ int main(int argc,char** argv) { @autoreleasepool {
         assert(delayed.value==0.75 && delayed.setter_calls==1);
         assert(controls.endEdit(7)==kResultOk && controls.synchronize_parameter_feedback(&delayed));
         assert(delayed.value==0.75 && delayed.setter_calls==1);
+    }
+    if(argc==1 || !std::strcmp(argv[1],"values-only-refresh")) {
+        Controller controller;
+        Host host;
+        assert(host.refresh_on_control(&controller).disposition==HostDisposition::Refreshed);
+        const auto initial_revision=host.snapshot()->revision;
+        const auto descriptor_signature=host.snapshot()->descriptor_signature;
+        controller.value=0.75;
+        assert(host.restartComponent(kParamValuesChanged)==kResultOk);
+        assert(host.dispatch(&controller).disposition==HostDisposition::Refreshed);
+        assert(controller.descriptor_reads==1);
+        assert(host.snapshot()->revision==initial_revision+1);
+        assert(host.snapshot()->parameters[0].value==0.75);
+        assert(host.snapshot()->descriptor_signature==descriptor_signature);
+
+        assert(host.restartComponent(kParamValuesChanged|kParamTitlesChanged)==kResultOk);
+        assert(host.dispatch(&controller).disposition==HostDisposition::Refreshed);
+        assert(controller.descriptor_reads==2);
+        const auto valid_revision=host.snapshot()->revision;
+        controller.value=std::numeric_limits<ParamValue>::quiet_NaN();
+        assert(host.restartComponent(kParamValuesChanged)==kResultOk);
+        assert(host.dispatch(&controller).disposition==HostDisposition::InvalidMetadata);
+        assert(host.snapshot()->revision==valid_revision && host.snapshot()->parameters[0].value==0.75);
+
+        controller.value=0.125;
+        controller.recursive_value_host=&host;
+        assert(host.restartComponent(kParamValuesChanged)==kResultOk);
+        assert(host.dispatch(&controller).disposition==HostDisposition::Recursive);
+        assert(host.snapshot()->revision==valid_revision && host.snapshot()->parameters[0].value==0.75);
     }
     if(argc>1) return 0;
     Controller controller;
