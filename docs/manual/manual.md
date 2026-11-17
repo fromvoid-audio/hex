@@ -645,8 +645,8 @@ plain **f** keeps its momentary fade-handle behavior.
 ## audio event fades
 
 the **scope bar** at the top of each clip editor defines the clip's **scope**.
-in the audio editor, moving or resizing the scope updates the clip's start and
-end in the arranger. an existing play start stays at its source position while
+in the audio editor, drag the scope bar to move both ends together, or drag an
+end to resize the scope. both edits update the clip's bounds in the arranger. an existing play start stays at its source position while
 it remains inside the new scope; otherwise it moves to the scope start. looping
 controls whether playback repeats within the scope.
 

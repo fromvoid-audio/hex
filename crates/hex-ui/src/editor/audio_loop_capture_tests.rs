@@ -81,6 +81,88 @@ fn open(cx: &mut TestAppContext, start_edge: bool) -> Fixture {
     }
 }
 #[gpui::test]
+fn dragging_audio_scope_body_moves_both_edges_and_keeps_released_gate(cx: &mut TestAppContext) {
+    let Fixture {
+        mut visual,
+        editor,
+        width,
+        clip,
+        ..
+    } = open(cx, true);
+    editor.update(&mut visual, |v, _| {
+        assert!(v.enqueue(Request::Edit(Command::ResizeAudioClipView {
+            clip,
+            operation: AudioViewResizeOperation::ScopeRange {
+                start: 24_000,
+                end: 72_000,
+                looping: false,
+            },
+        })));
+    });
+    crate::editor::clip_drag_ui_test::pump_move(&editor, &mut visual);
+    let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
+    let selector = Box::leak(format!("clip-visual-{}", clip.value()).into_boxed_str());
+    let original = visual.debug_bounds(selector).unwrap();
+    let down = visual.debug_bounds("audio-scope-body").unwrap().center();
+    // One full viewport of motion overshoots the retained source and clamps.
+    let up = down + point(width, px(0.));
+    for cancel in [true, false] {
+        visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(up, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        let held = visual.debug_bounds(selector).unwrap();
+        assert!(held.left() > original.left());
+        assert_eq!(held.size.width, original.size.width);
+        editor.read_with(&visual, |v, _| {
+            let g = v.clip_loop.audio_gesture.as_ref().unwrap();
+            assert_eq!(g.preview, (48_000, 96_000));
+            assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
+        });
+        if cancel {
+            visual.simulate_keystrokes("escape");
+        }
+        visual.simulate_mouse_up(up, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        if cancel {
+            assert_eq!(visual.debug_bounds(selector).unwrap(), original);
+            assert!(editor.read_with(&visual, |v, _| !v.edit_pending()));
+            continue;
+        }
+        let terminal = crate::editor::clip_editor_loop_ui_tests::hold(&editor, &mut visual);
+        assert!(
+            terminal.request_complete && terminal.error.is_none(),
+            "{:?}",
+            terminal.error
+        );
+        for _ in 0..3 {
+            editor.update(&mut visual, |_, cx| cx.notify());
+            visual.run_until_parked();
+            assert_eq!(visual.debug_bounds(selector).unwrap(), held);
+        }
+        editor.update(&mut visual, |v, cx| {
+            v.receive(terminal);
+            cx.notify();
+        });
+        visual.run_until_parked();
+        assert_eq!(visual.debug_bounds(selector).unwrap(), held);
+    }
+    let after = editor.read_with(&visual, |v, _| {
+        let project = &v.state.as_ref().unwrap().project;
+        let clip = project.clip(clip).unwrap();
+        assert_eq!((clip.start(), clip.duration()), (48_000, 48_000));
+        project.snapshot()
+    });
+    assert_ne!(after, before);
+    for (key, expected) in [("cmd-z", before), ("cmd-shift-z", after)] {
+        visual.simulate_keystrokes(key);
+        crate::editor::clip_drag_ui_test::pump_move(&editor, &mut visual);
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(v.state.as_ref().unwrap().project.snapshot(), expected);
+        });
+    }
+}
+
+#[gpui::test]
 fn audio_loop_start_edge_keeps_input_and_pending_receipt_separate(cx: &mut TestAppContext) {
     assert_audio_loop_receipt(cx, true);
 }
