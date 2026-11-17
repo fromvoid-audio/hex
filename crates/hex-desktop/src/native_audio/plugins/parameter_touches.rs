@@ -70,6 +70,26 @@ fn continue_stopped_read(
     }
 }
 
+enum ReceiptProgress {
+    Waiting,
+    ReadyBacklog,
+    Recover(AppliedAudioSource),
+}
+
+fn poll_source_turn(
+    allow_followup: bool,
+    mut poll: impl FnMut() -> ReceiptProgress,
+) -> Option<AppliedAudioSource> {
+    match poll() {
+        ReceiptProgress::Recover(source) => Some(source),
+        ReceiptProgress::ReadyBacklog if allow_followup => match poll() {
+            ReceiptProgress::Recover(source) => Some(source),
+            ReceiptProgress::Waiting | ReceiptProgress::ReadyBacklog => None,
+        },
+        ReceiptProgress::Waiting | ReceiptProgress::ReadyBacklog => None,
+    }
+}
+
 #[derive(Default)]
 pub(super) struct PollSchedule {
     ordinary: usize,
@@ -129,12 +149,14 @@ impl PollSchedule {
 }
 
 impl Plugins {
-    /// Poll at most two distinct original workers per control turn, without
+    /// Select at most two distinct original workers per control turn, without
     /// waiting. Ordinary polling retains its 10ms cadence and recording-first
     /// selection, otherwise rotating over all accepted current sources. One extra
     /// round-robin poll progresses an open editor, admitted read or receipt backlog,
     /// excluding the recording source. Idle inventory cannot delay that rotation.
     /// A recovery notice stops the turn before another source is polled.
+    /// During playback, each non-recording source may also submit one more
+    /// read after delivering a live batch that reports ready edits.
     ///
     /// Ordinary resident graphs retain stopped-edit flushing and latency recovery.
     /// Other retained sources observe without opting into that recovery contract.
@@ -171,13 +193,17 @@ impl Plugins {
             self.parameter_poll
                 .select(&self.sources, context.project_generation, recording, now);
         for index in selected.into_iter().flatten() {
-            if let Some(notice) = self.poll_parameter_source(
-                control,
-                active,
-                recovery && recording.is_none(),
-                index,
-                now,
-            ) {
+            let allow_followup = recording != Some(self.sources[index].binding)
+                && control.status.playing.load(Acquire);
+            if let Some(notice) = poll_source_turn(allow_followup, || {
+                self.poll_parameter_source(
+                    control,
+                    active,
+                    recovery && recording.is_none(),
+                    index,
+                    now,
+                )
+            }) {
                 return Some(notice);
             }
         }
@@ -191,7 +217,7 @@ impl Plugins {
         recovery: bool,
         index: usize,
         now: Instant,
-    ) -> Option<AppliedAudioSource> {
+    ) -> ReceiptProgress {
         let source = &mut self.sources[index];
         let pending_read = source.edit_recovery;
         let requested_recovery = pending_read.map(|read| read.recovery).unwrap_or(recovery);
@@ -209,6 +235,7 @@ impl Plugins {
                     })
                 })
         };
+        let live = result.is_ok();
         let result = continue_stopped_read(result, pending_read, |mode| {
             control.poll_native_source_stopped_edits_on_control(source.binding, mode)
         });
@@ -235,9 +262,9 @@ impl Plugins {
                     let _ = log.record_typed(hex_diagnostics::Level::Warn, hex_diagnostics::Category::Audio,
                             &format!("vst3_editor v=1 stage=stopped_read_failed device={} binding={:?} reason={reason}", source.device, source.binding));
                 }
-                return None;
+                return ReceiptProgress::Waiting;
             }
-            Err(_) => return None, // Busy preserves the admitted request and prior touch.
+            Err(_) => return ReceiptProgress::Waiting, // Busy preserves the admitted request and prior touch.
         };
         if let Some(batch) = batch {
             source.edit_backlog = batch.edits.pending != 0;
@@ -279,10 +306,13 @@ impl Plugins {
                 })
             {
                 self.latency_notice = Some((active, now));
-                return Some(active);
+                return ReceiptProgress::Recover(active);
+            }
+            if live && batch.edits.ready != 0 && !batch.edits.as_slice().is_empty() {
+                return ReceiptProgress::ReadyBacklog;
             }
         }
-        None
+        ReceiptProgress::Waiting
     }
 
     pub fn take_parameter_touch(&mut self) -> Option<EditorAudioEvent> {
@@ -349,6 +379,32 @@ mod tests {
         };
         let sources = (1..=24).map(|id| source(id, active, 42)).collect();
         (active, sources)
+    }
+
+    #[test]
+    fn delivered_live_backlog_can_request_again_before_the_next_turn() {
+        let (active, _) = scheduling_sources();
+        let mut reads = [
+            ReceiptProgress::ReadyBacklog,
+            ReceiptProgress::ReadyBacklog,
+            ReceiptProgress::Recover(active),
+        ]
+        .into_iter();
+        assert_eq!(poll_source_turn(true, || reads.next().unwrap()), None);
+        assert!(matches!(reads.next(), Some(ReceiptProgress::Recover(_))));
+
+        for (allow_followup, first) in [
+            (true, ReceiptProgress::Waiting),
+            (false, ReceiptProgress::ReadyBacklog),
+            (true, ReceiptProgress::Recover(active)),
+        ] {
+            let expected = matches!(first, ReceiptProgress::Recover(_)).then_some(active);
+            let mut reads = Some(first);
+            assert_eq!(
+                poll_source_turn(allow_followup, || reads.take().unwrap()),
+                expected
+            );
+        }
     }
 
     #[test]
