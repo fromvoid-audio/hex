@@ -945,3 +945,478 @@ fn verified_region_rejects_mismatched_source_extent_and_cancel() {
     );
     assert_eq!(reader.raw_page_reads(), before);
 }
+
+fn cursor_read(
+    cursor: &mut hex_stream::VerifiedGranularCursor,
+    reader: &mut VerifiedWavReader,
+    plan: &ResamplePlan,
+    raw: &mut [[f32; 2]],
+    cache: &mut [[f32; 2]],
+    grain: &mut [[f64; 2]],
+    count: usize,
+) -> Vec<[f32; 2]> {
+    let mut output = vec![[0.0; 2]; count];
+    let mut at = 0;
+    while at < count {
+        if cursor.available() == 0 {
+            cursor
+                .advance(
+                    reader,
+                    plan,
+                    hex_stream::VerifiedGranularBuffers {
+                        source: raw,
+                        cache,
+                        grain,
+                    },
+                    || false,
+                )
+                .unwrap();
+        }
+        let n = cursor.available().min(count - at);
+        cursor.drain(&mut output[at..at + n]).unwrap();
+        at += n;
+    }
+    output
+}
+
+#[test]
+fn verified_granular_seek_replays_exact_looped_pcm_in_bounded_calls() {
+    use hex_stream::{
+        GranularSeekProgress, VerifiedGranularBuffers, VerifiedGranularCursor,
+        scan_verified_granular_region_on_control,
+    };
+    use hex_warp::{GainPoint, MAX_SCRATCH_BYTES, Mode, Resampler, SourceRegion};
+    let (wav, pcm) = Wav::create(8192, false);
+    let resident = resample_with_version(
+        &Audio::new(48_000, pcm).unwrap(),
+        44_100,
+        ResampleLimits {
+            max_source_frames: 8192,
+            max_output_frames: 16384,
+        },
+        ResampleVersion::V2,
+    )
+    .unwrap();
+    let (mut reader, plan, metadata) = setup(&wav, 8192, 44_100, ResampleVersion::V2);
+    let mut raw = vec![[0.0; 2]; 8192];
+    let mut cache = vec![[0.0; 2]; 8192];
+    let gain = vec![
+        GainPoint {
+            source_frame: 0,
+            gain_q16: 65_536,
+        },
+        GainPoint {
+            source_frame: 6000,
+            gain_q16: 16_384,
+        },
+    ];
+    let region =
+        SourceRegion::new(plan.output_frames(), 197, 5000, 4900, true, gain.clone()).unwrap();
+    let reference = scan_verified_granular_region_on_control(
+        &metadata,
+        region,
+        &mut reader,
+        &plan,
+        &mut raw,
+        &mut cache,
+        || false,
+    )
+    .unwrap();
+    let started = std::time::Instant::now();
+    let before = reader.raw_page_reads();
+    for mode in [
+        Mode::Tones { grain_ms: 8 },
+        Mode::Texture {
+            grain_ms: 8,
+            fluctuation: 35,
+            seed: 42,
+        },
+    ] {
+        for law in [Resampler::V1, Resampler::V2] {
+            let map = granular_map(1024);
+            let expected = hex_warp::render_with_resampler(
+                &hex_warp::Request {
+                    attacks: &[],
+                    input: hex_warp::Input {
+                        frames: resident.frames(),
+                        sample_rate: 44_100,
+                        region_start: 197,
+                        region_length: 5000,
+                        phase: 4900,
+                        looping: true,
+                        envelope: &gain,
+                    },
+                    map: &map,
+                    output_frames: 1024,
+                    pitch_cents: 300,
+                    mode,
+                },
+                law,
+                &mut || false,
+            )
+            .unwrap()
+            .frames;
+            let state =
+                granular_state(plan.output_frames(), 44_100, mode, law, reference.channel());
+            let mut cursor = VerifiedGranularCursor::new(state, reference.clone()).unwrap();
+            let mut grain = vec![[0.0; 2]; cursor.max_source_frames()];
+            let start = cursor.checkpoint(MAX_SCRATCH_BYTES).unwrap();
+            let first = cursor_read(
+                &mut cursor,
+                &mut reader,
+                &plan,
+                &mut raw,
+                &mut cache,
+                &mut grain,
+                512,
+            );
+            let middle = cursor.checkpoint(MAX_SCRATCH_BYTES).unwrap();
+            let later = cursor_read(
+                &mut cursor,
+                &mut reader,
+                &plan,
+                &mut raw,
+                &mut cache,
+                &mut grain,
+                512,
+            );
+            assert_eq!(first, expected[..512]);
+            assert_eq!(later, expected[512..]);
+            let mut discard = [[0.0; 2]; 31];
+            assert!(matches!(
+                cursor.begin_seek(&middle, 520, 8, &mut reader, &plan, || false),
+                Ok(GranularSeekProgress::Pending { position: 512 })
+            ));
+            let kernel = ResampleKernel::with_version(48_000, 44_100, ResampleVersion::V1).unwrap();
+            let wrong = ResamplePlan::with_kernel(kernel, 8192, 8192, 16384, 4096).unwrap();
+            assert_eq!(
+                cursor.continue_seek(
+                    &mut reader,
+                    &wrong,
+                    VerifiedGranularBuffers {
+                        source: &mut raw,
+                        cache: &mut cache,
+                        grain: &mut grain
+                    },
+                    &mut discard,
+                    1,
+                    || false
+                ),
+                Err(hex_stream::VerifiedGranularStepError::Source(
+                    StreamFailureKind::UnknownSource
+                ))
+            );
+            assert_eq!(
+                cursor.continue_seek(
+                    &mut reader,
+                    &plan,
+                    VerifiedGranularBuffers {
+                        source: &mut raw,
+                        cache: &mut cache,
+                        grain: &mut grain
+                    },
+                    &mut discard,
+                    1,
+                    || true
+                ),
+                Err(hex_stream::VerifiedGranularStepError::Source(
+                    StreamFailureKind::Cancelled
+                ))
+            );
+            assert_eq!(cursor.position(), 512);
+            let old_position = cursor.position();
+            assert!(matches!(
+                cursor.begin_seek(&middle, 511, 1, &mut reader, &plan, || false),
+                Err(hex_stream::VerifiedGranularStepError::Warp(
+                    hex_warp::Error::Invalid(_)
+                ))
+            ));
+            assert_eq!(cursor.position(), old_position);
+            let seek_reads = reader.raw_page_reads();
+            let seek_started = std::time::Instant::now();
+            assert_eq!(
+                cursor
+                    .begin_seek(&start, 256, 256, &mut reader, &plan, || false)
+                    .unwrap(),
+                GranularSeekProgress::Pending { position: 0 }
+            );
+            assert_eq!(cursor.available(), 0);
+            assert!(cursor.drain(&mut []).is_err());
+            let mut pending = 0;
+            loop {
+                match cursor
+                    .continue_seek(
+                        &mut reader,
+                        &plan,
+                        VerifiedGranularBuffers {
+                            source: &mut raw,
+                            cache: &mut cache,
+                            grain: &mut grain,
+                        },
+                        &mut discard,
+                        1,
+                        || false,
+                    )
+                    .unwrap()
+                {
+                    GranularSeekProgress::Pending { .. } => pending += 1,
+                    GranularSeekProgress::Reached { position } => {
+                        assert_eq!(position, 256);
+                        break;
+                    }
+                }
+            }
+            assert!(pending > 0);
+            eprintln!(
+                "verified_seek_replay mode={mode:?} law={law:?} target=256 from=0 pending_calls={pending} elapsed_us={} verified_reads={}",
+                seek_started.elapsed().as_micros(),
+                reader.raw_page_reads() - seek_reads
+            );
+            assert_eq!(
+                cursor_read(
+                    &mut cursor,
+                    &mut reader,
+                    &plan,
+                    &mut raw,
+                    &mut cache,
+                    &mut grain,
+                    256
+                ),
+                first[256..]
+            );
+            assert_eq!(
+                cursor
+                    .begin_seek(&middle, 768, 256, &mut reader, &plan, || false)
+                    .unwrap(),
+                GranularSeekProgress::Pending { position: 512 }
+            );
+            loop {
+                if matches!(
+                    cursor
+                        .continue_seek(
+                            &mut reader,
+                            &plan,
+                            VerifiedGranularBuffers {
+                                source: &mut raw,
+                                cache: &mut cache,
+                                grain: &mut grain
+                            },
+                            &mut discard,
+                            1,
+                            || false
+                        )
+                        .unwrap(),
+                    GranularSeekProgress::Reached { .. }
+                ) {
+                    break;
+                }
+            }
+            assert_eq!(
+                cursor_read(
+                    &mut cursor,
+                    &mut reader,
+                    &plan,
+                    &mut raw,
+                    &mut cache,
+                    &mut grain,
+                    256
+                ),
+                later[256..]
+            );
+        }
+    }
+    eprintln!(
+        "verified_seek rate=44100 loop=5000 phase=4900 modes=2 laws=2 targets=2 preroll=256 steps=1 elapsed_ms={} verified_reads={}",
+        started.elapsed().as_millis(),
+        reader.raw_page_reads() - before
+    );
+}
+
+#[test]
+fn verified_granular_seek_rejects_invalid_source_budget_and_foreign_marks() {
+    use hex_stream::{
+        GranularSeekProgress, VerifiedGranularBuffers, VerifiedGranularCursor,
+        VerifiedGranularStepError,
+    };
+    use hex_warp::{Error, MAX_SCRATCH_BYTES, Mode, Resampler};
+    let (wav, _) = Wav::create(8192, false);
+    let (mut reader, plan, meta) = setup(&wav, 8192, 48_000, ResampleVersion::V1);
+    let mut raw = vec![[0.0; 2]; 8192];
+    let mut cache = vec![[0.0; 2]; 2048];
+    let reference =
+        scan_reference_channel_on_control(&meta, &mut reader, &plan, &mut raw, &mut cache, || {
+            false
+        })
+        .unwrap();
+    let mut dirty = granular_state(
+        plan.output_frames(),
+        48_000,
+        Mode::Tones { grain_ms: 8 },
+        Resampler::V1,
+        reference.channel(),
+    );
+    let mut dirty_grain = vec![[0.0; 2]; dirty.max_source_frames()];
+    hex_stream::advance_verified_granular_on_control(
+        &mut dirty,
+        &reference,
+        &mut reader,
+        &plan,
+        VerifiedGranularBuffers {
+            source: &mut raw,
+            cache: &mut cache,
+            grain: &mut dirty_grain,
+        },
+        || false,
+    )
+    .unwrap();
+    assert!(!dirty.is_pristine());
+    assert!(matches!(
+        VerifiedGranularCursor::new(dirty, reference.clone()),
+        Err(Error::Invalid(_))
+    ));
+    let mut cursor = VerifiedGranularCursor::new(
+        granular_state(
+            plan.output_frames(),
+            48_000,
+            Mode::Tones { grain_ms: 8 },
+            Resampler::V1,
+            reference.channel(),
+        ),
+        reference.clone(),
+    )
+    .unwrap();
+    let other = VerifiedGranularCursor::new(
+        granular_state(
+            plan.output_frames(),
+            48_000,
+            Mode::Tones { grain_ms: 8 },
+            Resampler::V1,
+            reference.channel(),
+        ),
+        reference,
+    )
+    .unwrap();
+    let foreign = other.checkpoint(MAX_SCRATCH_BYTES).unwrap();
+    let mark = cursor.checkpoint(MAX_SCRATCH_BYTES).unwrap();
+    let mut grain = vec![[0.0; 2]; cursor.max_source_frames()];
+    assert!(matches!(
+        cursor.begin_seek(&foreign, 10, 10, &mut reader, &plan, || false),
+        Err(VerifiedGranularStepError::Warp(Error::Invalid(_)))
+    ));
+    assert!(matches!(
+        cursor.begin_seek(&mark, 100, 99, &mut reader, &plan, || false),
+        Err(VerifiedGranularStepError::Warp(Error::Invalid(_)))
+    ));
+    assert!(matches!(
+        cursor.begin_seek(
+            &mark,
+            10,
+            hex_stream::MAX_GRANULAR_PREROLL_FRAMES + 1,
+            &mut reader,
+            &plan,
+            || false
+        ),
+        Err(VerifiedGranularStepError::Warp(Error::Invalid(_)))
+    ));
+    assert!(matches!(
+        cursor.begin_seek(
+            &mark,
+            plan.output_frames() + 1,
+            plan.output_frames() + 1,
+            &mut reader,
+            &plan,
+            || false
+        ),
+        Err(VerifiedGranularStepError::Warp(Error::Invalid(_)))
+    ));
+    assert_eq!(cursor.position(), 0);
+    let kernel = ResampleKernel::with_version(48_000, 48_000, ResampleVersion::V2).unwrap();
+    let wrong_plan = ResamplePlan::with_kernel(kernel, 8192, 8192, 16384, 4096).unwrap();
+    assert_eq!(
+        cursor.begin_seek(&mark, 10, 10, &mut reader, &wrong_plan, || false),
+        Err(VerifiedGranularStepError::Source(
+            StreamFailureKind::UnknownSource
+        ))
+    );
+    assert_eq!(
+        cursor
+            .begin_seek(&mark, 100, 100, &mut reader, &plan, || false)
+            .unwrap(),
+        GranularSeekProgress::Pending { position: 0 }
+    );
+    let mut discard = [[0.0; 2]; 32];
+    assert!(matches!(
+        cursor.continue_seek(
+            &mut reader,
+            &plan,
+            VerifiedGranularBuffers {
+                source: &mut raw,
+                cache: &mut cache,
+                grain: &mut grain
+            },
+            &mut discard,
+            0,
+            || false
+        ),
+        Err(VerifiedGranularStepError::Warp(Error::Invalid(_)))
+    ));
+    let cancelled = cursor.continue_seek(
+        &mut reader,
+        &plan,
+        VerifiedGranularBuffers {
+            source: &mut raw,
+            cache: &mut cache,
+            grain: &mut grain,
+        },
+        &mut discard,
+        1,
+        || true,
+    );
+    assert!(matches!(
+        cancelled,
+        Err(VerifiedGranularStepError::Warp(Error::Cancelled))
+            | Err(VerifiedGranularStepError::Source(
+                StreamFailureKind::Cancelled
+            ))
+    ));
+    assert_eq!(cursor.seek_target(), Some(100));
+    assert!(!cursor.is_poisoned());
+    loop {
+        if matches!(
+            cursor
+                .continue_seek(
+                    &mut reader,
+                    &plan,
+                    VerifiedGranularBuffers {
+                        source: &mut raw,
+                        cache: &mut cache,
+                        grain: &mut grain
+                    },
+                    &mut discard,
+                    1,
+                    || false
+                )
+                .unwrap(),
+            GranularSeekProgress::Reached { position: 100 }
+        ) {
+            break;
+        }
+    }
+    assert_eq!(
+        cursor
+            .begin_seek(&mark, 100, 100, &mut reader, &plan, || false)
+            .unwrap(),
+        GranularSeekProgress::Pending { position: 0 }
+    );
+    let mut file = OpenOptions::new().write(true).open(&wav.0).unwrap();
+    file.seek(SeekFrom::Start(44)).unwrap();
+    file.write_all(&[1, 2, 3, 4]).unwrap();
+    drop(file);
+    assert_eq!(
+        cursor.begin_seek(&mark, 10, 10, &mut reader, &plan, || false),
+        Err(VerifiedGranularStepError::Source(
+            StreamFailureKind::SourceChanged
+        ))
+    );
+    assert_eq!(cursor.seek_target(), Some(100));
+}
