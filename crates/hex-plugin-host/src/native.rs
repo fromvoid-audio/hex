@@ -26,7 +26,7 @@ use hex_plugin_scan::macos::{
 };
 use hex_plugin_state::{BinaryIdentity, ClassId, Identity};
 use std::{
-    io::Cursor,
+    io::{Cursor, Read},
     os::{fd::OwnedFd, unix::net::UnixStream},
     path::Path,
     process::{Child, Command, ExitStatus, Stdio},
@@ -43,6 +43,7 @@ pub struct Source {
     executable: Executable,
     identity: Identity,
     grouped_editor_callbacks: bool,
+    transport_space: bool,
 }
 impl Source {
     pub fn inspect_on_control(path: &Path, executable: &str, class: ClassId) -> Result<Self> {
@@ -60,12 +61,17 @@ impl Source {
             executable,
             identity,
             grouped_editor_callbacks: false,
+            transport_space: false,
         })
     }
     /// Explicit opt-in on the exact inspected source before the SDK creates
     /// its component handler. This enables callbacks, not recording custody.
     pub fn with_grouped_editor_callbacks(mut self) -> Self {
         self.grouped_editor_callbacks = true;
+        self
+    }
+    pub fn with_transport_space(mut self) -> Self {
+        self.transport_space = true;
         self
     }
     pub fn identity(&self) -> Identity {
@@ -141,6 +147,9 @@ pub struct PreparationCancellation {
 impl PreparationCancellation {
     pub fn new_on_control() -> Result<Self> {
         let (sender, receiver) = UnixStream::pair().map_err(Error::Io)?;
+        // Only the parent reads shortcuts and shuts down its write half. The
+        // helper's distinct socket still blocks in its cancellation guardian.
+        sender.set_nonblocking(true).map_err(Error::Io)?;
         Ok(Self {
             token: Cancellation {
                 stream: Arc::new(sender),
@@ -159,6 +168,14 @@ pub struct Cancellation {
     cancelled: Arc<AtomicBool>,
 }
 impl Cancellation {
+    /// One editor Space token on the helper-to-parent half of this exact
+    /// source's socket. The parent-to-helper half remains cancellation only.
+    pub fn take_transport_space_on_control(&self) -> bool {
+        let mut token = [0];
+        !self.cancelled.load(Ordering::Acquire)
+            && self.stream.as_ref().read(&mut token).ok() == Some(1)
+            && token == [1]
+    }
     /// Test-only lifetime observation; never resource provenance or admission.
     /// A weak observer cannot keep the descriptor payload alive.
     #[cfg(feature = "test-support")]
@@ -423,6 +440,10 @@ impl Pending {
         let mut command = Command::new(build.helper());
         command
             .arg("--supervised")
+            .env(
+                "HEX_VST3_TRANSPORT_SPACE",
+                if source.transport_space { "1" } else { "0" },
+            )
             .stdin(Stdio::from(OwnedFd::from(child_data)))
             .stdout(Stdio::from(OwnedFd::from(child_cancel)))
             .stderr(Stdio::null());

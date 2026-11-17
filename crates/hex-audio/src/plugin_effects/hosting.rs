@@ -70,6 +70,7 @@ pub struct Hosting {
     build: InstanceBuild,
     limits: native::Limits,
     grouped_editor_callbacks: bool,
+    transport_space: bool,
 }
 impl Hosting {
     /// Prepare a private offline source. Its reserved root is never admitted
@@ -221,6 +222,7 @@ impl Hosting {
         Ok(Self {
             build: InstanceBuild::inspect(receipt)?,
             grouped_editor_callbacks: false,
+            transport_space: false,
             limits: native::Limits {
                 startup: Duration::from_secs(3),
                 exchange: Duration::from_secs(1),
@@ -248,6 +250,7 @@ impl Hosting {
         Self {
             build: package.build,
             grouped_editor_callbacks: false,
+            transport_space: false,
             limits: native::Limits {
                 startup: Duration::from_secs(30),
                 exchange: Duration::from_secs(1),
@@ -261,12 +264,17 @@ impl Hosting {
             build,
             limits,
             grouped_editor_callbacks: false,
+            transport_space: false,
         }
     }
     /// Opt in before a live SDK controller is constructed. This grants no
     /// recorder scope and does not affect the isolated offline constructor.
     pub fn with_grouped_editor_callbacks(mut self) -> Self {
         self.grouped_editor_callbacks = true;
+        self
+    }
+    pub fn with_transport_space(mut self) -> Self {
+        self.transport_space = true;
         self
     }
     /// Begin an explicit user-selected effect, including restoration of its
@@ -297,6 +305,11 @@ impl Hosting {
         let source = selection.inspect_on_control()?;
         let source = if self.grouped_editor_callbacks {
             source.with_grouped_editor_callbacks()
+        } else {
+            source
+        };
+        let source = if self.transport_space {
+            source.with_transport_space()
         } else {
             source
         };

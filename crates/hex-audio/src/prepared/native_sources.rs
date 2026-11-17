@@ -1039,6 +1039,14 @@ impl PublicationControl {
         }
         self.candidate_root.native_source_endpoint_status(binding)
     }
+    /// Consume at most one editor Space press from the exact accepted helper.
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub fn take_native_source_transport_space(&self, binding: Binding) -> bool {
+        !self.status.closing.load(Acquire)
+            && self
+                .candidate_root
+                .take_native_source_transport_space(binding)
+    }
     /// Drain one best-effort sample from this exact active native source.
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     pub fn take_native_source_slow_exchange(

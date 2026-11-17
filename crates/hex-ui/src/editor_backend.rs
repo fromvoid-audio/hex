@@ -79,6 +79,8 @@ pub enum EditorAudioEvent {
     NativeLatencyRestart {
         source: hex_audio::prepared::AppliedAudioSource,
     },
+    /// A plain Space press reserved by the focused native VST3 editor.
+    PluginTransportToggle { project_generation: u64 },
     /// Latest native editor touch observed on an exact retained source. This
     /// carries an optional SDK-confirmed Perform value for immediate display.
     /// Controller pages still own metadata and edit authority.

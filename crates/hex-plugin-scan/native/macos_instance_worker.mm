@@ -192,8 +192,10 @@ public:
     bool start() {
         channel=::dup(STDOUT_FILENO);if(channel<0) return false;
         int kind=0;socklen_t size=sizeof kind;
+        const int enabled=1;
         if(::fcntl(channel,F_SETFD,FD_CLOEXEC)<0 ||
-            ::getsockopt(channel,SOL_SOCKET,SO_TYPE,&kind,&size)!=0 || kind!=SOCK_STREAM) {
+            ::getsockopt(channel,SOL_SOCKET,SO_TYPE,&kind,&size)!=0 || kind!=SOCK_STREAM ||
+            ::setsockopt(channel,SOL_SOCKET,SO_NOSIGPIPE,&enabled,sizeof enabled)!=0) {
             ::close(channel);channel=-1;return false;
         }
         try {
@@ -204,6 +206,12 @@ public:
             });
         } catch(...) { ::close(channel);channel=-1;return false; }
         return true;
+    }
+    // Reverse direction only. Never stall the AppKit lane or encode a
+    // transport key as a cancellation, controller or audio message.
+    void send_transport_press() const {
+        const uint8_t press=1;
+        if(channel>=0) (void)::send(channel,&press,1,MSG_DONTWAIT);
     }
     ~CancellationGuardian() {
         if(channel<0) return;
@@ -281,6 +289,8 @@ int main(int argc,char** argv) {
     const bool editor_groups=argc==3 && !std::strcmp(argv[2],"--test-grouped-editor");
     const bool supervised=(argc==2 || offline || editor_groups) && !std::strcmp(argv[1],"--supervised");
     if(argc!=1 && !supervised) return Configuration;
+    const auto* transport_space=std::getenv("HEX_VST3_TRANSPORT_SPACE");
+    const bool reserve_space=supervised && !offline && transport_space && !std::strcmp(transport_space,"1");
     const auto process_mode=offline?kOffline:kRealtime;
     // Static lifetime keeps cancellation live through main-thread TLS/atexit
     // cleanup registered by subsequently loaded SDK modules, not just main.
@@ -1403,7 +1413,8 @@ int main(int argc,char** argv) {
                         std::_Exit(Cancelled);
                     }
                     try {
-                        if(!editor.pump()) control_failure(Teardown);
+                        if(!editor.pump(reserve_space,[&] { guardian.send_transport_press(); }))
+                            control_failure(Teardown);
                     } catch(...) {
                         editor.quarantine();
                         control_failure(Unexpected);

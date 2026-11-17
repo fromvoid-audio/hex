@@ -669,6 +669,13 @@ impl EditorView {
             };
             crate::diagnostics::record_audio_backend_event(cx, &event);
             match event {
+                crate::EditorAudioEvent::PluginTransportToggle { project_generation } => {
+                    if project_generation == self.project_generation {
+                        let _scope = crate::diagnostics::action_scope(cx, "hex_editor::TogglePlay");
+                        self.toggle_play();
+                        changed = true;
+                    }
+                }
                 crate::EditorAudioEvent::PluginParameterTouched {
                     source,
                     binding,
