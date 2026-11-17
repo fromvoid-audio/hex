@@ -112,6 +112,7 @@ pub(crate) fn bounce_with_config(
             ))
         },
         request.repitches(),
+        GranularCapture::Captured(request.granulars()),
         Some(request.path()),
         config,
         request.control(),
@@ -164,9 +165,60 @@ fn media(error: impl std::fmt::Display) -> ExportError {
     ExportError::Media(error.to_string())
 }
 
+/// Canonical export and retained ordinary inputs share exact root projection;
+/// neither form authorizes readers, workers, native domains or page loans.
+#[derive(Clone, Copy)]
+enum GranularCapture<'a> {
+    Canonical(&'a hex_session::service::CanonicalAudioSourceSnapshot),
+    Captured(&'a [hex_engine::audio_transform::StreamedGranularRequirement]),
+}
+impl GranularCapture<'_> {
+    fn root_for(
+        &self,
+        expected: &hex_engine::StreamedSourceMetadata,
+        file: &VerifiedAudioFile,
+        control: &impl Cancellation,
+    ) -> Result<hex_engine::audio_transform::StreamedGranularRoot, ExportError> {
+        let raw = file
+            .source_metadata(expected.key().asset(), expected.key().generation())
+            .map_err(ExportError::Render)?;
+        if !expected.is_granular_of(&raw) {
+            return Err(ExportError::Invalid("granular export source facts differ"));
+        }
+        match self {
+            Self::Canonical(source) => {
+                for result in source.required_granular_roots(expected.key().generation()) {
+                    check(control)?;
+                    let (candidate, root) = result.map_err(ExportError::Render)?;
+                    if candidate == file && root.metadata() == expected {
+                        return Ok(root);
+                    }
+                }
+            }
+            Self::Captured(requirements) => {
+                for requirement in *requirements {
+                    check(control)?;
+                    if requirement
+                        .metadata_for(&raw)
+                        .is_ok_and(|metadata| &metadata == expected)
+                    {
+                        return requirement
+                            .try_owned_root(&raw, &AtomicBool::new(false))
+                            .map_err(ExportError::Render);
+                    }
+                }
+            }
+        }
+        Err(ExportError::Invalid(
+            "verified granular requirement missing or differs",
+        ))
+    }
+}
+
 struct VerifiedPages {
     config: StreamConfig,
     definitions: Option<Vec<SourceDefinition>>,
+    granulars: Option<Vec<hex_engine::audio_transform::StreamedGranularRoot>>,
     files: Vec<(StreamSourceKey, VerifiedAudioFile)>,
     runtime: Option<StreamRuntime>,
     extents: Vec<StreamPageExtent>,
@@ -353,6 +405,7 @@ impl VerifiedPages {
                 )),
             },
             &requirements,
+            GranularCapture::Canonical(request.source()),
             Some(request.path()),
             capture_config,
             request.control(),
@@ -365,6 +418,7 @@ impl VerifiedPages {
         prepared: &hex_engine::PreparedRevision,
         mut file_for: impl FnMut(StreamSourceKey) -> Result<&'a VerifiedAudioFile, ExportError>,
         repitches: &[hex_engine::audio_transform::StreamedRepitchRequirement],
+        granular_capture: GranularCapture<'_>,
         destination: Option<&std::path::Path>,
         config: StreamConfig,
         control: &impl Cancellation,
@@ -393,7 +447,41 @@ impl VerifiedPages {
             None => None,
         };
         let mut definitions: Vec<SourceDefinition> = Vec::new();
-        let mut files = Vec::new();
+        let mut files: Vec<(StreamSourceKey, VerifiedAudioFile)> = Vec::new();
+        let mut granulars: Vec<hex_engine::audio_transform::StreamedGranularRoot> = Vec::new();
+        let has_granular = prepared
+            .arrangement_stream_sources()
+            .any(|m| m.key().granular_identity().is_some());
+        let root_slots = if has_granular {
+            if config.page_buffers < 3 {
+                return Err(ExportError::Invalid(
+                    "granular export requires three pool pages",
+                ));
+            }
+            let bytes = config
+                .max_sources
+                .checked_mul(std::mem::size_of::<
+                    hex_engine::audio_transform::StreamedGranularRoot,
+                >())
+                .ok_or(ExportError::Invalid("granular root slots overflow"))?;
+            if bytes > config.max_kernel_table_bytes {
+                return Err(ExportError::Invalid(
+                    "granular metadata reservation exceeded",
+                ));
+            }
+            granulars
+                .try_reserve_exact(config.max_sources)
+                .map_err(media)?;
+            granulars
+                .capacity()
+                .checked_mul(std::mem::size_of::<
+                    hex_engine::audio_transform::StreamedGranularRoot,
+                >())
+                .ok_or(ExportError::Invalid("granular root slots overflow"))?
+        } else {
+            0
+        };
+        let mut granular_map_bytes = 0usize;
         definitions
             .try_reserve_exact(config.max_sources)
             .map_err(media)?;
@@ -414,6 +502,7 @@ impl VerifiedPages {
                 .source_metadata(metadata.key().asset(), metadata.key().generation())
                 .map_err(ExportError::Render)?;
             let mut repitch = None;
+            let mut is_granular = false;
             let expected = match metadata.key().pitch() {
                 Some((cents, law)) => original
                     .with_plain_pitch(cents, law)
@@ -436,6 +525,10 @@ impl VerifiedPages {
                         .metadata_for(&original)
                         .map_err(ExportError::Render)?
                 }
+                None if metadata.key().granular_identity().is_some() => {
+                    is_granular = true;
+                    metadata.clone()
+                }
                 None => return Err(ExportError::Invalid("unsupported derived export source")),
             };
             if expected != *metadata {
@@ -443,48 +536,93 @@ impl VerifiedPages {
                     "verified export file facts differ from compiled source",
                 ));
             }
-            match definitions.binary_search_by_key(&metadata.key(), |definition| definition.key) {
+            match files.binary_search_by_key(&metadata.key(), |(key, _)| *key) {
                 Ok(index) => {
-                    if definitions[index].metadata != *metadata {
+                    let known = definitions
+                        .iter()
+                        .any(|definition| definition.metadata == *metadata)
+                        || granulars.iter().any(|root| root.metadata() == metadata);
+                    if !known || files[index].1 != *file {
                         return Err(ExportError::Invalid("conflicting compiled export source"));
                     }
                 }
                 Err(index) => {
-                    if definitions.len() == config.max_sources {
+                    if files.len() == config.max_sources {
                         return Err(ExportError::Invalid(
                             "offline export source count exceeds its bound",
                         ));
                     }
-                    let definition = if let Some(requirement) = repitch {
-                        repitch_map_bytes = repitch_map_bytes
-                            .checked_add(
-                                requirement
-                                    .map()
-                                    .backing_bytes()
-                                    .ok_or(ExportError::Invalid("repitch map size overflow"))?,
-                            )
-                            .ok_or(ExportError::Invalid("repitch map size overflow"))?;
-                        if repitch_map_bytes > config.max_kernel_table_bytes {
-                            return Err(ExportError::Invalid("repitch map reservation exceeded"));
+                    if is_granular {
+                        let workspace =
+                            hex_engine::audio_transform::native_metadata_workspace_bytes()
+                                .ok_or(ExportError::Invalid("granular workspace overflow"))?;
+                        if root_slots
+                            .checked_add(granular_map_bytes)
+                            .and_then(|bytes| bytes.checked_add(repitch_map_bytes))
+                            .and_then(|bytes| bytes.checked_add(workspace))
+                            .is_none_or(|bytes| bytes > config.max_kernel_table_bytes)
+                        {
+                            return Err(ExportError::Invalid(
+                                "granular metadata reservation exceeded",
+                            ));
                         }
-                        let map = requirement.try_owned_map().map_err(ExportError::Render)?;
-                        check(control)?;
-                        SourceDefinition::new(
-                            file.path().to_path_buf(),
-                            original,
-                            file.reader_limits(),
-                        )
-                        .with_repitch(map, requirement.law())
-                        .map_err(ExportError::Render)?
+                        let root = granular_capture.root_for(metadata, file, control)?;
+                        granular_map_bytes = granular_map_bytes
+                            .checked_add(
+                                root.backing_bytes()
+                                    .ok_or(ExportError::Invalid("granular map size overflow"))?,
+                            )
+                            .ok_or(ExportError::Invalid("granular map size overflow"))?;
+                        if root_slots
+                            .checked_add(granular_map_bytes)
+                            .and_then(|bytes| bytes.checked_add(repitch_map_bytes))
+                            .is_none_or(|bytes| bytes > config.max_kernel_table_bytes)
+                        {
+                            return Err(ExportError::Invalid(
+                                "granular metadata reservation exceeded",
+                            ));
+                        }
+                        granulars.push(root);
                     } else {
-                        SourceDefinition::new(
-                            file.path().to_path_buf(),
-                            metadata.clone(),
-                            file.reader_limits(),
-                        )
+                        let definition = if let Some(requirement) = repitch {
+                            repitch_map_bytes = repitch_map_bytes
+                                .checked_add(
+                                    requirement
+                                        .map()
+                                        .backing_bytes()
+                                        .ok_or(ExportError::Invalid("repitch map size overflow"))?,
+                                )
+                                .ok_or(ExportError::Invalid("repitch map size overflow"))?;
+                            if repitch_map_bytes
+                                .checked_add(granular_map_bytes)
+                                .and_then(|bytes| bytes.checked_add(root_slots))
+                                .is_none_or(|bytes| bytes > config.max_kernel_table_bytes)
+                            {
+                                return Err(ExportError::Invalid(
+                                    "repitch map reservation exceeded",
+                                ));
+                            }
+                            let map = requirement.try_owned_map().map_err(ExportError::Render)?;
+                            check(control)?;
+                            SourceDefinition::new(
+                                file.path().to_path_buf(),
+                                original,
+                                file.reader_limits(),
+                            )
+                            .with_repitch(map, requirement.law())
+                            .map_err(ExportError::Render)?
+                        } else {
+                            SourceDefinition::new(
+                                file.path().to_path_buf(),
+                                metadata.clone(),
+                                file.reader_limits(),
+                            )
+                        }
+                        .with_verified_manifest(file.verified_manifest().clone());
+                        let at = definitions
+                            .partition_point(|definition| definition.key < metadata.key());
+                        definitions.insert(at, definition);
                     }
-                    .with_verified_manifest(file.verified_manifest().clone());
-                    definitions.insert(index, definition);
                     files.insert(index, (metadata.key(), file.clone()));
                 }
             }
@@ -498,12 +636,128 @@ impl VerifiedPages {
         Ok(Self {
             config,
             definitions: Some(definitions),
+            granulars: Some(granulars),
             files,
             runtime: None,
             extents,
             keys,
             missed: false,
         })
+    }
+    fn storage_bytes(&self) -> Result<usize, ExportError> {
+        let definitions = self
+            .definitions
+            .as_ref()
+            .ok_or(ExportError::Invalid("offline definitions missing"))?;
+        let bound = hex_stream::PendingStreamDomain::preparation_bound(
+            self.config,
+            definitions,
+            definitions.capacity(),
+            None,
+        )
+        .map_err(media)?;
+        let roots = self
+            .granulars
+            .as_ref()
+            .ok_or(ExportError::Invalid("offline roots missing"))?;
+        let adapter = std::mem::size_of::<Self>()
+            .checked_add(
+                self.extents
+                    .capacity()
+                    .checked_mul(std::mem::size_of::<StreamPageExtent>())
+                    .ok_or(ExportError::Invalid("seek extent quote overflow"))?,
+            )
+            .and_then(|bytes| {
+                bytes.checked_add(
+                    self.keys
+                        .capacity()
+                        .checked_mul(std::mem::size_of::<PageKey>())?,
+                )
+            })
+            .and_then(|bytes| {
+                bytes.checked_add(
+                    self.files
+                        .capacity()
+                        .checked_mul(std::mem::size_of::<(StreamSourceKey, VerifiedAudioFile)>())?,
+                )
+            })
+            .and_then(|bytes| {
+                bytes.checked_add(roots.capacity().checked_mul(std::mem::size_of::<
+                    hex_engine::audio_transform::StreamedGranularRoot,
+                >())?)
+            })
+            .and_then(|bytes| {
+                roots.iter().try_fold(bytes, |bytes, root| {
+                    bytes.checked_add(root.backing_bytes()?)
+                })
+            })
+            .ok_or(ExportError::Invalid("seek adapter quote overflow"))?;
+        let extra = if roots.is_empty() {
+            0
+        } else {
+            // Bound the shared constructor's listed per-source obligations from
+            // captured facts, without opening readers. Its processing cap is
+            // 32MiB; the public pure quote covers temporary construction too.
+            let mut bank = roots
+                .len()
+                .checked_mul(std::mem::size_of::<hex_stream::VerifiedGranularSource>())
+                .ok_or(ExportError::Invalid("granular source quote overflow"))?;
+            let mut overlap = 0usize;
+            for root in roots {
+                let index = self
+                    .files
+                    .binary_search_by_key(&root.metadata().key(), |(key, _)| *key)
+                    .map_err(|_| ExportError::Invalid("granular quote source missing"))?;
+                let file = &self.files[index].1;
+                let reader = file
+                    .path()
+                    .as_os_str()
+                    .len()
+                    .checked_add(
+                        file.reader_limits()
+                            .max_manifest_bytes
+                            .min(self.config.max_manifest_bytes),
+                    )
+                    .and_then(|bytes| {
+                        bytes.checked_add(hex_media::VerifiedWavManifest::owner_payload_bytes())
+                    })
+                    .and_then(|bytes| {
+                        bytes.checked_add(hex_media::ResampleKernel::owner_payload_bytes())
+                    })
+                    .and_then(|bytes| {
+                        bytes.checked_add(hex_media::ResampleKernel::max_table_payload_bytes())
+                    })
+                    .and_then(|bytes| bytes.checked_add(root.backing_bytes()?))
+                    .ok_or(ExportError::Invalid("granular reader quote overflow"))?;
+                let processing = 32 * 1024 * 1024;
+                let limits = hex_stream::GranularSourcePreparationLimits {
+                    source_scratch_frames: self.config.source_scratch_frames,
+                    checkpoint_entries: 8,
+                    checkpoint_budget: 16 * 1024 * 1024,
+                    max_processing_bytes: processing,
+                    max_construction_peak_bytes: 0,
+                };
+                let peak = limits
+                    .construction_processing_bound(root.metadata().project_rate())
+                    .map_err(|error| media(format!("{error:?}")))?;
+                bank = bank
+                    .checked_add(reader)
+                    .and_then(|bytes| bytes.checked_add(processing))
+                    .ok_or(ExportError::Invalid("granular bank quote overflow"))?;
+                overlap = overlap.max(peak.saturating_sub(processing));
+            }
+            bank.checked_add(overlap)
+                .map(|bytes| {
+                    bytes.min(crate::audio_policy::GranularPolicy::initial().max_construction_bytes)
+                })
+                .and_then(|bytes| bytes.checked_add(16 * 1024 * 1024))
+                .ok_or(ExportError::Invalid("granular construction quote overflow"))?
+        };
+        bound
+            .construction_peak_data_bytes
+            .checked_add(adapter)
+            .and_then(|bytes| bytes.checked_add(extra))
+            .ok_or(ExportError::Invalid("seek page quote overflow"))
     }
     fn failure(&self, failure: StreamFailure, control: &impl Cancellation) -> ExportError {
         if control.is_cancelled() {
@@ -543,7 +797,103 @@ impl VerifiedPages {
         let definitions = self.definitions.take().ok_or(ExportError::Invalid(
             "offline stream constructor was already consumed",
         ))?;
-        self.runtime = Some(StreamRuntime::new(self.config, definitions).map_err(media)?);
+        let granulars = self
+            .granulars
+            .take()
+            .ok_or(ExportError::Invalid("offline roots already consumed"))?;
+        self.runtime = Some(if granulars.is_empty() {
+            StreamRuntime::new(self.config, definitions).map_err(media)?
+        } else {
+            check(control)?;
+            let metadata_bytes = granulars
+                .capacity()
+                .checked_mul(std::mem::size_of::<
+                    hex_engine::audio_transform::StreamedGranularRoot,
+                >())
+                .and_then(|bytes| {
+                    granulars.iter().try_fold(bytes, |bytes, root| {
+                        bytes.checked_add(root.backing_bytes()?)
+                    })
+                })
+                .ok_or(ExportError::Invalid("granular metadata size overflow"))?;
+            let mut policy = crate::audio_policy::GranularPolicy::initial();
+            policy.max_construction_bytes = policy
+                .max_construction_bytes
+                .checked_sub(metadata_bytes)
+                .ok_or(ExportError::Invalid(
+                    "granular construction reservation exceeded",
+                ))?;
+            let count = granulars.len();
+            let roots = granulars.into_iter().map(|root| {
+                let index = self
+                    .files
+                    .binary_search_by_key(&root.metadata().key(), |(key, _)| *key)
+                    .map_err(|_| "granular source file missing".to_owned())?;
+                Ok((&self.files[index].1, root))
+            });
+            let bank = crate::granular_sources::prepare_granular_bank(
+                count,
+                roots,
+                self.config,
+                policy,
+                || control.is_cancelled(),
+            )
+            .map_err(media)?
+            .ok_or(ExportError::Invalid("offline granular bank missing"))?;
+            let ordinary = hex_stream::PendingStreamDomain::preparation_bound(
+                self.config,
+                &definitions,
+                definitions.capacity(),
+                None,
+            )
+            .map_err(media)?;
+            let combined =
+                hex_stream::PendingStreamDomain::preparation_bound_with_granular_sources(
+                    self.config,
+                    &definitions,
+                    definitions.capacity(),
+                    &[],
+                    0,
+                    &bank,
+                    None,
+                )
+                .map_err(media)?;
+            if combined.retained_data_bytes
+                > ordinary
+                    .retained_data_bytes
+                    .checked_add(policy.runtime_allowance())
+                    .ok_or(ExportError::Invalid("granular runtime quote overflow"))?
+                || combined.construction_peak_data_bytes
+                    > ordinary
+                        .construction_peak_data_bytes
+                        .checked_add(policy.runtime_allowance())
+                        .ok_or(ExportError::Invalid("granular runtime quote overflow"))?
+            {
+                return Err(ExportError::Invalid(
+                    "granular runtime reservation exceeded",
+                ));
+            }
+            let worker =
+                hex_stream::GranularWorkerControl::data_bound(&bank, self.config.page_buffers)
+                    .map_err(media)?;
+            let allowance = hex_stream::GranularWorkerAllowance {
+                max_data_bytes: worker
+                    .bytes()
+                    .ok_or(ExportError::Invalid("granular worker quote overflow"))?,
+                max_shared_handles: worker
+                    .shared_handle_bound()
+                    .ok_or(ExportError::Invalid("granular handle quote overflow"))?,
+            };
+            StreamRuntime::spawn_with_granular_sources(
+                self.config,
+                definitions,
+                Vec::new(),
+                bank,
+                allowance,
+            )
+            .map_err(media)?
+        });
+
         if self
             .runtime
             .as_ref()
@@ -896,51 +1246,13 @@ pub(super) fn resident_seek_storage_bytes(
                 ))
         },
         sources.repitches().requirements(),
+        GranularCapture::Captured(sources.granulars().requirements()),
         None,
         StreamConfig::initial(),
         &AtomicBool::new(false),
     )
     .map_err(|error| error.to_string())?;
-    let definitions = pages
-        .definitions
-        .as_ref()
-        .ok_or("offline definitions missing")?;
-    let bound = hex_stream::PendingStreamDomain::preparation_bound(
-        pages.config,
-        definitions,
-        definitions.capacity(),
-        None,
-    )
-    .map_err(|error| error.to_string())?;
-    let adapter = std::mem::size_of::<VerifiedPages>()
-        .checked_add(
-            pages
-                .extents
-                .capacity()
-                .checked_mul(std::mem::size_of::<StreamPageExtent>())
-                .ok_or("seek extent quote overflow")?,
-        )
-        .and_then(|n| {
-            n.checked_add(
-                pages
-                    .keys
-                    .capacity()
-                    .checked_mul(std::mem::size_of::<PageKey>())?,
-            )
-        })
-        .and_then(|n| {
-            n.checked_add(
-                pages
-                    .files
-                    .capacity()
-                    .checked_mul(std::mem::size_of::<(StreamSourceKey, VerifiedAudioFile)>())?,
-            )
-        })
-        .ok_or("seek adapter quote overflow")?;
-    bound
-        .construction_peak_data_bytes
-        .checked_add(adapter)
-        .ok_or_else(|| "seek page quote overflow".into())
+    pages.storage_bytes().map_err(|error| error.to_string())
 }
 
 /// Run only on the original seek worker. This composes its exact admitted
@@ -965,6 +1277,7 @@ pub(super) fn prepare_resident_seek(
                 ))
         },
         request.sources().repitches().requirements(),
+        request.sources().granulars().requirements(),
         request.cancelled(),
     )?;
     hex_engine::playback::Playback::from_interactive_arrangement_preroll(runtime)
@@ -978,6 +1291,7 @@ fn prepare_file_seek_runtime<'a>(
     context: hex_engine::AudioSourceContext,
     resolve: impl FnMut(StreamSourceKey) -> Result<&'a VerifiedAudioFile, ExportError>,
     repitches: &[hex_engine::audio_transform::StreamedRepitchRequirement],
+    granulars: &[hex_engine::audio_transform::StreamedGranularRequirement],
     cancelled: &AtomicBool,
 ) -> Result<SessionPlayback, hex_engine::ArrangementPrerollError> {
     if context.project_generation != spec.generation {
@@ -1001,6 +1315,7 @@ fn prepare_file_seek_runtime<'a>(
         &spec.prepared_revision,
         resolve,
         repitches,
+        GranularCapture::Captured(granulars),
         None,
         StreamConfig::initial(),
         cancelled,
