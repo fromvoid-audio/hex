@@ -23,8 +23,8 @@ impl SessionPlayback {
     /// This is derived from the retained runtime graph, not a caller-declared
     /// readiness mode. Serial Main-only latency reads the ordinary source
     /// frontier for Arrangement and Session audio. Flat audio-only tracks and
-    /// grouped Arrangement audio may use upstream compensation with closed
-    /// native effects. Instruments, foreign effects, authored feeds and keyboard
+    /// grouped audio may use upstream compensation with closed native effects.
+    /// Instruments, foreign effects, authored feeds and keyboard
     /// remain excluded from these compensated extensions.
     pub(super) fn supports_closed_stream_demand(&self) -> bool {
         self.computer_keyboard.is_none()
@@ -54,7 +54,6 @@ impl SessionPlayback {
                 };
                 runtime.graph.supports_closed_group_stream()
                     || (runtime.graph.supports_closed_compensated_audio_groups()
-                        && self.revision.session().audio_clips().is_empty()
                         && native_audio_only())
                     || (runtime.graph.independent_main_routes()
                         && ((!runtime.graph.needs_upstream_frame_routing()
