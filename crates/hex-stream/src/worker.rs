@@ -1548,7 +1548,12 @@ pub(crate) mod tests {
 
     #[test]
     fn repitch_pages_match_resident_with_converted_source_and_distinct_extent() {
-        for project_rate in [48_000, 44_100] {
+        for (project_rate, segmented) in [
+            (48_000, false),
+            (44_100, false),
+            (48_000, true),
+            (44_100, true),
+        ] {
             let fixture = Fixture::pcm16();
             let limits = VerifiedWavReaderLimits::new(
                 WavReaderLimits::new(1024 * 1024, 4096, 128, 8192),
@@ -1584,16 +1589,40 @@ pub(crate) mod tests {
             )
             .unwrap();
             let output_frames = input_frames * 2;
-            let map = hex_warp::TimeMap::new(
+            let segments = if segmented {
+                let a = output_frames / 4;
+                let b = output_frames / 2;
+                let first = i128::from(input_frames) * (1_i128 << 32) / 4;
+                let second = i128::from(input_frames) * 5 * (1_i128 << 32) / 8;
+                vec![
+                    hex_warp::MapSegment {
+                        output_start: 0,
+                        output_end: a,
+                        source_start_q32: 0,
+                        source_end_q32: first,
+                    },
+                    hex_warp::MapSegment {
+                        output_start: a,
+                        output_end: b,
+                        source_start_q32: first,
+                        source_end_q32: second,
+                    },
+                    hex_warp::MapSegment {
+                        output_start: b,
+                        output_end: output_frames,
+                        source_start_q32: second,
+                        source_end_q32: i128::from(input_frames) << 32,
+                    },
+                ]
+            } else {
                 vec![hex_warp::MapSegment {
                     output_start: 0,
                     output_end: output_frames,
                     source_start_q32: 0,
                     source_end_q32: i128::from(input_frames) << 32,
-                }],
-                output_frames as usize,
-            )
-            .unwrap();
+                }]
+            };
+            let map = hex_warp::TimeMap::new(segments, output_frames as usize).unwrap();
             let definition = SourceDefinition::new(fixture.0.clone(), raw, limits)
                 .with_repitch(map.clone(), Resampler::V2)
                 .unwrap();
