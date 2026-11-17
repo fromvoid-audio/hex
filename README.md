@@ -47,21 +47,10 @@ nightly and stable distribution packages.
 
 ### keep spacebar on transport with a vst3 editor focused
 
-On macOS, set `spacebar_controls_transport` in
-`~/Library/Application Support/hex/vst3-editor.json` and restart hex.
-
-```json
-{
-  "version": 1,
-  "preferences": {
-    "spacebar_controls_transport": true
-  }
-}
-```
-
-With this flag enabled, plain Space starts or pauses playback even when the
-plug-in's own window is focused. Modified Space and other shortcuts still go to
-the plug-in. The flag defaults to `false`.
+On macOS, plain Space starts or pauses playback when a VST3 editor has focus.
+Modified Space and other shortcuts still go to the plug-in. To give plain Space
+to the plug-in too, open **hex → settings…** and turn off **space controls
+transport in vst3 editors**. Restart hex to apply a change.
 
 To run the optimized desktop directly from source:
 

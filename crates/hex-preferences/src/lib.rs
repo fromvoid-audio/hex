@@ -30,7 +30,8 @@ pub use project_directory::{load_project_directory, save_project_directory};
 
 mod vst3_editor;
 pub use vst3_editor::{
-    Vst3EditorPreferences, load_vst3_editor_preferences, vst3_editor_preferences_path,
+    Vst3EditorPreferences, load_vst3_editor_preferences, save_vst3_editor_preferences,
+    vst3_editor_preferences_path,
 };
 
 use serde::{Deserialize, Serialize};
