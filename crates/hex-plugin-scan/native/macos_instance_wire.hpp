@@ -178,9 +178,15 @@ struct Presentation {
 struct PresentationPlan {
     std::optional<Presentation> known;
     bool allow_unknown=false;
+    uint8_t known_mode=1; // 1: both, 3: input only, 4: output only
 };
+inline bool known_presentation(uint64_t mode,uint32_t input,uint32_t output,PresentationPlan& result) {
+    if((mode!=1 && mode!=3 && mode!=4) || (mode==3 && output) || (mode==4 && input)) return false;
+    result.known=Presentation{input,output};result.known_mode=static_cast<uint8_t>(mode);return true;
+}
 // No SDK call occurs inside this parser. Unknown presentation is explicit and
-// carries no invented numeric values. All bounds/identity precede application.
+// carries no invented numeric facts. Mixed modes reserve the unknown word as
+// zero; the mode retains its unknown identity. All bounds/identity precede application.
 inline bool presentation(int fd,const Config& config,PresentationPlan& result) {
     try {
         std::array<uint8_t,12> header{};
@@ -189,10 +195,13 @@ inline bool presentation(int fd,const Config& config,PresentationPlan& result) {
         Reader in{Bytes(static_cast<size_t>(size)),0};
         if(read_exact(fd,in.bytes.data(),in.bytes.size())!=1 || in.number(2)!=1) return false;
         for(auto id:config.binding) if(in.number(8)!=id) return false;
-        const auto mode=in.number(1);if(mode>2) return false;
+        const auto mode=in.number(1);if(mode>4) return false;
         result={};
         result.allow_unknown=mode==2;
-        if(mode==1) result.known=Presentation{static_cast<uint32_t>(in.number(4)),static_cast<uint32_t>(in.number(4))};
+        if(mode==1 || mode==3 || mode==4) {
+            const auto input=static_cast<uint32_t>(in.number(4)),output=static_cast<uint32_t>(in.number(4));
+            if(!known_presentation(mode,input,output,result)) return false;
+        }
         return in.at==in.bytes.size();
     } catch(const std::runtime_error&) { return false; }
 }
@@ -295,12 +304,12 @@ struct Packet {
         frames=static_cast<uint16_t>(number(p+6,2));
         if(resume) {
             next_graph=number(p+48,8);next_epoch=number(p+56,8);
-            if(frames || p[10]>2 || next_graph<config.binding[2] || next_epoch<=config.binding[3]) return -1;
+            if(frames || p[10]>4 || next_graph<config.binding[2] || next_epoch<=config.binding[3]) return -1;
             resumed_presentation={};
             resumed_presentation.allow_unknown=p[10]==2;
-            if(p[10]==1) {
+            if(p[10]==1 || p[10]==3 || p[10]==4) {
                 if(read_exact(fd,p+header_size,8,true)!=1) return -1;
-                resumed_presentation.known=Presentation{static_cast<uint32_t>(number(p+header_size,4)),static_cast<uint32_t>(number(p+header_size+4,4))};
+                if(!known_presentation(p[10],static_cast<uint32_t>(number(p+header_size,4)),static_cast<uint32_t>(number(p+header_size+4,4)),resumed_presentation)) return -1;
             }
             return 4;
         }
