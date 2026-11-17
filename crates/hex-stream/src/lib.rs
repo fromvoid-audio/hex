@@ -4,7 +4,7 @@
 //!
 //! # Dependencies
 //! Uses hex-engine/hex-project contracts, hex-media readers/conversion, hex-warp's
-//! bounded pitch kernel, hex-storage closed automation readers and rtrb ownership queues.
+//! bounded pitch/granular renderers, hex-storage closed automation readers and rtrb ownership queues.
 //!
 //! # Does not own
 //! Does not edit projects, own CPAL or decode/hash on callback. Only the joining control owner
@@ -60,6 +60,7 @@ mod runtime;
 pub mod test_support;
 mod types;
 mod worker;
+pub use worker::granular::GranularRuntimeData;
 
 pub use endpoint::EndpointStats;
 pub use hex_engine::{StreamPageExtent, StreamResourceExtent};

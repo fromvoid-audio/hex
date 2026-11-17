@@ -7,6 +7,7 @@ use crate::{
 };
 use hex_engine::{StreamResourceKey, StreamedSourceMetadata};
 use std::collections::VecDeque;
+pub(crate) mod granular;
 pub(crate) mod scalar;
 use hex_media::{ResampleKernel, ResamplePlan, ResampleVersion, VerifiedWavReader};
 use hex_warp::{PitchWindow, RepitchWindow, Resampler};
@@ -21,6 +22,10 @@ use std::{
     thread,
     time::Duration,
 };
+
+/// A child worker failure is a parent shutdown failure even if no PCM loan was
+/// active; successful pool counts alone must not erase a failed join.
+pub(crate) type WorkerExit = Result<Vec<Box<PageBuffer>>, crate::StreamRuntimeError>;
 
 pub(crate) struct WorkerQueues {
     pub(crate) requests: Consumer<PageRequest>,
@@ -296,18 +301,19 @@ impl TestWorkerHooks {
     }
 }
 
-#[cfg_attr(any(test, feature = "test-support"), allow(clippy::too_many_arguments))] // Fixed owners plus test-only gates.
+#[allow(clippy::too_many_arguments)] // Fixed source/pool owners plus test-only gates.
 pub(crate) fn run_worker(
     config: StreamConfig,
     definitions: Vec<SourceDefinition>,
     mut scalar_definitions: Vec<ScalarSourceDefinition>,
+    granular: Option<granular::PreparedGranular>,
     mut free_pages: Vec<Box<PageBuffer>>,
     mut queues: WorkerQueues,
     stop: Arc<AtomicBool>,
     catalog_result: SyncSender<Result<VerifiedCatalog, StreamFailureKind>>,
     #[cfg(test)] test_hooks: Option<TestWorkerHooks>,
     #[cfg(feature = "test-support")] mut page_gate: Option<crate::test_support::PageGate>,
-) -> Vec<Box<PageBuffer>> {
+) -> WorkerExit {
     let mut source_scratch = Vec::new();
     let scratch_ok = source_scratch
         .try_reserve_exact(config.source_scratch_frames)
@@ -350,6 +356,17 @@ pub(crate) fn run_worker(
         Err(StreamFailureKind::DecodeFailed)
     };
     scalar_definitions.sort_unstable_by_key(|definition| definition.metadata().key());
+    if let Err(kind) = &catalog {
+        let _ = catalog_result.send(Err(*kind));
+        return Ok(free_pages);
+    }
+    let mut granular = match granular.map(|prepared| prepared.start(&stop)).transpose() {
+        Ok(routing) => routing,
+        Err(kind) => {
+            let _ = catalog_result.send(Err(kind));
+            return Ok(free_pages);
+        }
+    };
     let catalog_message = catalog.as_ref().map_or_else(
         |error| Err(*error),
         |(sources, footprint, data)| {
@@ -369,22 +386,37 @@ pub(crate) fn run_worker(
             };
             data.scalar_source_slots =
                 crate::AllocationData::of::<ScalarSourceDefinition>(scalar_definitions.capacity());
-            verified_membership(sources, &scalar_definitions, *footprint, data)
+            let mut catalog = verified_membership(
+                sources,
+                &scalar_definitions,
+                granular.as_ref().map_or(&[], |routing| routing.metadata()),
+                *footprint,
+                data,
+            )?;
+            if let Some(routing) = &granular {
+                catalog.data.granular = Some(routing.data());
+                catalog.footprint.sources += routing.metadata().len();
+                catalog.footprint.granular_data_bytes = routing
+                    .data()
+                    .bytes()
+                    .ok_or(StreamFailureKind::CapacityExhausted)?;
+            }
+            Ok(catalog)
         },
     );
     if catalog_result.send(catalog_message).is_err() {
-        return free_pages;
+        return Ok(free_pages);
     }
     let (mut sources, _footprint, _data) = match catalog {
         Ok(sources) => sources,
-        Err(_) => return free_pages,
+        Err(_) => return Ok(free_pages),
     };
     #[cfg(test)]
     if test_hooks
         .as_ref()
         .is_some_and(|hooks| !hooks.wait_for_release(&stop))
     {
-        return free_pages;
+        return Ok(free_pages);
     }
     let mut scalar_job: Option<ScalarJob> = None;
     loop {
@@ -393,6 +425,39 @@ pub(crate) fn run_worker(
                 break;
             };
             free_pages.push(page);
+        }
+        if let Some(routing) = &mut granular {
+            for _ in 0..config.page_buffers {
+                let Some((mut page, status)) = routing.poll() else {
+                    break;
+                };
+                match status {
+                    Ok(()) => {
+                        if let Err(PushError::Full(page)) = queues.ready.push(page) {
+                            held_pages.push(page);
+                        }
+                    }
+                    Err(kind) => {
+                        if let Some(key) = page.key {
+                            hold_failure(
+                                StreamFailure {
+                                    key: key.source,
+                                    page_index: key.page_index,
+                                    kind,
+                                },
+                                &mut held_failures,
+                                &mut queues.failures,
+                            );
+                        }
+                        page.key = None;
+                        page.valid_frames = 0;
+                        free_pages.push(page);
+                    }
+                }
+            }
+            if routing.faulted() {
+                break;
+            }
         }
         flush_held_pages(&mut held_pages, &mut queues.ready);
         flush_held_failures(&mut held_failures, &mut queues.failures);
@@ -540,6 +605,23 @@ pub(crate) fn run_worker(
         let StreamResourceKey::Audio(audio_key) = key.source else {
             continue;
         };
+        if let Some(routing) = &mut granular
+            && routing.contains(audio_key)
+        {
+            if let Err(page) = routing.submit(key, page) {
+                free_pages.push(page);
+                hold_failure(
+                    StreamFailure {
+                        key: key.source,
+                        page_index: key.page_index,
+                        kind: StreamFailureKind::CapacityExhausted,
+                    },
+                    &mut held_failures,
+                    &mut queues.failures,
+                );
+            }
+            continue;
+        }
         let Some(source_index) = sources
             .binary_search_by_key(&audio_key, |source| source.definition.key)
             .ok()
@@ -619,27 +701,37 @@ pub(crate) fn run_worker(
     if let Some(job) = scalar_job.take() {
         free_pages.push(job.page);
     }
+    if let Some(routing) = granular {
+        routing.stop_into(&mut free_pages)?;
+    }
     free_pages.append(&mut held_pages);
     drop(sources);
     drop(source_scratch);
-    free_pages
+    Ok(free_pages)
 }
 
 fn verified_membership(
     sources: &[Source],
     scalar_sources: &[ScalarSourceDefinition],
+    granular_sources: &[StreamedSourceMetadata],
     mut footprint: CatalogFootprint,
     mut data: crate::WorkerData,
 ) -> Result<VerifiedCatalog, StreamFailureKind> {
     let mut members = Vec::new();
     members
-        .try_reserve_exact(sources.len())
+        .try_reserve_exact(
+            sources
+                .len()
+                .checked_add(granular_sources.len())
+                .ok_or(StreamFailureKind::CapacityExhausted)?,
+        )
         .map_err(|_| StreamFailureKind::CapacityExhausted)?;
     members.extend(
         sources
             .iter()
             .map(|source| source.definition.metadata.clone()),
     );
+    members.extend_from_slice(granular_sources);
     members.sort_unstable_by_key(StreamedSourceMetadata::key);
     data.membership = crate::AllocationData::of::<StreamedSourceMetadata>(members.capacity());
     data.catalog_object = std::mem::size_of::<VerifiedCatalog>();
@@ -1081,6 +1173,7 @@ fn build_catalog(
     Ok((
         sources,
         CatalogFootprint {
+            granular_data_bytes: 0,
             sources: source_count,
             catalog_path_bytes,
             manifest_bytes,
@@ -1125,7 +1218,7 @@ fn max_source_window(
         .map_err(|_| StreamFailureKind::CapacityExhausted)
 }
 
-fn validate_finite_source(
+pub(crate) fn validate_finite_source(
     reader: &mut VerifiedWavReader,
     scratch: &mut [[f32; 2]],
     stop: &AtomicBool,

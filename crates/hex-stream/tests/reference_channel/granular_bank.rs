@@ -31,13 +31,58 @@ fn source(mode: WarpMode) -> (Wav, VerifiedGranularSource, Vec<[f32; 2]>) {
     source_at_rate(mode, 48_000)
 }
 fn source_at_rate(mode: WarpMode, rate: u32) -> (Wav, VerifiedGranularSource, Vec<[f32; 2]>) {
+    source_fixture(mode, rate, false)
+}
+fn source_fixture(
+    mode: WarpMode,
+    rate: u32,
+    nan_tail: bool,
+) -> (Wav, VerifiedGranularSource, Vec<[f32; 2]>) {
     let (wav, pcm) = Wav::create(8192, false);
+    if nan_tail {
+        let mut bytes = fs::read(&wav.0).unwrap()[..44].to_vec();
+        bytes[4..8].copy_from_slice(&(36u32 + 8192 * 8).to_le_bytes());
+        bytes[20..22].copy_from_slice(&3u16.to_le_bytes());
+        bytes[28..32].copy_from_slice(&384_000u32.to_le_bytes());
+        bytes[32..34].copy_from_slice(&8u16.to_le_bytes());
+        bytes[34..36].copy_from_slice(&32u16.to_le_bytes());
+        bytes[40..44].copy_from_slice(&(8192u32 * 8).to_le_bytes());
+        for (index, frame) in pcm.iter().enumerate() {
+            for sample in frame {
+                bytes.extend_from_slice(
+                    &if index == 8191 { f32::NAN } else { *sample }.to_le_bytes(),
+                );
+            }
+        }
+        fs::write(&wav.0, bytes).unwrap();
+    }
     let version = if rate == 48_000 {
         ResampleVersion::V1
     } else {
         ResampleVersion::V2
     };
-    let (reader, plan, _) = setup(&wav, 8192, rate, version);
+    let (reader, plan) = if nan_tail {
+        let reader = VerifiedWavReader::open(
+            &wav.0,
+            VerifiedWavReaderLimits::new(
+                WavReaderLimits::new(8192 * 8 + 44, 8192, 128, 8192),
+                4096,
+            ),
+        )
+        .unwrap();
+        let plan = ResamplePlan::with_kernel(
+            ResampleKernel::with_version(48_000, rate, version).unwrap(),
+            8192,
+            8192,
+            16384,
+            4096,
+        )
+        .unwrap();
+        (reader, plan)
+    } else {
+        let (reader, plan, _) = setup(&wav, 8192, rate, version);
+        (reader, plan)
+    };
     let converted_frames = plan.output_frames();
     let pcm = resample_with_version(
         &Audio::new(48_000, pcm).unwrap(),
@@ -76,6 +121,17 @@ fn source_at_rate(mode: WarpMode, rate: u32) -> (Wav, VerifiedGranularSource, Ve
             enabled: true,
         })
         .unwrap();
+    if nan_tail {
+        editor
+            .execute(Command::TrimClip {
+                clip,
+                start: 0,
+                duration: converted_frames / 2,
+                source_offset: 0,
+                source_length: converted_frames / 2,
+            })
+            .unwrap();
+    }
     let warp = default_audio_warp(
         editor.project().clip(clip).unwrap(),
         editor.project().tempo_map(),
@@ -670,4 +726,236 @@ fn outcome_frames(outcome: hex_stream::GranularWorkerOutcome) -> Box<[[f32; 2]]>
         GranularWorkerResult::Cancelled { frames }
         | GranularWorkerResult::Failed { frames, .. } => frames,
     }
+}
+
+fn runtime_allowance(
+    bank: &GranularWorkerBank,
+    pages: usize,
+) -> hex_stream::GranularWorkerAllowance {
+    let data = hex_stream::GranularWorkerControl::data_bound(bank, pages).unwrap();
+    hex_stream::GranularWorkerAllowance {
+        max_data_bytes: data.bytes().unwrap(),
+        max_shared_handles: data.shared_handle_bound().unwrap(),
+    }
+}
+fn runtime_page(
+    runtime: &mut hex_stream::StreamRuntime,
+    key: StreamSourceKey,
+    index: u64,
+) -> Vec<[f32; 2]> {
+    use hex_engine::MediaPages;
+    runtime.request_page(key, index);
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        runtime.pump_ready(8);
+        if let Some(page) = runtime.page(key, index) {
+            return page.frames.to_vec();
+        }
+        let mut failures = [hex_stream::StreamFailure {
+            key: key.into(),
+            page_index: index,
+            kind: StreamFailureKind::Cancelled,
+        }; 1];
+        if runtime.take_failures(&mut failures) != 0 {
+            panic!("runtime page {key:?}/{index} failed: {:?}", failures[0]);
+        }
+        assert!(
+            Instant::now() < deadline,
+            "runtime page {key:?}/{index} did not arrive"
+        );
+        thread::yield_now();
+    }
+}
+fn raw_definition() -> (Wav, hex_stream::SourceDefinition, Vec<[f32; 2]>) {
+    let (wav, pcm) = Wav::create(8192, false);
+    let (reader, _, raw) = setup(&wav, 8192, 48_000, ResampleVersion::V1);
+    let limits =
+        VerifiedWavReaderLimits::new(WavReaderLimits::new(8192 * 4 + 44, 8192, 128, 8192), 4096);
+    let definition = hex_stream::SourceDefinition::new(wav.0.clone(), raw, limits)
+        .with_verified_manifest(reader.manifest().clone());
+    (wav, definition, pcm)
+}
+
+#[test]
+fn runtime_routes_mixed_raw_tones_and_texture_pages_and_refuses_unclosed_native_custody() {
+    use hex_stream::{ConstructorStreamDomain, StreamConfig, StreamRuntime};
+    let (_raw_wav, raw, raw_pcm) = raw_definition();
+    let raw_key = raw.metadata.key();
+    let (_tones_wav, tones, tones_pcm) = source(WarpMode::Tones { grain_ms: 32 });
+    let (_texture_wav, texture, texture_pcm) = source_at_rate(
+        WarpMode::Texture {
+            grain_ms: 32,
+            fluctuation: 35,
+            seed: 42,
+        },
+        44_100,
+    );
+    let keys = [raw_key, tones.metadata().key(), texture.metadata().key()];
+    let bank = admit(vec![tones, texture]);
+    let allowance = runtime_allowance(&bank, 4);
+    let mut runtime = StreamRuntime::spawn_with_granular_sources(
+        StreamConfig::with_pool_pages(4),
+        vec![raw],
+        vec![],
+        bank,
+        allowance,
+    )
+    .unwrap();
+    runtime.wait_until_ready(Duration::from_secs(3)).unwrap();
+    let footprint = runtime.catalog_footprint().unwrap();
+    assert_eq!(footprint.sources, 3);
+    assert!(footprint.granular_data_bytes > allowance.max_data_bytes);
+    for (source, index) in [(0, 0), (1, 1), (2, 1), (1, 0), (2, 0), (0, 1)] {
+        let actual = runtime_page(&mut runtime, keys[source], index);
+        let expected = [&raw_pcm, &tones_pcm, &texture_pcm][source];
+        let start = index as usize * STREAM_PAGE_FRAMES;
+        assert_eq!(
+            actual,
+            expected[start..(start + STREAM_PAGE_FRAMES).min(expected.len())]
+        );
+    }
+    let (control, pages) = runtime.split().ok().unwrap();
+    let Err(refusal) = ConstructorStreamDomain::try_new_on_control(control, pages) else {
+        panic!("unextended native custody admitted a second worker")
+    };
+    assert_eq!(
+        refusal.reason,
+        hex_stream::AudioStreamStorageError::UnknownData
+    );
+    let report = refusal.control.shutdown(refusal.pages).unwrap();
+    assert!(report.accounting_complete && report.worker_joined);
+    assert_eq!(report.page_buffers, 4);
+}
+
+#[cfg(feature = "test-support")]
+#[test]
+fn runtime_raw_service_and_stop_progress_while_granular_work_is_held() {
+    use hex_engine::MediaPages;
+    use hex_stream::{StreamConfig, StreamRuntime, test_support::PageGate};
+    let (_raw_wav, raw, expected) = raw_definition();
+    let raw_key = raw.metadata.key();
+    let (_wav, source, _) = source(WarpMode::Tones { grain_ms: 32 });
+    let key = source.metadata().key();
+    let bank = admit(vec![source]);
+    let allowance = runtime_allowance(&bank, 3);
+    let (gate, entered, _release) = PageGate::new(hex_stream::PageKey {
+        source: key,
+        page_index: 0,
+    });
+    let mut config = StreamConfig::with_pool_pages(3);
+    config.ready_capacity = 1;
+    config.max_ready_pages_per_pump = 1;
+    let mut runtime = StreamRuntime::new_with_granular_page_gate(
+        config,
+        vec![raw],
+        vec![],
+        bank,
+        allowance,
+        gate,
+    )
+    .unwrap();
+    runtime.wait_until_ready(Duration::from_secs(3)).unwrap();
+    runtime.request_page(key, 0);
+    entered.recv_timeout(Duration::from_secs(3)).unwrap();
+    runtime.request_page(key, 1);
+    let actual = runtime_page(&mut runtime, raw_key, 0);
+    assert_eq!(actual, expected[..STREAM_PAGE_FRAMES]);
+    assert!(runtime.page(key, 0).is_none());
+    // Never release the held child: parent Stop must stop/join it and reclaim
+    // both its active and queued original-pool buffers.
+    let report = runtime.shutdown().unwrap();
+    assert_eq!(report.page_buffers, 3);
+    assert!(report.accounting_complete && report.worker_joined);
+}
+
+#[test]
+fn runtime_granular_failure_returns_pool_page_for_following_raw_request() {
+    use hex_engine::MediaPages;
+    use hex_stream::{StreamConfig, StreamFailure, StreamRuntime};
+    let (_raw_wav, raw, expected) = raw_definition();
+    let raw_key = raw.metadata.key();
+    let (_wav, source, _) = source(WarpMode::Tones { grain_ms: 32 });
+    let key = source.metadata().key();
+    let bank = admit(vec![source]);
+    let allowance = runtime_allowance(&bank, 2);
+    let mut runtime = StreamRuntime::spawn_with_granular_sources(
+        StreamConfig::with_pool_pages(2),
+        vec![raw],
+        vec![],
+        bank,
+        allowance,
+    )
+    .unwrap();
+    runtime.wait_until_ready(Duration::from_secs(3)).unwrap();
+    runtime.request_page(key, u64::MAX);
+    let mut failures = [StreamFailure {
+        key: key.into(),
+        page_index: 0,
+        kind: StreamFailureKind::Cancelled,
+    }; 1];
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while runtime.take_failures(&mut failures) == 0 {
+        assert!(Instant::now() < deadline, "granular failure not reported");
+        thread::yield_now();
+    }
+    assert_eq!(failures[0].key, key.into());
+    assert_eq!(failures[0].page_index, u64::MAX);
+    assert_eq!(failures[0].kind, StreamFailureKind::DecodeFailed);
+    assert_eq!(
+        runtime_page(&mut runtime, raw_key, 1),
+        expected[STREAM_PAGE_FRAMES..2 * STREAM_PAGE_FRAMES]
+    );
+    assert!(runtime.shutdown().unwrap().accounting_complete);
+}
+
+#[test]
+fn runtime_refuses_source_changed_after_preparation_before_catalog_eligibility() {
+    use hex_stream::{StreamConfig, StreamRuntime, StreamRuntimeError};
+    let (wav, source, _) = source(WarpMode::Tones { grain_ms: 32 });
+    let mut file = OpenOptions::new().write(true).open(&wav.0).unwrap();
+    file.seek(SeekFrom::Start(44)).unwrap();
+    file.write_all(&1234i16.to_le_bytes()).unwrap();
+    drop(file);
+    let bank = admit(vec![source]);
+    let allowance = runtime_allowance(&bank, 2);
+    let mut runtime = StreamRuntime::spawn_with_granular_sources(
+        StreamConfig::with_pool_pages(2),
+        vec![],
+        vec![],
+        bank,
+        allowance,
+    )
+    .unwrap();
+    assert_eq!(
+        runtime.wait_until_ready(Duration::from_secs(3)),
+        Err(StreamRuntimeError::CatalogFailed(
+            StreamFailureKind::SourceChanged
+        ))
+    );
+    assert!(!runtime.catalog_ready());
+    assert!(runtime.shutdown().unwrap().accounting_complete);
+}
+
+#[test]
+fn runtime_float_preflight_refuses_nan_outside_granular_region() {
+    use hex_stream::{StreamConfig, StreamRuntime, StreamRuntimeError};
+    let (_wav, source, _) = source_fixture(WarpMode::Tones { grain_ms: 32 }, 48_000, true);
+    let bank = admit(vec![source]);
+    let allowance = runtime_allowance(&bank, 2);
+    let mut runtime = StreamRuntime::spawn_with_granular_sources(
+        StreamConfig::with_pool_pages(2),
+        vec![],
+        vec![],
+        bank,
+        allowance,
+    )
+    .unwrap();
+    assert_eq!(
+        runtime.wait_until_ready(Duration::from_secs(3)),
+        Err(StreamRuntimeError::CatalogFailed(
+            StreamFailureKind::DecodeFailed
+        ))
+    );
+    assert!(!runtime.catalog_ready());
+    assert!(runtime.shutdown().unwrap().accounting_complete);
 }
