@@ -38,6 +38,84 @@ fn adding_an_empty_track_keeps_compensated_pcm_continuous() {
 }
 
 #[test]
+fn adding_active_audio_track_preserves_old_pcm_without_playing_its_past() {
+    use hex_project::{Command, Created};
+    for (start, frames, partition, stateful_main) in [
+        (0, 256, 1, false),
+        (0, 256, 257, false),
+        (32, 256, 1, false),
+        (32, 256, 257, false),
+        (0, 26, 1, false),
+        (0, 26, 257, false),
+        (0, 256, 1, true),
+        (0, 256, 257, true),
+    ] {
+        let mut f = fixture(&[&[7]], 512);
+        if stateful_main {
+            f.editor
+                .execute(Command::InsertMainDevice {
+                    before: None,
+                    state: crate::signal_graph::tests::state(3).unwrap(),
+                })
+                .unwrap();
+        }
+        for audio in f.media.values_mut() {
+            *audio = Audio::new(48_000, vec![[1.0, -0.5]; 512]).unwrap();
+        }
+        let mut old = SessionPlayback::new(prepare(&f).unwrap()).unwrap();
+        old.apply(SessionPlaybackCommand::Play).unwrap();
+        old.render(&mut [[0.0; 2]; 32]).unwrap();
+        let Created::Imported { track, asset, clip } = f
+            .editor
+            .execute(Command::ImportAudioTrack {
+                name: "active".into(),
+                path: "active.wav".into(),
+                sample_rate: 48_000,
+                frames,
+            })
+            .unwrap()
+        else {
+            panic!("import")
+        };
+        if start != 0 {
+            f.editor
+                .execute(Command::MoveClip { clip, track, start })
+                .unwrap();
+        }
+        let source: Vec<_> = (0..frames).map(|i| [(i as f32 + 1.0) / 512.0; 2]).collect();
+        f.media
+            .insert(asset, Audio::new(48_000, source.clone()).unwrap());
+        let revision = prepare(&f).unwrap();
+        let mut masked = source;
+        if start == 0 {
+            let prefix = masked.len().min(32);
+            masked[..prefix].fill([0.0; 2]);
+        }
+        f.media.insert(asset, Audio::new(48_000, masked).unwrap());
+        let mut reference = SessionPlayback::new(prepare(&f).unwrap()).unwrap();
+        reference.apply(SessionPlaybackCommand::Play).unwrap();
+        reference.render(&mut [[0.0; 2]; 32]).unwrap();
+        let mut next = SessionPlayback::new(revision).unwrap();
+        next.try_inherit_state_from(&mut old).unwrap();
+        let mut actual = [[0.0; 2]; 128];
+        let mut expected = actual;
+        for chunk in actual.chunks_mut(partition) {
+            next.render(chunk).unwrap();
+        }
+        for chunk in expected.chunks_mut(partition) {
+            reference.render(chunk).unwrap();
+        }
+        assert_eq!(
+            actual, expected,
+            "start {start} frames {frames} partition {partition} main {stateful_main}"
+        );
+        if frames > 32 && !stateful_main {
+            assert!(actual[7..].iter().any(|frame| frame[0] > 1.0));
+        }
+    }
+}
+
+#[test]
 fn adding_ended_audio_track_preserves_existing_compensated_pcm() {
     use hex_project::{Command, Created};
     for (frames, partition) in [(16, 1), (16, 257), (25, 1), (25, 257)] {
@@ -85,6 +163,16 @@ fn adding_ended_audio_track_preserves_existing_compensated_pcm() {
 #[test]
 #[ignore = "explicit optimized handoff timing profile"]
 fn ended_audio_track_handoff_profile() {
+    profile_added_audio_track(16);
+}
+
+#[test]
+#[ignore = "explicit optimized handoff timing profile"]
+fn active_audio_track_handoff_profile() {
+    profile_added_audio_track(256);
+}
+
+fn profile_added_audio_track(frames: u64) {
     use hex_project::{Command, Created};
     use std::time::Instant;
     const WARMUP: usize = 20;
@@ -97,14 +185,16 @@ fn ended_audio_track_handoff_profile() {
             name: "ended".into(),
             path: "ended.wav".into(),
             sample_rate: 48_000,
-            frames: 16,
+            frames,
         })
         .unwrap()
     else {
         panic!("import")
     };
-    f.media
-        .insert(asset, Audio::new(48_000, vec![[0.25; 2]; 16]).unwrap());
+    f.media.insert(
+        asset,
+        Audio::new(48_000, vec![[0.25; 2]; frames as usize]).unwrap(),
+    );
     let new_revision = prepare(&f).unwrap();
     let mut samples = Vec::with_capacity(SAMPLES);
     for iteration in 0..WARMUP + SAMPLES {
@@ -121,7 +211,7 @@ fn ended_audio_track_handoff_profile() {
     }
     samples.sort_unstable();
     eprintln!(
-        "ended_audio_handoff rate=48000 tracks=1+1 delay=7 cut=32 warmup={WARMUP} samples={SAMPLES} p50_ns={} p95_ns={}",
+        "audio_handoff rate=48000 tracks=1+1 delay=7 cut=32 clip_frames={frames} warmup={WARMUP} samples={SAMPLES} p50_ns={} p95_ns={}",
         samples[SAMPLES / 2],
         samples[SAMPLES * 95 / 100]
     );
@@ -295,11 +385,8 @@ fn newly_added_clip_near_cut_keeps_compensated_onset_in_time() {
 fn future_audio_handoff_keeps_unsafe_cases_on_restart_path() {
     use hex_project::{Command, Created};
     for case in [
-        "active",
-        "historical",
         "underflow",
         "recent_seek",
-        "at_cut",
         "loop_active",
         "loop_historical",
         "loop_replayed",
@@ -358,7 +445,6 @@ fn future_audio_handoff_keeps_unsafe_cases_on_restart_path() {
                 .unwrap();
         }
         let frames = match case {
-            "historical" => 26,
             "loop_historical" | "loop_replayed" | "recent_seek" => 16,
             "underflow" => 1,
             _ => 1024,
@@ -376,10 +462,9 @@ fn future_audio_handoff_keeps_unsafe_cases_on_restart_path() {
             panic!("import")
         };
         let start = match case {
-            "active" | "historical" | "underflow" | "recent_seek" | "loop_active"
-            | "loop_historical" | "loop_replayed" => 0,
+            "underflow" | "recent_seek" | "loop_active" | "loop_historical" | "loop_replayed" => 0,
             "loop_change" => 50,
-            "at_cut" | "loop_at_cut" => 32,
+            "loop_at_cut" => 32,
             _ => 1024,
         };
         if start != 0 {

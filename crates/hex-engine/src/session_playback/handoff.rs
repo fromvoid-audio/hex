@@ -1211,9 +1211,9 @@ impl SessionPlayback {
                         && !self.revision.contains_streamed_sources()
                         && !previous.revision.contains_streamed_sources())
                     .then(|| {
-                        // A past clip is silent only once its entire signal can
-                        // have left both retained compensation histories. A
-                        // loop can revisit it, so never use this proof there.
+                        // Only admit an active new source when the old
+                        // unlooped clock history is complete. Its newly
+                        // allocated edges start silent at this handoff.
                         let ended_by = if old_loop_region.is_none() {
                             self.compensation
                                 .as_ref()
@@ -1227,7 +1227,19 @@ impl SessionPlayback {
                         } else {
                             None
                         };
-                        silent_added_audio_track(new, old, previous.arrangement_frame, ended_by)
+                        // Hosted processors need separate continuity evidence.
+                        let mut has_foreign = false;
+                        if ended_by.is_some() {
+                            previous.visit_foreign_runtime_bindings(&mut |_| has_foreign = true);
+                            self.visit_foreign_runtime_bindings(&mut |_| has_foreign = true);
+                        }
+                        fresh_added_audio_track(
+                            new,
+                            old,
+                            previous.arrangement_frame,
+                            ended_by,
+                            !has_foreign,
+                        )
                     })
                     .flatten()
                 })
@@ -6482,16 +6494,15 @@ fn cold_added_track(candidate: &[Track], previous: &[Track]) -> Option<TrackId> 
     .then_some(id)
 }
 
-/// A newly inserted resident track is silent in the relevant past when every
-/// clip starts later, or all clips ended before the supplied unlooped history
-/// horizon. The caller supplies no ended proof for loops or arithmetic underflow.
-/// The graph independently checks
-/// routing, retained edge identities, equal alignment and silent delay rings.
-fn silent_added_audio_track(
+/// One newly inserted resident audio track can start from its empty edges at
+/// the handoff when the unlooped clock is ready. The graph independently
+/// checks routing, retained edge identities, alignment and silent delay rings.
+fn fresh_added_audio_track(
     candidate: &[Track],
     previous: &[Track],
     frame: u64,
     ended_by: Option<u64>,
+    no_foreign: bool,
 ) -> Option<TrackId> {
     if candidate.len() != previous.len().checked_add(1)? {
         return None;
@@ -6514,7 +6525,8 @@ fn silent_added_audio_track(
             || track.midi_source_index.is_some()
             || !(crate::clip_index::all_start_after(&track.clip_index, track.clips.len(), frame)
                 || ended_by.is_some_and(|end| {
-                    crate::clip_index::all_end_by(&track.clip_index, track.clips.len(), end)
+                    no_foreign
+                        || crate::clip_index::all_end_by(&track.clip_index, track.clips.len(), end)
                 }))
         {
             return None;

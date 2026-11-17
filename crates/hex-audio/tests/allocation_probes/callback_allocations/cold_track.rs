@@ -83,16 +83,29 @@ fn cold_track_add_and_remove_preserve_pcm_without_callback_allocations()
 #[test]
 fn future_audio_track_add_preserves_pcm_without_callback_allocations() -> Result<(), Box<dyn Error>>
 {
-    verify_added_audio_track(false)
+    verify_added_audio_track(AddedAudio::Future)
 }
 
 #[test]
 fn ended_audio_track_add_preserves_pcm_without_callback_allocations() -> Result<(), Box<dyn Error>>
 {
-    verify_added_audio_track(true)
+    verify_added_audio_track(AddedAudio::Ended)
 }
 
-fn verify_added_audio_track(ended: bool) -> Result<(), Box<dyn Error>> {
+#[test]
+fn active_audio_track_add_preserves_pcm_without_callback_allocations() -> Result<(), Box<dyn Error>>
+{
+    verify_added_audio_track(AddedAudio::Active)
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AddedAudio {
+    Future,
+    Ended,
+    Active,
+}
+
+fn verify_added_audio_track(case: AddedAudio) -> Result<(), Box<dyn Error>> {
     let mut editor = Editor::new(Project::new(RATE)?, 8)?;
     let Created::Imported { track, asset, .. } = editor.execute(Command::ImportAudioTrack {
         name: "source".into(),
@@ -128,7 +141,7 @@ fn verify_added_audio_track(ended: bool) -> Result<(), Box<dyn Error>> {
     measured_block(&mut callback, &mut actual);
     oracle.render(&mut expected)?;
     assert_eq!(actual, expected);
-    let frames = if ended { 16 } else { 1024 };
+    let frames = if case == AddedAudio::Ended { 16 } else { 1024 };
     let Created::Imported {
         track: added,
         asset: added_asset,
@@ -142,7 +155,7 @@ fn verify_added_audio_track(ended: bool) -> Result<(), Box<dyn Error>> {
     else {
         return Err("expected added track".into());
     };
-    if !ended {
+    if case == AddedAudio::Future {
         editor.execute(Command::MoveClip {
             clip,
             track: added,
@@ -159,12 +172,25 @@ fn verify_added_audio_track(ended: bool) -> Result<(), Box<dyn Error>> {
         table,
         None,
     )?);
+    let latency = next.arrangement().main_latency_frames() as usize;
     control
         .publish(Playback::try_from_prepared_with_session(next)?)
         .map_err(|_| "updated publication")?;
     measured_block(&mut callback, &mut actual);
     oracle.render(&mut expected)?;
-    assert_eq!(actual, expected);
+    if case == AddedAudio::Active {
+        assert!(latency > 0 && latency < actual.len());
+        for (index, (actual, expected)) in actual.iter().zip(&expected).enumerate() {
+            let added = if index < latency { 0.0 } else { 0.125 };
+            assert_eq!(
+                *actual,
+                [expected[0] + added, expected[1] + added],
+                "frame {index}"
+            );
+        }
+    } else {
+        assert_eq!(actual, expected);
+    }
     assert!(actual.iter().flatten().any(|sample| *sample != 0.0));
     control.request_shutdown();
     measured_shutdown(&mut callback, &mut actual);
