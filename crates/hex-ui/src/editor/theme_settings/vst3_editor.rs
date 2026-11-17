@@ -11,7 +11,7 @@ pub(super) struct State {
     path: PathBuf,
     load_started: bool,
     preferences: Option<Vst3EditorPreferences>,
-    saving: bool,
+    pub(super) saving: bool,
     error: Option<String>,
     toggle: Option<(Entity<Toggle>, Subscription)>,
 }

@@ -860,6 +860,10 @@ impl EditorView {
         if self.project_rate_settings.applying() {
             return false;
         }
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        if self.theme_settings.vst3_editor.saving {
+            return false;
+        }
         if self.theme_settings.saving {
             self.theme_settings.error = Some("theme save in progress".into());
             cx.notify();
@@ -1846,5 +1850,24 @@ mod tests {
                 .unwrap()
                 .spacebar_controls_transport
         );
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[gpui::test]
+    fn window_close_waits_for_vst3_space_setting_save(cx: &mut TestAppContext) {
+        let _restore = RestoreTheme(theme::preferences());
+        let directory = TestDirectory::new();
+        let (handle, editor) = editor_fixture(cx, &directory);
+        cx.update_window(handle, |_, window, cx| {
+            editor.update(cx, |view, cx| {
+                view.open_theme_settings(window, cx);
+                view.theme_settings.vst3_editor.saving = true;
+                assert!(!view.prepare_theme_window_close(window, cx));
+                assert!(view.theme_settings.open);
+                view.theme_settings.vst3_editor.saving = false;
+                assert!(view.prepare_theme_window_close(window, cx));
+            });
+        })
+        .unwrap();
     }
 }
