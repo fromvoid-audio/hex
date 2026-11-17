@@ -21,7 +21,7 @@ mod device;
 pub mod enumerate;
 mod loopback;
 mod property_listener;
-pub use device::Device;
+pub use device::{Device, OutputTiming};
 
 /// Coreaudio host, the default host on macOS.
 #[derive(Debug)]
