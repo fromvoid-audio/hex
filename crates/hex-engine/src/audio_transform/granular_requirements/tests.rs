@@ -39,6 +39,18 @@ fn fixture_frames(
     editor
         .execute(Command::SetClipSourcePhase { clip, phase: 137 })
         .unwrap();
+    let warp = hex_project::default_audio_warp(
+        editor.project().clip(clip).unwrap(),
+        editor.project().tempo_map(),
+        mode,
+    )
+    .unwrap();
+    editor
+        .execute(Command::SetAudioClipWarp {
+            clip,
+            settings: Some(warp),
+        })
+        .unwrap();
     editor
         .execute(Command::SetAudioClipSourceGain {
             clip,
@@ -52,18 +64,6 @@ fn fixture_frames(
                     gain_q16: 60_000,
                 },
             ],
-        })
-        .unwrap();
-    let warp = hex_project::default_audio_warp(
-        editor.project().clip(clip).unwrap(),
-        editor.project().tempo_map(),
-        mode,
-    )
-    .unwrap();
-    editor
-        .execute(Command::SetAudioClipWarp {
-            clip,
-            settings: Some(warp),
         })
         .unwrap();
     editor
