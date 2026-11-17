@@ -52,8 +52,15 @@ enum Phase {
     Complete,
     Failed,
 }
+#[derive(Clone, Copy)]
+enum SeekPolicy {
+    Strict(u64),
+    Segmented(u64),
+}
 struct PendingPage {
     index: u64,
+    target: u64,
+    policy: SeekPolicy,
     frames: Box<[Frame]>,
     valid: usize,
     written: usize,
@@ -67,9 +74,10 @@ struct PendingPage {
 /// This is blocking control-side work: never run it on the audio callback or
 /// the sole worker supplying active playback pages. One step performs at most
 /// one grain advance and drains/discards at most one page; completing a page may
-/// also record one bounded checkpoint. It does not guarantee seek coverage or
-/// a whole-file snapshot. On any failure reclaim the buffer and restart from an
-/// admitted checkpoint after resolving the source failure.
+/// also record one bounded checkpoint and begin the next replay segment. Strict
+/// seeks may refuse distant targets; segmented seeks can take substantial time.
+/// Neither mode establishes a whole-file snapshot. On failure reclaim the buffer
+/// and restart from an admitted checkpoint after resolving the source failure.
 pub struct VerifiedGranularPages {
     metadata: StreamedSourceMetadata,
     cursor: VerifiedGranularCursor,
@@ -118,12 +126,55 @@ impl VerifiedGranularPages {
     pub fn max_source_frames(&self) -> usize {
         self.cursor.max_source_frames()
     }
-    /// Begin one page. Refusal returns the unchanged caller-owned buffer.
+    /// Begin one page within a strict total preroll. Refusal returns the buffer.
     pub fn begin_page(
         &mut self,
         index: u64,
-        mut frames: Box<[Frame]>,
+        frames: Box<[Frame]>,
         max_preroll_frames: u64,
+        reader: &mut VerifiedWavReader,
+        plan: &ResamplePlan,
+        cancelled: impl FnMut() -> bool,
+    ) -> Result<(), (GranularPageError, Box<[Frame]>)> {
+        self.begin_page_with_policy(
+            index,
+            frames,
+            SeekPolicy::Strict(max_preroll_frames),
+            reader,
+            plan,
+            cancelled,
+        )
+    }
+    /// Begin a page with successive bounded replay segments. Total replay time
+    /// may be large; the caller must schedule it away from the playback worker.
+    /// A positive segment size no greater than `MAX_GRANULAR_PREROLL_FRAMES` is
+    /// required. Refusal returns the unchanged buffer. Intermediate checkpoints
+    /// consume the existing cache budget and can evict other noninitial entries.
+    /// Distant replay needs budget for the pinned initial and one additional
+    /// checkpoint; insufficient admission is reported before publishing a page.
+    pub fn begin_page_replaying(
+        &mut self,
+        index: u64,
+        frames: Box<[Frame]>,
+        segment_frames: u64,
+        reader: &mut VerifiedWavReader,
+        plan: &ResamplePlan,
+        cancelled: impl FnMut() -> bool,
+    ) -> Result<(), (GranularPageError, Box<[Frame]>)> {
+        self.begin_page_with_policy(
+            index,
+            frames,
+            SeekPolicy::Segmented(segment_frames),
+            reader,
+            plan,
+            cancelled,
+        )
+    }
+    fn begin_page_with_policy(
+        &mut self,
+        index: u64,
+        mut frames: Box<[Frame]>,
+        policy: SeekPolicy,
         reader: &mut VerifiedWavReader,
         plan: &ResamplePlan,
         cancelled: impl FnMut() -> bool,
@@ -139,14 +190,25 @@ impl VerifiedGranularPages {
         }
         let valid =
             (self.metadata.playback_frames() - start).min(STREAM_PAGE_FRAMES as u64) as usize;
-        let phase = match self.cache.begin_seek(
-            &mut self.cursor,
-            start,
-            max_preroll_frames,
-            reader,
-            plan,
-            cancelled,
-        ) {
+        let seek = match policy {
+            SeekPolicy::Strict(max_preroll_frames) => self.cache.begin_seek(
+                &mut self.cursor,
+                start,
+                max_preroll_frames,
+                reader,
+                plan,
+                cancelled,
+            ),
+            SeekPolicy::Segmented(segment_frames) => self.cache.begin_seek_toward(
+                &mut self.cursor,
+                start,
+                segment_frames,
+                reader,
+                plan,
+                cancelled,
+            ),
+        };
+        let phase = match seek {
             Ok(GranularSeekProgress::Pending { .. }) => Phase::Seeking,
             Ok(GranularSeekProgress::Reached { .. }) => Phase::Rendering,
             Err(error) => return Err((error.into(), frames)),
@@ -154,6 +216,8 @@ impl VerifiedGranularPages {
         frames.fill([0.0; 2]);
         self.pending = Some(PendingPage {
             index,
+            target: start,
+            policy,
             frames,
             valid,
             written: 0,
@@ -188,18 +252,42 @@ impl VerifiedGranularPages {
         let result = (|| -> Result<GranularPageProgress, GranularPageError> {
             if matches!(pending.phase, Phase::Seeking) {
                 let mut discard = [[0.0; 2]; STREAM_PAGE_FRAMES];
-                if matches!(
-                    self.cursor.continue_seek(
-                        reader,
-                        plan,
-                        buffers,
-                        &mut discard,
-                        1,
-                        &mut cancelled
-                    )?,
-                    GranularSeekProgress::Reached { .. }
-                ) {
-                    pending.phase = Phase::Rendering;
+                if let GranularSeekProgress::Reached { position } = self.cursor.continue_seek(
+                    reader,
+                    plan,
+                    buffers,
+                    &mut discard,
+                    1,
+                    &mut cancelled,
+                )? {
+                    if position == pending.target {
+                        pending.phase = Phase::Rendering;
+                    } else if let SeekPolicy::Segmented(segment_frames) = pending.policy {
+                        if position > pending.target {
+                            return Err(GranularPageError::InvalidRequest);
+                        }
+                        self.cache.record(&self.cursor)?;
+                        match self.cache.begin_seek_toward(
+                            &mut self.cursor,
+                            pending.target,
+                            segment_frames,
+                            reader,
+                            plan,
+                            &mut cancelled,
+                        )? {
+                            GranularSeekProgress::Pending { .. } => {}
+                            GranularSeekProgress::Reached { position }
+                                if position == pending.target =>
+                            {
+                                pending.phase = Phase::Rendering;
+                            }
+                            GranularSeekProgress::Reached { .. } => {
+                                return Err(GranularPageError::InvalidRequest);
+                            }
+                        }
+                    } else {
+                        return Err(GranularPageError::InvalidRequest);
+                    }
                 }
                 return Ok(GranularPageProgress::Pending);
             }
