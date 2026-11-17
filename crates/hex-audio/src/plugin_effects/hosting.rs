@@ -40,12 +40,21 @@ impl EffectSelection<'_> {
     }
 }
 
-/// Caller-derived graph/device contributions. None uses the SDK's explicit
-/// unknown mode. Buffer duration alone does not establish device latency.
+/// Both caller-derived graph/device contributions in project frames. Use a
+/// presentation plan for independently known or unknown directions.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EffectPresentation {
     pub input_frames: u32,
     pub output_frames: u32,
+}
+
+impl EffectPresentation {
+    pub fn plan(self) -> PresentationPlan {
+        PresentationPlan::Known(PresentationLatency {
+            input_frames: self.input_frames,
+            output_frames: self.output_frames,
+        })
+    }
 }
 
 /// Fixed audio-bus shape for the selected project device slot.
@@ -326,18 +335,10 @@ impl Hosting {
         &self,
         output: &mut PublicationControl,
         binding: Binding,
-        presentation: Option<EffectPresentation>,
+        presentation: PresentationPlan,
     ) -> Result<(), String> {
         output
-            .complete_native_source_preparation(
-                binding,
-                presentation.map_or(PresentationPlan::AllowUnknown, |p| {
-                    PresentationPlan::Known(PresentationLatency {
-                        input_frames: p.input_frames,
-                        output_frames: p.output_frames,
-                    })
-                }),
-            )
+            .complete_native_source_preparation(binding, presentation)
             .map_err(str::to_owned)
     }
     /// Borrow actual Root-held definitions through the ordinary compiler facade.

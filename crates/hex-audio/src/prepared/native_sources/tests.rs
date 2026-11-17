@@ -290,11 +290,12 @@ fn source_for_profile_with_authored_mode(
         .complete_on_control(
             control,
             binding,
-            Some(crate::plugin_effects::EffectPresentation {
+            crate::plugin_effects::EffectPresentation {
                 // Explicit headless fixture inputs, not production/device measurements.
                 input_frames: 77,
                 output_frames: 91,
-            }),
+            }
+            .plan(),
         )
         .unwrap();
     let authored = crate::plugin_effects::AuthoredSelection::from_targets(

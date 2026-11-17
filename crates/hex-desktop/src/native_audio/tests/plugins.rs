@@ -1663,7 +1663,7 @@ fn admitted_parameter_conversion_survives_output_close() {
 
 #[test]
 #[ignore = "explicit original SDK helper and source fixtures required"]
-fn native_effect_real_work_contention_waits_then_keeps_exact_accept_or_refusal() {
+fn native_effect_real_work_contention_returns_through_session_for_both_timing_modes() {
     let _native = native_fixture();
     for known_presentation in [false, true] {
         let (reached, facts) = mpsc::sync_channel(1);
@@ -1691,6 +1691,10 @@ fn native_effect_real_work_contention_waits_then_keeps_exact_accept_or_refusal()
         let before_attempt = h.plugin_progress.lock().unwrap().attempts;
         resume.send(()).unwrap();
         wait(|| h.plugin_progress.lock().unwrap().attempts > before_attempt);
+        assert!(
+            h.plugin_progress.lock().unwrap().facts_attempt_from_session,
+            "Facts must retry through the matching Session continuation"
+        );
         let pending = h.next();
         release.send(()).unwrap();
         holder.join().unwrap();
@@ -1707,30 +1711,38 @@ fn native_effect_real_work_contention_waits_then_keeps_exact_accept_or_refusal()
             &finished.plugin_effect_complete[0].control,
             &input.control
         ));
-        assert_eq!(
-            finished.plugin_effect_complete[0].accepted,
-            known_presentation
-        );
-        if known_presentation {
-            assert!(finished.error.is_none(), "{:?}", finished.error);
-            assert_eq!(finished.state.revision, initial.state.revision + 1);
-            assert_eq!(finished.state.project.main_devices().len(), 1);
-        } else {
-            assert!(
-                finished.error.as_ref().unwrap().contains("presentation"),
-                "{:?}",
-                finished.error
-            );
-            assert_eq!(finished.state.project, initial.state.project);
-            assert_eq!(finished.state.revision, initial.state.revision);
-            assert!(!finished.state.can_undo);
-        }
+        assert!(finished.plugin_effect_complete[0].accepted);
+        assert!(finished.error.is_none(), "{:?}", finished.error);
+        assert_eq!(finished.state.revision, initial.state.revision + 1);
+        assert_eq!(finished.state.project.main_devices().len(), 1);
     }
 }
 
 #[test]
 #[ignore = "explicit original SDK helper and source fixtures required"]
-fn native_effect_coordinator_refuses_unknown_presentation_without_canonical_or_history_edit() {
+fn native_effect_coordinator_preserves_history_when_plugin_refuses_presentation() {
+    const CHILD: &str = "HEX_DESKTOP_PRESENTATION_REFUSAL_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                std::thread::current().name().unwrap(),
+                "--ignored",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .env("HEX_ORIGINAL_INSTANCE_VARIANT", "17")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+        return;
+    }
     let _native = native_fixture();
     let mut h = ResidentHarness::with_plugins(host(), None);
     let initial = h.next();
