@@ -1803,7 +1803,7 @@ def carry_basis(root: Path, plan: dict, evidence: dict, env=None) -> dict:
             or evidence.get("status") != "passed" or evidence.get("exit_code") != 0
             or evidence.get("stale") is not False or evidence.get("dirty") is not False
             or evidence.get("native_acceptance_opt_in") is not False
-            or not tree or tree != evidence.get("end_tree")
+            or not isinstance(tree, dict) or not tree or tree != evidence.get("end_tree")
             or evidence.get("resume") or old.get("reuse")
             or old.get("qualifies_merge") is not True or old.get("profile") != "merge"
             or not isinstance(steps, list) or not steps

@@ -523,6 +523,13 @@ class ReportStepAdmissionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "zero-match"):
             local_ci.validate_report_steps(evidence, allow_carried=True)
 
+    def test_malformed_test_count_objects_refuse(self):
+        for counts in ([], {"rust_passed_by_binary": "one"}, {"python_executions": [None]}):
+            evidence = self.evidence()
+            evidence["steps"][0]["test_results"] = counts
+            with self.assertRaisesRegex(ValueError, "malformed test counts"):
+                local_ci.validate_report_steps(evidence, allow_carried=True)
+
     def test_module_source_cannot_escape_verified_workspace(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()

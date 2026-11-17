@@ -702,6 +702,10 @@ def validate_report_steps(evidence: dict, *, allow_carried: bool = False) -> Non
         raise ValueError("runtime report does not contain its complete required configurations")
     for required, actual in zip(expected, evidence["steps"]):
         results = actual.get("test_results", {})
+        if (not isinstance(results, dict) or any(not isinstance(results.get(key, []), list)
+                or any(type(count) is not int or count < 0 for count in results.get(key, []))
+                for key in ("rust_passed_by_binary", "python_executions", "python_skipped"))):
+            raise ValueError("runtime report has malformed test counts")
         if required.requires_tests and sum(results.get("rust_passed_by_binary", [])) + sum(
                 results.get("python_executions", [])) - sum(results.get("python_skipped", [])) <= 0:
             raise ValueError("runtime report has a zero-match test configuration")
@@ -2715,7 +2719,10 @@ class LocalCiRunner:
             validate_report_steps(evidence, allow_carried=True)
             basis = ci_plan.carry_basis(self.root, self.plan, evidence, env=self.env)
             decisions = carry_decisions(self.steps, evidence, basis, self.plan["cargo_inventory"])
-            dependency = evidence.get("target_cache", {}).get("dependency_inputs")
+            cache = evidence.get("target_cache")
+            if not isinstance(cache, dict):
+                raise ValueError("carried report lacks guarded target identity")
+            dependency = cache.get("dependency_inputs")
             if not isinstance(dependency, dict):
                 raise ValueError("carried report lacks guarded toolchain/dependency identity")
         except (ValueError, OSError, KeyError, TypeError, subprocess.SubprocessError) as error:

@@ -2005,6 +2005,13 @@ class BaseAdvanceCarryTests(unittest.TestCase):
             runner = ci.LocalCiRunner(root, mode="merge", plan=current, carry_report=report)
             runner._prepare_carry()
             self.assertIsNotNone(runner._carry)
+            cache = evidence["target_cache"]
+            evidence["target_cache"] = []
+            report.write_text(json.dumps(evidence))
+            runner._prepare_carry()
+            self.assertIsNone(runner._carry)
+            self.assertIn("guarded target identity", runner.summary["carry"]["refused"])
+            evidence["target_cache"] = cache
             evidence["steps"].pop()
             raw = json.dumps(evidence).encode()
             report.write_bytes(raw)
@@ -2047,6 +2054,8 @@ class BaseAdvanceCarryTests(unittest.TestCase):
                     plan.carry_basis(root, current, {**evidence, field: value}, env={})
             with self.assertRaisesRegex(ValueError, "native/external"):
                 plan.carry_basis(root, current, evidence, env={"HEX_VST3_SDK_DIR": "x"})
+            with self.assertRaisesRegex(ValueError, "not a complete passed"):
+                plan.carry_basis(root, current, {**evidence, "start_tree": "bad", "end_tree": "bad"}, env={})
             # A report whose base is newer than the current base cannot carry.
             newer = {**evidence["plan"], "base": candidate}
             with self.assertRaisesRegex(ValueError, "not an ancestor"):
