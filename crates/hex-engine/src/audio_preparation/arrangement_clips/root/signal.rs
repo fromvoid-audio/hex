@@ -148,8 +148,32 @@ impl ArrangementRootAssembly {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum FeedTopology {
+        Flat,
+        GroupedSiblings,
+        GroupSource,
+        GroupDestination,
+    }
     #[test]
     fn flat_track_feed_constructor_accounts_for_graph_and_recovers_input() {
+        track_feed_constructor_accounts_for_graph_and_recovers_input(FeedTopology::Flat);
+    }
+    #[test]
+    fn grouped_track_feed_constructor_accounts_for_graph_and_recovers_input() {
+        track_feed_constructor_accounts_for_graph_and_recovers_input(FeedTopology::GroupedSiblings);
+    }
+    #[test]
+    fn group_output_feed_constructor_accounts_for_graph_and_recovers_input() {
+        track_feed_constructor_accounts_for_graph_and_recovers_input(FeedTopology::GroupSource);
+    }
+    #[test]
+    fn group_input_feed_constructor_accounts_for_graph_and_recovers_input() {
+        track_feed_constructor_accounts_for_graph_and_recovers_input(
+            FeedTopology::GroupDestination,
+        );
+    }
+    fn track_feed_constructor_accounts_for_graph_and_recovers_input(topology: FeedTopology) {
         use hex_project::{Command, Created, Editor, RoutingOwner, TrackDeviceSlot};
         if !crate::audio_storage_constructor_layout_supported() {
             return;
@@ -175,13 +199,6 @@ mod tests {
             .execute(Command::RemoveInstrument { track: destination })
             .unwrap();
         editor
-            .execute(Command::SetAudioFeed {
-                source: RoutingOwner::Track(source),
-                destination,
-                gain: 0.5,
-            })
-            .unwrap();
-        editor
             .execute(Command::InsertDevice {
                 track: source,
                 before: None,
@@ -190,6 +207,37 @@ mod tests {
                     crate::DeviceTypeId::from_static("hex.limiter"),
                 )
                 .unwrap(),
+            })
+            .unwrap();
+        let mut feed_source = source;
+        let mut feed_destination = destination;
+        if topology != FeedTopology::Flat {
+            let grouped = match topology {
+                FeedTopology::GroupedSiblings => vec![source, destination],
+                FeedTopology::GroupSource => vec![source],
+                FeedTopology::GroupDestination => vec![destination],
+                FeedTopology::Flat => Vec::new(),
+            };
+            let Created::Track(group) = editor
+                .execute(Command::GroupTracks {
+                    tracks: hex_project::TrackSelectionIds::new(&grouped).unwrap(),
+                    name: "group".into(),
+                })
+                .unwrap()
+            else {
+                panic!("group")
+            };
+            if topology == FeedTopology::GroupSource {
+                feed_source = group;
+            } else if topology == FeedTopology::GroupDestination {
+                feed_destination = group;
+            }
+        }
+        editor
+            .execute(Command::SetAudioFeed {
+                source: RoutingOwner::Track(feed_source),
+                destination: feed_destination,
+                gain: 0.5,
             })
             .unwrap();
         let registry = hex_devices::native_registry().unwrap();
@@ -246,9 +294,8 @@ mod tests {
             .unwrap(),
         );
         let mut reference = crate::SessionPlayback::new(reference).unwrap();
-        reference
-            .visit_next_stream_chunk(32, None, &mut |_| Ok(()))
-            .unwrap();
+        let demand = reference.visit_next_stream_chunk(32, None, &mut |_| Ok(()));
+        assert_eq!(demand.is_err(), topology != FeedTopology::Flat);
         reference
             .apply(crate::SessionPlaybackCommand::Play)
             .unwrap();
@@ -300,20 +347,6 @@ mod tests {
         assert!(matches!(
             crate::AudioCandidateReservationQuote::for_project_with_effect_registry(
                 with_return.project(),
-                1,
-                &registry,
-            ),
-            Err(AudioStorageError::UnsupportedGraph)
-        ));
-        editor
-            .execute(Command::GroupTracks {
-                tracks: hex_project::TrackSelectionIds::new(&[source, destination]).unwrap(),
-                name: "group".into(),
-            })
-            .unwrap();
-        assert!(matches!(
-            crate::AudioCandidateReservationQuote::for_project_with_effect_registry(
-                editor.project(),
                 1,
                 &registry,
             ),
