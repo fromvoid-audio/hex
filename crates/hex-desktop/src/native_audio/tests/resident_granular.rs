@@ -1,6 +1,8 @@
 use super::resident_preview::ResidentHarness;
 use super::*;
 
+mod transport;
+
 fn play(h: &mut ResidentHarness) {
     h.audio
         .as_mut()
