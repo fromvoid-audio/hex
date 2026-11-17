@@ -325,6 +325,11 @@ impl<'a> FrameCache<'a> {
     }
 }
 impl Bandlimited {
+    pub(super) fn backing_bytes(&self) -> Option<usize> {
+        self.coefficients
+            .capacity()
+            .checked_mul(std::mem::size_of::<f64>())
+    }
     pub(super) fn new(rate: f64, work: &mut Work<'_>) -> Result<Self, Error> {
         let resampler = work.resampler;
         work.scratch(bank_bytes(resampler))?;
@@ -451,7 +456,11 @@ impl Bandlimited {
             input.frame(interval.map_or(at, |(start, end)| at.clamp(start, end)))
         })
     }
-    fn sample_with(&self, position_q32: i128, mut frame: impl FnMut(i128) -> [f64; 2]) -> [f64; 2] {
+    pub(super) fn sample_with(
+        &self,
+        position_q32: i128,
+        mut frame: impl FnMut(i128) -> [f64; 2],
+    ) -> [f64; 2] {
         let integer = position_q32.div_euclid(Q32);
         let fraction = position_q32.rem_euclid(Q32);
         if fraction == 0 && self.rate <= 1.0 {

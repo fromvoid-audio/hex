@@ -10,7 +10,7 @@
 mod beats;
 pub mod fft;
 mod granular;
-pub use granular::{GrainAnalysis, GrainDecision, analyze_grain};
+pub use granular::{GrainAnalysis, GrainDecision, GrainSynthesis, analyze_grain};
 mod granular_overlap;
 pub use granular_overlap::GranularOverlap;
 mod resample;
