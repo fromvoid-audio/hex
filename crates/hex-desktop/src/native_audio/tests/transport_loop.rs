@@ -118,6 +118,10 @@ fn scope_resize_waits_for_the_previous_graph_and_returns_a_terminal_on_timeout()
 
     h.service.submit(resize()).unwrap();
     let refused = h.next();
+    assert!(
+        refused.request_complete,
+        "the resize must release the pending UI edit"
+    );
     assert_eq!(
         refused.error.as_deref(),
         Some("edit cancelled · audio publication timed out")
