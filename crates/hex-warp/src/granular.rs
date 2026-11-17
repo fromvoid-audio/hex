@@ -10,6 +10,10 @@ fn hash(mut value: u64) -> u64 {
     value = (value ^ (value >> 27)).wrapping_mul(0x94d049bb133111eb);
     value ^ (value >> 31)
 }
+const PERIOD_WIDTH: usize = 256;
+const MAX_PERIOD_LAG: usize = 200;
+const PERIOD_SCRATCH_BYTES: usize = (MAX_PERIOD_LAG + 2 + PERIOD_WIDTH + MAX_PERIOD_LAG) * 8;
+
 fn period<E: From<Error>>(
     sample_rate: u32,
     read: &mut impl FnMut(i128) -> Result<[f64; 2], E>,
@@ -19,13 +23,21 @@ fn period<E: From<Error>>(
 ) -> Result<Option<f64>, E> {
     let step = (sample_rate / 8_000).max(1) as i128;
     let minimum = (sample_rate / 2_000).max(2) as usize / step as usize;
-    let maximum = ((sample_rate / 50) as usize / step as usize).min(200);
+    let maximum = ((sample_rate / 50) as usize / step as usize).min(MAX_PERIOD_LAG);
     let minimum = minimum.max(2).min(maximum.saturating_sub(1));
-    let mut correlations = [0.0_f64; 202];
+    let mut correlations = [0.0_f64; MAX_PERIOD_LAG + 2];
     let center = center.round() as i128;
-    let width = 256;
+    let width = PERIOD_WIDTH;
     work.check(((maximum - minimum + 1) * width * 2) as u64)
         .map_err(E::from)?;
+    // Every lag reads this same bounded set. Resolve it once per analysis,
+    // retaining the original correlation order and work charge. Nothing is
+    // reused across grains or source-validation calls.
+    let mut samples = [0.0_f64; PERIOD_WIDTH + MAX_PERIOD_LAG];
+    for (index, sample) in samples.iter_mut().take(width + maximum).enumerate() {
+        let at = center + (index as i128 - maximum as i128 - width as i128 / 2) * step;
+        *sample = read(at)?[channel];
+    }
     for (lag, correlation) in correlations
         .iter_mut()
         .enumerate()
@@ -36,9 +48,8 @@ fn period<E: From<Error>>(
         let mut xx = 0.0;
         let mut yy = 0.0;
         for index in 0..width {
-            let at = center + (index as i128 - width as i128 / 2) * step;
-            let x = read(at)?[channel];
-            let y = read(at - lag as i128 * step)?[channel];
+            let x = samples[index + maximum];
+            let y = samples[index + maximum - lag];
             xy += x * y;
             xx += x * x;
             yy += y * y;
@@ -426,7 +437,7 @@ pub(super) fn grains(
     let half_limit = nominal;
     let hop = (nominal / 4).max(1);
     let ring = half_limit * 2 + hop + 4;
-    let baseline_extra = bank_bytes(work.resampler) + 202 * 8;
+    let baseline_extra = bank_bytes(work.resampler) + PERIOD_SCRATCH_BYTES;
     let cache_fits = |bytes: usize| {
         ring.checked_mul(24)
             .and_then(|n| n.checked_add(baseline_extra))
@@ -721,7 +732,7 @@ mod tests {
                 seed: 4,
             },
         };
-        let baseline = (160 * 2 + 40 + 4) * 24 + bank_bytes(Resampler::V1) + 202 * 8;
+        let baseline = (160 * 2 + 40 + 4) * 24 + bank_bytes(Resampler::V1) + PERIOD_SCRATCH_BYTES;
         let mut cancel = || false;
         let mut cached = Work {
             cancel: &mut cancel,
@@ -748,17 +759,23 @@ mod tests {
     }
     #[test]
     fn period_analysis_tracks_pitch_without_cancelling_antiphase_stereo() {
-        for frequency in [220.0, 880.0] {
+        for (sample_rate, frequency) in [
+            (8_000, 220.0),
+            (16_000, 880.0),
+            (48_000, 220.0),
+            (192_000, 880.0),
+        ] {
             let frames: Vec<_> = (0..4_000)
                 .map(|i| {
-                    let sample =
-                        (2.0 * std::f64::consts::PI * frequency * i as f64 / 16_000.0).sin() as f32;
+                    let sample = (2.0 * std::f64::consts::PI * frequency * i as f64
+                        / f64::from(sample_rate))
+                    .sin() as f32;
                     [sample, -sample]
                 })
                 .collect();
             let input = Input {
                 frames: &frames,
-                sample_rate: 16_000,
+                sample_rate,
                 region_start: 0,
                 region_length: 4_000,
                 phase: 0,
@@ -774,16 +791,24 @@ mod tests {
                 base_scratch: 0,
                 resampler: Resampler::V1,
             };
+            let mut reads = 0;
             let measured = period(
                 input.sample_rate,
-                &mut |position| Ok::<_, Error>(input.frame(position)),
+                &mut |position| {
+                    reads += 1;
+                    Ok::<_, Error>(input.frame(position))
+                },
                 2_000.0,
                 input.reference_channel().unwrap(),
                 &mut work,
             )
             .unwrap()
             .unwrap();
-            assert!((16_000.0 / measured - frequency).abs() < frequency * 0.01);
+            assert!((f64::from(sample_rate) / measured - frequency).abs() < frequency * 0.01);
+            assert!(
+                reads <= 456,
+                "period analysis reread source samples: {reads}"
+            );
         }
     }
 }
