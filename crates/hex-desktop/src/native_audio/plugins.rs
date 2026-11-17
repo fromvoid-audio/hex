@@ -165,8 +165,7 @@ pub(super) struct Plugins {
     degraded: degraded::DegradedReport<Binding>,
     degraded_changed: Option<(u64, u64, Vec<u64>)>,
     diagnostics: Option<hex_diagnostics::DiagnosticsHandle>,
-    latency_poll: usize,
-    latency_poll_at: Option<std::time::Instant>,
+    parameter_poll: parameter_touches::PollSchedule,
     latency_notice: Option<(hex_audio::prepared::AppliedAudioSource, std::time::Instant)>,
     #[cfg(all(test, feature = "allocation-probe"))]
     presentation: Option<hex_audio::plugin_effects::EffectPresentation>,
