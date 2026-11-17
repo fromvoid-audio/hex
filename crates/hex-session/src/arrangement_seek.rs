@@ -42,12 +42,10 @@ pub enum ArrangementSeekMode {
     /// Fresh playing section loop. The region must be enabled, destination must
     /// equal its start, and start_playing must be true; malformed specs refuse.
     SectionLoop(hex_project::LoopRegion),
-    /// Fresh playing section with a finite end and no enabled canonical loop.
-    SectionOnce(hex_project::LoopRegion),
 }
 
 /// Transient click intent. The region's enabled bit selects a canonical loop
-/// or a one-shot section. Both use the predecessor clock for quantized launch.
+/// or continuous Arrangement playback. Both use the predecessor clock for launch.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SectionLaunch {
     pub region: hex_project::LoopRegion,
@@ -59,7 +57,7 @@ impl SectionLaunch {
         if self.region.enabled() {
             ArrangementSeekMode::SectionLoop(self.region)
         } else {
-            ArrangementSeekMode::SectionOnce(self.region)
+            ArrangementSeekMode::Interactive
         }
     }
 
@@ -456,7 +454,7 @@ fn prepare(
             )?;
             Playback::from_interactive_arrangement_preroll(runtime)
         }
-        ArrangementSeekMode::Interactive | ArrangementSeekMode::SectionOnce(_) => {
+        ArrangementSeekMode::Interactive => {
             let runtime = SessionPlayback::prepare_interactive_arrangement_preroll_from_revision(
                 Arc::clone(&spec.prepared_revision),
                 spec.destination_frame,
@@ -580,7 +578,7 @@ fn run_worker(shared: Arc<Shared>, preparer: Box<Preparer>) {
                             &cancelled,
                         )
                     }
-                    ArrangementSeekMode::Interactive | ArrangementSeekMode::SectionOnce(_) => {
+                    ArrangementSeekMode::Interactive => {
                         SessionPlayback::prepare_interactive_arrangement_preroll_with_device_resources(
                             Arc::clone(&work.spec.prepared_revision),
                             &resident.resources,
@@ -599,17 +597,6 @@ fn run_worker(shared: Arc<Shared>, preparer: Box<Preparer>) {
         } else {
             preparer(work.spec.clone(), &cancelled)
         };
-        let result = result.and_then(|mut playback| {
-            if let ArrangementSeekMode::SectionOnce(region) = work.spec.mode {
-                if work.spec.destination_frame != region.start() || !work.spec.start_playing {
-                    return Err(ArrangementPrerollError::CandidatePositionMismatch);
-                }
-                playback
-                    .arm_section_once(region)
-                    .map_err(|_| ArrangementPrerollError::CandidatePositionMismatch)?;
-            }
-            Ok(playback)
-        });
         let result = ArrangementSeekResult {
             request_id: work.request_id,
             mode: work.spec.mode,
@@ -746,6 +733,23 @@ mod tests {
         let playback = worker.try_result().unwrap().result.unwrap();
         assert_eq!(playback.section_loop(), Some(enabled));
         assert_eq!(playback.position(), 0);
+        assert!(playback.playing());
+
+        let plain = SectionLaunch {
+            region: hex_project::LoopRegion::new(0, 256, false).unwrap(),
+            quantization: hex_engine::LaunchQuantization::Immediate,
+        };
+        worker
+            .submit(ArrangementSeekSpec {
+                mode: plain.mode(),
+                start_playing: true,
+                ..spec(graph, 3)
+            })
+            .unwrap();
+        wait_for_ready(&worker);
+        let mut playback = worker.try_result().unwrap().result.unwrap();
+        playback.render(&mut [[0.0; 2]; 272]).unwrap();
+        assert_eq!(playback.position(), 272);
         assert!(playback.playing());
         worker.shutdown_and_join_on_control();
     }

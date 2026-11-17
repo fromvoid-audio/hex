@@ -3,7 +3,7 @@ use crate::signal_graph::tests::{fixture, prepare};
 
 #[test]
 fn live_audio_matches_arrangement_across_large_blocks_and_transport_splits() {
-    for mode in 0..4 {
+    for mode in 0..3 {
         let mut f = fixture(&[&[7]], 1024);
         let track = f.tracks[0];
         for (index, sample) in f.samples.iter_mut().enumerate() {
@@ -25,8 +25,6 @@ fn live_audio_matches_arrangement_across_large_blocks_and_transport_splits() {
                     .unwrap();
             } else if mode == 2 {
                 playback.transport_fade.begin_in(128);
-            } else if mode == 3 {
-                playback.transport_fade.section_end = Some(150);
             }
         }
         let mut expected = [[0.0; 2]; 512];
@@ -159,7 +157,7 @@ fn playback_refuses_project_capture_with_live_input_before_advancing() {
 
 #[test]
 fn timing_only_tap_observes_live_input_across_transport_splits_without_pcm() {
-    for section in [false, true] {
+    for fading in [false, true] {
         let f = fixture(&[&[7]], 1024);
         let track = f.tracks[0];
         let revision = prepare(&f).unwrap();
@@ -167,8 +165,10 @@ fn timing_only_tap_observes_live_input_across_transport_splits_without_pcm() {
         let mut reference = Playback::try_from_prepared_with_session(revision).unwrap();
         for playback in [&mut live, &mut reference] {
             playback.apply(PlaybackCommand::Play);
-            if section {
-                playback.transport_fade.section_end = Some(150);
+            if fading {
+                playback
+                    .try_apply_declicked_action(PlaybackAction::Transport(PlaybackCommand::Pause))
+                    .unwrap();
             }
         }
         let mut live_spans = Vec::new();
@@ -212,7 +212,7 @@ fn timing_only_tap_observes_live_input_across_transport_splits_without_pcm() {
             )
             .unwrap();
         assert!(!received_pcm);
-        assert_eq!(live_spans, reference_spans, "section {section}");
+        assert_eq!(live_spans, reference_spans, "fading {fading}");
         assert!(!live_spans.is_empty());
     }
 }

@@ -1301,7 +1301,6 @@ fn prepare_file_seek_runtime<'a>(
     let section = match spec.mode {
         hex_session::arrangement_seek::ArrangementSeekMode::SectionLoop(region) => Some(region),
         hex_session::arrangement_seek::ArrangementSeekMode::Interactive
-        | hex_session::arrangement_seek::ArrangementSeekMode::SectionOnce(_)
         | hex_session::arrangement_seek::ArrangementSeekMode::HistoryPreservingInteractive => None,
         _ => {
             return Err(hex_engine::ArrangementPrerollError::MediaPreparation(

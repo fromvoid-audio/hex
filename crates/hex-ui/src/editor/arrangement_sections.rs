@@ -992,7 +992,7 @@ impl EditorView {
             .tooltip(|_, cx| {
                 cx.new(|_| super::transport::MiniTooltip {
                     kind: crate::tooltips::Kind::Identification,
-                    description: "play section · hold l to loop".into(),
+                    description: "play from section · hold l to loop".into(),
                 })
                 .into()
             })

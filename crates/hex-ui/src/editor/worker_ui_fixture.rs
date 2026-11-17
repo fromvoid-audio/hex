@@ -207,7 +207,7 @@ mod tests {
     use std::sync::atomic::Ordering::{Acquire, Release};
 
     #[gpui::test]
-    fn section_button_plays_once_and_l_click_uses_the_visible_loop(cx: &mut TestAppContext) {
+    fn section_button_plays_through_and_l_click_uses_the_visible_loop(cx: &mut TestAppContext) {
         section_button_case(cx, false);
     }
 
@@ -232,6 +232,12 @@ mod tests {
                     color: ElementColor::Blue,
                     start,
                     end,
+                },
+                Command::AddArrangementSection {
+                    name: "next section".into(),
+                    color: ElementColor::Blue,
+                    start: end,
+                    end: BeatTime::from_quarters(4).unwrap(),
                 },
             ],
         );
@@ -406,7 +412,7 @@ mod tests {
             }
             assert!(
                 Instant::now() < deadline,
-                "one-shot launch was not applied: {:?}",
+                "plain section launch was not applied: {:?}",
                 fixture.editor.read_with(&visual, |view, _| (
                     view.status.to_string(),
                     view.error.as_ref().map(|e| e.to_string())
@@ -426,8 +432,11 @@ mod tests {
                         if revision < status.applied_revision.load(Acquire)
                 ));
             }
-            assert_eq!(status.position.load(Acquire), region.end());
-            assert!(!status.playing.load(Acquire));
+            assert!(
+                status.position.load(Acquire) > region.end(),
+                "plain launch must advance into the next section"
+            );
+            assert!(status.playing.load(Acquire));
         });
         fixture.finish(cx);
     }
