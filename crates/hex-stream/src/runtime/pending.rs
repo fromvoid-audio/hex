@@ -8,8 +8,11 @@ use super::*;
 pub struct StreamPreparationBound {
     pub retained_data_bytes: usize,
     pub construction_peak_data_bytes: usize,
+    /// Selected retained fields plus one possible construction-cache kernel
+    /// handle per raw source. Opaque std/native and caller aliases are separate.
     pub shared_handle_bound: usize,
     pub source_reader_bound: usize,
+    pub worker_lifetimes: usize,
 }
 /// Explicit caller allowance checked before constructing the pool or starting a
 /// worker. It neither certifies ownership nor grants page/native admission.
@@ -18,6 +21,14 @@ pub struct StreamPreparationAllowance {
     pub max_retained_data_bytes: usize,
     pub max_construction_peak_data_bytes: usize,
     pub max_shared_handle_bound: usize,
+}
+/// Combined DATA/shared-handle allowance plus explicit native resource counts.
+/// Earlier prepared-source construction and opaque native costs remain separate.
+#[derive(Clone, Copy, Debug)]
+pub struct GranularStreamPreparationAllowance {
+    pub stream: StreamPreparationAllowance,
+    pub max_source_readers: usize,
+    pub max_worker_lifetimes: usize,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PendingPhase {
@@ -63,12 +74,69 @@ impl PendingStreamDomain {
         scalar_definition_capacity: usize,
         readiness: Option<StreamReadinessReservation>,
     ) -> Result<StreamPreparationBound, StreamRuntimeError> {
+        Self::preparation_bound_inner(
+            config,
+            definitions,
+            definition_capacity,
+            scalar_definitions,
+            scalar_definition_capacity,
+            None,
+            readiness,
+        )
+    }
+    pub fn preparation_bound_with_granular_sources(
+        config: StreamConfig,
+        definitions: &[SourceDefinition],
+        definition_capacity: usize,
+        scalar_definitions: &[ScalarSourceDefinition],
+        scalar_definition_capacity: usize,
+        bank: &crate::GranularWorkerBank,
+        readiness: Option<StreamReadinessReservation>,
+    ) -> Result<StreamPreparationBound, StreamRuntimeError> {
+        Self::preparation_bound_inner(
+            config,
+            definitions,
+            definition_capacity,
+            scalar_definitions,
+            scalar_definition_capacity,
+            Some(bank),
+            readiness,
+        )
+    }
+    pub(super) fn preparation_bound_inner(
+        config: StreamConfig,
+        definitions: &[SourceDefinition],
+        definition_capacity: usize,
+        scalar_definitions: &[ScalarSourceDefinition],
+        scalar_definition_capacity: usize,
+        granular: Option<&crate::GranularWorkerBank>,
+        readiness: Option<StreamReadinessReservation>,
+    ) -> Result<StreamPreparationBound, StreamRuntimeError> {
         let config = config.validate()?;
+        let granular_count = granular.map_or(0, |bank| bank.metadata().len());
+        let granular_data = granular
+            .map(|bank| crate::GranularRuntimeData::requested(bank, config))
+            .transpose()?;
+        let granular_extra = granular_data
+            .map_or(Some(0), |data| {
+                data.bytes()?.checked_add(
+                    granular_count
+                        .checked_mul(std::mem::size_of::<hex_engine::StreamedSourceMetadata>())?,
+                )
+            })
+            .ok_or(StreamRuntimeError::AllocationFailed)?;
+        if granular.is_some_and(|bank| {
+            bank.metadata()
+                .any(|m| definitions.iter().any(|d| d.key == m.key()))
+        }) {
+            return Err(StreamRuntimeError::InvalidConfiguration);
+        }
         if definition_capacity < definitions.len()
             || scalar_definition_capacity < scalar_definitions.len()
             || definitions
                 .len()
                 .checked_add(scalar_definitions.len())
+                .and_then(|n| n.checked_add(granular_count))
                 .is_none_or(|count| count > config.max_sources)
             || !crate::footprint::queue_family_supported()
         {
@@ -96,7 +164,7 @@ impl PendingStreamDomain {
         let endpoint = Endpoint::requested_data(
             config.page_buffers,
             config.request_capacity,
-            definitions.len() + scalar_definitions.len(),
+            definitions.len() + scalar_definitions.len() + granular_count,
         )
         .and_then(crate::EndpointData::bytes)
         .ok_or(StreamRuntimeError::AllocationFailed)?;
@@ -162,7 +230,8 @@ impl PendingStreamDomain {
         let readiness_bytes = match readiness {
             Some(reservation)
                 if reservation.extents_per_role != 0
-                    && reservation.extents_per_role < config.page_buffers =>
+                    && reservation.extents_per_role
+                        < config.page_buffers - usize::from(granular.is_some()) =>
             {
                 reservation
                     .extents_per_role
@@ -173,13 +242,20 @@ impl PendingStreamDomain {
             Some(_) => return Err(StreamRuntimeError::InvalidConfiguration),
             None => 0,
         };
-        let retained =
-            crate::footprint::sum([endpoint, transport, worker, disposal, readiness_bytes])
-                .ok_or(StreamRuntimeError::AllocationFailed)?;
+        let retained = crate::footprint::sum([
+            endpoint,
+            transport,
+            worker,
+            disposal,
+            readiness_bytes,
+            granular_extra,
+        ])
+        .ok_or(StreamRuntimeError::AllocationFailed)?;
         let peak = crate::footprint::sum([
             endpoint,
             transport,
             worker_peak,
+            granular_extra,
             disposal,
             readiness_bytes,
             hex_engine::STREAM_PAGE_FRAMES
@@ -200,11 +276,22 @@ impl PendingStreamDomain {
             retained_data_bytes: retained,
             construction_peak_data_bytes: peak,
             shared_handle_bound: 22usize
-                .checked_add(definitions.len())
+                .checked_add(
+                    definitions
+                        .len()
+                        .checked_mul(3)
+                        .ok_or(StreamRuntimeError::AllocationFailed)?,
+                )
                 .and_then(|n| n.checked_add(scalar_definitions.len().checked_mul(2)?))
                 .and_then(|n| n.checked_add(if scalar_definitions.is_empty() { 0 } else { 2 }))
+                .and_then(|n| {
+                    n.checked_add(
+                        granular_data.map_or(Some(0), |data| data.worker.shared_handle_bound())?,
+                    )
+                })
                 .ok_or(StreamRuntimeError::AllocationFailed)?,
-            source_reader_bound: definitions.len() + scalar_definitions.len(),
+            source_reader_bound: definitions.len() + scalar_definitions.len() + granular_count,
+            worker_lifetimes: 1 + usize::from(granular.is_some()),
         })
     }
     /// Once this succeeds, no owning Err may discard the live pair. The host
@@ -234,6 +321,7 @@ impl PendingStreamDomain {
             config,
             definitions,
             scalar_definitions,
+            None,
             readiness,
             allowance,
             #[cfg(feature = "test-support")]
@@ -254,26 +342,65 @@ impl PendingStreamDomain {
             config,
             definitions,
             Vec::new(),
+            None,
             readiness,
             allowance,
             Some(gate),
         )
     }
 
-    fn try_start_inner(
+    /// Admit all listed mixed runtime DATA and concrete reader/worker counts
+    /// before allocating the pair. The prebuilt bank's earlier peaks are caller-owned.
+    pub fn try_start_with_granular_sources_on_control(
         config: StreamConfig,
         definitions: Vec<SourceDefinition>,
         scalar_definitions: Vec<ScalarSourceDefinition>,
+        bank: crate::GranularWorkerBank,
         readiness: Option<StreamReadinessReservation>,
-        allowance: StreamPreparationAllowance,
-        #[cfg(feature = "test-support")] page_gate: Option<crate::test_support::PageGate>,
+        allowance: GranularStreamPreparationAllowance,
     ) -> Result<Self, StreamRuntimeError> {
-        let bound = Self::preparation_bound_with_scalar_sources(
+        let bound = Self::preparation_bound_with_granular_sources(
             config,
             &definitions,
             definitions.capacity(),
             &scalar_definitions,
             scalar_definitions.capacity(),
+            &bank,
+            readiness,
+        )?;
+        if bound.source_reader_bound > allowance.max_source_readers
+            || bound.worker_lifetimes > allowance.max_worker_lifetimes
+        {
+            return Err(StreamRuntimeError::InvalidConfiguration);
+        }
+        Self::try_start_inner(
+            config,
+            definitions,
+            scalar_definitions,
+            Some(bank),
+            readiness,
+            allowance.stream,
+            #[cfg(feature = "test-support")]
+            None,
+        )
+    }
+    #[allow(clippy::too_many_arguments)] // Fixed resource owners plus the test gate.
+    fn try_start_inner(
+        config: StreamConfig,
+        definitions: Vec<SourceDefinition>,
+        scalar_definitions: Vec<ScalarSourceDefinition>,
+        granular: Option<crate::GranularWorkerBank>,
+        readiness: Option<StreamReadinessReservation>,
+        allowance: StreamPreparationAllowance,
+        #[cfg(feature = "test-support")] page_gate: Option<crate::test_support::PageGate>,
+    ) -> Result<Self, StreamRuntimeError> {
+        let bound = Self::preparation_bound_inner(
+            config,
+            &definitions,
+            definitions.capacity(),
+            &scalar_definitions,
+            scalar_definitions.capacity(),
+            granular.as_ref(),
             readiness,
         )?;
         if bound.retained_data_bytes > allowance.max_retained_data_bytes
@@ -282,10 +409,23 @@ impl PendingStreamDomain {
         {
             return Err(StreamRuntimeError::InvalidConfiguration);
         }
-        let (runtime, disposal) = StreamRuntime::new_factory_with_scalar_sources(
+        let granular = granular
+            .map(|bank| {
+                let data = crate::GranularWorkerControl::data_bound(&bank, config.page_buffers)?;
+                let allowance = crate::GranularWorkerAllowance {
+                    max_data_bytes: data.bytes().ok_or(StreamRuntimeError::AllocationFailed)?,
+                    max_shared_handles: data
+                        .shared_handle_bound()
+                        .ok_or(StreamRuntimeError::AllocationFailed)?,
+                };
+                crate::worker::granular::PreparedGranular::new(bank, config, allowance)
+            })
+            .transpose()?;
+        let (runtime, disposal) = StreamRuntime::new_factory_with_granular(
             config,
             definitions,
             scalar_definitions,
+            granular,
             true,
             #[cfg(test)]
             None,
@@ -357,6 +497,11 @@ impl PendingStreamDomain {
             self.bound.shared_handle_bound,
             self.readiness,
         )?;
+        if parts.summary.worker_lifetimes > self.bound.worker_lifetimes
+            || parts.summary.source_reader_lifetimes > self.bound.source_reader_bound
+        {
+            return Err(AudioStreamStorageError::ReservationExceeded);
+        }
         // No caller/provider code, fallibility or destructor-bearing overwrite
         // exists between the first take and securing the same pair+capsule.
         let pair = self.runtime.control.take().zip(self.runtime.pages.take());

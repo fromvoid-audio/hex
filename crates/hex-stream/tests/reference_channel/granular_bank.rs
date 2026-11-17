@@ -777,7 +777,7 @@ fn raw_definition() -> (Wav, hex_stream::SourceDefinition, Vec<[f32; 2]>) {
 }
 
 #[test]
-fn runtime_routes_mixed_raw_tones_and_texture_pages_and_refuses_unclosed_native_custody() {
+fn runtime_routes_mixed_raw_tones_and_texture_pages_and_admits_native_custody() {
     use hex_stream::{ConstructorStreamDomain, StreamConfig, StreamRuntime};
     let (_raw_wav, raw, raw_pcm) = raw_definition();
     let raw_key = raw.metadata.key();
@@ -815,14 +815,94 @@ fn runtime_routes_mixed_raw_tones_and_texture_pages_and_refuses_unclosed_native_
         );
     }
     let (control, pages) = runtime.split().ok().unwrap();
-    let Err(refusal) = ConstructorStreamDomain::try_new_on_control(control, pages) else {
-        panic!("unextended native custody admitted a second worker")
+    {
+        use hex_engine::{AudioRootStorageLedger, AudioStorageLedgerReservation};
+        use hex_stream::{
+            AudioStreamStorageLedger, AudioStreamStorageReservation, OpaqueStreamHandleGroup,
+            StreamHandleLocation,
+        };
+        let roots = AudioRootStorageLedger::try_new_on_control(AudioStorageLedgerReservation {
+            data_rows: 0,
+            handle_rows: 0,
+            root_rows: 0,
+            max_retained_bytes: usize::MAX,
+            max_construction_peak_bytes: usize::MAX,
+        })
+        .unwrap();
+        let mut ledger = AudioStreamStorageLedger::try_new_on_control(
+            &roots,
+            AudioStreamStorageReservation {
+                domains: 1,
+                caller_leases: 0,
+                max_listed_data_bytes: usize::MAX,
+                max_listed_construction_peak_bytes: usize::MAX,
+            },
+        )
+        .unwrap();
+        ledger.borrow_domain_on_control(&control, &pages).unwrap();
+        let handles = ledger
+            .owning_handle_obligations()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(handles.len(), 15 + 2 + 8 + 4);
+        for location in [
+            StreamHandleLocation::SourceManifest(0),
+            StreamHandleLocation::GranularManifest(0),
+            StreamHandleLocation::GranularManifest(1),
+            StreamHandleLocation::GranularKernel(0),
+            StreamHandleLocation::GranularKernel(1),
+            StreamHandleLocation::GranularOwnerEpoch,
+            StreamHandleLocation::GranularWorkerEpoch,
+        ] {
+            assert!(handles.iter().any(|h| h.location == location));
+        }
+        assert!(
+            ledger
+                .opaque_handle_obligations()
+                .any(|(_, kind)| kind == OpaqueStreamHandleGroup::GranularWorkerThread)
+        );
+        let summary = ledger.summary().unwrap().require_listed_data().unwrap();
+        assert_eq!(summary.unresolved_known_stream_handles, handles.len());
+        assert_eq!(summary.unresolved_opaque_handle_groups, 3);
+        assert_eq!(
+            summary.require_complete(),
+            Err(hex_stream::AudioStreamStorageError::UnresolvedObligations)
+        );
+    }
+    // 19 fixed pair/disposal/lease handles, raw manifest+plan, and eight
+    // granular queue/atomic fields plus two manifest+plan pairs.
+    let expected_handles = 19 + 2 + 8 + 4;
+    let Err(refusal) = ConstructorStreamDomain::try_new_with_limits_on_control(
+        control,
+        pages,
+        usize::MAX,
+        usize::MAX,
+        expected_handles - 1,
+    ) else {
+        panic!("short native handle allowance admitted")
     };
     assert_eq!(
         refusal.reason,
-        hex_stream::AudioStreamStorageError::UnknownData
+        hex_stream::AudioStreamStorageError::ReservationExceeded
     );
-    let report = refusal.control.shutdown(refusal.pages).unwrap();
+    let mut domain = ConstructorStreamDomain::try_new_with_limits_on_control(
+        refusal.control,
+        refusal.pages,
+        usize::MAX,
+        usize::MAX,
+        expected_handles,
+    )
+    .ok()
+    .unwrap();
+    assert_eq!(domain.summary().shared_handle_bound, expected_handles);
+    assert_eq!(domain.summary().worker_lifetimes, 2);
+    assert_eq!(domain.summary().source_reader_lifetimes, 3);
+    assert_eq!(domain.summary().kernel_handle_bound, 3);
+    let report = loop {
+        if let Some(report) = domain.advance_disposal_on_control().unwrap() {
+            break report;
+        }
+    };
     assert!(report.accounting_complete && report.worker_joined);
     assert_eq!(report.page_buffers, 4);
 }
@@ -981,4 +1061,216 @@ fn runtime_float_preflight_refuses_nan_outside_granular_region() {
     );
     assert!(!runtime.catalog_ready());
     assert!(runtime.shutdown().unwrap().accounting_complete);
+}
+
+fn pending_fixture() -> (
+    Vec<Wav>,
+    Vec<hex_stream::SourceDefinition>,
+    GranularWorkerBank,
+) {
+    let (raw_wav, raw, _) = raw_definition();
+    let (tones_wav, tones, _) = source(WarpMode::Tones { grain_ms: 32 });
+    let (texture_wav, texture, _) = source_at_rate(
+        WarpMode::Texture {
+            grain_ms: 32,
+            fluctuation: 35,
+            seed: 42,
+        },
+        44_100,
+    );
+    (
+        vec![raw_wav, tones_wav, texture_wav],
+        vec![raw],
+        admit(vec![tones, texture]),
+    )
+}
+fn pending_allowance(
+    bound: hex_stream::StreamPreparationBound,
+) -> hex_stream::GranularStreamPreparationAllowance {
+    hex_stream::GranularStreamPreparationAllowance {
+        stream: hex_stream::StreamPreparationAllowance {
+            max_retained_data_bytes: bound.retained_data_bytes,
+            max_construction_peak_data_bytes: bound.construction_peak_data_bytes,
+            max_shared_handle_bound: bound.shared_handle_bound,
+        },
+        max_source_readers: bound.source_reader_bound,
+        max_worker_lifetimes: bound.worker_lifetimes,
+    }
+}
+#[test]
+fn pending_exact_mixed_granular_allowance_seals_and_reclaims_the_original_pool() {
+    use hex_stream::{PendingStreamDomain, StreamConfig, StreamReadinessReservation};
+    let (_files, definitions, bank) = pending_fixture();
+    let metadata = bank.metadata().cloned().collect::<Vec<_>>();
+    let config = StreamConfig::with_pool_pages(4);
+    let readiness = Some(StreamReadinessReservation {
+        extents_per_role: 1,
+    });
+    assert!(
+        PendingStreamDomain::preparation_bound_with_granular_sources(
+            config,
+            &definitions,
+            usize::MAX,
+            &[],
+            0,
+            &bank,
+            readiness
+        )
+        .is_err()
+    );
+    let bound = PendingStreamDomain::preparation_bound_with_granular_sources(
+        config,
+        &definitions,
+        definitions.capacity(),
+        &[],
+        0,
+        &bank,
+        readiness,
+    )
+    .unwrap();
+    assert_eq!(bound.source_reader_bound, 3);
+    assert_eq!(bound.worker_lifetimes, 2);
+    let mut pending = PendingStreamDomain::try_start_with_granular_sources_on_control(
+        config,
+        definitions,
+        vec![],
+        bank,
+        readiness,
+        pending_allowance(bound),
+    )
+    .unwrap();
+    assert_eq!(pending.reservation(), bound);
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let mut domain = loop {
+        if let Some(domain) = pending.try_seal_on_control().unwrap() {
+            break domain;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "pending granular catalog did not seal"
+        );
+        thread::yield_now();
+    };
+    let summary = domain.summary();
+    assert_eq!(summary.worker_lifetimes, bound.worker_lifetimes);
+    assert_eq!(summary.source_reader_lifetimes, bound.source_reader_bound);
+    // The pending quote also reserves one possible raw kernel-cache handle
+    // during construction; the sealed source retains only manifest + plan.
+    assert_eq!(summary.shared_handle_bound + 1, bound.shared_handle_bound);
+    assert!(summary.retained_data_bytes <= bound.retained_data_bytes);
+    assert!(summary.construction_peak_data_bytes <= bound.construction_peak_data_bytes);
+    assert!(metadata.iter().all(|m| domain.covers_source(m)));
+    let mut loan = Some(domain.loan_pages_on_control().unwrap());
+    domain.return_pages_on_control(&mut loan).unwrap();
+    assert!(loan.is_none());
+    let report = loop {
+        if let Some(report) = domain.advance_disposal_on_control().unwrap() {
+            break report;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "sealed granular disposal did not complete"
+        );
+    };
+    assert_eq!(report.page_buffers, 4);
+    assert!(report.accounting_complete && report.worker_joined);
+    assert!(domain.advance_disposal_on_control().is_err());
+}
+#[test]
+fn pending_granular_short_resource_allowances_and_invalid_inputs_refuse_before_start() {
+    use hex_stream::{
+        PendingStreamDomain, StreamConfig, StreamReadinessReservation, StreamRuntimeError,
+    };
+    for case in 0..8 {
+        let (_files, definitions, bank) = pending_fixture();
+        let mut config = StreamConfig::with_pool_pages(4);
+        let mut readiness = Some(StreamReadinessReservation {
+            extents_per_role: 1,
+        });
+        let bound = PendingStreamDomain::preparation_bound_with_granular_sources(
+            config,
+            &definitions,
+            definitions.capacity(),
+            &[],
+            0,
+            &bank,
+            readiness,
+        )
+        .unwrap();
+        let mut allowance = pending_allowance(bound);
+        match case {
+            0 => allowance.stream.max_retained_data_bytes -= 1,
+            1 => allowance.stream.max_construction_peak_data_bytes -= 1,
+            2 => allowance.stream.max_shared_handle_bound -= 1,
+            3 => allowance.max_source_readers -= 1,
+            4 => allowance.max_worker_lifetimes -= 1,
+            5 => config.page_buffers = 2,
+            6 => config.max_sources = 2,
+            _ => {
+                readiness = Some(StreamReadinessReservation {
+                    extents_per_role: 3,
+                })
+            }
+        }
+        assert!(
+            matches!(
+                PendingStreamDomain::try_start_with_granular_sources_on_control(
+                    config,
+                    definitions,
+                    vec![],
+                    bank,
+                    readiness,
+                    allowance
+                ),
+                Err(StreamRuntimeError::InvalidConfiguration)
+            ),
+            "case {case}"
+        );
+    }
+}
+#[test]
+fn pending_granular_cancellation_before_and_after_catalog_returns_every_page() {
+    use hex_stream::{PendingStreamDomain, StreamConfig};
+    for wait in [false, true] {
+        let (_files, definitions, bank) = pending_fixture();
+        let config = StreamConfig::with_pool_pages(4);
+        let bound = PendingStreamDomain::preparation_bound_with_granular_sources(
+            config,
+            &definitions,
+            definitions.capacity(),
+            &[],
+            0,
+            &bank,
+            None,
+        )
+        .unwrap();
+        let mut pending = PendingStreamDomain::try_start_with_granular_sources_on_control(
+            config,
+            definitions,
+            vec![],
+            bank,
+            None,
+            pending_allowance(bound),
+        )
+        .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        if wait {
+            while !pending.poll_catalog_on_control().unwrap() {
+                assert!(Instant::now() < deadline);
+                thread::yield_now();
+            }
+        }
+        let report = loop {
+            if let Some(report) = pending.advance_disposal_on_control().unwrap() {
+                break report;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "pending cancellation did not complete"
+            );
+        };
+        assert_eq!(report.page_buffers, 4);
+        assert!(report.accounting_complete && report.worker_joined);
+        assert!(pending.advance_disposal_on_control().is_err());
+    }
 }
