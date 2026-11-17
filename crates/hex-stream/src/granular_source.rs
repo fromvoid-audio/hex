@@ -8,6 +8,9 @@ use hex_engine::{Frame, StreamedSourceMetadata, audio_transform::StreamedGranula
 use hex_media::{ResamplePlan, VerifiedWavReader};
 use hex_warp::SequentialGranularConfig;
 
+mod preparation;
+pub use preparation::GranularSourcePreparationLimits;
+
 /// Caller-owned, fixed-size buffers moved into the control-side source owner.
 pub struct GranularSourceBuffers {
     pub source: Box<[Frame]>,
@@ -131,6 +134,13 @@ impl VerifiedGranularSource {
     /// renderer. Inputs may be dropped on failure, always on the calling thread.
     pub fn prepare(
         input: GranularSourcePreparation,
+        cancelled: impl FnMut() -> bool,
+    ) -> Result<Self, GranularSourceError> {
+        Self::prepare_inner(input, None, cancelled)
+    }
+    fn prepare_inner(
+        input: GranularSourcePreparation,
+        automatic_processing_limit: Option<usize>,
         mut cancelled: impl FnMut() -> bool,
     ) -> Result<Self, GranularSourceError> {
         let GranularSourcePreparation {
@@ -143,7 +153,7 @@ impl VerifiedGranularSource {
             checkpoint_entries,
             checkpoint_budget,
         } = input;
-        let scratch = buffers.bytes().ok_or(GranularSourceError::ScratchLimit)?;
+        let mut scratch = buffers.bytes().ok_or(GranularSourceError::ScratchLimit)?;
         if scratch_budget > hex_warp::MAX_SCRATCH_BYTES
             || scratch > scratch_budget
             || scratch
@@ -188,6 +198,22 @@ impl VerifiedGranularSource {
         .map_err(GranularSourceError::Page)?;
         if pages.metadata() != &expected {
             return Err(GranularSourceError::InvalidSource);
+        }
+        if let Some(limit) = automatic_processing_limit {
+            let grain_bytes = pages
+                .max_source_frames()
+                .checked_mul(std::mem::size_of::<[f64; 2]>())
+                .ok_or(GranularSourceError::ScratchLimit)?;
+            let retained = pages
+                .reserved_processing_bytes()
+                .and_then(|bytes| bytes.checked_add(scratch))
+                .and_then(|bytes| bytes.checked_add(grain_bytes))
+                .ok_or(GranularSourceError::ScratchLimit)?;
+            if retained > limit {
+                return Err(GranularSourceError::ScratchLimit);
+            }
+            buffers.grain = preparation::zeroed(pages.max_source_frames(), [0.0; 2])?;
+            scratch = buffers.bytes().ok_or(GranularSourceError::ScratchLimit)?;
         }
         if buffers.grain.len() < pages.max_source_frames() {
             return Err(GranularSourceError::ScratchLimit);

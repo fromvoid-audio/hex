@@ -3,7 +3,7 @@ use crate::{GranularSeekProgress, VerifiedGranularCursor, VerifiedGranularStepEr
 use hex_media::{ResamplePlan, VerifiedWavReader};
 use hex_warp::{Error, GranularCheckpoint};
 
-const MAX_ENTRIES: usize = 64;
+pub(crate) const MAX_ENTRIES: usize = 64;
 
 /// Cache operations preserve the cursor's source and warp error details.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
