@@ -5,7 +5,7 @@ use crate::{
 use hex_engine::{Frame, StreamSourceKey};
 use rtrb::{Consumer, Producer, PushError};
 use std::{
-    sync::atomic::{AtomicBool, Ordering},
+    sync::atomic::{AtomicBool, AtomicU64, Ordering},
     thread,
     time::Duration,
 };
@@ -18,6 +18,8 @@ pub enum GranularWorkerSeek {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct GranularWorkerKey {
     pub source: StreamSourceKey,
+    /// Demand epoch captured when this request was submitted.
+    pub epoch: u64,
     pub page_index: u64,
     pub seek: GranularWorkerSeek,
 }
@@ -32,6 +34,10 @@ pub enum GranularWorkerError {
 }
 pub enum GranularWorkerResult {
     Ready(CompletedGranularPage),
+    /// Obsolete demand; the page contents must not be published.
+    Cancelled {
+        frames: Box<[Frame]>,
+    },
     Failed {
         error: GranularWorkerError,
         frames: Box<[Frame]>,
@@ -65,15 +71,45 @@ pub struct GranularWorkerExit {
 /// source and thread before starting. Requests are handled FIFO, one at a time;
 /// a full results queue holds one outcome and prevents further dequeue. Idle and
 /// full queues wait up to 2 ms between polls, subject to thread scheduling; the
-/// joining control owner may unpark the worker. Stop is checked between bounded rendering steps and during source
-/// operations, but an operating-system I/O call can delay it. On return, the
-/// joining control owner must drain the returned request consumer, result consumer,
+/// joining control owner may unpark the worker. Stop is checked between bounded
+/// rendering steps and during source operations, but an operating-system I/O
+/// call can delay it. On return, the joining control owner must drain the
+/// returned request consumer, result consumer,
 /// interrupted request and held outcome, and destroy them and the source on control.
-/// This loop does not admit sources to playback or establish a catalog lease.
+/// The caller advances `demand_epoch` to supersede all requests from older
+/// demand and must never reuse an epoch during this worker lifetime. A stale
+/// active request is cancelled between and within steps; returned frames remain
+/// caller-owned. Outcomes already in the result queue can race an epoch change:
+/// the consumer must serialize demand changes with publication and compare each
+/// outcome epoch with its current demand before publication. Retire the worker
+/// before epoch wrap. This loop does not admit sources to playback or establish
+/// a catalog lease.
 pub fn run_granular_worker(
+    source: VerifiedGranularSource,
+    queues: GranularWorkerQueues,
+    stop: &AtomicBool,
+    demand_epoch: &AtomicU64,
+) -> GranularWorkerExit {
+    run_inner(source, queues, stop, demand_epoch, || {})
+}
+
+#[cfg(feature = "test-support")]
+pub(crate) fn run_with_step_hook(
+    source: VerifiedGranularSource,
+    queues: GranularWorkerQueues,
+    stop: &AtomicBool,
+    demand_epoch: &AtomicU64,
+    before_step: impl FnMut(),
+) -> GranularWorkerExit {
+    run_inner(source, queues, stop, demand_epoch, before_step)
+}
+
+fn run_inner(
     mut source: VerifiedGranularSource,
     mut queues: GranularWorkerQueues,
     stop: &AtomicBool,
+    demand_epoch: &AtomicU64,
+    mut before_step: impl FnMut(),
 ) -> GranularWorkerExit {
     let mut active: Option<GranularWorkerKey> = None;
     let mut held: Option<GranularWorkerOutcome> = None;
@@ -83,7 +119,15 @@ pub fn run_granular_worker(
         if stop.load(Ordering::Acquire) {
             break;
         }
-        if let Some(outcome) = held.take() {
+        if let Some(mut outcome) = held.take() {
+            if outcome.key.epoch != demand_epoch.load(Ordering::Acquire) {
+                let frames = match outcome.result {
+                    GranularWorkerResult::Ready(page) => page.frames,
+                    GranularWorkerResult::Failed { frames, .. }
+                    | GranularWorkerResult::Cancelled { frames } => frames,
+                };
+                outcome.result = GranularWorkerResult::Cancelled { frames };
+            }
             if let Err(PushError::Full(outcome)) = queues.results.push(outcome) {
                 held = Some(outcome);
                 thread::park_timeout(Duration::from_millis(2));
@@ -91,7 +135,23 @@ pub fn run_granular_worker(
             continue;
         }
         if let Some(key) = active {
-            match source.step(|| stop.load(Ordering::Acquire)) {
+            if key.epoch != demand_epoch.load(Ordering::Acquire) {
+                if let Some(frames) = source.reclaim() {
+                    active = None;
+                    held = Some(GranularWorkerOutcome {
+                        key,
+                        result: GranularWorkerResult::Cancelled { frames },
+                    });
+                } else {
+                    fault = Some(key);
+                    break;
+                }
+                continue;
+            }
+            before_step();
+            match source.step(|| {
+                stop.load(Ordering::Acquire) || key.epoch != demand_epoch.load(Ordering::Acquire)
+            }) {
                 Ok(GranularPageProgress::Pending) => {}
                 Ok(GranularPageProgress::Complete) => {
                     if let Some(page) = source.take_complete() {
@@ -111,13 +171,15 @@ pub fn run_granular_worker(
                     }
                     if let Some(frames) = source.reclaim() {
                         active = None;
-                        held = Some(GranularWorkerOutcome {
-                            key,
-                            result: GranularWorkerResult::Failed {
+                        let result = if key.epoch != demand_epoch.load(Ordering::Acquire) {
+                            GranularWorkerResult::Cancelled { frames }
+                        } else {
+                            GranularWorkerResult::Failed {
                                 error: GranularWorkerError::Page(error),
                                 frames,
-                            },
-                        });
+                            }
+                        };
+                        held = Some(GranularWorkerOutcome { key, result });
                     } else {
                         fault = Some(key);
                         break;
@@ -131,6 +193,13 @@ pub fn run_granular_worker(
             continue;
         };
         let GranularWorkerRequest { key, frames } = request;
+        if key.epoch != demand_epoch.load(Ordering::Acquire) {
+            held = Some(GranularWorkerOutcome {
+                key,
+                result: GranularWorkerResult::Cancelled { frames },
+            });
+            continue;
+        }
         if key.source != source.metadata().key() {
             held = Some(GranularWorkerOutcome {
                 key,
@@ -145,11 +214,13 @@ pub fn run_granular_worker(
             GranularWorkerSeek::Strict { max_preroll_frames } => {
                 source.begin_page(key.page_index, frames, max_preroll_frames, || {
                     stop.load(Ordering::Acquire)
+                        || key.epoch != demand_epoch.load(Ordering::Acquire)
                 })
             }
             GranularWorkerSeek::Segmented { segment_frames } => {
                 source.begin_page_replaying(key.page_index, frames, segment_frames, || {
                     stop.load(Ordering::Acquire)
+                        || key.epoch != demand_epoch.load(Ordering::Acquire)
                 })
             }
         };
@@ -160,13 +231,15 @@ pub fn run_granular_worker(
                     interrupted = Some(GranularWorkerRequest { key, frames });
                     break;
                 }
-                held = Some(GranularWorkerOutcome {
-                    key,
-                    result: GranularWorkerResult::Failed {
+                let result = if key.epoch != demand_epoch.load(Ordering::Acquire) {
+                    GranularWorkerResult::Cancelled { frames }
+                } else {
+                    GranularWorkerResult::Failed {
                         error: GranularWorkerError::Page(error),
                         frames,
-                    },
-                });
+                    }
+                };
+                held = Some(GranularWorkerOutcome { key, result });
             }
         }
     }
