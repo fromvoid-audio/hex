@@ -154,6 +154,7 @@ mod tests {
         GroupedSiblings,
         GroupSource,
         GroupDestination,
+        ReturnSource,
     }
     #[test]
     fn flat_track_feed_constructor_accounts_for_graph_and_recovers_input() {
@@ -172,6 +173,10 @@ mod tests {
         track_feed_constructor_accounts_for_graph_and_recovers_input(
             FeedTopology::GroupDestination,
         );
+    }
+    #[test]
+    fn return_feed_constructor_accounts_for_graph_and_recovers_input() {
+        track_feed_constructor_accounts_for_graph_and_recovers_input(FeedTopology::ReturnSource);
     }
     fn track_feed_constructor_accounts_for_graph_and_recovers_input(topology: FeedTopology) {
         use hex_project::{Command, Created, Editor, RoutingOwner, TrackDeviceSlot};
@@ -209,14 +214,14 @@ mod tests {
                 .unwrap(),
             })
             .unwrap();
-        let mut feed_source = source;
+        let mut feed_source = RoutingOwner::Track(source);
         let mut feed_destination = destination;
-        if topology != FeedTopology::Flat {
+        if topology != FeedTopology::Flat && topology != FeedTopology::ReturnSource {
             let grouped = match topology {
                 FeedTopology::GroupedSiblings => vec![source, destination],
                 FeedTopology::GroupSource => vec![source],
                 FeedTopology::GroupDestination => vec![destination],
-                FeedTopology::Flat => Vec::new(),
+                FeedTopology::Flat | FeedTopology::ReturnSource => Vec::new(),
             };
             let Created::Track(group) = editor
                 .execute(Command::GroupTracks {
@@ -228,14 +233,43 @@ mod tests {
                 panic!("group")
             };
             if topology == FeedTopology::GroupSource {
-                feed_source = group;
+                feed_source = RoutingOwner::Track(group);
             } else if topology == FeedTopology::GroupDestination {
                 feed_destination = group;
             }
         }
+        if topology == FeedTopology::ReturnSource {
+            let Created::ReturnTrack(bus) = editor
+                .execute(Command::AddReturnTrack {
+                    name: "return".into(),
+                })
+                .unwrap()
+            else {
+                panic!("return")
+            };
+            editor
+                .execute(Command::SetReturnSend {
+                    track: source,
+                    return_track: bus,
+                    gain: 0.5,
+                })
+                .unwrap();
+            editor
+                .execute(Command::InsertReturnDevice {
+                    return_track: bus,
+                    before: None,
+                    state: crate::default_native_device_state_for_class(
+                        crate::NativeDeviceClass::Effect,
+                        crate::DeviceTypeId::from_static("hex.limiter"),
+                    )
+                    .unwrap(),
+                })
+                .unwrap();
+            feed_source = RoutingOwner::Return(bus);
+        }
         editor
             .execute(Command::SetAudioFeed {
-                source: RoutingOwner::Track(feed_source),
+                source: feed_source,
                 destination: feed_destination,
                 gain: 0.5,
             })
@@ -263,7 +297,12 @@ mod tests {
                 .tracks
                 .iter()
                 .map(|track| track.audio_feeds.len())
-                .sum::<usize>(),
+                .sum::<usize>()
+                + graph
+                    .returns
+                    .iter()
+                    .map(|bus| bus.audio_feeds.len())
+                    .sum::<usize>(),
             1
         );
         let mut owner = crate::AudioCandidateOwner::try_new_on_control(custody, token)
@@ -294,9 +333,8 @@ mod tests {
             .unwrap(),
         );
         let mut reference = crate::SessionPlayback::new(reference).unwrap();
-        reference
-            .visit_next_stream_chunk(32, None, &mut |_| Ok(()))
-            .unwrap();
+        let demand = reference.visit_next_stream_chunk(32, None, &mut |_| Ok(()));
+        assert_eq!(demand.is_err(), topology == FeedTopology::ReturnSource);
         reference
             .apply(crate::SessionPlaybackCommand::Play)
             .unwrap();
@@ -345,14 +383,14 @@ mod tests {
                 name: "return".into(),
             })
             .unwrap();
-        assert!(matches!(
+        assert!(
             crate::AudioCandidateReservationQuote::for_project_with_effect_registry(
                 with_return.project(),
                 1,
                 &registry,
-            ),
-            Err(AudioStorageError::UnsupportedGraph)
-        ));
+            )
+            .is_ok()
+        );
     }
     #[test]
     fn equal_plan_and_layout_are_not_the_original_runtime_graph() {

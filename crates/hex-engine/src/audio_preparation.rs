@@ -107,15 +107,9 @@ pub(crate) fn validate_constructor_project_with_effects(
     {
         return Err(AudioStorageError::UnsupportedGraph);
     }
-    // Track feeds use rooted graph custody. Return feeds remain excluded, and
-    // stream demand independently checks its supported source and routing class.
-    if (!project.audio_feeds().is_empty()
-        && (!project.return_tracks().is_empty()
-            || project
-                .audio_feeds()
-                .iter()
-                .any(|feed| !matches!(feed.source(), hex_project::RoutingOwner::Track(_)))))
-        || !project.midi_routes().is_empty()
+    // Authored feeds use rooted graph custody. Stream demand independently
+    // checks its supported source and routing class.
+    if !project.midi_routes().is_empty()
         || project
             .tracks()
             .iter()
