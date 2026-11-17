@@ -20,6 +20,10 @@ pub use granular_bank::{
     GranularBankAllowance, GranularBankData, GranularBankError, GranularBankRefusal,
     GranularWorkerBank,
 };
+mod granular_control;
+pub use granular_control::{
+    GranularWorkerAllowance, GranularWorkerControl, GranularWorkerData, GranularWorkerStopped,
+};
 mod granular_checkpoint_cache;
 mod granular_page;
 mod granular_seek;

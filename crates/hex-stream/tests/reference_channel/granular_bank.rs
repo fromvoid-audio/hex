@@ -457,3 +457,217 @@ fn admission_returns_sources_holding_pending_or_complete_pages() {
         assert_eq!(admit(refusal.sources).metadata().count(), 1);
     }
 }
+
+fn control(bank: GranularWorkerBank, capacity: usize) -> hex_stream::GranularWorkerControl {
+    let data = hex_stream::GranularWorkerControl::data_bound(&bank, capacity).unwrap();
+    hex_stream::GranularWorkerControl::try_start_on_control(
+        bank,
+        capacity,
+        hex_stream::GranularWorkerAllowance {
+            max_data_bytes: data.bytes().unwrap(),
+            max_shared_handles: data.shared_handle_bound().unwrap(),
+        },
+    )
+    .unwrap()
+}
+
+#[test]
+fn control_admission_refuses_short_data_handles_and_invalid_queues() {
+    use hex_stream::{GranularWorkerAllowance, GranularWorkerControl, StreamRuntimeError};
+    for case in 0..4 {
+        let (wav, source, _) = source(WarpMode::Tones { grain_ms: 32 });
+        let bank = admit(vec![source]);
+        let data = GranularWorkerControl::data_bound(&bank, 1).unwrap();
+        let mut allowance = GranularWorkerAllowance {
+            max_data_bytes: data.bytes().unwrap(),
+            max_shared_handles: data.shared_handle_bound().unwrap(),
+        };
+        let mut capacity = 1;
+        match case {
+            0 => allowance.max_data_bytes -= 1,
+            1 => allowance.max_shared_handles -= 1,
+            2 => capacity = 0,
+            _ => capacity = 1025,
+        }
+        assert!(matches!(
+            GranularWorkerControl::try_start_on_control(bank, capacity, allowance),
+            Err(StreamRuntimeError::InvalidConfiguration)
+        ));
+        assert!(
+            VerifiedWavReader::open(
+                &wav.0,
+                VerifiedWavReaderLimits::new(
+                    WavReaderLimits::new(8192 * 4 + 44, 8192, 128, 8192),
+                    4096
+                )
+            )
+            .is_ok()
+        );
+    }
+}
+
+#[test]
+fn control_fences_already_queued_pcm_then_completes_current_demand() {
+    let (_wav, source, expected) = source(WarpMode::Tones { grain_ms: 32 });
+    let source_key = source.metadata().key();
+    let mut owner = control(admit(vec![source]), 1);
+    let frames = vec![[0.0; 2]; STREAM_PAGE_FRAMES].into_boxed_slice();
+    let pointer = frames.as_ptr();
+    let mut key = GranularWorkerKey {
+        source: source_key,
+        epoch: owner.epoch(),
+        page_index: 0,
+        seek: GranularWorkerSeek::Strict {
+            max_preroll_frames: 0,
+        },
+    };
+    for (bad_key, bad_frames) in [
+        (key, vec![[7.0; 2]; 1].into_boxed_slice()),
+        (
+            GranularWorkerKey { epoch: 0, ..key },
+            vec![[7.0; 2]; STREAM_PAGE_FRAMES].into_boxed_slice(),
+        ),
+    ] {
+        let pointer = bad_frames.as_ptr();
+        let refused = owner
+            .try_submit_on_control(GranularWorkerRequest {
+                key: bad_key,
+                frames: bad_frames,
+            })
+            .unwrap_err();
+        assert_eq!(refused.key, bad_key);
+        assert_eq!(refused.frames.as_ptr(), pointer);
+    }
+    assert_eq!(owner.queued_results(), 0);
+    assert_eq!(owner.available_request_slots(), 1);
+    assert!(
+        owner
+            .try_submit_on_control(GranularWorkerRequest { key, frames })
+            .is_ok()
+    );
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while owner.queued_results() == 0 {
+        assert!(
+            Instant::now() < deadline,
+            "worker did not queue completed PCM"
+        );
+        thread::yield_now();
+    }
+    assert_eq!(owner.supersede_on_control().unwrap(), 2);
+    let outcome = owner.poll_on_control().unwrap();
+    assert_eq!(outcome.key, key);
+    let GranularWorkerResult::Cancelled { frames } = outcome.result else {
+        panic!("stale PCM escaped the owner fence")
+    };
+    assert_eq!(frames.as_ptr(), pointer);
+    key.epoch = owner.epoch();
+    assert!(
+        owner
+            .try_submit_on_control(GranularWorkerRequest { key, frames })
+            .is_ok()
+    );
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let outcome = loop {
+        if let Some(outcome) = owner.poll_on_control() {
+            break outcome;
+        }
+        assert!(Instant::now() < deadline, "current demand did not complete");
+        thread::yield_now();
+    };
+    assert_eq!(outcome.key, key);
+    let GranularWorkerResult::Ready(page) = outcome.result else {
+        panic!("current demand refused")
+    };
+    assert_eq!(page.frames.as_ptr(), pointer);
+    assert_eq!(&*page.frames, &expected[..STREAM_PAGE_FRAMES]);
+    let mut stopped = owner.shutdown_on_control().unwrap();
+    assert_eq!(stopped.worker.reason, GranularWorkerExitReason::Stopped);
+    assert_eq!(stopped.worker.sources.len(), 1);
+    assert!(stopped.results.pop().is_err());
+    assert!(stopped.worker.queues.requests.pop().is_err());
+    assert!(stopped.worker.held.is_none() && stopped.worker.interrupted.is_none());
+}
+
+#[test]
+fn control_shutdown_conserves_every_buffer_with_full_queues() {
+    let (_wav_a, a, _) = source(WarpMode::Tones { grain_ms: 32 });
+    let (_wav_b, b, _) = source(WarpMode::Texture {
+        grain_ms: 32,
+        fluctuation: 35,
+        seed: 42,
+    });
+    let keys = [a.metadata().key(), b.metadata().key()];
+    let mut owner = control(admit(vec![a, b]), 1);
+    let request = |source, epoch, value| GranularWorkerRequest {
+        key: GranularWorkerKey {
+            source,
+            epoch,
+            page_index: 0,
+            seek: GranularWorkerSeek::Strict {
+                max_preroll_frames: 0,
+            },
+        },
+        frames: vec![[value; 2]; STREAM_PAGE_FRAMES].into_boxed_slice(),
+    };
+    let first = request(keys[0], owner.epoch(), 1.0);
+    let second = request(keys[1], owner.epoch(), 2.0);
+    let third = request(keys[0], owner.epoch(), 3.0);
+    let mut expected = vec![
+        first.frames.as_ptr() as usize,
+        second.frames.as_ptr() as usize,
+        third.frames.as_ptr() as usize,
+    ];
+    assert!(owner.try_submit_on_control(first).is_ok());
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while owner.queued_results() == 0 {
+        assert!(Instant::now() < deadline, "first result not queued");
+        thread::yield_now();
+    }
+    assert!(owner.try_submit_on_control(second).is_ok());
+    while owner.available_request_slots() == 0 {
+        assert!(Instant::now() < deadline, "second request not dequeued");
+        thread::yield_now();
+    }
+    assert!(owner.try_submit_on_control(third).is_ok());
+    let refused = request(keys[0], owner.epoch(), 4.0);
+    let pointer = refused.frames.as_ptr();
+    let Err(refused) = owner.try_submit_on_control(refused) else {
+        panic!("full queue accepted another page")
+    };
+    assert_eq!(refused.frames.as_ptr(), pointer);
+    assert!(refused.frames.iter().all(|frame| *frame == [4.0; 2]));
+    let mut stopped = owner.shutdown_on_control().unwrap();
+    assert_eq!(stopped.worker.reason, GranularWorkerExitReason::Stopped);
+    assert_eq!(
+        stopped
+            .worker
+            .sources
+            .iter()
+            .map(|s| s.metadata().key())
+            .collect::<Vec<_>>(),
+        keys
+    );
+    let mut returned = Vec::new();
+    while let Ok(outcome) = stopped.results.pop() {
+        returned.push(outcome_frames(outcome).as_ptr() as usize);
+    }
+    if let Some(outcome) = stopped.worker.held.take() {
+        returned.push(outcome_frames(outcome).as_ptr() as usize);
+    }
+    if let Some(request) = stopped.worker.interrupted.take() {
+        returned.push(request.frames.as_ptr() as usize);
+    }
+    while let Ok(request) = stopped.worker.queues.requests.pop() {
+        returned.push(request.frames.as_ptr() as usize);
+    }
+    expected.sort_unstable();
+    returned.sort_unstable();
+    assert_eq!(returned, expected);
+}
+fn outcome_frames(outcome: hex_stream::GranularWorkerOutcome) -> Box<[[f32; 2]]> {
+    match outcome.result {
+        GranularWorkerResult::Ready(page) => page.frames,
+        GranularWorkerResult::Cancelled { frames }
+        | GranularWorkerResult::Failed { frames, .. } => frames,
+    }
+}
