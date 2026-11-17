@@ -2399,14 +2399,13 @@ fn canonical_granular_projection_drives_verified_page_matching_resident() {
     use hex_engine::{STREAM_PAGE_FRAMES, audio_transform::streamed_granular_root};
     use hex_project::{SourceGainPoint, WarpMode, default_audio_warp};
     use hex_stream::{
-        GranularPageProgress, VerifiedGranularBuffers, VerifiedGranularPages,
-        scan_verified_granular_region_on_control,
+        GranularPageError, GranularPageProgress, GranularSourceBuffers, GranularSourceError,
+        GranularSourcePreparation, VerifiedGranularSource, VerifiedGranularStepError,
     };
-    use hex_warp::SequentialGranularConfig;
     use std::sync::atomic::AtomicBool;
 
     let (wav, pcm) = Wav::create(8192, false);
-    let (mut reader, plan, _) = setup(&wav, 8192, 48_000, ResampleVersion::V1);
+    let (reader, plan, _) = setup(&wav, 8192, 48_000, ResampleVersion::V1);
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
     let Created::Imported { clip, asset, .. } = editor
         .execute(Command::ImportAudioTrack {
@@ -2516,64 +2515,164 @@ fn canonical_granular_projection_drives_verified_page_matching_resident() {
     )
     .unwrap()
     .frames;
-    let mut raw_scratch = vec![[0.0; 2]; 8192];
-    let mut cache = vec![[0.0; 2]; 8192];
-    let reference = scan_verified_granular_region_on_control(
+    let make_input = |raw_input: StreamedSourceMetadata, scratch_budget, grain_frames| {
+        let (reader, plan, _) = setup(&wav, 8192, 48_000, ResampleVersion::V1);
+        GranularSourcePreparation {
+            raw: raw_input,
+            root: streamed_granular_root(
+                &raw,
+                edit,
+                editor.project().tempo_map(),
+                &AtomicBool::new(false),
+            )
+            .unwrap(),
+            reader,
+            plan,
+            buffers: GranularSourceBuffers {
+                source: vec![[0.0; 2]; 8192].into_boxed_slice(),
+                cache: vec![[0.0; 2]; 8192].into_boxed_slice(),
+                grain: vec![[0.0; 2]; grain_frames].into_boxed_slice(),
+            },
+            scratch_budget,
+            checkpoint_entries: 2,
+            checkpoint_budget: 8 * 1024 * 1024,
+        }
+    };
+    let foreign = StreamedSourceMetadata::new(
+        StreamSourceKey::new(8, asset),
+        48_000,
+        48_000,
+        8192,
+        8192,
+        IDENTITY_CONVERSION,
+        *reader.fingerprint(),
+    )
+    .unwrap();
+    assert!(matches!(
+        VerifiedGranularSource::prepare(make_input(foreign, 1_000_000, 10_000), || false),
+        Err(GranularSourceError::InvalidSource)
+    ));
+    let wrong_fingerprint = StreamedSourceMetadata::new(
+        StreamSourceKey::new(7, asset),
+        48_000,
+        48_000,
+        8192,
+        8192,
+        IDENTITY_CONVERSION,
+        [9; 32],
+    )
+    .unwrap();
+    assert!(matches!(
+        VerifiedGranularSource::prepare(make_input(wrong_fingerprint, 1_000_000, 10_000), || false),
+        Err(GranularSourceError::Source(
+            StreamFailureKind::SourceChanged
+        ))
+    ));
+    let mut wrong_plan = make_input(raw.clone(), 1_000_000, 10_000);
+    wrong_plan.plan = ResamplePlan::with_kernel(
+        ResampleKernel::with_version(48_000, 48_000, ResampleVersion::V2).unwrap(),
+        8192,
+        8192,
+        16384,
+        4096,
+    )
+    .unwrap();
+    assert!(matches!(
+        VerifiedGranularSource::prepare(wrong_plan, || false),
+        Err(GranularSourceError::Source(
+            StreamFailureKind::UnknownSource
+        ))
+    ));
+    assert!(matches!(
+        VerifiedGranularSource::prepare(make_input(raw.clone(), 1, 10_000), || false),
+        Err(GranularSourceError::ScratchLimit)
+    ));
+    assert!(matches!(
+        VerifiedGranularSource::prepare(make_input(raw.clone(), 1_000_000, 1), || false),
+        Err(GranularSourceError::ScratchLimit)
+    ));
+    assert!(matches!(
+        VerifiedGranularSource::prepare(make_input(raw.clone(), 1_000_000, 10_000), || true),
+        Err(GranularSourceError::Step(
+            VerifiedGranularStepError::Source(StreamFailureKind::Cancelled)
+        ))
+    ));
+    let root = streamed_granular_root(
         &raw,
-        region,
-        &mut reader,
-        &plan,
-        &mut raw_scratch,
-        &mut cache,
+        edit,
+        editor.project().tempo_map(),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let mut source = VerifiedGranularSource::prepare(
+        GranularSourcePreparation {
+            raw,
+            root,
+            reader,
+            plan,
+            buffers: GranularSourceBuffers {
+                source: vec![[0.0; 2]; 8192].into_boxed_slice(),
+                cache: vec![[0.0; 2]; 8192].into_boxed_slice(),
+                grain: vec![[0.0; 2]; 10_000].into_boxed_slice(),
+            },
+            scratch_budget: 1_000_000,
+            checkpoint_entries: 2,
+            checkpoint_budget: 8 * 1024 * 1024,
+        },
         || false,
     )
     .unwrap();
-    let mut pages = VerifiedGranularPages::new(
-        reference.clone(),
-        SequentialGranularConfig {
-            map,
-            sample_rate: 48_000,
-            mode,
-            pitch_cents: pitch,
-            resampler: law,
-            reference_channel: reference.channel(),
-        },
-        2,
-        8 * 1024 * 1024,
-        &mut || false,
-    )
-    .unwrap();
-    assert_eq!(pages.metadata(), &metadata);
-    let mut grain = vec![[0.0; 2]; pages.max_source_frames()];
-    pages
-        .begin_page(
-            0,
-            vec![[0.0; 2]; STREAM_PAGE_FRAMES].into_boxed_slice(),
-            0,
-            &mut reader,
-            &plan,
-            || false,
-        )
-        .unwrap();
+    assert_eq!(source.metadata(), &metadata);
+    let scratch_bytes =
+        2 * 8192 * std::mem::size_of::<[f32; 2]>() + 10_000 * std::mem::size_of::<[f64; 2]>();
+    assert!(source.reserved_processing_bytes() >= 8 * 1024 * 1024 + scratch_bytes);
+    assert!(source.reserved_processing_bytes() <= hex_warp::MAX_SCRATCH_BYTES);
+    let page = vec![[0.0; 2]; STREAM_PAGE_FRAMES].into_boxed_slice();
+    let pointer = page.as_ptr();
+    let (error, page) = source.begin_page(u64::MAX, page, 0, || false).unwrap_err();
+    assert_eq!(error, GranularPageError::InvalidRequest);
+    assert_eq!(page.as_ptr(), pointer);
+    source.begin_page(0, page, 0, || false).unwrap();
+    assert_eq!(
+        source.step(|| true),
+        Err(GranularPageError::Step(VerifiedGranularStepError::Source(
+            StreamFailureKind::Cancelled
+        )))
+    );
+    assert!(source.take_complete().is_none());
+    let page = source.reclaim().unwrap();
+    assert_eq!(page.as_ptr(), pointer);
+    source.begin_page(0, page, 0, || false).unwrap();
     for _ in 0..1000 {
-        if pages
-            .step(
-                &mut reader,
-                &plan,
-                VerifiedGranularBuffers {
-                    source: &mut raw_scratch,
-                    cache: &mut cache,
-                    grain: &mut grain,
-                },
-                || false,
-            )
-            .unwrap()
-            == GranularPageProgress::Complete
-        {
+        if source.step(|| false).unwrap() == GranularPageProgress::Complete {
             break;
         }
     }
-    let page = pages.take_complete().expect("canonical page completed");
+    let page = source.take_complete().expect("canonical page completed");
     assert_eq!(page.valid_frames, STREAM_PAGE_FRAMES);
     assert_eq!(&*page.frames, &expected[..STREAM_PAGE_FRAMES]);
+    let pointer = page.frames.as_ptr();
+    source.begin_page(0, page.frames, 0, || false).unwrap();
+    OpenOptions::new()
+        .write(true)
+        .open(&wav.0)
+        .unwrap()
+        .set_len(100)
+        .unwrap();
+    let error = loop {
+        match source.step(|| false) {
+            Ok(GranularPageProgress::Pending) => continue,
+            Ok(GranularPageProgress::Complete) => panic!("changed source published a page"),
+            Err(error) => break error,
+        }
+    };
+    assert_eq!(
+        error,
+        GranularPageError::Step(VerifiedGranularStepError::Source(
+            StreamFailureKind::SourceChanged
+        ))
+    );
+    assert!(source.take_complete().is_none());
+    let returned = source.reclaim().unwrap();
+    assert_eq!(returned.as_ptr(), pointer);
 }

@@ -18,6 +18,7 @@ mod granular;
 mod granular_checkpoint_cache;
 mod granular_page;
 mod granular_seek;
+mod granular_source;
 pub use granular_checkpoint_cache::{
     CheckpointCacheError, CheckpointRecord, VerifiedGranularCheckpointCache,
 };
@@ -27,6 +28,9 @@ pub use granular_page::{
 pub use granular_seek::{
     GranularSeekProgress, MAX_GRANULAR_PREROLL_FRAMES, MAX_GRANULAR_SEEK_STEPS,
     VerifiedGranularCursor,
+};
+pub use granular_source::{
+    GranularSourceBuffers, GranularSourceError, GranularSourcePreparation, VerifiedGranularSource,
 };
 mod reference;
 pub use footprint::{AllocationData, EndpointData, StreamDataFootprint, TransportData, WorkerData};
