@@ -143,7 +143,13 @@ pub(super) fn grains(
             .as_ref()
             .and_then(FrameCache::allocated_bytes)
             .unwrap_or(0);
-    let mut accumulator = Accumulator::new(request.output_frames, ring, work, extra)?;
+    let scratch = ring
+        .checked_mul(24)
+        .and_then(|bytes| bytes.checked_add(extra))
+        .ok_or(Error::ScratchLimit)?;
+    work.scratch(scratch)?;
+    let mut output = buffer(request.output_frames, [0.0; 2])?;
+    let mut accumulator = GranularOverlap::new(request.output_frames as u64, ring)?;
     let bank = Bandlimited::new(pitch, work)?;
     let channel = request.input.reference_channel()?;
     let mut center = -(half_limit as i128);
@@ -203,14 +209,62 @@ pub(super) fn grains(
         center += hop as i128;
         grain_index = grain_index.wrapping_add(1);
         let finished = (center - half_limit as i128).max(0) as usize;
-        accumulator.finish_until(finished)?;
+        drain_output(&mut accumulator, &mut output, finished)?;
     }
-    accumulator.finish()
+    let end = output.len();
+    drain_output(&mut accumulator, &mut output, end)?;
+    Ok(output)
+}
+
+fn drain_output(
+    accumulator: &mut GranularOverlap,
+    output: &mut [Frame],
+    end: usize,
+) -> Result<(), Error> {
+    let start = usize::try_from(accumulator.position())
+        .map_err(|_| Error::Invalid("granular output cursor overflow"))?;
+    let end = end.min(output.len());
+    if start >= end {
+        return Ok(());
+    }
+    let destination = output
+        .get_mut(start..end)
+        .ok_or(Error::Invalid("granular output range is invalid"))?;
+    accumulator.drain(destination)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bounded_overlap_matches_existing_accumulator_sample_for_sample() {
+        let mut cancel = || false;
+        let mut work = Work {
+            cancel: &mut cancel,
+            used: 0,
+            limit: MAX_WORK_UNITS,
+            scratch: 0,
+            base_scratch: 0,
+            resampler: Resampler::V1,
+        };
+        let mut previous = Accumulator::new(1024, 64, &mut work, 0).unwrap();
+        let mut bounded = GranularOverlap::new(1024, 64).unwrap();
+        let mut output = [[0.0; 2]; 1024];
+        for start in (0..1024).step_by(8) {
+            for i in 0..32 {
+                let frame = (start + i) as i128;
+                let sample = [(frame as f64 * 0.017).sin(), (frame as f64 * 0.031).cos()];
+                let weight = (i + 1) as f64 / 33.0;
+                previous.add(frame, sample, weight).unwrap();
+                bounded.add(frame, sample, weight).unwrap();
+            }
+            let end = (start + 8).min(output.len());
+            previous.finish_until(end).unwrap();
+            bounded.drain(&mut output[start..end]).unwrap();
+        }
+        assert_eq!(output.as_slice(), previous.finish().unwrap());
+    }
 
     #[test]
     fn incremental_reference_matches_resident_loop_phase_and_gain() {
@@ -312,16 +366,28 @@ mod tests {
                     mode,
                     attacks: &[],
                 };
-                let pcm = render_with_resampler(&request, law, &mut || false)
-                    .unwrap()
-                    .frames;
+                let mut samples = Vec::new();
+                let mut pcm = Vec::new();
+                for iteration in 0..8 {
+                    let started = Instant::now();
+                    pcm = render_with_resampler(&request, law, &mut || false)
+                        .unwrap()
+                        .frames;
+                    if iteration >= 3 {
+                        samples.push(started.elapsed().as_nanos());
+                    }
+                }
+                samples.sort_unstable();
                 let hash = pcm
                     .iter()
                     .flatten()
                     .fold(0xcbf29ce484222325u64, |h, sample| {
                         (h ^ u64::from(sample.to_bits())).wrapping_mul(0x100000001b3)
                     });
-                eprintln!("granular_pcm law={law:?} mode={mode:?} frames=1024 hash={hash:016x}");
+                eprintln!(
+                    "granular_pcm law={law:?} mode={mode:?} frames=1024 warmup=3 samples=5 p50_ns={} hash={hash:016x}",
+                    samples[2]
+                );
             }
         }
         for _ in 0..5 {
