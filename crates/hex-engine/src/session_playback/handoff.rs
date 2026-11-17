@@ -1206,14 +1206,15 @@ impl SessionPlayback {
             cold_added_track(new, old)
                 .or_else(|| cold_added_track(old, new))
                 .or_else(|| {
-                    (same_base_timing
+                    (old.len().checked_add(1) == Some(new.len())
+                        && same_base_timing
                         && old_loop_region == new_loop_region
                         && !self.revision.contains_streamed_sources()
                         && !previous.revision.contains_streamed_sources())
                     .then(|| {
-                        // Only admit an active new source when the old
-                        // unlooped clock history is complete. Its newly
-                        // allocated edges start silent at this handoff.
+                        // The new source has no history before this handoff.
+                        // A looped cursor cannot prove age; its ready donor
+                        // must retain the complete matching stamp horizon.
                         let ended_by = if old_loop_region.is_none() {
                             self.compensation
                                 .as_ref()
@@ -1227,9 +1228,19 @@ impl SessionPlayback {
                         } else {
                             None
                         };
+                        let clock_ready = ended_by.is_some()
+                            || (old_loop_region.is_some()
+                                && self
+                                    .compensation
+                                    .as_ref()
+                                    .zip(previous.compensation.as_ref())
+                                    .is_some_and(|(candidate, old)| {
+                                        old.delays.history_ready()
+                                            && candidate.horizon() == old.horizon()
+                                    }));
                         // Hosted processors need separate continuity evidence.
                         let mut has_foreign = false;
-                        if ended_by.is_some() {
+                        if clock_ready {
                             previous.visit_foreign_runtime_bindings(&mut |_| has_foreign = true);
                             self.visit_foreign_runtime_bindings(&mut |_| has_foreign = true);
                         }
@@ -1238,7 +1249,7 @@ impl SessionPlayback {
                             old,
                             previous.arrangement_frame,
                             ended_by,
-                            ended_by.is_some() && !has_foreign,
+                            clock_ready && !has_foreign,
                         )
                     })
                     .flatten()
