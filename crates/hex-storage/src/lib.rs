@@ -84,7 +84,10 @@ pub const RETAINED_RECEIVER_SCHEMA_VERSION: u32 = 68;
 /// Schema69 stores the Compressor's authored stereo sidechain source.
 pub const SIDECHAIN_SCHEMA_VERSION: u32 = 69;
 /// Newest schema this build opens; anything above it is refused as newer.
-pub const NEWEST_SCHEMA_VERSION: u32 = LONG_PITCH_FADE_SCHEMA_VERSION;
+pub const NEWEST_SCHEMA_VERSION: u32 = LONG_GRANULAR_SCHEMA_VERSION;
+/// Schema120 stores bounded long Tones/Texture roots over a valid prior document.
+/// Older readers refuse this extension; see `schema::long_granular`.
+pub const LONG_GRANULAR_SCHEMA_VERSION: u32 = 120;
 /// Full-source long pitch with its retained frame-clock fade.
 pub const LONG_PITCH_FADE_SCHEMA_VERSION: u32 = 119;
 /// Independent frame-clock audio repeat periods containing silence.
@@ -261,6 +264,7 @@ fn contains_extended_frame_events(project: &Project) -> bool {
 /// Free-running Steps uses schema107, or schema108 alongside those touches.
 /// Arrangement Steps uses schema109, or schema110 alongside those touches.
 /// Mutable Operator banks use schema111, or schema112 alongside those touches.
+/// Schema120 wraps a valid prior document and restores complete long granular edits.
 /// Schema119 wraps a prior document for full-source long pitch with a fade.
 /// Schema118 wraps the appropriate prior document for independent audio repeat periods.
 /// Schema117 wraps the appropriate prior document for exact full-source long pitch.
@@ -268,6 +272,9 @@ fn contains_extended_frame_events(project: &Project) -> bool {
 /// Schema115 wraps the appropriate prior document only when an authored device
 /// lane has two points at one beat. Projects with unique beats retain their format.
 pub fn schema_version_for(project: &Project) -> u32 {
+    if schema::long_granular::contains(project) {
+        return LONG_GRANULAR_SCHEMA_VERSION;
+    }
     if schema::long_pitch_fade::contains(project) {
         return LONG_PITCH_FADE_SCHEMA_VERSION;
     }
@@ -549,6 +556,9 @@ impl From<serde_json::Error> for StorageError {
 /// but the codec materializes metadata and is not a streaming or OOM-proof reader.
 /// Nonempty serial units use schema80; flat projects retain their prior layout.
 pub fn encode(project: &Project) -> Result<Vec<u8>, StorageError> {
+    if schema::long_granular::contains(project) {
+        return schema::long_granular::encode(project);
+    }
     if schema::long_pitch_fade::contains(project) {
         return schema::long_pitch_fade::encode(project);
     }
@@ -896,6 +906,9 @@ fn decode_impl(bytes: &[u8], inside_envelope: bool) -> Result<Project, StorageEr
     if header.format != "hex-project" {
         return Err(StorageError::Invalid("unsupported project format"));
     }
+    if header.version == LONG_GRANULAR_SCHEMA_VERSION && !inside_envelope {
+        return schema::long_granular::decode(bytes);
+    }
     if header.version == LONG_PITCH_FADE_SCHEMA_VERSION && !inside_envelope {
         return schema::long_pitch_fade::decode(bytes);
     }
@@ -1024,6 +1037,11 @@ fn decode_impl(bytes: &[u8], inside_envelope: bool) -> Result<Project, StorageEr
             "unsupported older project schema; open a copy with the hex build that saved it and retain the original for recovery",
         )),
     }?;
+    if schema::long_granular::contains(&project) {
+        return Err(StorageError::Invalid(
+            "long granular roots require their current project schema",
+        ));
+    }
     if schema::long_pitch_fade::contains(&project) {
         return Err(StorageError::Invalid(
             "long pitch with fade requires its current project schema",

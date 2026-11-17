@@ -11,6 +11,9 @@ pub(crate) struct Fixture {
 }
 impl Fixture {
     pub fn new(mode: WarpMode, converted: bool) -> Self {
+        Self::with_frames(mode, converted, 8192)
+    }
+    pub fn with_frames(mode: WarpMode, converted: bool, frames: u32) -> Self {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let path = std::env::temp_dir().join(format!(
             "hex-granular-projection-{}-{}.wav",
@@ -18,7 +21,6 @@ impl Fixture {
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
         let rate: u32 = if converted { 44_100 } else { 48_000 };
-        let frames: u32 = 8192;
         let mut bytes = Vec::from(*b"RIFF");
         bytes.extend_from_slice(&(36 + frames * 2).to_le_bytes());
         bytes.extend_from_slice(b"WAVEfmt ");
@@ -31,15 +33,29 @@ impl Fixture {
         bytes.extend_from_slice(&16u16.to_le_bytes());
         bytes.extend_from_slice(b"data");
         bytes.extend_from_slice(&(frames * 2).to_le_bytes());
-        for _ in 0..frames {
-            bytes.extend_from_slice(&8192i16.to_le_bytes());
+        if frames <= 8192 {
+            for _ in 0..frames {
+                bytes.extend_from_slice(&8192i16.to_le_bytes());
+            }
+            std::fs::write(&path, bytes).unwrap();
+        } else {
+            // A genuine zero PCM16 file; sparse backing avoids constructing a
+            // full-file PCM fixture in memory. Inspection still hashes its bytes.
+            use std::io::Write;
+            let mut output = std::fs::File::create(&path).unwrap();
+            output.write_all(&bytes).unwrap();
+            output.set_len(44 + u64::from(frames) * 2).unwrap();
         }
-        std::fs::write(&path, bytes).unwrap();
         let file = VerifiedAudioFile::inspect(
             path.clone(),
             48_000,
             VerifiedWavReaderLimits::new(
-                hex_media::WavReaderLimits::new(1 << 20, 16384, 32, 4096),
+                hex_media::WavReaderLimits::new(
+                    44 + u64::from(frames) * 2,
+                    u64::from(frames),
+                    32,
+                    4096,
+                ),
                 1 << 20,
             ),
             || false,

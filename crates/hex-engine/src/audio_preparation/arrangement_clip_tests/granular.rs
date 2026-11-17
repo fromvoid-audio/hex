@@ -11,6 +11,19 @@ fn fixture(
     crate::StreamedSourceMetadata,
     crate::StreamedSourceMetadata,
 ) {
+    fixture_with_region(mode, converted, frames, true)
+}
+fn fixture_with_region(
+    mode: WarpMode,
+    converted: bool,
+    frames: u64,
+    bounded_region: bool,
+) -> (
+    Editor,
+    hex_project::ClipId,
+    crate::StreamedSourceMetadata,
+    crate::StreamedSourceMetadata,
+) {
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
     let source_rate = if converted { 44_100 } else { 48_000 };
     let playback = hex_project::converted_frame_count(frames, source_rate, 48_000).unwrap();
@@ -41,7 +54,7 @@ fn fixture(
         .unwrap();
     // Full long processing roots remain a separate Project/schema contract.
     // This fixture's long-file case selects a legal bounded source region.
-    if frames > hex_project::MAX_AUDIO_DOMAIN_FRAMES {
+    if bounded_region && frames > hex_project::MAX_AUDIO_DOMAIN_FRAMES {
         editor
             .execute(Command::TrimClip {
                 clip,
@@ -385,4 +398,47 @@ fn long_source_with_bounded_granular_region_needs_no_resident_domain_expansion()
         .unwrap();
     assert_eq!(candidate.resident_pcm_capacity_frames().unwrap(), 0);
     candidate.cleanup_on_control().unwrap();
+}
+
+#[test]
+fn full_long_granular_roots_prepare_without_resident_pcm() {
+    for mode in [
+        WarpMode::Tones { grain_ms: 32 },
+        WarpMode::Texture {
+            grain_ms: 32,
+            fluctuation: 35,
+            seed: 42,
+        },
+    ] {
+        let (editor, _, raw, derived) = fixture_with_region(mode, false, 20_000_000, false);
+        assert_eq!(derived.playback_frames(), 20_000_000);
+        let quote = crate::AudioCandidateReservationQuote::for_project_with_pitched_streams(
+            editor.project(),
+            2,
+            &[raw.clone(), derived.clone()],
+        )
+        .unwrap();
+        assert_eq!(quote.prepared_pcm_frames, 0);
+        let mut candidate = crate::AudioCandidatePreparation::try_new_on_control(
+            2,
+            quote.storage_reservation(4096).unwrap(),
+        )
+        .unwrap();
+        candidate.add_streamed_source_on_control(raw).unwrap();
+        candidate
+            .add_granular_streamed_source_on_control(derived)
+            .unwrap();
+        candidate
+            .prepare_on_control(
+                editor.project(),
+                11,
+                crate::AudioSourceContext {
+                    project_generation: 2,
+                    editor_revision: 8,
+                },
+            )
+            .unwrap();
+        assert_eq!(candidate.resident_pcm_capacity_frames().unwrap(), 0);
+        candidate.cleanup_on_control().unwrap();
+    }
 }

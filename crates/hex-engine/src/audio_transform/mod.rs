@@ -193,14 +193,8 @@ pub fn streamed_granular_root(
     }
     if !raw.key().is_raw()
         || raw.project_rate() != tempo.sample_rate()
-        || !domain.warp_enabled
-        || domain.events.is_some()
-        || domain.musical_event_source.is_some()
+        || !edit.is_streamed_granular_root()
         || domain.source_gain.len() > hex_warp::MAX_POINTS
-        || !domain.fade.is_neutral()
-        || edit.content_view.is_some()
-        || edit.placement.is_some()
-        || edit.repeat_period.is_some()
     {
         return Err(Invalid("unsupported streamed granular root"));
     }

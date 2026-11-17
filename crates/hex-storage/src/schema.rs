@@ -32,6 +32,7 @@ pub(crate) mod grouped_audio;
 mod host_gain;
 pub(crate) mod legacy;
 pub(crate) mod legacy_early;
+pub(crate) mod long_granular;
 pub(crate) mod long_pitch;
 pub(crate) mod long_pitch_fade;
 pub(crate) mod long_reverse;
