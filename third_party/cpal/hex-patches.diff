@@ -383,7 +383,7 @@
                  audio_unit,
                  device_id: self.audio_device_id,
                  _loopback_device: None,
-@@ -943,8 +1143,963 @@
+@@ -943,8 +1143,967 @@
              .audio_unit
              .start()?;
  
@@ -521,6 +521,8 @@
 +const WATCH_STRIDE: usize = WATCH_SLOTS * 2;
 +const WATCH_DIRTY: usize = 1;
 +static WATCH_SERIAL: AtomicUsize = AtomicUsize::new(1);
++// Array-repeat const operands support the pinned crate's Rust 1.78 MSRV.
++#[allow(clippy::declare_interior_mutable_const)]
 +const EMPTY_WATCH_STATE: AtomicUsize = AtomicUsize::new(0);
 +static WATCH_STATE: [AtomicUsize; WATCH_SLOTS] = [EMPTY_WATCH_STATE; WATCH_SLOTS];
 +
@@ -586,7 +588,9 @@
 +    _: NonNull<AudioObjectPropertyAddress>,
 +    data: *mut c_void,
 +) -> i32 {
-+    OutputTimingReceipt(data as usize).invalidate();
++    if !data.is_null() {
++        OutputTimingReceipt(data as usize).invalidate();
++    }
 +    0
 +}
 +

@@ -1277,6 +1277,8 @@ const WATCH_SLOTS: usize = 16;
 const WATCH_STRIDE: usize = WATCH_SLOTS * 2;
 const WATCH_DIRTY: usize = 1;
 static WATCH_SERIAL: AtomicUsize = AtomicUsize::new(1);
+// Array-repeat const operands support the pinned crate's Rust 1.78 MSRV.
+#[allow(clippy::declare_interior_mutable_const)]
 const EMPTY_WATCH_STATE: AtomicUsize = AtomicUsize::new(0);
 static WATCH_STATE: [AtomicUsize; WATCH_SLOTS] = [EMPTY_WATCH_STATE; WATCH_SLOTS];
 
@@ -1342,7 +1344,9 @@ unsafe extern "C-unwind" fn invalidate_hal_timing(
     _: NonNull<AudioObjectPropertyAddress>,
     data: *mut c_void,
 ) -> i32 {
-    OutputTimingReceipt(data as usize).invalidate();
+    if !data.is_null() {
+        OutputTimingReceipt(data as usize).invalidate();
+    }
     0
 }
 
