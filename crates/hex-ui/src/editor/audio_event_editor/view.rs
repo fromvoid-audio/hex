@@ -344,7 +344,7 @@ pub(in crate::editor) fn view(
                 && let Some(wave) = state.waveforms.get(&clip.asset())
             {
                 element = element.child(
-                    waveform::waveform_clip_gain_view_cached(
+                    waveform::waveform_view_cached(
                         wave,
                         &clip,
                         source_frame..end_frame,

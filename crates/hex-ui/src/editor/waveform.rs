@@ -390,17 +390,6 @@ pub(super) fn timeline_waveform_view_cached(
 pub(super) fn waveform_view_cached(
     waveform: &Arc<CachedWaveform>,
     clip: &Clip,
-    visible_start: u64,
-    visible_end: u64,
-    cache: Rc<WaveformViewCache>,
-    ink: u32,
-) -> Div {
-    waveform_clip_gain_view_cached(waveform, clip, visible_start..visible_end, None, cache, ink)
-}
-
-pub(super) fn waveform_clip_gain_view_cached(
-    waveform: &Arc<CachedWaveform>,
-    clip: &Clip,
     visible: Range<u64>,
     gain: Option<f32>,
     cache: Rc<WaveformViewCache>,
