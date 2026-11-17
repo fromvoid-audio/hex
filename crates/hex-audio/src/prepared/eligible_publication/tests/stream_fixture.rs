@@ -115,6 +115,58 @@ pub(super) fn owner_with_context(
 ) -> hex_engine::AudioCandidateOwner {
     owner_sources(project, vec![metadata], context)
 }
+pub(super) fn project_with_return_feed(project: hex_project::Project) -> hex_project::Project {
+    use hex_project::{Command, Created, Editor, RoutingOwner, TrackDeviceSlot};
+    let mut editor = Editor::new(project, 16).unwrap();
+    let source = editor.project().tracks()[0].id();
+    let Created::Track(receiver) = editor
+        .execute(Command::InsertTrackWithDevice {
+            name: "receiver".into(),
+            before_track: None,
+            slot: TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("receiver")
+    };
+    editor
+        .execute(Command::RemoveInstrument { track: receiver })
+        .unwrap();
+    let Created::ReturnTrack(bus) = editor
+        .execute(Command::AddReturnTrack {
+            name: "return".into(),
+        })
+        .unwrap()
+    else {
+        panic!("return")
+    };
+    editor
+        .execute(Command::SetReturnSend {
+            track: source,
+            return_track: bus,
+            gain: 0.5,
+        })
+        .unwrap();
+    editor
+        .execute(Command::InsertReturnDevice {
+            return_track: bus,
+            before: None,
+            state: hex_engine::default_native_device_state(hex_engine::DeviceTypeId::from_static(
+                "hex.limiter",
+            ))
+            .unwrap(),
+        })
+        .unwrap();
+    editor
+        .execute(Command::SetAudioFeed {
+            source: RoutingOwner::Return(bus),
+            destination: receiver,
+            gain: 0.5,
+        })
+        .unwrap();
+    editor.project().clone()
+}
 pub(super) fn owner_sources(
     project: &hex_project::Project,
     sources: Vec<StreamedSourceMetadata>,

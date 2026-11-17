@@ -1064,35 +1064,46 @@ fn seek_pause_stop_case(grouped: bool) {
 
 #[test]
 fn real_immediate_scene_waits_before_route_and_play_then_restarts_actual_clip() {
-    real_immediate_scene(false, false, false, false);
+    real_immediate_scene(false, false, false, false, false);
 }
 
 #[test]
 fn main_latency_session_scene_waits_for_pages_and_renders_without_allocations() {
-    real_immediate_scene(true, false, false, false);
+    real_immediate_scene(true, false, false, false, false);
 }
 
 #[test]
 fn upstream_latency_session_scene_waits_for_pages_and_renders_without_allocations() {
-    real_immediate_scene(true, true, false, false);
+    real_immediate_scene(true, true, false, false, false);
 }
 
 #[test]
 fn grouped_latency_session_scene_waits_for_pages_and_renders_without_allocations() {
-    real_immediate_scene(true, true, true, false);
+    real_immediate_scene(true, true, true, false, false);
 }
 
 #[test]
 fn fed_track_session_scene_waits_for_pages_and_renders_without_allocations() {
-    real_immediate_scene(true, true, false, true);
+    real_immediate_scene(true, true, false, true, false);
 }
 
 #[test]
 fn grouped_fed_track_session_scene_waits_for_pages_and_renders_without_allocations() {
-    real_immediate_scene(true, true, true, true);
+    real_immediate_scene(true, true, true, true, false);
 }
 
-fn real_immediate_scene(with_latency: bool, upstream: bool, grouped: bool, feed: bool) {
+#[test]
+fn return_feed_session_scene_waits_for_pages_and_renders_without_allocations() {
+    real_immediate_scene(true, true, false, false, true);
+}
+
+fn real_immediate_scene(
+    with_latency: bool,
+    upstream: bool,
+    grouped: bool,
+    feed: bool,
+    return_feed: bool,
+) {
     let _serial = serial();
     if !hex_engine::audio_storage_constructor_layout_supported() {
         return;
@@ -1191,6 +1202,11 @@ fn real_immediate_scene(with_latency: bool, upstream: bool, grouped: bool, feed:
                 .unwrap();
         }
         editor.project().clone()
+    } else {
+        project
+    };
+    let project = if return_feed {
+        stream_fixture::project_with_return_feed(project)
     } else {
         project
     };

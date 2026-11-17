@@ -23,9 +23,9 @@ impl SessionPlayback {
     /// This is derived from the retained runtime graph, not a caller-declared
     /// readiness mode. Serial Main-only latency reads the ordinary source
     /// frontier for Arrangement and Session audio. Flat audio-only tracks and
-    /// grouped audio and track feeds may use upstream compensation with
-    /// closed native effects. Instruments, foreign effects and keyboard remain
-    /// excluded from these compensated extensions.
+    /// grouped audio, track feeds and flat Return feeds may use upstream
+    /// compensation with closed native effects. Instruments, foreign effects
+    /// and keyboard remain excluded from these compensated extensions.
     pub(super) fn supports_closed_stream_demand(&self) -> bool {
         self.computer_keyboard.is_none()
             && self.compensation.as_ref().is_none_or(|runtime| {
@@ -37,6 +37,13 @@ impl SessionPlayback {
                             .tracks()
                             .iter()
                             .flat_map(|track| track.device_chain.iter())
+                            .chain(
+                                self.revision
+                                    .arrangement()
+                                    .return_buses()
+                                    .iter()
+                                    .flat_map(|bus| bus.device_chain.iter()),
+                            )
                             .chain(self.revision.arrangement().main_device_chain.iter())
                             .all(|device| {
                                 crate::native_effect_storage::is_closed_type(device.device_type)
@@ -56,6 +63,8 @@ impl SessionPlayback {
                     || (runtime.graph.supports_closed_compensated_audio_groups()
                         && native_audio_only())
                     || (runtime.graph.supports_closed_compensated_track_feeds()
+                        && native_audio_only())
+                    || (runtime.graph.supports_closed_compensated_return_feeds()
                         && native_audio_only())
                     || (runtime.graph.independent_main_routes()
                         && ((!runtime.graph.needs_upstream_frame_routing()

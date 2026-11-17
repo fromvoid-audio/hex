@@ -978,6 +978,19 @@ impl SignalGraph {
                     && matches!(track.output, TrackOutput::Main { .. })
             })
     }
+    /// Return feeds carry PCM already rendered from the current source
+    /// frontier; their graph edges retain samples rather than stream pages.
+    pub(crate) fn supports_closed_compensated_return_feeds(&self) -> bool {
+        !self.has_group_outputs
+            && self.key_stages.is_empty()
+            && self.returns.iter().any(|bus| !bus.audio_feeds.is_empty())
+            && self.tracks.iter().all(|track| {
+                track.generator.is_none()
+                    && track.printed_merge.is_none()
+                    && track.group_output_mutes.is_empty()
+                    && matches!(track.output, TrackOutput::Main { .. })
+            })
+    }
     /// Serial Main latency needs clock history, but does not require rendering
     /// all upstream sources and effects one sample at a time. Typed audio feeds
     /// and pre-Main latency still use the general compensated routing kernel.

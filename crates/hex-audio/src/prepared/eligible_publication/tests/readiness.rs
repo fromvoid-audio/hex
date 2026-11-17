@@ -2,27 +2,31 @@
 use super::*;
 #[test]
 fn real_first_play_buffers_without_ack_clock_or_samples_then_installs_exact_worker_pages() {
-    first_play(false, false, false, false);
+    first_play(false, false, false, false, false);
 }
 #[test]
 fn grouped_closed_constructor_buffers_and_renders_verified_worker_pages() {
-    first_play(true, false, false, false);
+    first_play(true, false, false, false, false);
 }
 #[test]
 fn track_limiter_closed_stream_buffers_then_renders_without_callback_allocations() {
-    first_play(false, false, true, false);
+    first_play(false, false, true, false, false);
 }
 #[test]
 fn group_limiter_closed_stream_buffers_then_renders_without_callback_allocations() {
-    first_play(true, false, true, false);
+    first_play(true, false, true, false, false);
 }
 #[test]
 fn fed_track_limiter_buffers_and_handoffs_without_callback_allocations() {
-    first_play(false, false, true, true);
+    first_play(false, false, true, true, false);
 }
 #[test]
 fn fed_group_limiter_buffers_and_handoffs_without_callback_allocations() {
-    first_play(true, false, true, true);
+    first_play(true, false, true, true, false);
+}
+#[test]
+fn return_feed_limiter_buffers_and_handoffs_without_callback_allocations() {
+    first_play(false, false, true, false, true);
 }
 #[test]
 fn priority_stop_revokes_buffered_play_before_installation() {
@@ -30,9 +34,9 @@ fn priority_stop_revokes_buffered_play_before_installation() {
         hex_engine::audio_storage_constructor_layout_supported(),
         "this regression requires the real sealed-source constructor"
     );
-    first_play(false, true, false, false);
+    first_play(false, true, false, false, false);
 }
-fn first_play(grouped: bool, stop_pending: bool, limiter: bool, feed: bool) {
+fn first_play(grouped: bool, stop_pending: bool, limiter: bool, feed: bool, return_feed: bool) {
     let _serial = serial();
     if !hex_engine::audio_storage_constructor_layout_supported() {
         return;
@@ -150,6 +154,11 @@ fn first_play(grouped: bool, stop_pending: bool, limiter: bool, feed: bool) {
             })
             .unwrap();
         editor.project().clone()
+    } else {
+        project
+    };
+    let project = if return_feed {
+        stream_fixture::project_with_return_feed(project)
     } else {
         project
     };
@@ -356,11 +365,15 @@ fn first_play(grouped: bool, stop_pending: bool, limiter: bool, feed: bool) {
             );
             assert!(control.status.position.load(Acquire) < 1024);
         }
-        assert!(
-            output
-                .iter()
-                .all(|frame| frame[0] >= 0.0 && frame[0] <= if feed { 0.375 } else { 0.25 })
-        );
+        assert!(output.iter().all(|frame| frame[0] >= 0.0
+            && frame[0]
+                <= if return_feed {
+                    0.5
+                } else if feed {
+                    0.375
+                } else {
+                    0.25
+                }));
     } else {
         assert_eq!(output, [[if grouped { 0.125 } else { 0.25 }; 2]; 8]);
         assert_eq!(control.status.position.load(Acquire), 8);

@@ -1076,6 +1076,7 @@ enum FeedTopology {
     Siblings,
     GroupSource,
     GroupDestination,
+    ReturnSource,
 }
 
 #[test]
@@ -1102,6 +1103,14 @@ fn closed_group_destination_feed_latency_matches_resident() {
 fn closed_group_destination_feed_zero_latency_matches_resident() {
     feed_stream_demand_matches_resident(FeedTopology::GroupDestination, false);
 }
+#[test]
+fn closed_return_feed_latency_matches_resident() {
+    feed_stream_demand_matches_resident(FeedTopology::ReturnSource, true);
+}
+#[test]
+fn closed_return_feed_zero_latency_matches_resident() {
+    feed_stream_demand_matches_resident(FeedTopology::ReturnSource, false);
+}
 
 fn feed_stream_demand_matches_resident(topology: FeedTopology, limiter: bool) {
     use hex_project::{Command, Created, TrackSelectionIds};
@@ -1116,7 +1125,7 @@ fn feed_stream_demand_matches_resident(topology: FeedTopology, limiter: bool) {
             let source = f.tracks[1];
             let destination = f.tracks[0];
             let group_tracks = match topology {
-                FeedTopology::Flat => None,
+                FeedTopology::Flat | FeedTopology::ReturnSource => None,
                 FeedTopology::Siblings => Some(vec![source, destination]),
                 FeedTopology::GroupSource => Some(vec![source]),
                 FeedTopology::GroupDestination => Some(vec![destination]),
@@ -1144,9 +1153,32 @@ fn feed_stream_demand_matches_resident(topology: FeedTopology, limiter: bool) {
             } else {
                 destination
             };
+            let mut return_bus = None;
+            let feed_source = if matches!(topology, FeedTopology::ReturnSource) {
+                let Created::ReturnTrack(bus) = f
+                    .editor
+                    .execute(Command::AddReturnTrack {
+                        name: "return".into(),
+                    })
+                    .unwrap()
+                else {
+                    panic!("return")
+                };
+                f.editor
+                    .execute(Command::SetReturnSend {
+                        track: source,
+                        return_track: bus,
+                        gain: 0.5,
+                    })
+                    .unwrap();
+                return_bus = Some(bus);
+                hex_project::RoutingOwner::Return(bus)
+            } else {
+                hex_project::RoutingOwner::Track(source)
+            };
             f.editor
                 .execute(Command::SetAudioFeed {
-                    source: hex_project::RoutingOwner::Track(source),
+                    source: feed_source,
                     destination,
                     gain: 0.5,
                 })
@@ -1157,8 +1189,14 @@ fn feed_stream_demand_matches_resident(topology: FeedTopology, limiter: bool) {
                     crate::DeviceTypeId::from_static("hex.limiter"),
                 )
                 .unwrap();
-                f.editor
-                    .execute(Command::InsertDevice {
+                let command = if let (true, Some(bus)) = (limiter_on_receiver, return_bus) {
+                    Command::InsertReturnDevice {
+                        return_track: bus,
+                        before: None,
+                        state,
+                    }
+                } else {
+                    Command::InsertDevice {
                         track: if limiter_on_receiver {
                             f.tracks[0]
                         } else {
@@ -1166,8 +1204,9 @@ fn feed_stream_demand_matches_resident(topology: FeedTopology, limiter: bool) {
                         },
                         before: None,
                         state,
-                    })
-                    .unwrap();
+                    }
+                };
+                f.editor.execute(command).unwrap();
             }
             f.editor
                 .execute(Command::SetLoopRegion {
