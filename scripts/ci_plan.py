@@ -1690,13 +1690,18 @@ def reuse_checks_from_snapshot(root: Path, plan: dict, report: Path, raw: bytes,
     old_plan = evidence.get("plan")
     if old_plan is not None and not isinstance(old_plan, dict):
         raise ValueError("historical report plan must be an object")
+    steps = evidence.get("steps")
+    reported_inputs = evidence.get("runtime_inputs")
     if (evidence.get("schema_version") != 2 or evidence.get("mode") not in {"full", "merge", "release"}
             or evidence.get("status") != "passed" or evidence.get("exit_code") != 0
             or evidence.get("stale") is not False or evidence.get("dirty") is not False
+            or not isinstance(evidence.get("start_tree"), dict)
             or evidence.get("start_tree") != evidence.get("end_tree")
-            or not evidence.get("steps") or any(s.get("status") != "passed" for s in evidence["steps"])
+            or not isinstance(steps, list) or not steps
+            or any(not isinstance(s, dict) or s.get("status") != "passed" for s in steps)
             or old_plan is not None and old_plan.get("qualifies_merge") is not True
-            or evidence.get("runtime_inputs", {}).get("sha256") != plan["runtime_inputs"]["sha256"]):
+            or not isinstance(reported_inputs, dict)
+            or reported_inputs.get("sha256") != plan["runtime_inputs"]["sha256"]):
         raise ValueError("runtime report is incomplete/failed/stale/partial or executable inputs changed")
     previous = evidence["commit"]
     if (not isinstance(previous, str) or re.fullmatch(r"[0-9a-f]{40}", previous) is None
@@ -1728,7 +1733,8 @@ def reuse_checks_from_snapshot(root: Path, plan: dict, report: Path, raw: bytes,
             plan["cargo_inventory"], historical_inputs, env=env)
         if old_plan != expected:
             raise ValueError("historical plan differs from source-bound selection")
-    dependency = evidence.get("target_cache", {}).get("dependency_inputs")
+    cache = evidence.get("target_cache")
+    dependency = cache.get("dependency_inputs") if isinstance(cache, dict) else None
     if not isinstance(dependency, dict):
         raise ValueError("runtime report lacks guarded toolchain/dependency identity")
     result = dict(plan)

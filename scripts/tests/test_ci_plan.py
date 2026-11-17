@@ -1295,7 +1295,8 @@ class ScopeTests(unittest.TestCase):
             (root / "linked-runtime.rs").unlink()
             for field, value in (("steps", evidence["steps"][:-1]), ("status", "failed"),
                                  ("mode", "edit"), ("schema_version", 1),
-                                 ("runtime_inputs", {"sha256": "changed"}), ("target_cache", {})):
+                                 ("runtime_inputs", {"sha256": "changed"}), ("runtime_inputs", []),
+                                 ("target_cache", {}), ("target_cache", [])):
                 report.write_text(json.dumps({**evidence, field: value}))
                 with self.subTest(field=field), self.assertRaises(ValueError):
                     ci.reusable_plan(root, resolved, report)
