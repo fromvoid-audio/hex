@@ -1105,12 +1105,16 @@ public:
         }
         // Emit an old processor observation one quantum after the edit that
         // caused it, with no parameter input in that second quantum.
-        if(point_count || fault==83 || fault==84 || (fault==135 && block==1)) {
+        if(point_count || fault==83 || fault==84 || fault==stopped_editor_echo_variant || (fault==135 && block==1)) {
             gain.store(static_cast<float>(current_gain));
             if(data.outputParameterChanges && fault!=78) {
                 int32 index=-1;const ParamID id=parameter_id(fault);
                 auto* queue=data.outputParameterChanges->addParameterData(id,index);
-                if(!queue || queue->addPoint(fault==79 || fault==83 || fault==84?0:data.numSamples-1,fault==79?0.25:current_gain/4.0,index)!=kResultOk) return kResultFalse;
+                // A processor can report its previous/smoothed value while
+                // accepting the editor's new target. Keep the PCM at that target.
+                const auto feedback_value=fault==79 || (fault==stopped_editor_echo_variant &&
+                    (current_gain==3.0 || current_gain==3.5))?0.25:current_gain/4.0;
+                if(!queue || queue->addPoint(fault==79 || fault==83 || fault==84?0:data.numSamples-1,feedback_value,index)!=kResultOk) return kResultFalse;
             }
         }
         if (output) data.outputs[0].silenceFlags=silent || fault==9?((uint64(1)<<outputs)-1):0;
