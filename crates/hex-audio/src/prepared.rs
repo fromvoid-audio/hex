@@ -72,6 +72,10 @@ pub use action_outcomes::{
 };
 mod admission;
 mod eligible_publication;
+#[cfg(target_os = "macos")]
+mod output_presentation;
+#[cfg(target_os = "macos")]
+pub(crate) use output_presentation::PluginOutputFence;
 mod endpoints;
 pub(crate) mod retired_scalar_receipts;
 pub use retired_scalar_receipts::{
