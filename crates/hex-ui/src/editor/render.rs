@@ -643,6 +643,7 @@ impl Render for EditorView {
         self.reconcile_track_name(window, cx);
         self.reconcile_fade_gesture();
         self.reconcile_clip_gain();
+        self.reconcile_gain_audition();
         if self.clip_view_open && self.gain_lane.track.is_some() && !self.automation_view.enabled {
             self.cancel_gain_draft(cx);
             self.gain_lane.track = None;

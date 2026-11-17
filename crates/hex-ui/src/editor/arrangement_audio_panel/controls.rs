@@ -109,6 +109,9 @@ impl Controls {
     pub(crate) fn has_pending(&self) -> bool {
         self.pending.is_some()
     }
+    pub(crate) fn has_gain_preview(&self) -> bool {
+        self.gain_preview.is_some()
+    }
     pub(in crate::editor) fn gain_preview(
         &self,
         view: &EditorView,
@@ -436,8 +439,18 @@ pub(super) fn number(
                             hex_project::ClipGain::new((e.value * 1000.0).round() as i32)
                                 .ok()
                                 .map(|gain| (window, gain));
+                        if e.phase == NumericEventPhase::Change && e.gesture.is_some() {
+                            let audition =
+                                view.audio_clip_controls.gain_preview.and_then(|(_, gain)| {
+                                    view.clip_gain_audition_edit(window.clip, window.gain, gain)
+                                });
+                            view.set_held_gain_audition(audition);
+                        }
                     }
-                    NumericEventPhase::Cancel => view.audio_clip_controls.gain_preview = None,
+                    NumericEventPhase::Cancel => {
+                        view.audio_clip_controls.gain_preview = None;
+                        view.set_held_gain_audition(None);
+                    }
                     _ => {}
                 }
             }
@@ -467,6 +480,9 @@ pub(super) fn number(
                         absolute_command(window, field, e.value, multiple)
                     };
                     if let Some(command) = command {
+                        if field == Field::Gain {
+                            view.finish_gain_audition();
+                        }
                         submit(view, window, command);
                     } else {
                         view.retire_clip_detail();
@@ -649,6 +665,10 @@ pub(super) fn toggle(
 }
 impl EditorView {
     pub(crate) fn retire_clip_detail(&mut self) -> bool {
+        if self.audio_clip_controls.has_gain_preview() {
+            self.set_held_gain_audition(None);
+            self.service.retire_arrangement_gain_audition();
+        }
         let changed = self.audio_clip_controls.reset();
         self.retire_sample_bpm_control();
         changed
