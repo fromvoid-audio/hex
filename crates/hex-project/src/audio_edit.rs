@@ -1662,8 +1662,8 @@ mod commands;
 pub use commands::default_audio_warp;
 mod view;
 pub(crate) use commands::{
-    apply, move_clip, project_clip, reset_region, set_clip_fade_envelope, set_fade_envelope,
-    set_fades, source_policy, trim_view, validate_clip,
+    DEFAULT_WARP_MODE, apply, initial_audio_warp, move_clip, project_clip, reset_region,
+    set_clip_fade_envelope, set_fade_envelope, set_fades, source_policy, trim_view, validate_clip,
 };
 pub(crate) use view::resize_view;
 pub use view::{

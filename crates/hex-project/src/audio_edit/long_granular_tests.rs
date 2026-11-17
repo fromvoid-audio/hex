@@ -157,14 +157,15 @@ fn enabling_warp_chooses_modes_per_source_and_keeps_one_history_step() {
 fn long_streamable_warp_stretch_keeps_preview_command_and_history_aligned() {
     const SOURCE: u64 = 20_000_000;
     const END: u64 = 24_000_000;
-    for mode in [
-        WarpMode::RePitch,
-        WarpMode::Tones { grain_ms: 32 },
-        WarpMode::Texture {
+    for authored_mode in [
+        None,
+        Some(WarpMode::RePitch),
+        Some(WarpMode::Tones { grain_ms: 32 }),
+        Some(WarpMode::Texture {
             grain_ms: 32,
             fluctuation: 35,
             seed: 42,
-        },
+        }),
     ] {
         let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
         let Created::Imported { clip, .. } = editor
@@ -178,23 +179,18 @@ fn long_streamable_warp_stretch_keeps_preview_command_and_history_aligned() {
         else {
             panic!("fixture import");
         };
-        editor
-            .execute(Command::SetClipFades {
-                clip,
-                fade_in: 0,
-                fade_out: 0,
-            })
-            .unwrap();
-        let project = editor.project();
-        let settings =
-            crate::default_audio_warp(project.clip(clip).unwrap(), project.tempo_map(), mode)
+        if let Some(mode) = authored_mode {
+            let project = editor.project();
+            let settings =
+                crate::default_audio_warp(project.clip(clip).unwrap(), project.tempo_map(), mode)
+                    .unwrap();
+            editor
+                .execute(Command::SetAudioClipWarp {
+                    clip,
+                    settings: Some(settings),
+                })
                 .unwrap();
-        editor
-            .execute(Command::SetAudioClipWarp {
-                clip,
-                settings: Some(settings),
-            })
-            .unwrap();
+        }
         let project = editor.project();
         let before = project.snapshot();
         let original = project.clip(clip).unwrap();
@@ -218,7 +214,7 @@ fn long_streamable_warp_stretch_keeps_preview_command_and_history_aligned() {
                 .as_ref()
                 .unwrap()
                 .mode,
-            mode
+            authored_mode.unwrap_or(WarpMode::Tones { grain_ms: 40 })
         );
         editor
             .execute(Command::StretchAudioClipEdge {
