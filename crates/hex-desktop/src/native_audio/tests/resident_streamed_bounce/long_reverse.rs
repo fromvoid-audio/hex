@@ -10,8 +10,23 @@ const LONG_FRAMES: u64 = 20_000_000;
 const TAIL_FRAMES: u64 = 8192;
 const RANGE_FRAMES: u64 = 512;
 
+#[derive(Clone, Copy)]
+enum Output {
+    Export,
+    Bounce,
+}
+
 #[test]
-fn long_reverse_bounce_and_export_match_resident_across_a_stream_page() {
+fn long_reverse_export_matches_resident_across_a_stream_page() {
+    compare(Output::Export);
+}
+
+#[test]
+fn long_reverse_bounce_matches_resident_across_a_stream_page() {
+    compare(Output::Bounce);
+}
+
+fn compare(output: Output) {
     let _native = native_fixture();
     let files = Files::new();
     let short = files.constant_wav("resident.wav", 48_000, TAIL_FRAMES as u32, &[0]);
@@ -43,34 +58,15 @@ fn long_reverse_bounce_and_export_match_resident_across_a_stream_page() {
         .take(RANGE_FRAMES as usize)
         .map(|sample| [f32::from(*sample) / 32_768.0; 2])
         .collect();
-    let (resident_export, resident_bounce) = render(&short, start, false);
-    let (streamed_export, streamed_bounce) = render(&long, start, true);
-    for render in [
-        &resident_export,
-        &resident_bounce,
-        &streamed_export,
-        &streamed_bounce,
-    ] {
-        assert_eq!(render.len(), RANGE_FRAMES as usize);
-        assert_matches(render, &oracle, "reverse source frame oracle");
-    }
-    assert_matches(
-        &streamed_export,
-        &resident_export,
-        "streamed reverse Main export",
-    );
-    assert_matches(
-        &streamed_bounce,
-        &resident_bounce,
-        "streamed reverse range bounce",
-    );
+    let resident = render(&short, start, false, output);
+    let streamed = render(&long, start, true, output);
+    assert_eq!(resident.len(), RANGE_FRAMES as usize);
+    assert_eq!(streamed.len(), RANGE_FRAMES as usize);
+    assert_matches(&resident, &oracle, "resident reverse source frame oracle");
+    assert_matches(&streamed, &resident, "streamed reverse");
 }
 
-fn render(
-    path: &Path,
-    start: u64,
-    streamed: bool,
-) -> (Vec<hex_engine::Frame>, Vec<hex_engine::Frame>) {
+fn render(path: &Path, start: u64, streamed: bool, output: Output) -> Vec<hex_engine::Frame> {
     let mut h = ResidentHarness::with_frame_limit_at_rate(65_536, 48_000);
     h.next();
     let (applied, _) = h.applied(0);
@@ -106,40 +102,46 @@ fn render(
     }
     let (applied, _) = h.applied(applied);
 
-    let destination = path.with_extension("export.wav");
-    let queued = h.run(Request::ExportRange {
-        path: destination.clone(),
-        start,
-        frames: Some(RANGE_FRAMES),
-        signal: ExportSignal::Main,
-        control: ExportControl::default(),
-        format: ExportFormat::Float32,
-        overwrite: false,
-    });
-    let exported = completed(&mut h);
-    assert_eq!(exported.revision, reversed.state.revision);
-    assert_eq!(exported.result.unwrap().frames, RANGE_FRAMES);
-    assert_eq!(queued.state.revision, reversed.state.revision);
-    assert_eq!(queued.state.project, reversed.state.project);
-    let exported_pcm = decoded(&destination);
-
-    let target = TimeRange::new(vec![track.id()], start, start + RANGE_FRAMES).unwrap();
-    let bounced = bounce(&mut h, &reversed, BounceTarget::Range(target), false);
-    assert!(bounced.error.is_none(), "{:?}", bounced.error);
-    let new_asset = added_asset(&reversed.state.project, &bounced.state.project);
-    let bounced_pcm = decoded(bounced.state.project.asset(new_asset).unwrap().path());
-    h.applied(applied);
-    let undone = h.run(Request::Undo);
-    assert_eq!(
-        undone.state.project.tracks(),
-        reversed.state.project.tracks()
-    );
-    assert!(undone.state.project.asset(new_asset).is_none());
+    let pcm = match output {
+        Output::Export => {
+            let destination = path.with_extension("export.wav");
+            let queued = h.run(Request::ExportRange {
+                path: destination.clone(),
+                start,
+                frames: Some(RANGE_FRAMES),
+                signal: ExportSignal::Main,
+                control: ExportControl::default(),
+                format: ExportFormat::Float32,
+                overwrite: false,
+            });
+            let exported = completed(&mut h);
+            assert_eq!(exported.revision, reversed.state.revision);
+            assert_eq!(exported.result.unwrap().frames, RANGE_FRAMES);
+            assert_eq!(queued.state.revision, reversed.state.revision);
+            assert_eq!(queued.state.project, reversed.state.project);
+            decoded(&destination)
+        }
+        Output::Bounce => {
+            let target = TimeRange::new(vec![track.id()], start, start + RANGE_FRAMES).unwrap();
+            let bounced = bounce(&mut h, &reversed, BounceTarget::Range(target), false);
+            assert!(bounced.error.is_none(), "{:?}", bounced.error);
+            let new_asset = added_asset(&reversed.state.project, &bounced.state.project);
+            let pcm = decoded(bounced.state.project.asset(new_asset).unwrap().path());
+            h.applied(applied);
+            let undone = h.run(Request::Undo);
+            assert_eq!(
+                undone.state.project.tracks(),
+                reversed.state.project.tracks()
+            );
+            assert!(undone.state.project.asset(new_asset).is_none());
+            pcm
+        }
+    };
     if let Some(fingerprint) = fingerprint {
         let actual =
             hex_media::VerifiedWavReader::open(path, AudioPolicy::source_reservation().reader)
                 .unwrap();
         assert_eq!(*actual.fingerprint(), fingerprint);
     }
-    (exported_pcm, bounced_pcm)
+    pcm
 }
