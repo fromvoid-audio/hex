@@ -32,6 +32,10 @@ fn scan_is_ordered_bounded_and_handles_incomplete_or_duplicate_samples() {
 
 #[test]
 fn scan_chooses_left_on_exact_ties_and_requires_each_sample() {
+    {
+        let mut abandoned = ReferenceChannelScan::new(2).unwrap();
+        abandoned.observe(0, [0.0, 10.0]).unwrap();
+    }
     let mut scan = ReferenceChannelScan::new(2).unwrap();
     scan.observe(0, [1.0, -1.0]).unwrap();
     assert!(matches!(scan.finish(), Err(Error::Invalid(_))));
