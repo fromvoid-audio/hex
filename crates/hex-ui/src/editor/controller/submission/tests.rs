@@ -45,9 +45,20 @@ fn a_non_export_busy_refusal_reports_its_reason_on_both_paths(cx: &mut TestAppCo
     let queued = editor(cx);
     queued
         .update(cx, |view, _, cx| {
-            view.pending_requests.push_back(empty_bounce());
+            let request = empty_bounce();
+            let Request::BounceArrangement { control, .. } = &request else {
+                unreachable!("bounce fixture")
+            };
+            let control = control.clone();
+            view.bounce_control = Some(control.clone());
+            view.pending_requests.push_back(request);
             view.tick(cx);
             assert!(view.pending_requests.is_empty());
+            assert!(
+                view.bounce_control.is_none(),
+                "no worker terminal will arrive"
+            );
+            assert!(control.is_cancelled());
             assert_eq!(error_text(view).as_deref(), Some(expected));
         })
         .expect("editor window");

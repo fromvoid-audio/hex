@@ -1238,6 +1238,10 @@ impl EditorView {
                     }
                     self.midi_service_disconnected();
                     self.gain_take_service_disconnected();
+                    if self.abandon_bounce() {
+                        self.error = Some("bounce worker stopped".into());
+                        visible_change = true;
+                    }
                     if let Some(path) = self.audio_recorder.pending_commit_path.take() {
                         self.error = Some(
                             format!(
@@ -2602,10 +2606,8 @@ impl EditorView {
         } else {
             None
         };
-        if event.project_replaced
-            && let Some(control) = self.bounce_control.take()
-        {
-            control.cancel();
+        if event.project_replaced {
+            self.abandon_bounce();
         }
         // A bounce drop's ghost retires with its job's terminal, in the same
         // receive that installs the adopted (or unchanged, refused) state.
