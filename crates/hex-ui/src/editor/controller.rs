@@ -2492,7 +2492,7 @@ impl EditorView {
         self.clip_loop_request_complete(&event);
         self.bypass_request_complete(&event);
         self.modulation_depth_complete(&event);
-        let clip_drop_cursor = self.clip_move_request_complete(&event);
+        let clip_drop = self.clip_move_request_complete(&event);
         self.clip_paint_request_complete(&event);
         self.truncated_import
             .observe(self.project_generation, &event);
@@ -3168,7 +3168,17 @@ impl EditorView {
                 });
                 self.select_copied_group(first, last, count);
             }
-        } else if let Some(hex_project::Created::Track(track)) = event.created {
+        } else if let Some(hex_project::Created::Track(track)) = event.created
+            && clip_drop.as_ref().is_none_or(|(cursor, moved)| {
+                moved.is_none()
+                    || cursor.track != track
+                    || self.selection_intent_epoch == Some(cursor.epoch)
+            })
+        {
+            let moved_selection = self.selected_track == Some(track)
+                && clip_drop
+                    .as_ref()
+                    .is_some_and(|(cursor, moved)| cursor.track == track && moved.is_some());
             self.focused_return = None;
             self.device_panel.main_selected = None;
             if let Some(state) = &self.state {
@@ -3178,8 +3188,10 @@ impl EditorView {
             self.midi_note_gesture = None;
             self.midi_group_gesture = None;
             self.selected_track = Some(track);
-            self.selected_clip = None;
-            self.midi_selection.clear();
+            if !moved_selection {
+                self.selected_clip = None;
+                self.midi_selection.clear();
+            }
             self.reconcile_arrangement_focus();
             self.arrangement_focus.reveal_created_track(track);
         } else if let Some(hex_project::Created::Clip(clip)) = event.created {
@@ -3493,8 +3505,10 @@ impl EditorView {
             self.audition_midi_selection();
         }
         self.apply_completed_midi_step(midi_step_complete);
-        if let Some(cursor) = clip_drop_cursor.or(bounce_drop_cursor) {
-            self.install_drop_cursor(cursor);
+        if let Some((cursor, moved_clip)) =
+            clip_drop.or(bounce_drop_cursor.map(|cursor| (cursor, None)))
+        {
+            self.install_drop_cursor(cursor, moved_clip);
         }
         if let Some(path) = &successfully_opened_path {
             self.check_leftover_recovery(Some(path.clone()));

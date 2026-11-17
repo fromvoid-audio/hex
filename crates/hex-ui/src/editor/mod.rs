@@ -2344,11 +2344,7 @@ impl EditorView {
             return false;
         }
         self.advance_selection_intent();
-        self.duplicate_intent.cancel_chain();
-        self.retire_clip_detail_state_for(clip);
-        self.detail_context = None;
-        self.selected_track = Some(track);
-        self.arrangement_focus.observe_active_track(Some(track));
+        self.select_arrangement_clip(track, clip);
         if !self.track_selection.contains(track)
             && let Some(state) = self.state.as_ref()
         {
@@ -2356,10 +2352,19 @@ impl EditorView {
                 .select(&state.project, track, false, false);
             self.update_track_selection_status();
         }
-        self.selected_clip = Some(clip);
-        self.clip_selection.only(track, clip);
         self.focus.focus(window);
         true
+    }
+
+    /// Change the clip subject without switching panes or taking keyboard focus.
+    pub(super) fn select_arrangement_clip(&mut self, track: TrackId, clip: ClipId) {
+        self.duplicate_intent.cancel_chain();
+        self.retire_clip_detail_state_for(clip);
+        self.detail_context = None;
+        self.selected_track = Some(track);
+        self.arrangement_focus.observe_active_track(Some(track));
+        self.selected_clip = Some(clip);
+        self.clip_selection.only(track, clip);
     }
 
     /// Reset clip-local editor state when the clip editor's subject changes.
