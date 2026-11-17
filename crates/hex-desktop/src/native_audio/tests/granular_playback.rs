@@ -1,7 +1,7 @@
 use super::*;
 use std::io::Write;
 
-fn long_converted_source(files: &Files) -> PathBuf {
+pub(super) fn long_converted_source(files: &Files) -> PathBuf {
     let path = files.0.join("long-granular.wav");
     let mut file = fs::File::create(&path).unwrap();
     let data_bytes = 40_000_000u32; // 20M original frames, 40M at the project rate.

@@ -121,6 +121,10 @@ impl DomainSources {
             let (file, metadata) = Self::repitch_for(input, requirement, catalog_generation)?;
             Self::add_derived_member(&mut members, file, metadata)?;
         }
+        for requirement in input.granulars {
+            let (file, metadata) = Self::granular_for(input, requirement, catalog_generation)?;
+            Self::add_derived_member(&mut members, file, metadata)?;
+        }
         Ok(Self {
             project_generation: input.context.project_generation,
             catalog_generation,
@@ -147,6 +151,29 @@ impl DomainSources {
                 Self::repitch_for(input, requirement, self.catalog_generation)
                     .is_ok_and(|(file, expected)| self.contains_member(file, &expected))
             })
+            && input.granulars.iter().all(|requirement| {
+                Self::granular_for(input, requirement, self.catalog_generation)
+                    .is_ok_and(|(file, expected)| self.contains_member(file, &expected))
+            })
+    }
+    fn granular_for<'a>(
+        input: &hex_session::service::ResidentFileInput<'a>,
+        requirement: &hex_engine::audio_transform::StreamedGranularRequirement,
+        generation: u64,
+    ) -> Result<(&'a VerifiedAudioFile, hex_engine::StreamedSourceMetadata), String> {
+        let file = input
+            .files
+            .iter()
+            .find(|(asset, _)| *asset == requirement.asset())
+            .map(|(_, file)| *file)
+            .ok_or("ordinary granular file missing")?;
+        let raw = file
+            .source_metadata(requirement.asset(), generation)
+            .map_err(|e| e.to_string())?;
+        Ok((
+            file,
+            requirement.metadata_for(&raw).map_err(|e| e.to_string())?,
+        ))
     }
     fn repitch_for<'a>(
         input: &hex_session::service::ResidentFileInput<'a>,
@@ -223,6 +250,15 @@ impl DomainSources {
                 .ok_or("ordinary repitch metadata missing")?;
             pitched.insert(expected.key(), std::sync::Arc::new(metadata));
         }
+        for requirement in input.granulars {
+            let (_, expected) = Self::granular_for(input, requirement, self.catalog_generation)?;
+            let metadata = self
+                .metadata_for(expected.key())
+                .filter(|actual| *actual == &expected)
+                .cloned()
+                .ok_or("ordinary granular metadata missing")?;
+            pitched.insert(expected.key(), std::sync::Arc::new(metadata));
+        }
         hex_session::service::ResidentFileMetadata::new_with_derived(
             self.catalog_generation,
             sources,
@@ -264,6 +300,16 @@ impl DomainSources {
                     },
                 )
             })
+            && input.granulars.iter().all(|requirement| {
+                Self::granular_for(input, requirement, self.catalog_generation).is_ok_and(
+                    |(_, expected)| {
+                        self.metadata_for(expected.key()).is_some_and(|actual| {
+                            actual == &expected
+                                && control.audio_candidate_domain_covers_source(token, actual)
+                        })
+                    },
+                )
+            })
     }
     /// Build worker definitions from the exact retained ordinary file requirements.
     /// Map copies are bounded by the supplied stream budget before allocation.
@@ -281,6 +327,9 @@ impl DomainSources {
             .map_err(|_| "could not reserve source definitions")?;
         let mut map_bytes = 0usize;
         for member in &self.members {
+            if member.metadata.key().granular_identity().is_some() {
+                continue;
+            }
             if member.metadata.key().repitch_identity().is_none() {
                 definitions.push(
                     hex_stream::SourceDefinition::new(
