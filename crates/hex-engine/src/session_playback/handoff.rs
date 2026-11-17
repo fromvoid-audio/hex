@@ -1,4 +1,5 @@
 use super::*;
+use crate::signal_graph::FreshHistory;
 use crate::{MidiTiming, Track};
 use std::sync::Weak;
 mod shared_sources;
@@ -1196,8 +1197,8 @@ impl SessionPlayback {
         // A cold, independent added or removed track also needs a fresh delay history
         // when no foreign instrument is present. Foreign handoff admission
         // retains its narrower `fresh` input above; compensation proves the
-        // isolated routing and silent rings independently below.
-        let history_track = fresh.or_else(|| {
+        // eligible routing and silent rings independently below.
+        let history_track = fresh.map(FreshHistory::Track).or_else(|| {
             if !previous.playing {
                 return None;
             }
@@ -1205,6 +1206,7 @@ impl SessionPlayback {
             let new = self.revision.arrangement().tracks();
             cold_added_track(new, old)
                 .or_else(|| cold_added_track(old, new))
+                .map(FreshHistory::ColdTrack)
                 .or_else(|| {
                     (old.len().checked_add(1) == Some(new.len())
                         && same_base_timing
@@ -1253,6 +1255,7 @@ impl SessionPlayback {
                         )
                     })
                     .flatten()
+                    .map(FreshHistory::Track)
                 })
         });
         let compensation_pair = self
@@ -1302,7 +1305,6 @@ impl SessionPlayback {
         }
         let fresh_history = compensation_pair.and_then(|(candidate, old)| {
             history_track
-                .map(crate::signal_graph::FreshHistory::Track)
                 .or_else(|| {
                     if !previous.playing
                         || !same_base_timing
@@ -1337,7 +1339,7 @@ impl SessionPlayback {
                         None,
                         true,
                     )
-                    .map(crate::signal_graph::FreshHistory::RemovedTrack)
+                    .map(FreshHistory::RemovedTrack)
                 })
                 .or_else(|| {
                     candidate
@@ -1345,16 +1347,14 @@ impl SessionPlayback {
                         .has_one_more_node_than(&old.graph)
                         .then(|| muted_isolated_latency_addition(self, previous))
                         .flatten()
-                        .map(|(track, device)| {
-                            crate::signal_graph::FreshHistory::ChangedTrack(track, device)
-                        })
+                        .map(|(track, device)| FreshHistory::ChangedTrack(track, device))
                 })
                 .or_else(|| {
                     candidate
                         .graph
                         .added_isolated_return_from(&old.graph)
                         .or(removed_return)
-                        .map(crate::signal_graph::FreshHistory::Return)
+                        .map(FreshHistory::Return)
                 })
                 .filter(|_| !candidate.can_copy_from(old, None))
         });
