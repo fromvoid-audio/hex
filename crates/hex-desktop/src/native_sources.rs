@@ -2,6 +2,8 @@
 //! This record is not a lease: every reuse checks the actual retained Root cell.
 use hex_session::{AudioSourceBinding, VerifiedAudioFile, service::CanonicalAudioSourceSnapshot};
 
+mod granular;
+
 struct Member {
     file: VerifiedAudioFile,
     metadata: hex_engine::StreamedSourceMetadata,
@@ -367,9 +369,8 @@ impl DomainSources {
         }
         Ok(definitions)
     }
-    /// Reconstruct raw/pitch/Re-Pitch worker definitions from captured facts.
-    /// Granular entries need their separate source-bank preparation; they must
-    /// never be relabeled as ordinary raw definitions. No map is retained here.
+    /// Reconstruct only the ordinary raw/pitch/Re-Pitch portion. Granular facts
+    /// are admitted by prepare_for_snapshot's separate owned bank, never relabeled.
     pub(super) fn definitions_for_snapshot(
         &self,
         snapshot: &CanonicalAudioSourceSnapshot,
@@ -377,19 +378,15 @@ impl DomainSources {
         if !self.matches_snapshot(snapshot) {
             return Err("source projection differs from snapshot".into());
         }
-        if self
-            .members
-            .iter()
-            .any(|member| member.metadata.key().granular_identity().is_some())
-        {
-            return Err("granular sources require source-bank preparation".into());
-        }
         let mut definitions = Vec::new();
         definitions
             .try_reserve_exact(self.members.len())
             .map_err(|_| "could not reserve source definitions")?;
         let mut map_bytes = 0usize;
         for member in &self.members {
+            if member.metadata.key().granular_identity().is_some() {
+                continue;
+            }
             if member.metadata.key().repitch_identity().is_none() {
                 definitions.push(
                     hex_stream::SourceDefinition::new(
@@ -606,6 +603,7 @@ mod tests {
         service::{Event, Request, Service},
     };
     use std::{path::PathBuf, time::Duration};
+    static NEXT_FILE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     struct Files(PathBuf);
     impl Files {
         fn new() -> Self {
@@ -613,8 +611,11 @@ mod tests {
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos();
-            let path = std::env::temp_dir()
-                .join(format!("hex-desktop-source-{}-{stamp}", std::process::id()));
+            let unique = NEXT_FILE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!(
+                "hex-desktop-source-{}-{stamp}-{unique}",
+                std::process::id()
+            ));
             std::fs::create_dir(&path).unwrap();
             Self(path)
         }
