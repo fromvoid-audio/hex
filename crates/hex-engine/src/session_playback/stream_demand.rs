@@ -21,14 +21,17 @@ pub(super) enum ScalarOriginHistory<'a> {
 
 impl SessionPlayback {
     /// This is derived from the retained runtime graph, not a caller-declared
-    /// readiness mode. Keyboard and previously unsupported compensated graphs
-    /// retain their existing refusal.
+    /// readiness mode. Serial Main-only latency reads the ordinary source
+    /// frontier for Arrangement-only content; Session audio, upstream
+    /// compensated routes and keyboard remain excluded.
     pub(super) fn supports_closed_stream_demand(&self) -> bool {
         self.computer_keyboard.is_none()
-            && self
-                .compensation
-                .as_ref()
-                .is_none_or(|runtime| runtime.graph.supports_closed_group_stream())
+            && self.compensation.as_ref().is_none_or(|runtime| {
+                runtime.graph.supports_closed_group_stream()
+                    || (runtime.graph.independent_main_routes()
+                        && !runtime.graph.needs_upstream_frame_routing()
+                        && self.revision.session().audio_clips().is_empty())
+            })
     }
 
     /// Repeat the actual handoff's pure planning and enumerate its next chunk.
