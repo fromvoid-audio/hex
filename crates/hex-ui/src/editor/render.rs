@@ -261,16 +261,6 @@ impl EditorView {
             } else {
                 "bouncing audio · escape cancels"
             };
-            let fill = div()
-                .absolute()
-                .h_full()
-                .w(px(16.0))
-                .bg(rgb(theme::color(theme::PaletteRole::Primary)))
-                .with_animation(
-                    "bounce-status-sweep",
-                    gpui::Animation::new(std::time::Duration::from_millis(1200)).repeat(),
-                    |fill, progress| fill.left(px(32.0 * (1.0 - (2.0 * progress - 1.0).abs()))),
-                );
             bar = bar.child(
                 div()
                     .id("bounce-status-progress")
@@ -288,7 +278,21 @@ impl EditorView {
                         })
                         .into()
                     })
-                    .child(fill),
+                    .child(
+                        div()
+                            .absolute()
+                            .h_full()
+                            .w(px(16.0))
+                            .bg(rgb(theme::color(theme::PaletteRole::Primary)))
+                            .with_animation(
+                                "bounce-status-sweep",
+                                gpui::Animation::new(std::time::Duration::from_millis(1200))
+                                    .repeat(),
+                                |fill, progress| {
+                                    fill.left(px(32.0 * (1.0 - (2.0 * progress - 1.0).abs())))
+                                },
+                            ),
+                    ),
             );
         }
         let offline = self
