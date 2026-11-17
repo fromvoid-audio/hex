@@ -37,7 +37,7 @@ pub(super) struct WaveformPreview<'a> {
 
 /// Keep inactive clip peaks readable but subordinate to active material.
 pub(super) fn clip_waveform_activity(body: Div, active: bool) -> Div {
-    body.opacity(if active { 1.0 } else { 0.4 })
+    body.opacity(theme::clip_detail_opacity(active))
 }
 
 pub(super) fn preview_waveform_view_cached(
