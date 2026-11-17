@@ -252,6 +252,161 @@ fn analyze<E: From<Error>>(
         ))
     }
 }
+/// Prepared, versioned granular reconstruction for one bounded source window.
+///
+/// The caller resolves each requested logical position with its own source phase,
+/// loop, gain and out-of-region silence. This owns a filter bank, not PCM or source
+/// identity. Construction and rendering are control/worker operations.
+pub struct GrainSynthesis {
+    bank: Bandlimited,
+    pitch: f64,
+}
+
+impl GrainSynthesis {
+    /// Prepare the same pitch filter used by the resident granular renderer.
+    pub fn new(
+        pitch_cents: i16,
+        resampler: Resampler,
+        cancel: &mut dyn FnMut() -> bool,
+    ) -> Result<Self, Error> {
+        if !(-4_800..=4_800).contains(&pitch_cents) {
+            return Err(Error::Invalid("invalid granular synthesis pitch"));
+        }
+        let pitch = 2.0_f64.powf(f64::from(pitch_cents) / 1_200.0);
+        let mut work = Work {
+            cancel,
+            used: 0,
+            limit: MAX_WORK_UNITS,
+            scratch: 0,
+            base_scratch: 0,
+            resampler,
+        };
+        work.check(0)?;
+        Ok(Self {
+            bank: Bandlimited::new(pitch, &mut work)?,
+            pitch,
+        })
+    }
+
+    /// Requested filter payload; compare actual retained capacity before admission.
+    pub const fn filter_reservation_bytes(resampler: Resampler) -> usize {
+        bank_bytes(resampler)
+    }
+
+    /// Actual retained filter allocation, for worker memory accounting.
+    pub fn filter_backing_bytes(&self) -> Option<usize> {
+        self.bank.backing_bytes()
+    }
+
+    /// Conservative half-open unwrapped logical source interval for one grain.
+    /// The interval contains all taps of either versioned filter and is bounded
+    /// by the 32 MiB scratch ceiling when represented as `[f64; 2]` frames.
+    /// The caller must also reserve the filter, overlap and other worker memory.
+    pub fn required_source_range(
+        &self,
+        anchor: f64,
+        length: usize,
+    ) -> Result<std::ops::Range<i128>, Error> {
+        if !anchor.is_finite()
+            || anchor.abs() > (1_u64 << 43) as f64
+            || !(2..=76_800).contains(&length)
+        {
+            return Err(Error::Invalid("invalid granular synthesis window"));
+        }
+        let first_position = anchor + (-(length as i128 / 2)) as f64 * self.pitch;
+        let last_position = anchor + (length as i128 - 1 - length as i128 / 2) as f64 * self.pitch;
+        let first = ((first_position * Q32 as f64).round() as i128).div_euclid(Q32);
+        let last = ((last_position * Q32 as f64).round() as i128).div_euclid(Q32);
+        let start = first - (V2_MAX_TAPS as i128 / 2) - 1;
+        let end = last + (V2_MAX_TAPS as i128 / 2) + 2;
+        let frames = usize::try_from(end - start).map_err(|_| Error::ScratchLimit)?;
+        if frames
+            .checked_mul(std::mem::size_of::<[f64; 2]>())
+            .is_none_or(|bytes| bytes > MAX_SCRATCH_BYTES)
+        {
+            return Err(Error::ScratchLimit);
+        }
+        Ok(start..end)
+    }
+
+    /// Accumulate one grain from exactly the requested source interval.
+    ///
+    /// The caller must supply a matching analyzed decision and source; no source
+    /// identity is inferred from positions or samples. Cancellation is checked
+    /// before the grain and at most every 1,024 reconstructed frames. One grain
+    /// performs at most 76,800 reconstructions of at most 512 taps; the caller
+    /// owns aggregate work admission. On any error after accumulation starts,
+    /// the overlap may be partially changed and must be discarded, not retried.
+    pub fn add_grain(
+        &self,
+        center: i128,
+        decision: GrainDecision,
+        source_start: i128,
+        source: &[[f64; 2]],
+        overlap: &mut GranularOverlap,
+        cancel: &mut dyn FnMut() -> bool,
+    ) -> Result<(), Error> {
+        let GrainDecision { anchor, length, .. } = decision;
+        let range = self.required_source_range(anchor, length)?;
+        if center.unsigned_abs() > u128::from(MAX_STREAMED_OUTPUT_FRAMES) + 38_400
+            || source_start != range.start
+            || usize::try_from(range.end - range.start).ok() != Some(source.len())
+        {
+            return Err(Error::Invalid("incomplete granular source window"));
+        }
+        if cancel() {
+            return Err(Error::Cancelled);
+        }
+        let mut produced = 0_usize;
+        synthesize(center, anchor, length, self.pitch, overlap, |position| {
+            if produced > 0 && produced.is_multiple_of(1_024) && cancel() {
+                return Err(Error::Cancelled);
+            }
+            produced += 1;
+            let mut missing = false;
+            let sample = self
+                .bank
+                .sample_with((position * Q32 as f64).round() as i128, |at| {
+                    let value = at
+                        .checked_sub(source_start)
+                        .and_then(|offset| usize::try_from(offset).ok())
+                        .and_then(|index| source.get(index));
+                    match value {
+                        Some(frame) => *frame,
+                        None => {
+                            missing = true;
+                            [0.0; 2]
+                        }
+                    }
+                });
+            if missing {
+                Err(Error::Invalid("granular source window missed a filter tap"))
+            } else {
+                Ok(sample)
+            }
+        })
+    }
+}
+
+fn synthesize(
+    center: i128,
+    anchor: f64,
+    length: usize,
+    pitch: f64,
+    overlap: &mut GranularOverlap,
+    mut sample: impl FnMut(f64) -> Result<[f64; 2], Error>,
+) -> Result<(), Error> {
+    let first = center - (length / 2) as i128;
+    for offset in 0..length {
+        let frame = first + offset as i128;
+        let window =
+            0.5 - 0.5 * (2.0 * std::f64::consts::PI * offset as f64 / (length - 1) as f64).cos();
+        let position = anchor + (frame - center) as f64 * pitch;
+        overlap.add(frame, sample(position)?, window)?;
+    }
+    Ok(())
+}
+
 pub(super) fn grains(
     request: &Request<'_>,
     pitch: f64,
@@ -322,18 +477,19 @@ pub(super) fn grains(
         )?;
         work.check(length as u64 * 64)?;
         previous = Some(anchor);
-        let first = center - (length / 2) as i128;
-        for offset in 0..length {
-            let frame = first + offset as i128;
-            let window = 0.5
-                - 0.5 * (2.0 * std::f64::consts::PI * offset as f64 / (length - 1) as f64).cos();
-            let position = anchor + (frame - center) as f64 * pitch;
-            let sample = match frame_cache.as_mut() {
-                Some(cache) => bank.sample_float_cached(position, cache),
-                None => bank.sample_float(request.input, position),
-            };
-            accumulator.add(frame, sample, window)?;
-        }
+        synthesize(
+            center,
+            anchor,
+            length,
+            pitch,
+            &mut accumulator,
+            |position| {
+                Ok(match frame_cache.as_mut() {
+                    Some(cache) => bank.sample_float_cached(position, cache),
+                    None => bank.sample_float(request.input, position),
+                })
+            },
+        )?;
         center += hop as i128;
         grain_index = grain_index.wrapping_add(1);
         let finished = (center - half_limit as i128).max(0) as usize;
