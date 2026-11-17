@@ -3,17 +3,117 @@ use super::*;
 
 mod transport;
 
+#[test]
+fn long_plain_reverse_plays_raw_file_and_survives_history_and_reopen() {
+    use std::io::{Seek, SeekFrom, Write};
+
+    const FRAMES: u64 = 20_000_000;
+    let _native = native_fixture();
+    let files = Files::new();
+    let path = super::granular_playback::long_source_at_rate(&files, 48_000);
+    let mut wav = fs::OpenOptions::new().write(true).open(&path).unwrap();
+    wav.seek(SeekFrom::Start(44 + (FRAMES - 20_000) * 2))
+        .unwrap();
+    wav.write_all(&16384_i16.to_le_bytes().repeat(12_000))
+        .unwrap();
+    wav.write_all(&(-8192_i16).to_le_bytes().repeat(8_000))
+        .unwrap();
+    drop(wav);
+
+    let mut h = ResidentHarness::with_frame_limit_at_rate(16_000, 48_000);
+    h.next();
+    let (applied, _) = h.applied(0);
+    let imported = h.run(Request::ImportToNewTrack {
+        path,
+        before_track: None,
+        start: 0,
+    });
+    let (applied, _) = h.applied(applied);
+    let original = &imported.state.project.tracks()[0].clips()[0];
+    let clip = original.id();
+    let asset = original.asset();
+    assert_eq!(original.source_length(), FRAMES);
+    let original_source = imported.state.canonical_audio_source.as_ref().unwrap();
+    let AudioSourceBinding::VerifiedFile(before) = &original_source.sources()[&asset] else {
+        panic!("import must keep the verified file");
+    };
+    play_level_at(&mut h, 1_024, 0.25);
+
+    let reversed = h.run(Request::Edit(hex_project::Command::ReverseClips(vec![
+        clip,
+    ])));
+    let assert_reversed_source = |event: &Event| {
+        let canonical = event.state.canonical_audio_source.as_ref().unwrap();
+        let AudioSourceBinding::VerifiedFile(after) = &canonical.sources()[&asset] else {
+            panic!("reversal must keep the verified file");
+        };
+        assert_eq!(after.fingerprint(), before.fingerprint());
+        assert_eq!(
+            canonical
+                .candidate_reservation_quote()
+                .unwrap()
+                .prepared_pcm_frames,
+            0
+        );
+        let clip = event.state.project.clip(clip).unwrap();
+        assert_eq!(
+            clip.audio_edit().unwrap().plain_reversed_source(clip),
+            Some((0, FRAMES))
+        );
+    };
+    assert_reversed_source(&reversed);
+    let (applied, _) = h.applied(applied);
+    transport_command(&mut h, PlaybackCommand::PlayFrom(1_024));
+    expect_level_at(&mut h, 1_024, -0.25);
+    transport_command(&mut h, PlaybackCommand::Seek(9_024));
+    expect_level_at(&mut h, 9_024, 0.5);
+    transport_command(&mut h, PlaybackCommand::Stop);
+
+    assert_eq!(
+        h.run(Request::Undo).state.project.snapshot(),
+        imported.state.project.snapshot()
+    );
+    let (applied, _) = h.applied(applied);
+    play_level_at(&mut h, 1_024, 0.25);
+    let redone = h.run(Request::Redo);
+    assert_eq!(
+        redone.state.project.snapshot(),
+        reversed.state.project.snapshot()
+    );
+    assert_reversed_source(&redone);
+    h.applied(applied);
+    play_level_at(&mut h, 9_024, 0.5);
+
+    let saved = files.0.join("reversed.hex");
+    assert!(h.run(Request::SaveNew(saved.clone())).save_complete);
+    let output = h.audio.as_ref().unwrap().control.output_identity().unwrap();
+    let reopened = h.run(Request::Open(saved));
+    assert!(reopened.open_complete);
+    assert_eq!(
+        reopened.state.project.snapshot(),
+        reversed.state.project.snapshot()
+    );
+    assert_reversed_source(&reopened);
+    super::resident_lifecycle::finish_replacement(&mut h, &reopened, output);
+    play_level_at(&mut h, 1_024, -0.25);
+    play_level_at(&mut h, 9_024, 0.5);
+}
+
 fn play(h: &mut ResidentHarness) {
     play_level_at(h, 0, 0.25);
 }
 
 fn play_level_at(h: &mut ResidentHarness, frame: u64, level: f32) {
-    h.audio
-        .as_mut()
-        .unwrap()
-        .control
-        .command(PlaybackCommand::PlayFrom(frame))
-        .unwrap();
+    transport_command(h, PlaybackCommand::PlayFrom(frame));
+    expect_level_at(h, frame, level);
+    transport_command(h, PlaybackCommand::Stop);
+}
+
+fn transport_command(h: &mut ResidentHarness, command: PlaybackCommand) {
+    h.audio.as_mut().unwrap().control.command(command).unwrap();
+}
+
+fn expect_level_at(h: &mut ResidentHarness, frame: u64, level: f32) {
     let end = Instant::now() + Duration::from_secs(3);
     loop {
         h.pump();
@@ -24,8 +124,7 @@ fn play_level_at(h: &mut ResidentHarness, frame: u64, level: f32) {
             .all(|sample| (*sample - level).abs() < 0.0001)
         {
             if frame != 0 {
-                // The two rate cases have opposite signs in this window.
-                // A later block at the requested level does not prove the read.
+                // The expected samples must be at the requested position.
                 let end = h
                     .audio
                     .as_ref()
@@ -48,12 +147,6 @@ fn play_level_at(h: &mut ResidentHarness, frame: u64, level: f32) {
         );
         std::thread::sleep(Duration::from_millis(1));
     }
-    h.audio
-        .as_mut()
-        .unwrap()
-        .control
-        .command(PlaybackCommand::Stop)
-        .unwrap();
 }
 
 #[test]

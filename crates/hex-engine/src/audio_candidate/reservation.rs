@@ -2,6 +2,7 @@
 //! Row envelopes cover the selected compiler's fixed representations; the real
 //! rooted constructor and borrowed ledger still validate actual capacities.
 use super::*;
+use crate::audio_preparation::transformed;
 
 #[derive(Clone, Copy, Debug)]
 pub struct AudioCandidateReservationQuote {
@@ -141,29 +142,27 @@ impl AudioCandidateReservationQuote {
             project.return_tracks().len(),
             sources,
         )?;
-        let streamed_derived = |clip: &hex_project::Clip| {
+        let streamed_origin = |clip: &hex_project::Clip| {
             streams
                 .iter()
                 .find(|raw| raw.key().asset() == clip.asset() && raw.key().is_raw())
                 .is_some_and(|raw| {
-                    streams.iter().any(|pitch| {
-                        crate::audio_preparation::transformed::matching_streamed_pitch(
-                            project, clip, raw, pitch,
-                        ) || crate::audio_preparation::transformed::matching_streamed_repitch(
-                            project, clip, raw, pitch,
-                        ) || crate::audio_preparation::transformed::matching_streamed_granular(
-                            project, clip, raw, pitch,
-                        )
-                    })
+                    transformed::streamed_reverse_region(project, clip, raw).is_some()
+                        || streams.iter().any(|derived| {
+                            transformed::matching_streamed_pitch(project, clip, raw, derived)
+                                || transformed::matching_streamed_repitch(
+                                    project, clip, raw, derived,
+                                )
+                                || transformed::matching_streamed_granular(
+                                    project, clip, raw, derived,
+                                )
+                        })
                 })
         };
         quote.prepared_pcm_frames = if streams.is_empty() {
-            crate::audio_preparation::transformed::prepared_pcm_frames(project)?
+            transformed::prepared_pcm_frames(project)?
         } else {
-            crate::audio_preparation::transformed::prepared_pcm_frames_for(
-                project,
-                &streamed_derived,
-            )?
+            transformed::prepared_pcm_frames_for(project, &streamed_origin)?
         };
         let pcm_bytes = usize::try_from(quote.prepared_pcm_frames)
             .ok()
@@ -172,10 +171,7 @@ impl AudioCandidateReservationQuote {
         let (retained, workspace) = if streams.is_empty() {
             crate::audio_preparation::transformed_audio_quote(project)?
         } else {
-            crate::audio_preparation::transformed::transformed_audio_quote_for(
-                project,
-                &streamed_derived,
-            )?
+            transformed::transformed_audio_quote_for(project, &streamed_origin)?
         };
         quote.metadata_data_bytes = quote
             .metadata_data_bytes
