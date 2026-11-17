@@ -14,7 +14,9 @@
 #![allow(clippy::vec_box)]
 
 mod footprint;
+mod reference;
 pub use footprint::{AllocationData, EndpointData, StreamDataFootprint, TransportData, WorkerData};
+pub use reference::{VerifiedReferenceChannel, scan_reference_channel_on_control};
 mod endpoint;
 mod runtime;
 #[cfg(feature = "test-support")]
