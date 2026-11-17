@@ -296,6 +296,7 @@ pub enum PlaybackHandoffRejection {
     StreamSourceChanged = 12,
     SharedSourceVoiceCapacity = 13,
     StreamedPageCapacity = 14,
+    ForeignTailSourcePaused = 15,
 }
 
 impl PlaybackHandoffRejection {
@@ -313,6 +314,9 @@ impl PlaybackHandoffRejection {
             ) => Self::SourceHistoryUnavailable,
             PlaybackHandoffError::Session(crate::SessionPlaybackError::CandidateAlreadyUsed) => {
                 Self::SessionRuntime
+            }
+            PlaybackHandoffError::Session(crate::SessionPlaybackError::ForeignTailSourcePaused) => {
+                Self::ForeignTailSourcePaused
             }
             PlaybackHandoffError::Session(_) => Self::SessionRuntime,
             PlaybackHandoffError::ActiveSessionStateCannotBeDropped => {
@@ -346,6 +350,7 @@ impl PlaybackHandoffRejection {
             12 => Some(Self::StreamSourceChanged),
             13 => Some(Self::SharedSourceVoiceCapacity),
             14 => Some(Self::StreamedPageCapacity),
+            15 => Some(Self::ForeignTailSourcePaused),
             _ => None,
         }
     }
@@ -375,6 +380,9 @@ impl PlaybackHandoffRejection {
             Self::StreamedPagesNotReady => "streamed playback page readiness is unavailable",
             Self::StreamedPageCapacity => "stream cache capacity is full · stop playback or retry",
             Self::StreamSourceChanged => "original media changed · reopen or relink it",
+            Self::ForeignTailSourcePaused => {
+                "native effect tail is paused · resume playback, then retry"
+            }
             Self::SharedSourceVoiceCapacity => {
                 "shared source voice capacity is full · release notes or wait for tails, then retry"
             }
