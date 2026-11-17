@@ -666,6 +666,7 @@ impl StreamRuntime {
                 return Err(StreamRuntimeError::InvalidConfiguration);
             }
         }
+        let offline_consumer = config.wake_offline_consumer.then(thread::current);
         let worker = thread::Builder::new()
             .name("hex-stream-worker".to_owned())
             .spawn(move || {
@@ -682,6 +683,7 @@ impl StreamRuntime {
                     worker_queues,
                     thread_stop,
                     catalog_sender,
+                    offline_consumer,
                     #[cfg(test)]
                     test_hooks,
                     #[cfg(feature = "test-support")]
@@ -1510,5 +1512,7 @@ mod tests {
     }
 }
 
+#[cfg(test)]
+mod offline_wait_tests;
 #[cfg(test)]
 mod scalar_tests;
