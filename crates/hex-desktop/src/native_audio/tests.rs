@@ -432,6 +432,12 @@ impl WorkerAudioSink for ObservedSink {
         }
         accepted
     }
+    fn verified_arrangement_gain_update(
+        &mut self,
+        update: hex_session::service::VerifiedArrangementGainUpdate,
+    ) -> bool {
+        self.inner.verified_arrangement_gain_update(update)
+    }
     fn native_sampler_input(&mut self, input: hex_session::service::NativeSamplerInput<'_>) {
         self.inner.native_sampler_input(input);
         let mut observation = self.observation.lock().unwrap();

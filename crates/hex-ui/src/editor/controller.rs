@@ -508,6 +508,12 @@ impl EditorView {
                 }
                 self.status = "publishing gain preview".into();
             }
+            crate::EditorPublicationState::VerifiedArrangementGainSubmitted { .. } => {
+                self.status = "publishing gain preview".into();
+            }
+            crate::EditorPublicationState::VerifiedArrangementGainRefused(reason) => {
+                self.status = format!("gain preview unavailable · {}", reason.to_lowercase());
+            }
             crate::EditorPublicationState::Preparing => self.status = "preparing audio".into(),
             crate::EditorPublicationState::Busy => {
                 self.status = "audio busy · waiting to publish".into()
