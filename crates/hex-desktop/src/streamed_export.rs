@@ -27,8 +27,8 @@ use std::{
 
 const PREPARATION_TIMEOUT: Duration = Duration::from_secs(60);
 const POLL: Duration = Duration::from_millis(5);
-// Page preparation runs on the offline worker, not the audio callback. Check
-// completed reads more promptly while retaining a bounded cancellation poll.
+// Page replies wake the offline consumer. The timeout bounds cancellation
+// and fault checks even if no reply arrives.
 const PAGE_POLL: Duration = Duration::from_millis(1);
 
 pub(super) fn render(
@@ -801,8 +801,10 @@ impl VerifiedPages {
             .granulars
             .take()
             .ok_or(ExportError::Invalid("offline roots already consumed"))?;
+        let mut config = self.config;
+        config.wake_offline_consumer = true;
         self.runtime = Some(if granulars.is_empty() {
-            StreamRuntime::new(self.config, definitions).map_err(media)?
+            StreamRuntime::new(config, definitions).map_err(media)?
         } else {
             check(control)?;
             let metadata_bytes = granulars
@@ -885,7 +887,7 @@ impl VerifiedPages {
                     .ok_or(ExportError::Invalid("granular handle quote overflow"))?,
             };
             StreamRuntime::spawn_with_granular_sources(
-                self.config,
+                config,
                 definitions,
                 Vec::new(),
                 bank,
@@ -1080,20 +1082,11 @@ impl VerifiedPages {
                 .runtime
                 .as_mut()
                 .ok_or(ExportError::Invalid("offline stream worker is unavailable"))?;
-            // The endpoint reserves one turnover buffer. Admit one missing
-            // page at a time so pumping can return an evicted page before the
-            // worker needs the next buffer, even with the smallest valid pool.
+            // Protect the required subset across pumps. A full cache could
+            // otherwise evict a required page while loading another.
             for key in &self.keys {
                 runtime.pin_pages(std::slice::from_ref(key));
             }
-            if let Some(key) = self
-                .keys
-                .iter()
-                .find(|key| runtime.page(key.source, key.page_index).is_none())
-            {
-                runtime.request_page(key.source, key.page_index);
-            }
-            runtime.wake_worker();
             runtime.pump_ready(self.config.max_ready_pages_per_pump);
             let mut failures = [StreamFailure {
                 key: first_key.source.into(),
@@ -1102,11 +1095,6 @@ impl VerifiedPages {
             }];
             if runtime.take_failures(&mut failures) != 0 {
                 return Err(self.failure(failures[0], control));
-            }
-            // Protect the already-loaded subset across pumps. Without this,
-            // a full cache could evict one required page while loading another.
-            for key in &self.keys {
-                runtime.pin_pages(std::slice::from_ref(key));
             }
             if runtime.pin_pages(&self.keys) {
                 for extent in &self.extents {
@@ -1121,12 +1109,22 @@ impl VerifiedPages {
                 }
                 return Ok(window.frames);
             }
+            // Admit one missing page at a time so pumping can return an
+            // evicted page before the worker needs the next turnover buffer.
+            if let Some(key) = self
+                .keys
+                .iter()
+                .find(|key| runtime.page(key.source, key.page_index).is_none())
+            {
+                runtime.request_page(key.source, key.page_index);
+                runtime.wake_worker();
+            }
             if Instant::now() >= deadline {
                 return Err(ExportError::Media(
                     "media pages timed out; check the source disk and retry".into(),
                 ));
             }
-            std::thread::sleep(PAGE_POLL);
+            std::thread::park_timeout(PAGE_POLL);
         }
     }
 }
