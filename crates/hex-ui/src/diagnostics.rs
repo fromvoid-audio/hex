@@ -529,6 +529,15 @@ pub(crate) fn record_audio_backend_event(cx: &mut App, event: &crate::EditorAudi
         E::PluginTransportToggle { project_generation } => {
             format!("stage=plugin_transport_toggle generation={project_generation}")
         }
+        E::PluginEditorWindows {
+            project_generation,
+            output_identity,
+            devices,
+        } => {
+            format!(
+                "stage=plugin_editor_windows generation={project_generation} output={output_identity} devices={devices:?}"
+            )
+        }
         E::DegradedPlugins {
             project_generation,
             output_identity,

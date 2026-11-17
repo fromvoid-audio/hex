@@ -986,6 +986,10 @@ fn replacement_editor_commands_report_closed_and_unavailable_without_opening_win
     )
     .unwrap();
     for (request, expected) in [
+        (
+            ControllerRequest::EditorVisibility,
+            PluginEditorState::Closed,
+        ),
         (ControllerRequest::DetachEditor, PluginEditorState::Closed),
         (
             ControllerRequest::ReopenEditor(PluginEditorPosition::new(-204.25, 300.5)),

@@ -8,6 +8,7 @@ fn editor_receipt_requires_exact_controller_operation_and_discriminant() {
         (ControllerRequest::ToggleEditor, 6),
         (ControllerRequest::DetachEditor, 11),
         (ControllerRequest::ReopenEditor(None), 12),
+        (ControllerRequest::EditorVisibility, 15),
     ] {
         let wire = parameter_page_request(&config, 1, 7, request, false).unwrap();
         assert_eq!(&wire[..4], b"HXVM");
@@ -28,6 +29,24 @@ fn editor_receipt_requires_exact_controller_operation_and_discriminant() {
         reply.push(0);
         assert!(parameter_page(&reply, &config, 1, 7, request).is_err());
     }
+}
+
+#[test]
+fn editor_visibility_only_accepts_open_and_closed() {
+    let config = config();
+    let request = ControllerRequest::EditorVisibility;
+    let mut reply = Vec::new();
+    stamp(&mut reply, config.binding);
+    for value in [1_u64, u64::from(config.quantum), 7] {
+        reply.extend(value.to_le_bytes());
+    }
+    reply.extend([4, 0]);
+    assert_eq!(
+        parameter_page(&reply, &config, 1, 7, request).unwrap(),
+        ParameterPageProgress::Editor(PluginEditorState::Closed)
+    );
+    *reply.last_mut().unwrap() = 2;
+    assert!(parameter_page(&reply, &config, 1, 7, request).is_err());
 }
 #[test]
 fn live_editor_detach_refusal_is_bound_to_its_new_wire_operation() {

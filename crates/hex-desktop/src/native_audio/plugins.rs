@@ -59,6 +59,7 @@ struct Source {
     observes_latency: bool,
     editor_open: bool,
     editor_transfer: bool,
+    editor_open_on_insert: bool,
     edit_backlog: bool,
     edit_recovery: Option<parameter_touches::PendingRead>,
     pending_touch: Option<parameter_touches::Touch>,
@@ -157,6 +158,9 @@ pub(super) struct Plugins {
     sources: Vec<Source>,
     pending: Option<Pending>,
     editor: Option<editor::EditorOperation>,
+    queued_editor_toggle: Option<(Binding, u64)>,
+    editor_visibility_cursor: usize,
+    next_editor_visibility: Option<std::time::Instant>,
     parameters: Option<parameters::Inventory>,
     parameter_conversion: Option<parameter_conversion::Conversion>,
     observed_parameters: Vec<parameters::ObservedInventory>,
@@ -297,16 +301,28 @@ impl Plugins {
             source.pending_touch = None;
             source.editor_open = false;
             source.editor_transfer = false;
+            source.editor_open_on_insert = false;
         }
         self.editor_checked = None;
-        if let Some(editor::EditorOperation::Pending {
+        let queued_generation = self
+            .queued_editor_toggle
+            .take()
+            .map(|(_, generation)| generation);
+        let pending_generation = if let Some(editor::EditorOperation::Pending {
             generation,
             action: editor::EditorAction::Toggle,
             ..
         }) = &self.editor
         {
+            Some(*generation)
+        } else {
+            None
+        };
+        self.next_editor_visibility = None;
+        self.editor_visibility_cursor = 0;
+        if let Some(generation) = pending_generation.or(queued_generation) {
             self.editor = Some(editor::EditorOperation::Complete {
-                generation: *generation,
+                generation,
                 result: Err("vst3 editor closed · output changed".into()),
             });
         } else if matches!(self.editor, Some(editor::EditorOperation::Pending { .. })) {
@@ -370,6 +386,7 @@ impl Plugins {
     pub fn idle(&self) -> bool {
         self.pending.is_none()
             && self.editor.is_none()
+            && self.queued_editor_toggle.is_none()
             && self.editor_recording.is_none()
             && self.parameters.is_none()
             && self.parameter_conversion.is_none()
@@ -384,6 +401,7 @@ impl Plugins {
                     || source.edit_recovery.is_some()
                     || source.pending_touch.is_some()
                     || source.editor_open
+                    || source.editor_open_on_insert
                     || (source.queued && !source.accepted)
             })
     }
@@ -553,6 +571,7 @@ impl Plugins {
                 observes_latency: false,
                 editor_open: false,
                 editor_transfer: false,
+                editor_open_on_insert: false,
                 edit_backlog: false,
                 edit_recovery: None,
                 pending_touch: None,
@@ -603,6 +622,7 @@ impl Plugins {
                     .as_ref()
                     .is_some_and(|p| matches!(p.result, Some(Ok(_))));
             source.retiring |= !source.accepted;
+            source.editor_open_on_insert = source.accepted && operation.opens_editor();
         }
     }
     pub fn poll(
@@ -1205,6 +1225,7 @@ mod idle_tests {
             observes_latency: true,
             editor_open: false,
             editor_transfer: false,
+            editor_open_on_insert: false,
             edit_backlog: false,
             edit_recovery: None,
             pending_touch: None,
@@ -1259,6 +1280,7 @@ mod idle_tests {
             observes_latency: true,
             editor_open: true,
             editor_transfer: false,
+            editor_open_on_insert: false,
             edit_backlog: false,
             edit_recovery: None,
             pending_touch: None,
