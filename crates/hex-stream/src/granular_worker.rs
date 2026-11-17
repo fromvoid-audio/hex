@@ -54,28 +54,35 @@ pub struct GranularWorkerQueues {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GranularWorkerExitReason {
     Stopped,
+    /// Empty, duplicate-key or oversized bank; requests remain untouched.
+    InvalidSourceBank,
     /// An internal page-custody invariant failed. Do not publish the page.
     CustodyFault(GranularWorkerKey),
 }
 pub struct GranularWorkerExit {
     pub reason: GranularWorkerExitReason,
-    pub source: VerifiedGranularSource,
+    pub sources: Vec<VerifiedGranularSource>,
     pub queues: GranularWorkerQueues,
     pub interrupted: Option<GranularWorkerRequest>,
     pub held: Option<GranularWorkerOutcome>,
 }
 
-/// Run one verified source on a caller-owned dedicated worker thread.
+/// Run a bounded bank of verified sources on one dedicated worker thread.
 ///
 /// The caller creates finite SPSC queues and admits their storage, the page pool,
-/// source and thread before starting. Requests are handled FIFO, one at a time;
+/// source bank and thread before starting. At most 512 source slots (including
+/// spare vector capacity) are accepted; keys must be distinct and the bank must
+/// be nonempty. Invalid banks return without consuming requests. The caller
+/// admits all source readers, scratch and checkpoints in aggregate; the slot
+/// limit alone is not a memory quote. Each source retains its own renderer and
+/// checkpoint history. Requests are handled FIFO, one at a time;
 /// a full results queue holds one outcome and prevents further dequeue. Idle and
 /// full queues wait up to 2 ms between polls, subject to thread scheduling; the
 /// joining control owner may unpark the worker. Stop is checked between bounded
 /// rendering steps and during source operations, but an operating-system I/O
 /// call can delay it. On return, the joining control owner must drain the
 /// returned request consumer, result consumer,
-/// interrupted request and held outcome, and destroy them and the source on control.
+/// interrupted request and held outcome, and destroy them and every returned source on control.
 /// The caller advances `demand_epoch` to supersede all requests from older
 /// demand and must never reuse an epoch during this worker lifetime. A stale
 /// active request is cancelled between and within steps; returned frames remain
@@ -85,33 +92,50 @@ pub struct GranularWorkerExit {
 /// before epoch wrap. This loop does not admit sources to playback or establish
 /// a catalog lease.
 pub fn run_granular_worker(
-    source: VerifiedGranularSource,
+    sources: Vec<VerifiedGranularSource>,
     queues: GranularWorkerQueues,
     stop: &AtomicBool,
     demand_epoch: &AtomicU64,
 ) -> GranularWorkerExit {
-    run_inner(source, queues, stop, demand_epoch, || {})
+    run_inner(sources, queues, stop, demand_epoch, || {})
 }
 
 #[cfg(feature = "test-support")]
 pub(crate) fn run_with_step_hook(
-    source: VerifiedGranularSource,
+    sources: Vec<VerifiedGranularSource>,
     queues: GranularWorkerQueues,
     stop: &AtomicBool,
     demand_epoch: &AtomicU64,
     before_step: impl FnMut(),
 ) -> GranularWorkerExit {
-    run_inner(source, queues, stop, demand_epoch, before_step)
+    run_inner(sources, queues, stop, demand_epoch, before_step)
 }
 
 fn run_inner(
-    mut source: VerifiedGranularSource,
+    mut sources: Vec<VerifiedGranularSource>,
     mut queues: GranularWorkerQueues,
     stop: &AtomicBool,
     demand_epoch: &AtomicU64,
     mut before_step: impl FnMut(),
 ) -> GranularWorkerExit {
-    let mut active: Option<GranularWorkerKey> = None;
+    if sources.is_empty()
+        || sources.capacity() > 512
+        || sources.iter().enumerate().any(|(index, source)| {
+            sources[..index]
+                .iter()
+                .any(|previous| previous.metadata().key() == source.metadata().key())
+        })
+    {
+        return GranularWorkerExit {
+            reason: GranularWorkerExitReason::InvalidSourceBank,
+            sources,
+            queues,
+            interrupted: None,
+            held: None,
+        };
+    }
+    // The bank is never resized or reordered while a job holds its index.
+    let mut active: Option<(usize, GranularWorkerKey)> = None;
     let mut held: Option<GranularWorkerOutcome> = None;
     let mut interrupted = None;
     let mut fault = None;
@@ -134,7 +158,11 @@ fn run_inner(
             }
             continue;
         }
-        if let Some(key) = active {
+        if let Some((index, key)) = active {
+            let Some(source) = sources.get_mut(index) else {
+                fault = Some(key);
+                break;
+            };
             if key.epoch != demand_epoch.load(Ordering::Acquire) {
                 if let Some(frames) = source.reclaim() {
                     active = None;
@@ -200,7 +228,11 @@ fn run_inner(
             });
             continue;
         }
-        if key.source != source.metadata().key() {
+        let Some((index, source)) = sources
+            .iter_mut()
+            .enumerate()
+            .find(|(_, source)| source.metadata().key() == key.source)
+        else {
             held = Some(GranularWorkerOutcome {
                 key,
                 result: GranularWorkerResult::Failed {
@@ -209,7 +241,7 @@ fn run_inner(
                 },
             });
             continue;
-        }
+        };
         let result = match key.seek {
             GranularWorkerSeek::Strict { max_preroll_frames } => {
                 source.begin_page(key.page_index, frames, max_preroll_frames, || {
@@ -225,7 +257,7 @@ fn run_inner(
             }
         };
         match result {
-            Ok(()) => active = Some(key),
+            Ok(()) => active = Some((index, key)),
             Err((error, frames)) => {
                 if stop.load(Ordering::Acquire) {
                     interrupted = Some(GranularWorkerRequest { key, frames });
@@ -243,8 +275,11 @@ fn run_inner(
             }
         }
     }
-    if let Some(key) = active {
-        if let Some(frames) = source.reclaim() {
+    if let Some((index, key)) = active {
+        if let Some(frames) = sources
+            .get_mut(index)
+            .and_then(VerifiedGranularSource::reclaim)
+        {
             interrupted = Some(GranularWorkerRequest { key, frames });
         } else {
             fault = Some(key);
@@ -255,7 +290,7 @@ fn run_inner(
             GranularWorkerExitReason::Stopped,
             GranularWorkerExitReason::CustodyFault,
         ),
-        source,
+        sources,
         queues,
         interrupted,
         held,
