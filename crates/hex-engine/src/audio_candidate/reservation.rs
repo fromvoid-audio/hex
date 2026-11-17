@@ -151,6 +151,8 @@ impl AudioCandidateReservationQuote {
                             project, clip, raw, pitch,
                         ) || crate::audio_preparation::transformed::matching_streamed_repitch(
                             project, clip, raw, pitch,
+                        ) || crate::audio_preparation::transformed::matching_streamed_granular(
+                            project, clip, raw, pitch,
                         )
                     })
                 })

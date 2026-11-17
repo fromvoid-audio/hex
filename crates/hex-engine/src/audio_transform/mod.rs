@@ -132,7 +132,7 @@ pub fn streamed_repitch_map(
 }
 
 /// Canonical granular root inputs, not a file owner, worker or page lease.
-/// A future worker must bind the raw asset/generation to the verified reader
+/// The worker must bind the raw asset/generation to the verified reader
 /// and retain the existing aggregate memory and source invalidation contracts.
 pub struct StreamedGranularRoot {
     metadata: crate::StreamedSourceMetadata,
@@ -174,7 +174,7 @@ impl StreamedGranularRoot {
     }
 }
 
-/// Project a validated canonical Tones/Texture root for a future worker.
+/// Project a validated canonical Tones/Texture root for a streamed worker.
 /// The caller validates the edit and binds its asset to `raw`; this operation
 /// only derives bounded metadata and grants no source or playback admission.
 /// The map covers the full processing root; consumers apply view cropping.
@@ -1073,6 +1073,25 @@ impl AudioTransformPreparation {
                 .get(&expected.key())
                 .filter(|candidate| candidate.as_ref() == &expected)
                 .ok_or(Invalid("matching repitch stream is unavailable"))?;
+            let (_, _, view_start, view_end) = edit.projected_domain(tempo_map)?;
+            return Clip::streamed_region(
+                Arc::clone(derived),
+                clip.start(),
+                clip.duration(),
+                view_start,
+                view_end - view_start,
+                false,
+            )
+            .map(|prepared| Some(prepared.with_gain(clip.gain())));
+        }
+        if let PreparedAudioSourceRef::StreamedWithPitch(raw, derived_sources) = source
+            && let Ok(root) = streamed_granular_root(raw, edit, tempo_map, &self.shutdown)
+        {
+            let expected = root.metadata();
+            let derived = derived_sources
+                .get(&expected.key())
+                .filter(|candidate| candidate.as_ref() == expected)
+                .ok_or(Invalid("matching granular stream is unavailable"))?;
             let (_, _, view_start, view_end) = edit.projected_domain(tempo_map)?;
             return Clip::streamed_region(
                 Arc::clone(derived),
