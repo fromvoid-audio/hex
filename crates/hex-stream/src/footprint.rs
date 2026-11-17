@@ -82,6 +82,8 @@ pub struct WorkerData {
     pub source_slots: AllocationData,
     pub definition_paths: usize,
     pub reader_paths: usize,
+    /// Digest backing plus sized manifest owner DATA, conservatively charged
+    /// per reader even when immutable owners are shared. Excludes Arc metadata.
     pub manifests: usize,
     pub kernel_objects: usize,
     pub kernel_weights: usize,
