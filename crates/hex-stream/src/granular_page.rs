@@ -120,6 +120,11 @@ impl VerifiedGranularPages {
             pending: None,
         })
     }
+    pub(crate) fn reserved_processing_bytes(&self) -> Option<usize> {
+        self.cursor
+            .backing_bytes()?
+            .checked_add(self.cache.reserved_budget())
+    }
     pub fn metadata(&self) -> &StreamedSourceMetadata {
         &self.metadata
     }

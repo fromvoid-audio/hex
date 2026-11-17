@@ -73,6 +73,13 @@ impl VerifiedGranularCursor {
         self.seeking
     }
 
+    pub(crate) fn backing_bytes(&self) -> Option<usize> {
+        self.renderer.backing_bytes()?.checked_add(
+            self.reference
+                .region()
+                .map_or(Some(0), |region| region.backing_bytes())?,
+        )
+    }
     pub(crate) fn owns_checkpoint(&self, checkpoint: &GranularCheckpoint) -> bool {
         self.renderer.owns_checkpoint(checkpoint)
     }

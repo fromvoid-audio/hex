@@ -90,6 +90,9 @@ impl VerifiedGranularCheckpointCache {
             clock: 0,
         })
     }
+    pub(crate) fn reserved_budget(&self) -> usize {
+        self.budget
+    }
     /// Actual retained checkpoint and vector payload; excludes this inline value.
     pub fn backing_bytes(&self) -> Option<usize> {
         self.entries.iter().try_fold(
