@@ -789,15 +789,20 @@ public:
             uint32 index=0;
             while(index<metadata.count && metadata.parameters[index].info.id!=value.id) ++index;
             if(index==metadata.count) {refuse(FeedbackParameterMissing);return false;}
-            // DSP can finish long after the controller has moved
-            // on to a newer drag position. Its DSP receipt remains valid.
+            // During a drag, only the exact latest native input can mirror
+            // back to its controller. A deferred controller still needs this
+            // value even when the processor finishes before End.
+            const auto& parameter=metadata.parameters[index];
+            const bool current_native=value.editor_input && parameter.editor_sequence==value.editor_sequence;
             bool editing=false;
             for(size_t i=0;i<active_tokens.size();++i)
                 if(active_tokens[i] && active_ids[i]==value.id) {editing=true;break;}
-            if(editing || metadata.parameters[index].editor_sequence>value.editor_sequence ||
-                (metadata.parameters[index].feedback_floor>value.editor_sequence &&
-                    !(value.editor_input && metadata.parameters[index].editor_sequence==value.editor_sequence))) continue;
-            auto normalized=value.editor_sequence?controller->getParamNormalized(value.id):-1.0;
+            if(!current_native && (editing || parameter.editor_sequence>value.editor_sequence ||
+                parameter.feedback_floor>value.editor_sequence)) continue;
+            // Even before the first editor gesture, an equal value needs no
+            // setter. Setters can repaint or notify the vendor's editor.
+            auto normalized=controller->getParamNormalized(value.id);
+            if(recursive) return false;
             if(normalized!=value.normalized) {
                 applying_feedback=true;
                 const auto updated=controller->setParamNormalized(value.id,value.normalized);
