@@ -1272,8 +1272,21 @@ fn check_streamed_session_lookup_and_miss_semantics(with_resident_sessions: bool
 
 #[test]
 fn closed_main_latency_demand_matches_resident_through_loop_seek_and_handoff() {
+    closed_latency_demand_matches_resident(false);
+}
+
+#[test]
+fn closed_track_limiter_demand_matches_resident_through_loop_seek_and_handoff() {
+    closed_latency_demand_matches_resident(true);
+}
+
+fn closed_latency_demand_matches_resident(upstream: bool) {
     use hex_project::Command;
-    let mut f = crate::signal_graph::tests::fixture(&[&[]], 1024);
+    let mut f = if upstream {
+        crate::signal_graph::tests::fixture(&[&[], &[]], 1024)
+    } else {
+        crate::signal_graph::tests::fixture(&[&[]], 1024)
+    };
     let asset = *f.media.keys().next().unwrap();
     let key = StreamSourceKey::new(39, asset);
     f.editor
@@ -1283,18 +1296,34 @@ fn closed_main_latency_demand_matches_resident_through_loop_seek_and_handoff() {
             enabled: true,
         })
         .unwrap();
-    let saturator = crate::default_native_device_state_for_class(
+    let state = crate::default_native_device_state_for_class(
         crate::NativeDeviceClass::Effect,
-        crate::DeviceTypeId::from_static("hex.saturator"),
+        crate::DeviceTypeId::from_static(if upstream {
+            "hex.limiter"
+        } else {
+            "hex.saturator"
+        }),
     )
     .unwrap();
-    f.editor
-        .execute(Command::InsertMainDevice {
+    let command = if upstream {
+        Command::InsertDevice {
+            track: f.tracks[0],
             before: None,
-            state: saturator,
-        })
-        .unwrap();
-    let sources = BTreeMap::from([(
+            state,
+        }
+    } else {
+        Command::InsertMainDevice {
+            before: None,
+            state,
+        }
+    };
+    f.editor.execute(command).unwrap();
+    let mut sources: BTreeMap<_, _> = f
+        .media
+        .iter()
+        .map(|(id, audio)| (*id, PreparedAudioSource::Resident(audio.clone())))
+        .collect();
+    sources.insert(
         asset,
         PreparedAudioSource::Streamed(Arc::new(
             StreamedSourceMetadata::new(
@@ -1308,7 +1337,7 @@ fn closed_main_latency_demand_matches_resident_through_loop_seek_and_handoff() {
             )
             .unwrap(),
         )),
-    )]);
+    );
     let effects = hex_devices::native_registry().unwrap();
     let instruments = hex_devices::native_instrument_registry().unwrap();
     let streamed = Arc::new(
@@ -1447,7 +1476,7 @@ fn closed_main_latency_demand_matches_resident_through_loop_seek_and_handoff() {
 }
 
 #[test]
-fn closed_upstream_or_session_audio_latency_stream_demand_remains_refused() {
+fn closed_routed_upstream_or_session_audio_latency_stream_demand_remains_refused() {
     for (upstream, session_audio) in [(true, false), (false, true)] {
         let mut f = crate::signal_graph::tests::fixture(&[&[]], 1024);
         let asset = *f.media.keys().next().unwrap();
@@ -1470,6 +1499,13 @@ fn closed_upstream_or_session_audio_latency_stream_demand_remains_refused() {
             }
         };
         f.editor.execute(command).unwrap();
+        if upstream {
+            f.editor
+                .execute(hex_project::Command::AddReturnTrack {
+                    name: "unproven route".into(),
+                })
+                .unwrap();
+        }
         if session_audio {
             let hex_project::Created::Scene(scene) = f
                 .editor
@@ -1534,4 +1570,52 @@ fn closed_upstream_or_session_audio_latency_stream_demand_remains_refused() {
                 .is_ok()
         );
     }
+}
+
+#[test]
+fn closed_unknown_upstream_effect_stream_demand_remains_refused() {
+    let f = crate::signal_graph::tests::fixture(&[&[7]], 1024);
+    let asset = *f.media.keys().next().unwrap();
+    let key = StreamSourceKey::new(39, asset);
+    let source = StreamedSourceMetadata::new(
+        key,
+        48_000,
+        48_000,
+        1024,
+        1024,
+        hex_project::IDENTITY_CONVERSION,
+        [39; 32],
+    )
+    .unwrap();
+    let sources = BTreeMap::from([(asset, PreparedAudioSource::Streamed(Arc::new(source)))]);
+    let definition = crate::signal_graph::tests::Definition;
+    let definitions: [&dyn hex_lattice::NativeDeviceDefinition; 1] = [&definition];
+    let effects = hex_lattice::NativeDeviceRegistry::new(&definitions).unwrap();
+    let revision = Arc::new(
+        PreparedRevision::prepare_with_source_bank(
+            f.editor.project(),
+            crate::compile::SourceBank::Mixed(&sources, 39),
+            Arc::new(SineTable::new()),
+            None,
+            &effects,
+            &hex_devices::native_instrument_registry().unwrap(),
+            &crate::audio_transform::AudioTransformPreparation::default(),
+            None,
+            None,
+            &[],
+        )
+        .unwrap(),
+    );
+    let mut playback = crate::SessionPlayback::new(revision).unwrap();
+    playback.apply(SessionPlaybackCommand::Play).unwrap();
+    assert!(
+        playback
+            .visit_next_stream_chunk(64, None, &mut |_| Ok(()))
+            .is_err()
+    );
+    assert!(
+        playback
+            .visit_ordinary_stream_chunk(64, None, &mut |_| Ok(()))
+            .is_ok()
+    );
 }

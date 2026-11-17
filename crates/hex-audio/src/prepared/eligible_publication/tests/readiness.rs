@@ -2,11 +2,15 @@
 use super::*;
 #[test]
 fn real_first_play_buffers_without_ack_clock_or_samples_then_installs_exact_worker_pages() {
-    first_play(false, false);
+    first_play(false, false, false);
 }
 #[test]
 fn grouped_closed_constructor_buffers_and_renders_verified_worker_pages() {
-    first_play(true, false);
+    first_play(true, false, false);
+}
+#[test]
+fn track_limiter_closed_stream_buffers_then_renders_without_callback_allocations() {
+    first_play(false, false, true);
 }
 #[test]
 fn priority_stop_revokes_buffered_play_before_installation() {
@@ -14,18 +18,38 @@ fn priority_stop_revokes_buffered_play_before_installation() {
         hex_engine::audio_storage_constructor_layout_supported(),
         "this regression requires the real sealed-source constructor"
     );
-    first_play(false, true);
+    first_play(false, true, false);
 }
-fn first_play(grouped: bool, stop_pending: bool) {
+fn first_play(grouped: bool, stop_pending: bool, limiter: bool) {
     let _serial = serial();
     if !hex_engine::audio_storage_constructor_layout_supported() {
         return;
     }
     let (project, _) = utility_fixture::project();
+    let project = if limiter {
+        project_with_frames(1024)
+    } else {
+        project
+    };
     let mut snapshot = project.snapshot();
     snapshot.tracks[0].devices.clear();
     let project = hex_project::Project::from_snapshot(snapshot).unwrap();
-    let project = if grouped {
+    let project = if limiter {
+        let mut editor = hex_project::Editor::new(project, 8).unwrap();
+        let track = editor.project().tracks()[0].id();
+        let state = hex_engine::default_native_device_state(hex_engine::DeviceTypeId::from_static(
+            "hex.limiter",
+        ))
+        .unwrap();
+        editor
+            .execute(hex_project::Command::InsertDevice {
+                track,
+                before: None,
+                state,
+            })
+            .unwrap();
+        editor.project().clone()
+    } else if grouped {
         let mut editor = hex_project::Editor::new(project, 8).unwrap();
         let track = editor.project().tracks()[0].id();
         let hex_project::Created::Track(group) = editor
@@ -48,9 +72,18 @@ fn first_play(grouped: bool, stop_pending: bool) {
         project
     };
     let asset = project.assets().next().unwrap().id();
-    let wav = stream_fixture::Wav::new();
+    let wav = if limiter {
+        stream_fixture::Wav::with_frames(1024)
+    } else {
+        stream_fixture::Wav::new()
+    };
     let definition = wav.definition(asset, 11);
-    let mut owner = stream_fixture::owner_with_context(
+    let make_owner = if limiter {
+        stream_fixture::owner_with_effects
+    } else {
+        stream_fixture::owner_with_context
+    };
+    let mut owner = make_owner(
         &project,
         definition.metadata.clone(),
         Some(hex_engine::AudioSourceContext {
@@ -222,16 +255,42 @@ fn first_play(grouped: bool, stop_pending: bool) {
             std::thread::yield_now();
         }
     }
-    assert_eq!(output, [[if grouped { 0.125 } else { 0.25 }; 2]; 8]);
-    assert_eq!(control.status.position.load(Acquire), 8);
-    assert_eq!(control.status.performance_frame.load(Acquire), 8);
+    if limiter {
+        while output.iter().all(|frame| frame[0] == 0.0) {
+            let measured = allocation_counter::measure(|| {
+                data.owner_mut().unwrap().run(|callback, _| {
+                    callback.begin_block();
+                    callback.render(&mut output).unwrap();
+                });
+            });
+            assert_eq!(
+                (
+                    measured.count_total,
+                    measured.bytes_total,
+                    measured.count_current,
+                    measured.bytes_current
+                ),
+                (0, 0, 0, 0)
+            );
+            assert!(control.status.position.load(Acquire) < 1024);
+        }
+        assert!(
+            output
+                .iter()
+                .all(|frame| frame[0] >= 0.0 && frame[0] <= 0.25)
+        );
+    } else {
+        assert_eq!(output, [[if grouped { 0.125 } else { 0.25 }; 2]; 8]);
+        assert_eq!(control.status.position.load(Acquire), 8);
+        assert_eq!(control.status.performance_frame.load(Acquire), 8);
+    }
     assert_eq!(
         control.status.stream_applied_command_prefix.load(Acquire),
         play
     );
     assert!(!control.status.stream_buffering.load(Acquire));
-    if grouped {
-        let successor = stream_fixture::owner_with_context(
+    if grouped || limiter {
+        let successor = make_owner(
             &project,
             wav.definition(asset, 11).metadata,
             Some(hex_engine::AudioSourceContext {
@@ -269,6 +328,12 @@ fn first_play(grouped: bool, stop_pending: bool) {
             assert!(std::time::Instant::now() < deadline);
             std::thread::yield_now();
         }
+        if limiter {
+            assert!(
+                output.iter().any(|frame| frame[0] > 0.0),
+                "handoff retains Limiter history"
+            );
+        }
         control.reclaim();
         let retired = recover(&mut control, &ticket);
         assert_eq!(retired.disposed.identity(), id);
@@ -298,7 +363,9 @@ fn first_play(grouped: bool, stop_pending: bool) {
             assert!(std::time::Instant::now() < deadline);
             std::thread::yield_now();
         }
-        assert_eq!(output, [[0.125; 2]; 8]);
+        if !limiter {
+            assert_eq!(output, [[0.125; 2]; 8]);
+        }
     }
     let mut retirement = std::thread::spawn(move || {
         let mut backend = Some(());

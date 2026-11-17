@@ -120,6 +120,21 @@ pub(super) fn owner_sources(
     sources: Vec<StreamedSourceMetadata>,
     context: Option<hex_engine::AudioSourceContext>,
 ) -> hex_engine::AudioCandidateOwner {
+    owner_sources_impl(project, sources, context, false)
+}
+pub(super) fn owner_with_effects(
+    project: &hex_project::Project,
+    metadata: StreamedSourceMetadata,
+    context: Option<hex_engine::AudioSourceContext>,
+) -> hex_engine::AudioCandidateOwner {
+    owner_sources_impl(project, vec![metadata], context, true)
+}
+fn owner_sources_impl(
+    project: &hex_project::Project,
+    sources: Vec<StreamedSourceMetadata>,
+    context: Option<hex_engine::AudioSourceContext>,
+    with_effects: bool,
+) -> hex_engine::AudioCandidateOwner {
     let sources = sources
         .into_iter()
         .map(|metadata| {
@@ -147,6 +162,10 @@ pub(super) fn owner_sources(
     let mut custody = hex_engine::AudioPreparationCustody::try_new_on_control().unwrap();
     let mut input =
         hex_engine::AudioArrangementInput::new(project, 11, bank).with_audio_prepared_revision();
+    let registry = hex_devices::native_registry().unwrap();
+    if with_effects {
+        input = input.with_effect_registry(&registry);
+    }
     if let Some(context) = context {
         input = input.with_source_context(context);
     }
