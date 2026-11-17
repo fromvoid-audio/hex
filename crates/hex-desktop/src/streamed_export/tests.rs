@@ -417,26 +417,31 @@ fn scalar_offline_capture_refuses_before_source_resolution() {
 
 #[test]
 fn history_seek_replays_verified_pages_and_effect_history() {
-    std::thread::Builder::new()
-        .stack_size(8 * 1024 * 1024)
-        .spawn(|| history_seek_case(None))
-        .unwrap()
-        .join()
-        .unwrap();
+    run_history_seek(None);
 }
 
 #[test]
 fn granular_history_seek_replays_tones_pages_and_effect_history() {
-    history_seek_case(Some(hex_project::WarpMode::Tones { grain_ms: 32 }));
+    run_history_seek(Some(hex_project::WarpMode::Tones { grain_ms: 32 }));
 }
 #[test]
 fn granular_history_seek_replays_texture_pages_and_effect_history() {
-    history_seek_case(Some(hex_project::WarpMode::Texture {
+    run_history_seek(Some(hex_project::WarpMode::Texture {
         grain_ms: 32,
         fluctuation: 35,
         seed: 42,
     }));
 }
+
+fn run_history_seek(mode: Option<hex_project::WarpMode>) {
+    std::thread::Builder::new()
+        .stack_size(8 * 1024 * 1024)
+        .spawn(move || history_seek_case(mode))
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
 fn history_seek_case(mode: Option<hex_project::WarpMode>) {
     use hex_engine::native_device_resources::{PreparedDeviceResources, ResidentDeviceAssets};
     use hex_session::arrangement_seek::{ArrangementSeekMode, ArrangementSeekSpec};
