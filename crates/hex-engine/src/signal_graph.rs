@@ -1,5 +1,6 @@
 //! Typed production signal topology and control-prepared compensation ownership.
 use crate::{Frame, Invalid, Project, Track, compensation::*};
+mod append_latency;
 mod latency_observation;
 mod legacy;
 #[cfg(feature = "instrument-test-support")]
