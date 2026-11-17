@@ -1013,7 +1013,8 @@ impl EditorView {
             .child(self.controller_input_settings(cx));
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         {
-            card = card.child(self.vst3_editor_settings_row(cx));
+            let row = self.vst3_editor_settings_row(cx);
+            card = card.child(row);
         }
         card = card
             .child(div().text_sm().child(theme::text("theme colors")))

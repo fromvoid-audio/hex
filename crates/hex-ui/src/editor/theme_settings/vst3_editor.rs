@@ -137,13 +137,13 @@ impl EditorView {
             "restart hex to apply changes"
         };
         let mut row = div().flex().items_center().gap(px(8.0));
-        if let Some((toggle, _)) = &state.toggle {
-            toggle.update(cx, |toggle, cx| {
+        if let Some((entity, _)) = &state.toggle {
+            entity.update(cx, |toggle, cx| {
                 let _ = toggle.set_external_style(style, cx);
                 toggle.set_checked(checked, cx);
                 toggle.set_enabled(state.preferences.is_some() && !state.saving, cx);
             });
-            row = row.child(toggle.clone());
+            row = row.child(entity.clone());
         }
         row.child(
             div()
@@ -151,7 +151,7 @@ impl EditorView {
                 .debug_selector(|| "vst3 editor settings status".into())
                 .text_xs()
                 .text_color(rgb(style.muted))
-                .child(theme::text(status.to_owned())),
+                .child(theme::text(status)),
         )
     }
 }
