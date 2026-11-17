@@ -50,6 +50,9 @@ impl VerifiedGranularCursor {
             seeking: None,
         })
     }
+    pub(crate) fn source_metadata(&self) -> &hex_engine::StreamedSourceMetadata {
+        self.reference.metadata()
+    }
     pub fn position(&self) -> u64 {
         self.renderer.position()
     }
