@@ -584,6 +584,13 @@ mod tests {
             }
         }
         impl OfflineBounceSource for Owner {
+            fn finalize_on_control(
+                &mut self,
+                _: &PreparedRevision,
+                _: &ExportControl,
+            ) -> Result<(), String> {
+                Err("not prepared by dispatch test".into())
+            }
             fn retained_data_bytes(&self) -> usize {
                 32
             }
