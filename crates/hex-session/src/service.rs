@@ -71,9 +71,10 @@ mod streamed_export;
 pub use streamed_export::{StreamedExportRequest, StreamedExporter};
 mod clip_audition;
 pub use clip_audition::{
-    ArrangementMoveAudition, ArrangementMoveDestination, ArrangementMoveMode,
-    ArrangementPlayStartAudition, ArrangementStretchAudition, ClipMovePreviewDestination,
-    ClipMovePreviewIdentity, NewTrackMoveDestination, PlayStartEdit, VerifiedClipMoveUpdate,
+    ArrangementGainAudition, ArrangementMoveAudition, ArrangementMoveDestination,
+    ArrangementMoveMode, ArrangementPlayStartAudition, ArrangementStretchAudition,
+    ClipMovePreviewDestination, ClipMovePreviewIdentity, GainEdit, NewTrackMoveDestination,
+    PlayStartEdit, VerifiedClipMoveUpdate,
 };
 mod publication_wait;
 mod resident_audio;
@@ -1997,6 +1998,28 @@ impl Service {
     pub fn retire_arrangement_play_start_audition(&self) {
         self.clip_audition
             .clear(Some(clip_audition::Kind::PlayStart), false);
+    }
+
+    /// Replace only the latest held gain target. The worker coalesces pointer
+    /// values before preparation, and the preview does not enter history.
+    pub fn audition_arrangement_gain(&self, target: Option<ArrangementGainAudition>) {
+        match target {
+            Some(target) if target.edit.valid() => {
+                self.clip_audition.set(clip_audition::Target::Gain(target));
+            }
+            _ => self
+                .clip_audition
+                .clear(Some(clip_audition::Kind::Gain), true),
+        }
+    }
+
+    pub fn finish_arrangement_gain_audition(&self) {
+        self.clip_audition.release(clip_audition::Kind::Gain);
+    }
+
+    pub fn retire_arrangement_gain_audition(&self) {
+        self.clip_audition
+            .clear(Some(clip_audition::Kind::Gain), false);
     }
 
     /// Replace the complete held group target. An invalid target cancels the

@@ -396,6 +396,7 @@ pub enum ResidentSourceOrigin {
     ClipMovePreview,
     ClipStretchPreview,
     ClipPlayStartPreview,
+    ClipGainPreview,
 }
 
 /// Scalar identity for one worker-private ordinary resident graph. Neither preview correlation
