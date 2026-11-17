@@ -1779,6 +1779,15 @@ fn verified_repitch_edit_commits_and_survives_undo_redo_without_resident_pcm() {
 
 #[test]
 fn verified_stream_and_builtin_effect_share_candidate_reservation() {
+    verified_stream_and_effect_share_candidate_reservation(false);
+}
+
+#[test]
+fn verified_stream_and_limiter_share_candidate_reservation() {
+    verified_stream_and_effect_share_candidate_reservation(true);
+}
+
+fn verified_stream_and_effect_share_candidate_reservation(limiter: bool) {
     let files = Files::new();
     let source = files.wav("saturator.wav", 16_000, 8_000, 1024);
     let service = Service::new(16_000, 16, 0).unwrap();
@@ -1814,18 +1823,28 @@ fn verified_stream_and_builtin_effect_share_candidate_reservation() {
             settings: Some(warp),
         }),
     );
-    let saturator = hex_engine::default_native_device_state_for_class(
+    let effect = hex_engine::default_native_device_state_for_class(
         hex_engine::NativeDeviceClass::Effect,
-        hex_engine::DeviceTypeId::from_static("hex.saturator"),
+        hex_engine::DeviceTypeId::from_static(if limiter {
+            "hex.limiter"
+        } else {
+            "hex.saturator"
+        }),
     )
     .unwrap();
-    let edited = run(
-        &service,
-        Request::Edit(Command::InsertMainDevice {
+    let command = if limiter {
+        Command::InsertDevice {
+            track: neutral.state.project.tracks()[0].id(),
             before: None,
-            state: saturator,
-        }),
-    );
+            state: effect,
+        }
+    } else {
+        Command::InsertMainDevice {
+            before: None,
+            state: effect,
+        }
+    };
+    let edited = run(&service, Request::Edit(command));
     let snapshot = edited.state.canonical_audio_source.as_ref().unwrap();
     let AudioSourceBinding::VerifiedFile(file) = snapshot.sources().get(&asset).unwrap() else {
         panic!("verified source")
