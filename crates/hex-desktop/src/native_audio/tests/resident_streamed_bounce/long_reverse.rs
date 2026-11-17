@@ -2,13 +2,14 @@
 use super::*;
 use crate::native_audio::tests::resident_export::completed;
 use hex_export::{ExportControl, ExportFormat};
-use hex_project::Command;
+use hex_project::{Command, Created};
 use hex_session::service::ExportSignal;
-use std::io::{Seek, SeekFrom, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 
 const LONG_FRAMES: u64 = 20_000_000;
 const TAIL_FRAMES: u64 = 8192;
 const RANGE_FRAMES: u64 = 512;
+const WAV_HEADER_BYTES: usize = 44;
 
 #[derive(Clone, Copy)]
 enum Output {
@@ -30,7 +31,7 @@ fn compare(output: Output) {
     let _native = native_fixture();
     let files = Files::new();
     let short = files.constant_wav("resident.wav", 48_000, TAIL_FRAMES as u32, &[0]);
-    let long = super::super::granular_playback::long_source_at_rate(&files, 48_000);
+    let long = files.constant_wav("streamed.wav", 48_000, 1, &[0]);
     let ramp: Vec<i16> = (0..TAIL_FRAMES)
         .map(|frame| frame as i16 * 3 - 12_000)
         .collect();
@@ -38,12 +39,32 @@ fn compare(output: Output) {
         .iter()
         .flat_map(|sample| sample.to_le_bytes())
         .collect();
-    for (path, frames) in [(&short, TAIL_FRAMES), (&long, LONG_FRAMES)] {
-        let mut wav = fs::OpenOptions::new().write(true).open(path).unwrap();
-        wav.seek(SeekFrom::Start(44 + (frames - TAIL_FRAMES) * 2))
+    let header = {
+        let mut wav = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&long)
             .unwrap();
+        let mut header = [0; WAV_HEADER_BYTES];
+        wav.read_exact(&mut header).unwrap();
+        let data_bytes = (LONG_FRAMES * 2) as u32;
+        header[4..8].copy_from_slice(&(data_bytes + 36).to_le_bytes());
+        header[40..44].copy_from_slice(&data_bytes.to_le_bytes());
+        wav.rewind().unwrap();
+        wav.write_all(&header).unwrap();
+        wav.seek(SeekFrom::Start(
+            WAV_HEADER_BYTES as u64 + (LONG_FRAMES - TAIL_FRAMES) * 2,
+        ))
+        .unwrap();
         wav.write_all(&bytes).unwrap();
-    }
+        header
+    };
+    let mut resident_file = fs::OpenOptions::new().write(true).open(&short).unwrap();
+    resident_file
+        .seek(SeekFrom::Start(WAV_HEADER_BYTES as u64))
+        .unwrap();
+    resident_file.write_all(&bytes).unwrap();
+    drop(resident_file);
 
     let page = hex_engine::STREAM_PAGE_FRAMES as u64;
     let start = LONG_FRAMES % page - RANGE_FRAMES / 2;
@@ -58,15 +79,60 @@ fn compare(output: Output) {
         .take(RANGE_FRAMES as usize)
         .map(|sample| [f32::from(*sample) / 32_768.0; 2])
         .collect();
-    let resident = render(&short, start, false, output);
-    let streamed = render(&long, start, true, output);
+    let resident = render_resident(&short, start);
+    let streamed = render_streamed(&long, start, output);
     assert_eq!(resident.len(), RANGE_FRAMES as usize);
     assert_eq!(streamed.len(), RANGE_FRAMES as usize);
     assert_matches(&resident, &oracle, "resident reverse source frame oracle");
     assert_matches(&streamed, &resident, "streamed reverse");
+    assert_original_bytes(&long, &header, &bytes);
 }
 
-fn render(path: &Path, start: u64, streamed: bool, output: Output) -> Vec<hex_engine::Frame> {
+fn render_resident(path: &Path, start: u64) -> Vec<hex_engine::Frame> {
+    let mut session = hex_session::Session::new(48_000, 1, 65_536).unwrap();
+    let decoded = hex_media::decode_wav_file(
+        path,
+        hex_media::Limits::new(64 * 1024, TAIL_FRAMES as usize),
+    )
+    .unwrap();
+    let prepared = hex_session::PreparedImport::new(decoded).unwrap();
+    let Created::Imported { clip, .. } = session.import(prepared).unwrap() else {
+        panic!("resident fixture must have a clip");
+    };
+    let (_, project) = session
+        .command_prepared(Command::ReverseClips(vec![clip]))
+        .unwrap();
+    let mut playback = hex_engine::playback::Playback::new(project);
+    playback.apply(PlaybackCommand::PlayFrom(start));
+    let mut pcm = vec![[0.0; 2]; RANGE_FRAMES as usize];
+    playback.render(&mut pcm).unwrap();
+    pcm
+}
+
+fn assert_original_bytes(path: &Path, header: &[u8], tail: &[u8]) {
+    let mut wav = fs::File::open(path).unwrap();
+    assert_eq!(
+        wav.metadata().unwrap().len(),
+        WAV_HEADER_BYTES as u64 + LONG_FRAMES * 2
+    );
+    let mut actual_header = [0; WAV_HEADER_BYTES];
+    wav.read_exact(&mut actual_header).unwrap();
+    assert_eq!(actual_header, header);
+    let zeroes = [0; 65_536];
+    let mut block = [0; 65_536];
+    let mut remaining = (LONG_FRAMES - TAIL_FRAMES) * 2;
+    while remaining != 0 {
+        let frames = remaining.min(block.len() as u64) as usize;
+        wav.read_exact(&mut block[..frames]).unwrap();
+        assert_eq!(block[..frames], zeroes[..frames]);
+        remaining -= frames as u64;
+    }
+    let mut actual_tail = vec![0; tail.len()];
+    wav.read_exact(&mut actual_tail).unwrap();
+    assert_eq!(actual_tail, tail);
+}
+
+fn render_streamed(path: &Path, start: u64, output: Output) -> Vec<hex_engine::Frame> {
     let mut h = ResidentHarness::with_frame_limit_at_rate(65_536, 48_000);
     h.next();
     let (applied, _) = h.applied(0);
@@ -80,29 +146,25 @@ fn render(path: &Path, start: u64, streamed: bool, output: Output) -> Vec<hex_en
     let clip = &track.clips()[0];
     let asset = clip.asset();
     let context = imported.state.canonical_audio_source.as_ref().unwrap();
-    let fingerprint = match &context.sources()[&asset] {
-        AudioSourceBinding::VerifiedFile(file) => Some(*file.fingerprint()),
-        AudioSourceBinding::Resident(_) => None,
+    let AudioSourceBinding::VerifiedFile(original) = &context.sources()[&asset] else {
+        panic!("long source must remain file-backed");
     };
-    assert_eq!(fingerprint.is_some(), streamed);
     let reversed = h.run(Request::Edit(Command::ReverseClips(vec![clip.id()])));
     let source = reversed.state.canonical_audio_source.as_ref().unwrap();
-    if let Some(fingerprint) = fingerprint {
-        let AudioSourceBinding::VerifiedFile(file) = &source.sources()[&asset] else {
-            panic!("reversed clip must remain file-backed");
-        };
-        assert_eq!(*file.fingerprint(), fingerprint);
-        assert_eq!(
-            source
-                .candidate_reservation_quote()
-                .unwrap()
-                .prepared_pcm_frames,
-            0
-        );
-    }
+    let AudioSourceBinding::VerifiedFile(file) = &source.sources()[&asset] else {
+        panic!("reversed clip must remain file-backed");
+    };
+    assert_eq!(file.fingerprint(), original.fingerprint());
+    assert_eq!(
+        source
+            .candidate_reservation_quote()
+            .unwrap()
+            .prepared_pcm_frames,
+        0
+    );
     let (applied, _) = h.applied(applied);
 
-    let pcm = match output {
+    match output {
         Output::Export => {
             let destination = path.with_extension("export.wav");
             let queued = h.run(Request::ExportRange {
@@ -136,12 +198,5 @@ fn render(path: &Path, start: u64, streamed: bool, output: Output) -> Vec<hex_en
             assert!(undone.state.project.asset(new_asset).is_none());
             pcm
         }
-    };
-    if let Some(fingerprint) = fingerprint {
-        let actual =
-            hex_media::VerifiedWavReader::open(path, AudioPolicy::source_reservation().reader)
-                .unwrap();
-        assert_eq!(*actual.fingerprint(), fingerprint);
     }
-    pcm
 }
