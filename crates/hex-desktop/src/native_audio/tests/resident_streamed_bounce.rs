@@ -175,6 +175,21 @@ fn streamed_clip_bounces_match_source_while_playing_and_changed_media_refuses() 
 
 #[test]
 fn long_streamed_repitch_bounce_matches_resident_prefix() {
+    long_warp_bounce(hex_project::WarpMode::RePitch);
+}
+#[test]
+fn long_streamed_tones_bounce_matches_resident_prefix() {
+    long_warp_bounce(hex_project::WarpMode::Tones { grain_ms: 32 });
+}
+#[test]
+fn long_streamed_texture_bounce_matches_resident_prefix() {
+    long_warp_bounce(hex_project::WarpMode::Texture {
+        grain_ms: 32,
+        fluctuation: 35,
+        seed: 42,
+    });
+}
+fn long_warp_bounce(mode: hex_project::WarpMode) {
     use std::io::Write;
     let _native = native_fixture();
     let files = Files::new();
@@ -196,7 +211,7 @@ fn long_streamed_repitch_bounce_matches_resident_prefix() {
         file.write_all(&prefix).unwrap();
         file.set_len(44 + u64::from(frames)).unwrap();
     }
-    fn render(path: &Path, streamed: bool) -> Vec<hex_engine::Frame> {
+    fn render(path: &Path, streamed: bool, mode: hex_project::WarpMode) -> Vec<hex_engine::Frame> {
         let mut h = ResidentHarness::with_frame_limit(65_536);
         h.next();
         let (mut applied, _) = h.applied(0);
@@ -226,7 +241,7 @@ fn long_streamed_repitch_bounce_matches_resident_prefix() {
         let warp = hex_project::default_audio_warp(
             neutral.state.project.clip(clip).unwrap(),
             neutral.state.project.tempo_map(),
-            hex_project::WarpMode::RePitch,
+            mode,
         )
         .unwrap();
         h.run(Request::Edit(hex_project::Command::SetAudioClipWarp {
@@ -266,9 +281,9 @@ fn long_streamed_repitch_bounce_matches_resident_prefix() {
     let long = files.0.join("long.wav");
     source(&short, 8192);
     source(&long, 20_000_000);
-    let expected = render(&short, false);
-    let actual = render(&long, true);
-    assert_matches(&actual, &expected, "repitch bounce");
+    let expected = render(&short, false, mode);
+    let actual = render(&long, true, mode);
+    assert_matches(&actual, &expected, "warp bounce");
 }
 
 #[test]

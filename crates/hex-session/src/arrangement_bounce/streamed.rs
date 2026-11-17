@@ -25,6 +25,7 @@ pub struct StreamedBounceRequest<'a> {
     pub(crate) resources: Option<&'a PreparedDeviceResources>,
     pub(crate) files: &'a BTreeMap<AssetId, VerifiedAudioFile>,
     pub(crate) repitches: &'a [hex_engine::audio_transform::StreamedRepitchRequirement],
+    pub(crate) granulars: &'a [hex_engine::audio_transform::StreamedGranularRequirement],
     pub(crate) path: &'a Path,
     pub(crate) start: u64,
     pub(crate) frames: u64,
@@ -47,6 +48,10 @@ impl StreamedBounceRequest<'_> {
     /// Exact file-backed Re-Pitch maps captured with the isolated revision.
     pub fn repitches(&self) -> &[hex_engine::audio_transform::StreamedRepitchRequirement] {
         self.repitches
+    }
+    /// Exact granular roots retained with the isolated ordinary revision.
+    pub fn granulars(&self) -> &[hex_engine::audio_transform::StreamedGranularRequirement] {
+        self.granulars
     }
     pub fn path(&self) -> &Path {
         self.path
@@ -119,6 +124,10 @@ pub(crate) fn render(
                     .file_sources
                     .as_ref()
                     .map_or(&[], |files| files.repitches().requirements()),
+                granulars: revision
+                    .file_sources
+                    .as_ref()
+                    .map_or(&[], |files| files.granulars().requirements()),
                 path,
                 start,
                 frames,

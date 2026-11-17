@@ -139,6 +139,7 @@ fn pitched_and_raw_file_pages_case() {
             &revision,
             |_| Ok(&file),
             &[],
+            GranularCapture::Captured(&[]),
             Some(&path),
             config,
             &cancelled
@@ -154,15 +155,23 @@ fn pitched_and_raw_file_pages_case() {
                 Ok(&file)
             },
             &[],
+            GranularCapture::Captured(&[]),
             None,
             config,
             &cancelled
         )
         .is_err()
     );
-    let mut pages =
-        VerifiedPages::capture_files(&revision, |_| Ok(&file), &[], None, config, &cancelled)
-            .unwrap();
+    let mut pages = VerifiedPages::capture_files(
+        &revision,
+        |_| Ok(&file),
+        &[],
+        GranularCapture::Captured(&[]),
+        None,
+        config,
+        &cancelled,
+    )
+    .unwrap();
     assert_eq!(pages.files.len(), 2);
     for start in [0, FRAMES as u64] {
         let mut actual =
@@ -242,14 +251,23 @@ fn pitched_and_raw_file_pages_case() {
         .unwrap();
     let requirements = [requirement];
     assert!(
-        VerifiedPages::capture_files(&repitched, |_| Ok(&file), &[], None, config, &cancelled)
-            .is_err()
+        VerifiedPages::capture_files(
+            &repitched,
+            |_| Ok(&file),
+            &[],
+            GranularCapture::Captured(&[]),
+            None,
+            config,
+            &cancelled
+        )
+        .is_err()
     );
     assert!(
         VerifiedPages::capture_files(
             &repitched,
             |_| Ok(&other),
             &requirements,
+            GranularCapture::Captured(&[]),
             None,
             config,
             &cancelled
@@ -274,6 +292,7 @@ fn pitched_and_raw_file_pages_case() {
             &repitched,
             |_| Ok(&file),
             &[changed_requirement],
+            GranularCapture::Captured(&[]),
             None,
             config,
             &cancelled
@@ -287,6 +306,7 @@ fn pitched_and_raw_file_pages_case() {
             &repitched,
             |_| Ok(&file),
             &requirements,
+            GranularCapture::Captured(&[]),
             None,
             no_map_budget,
             &cancelled
@@ -297,6 +317,7 @@ fn pitched_and_raw_file_pages_case() {
         &repitched,
         |_| Ok(&file),
         &requirements,
+        GranularCapture::Captured(&[]),
         None,
         config,
         &cancelled,
@@ -380,6 +401,7 @@ fn scalar_offline_capture_refuses_before_source_resolution() {
             Err(ExportError::Invalid("unexpected source resolution"))
         },
         &[],
+        GranularCapture::Captured(&[]),
         None,
         StreamConfig::with_pool_pages(3),
         &AtomicBool::new(false),
@@ -397,19 +419,36 @@ fn scalar_offline_capture_refuses_before_source_resolution() {
 fn history_seek_replays_verified_pages_and_effect_history() {
     std::thread::Builder::new()
         .stack_size(8 * 1024 * 1024)
-        .spawn(history_seek_case)
+        .spawn(|| history_seek_case(None))
         .unwrap()
         .join()
         .unwrap();
 }
 
-fn history_seek_case() {
+#[test]
+fn granular_history_seek_replays_tones_pages_and_effect_history() {
+    history_seek_case(Some(hex_project::WarpMode::Tones { grain_ms: 32 }));
+}
+#[test]
+fn granular_history_seek_replays_texture_pages_and_effect_history() {
+    history_seek_case(Some(hex_project::WarpMode::Texture {
+        grain_ms: 32,
+        fluctuation: 35,
+        seed: 42,
+    }));
+}
+fn history_seek_case(mode: Option<hex_project::WarpMode>) {
     use hex_engine::native_device_resources::{PreparedDeviceResources, ResidentDeviceAssets};
     use hex_session::arrangement_seek::{ArrangementSeekMode, ArrangementSeekSpec};
     use hex_session::device_gesture::{ParameterId, ParameterValue};
     use std::collections::BTreeMap;
     let cancelled = AtomicBool::new(false);
-    let path = std::env::temp_dir().join(format!("hex-history-pages-{}.wav", std::process::id()));
+    static NEXT_HISTORY: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let path = std::env::temp_dir().join(format!(
+        "hex-history-pages-{}-{}.wav",
+        std::process::id(),
+        NEXT_HISTORY.fetch_add(1, Ordering::Relaxed)
+    ));
     struct RemoveFile(std::path::PathBuf);
     impl Drop for RemoveFile {
         fn drop(&mut self) {
@@ -437,7 +476,7 @@ fn history_seek_case() {
     )
     .unwrap();
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
-    let Created::Imported { track, asset, .. } = editor
+    let Created::Imported { track, clip, asset } = editor
         .execute(Command::ImportAudioTrack {
             name: "verified".into(),
             path: path.clone(),
@@ -530,6 +569,27 @@ fn history_seek_case() {
             velocity: 100,
         })
         .unwrap();
+    if let Some(mode) = mode {
+        editor
+            .execute(Command::SetClipFades {
+                clip,
+                fade_in: 0,
+                fade_out: 0,
+            })
+            .unwrap();
+        let warp = hex_project::default_audio_warp(
+            editor.project().clip(clip).unwrap(),
+            editor.project().tempo_map(),
+            mode,
+        )
+        .unwrap();
+        editor
+            .execute(Command::SetAudioClipWarp {
+                clip,
+                settings: Some(warp),
+            })
+            .unwrap();
+    }
     let project = editor.project();
     let resources = PreparedDeviceResources::prepare_on_control(
         &ResidentDeviceAssets::default(),
@@ -544,10 +604,32 @@ fn history_seek_case() {
             file.source_metadata(asset, 1).unwrap(),
         )),
     )]);
+    let raw = file.source_metadata(asset, 1).unwrap();
+    let granular_requirements = if mode.is_some() {
+        vec![
+            hex_engine::audio_transform::StreamedGranularRequirement::new(
+                &raw,
+                project.clip(clip).unwrap().audio_edit().unwrap(),
+                project.tempo_map(),
+                &cancelled,
+            )
+            .unwrap(),
+        ]
+    } else {
+        Vec::new()
+    };
+    let derived = granular_requirements
+        .iter()
+        .map(|requirement| {
+            let metadata = requirement.metadata_for(&raw).unwrap();
+            (metadata.key(), Arc::new(metadata))
+        })
+        .collect();
     let revision = Arc::new(
-        hex_engine::PreparedRevision::prepare_with_prepared_audio_sources_and_device_resources(
+        hex_engine::PreparedRevision::prepare_with_prepared_pitch_sources_and_device_resources(
             project,
             &sources,
+            &derived,
             1,
             Arc::new(hex_engine::SineTable::new()),
             None,
@@ -602,6 +684,7 @@ fn history_seek_case() {
             },
             |_| Ok(&file),
             &[],
+            &granular_requirements,
             &cancelled,
         )
         .unwrap();
@@ -614,6 +697,7 @@ fn history_seek_case() {
             &revision,
             |_| Ok(&file),
             &[],
+            GranularCapture::Captured(&granular_requirements),
             None,
             StreamConfig::with_pool_pages(3),
             &cancelled,
@@ -660,6 +744,7 @@ fn history_seek_case() {
                 Ok(&file)
             },
             &[],
+            &[],
             &cancelled
         )
         .is_err()
@@ -672,6 +757,7 @@ fn history_seek_case() {
             context,
             |_| Ok(&file),
             &[],
+            &[],
             &AtomicBool::new(true)
         ),
         Err(hex_engine::ArrangementPrerollError::Cancelled)
@@ -683,6 +769,7 @@ fn history_seek_case() {
             context,
             |_| Err(ExportError::Invalid("fixture binding unavailable")),
             &[],
+            &[],
             &cancelled
         )
         .is_err()
@@ -691,7 +778,37 @@ fn history_seek_case() {
     // and the private page owner joins during control-side error unwinding.
     std::fs::write(&path, b"changed fixture").unwrap();
     assert!(
-        prepare_file_seek_runtime(&spec, &resources, context, |_| Ok(&file), &[], &cancelled)
-            .is_err()
+        prepare_file_seek_runtime(
+            &spec,
+            &resources,
+            context,
+            |_| Ok(&file),
+            &[],
+            &[],
+            &cancelled
+        )
+        .is_err()
     );
+    if mode.is_some() {
+        std::fs::remove_file(&path).unwrap();
+        let mut quoted = VerifiedPages::capture_files(
+            &revision,
+            |_| Ok(&file),
+            &[],
+            GranularCapture::Captured(&granular_requirements),
+            None,
+            StreamConfig::initial(),
+            &cancelled,
+        )
+        .unwrap();
+        let bytes = quoted.storage_bytes().unwrap();
+        assert!(
+            bytes > 32 * 1024 * 1024
+                && bytes < crate::audio_policy::GranularPolicy::initial().max_construction_bytes
+        );
+        assert!(
+            quoted.ensure_runtime(&cancelled, 1).is_err(),
+            "only runtime construction may discover missing source I/O"
+        );
+    }
 }
