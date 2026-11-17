@@ -1,12 +1,17 @@
 //! The latest held Arrangement clip edit. Scalar targets and bounded shared
 //! group selections stay on control/worker threads. Prepared PCM and publication
-//! stay with the resident overlay; preview and cancellation never edit history.
+//! stay with the corresponding playback owner; preview and cancellation never
+//! edit history.
 use super::*;
 use hex_project::ClipId;
 use std::{
     sync::Mutex,
     time::{Duration, Instant},
 };
+
+mod verified_gain;
+pub(super) use verified_gain::VerifiedGainLane;
+pub use verified_gain::{VerifiedArrangementGainSource, VerifiedArrangementGainUpdate};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ArrangementStretchAudition {
