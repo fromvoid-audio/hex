@@ -204,6 +204,117 @@ fn wait_for_audio(h: &Harness) {
 }
 
 #[test]
+fn verified_track_limiter_running_tempo_edit_preserves_beat_and_audio() {
+    let _native = native_fixture();
+    for partition in [1, 257] {
+        verified_limiter_tempo_case(partition);
+    }
+}
+
+fn verified_limiter_tempo_case(partition: usize) {
+    let files = Files::new();
+    let mut h = actual_native_harness();
+    h.wait = Duration::from_secs(3);
+    h.next();
+    h.open();
+    h.run(Request::NewWithAudioMode {
+        mode: DocumentAudioMode::VerifiedStreaming,
+        reservation: Some(AudioPolicy::source_reservation()),
+    });
+    h.open();
+    h.applied(h.context.unwrap());
+    let imported = h.run(Request::Import(files.wav(48_000, 100_000)));
+    assert!(matches!(
+        imported
+            .state
+            .canonical_audio_source
+            .as_ref()
+            .unwrap()
+            .required_sources()
+            .next()
+            .unwrap()
+            .1,
+        AudioSourceBinding::VerifiedFile(_)
+    ));
+    h.applied(h.context.unwrap());
+    let track = imported.state.project.tracks()[0].id();
+    let limiter = hex_engine::default_native_device_state_for_class(
+        hex_engine::NativeDeviceClass::Effect,
+        hex_engine::DeviceTypeId::from_static("hex.limiter"),
+    )
+    .unwrap();
+    h.run(Request::Edit(Command::InsertDevice {
+        track,
+        before: None,
+        state: limiter,
+    }));
+    let previous = h.applied(h.context.unwrap());
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    wait_for_audio(&h);
+    let old_tempo = imported.state.project.tempo_map().clone();
+    let edited = h.run(Request::Edit(Command::SetProjectTempo {
+        tempo: hex_project::Tempo::new(90_000_000).unwrap(),
+    }));
+    let target = h.context.unwrap();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let (before, after) = loop {
+        let status = h.audio.as_ref().unwrap().status().unwrap();
+        let old = status.applied_audio_source();
+        let before = status.position.load(Acquire);
+        let mut output = [[0.0; 2]; 257];
+        let mut backend = h.backend.lock().unwrap();
+        let measured = allocation_counter::measure(|| {
+            backend
+                .as_mut()
+                .unwrap()
+                .render(&mut output[..partition])
+                .unwrap();
+        });
+        assert_eq!(
+            (
+                measured.count_total,
+                measured.bytes_total,
+                measured.count_current,
+                measured.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        drop(backend);
+        let status = h.audio.as_ref().unwrap().status().unwrap();
+        if old.is_some_and(|source| source == previous)
+            && status
+                .applied_audio_source()
+                .is_some_and(|source| source.context == target)
+        {
+            break (before, status.position.load(Acquire));
+        }
+        assert!(
+            Instant::now() < deadline,
+            "verified tempo edit did not publish: {:?}",
+            status.rejected_revision()
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    };
+    let beat = old_tempo.frame_to_beat(before).unwrap();
+    let expected = edited
+        .state
+        .project
+        .tempo_map()
+        .beat_to_frame(beat)
+        .unwrap();
+    assert_eq!(after, expected + partition as u64, "partition {partition}");
+    let status = h.audio.as_ref().unwrap().status().unwrap();
+    assert!(status.playing.load(Acquire));
+    assert!(status.rejected_revision().is_none());
+    wait_for_audio(&h);
+}
+
+#[test]
 fn stopped_verified_stream_installs_main_saturator() {
     check_main_saturator(false);
 }
