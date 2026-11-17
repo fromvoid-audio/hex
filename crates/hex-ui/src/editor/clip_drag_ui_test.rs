@@ -2764,6 +2764,80 @@ fn check_shift_edge(cx: &mut TestAppContext, edge: hex_project::TrimEdge) {
 }
 
 #[gpui::test]
+fn shift_edge_stretches_a_long_warped_clip_to_the_painted_endpoint(cx: &mut TestAppContext) {
+    const SOURCE: u64 = 20_000_000;
+    let mut project = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+    let Created::Imported { clip, .. } = project
+        .execute(Command::ImportAudioTrack {
+            name: "long".into(),
+            path: "long.wav".into(),
+            sample_rate: 48_000,
+            frames: SOURCE,
+        })
+        .unwrap()
+    else {
+        panic!("fixture import");
+    };
+    project
+        .execute(Command::SetClipFades {
+            clip,
+            fade_in: 0,
+            fade_out: 0,
+        })
+        .unwrap();
+    let settings = hex_project::default_audio_warp(
+        project.project().clip(clip).unwrap(),
+        project.project().tempo_map(),
+        hex_project::WarpMode::Tones { grain_ms: 32 },
+    )
+    .unwrap();
+    project
+        .execute(Command::SetAudioClipWarp {
+            clip,
+            settings: Some(settings),
+        })
+        .unwrap();
+    let (handle, editor) = editor_window(cx, project.project().clone(), Arc::default());
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    editor.update(&mut visual, |view, cx| {
+        let state = Arc::get_mut(view.state.as_mut().unwrap()).unwrap();
+        state.timeline_frames = 32_000_000;
+        view.viewport = Some(super::viewport::Viewport {
+            start: 18_000_000,
+            length: 6_000_000,
+        });
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let selector = Box::leak(format!("clip-trim-right-{}", clip.value()).into_boxed_str());
+    let down = visual.debug_bounds(selector).unwrap().center();
+    let end = point(down.x + px(80.0), down.y);
+    let shift = Modifiers {
+        shift: true,
+        ..Modifiers::default()
+    };
+    visual.simulate_mouse_down(down, MouseButton::Left, shift);
+    visual.simulate_mouse_move(end, MouseButton::Left, shift);
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("trim-live-preview").is_some());
+    let painted = editor.read_with(&visual, |view, _| {
+        let drag = view.active_trim_drag.as_ref().unwrap();
+        let preview = drag.preview.borrow();
+        let preview = &preview.as_ref().unwrap().clip;
+        assert!(preview.duration() > SOURCE);
+        preview.clone()
+    });
+    visual.simulate_mouse_up(end, MouseButton::Left, shift);
+    let command = editor.read_with(&visual, |view, _| view.last_enqueued_edit.clone().unwrap());
+    assert!(matches!(
+        command,
+        Command::StretchAudioClipEdge { clip: id, .. } if id == clip
+    ));
+    project.execute(command).unwrap();
+    assert_eq!(project.project().clip(clip), Some(&painted));
+}
+
+#[gpui::test]
 fn shift_edge_stretch_escape_and_focus_loss_cancel_without_release_edit(cx: &mut TestAppContext) {
     cx.update(super::bind_editor_keys);
     for cancel in [0, 1, 2] {
