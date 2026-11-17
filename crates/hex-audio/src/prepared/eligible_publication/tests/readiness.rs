@@ -29,6 +29,10 @@ fn return_feed_limiter_buffers_and_handoffs_without_callback_allocations() {
     first_play(false, false, true, false, true);
 }
 #[test]
+fn grouped_return_feed_buffers_and_handoffs_without_callback_allocations() {
+    first_play(true, false, true, false, true);
+}
+#[test]
 fn priority_stop_revokes_buffered_play_before_installation() {
     assert!(
         hex_engine::audio_storage_constructor_layout_supported(),
