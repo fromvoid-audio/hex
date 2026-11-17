@@ -1166,6 +1166,32 @@ class FreshTargetReservation:
 
 
 class LocalCiRunner:
+    def _git_scope_error(self) -> str | None:
+        """Check supplied qualifying Git scope independently of its own hash.
+
+        Planner selection and Cargo metadata authentication are separate checks.
+        """
+        if self.plan is None or self.plan.get("qualifies_merge") is not True:
+            return None
+        try:
+            base, source = self.plan.get("base"), self.plan.get("source")
+            if any(not isinstance(sha, str) or re.fullmatch(r"[0-9a-f]{40}", sha) is None
+                   for sha in (base, source)):
+                return "qualifying Git scope requires canonical base and source commits"
+            for sha in (base, source):
+                if ci_plan.git(self.root, "rev-parse", "--verify", sha + "^{commit}", env=self.env).decode().strip() != sha:
+                    return "qualifying Git scope commit differs"
+            if subprocess.run(["git", "merge-base", "--is-ancestor", base, source],
+                              cwd=self.root, env=self.env, capture_output=True).returncode != 0:
+                return "qualifying Git scope base is not an ancestor of source"
+            tree = ci_plan.git(self.root, "rev-parse", source + "^{tree}", env=self.env).decode().strip()
+            paths = ci_plan.changed_paths(self.root, base, source, env=self.env)
+            if not paths or self.plan.get("tree") != tree or self.plan.get("paths") != paths:
+                return "qualifying Git scope tree or changed paths differ from source"
+        except (OSError, ValueError, subprocess.SubprocessError) as error:
+            return f"cannot authenticate qualifying Git scope: {error}"
+        return None
+
     def delivery_source_error(self) -> str | None:
         """Check this runner module, even when another import shares its name."""
         return delivery_source_error(self.root)
@@ -2921,6 +2947,9 @@ class LocalCiRunner:
                 self.summary["status"] = "failed"
                 self.summary["exit_code"] = 2
                 self.summary["metadata_error"] = "could not capture exact commit and dirty state"
+            elif (error := self._git_scope_error()) is not None:
+                self.summary.update(status="failed", verification_status="failed", exit_code=2,
+                                    git_scope_error=error)
             elif self.plan and self.plan.get("reuse") and (
                     self.summary["native_acceptance_opt_in"]
                     or self.plan["reuse"].get("native_acceptance_opt_in") is not False):

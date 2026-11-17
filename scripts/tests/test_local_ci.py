@@ -483,6 +483,46 @@ class ManualFixtureCleanupTests(unittest.TestCase):
         self.assertIs(local_ci.LocalCiRunner._step_sequence_error, original)
 
 
+class SuppliedGitScopeTests(unittest.TestCase):
+    def test_altered_git_scope_refuses_before_steps_or_target_access(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            env = {**os.environ, "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull}
+            def git(*args):
+                return subprocess.check_output(["git", *args], cwd=root, env=env, text=True).strip()
+            git("init", "-q")
+            (root / ".gitignore").write_text("artifacts/\n")
+            (root / "README.md").write_text("first\n")
+            git("add", ".")
+            git("-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "base")
+            base = git("rev-parse", "HEAD")
+            (root / "README.md").write_text("second\n")
+            git("add", ".")
+            git("-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "source")
+            plan = {"profile": "merge", "scope": "metadata", "qualifies_merge": True,
+                    "base": base, "source": git("rev-parse", "HEAD"),
+                    "tree": git("rev-parse", "HEAD^{tree}"), "paths": ["README.md"],
+                    "runtime_inputs": local_ci.ci_plan.runtime_inputs(root, env)}
+            matching = local_ci.LocalCiRunner(root, mode="merge", env=env, plan=plan, min_free_bytes=0)
+            with patch.dict(os.environ, {"GIT_DIR": str(root / "not-the-repository")}):
+                self.assertIsNone(matching._git_scope_error())
+            self.assertIsNone(local_ci.LocalCiRunner(root, mode="edit", env=env,
+                plan={"qualifies_merge": False}, steps=())._git_scope_error())
+            for field, value in (("paths", []), ("tree", "0" * 40), ("base", plan["source"])):
+                altered = {**plan, field: value}
+                altered.pop("plan_sha256", None)
+                altered["plan_sha256"] = hashlib.sha256(json.dumps(altered, sort_keys=True).encode()).hexdigest()
+                runner = local_ci.LocalCiRunner(root, mode="merge", env=env, plan=altered,
+                                                run_id=field, min_free_bytes=0)
+                with patch.object(runner, "_execution_policy_error", return_value=None), \
+                        patch.object(runner, "_run_step", side_effect=AssertionError("unvalidated steps executed")) as execute, \
+                        patch.object(runner, "_resolve_cargo_identity") as target:
+                    self.assertEqual(runner.run(), 2)
+                self.assertIn("git_scope_error", runner.summary)
+                execute.assert_not_called()
+                target.assert_not_called()
+
+
 class RunnerEnvironmentInputTests(unittest.TestCase):
     def test_qualifying_inputs_use_the_runner_git_environment(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -524,6 +564,7 @@ class RunnerEnvironmentInputTests(unittest.TestCase):
                         runner.summary["cargo_metadata_error"] = "fixture stopped before target"
                         return False
                     with patch.object(runner, "_execution_policy_error", return_value=None), \
+                            patch.object(runner, "_git_scope_error", return_value=None), \
                             patch.object(runner, "_resolve_cargo_identity", side_effect=stop_before_target) as identity, \
                             patch.object(runner, "_run_step") as execute:
                         self.assertEqual(runner.run(), 2)
@@ -724,6 +765,11 @@ class LocalCiRunnerTests(unittest.TestCase):
         self.step_sequence_patch = patch.object(local_ci.LocalCiRunner, "_step_sequence_error", return_value=None)
         self.step_sequence_patch.start()
         self.addCleanup(self.step_sequence_patch.stop)
+        # These pipeline fixtures use synthetic Git; scope authentication has
+        # its own real-repository regression above.
+        self.git_scope_patch = patch.object(local_ci.LocalCiRunner, "_git_scope_error", return_value=None)
+        self.git_scope_patch.start()
+        self.addCleanup(self.git_scope_patch.stop)
         self.temp = tempfile.TemporaryDirectory()
         # Ordinary fixtures use the same physical identity as the runner.
         # Tests for unsafe lexical aliases construct those paths explicitly.
