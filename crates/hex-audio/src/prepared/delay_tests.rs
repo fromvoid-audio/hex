@@ -599,6 +599,82 @@ fn solo_toggles(session: bool) {
 }
 
 #[test]
+fn changing_an_empty_track_with_a_send_preserves_compensated_callback_audio() {
+    for partition in [1, 257] {
+        let (mut editor, track, _) = editor_with_delay();
+        editor
+            .execute(Command::InsertDevice {
+                track,
+                before: None,
+                state: hex_devices::limiter::DEFINITION.default_state().unwrap(),
+            })
+            .unwrap();
+        let Created::ReturnTrack(bus) = editor
+            .execute(Command::AddReturnTrack { name: "bus".into() })
+            .unwrap()
+        else {
+            panic!("return");
+        };
+        editor
+            .execute(Command::SetReturnSend {
+                track,
+                return_track: bus,
+                gain: 0.5,
+            })
+            .unwrap();
+        let (mut control, mut callback) = channel(48_000).unwrap();
+        let (mut reference_control, mut reference) = channel(48_000).unwrap();
+        let original = graph(editor.project());
+        assert!(original.main_output_latency_frames() > 0);
+        control.publish(original).unwrap();
+        reference_control.publish(graph(editor.project())).unwrap();
+        control.command(PlaybackCommand::Play).unwrap();
+        reference_control.command(PlaybackCommand::Play).unwrap();
+
+        let mut output = [[0.0; 2]; 257];
+        let mut expected = output;
+        for _ in 0..8 {
+            block(&mut callback, &mut output);
+            block(&mut reference, &mut expected);
+        }
+        assert!(expected.iter().flatten().any(|v| v.abs() > 1e-6));
+        let Created::Track(empty) = editor
+            .execute(Command::AddTrack {
+                name: "empty".into(),
+            })
+            .unwrap()
+        else {
+            panic!("track");
+        };
+        editor
+            .execute(Command::SetReturnSend {
+                track: empty,
+                return_track: bus,
+                gain: 0.75,
+            })
+            .unwrap();
+        for removed in [false, true] {
+            if removed {
+                editor.execute(Command::RemoveTrack(empty)).unwrap();
+            }
+            let revision = control.publish(graph(editor.project())).unwrap();
+            for (actual, expected) in output
+                .chunks_mut(partition)
+                .zip(expected.chunks_mut(partition))
+            {
+                block(&mut callback, actual);
+                block(&mut reference, expected);
+                assert_eq!(actual, expected, "partition {partition}, removed {removed}");
+            }
+            assert_eq!(control.status.applied_revision.load(Acquire), revision);
+            assert!(control.status.rejected_revision().is_none());
+            assert!(control.status.playing.load(Acquire));
+            control.reclaim();
+        }
+    }
+}
+
+#[test]
 fn track_mix_edits_preserve_delay_history_under_new_gain_and_balance() {
     let (mut editor, track, _) = editor_with_delay();
     let (mut control, mut callback) = channel(48000).unwrap();

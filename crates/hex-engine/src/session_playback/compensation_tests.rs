@@ -1467,7 +1467,81 @@ fn removing_an_empty_track_keeps_compensated_pcm_continuous() {
 }
 
 #[test]
-fn adding_a_routed_empty_track_keeps_the_conservative_restart() {
+fn adding_and_removing_an_empty_track_with_a_send_keeps_compensated_pcm_continuous() {
+    use hex_project::{Command, Created};
+    for partition in [1, 257] {
+        let mut f = fixture(&[&[7], &[]], 1024);
+        for audio in f.media.values_mut() {
+            let frames = (0..1024)
+                .map(|frame| [frame as f32 / 1024.0, -0.25])
+                .collect();
+            *audio = Audio::new(48_000, frames).unwrap();
+        }
+        let Created::ReturnTrack(bus) = f
+            .editor
+            .execute(Command::AddReturnTrack { name: "bus".into() })
+            .unwrap()
+        else {
+            panic!("return");
+        };
+        f.editor
+            .execute(Command::SetReturnSend {
+                track: f.tracks[1],
+                return_track: bus,
+                gain: 0.5,
+            })
+            .unwrap();
+        let revision = prepare(&f).unwrap();
+        let mut old = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+        let mut reference = SessionPlayback::new(revision).unwrap();
+        for runtime in [&mut old, &mut reference] {
+            runtime.apply(SessionPlaybackCommand::Play).unwrap();
+            runtime.render(&mut [[0.0; 2]; 32]).unwrap();
+        }
+        let Created::Track(empty) = f
+            .editor
+            .execute(Command::AddTrack {
+                name: "empty".into(),
+            })
+            .unwrap()
+        else {
+            panic!("track");
+        };
+        f.editor
+            .execute(Command::SetReturnSend {
+                track: empty,
+                return_track: bus,
+                gain: 0.75,
+            })
+            .unwrap();
+        for removed in [false, true] {
+            if removed {
+                f.editor.execute(Command::RemoveTrack(empty)).unwrap();
+            }
+            let mut next = SessionPlayback::new(prepare(&f).unwrap()).unwrap();
+            next.try_inherit_state_from(&mut old).unwrap();
+            let mut actual = [[0.0; 2]; 257];
+            let mut expected = actual;
+            for (actual, expected) in actual
+                .chunks_mut(partition)
+                .zip(expected.chunks_mut(partition))
+            {
+                next.render(actual).unwrap();
+                reference.render(expected).unwrap();
+            }
+            for (frame, (actual, expected)) in actual.into_iter().zip(expected).enumerate() {
+                assert_eq!(
+                    actual, expected,
+                    "frame {frame}, partition {partition}, removed {removed}"
+                );
+            }
+            old = next;
+        }
+    }
+}
+
+#[test]
+fn adding_an_empty_track_with_an_incoming_feed_keeps_the_conservative_restart() {
     use hex_project::{Command, Created};
     let mut f = fixture(&[&[7]], 1024);
     for audio in f.media.values_mut() {
@@ -1495,9 +1569,9 @@ fn adding_a_routed_empty_track_keeps_the_conservative_restart() {
         panic!("track");
     };
     f.editor
-        .execute(Command::SetReturnSend {
-            track,
-            return_track: bus,
+        .execute(Command::SetAudioFeed {
+            source: hex_project::RoutingOwner::Return(bus),
+            destination: track,
             gain: 0.5,
         })
         .unwrap();
