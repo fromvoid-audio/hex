@@ -836,7 +836,16 @@ fn runtime_raw_service_and_stop_progress_while_granular_work_is_held() {
     let raw_key = raw.metadata.key();
     let (_wav, source, _) = source(WarpMode::Tones { grain_ms: 32 });
     let key = source.metadata().key();
-    let bank = admit(vec![source]);
+    let (_other_wav, other, _) = source_at_rate(
+        WarpMode::Texture {
+            grain_ms: 32,
+            fluctuation: 35,
+            seed: 42,
+        },
+        48_000,
+    );
+    let other_key = other.metadata().key();
+    let bank = admit(vec![source, other]);
     let allowance = runtime_allowance(&bank, 3);
     let (gate, entered, _release) = PageGate::new(hex_stream::PageKey {
         source: key,
@@ -858,6 +867,22 @@ fn runtime_raw_service_and_stop_progress_while_granular_work_is_held() {
     runtime.request_page(key, 0);
     entered.recv_timeout(Duration::from_secs(3)).unwrap();
     runtime.request_page(key, 1);
+    runtime.request_page(other_key, 0);
+    let mut failures = [hex_stream::StreamFailure {
+        key: other_key.into(),
+        page_index: 0,
+        kind: StreamFailureKind::Cancelled,
+    }; 1];
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while runtime.take_failures(&mut failures) == 0 {
+        assert!(
+            Instant::now() < deadline,
+            "granular loan saturation not reported"
+        );
+        thread::yield_now();
+    }
+    assert_eq!(failures[0].key, other_key.into());
+    assert_eq!(failures[0].kind, StreamFailureKind::CapacityExhausted);
     let actual = runtime_page(&mut runtime, raw_key, 0);
     assert_eq!(actual, expected[..STREAM_PAGE_FRAMES]);
     assert!(runtime.page(key, 0).is_none());

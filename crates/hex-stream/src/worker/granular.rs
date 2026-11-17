@@ -35,6 +35,7 @@ pub(crate) struct PreparedGranular {
     allowance: GranularWorkerAllowance,
     metadata: Vec<StreamedSourceMetadata>,
     loans: Vec<Loan>,
+    loan_limit: usize,
     data: GranularRuntimeData,
     #[cfg(feature = "test-support")]
     pub(crate) gate: Option<crate::test_support::PageGate>,
@@ -77,6 +78,7 @@ impl PreparedGranular {
             allowance,
             metadata,
             loans,
+            loan_limit: config.page_buffers - 1,
             data,
             #[cfg(feature = "test-support")]
             gate: None,
@@ -99,6 +101,7 @@ impl PreparedGranular {
             control,
             metadata: self.metadata,
             loans: self.loans,
+            loan_limit: self.loan_limit,
             data: self.data,
             fault: false,
         })
@@ -108,6 +111,7 @@ pub(crate) struct GranularRouting {
     control: GranularWorkerControl,
     metadata: Vec<StreamedSourceMetadata>,
     loans: Vec<Loan>,
+    loan_limit: usize,
     data: GranularRuntimeData,
     fault: bool,
 }
@@ -134,7 +138,9 @@ impl GranularRouting {
         let StreamResourceKey::Audio(source) = key.source else {
             return Err(page);
         };
-        if self.loans.len() == self.loans.capacity() {
+        // One original buffer remains outside granular custody so the
+        // ordinary worker can continue raw/scalar service during replay.
+        if self.loans.len() >= self.loan_limit {
             return Err(page);
         }
         let frames = std::mem::take(&mut page.frames);
