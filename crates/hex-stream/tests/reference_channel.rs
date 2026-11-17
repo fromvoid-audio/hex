@@ -2715,6 +2715,7 @@ fn exercise_granular_worker(
     let (at_step_tx, at_step_rx) = std::sync::mpsc::sync_channel(1);
     #[cfg(feature = "test-support")]
     let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
+    let bank = granular_bank::admit(vec![source]);
     let join = thread::spawn(move || {
         let queues = GranularWorkerQueues {
             requests: request_rx,
@@ -2724,7 +2725,7 @@ fn exercise_granular_worker(
         {
             let mut first = true;
             hex_stream::test_support::run_granular_worker_with_step_hook(
-                vec![source],
+                bank,
                 queues,
                 &worker_stop,
                 &worker_epoch,
@@ -2738,7 +2739,7 @@ fn exercise_granular_worker(
             )
         }
         #[cfg(not(feature = "test-support"))]
-        hex_stream::run_granular_worker(vec![source], queues, &worker_stop, &worker_epoch)
+        hex_stream::run_granular_worker(bank, queues, &worker_stop, &worker_epoch)
     });
     let pointer = page.as_ptr() as usize;
     #[cfg(feature = "test-support")]

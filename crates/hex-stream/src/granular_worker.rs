@@ -1,6 +1,7 @@
 //! Dedicated granular page loop. Thread and queue lifecycle remain with the caller.
 use crate::{
-    CompletedGranularPage, GranularPageError, GranularPageProgress, VerifiedGranularSource,
+    CompletedGranularPage, GranularPageError, GranularPageProgress, GranularWorkerBank,
+    VerifiedGranularSource,
 };
 use hex_engine::{Frame, StreamSourceKey};
 use rtrb::{Consumer, Producer, PushError};
@@ -54,8 +55,6 @@ pub struct GranularWorkerQueues {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GranularWorkerExitReason {
     Stopped,
-    /// Empty, duplicate-key or oversized bank; requests remain untouched.
-    InvalidSourceBank,
     /// An internal page-custody invariant failed. Do not publish the page.
     CustodyFault(GranularWorkerKey),
 }
@@ -70,11 +69,10 @@ pub struct GranularWorkerExit {
 /// Run a bounded bank of verified sources on one dedicated worker thread.
 ///
 /// The caller creates finite SPSC queues and admits their storage, the page pool,
-/// source bank and thread before starting. At most 512 source slots (including
-/// spare vector capacity) are accepted; keys must be distinct and the bank must
-/// be nonempty. Invalid banks return without consuming requests. The caller
-/// admits all source readers, scratch and checkpoints in aggregate; the slot
-/// limit alone is not a memory quote. Each source retains its own renderer and
+/// source bank and thread before starting. The bank must pass control-side
+/// DATA admission before moving here; that quote excludes the page pool,
+/// queues, earlier source construction and opaque/native/thread costs.
+/// Each source retains its own renderer and
 /// checkpoint history. Requests are handled FIFO, one at a time;
 /// a full results queue holds one outcome and prevents further dequeue. Idle and
 /// full queues wait up to 2 ms between polls, subject to thread scheduling; the
@@ -92,48 +90,33 @@ pub struct GranularWorkerExit {
 /// before epoch wrap. This loop does not admit sources to playback or establish
 /// a catalog lease.
 pub fn run_granular_worker(
-    sources: Vec<VerifiedGranularSource>,
+    bank: GranularWorkerBank,
     queues: GranularWorkerQueues,
     stop: &AtomicBool,
     demand_epoch: &AtomicU64,
 ) -> GranularWorkerExit {
-    run_inner(sources, queues, stop, demand_epoch, || {})
+    run_inner(bank, queues, stop, demand_epoch, || {})
 }
 
 #[cfg(feature = "test-support")]
 pub(crate) fn run_with_step_hook(
-    sources: Vec<VerifiedGranularSource>,
+    bank: GranularWorkerBank,
     queues: GranularWorkerQueues,
     stop: &AtomicBool,
     demand_epoch: &AtomicU64,
     before_step: impl FnMut(),
 ) -> GranularWorkerExit {
-    run_inner(sources, queues, stop, demand_epoch, before_step)
+    run_inner(bank, queues, stop, demand_epoch, before_step)
 }
 
 fn run_inner(
-    mut sources: Vec<VerifiedGranularSource>,
+    bank: GranularWorkerBank,
     mut queues: GranularWorkerQueues,
     stop: &AtomicBool,
     demand_epoch: &AtomicU64,
     mut before_step: impl FnMut(),
 ) -> GranularWorkerExit {
-    if sources.is_empty()
-        || sources.capacity() > 512
-        || sources.iter().enumerate().any(|(index, source)| {
-            sources[..index]
-                .iter()
-                .any(|previous| previous.metadata().key() == source.metadata().key())
-        })
-    {
-        return GranularWorkerExit {
-            reason: GranularWorkerExitReason::InvalidSourceBank,
-            sources,
-            queues,
-            interrupted: None,
-            held: None,
-        };
-    }
+    let mut sources = bank.into_sources();
     // The bank is never resized or reordered while a job holds its index.
     let mut active: Option<(usize, GranularWorkerKey)> = None;
     let mut held: Option<GranularWorkerOutcome> = None;

@@ -15,6 +15,11 @@
 
 mod footprint;
 mod granular;
+mod granular_bank;
+pub use granular_bank::{
+    GranularBankAllowance, GranularBankData, GranularBankError, GranularBankRefusal,
+    GranularWorkerBank,
+};
 mod granular_checkpoint_cache;
 mod granular_page;
 mod granular_seek;

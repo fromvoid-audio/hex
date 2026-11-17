@@ -66,7 +66,35 @@ pub struct VerifiedGranularSource {
     pages: VerifiedGranularPages,
     reserved_processing_bytes: usize,
 }
+pub(crate) struct GranularSourceData {
+    pub processing_reserved_bytes: usize,
+    pub reader_heap_bytes: usize,
+    pub kernel_reserved_bytes: usize,
+}
 impl VerifiedGranularSource {
+    pub(crate) fn holds_page(&self) -> bool {
+        self.pages.holds_page()
+    }
+    pub(crate) fn admission_data(&self) -> Option<GranularSourceData> {
+        let reader = self.reader.control_data_layout();
+        let kernel = self.plan.control_kernel_data_layout();
+        Some(GranularSourceData {
+            processing_reserved_bytes: self.reserved_processing_bytes,
+            reader_heap_bytes: reader
+                .path_capacity
+                .checked_add(reader.manifest_owner_payload_bytes)?
+                .checked_add(
+                    reader
+                        .manifest_capacity
+                        .checked_mul(reader.manifest_element_bytes)?,
+                )?,
+            kernel_reserved_bytes: kernel.owner_payload_bytes.checked_add(
+                kernel
+                    .weight_capacity
+                    .checked_mul(kernel.weight_element_bytes)?,
+            )?,
+        })
+    }
     /// Validate canonical identity, scan the verified region and prepare a
     /// renderer. Inputs may be dropped on failure, always on the calling thread.
     pub fn prepare(
