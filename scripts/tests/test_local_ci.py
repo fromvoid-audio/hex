@@ -483,6 +483,55 @@ class ManualFixtureCleanupTests(unittest.TestCase):
         self.assertIs(local_ci.LocalCiRunner._step_sequence_error, original)
 
 
+class ReportStepAdmissionTests(unittest.TestCase):
+    def evidence(self):
+        plan = {"scope": "full", "python_tests": {"mode": "comprehensive",
+                "test_selectors": ["test_local_ci"], "sharded_discovery": True}}
+        return {"plan": plan, "steps": [{"step_id": step.step_id, "argv": list(step.argv),
+                "status": "passed", "test_results": {"rust_passed_by_binary": [1], "python_executions": [1]}}
+                for step in local_ci.planned_steps(plan)]}
+
+    def test_complete_steps_and_known_narrowed_python_configuration(self):
+        evidence = self.evidence()
+        local_ci.validate_report_steps(evidence, allow_carried=True)
+        row = next(row for row in evidence["steps"] if row["step_id"] == "runner-tests")
+        row["carry"] = {"planned_argv": row["argv"],
+                        "carried_remainder_from": {"report": "original.json", "commit": "a" * 40}}
+        row["argv"] = ["python3", "scripts/python_shards.py", "--", "test_local_ci.SomeTests"]
+        local_ci.validate_report_steps(evidence, allow_carried=True)
+        row["argv"] = ["true"]
+        with self.assertRaisesRegex(ValueError, "unknown narrowed"):
+            local_ci.validate_report_steps(evidence, allow_carried=True)
+
+    def test_missing_reordered_and_altered_configurations_refuse(self):
+        for change in (lambda rows: rows.pop(), lambda rows: rows.reverse(),
+                       lambda rows: rows[0].update(argv=["true"])):
+            evidence = self.evidence()
+            change(evidence["steps"])
+            with self.assertRaisesRegex(ValueError, "complete required configurations"):
+                local_ci.validate_report_steps(evidence, allow_carried=True)
+
+    def test_nonpython_narrowing_and_zero_match_refuse(self):
+        evidence = self.evidence()
+        row = evidence["steps"][0]
+        row["carry"] = {"planned_argv": row["argv"]}
+        with self.assertRaisesRegex(ValueError, "unknown narrowed"):
+            local_ci.validate_report_steps(evidence, allow_carried=True)
+        evidence = self.evidence()
+        required = next(step for step in local_ci.planned_steps(evidence["plan"]) if step.requires_tests)
+        next(row for row in evidence["steps"] if row["step_id"] == required.step_id)["test_results"] = {}
+        with self.assertRaisesRegex(ValueError, "zero-match"):
+            local_ci.validate_report_steps(evidence, allow_carried=True)
+
+    def test_module_source_cannot_escape_verified_workspace(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            (root / "src").mkdir()
+            (root / "src/lib.rs").write_text('#[path = "/outside.rs"]\nmod outside;\n')
+            with self.assertRaisesRegex(ValueError, "escapes the verified workspace"):
+                local_ci.ci_plan.module_paths(root / "src", workspace_root=root)
+
+
 class SuppliedSelectionTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()

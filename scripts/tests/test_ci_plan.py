@@ -1912,7 +1912,7 @@ class BaseAdvanceCarryTests(unittest.TestCase):
         for name in ("core", "ui"):
             (root / f"crates/{name}/src").mkdir(parents=True)
             (root / f"crates/{name}/Cargo.toml").write_text(f"[package]\nname='{name}'\n")
-            (root / f"crates/{name}/src/lib.rs").write_text("// base\n")
+            (root / f"crates/{name}/src/lib.rs").write_text("mod a;\n" if name == "ui" else "// base\n")
         git("add", ".")
         git("commit", "-qm", "base")
         return git
@@ -1928,9 +1928,11 @@ class BaseAdvanceCarryTests(unittest.TestCase):
         return {"schema_version": 2, "mode": "merge", "status": "passed", "exit_code": 0,
                 "commit": resolved["source"], "dirty": False, "stale": False,
                 "native_acceptance_opt_in": False, "start_tree": tree, "end_tree": tree,
+                "runtime_inputs": resolved["runtime_inputs"],
                 "plan": resolved, "target_cache": {"dependency_inputs": {"version": 1}},
-                "steps": [{"step_id": "affected-tests", "argv": ["cargo", "test", "-p", "ui"], "status": "passed",
-                           "test_results": {"rust_passed_by_binary": [1]}}]}
+                "steps": [{"step_id": step.step_id, "argv": list(step.argv), "status": "passed",
+                           "test_results": {"rust_passed_by_binary": [1], "python_executions": [1]}}
+                          for step in ci.planned_steps(resolved)]}
 
     @contextmanager
     def carry_fixture(self):
@@ -1939,14 +1941,14 @@ class BaseAdvanceCarryTests(unittest.TestCase):
             git = self.repository(root)
             base = git("rev-parse", "HEAD")
             git("checkout", "-qb", "pr")
-            (root / "crates/ui/src/a.rs").write_text("// pr\n")
+            (root / "crates/ui/src/a.rs").write_text("#[test] fn original() {}\n")
             git("add", ".")
             git("commit", "-qm", "pr")
             evidence = self.evidence(root, plan.resolve(root, profile="merge", base=base,
                                                         source=git("rev-parse", "HEAD"), metadata=self.metadata(root)))
             candidate = git("rev-parse", "HEAD")
 
-            def advance(paths, *, then=None):
+            def advance(paths, *, then=None, checker=None):
                 git("checkout", "-q", "--detach", base)
                 for path, text in paths.items():
                     (root / path).parent.mkdir(parents=True, exist_ok=True)
@@ -1962,7 +1964,7 @@ class BaseAdvanceCarryTests(unittest.TestCase):
                     git("commit", "-qm", "extra")
                 resolved = plan.resolve(root, profile="merge", base=advanced,
                                         source=git("rev-parse", "HEAD"), metadata=self.metadata(root))
-                return plan.carry_basis(root, resolved, evidence, env={})
+                return (checker or plan.carry_basis)(root, resolved, evidence, env={})
 
             yield root, base, candidate, evidence, advance
 
@@ -1971,6 +1973,44 @@ class BaseAdvanceCarryTests(unittest.TestCase):
             basis = advance({"crates/core/src/lib.rs": "// advanced\n", "docs/a.md": "prose"})
             self.assertEqual(basis["delta_owners"], ["core"])
             self.assertEqual(basis["report_commit"], candidate)
+
+    def test_carry_refuses_rehashed_historical_selection(self):
+        with self.carry_fixture() as (_, _, _, evidence, advance):
+            old = evidence["plan"]
+            old["python_tests"]["forged"] = True
+            old.pop("plan_sha256")
+            old["plan_sha256"] = hashlib.sha256(json.dumps(old, sort_keys=True).encode()).hexdigest()
+            with self.assertRaisesRegex(ValueError, "historical"):
+                advance({"crates/core/src/lib.rs": "// advanced\n"})
+
+    def test_carry_reconstructs_selector_relevant_old_source(self):
+        with self.carry_fixture() as (_, _, _, evidence, advance):
+            self.assertEqual(evidence["plan"]["boundary"]["module_filters"], {"ui": ["a::"]})
+            basis = advance({"crates/ui/src/lib.rs": "#[cfg(test)]\nmod a;\n"})
+            self.assertEqual(basis["delta_owners"], ["ui"])
+
+    def test_carry_git_uses_explicit_environment(self):
+        def check(root, current, evidence, **_):
+            env = {**os.environ, "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull}
+            with patch.dict(os.environ, {"GIT_DIR": str(root / "missing")}):
+                return plan.carry_basis(root, current, evidence, env=env)
+        with self.carry_fixture() as (_, _, _, _, advance):
+            self.assertEqual(advance({"crates/core/src/lib.rs": "// advanced\n"}, checker=check)["delta_owners"], ["core"])
+
+    def test_runner_refuses_incomplete_carried_report_before_inheritance(self):
+        def check(root, current, evidence, **_):
+            report = root / "artifacts/old.json"
+            report.parent.mkdir()
+            evidence["steps"].pop()
+            raw = json.dumps(evidence).encode()
+            report.write_bytes(raw)
+            runner = ci.LocalCiRunner(root, mode="merge", plan=current, carry_report=report)
+            runner._prepare_carry()
+            self.assertIsNone(runner._carry)
+            self.assertIn("every step runs fresh", runner.summary["carry"]["refused"])
+            self.assertEqual(report.read_bytes(), raw)
+        with self.carry_fixture() as (_, _, _, _, advance):
+            advance({"crates/core/src/lib.rs": "// advanced\n"}, checker=check)
 
     def assert_carry_advance_refused(self, paths, then, message):
         with self.carry_fixture() as (_, _, _, _, advance):
@@ -2022,7 +2062,7 @@ class BaseAdvanceCarryTests(unittest.TestCase):
             runner.output_dir.mkdir(parents=True)  # run() creates it before any step.
             basis = {"report_commit": "c0", "delta_paths": ["crates/core/src/lib.rs"],
                      "delta_owners": ["core"], "python_tests": {"mode": "none", "reasons": []}}
-            with patch.object(ci.ci_plan, "carry_basis", return_value=basis):
+            with patch.object(ci, "validate_report_steps"), patch.object(ci.ci_plan, "carry_basis", return_value=basis):
                 runner._prepare_carry()
             self.assertEqual(runner.summary["carry"]["decisions"][0]["action"], "carry")
             runner._record_carried(step, 1, runner._carry[0])
@@ -2031,12 +2071,16 @@ class BaseAdvanceCarryTests(unittest.TestCase):
             self.assertEqual(carried["carried_from"], {"report": str(report.resolve()), "commit": "c0", "log": "old.log"})
             # A chained carry keeps the run that actually executed the step.
             self.assertEqual(runner._carry_origin({"carried_from": {"report": "first.json"}}), {"report": "first.json"})
+            with patch.object(ci, "validate_report_steps", side_effect=ValueError("report changed")):
+                runner._prepare_carry()
+            self.assertIsNone(runner._carry)
+            self.assertIsNone(runner._carry_dependency_inputs)
             runner._drop_carry("toolchain changed")
             self.assertIsNone(runner._carry)
             self.assertIn("run fresh", runner.summary["carry"]["refused"])
             refused = ci.LocalCiRunner(root, mode="merge", plan=resolved, min_free_bytes=0,
                                        steps=(step,), carry_report=report)
-            with patch.object(ci.ci_plan, "carry_basis", side_effect=ValueError("own path changed")):
+            with patch.object(ci, "validate_report_steps"), patch.object(ci.ci_plan, "carry_basis", side_effect=ValueError("own path changed")):
                 refused._prepare_carry()
             self.assertIsNone(refused._carry)
             self.assertIn("every step runs fresh", refused.summary["carry"]["refused"])
