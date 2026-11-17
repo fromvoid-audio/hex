@@ -1157,9 +1157,9 @@ class ScopeTests(unittest.TestCase):
             run(selected)
             run(selection("unknown.input"), passed=False)
 
-    @patch.dict(os.environ, {}, clear=True)
-    def test_prose_continuation_requires_complete_original_runtime_certificate(self):
-        with tempfile.TemporaryDirectory() as directory:
+    @contextmanager
+    def runtime_certificate_fixture(self):
+        with patch.dict(os.environ, {}, clear=True), tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             install_delivery_source_fixture(root)
             def git(*args):
@@ -1182,6 +1182,7 @@ class ScopeTests(unittest.TestCase):
             metadata = {"workspace_members": ["fixture"], "packages": [dict(
                 id="fixture", name="fixture", manifest_path=str(root / "Cargo.toml"),
                 features={}, targets=[], dependencies=[])]}
+            scoped = plan.resolve(root, profile="merge", base=base, source=previous, metadata=metadata)
             # Deliberately fabricated unit-test data exercises schema/refusal;
             # these counts are never claimed as executed product tests.
             tree = {"commit": previous, "dirty": False, "dirty_files": [], "content_sha256": "fixture"}
@@ -1200,9 +1201,13 @@ class ScopeTests(unittest.TestCase):
             report = root / "artifacts/report.json"
             report.parent.mkdir()
             report.write_text(json.dumps(evidence))
+            yield root, resolved, report, evidence, scoped, metadata
+
+    def test_prose_continuation_requires_complete_original_runtime_certificate(self):
+        with self.runtime_certificate_fixture() as (root, resolved, report, evidence, scoped, metadata):
             reused = ci.reusable_plan(root, resolved, report)
             self.assertEqual([s.step_id for s in ci.planned_steps(reused)], ["metadata-continuation"])
-            self.assertEqual(reused["reuse"]["source"], previous)
+            self.assertEqual(reused["reuse"]["source"], evidence["commit"])
             self.assertIs(reused["reuse"]["native_acceptance_opt_in"], False)
             complete_bytes = report.read_bytes()
             incomplete_bytes = json.dumps({**evidence, "steps": [{"status": "passed"}]}).encode()
@@ -1237,9 +1242,14 @@ class ScopeTests(unittest.TestCase):
                 with self.subTest(check=check.__name__), self.assertRaisesRegex(ValueError, "must be an object"):
                     check(root, resolved, report, env={})
             report.write_bytes(original_report)
+
+    def test_runtime_reuse_preserves_native_acceptance_exclusions(self):
+        with self.runtime_certificate_fixture() as (root, resolved, report, evidence, scoped, metadata):
+            original_report = report.read_bytes()
+            original_plan = json.dumps(resolved, sort_keys=True)
             # Full reports without a plan and scoped reports must both carry an
             # explicit false observation. Missing historical state is unknown.
-            for old_plan in (None, {"scope": "tooling", "qualifies_merge": True}):
+            for old_plan in (None, scoped):
                 candidate = {**evidence, "plan": old_plan,
                              "mode": "full" if old_plan is None else "merge",
                              "steps": [{"step_id": s.step_id, "argv": list(s.argv), "status": "passed",
@@ -1275,10 +1285,13 @@ class ScopeTests(unittest.TestCase):
                         plan.reuse_checks(root, resolved, report, env={})
                     self.assertEqual(report.read_bytes(), native_report)
                 self.assertEqual(json.dumps(resolved, sort_keys=True), original_plan)
-            report.write_bytes(original_report)
+
+    def test_runtime_reuse_refuses_invalid_certificates_and_executable_changes(self):
+        with self.runtime_certificate_fixture() as (root, resolved, report, evidence, scoped, metadata):
+            original_report = report.read_bytes()
             (root / "linked-runtime.rs").symlink_to(root / "runtime.rs")
             with self.assertRaisesRegex(ValueError, "symlink"):
-                plan.resolve(root, profile="merge", base=base, source=current, metadata=metadata)
+                plan.resolve(root, profile="merge", base=resolved["base"], source=resolved["source"], metadata=metadata)
             (root / "linked-runtime.rs").unlink()
             for field, value in (("steps", evidence["steps"][:-1]), ("status", "failed"),
                                  ("mode", "edit"), ("schema_version", 1),
@@ -1288,7 +1301,7 @@ class ScopeTests(unittest.TestCase):
                     ci.reusable_plan(root, resolved, report)
             report.write_text(json.dumps(evidence))
             (root / "runtime.rs").write_text("uncommitted executable change")
-            changed = plan.resolve(root, profile="merge", base=base, source=current, metadata=metadata)
+            changed = plan.resolve(root, profile="merge", base=resolved["base"], source=resolved["source"], metadata=metadata)
             with self.assertRaises(ValueError):
                 ci.reusable_plan(root, changed, report)
             runner = ci.LocalCiRunner(root, mode="merge", plan=changed, min_free_bytes=0)
