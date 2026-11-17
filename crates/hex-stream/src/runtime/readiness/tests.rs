@@ -735,7 +735,7 @@ fn exact_decode_receipts(ordinary: bool) {
     .unwrap();
     assert_eq!(
         domain.summary().shared_handle_bound,
-        22 + domain.summary().kernel_handle_bound
+        22 + domain.summary().kernel_handle_bound + domain.summary().data.worker.manifest_handles
     );
     let bytes = domain.metadata_bytes().unwrap();
     let mut loan = domain.loan_pages_on_control().unwrap();

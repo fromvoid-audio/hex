@@ -976,7 +976,7 @@ mod tests {
         assert_eq!(s.roots.unresolved_handles, 4);
         assert_eq!(s.unresolved_source_domain_bindings, 4);
         assert_eq!(s.opaque_cost_obligations, 12);
-        assert_eq!(s.unresolved_known_stream_handles, 16 * 2 + 6);
+        assert_eq!(s.unresolved_known_stream_handles, 17 * 2 + 6);
         assert_eq!(
             report
                 .owning_handle_obligations()
