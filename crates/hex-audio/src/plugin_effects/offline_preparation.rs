@@ -256,10 +256,18 @@ mod tests {
             controller: None,
         })
         .unwrap();
-        let host = Hosting::inspect_fixture_on_control(&PathBuf::from(
+        let build = hex_plugin_scan::macos::build_identity::InstanceBuild::inspect(&PathBuf::from(
             std::env::var_os("HEX_VST3_INSTANCE_RECEIPT").unwrap(),
         ))
         .unwrap();
+        let host = Hosting::from_test_build(
+            build,
+            hex_plugin_host::native::Limits {
+                startup: std::time::Duration::from_secs(3),
+                exchange: std::time::Duration::from_secs(1),
+                retirement: std::time::Duration::from_secs(3),
+            },
+        );
         let mut editor = Editor::new(Project::new(48000).unwrap(), 32).unwrap();
         let Created::Track(track) = editor
             .execute(Command::AddTrack {
