@@ -1269,3 +1269,269 @@ fn check_streamed_session_lookup_and_miss_semantics(with_resident_sessions: bool
         assert_eq!((pages.reads, pages.requests), (32, 1));
     }
 }
+
+#[test]
+fn closed_main_latency_demand_matches_resident_through_loop_seek_and_handoff() {
+    use hex_project::Command;
+    let mut f = crate::signal_graph::tests::fixture(&[&[]], 1024);
+    let asset = *f.media.keys().next().unwrap();
+    let key = StreamSourceKey::new(39, asset);
+    f.editor
+        .execute(Command::SetLoopRegion {
+            start: 0,
+            end: 127,
+            enabled: true,
+        })
+        .unwrap();
+    let saturator = crate::default_native_device_state_for_class(
+        crate::NativeDeviceClass::Effect,
+        crate::DeviceTypeId::from_static("hex.saturator"),
+    )
+    .unwrap();
+    f.editor
+        .execute(Command::InsertMainDevice {
+            before: None,
+            state: saturator,
+        })
+        .unwrap();
+    let sources = BTreeMap::from([(
+        asset,
+        PreparedAudioSource::Streamed(Arc::new(
+            StreamedSourceMetadata::new(
+                key,
+                48_000,
+                48_000,
+                1024,
+                1024,
+                hex_project::IDENTITY_CONVERSION,
+                [39; 32],
+            )
+            .unwrap(),
+        )),
+    )]);
+    let effects = hex_devices::native_registry().unwrap();
+    let instruments = hex_devices::native_instrument_registry().unwrap();
+    let streamed = Arc::new(
+        PreparedRevision::prepare_with_source_bank(
+            f.editor.project(),
+            crate::compile::SourceBank::Mixed(&sources, 39),
+            Arc::new(SineTable::new()),
+            None,
+            &effects,
+            &instruments,
+            &crate::audio_transform::AudioTransformPreparation::default(),
+            None,
+            None,
+            &[],
+        )
+        .unwrap(),
+    );
+    let resident = Arc::new(
+        PreparedRevision::prepare(
+            f.editor.project(),
+            &f.media,
+            Arc::new(SineTable::new()),
+            None,
+        )
+        .unwrap(),
+    );
+    for partition in [1, 257] {
+        let mut actual = crate::SessionPlayback::new(Arc::clone(&streamed)).unwrap();
+        let mut oracle = crate::SessionPlayback::new(Arc::clone(&resident)).unwrap();
+        assert_eq!(
+            actual
+                .visit_next_stream_chunk(20, None, &mut |_| Ok(()))
+                .unwrap()
+                .frames,
+            0
+        );
+        actual.apply(SessionPlaybackCommand::Play).unwrap();
+        oracle.apply(SessionPlaybackCommand::Play).unwrap();
+        for cycle in 0..3 {
+            if cycle == 1 {
+                let before = (actual.performance_frame(), actual.arrangement_frame());
+                let token = actual
+                    .prepare_stream_action(PlaybackAction::Transport(PlaybackCommand::Seek(17)))
+                    .unwrap();
+                assert!(
+                    actual
+                        .visit_prepared_stream_action(&token, 20, &mut |_| Err(crate::Invalid(
+                            "visitor refused"
+                        )))
+                        .is_err()
+                );
+                assert_eq!(
+                    (actual.performance_frame(), actual.arrangement_frame()),
+                    before
+                );
+                let mut sought = Vec::new();
+                let window = actual
+                    .visit_prepared_stream_action(&token, 20, &mut |extent| {
+                        sought.push(extent);
+                        Ok(())
+                    })
+                    .unwrap();
+                assert_eq!((window.arrangement_frame, window.frames), (17, 20));
+                assert_eq!((sought[0].start, sought[0].end), (17, 37));
+                actual.apply(SessionPlaybackCommand::Seek(17)).unwrap();
+                oracle.apply(SessionPlaybackCommand::Seek(17)).unwrap();
+            }
+            if cycle == 2 {
+                let before = (actual.performance_frame(), actual.arrangement_frame());
+                let mut next = crate::SessionPlayback::new(Arc::clone(&streamed)).unwrap();
+                let mut next_oracle = crate::SessionPlayback::new(Arc::clone(&resident)).unwrap();
+                assert!(
+                    next.preview_stream_handoff(&mut actual, 20, None, &mut |_| Err(
+                        crate::Invalid("visitor refused")
+                    ))
+                    .is_err()
+                );
+                assert_eq!(
+                    (actual.performance_frame(), actual.arrangement_frame()),
+                    before
+                );
+                next.preview_stream_handoff(&mut actual, 20, None, &mut |_| Ok(()))
+                    .unwrap();
+                next.try_inherit_state_from(&mut actual).unwrap();
+                next_oracle.try_inherit_state_from(&mut oracle).unwrap();
+                actual = next;
+                oracle = next_oracle;
+            }
+            let mut expected = vec![[0.0; 2]; 514];
+            for block in expected.chunks_mut(partition) {
+                oracle.render(block).unwrap();
+            }
+            let mut observed = vec![[0.0; 2]; expected.len()];
+            let mut offset = 0;
+            while offset < observed.len() {
+                let mut extents = Vec::new();
+                let window = actual
+                    .visit_next_stream_chunk(
+                        (observed.len() - offset).min(partition),
+                        None,
+                        &mut |extent| {
+                            extents.push(extent);
+                            Ok(())
+                        },
+                    )
+                    .unwrap();
+                assert!(window.frames > 0);
+                assert_eq!(
+                    extents,
+                    [crate::StreamResourceExtent {
+                        source: key.into(),
+                        page_index: 0,
+                        start: window.arrangement_frame as usize,
+                        end: window.arrangement_frame as usize + window.frames
+                    }]
+                );
+                actual
+                    .render_with_pages(
+                        &mut observed[offset..offset + window.frames],
+                        &mut Pages {
+                            samples: &f.samples,
+                            key,
+                            extents: &extents,
+                        },
+                    )
+                    .unwrap();
+                offset += window.frames;
+            }
+            assert_eq!(observed, expected, "partition={partition}, cycle={cycle}");
+            assert_eq!(
+                (actual.performance_frame(), actual.arrangement_frame()),
+                (oracle.performance_frame(), oracle.arrangement_frame())
+            );
+        }
+    }
+}
+
+#[test]
+fn closed_upstream_or_session_audio_latency_stream_demand_remains_refused() {
+    for (upstream, session_audio) in [(true, false), (false, true)] {
+        let mut f = crate::signal_graph::tests::fixture(&[&[]], 1024);
+        let asset = *f.media.keys().next().unwrap();
+        let key = StreamSourceKey::new(39, asset);
+        let saturator = crate::default_native_device_state_for_class(
+            crate::NativeDeviceClass::Effect,
+            crate::DeviceTypeId::from_static("hex.saturator"),
+        )
+        .unwrap();
+        let command = if upstream {
+            hex_project::Command::InsertDevice {
+                track: f.tracks[0],
+                before: None,
+                state: saturator,
+            }
+        } else {
+            hex_project::Command::InsertMainDevice {
+                before: None,
+                state: saturator,
+            }
+        };
+        f.editor.execute(command).unwrap();
+        if session_audio {
+            let hex_project::Created::Scene(scene) = f
+                .editor
+                .execute(hex_project::Command::AddScene {
+                    name: "scene".into(),
+                })
+                .unwrap()
+            else {
+                panic!("scene")
+            };
+            f.editor
+                .execute(hex_project::Command::CreateSessionAudioClip {
+                    track: f.tracks[0],
+                    scene,
+                    name: "clip".into(),
+                    asset,
+                    source_start: 0,
+                    source_end: 1024,
+                })
+                .unwrap();
+        }
+        let sources = BTreeMap::from([(
+            asset,
+            PreparedAudioSource::Streamed(Arc::new(
+                StreamedSourceMetadata::new(
+                    key,
+                    48_000,
+                    48_000,
+                    1024,
+                    1024,
+                    hex_project::IDENTITY_CONVERSION,
+                    [39; 32],
+                )
+                .unwrap(),
+            )),
+        )]);
+        let revision = Arc::new(
+            PreparedRevision::prepare_with_source_bank(
+                f.editor.project(),
+                crate::compile::SourceBank::Mixed(&sources, 39),
+                Arc::new(SineTable::new()),
+                None,
+                &hex_devices::native_registry().unwrap(),
+                &hex_devices::native_instrument_registry().unwrap(),
+                &crate::audio_transform::AudioTransformPreparation::default(),
+                None,
+                None,
+                &[],
+            )
+            .unwrap(),
+        );
+        let mut playback = crate::SessionPlayback::new(revision).unwrap();
+        playback.apply(SessionPlaybackCommand::Play).unwrap();
+        assert!(
+            playback
+                .visit_next_stream_chunk(64, None, &mut |_| Ok(()))
+                .is_err()
+        );
+        assert!(
+            playback
+                .visit_ordinary_stream_chunk(64, None, &mut |_| Ok(()))
+                .is_ok()
+        );
+    }
+}

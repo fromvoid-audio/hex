@@ -204,7 +204,16 @@ fn wait_for_audio(h: &Harness) {
 }
 
 #[test]
-fn positive_latency_verified_effect_refuses_without_replacing_audio() {
+fn stopped_verified_stream_installs_main_saturator() {
+    check_main_saturator(false);
+}
+
+#[test]
+fn running_verified_stream_installs_main_saturator() {
+    check_main_saturator(true);
+}
+
+fn check_main_saturator(running: bool) {
     let _native = native_fixture();
     let files = Files::new();
     let mut h = actual_native_harness();
@@ -219,13 +228,15 @@ fn positive_latency_verified_effect_refuses_without_replacing_audio() {
     h.applied(h.context.unwrap());
     h.run(Request::Import(files.wav(48_000, 100_000)));
     let prior = h.applied(h.context.unwrap());
-    h.audio
-        .as_mut()
-        .unwrap()
-        .control
-        .command(PlaybackCommand::Play)
-        .unwrap();
-    wait_for_audio(&h);
+    if running {
+        h.audio
+            .as_mut()
+            .unwrap()
+            .control
+            .command(PlaybackCommand::Play)
+            .unwrap();
+        wait_for_audio(&h);
+    }
     let saturator = hex_engine::default_native_device_state_for_class(
         hex_engine::NativeDeviceClass::Effect,
         hex_engine::DeviceTypeId::from_static("hex.saturator"),
@@ -235,19 +246,46 @@ fn positive_latency_verified_effect_refuses_without_replacing_audio() {
         before: None,
         state: saturator,
     }));
-    let deadline = Instant::now() + Duration::from_secs(3);
-    loop {
+    let installed = h.applied(h.context.unwrap());
+    assert_ne!(installed.audio_revision, prior.audio_revision);
+    if !running {
+        h.audio
+            .as_mut()
+            .unwrap()
+            .control
+            .command(PlaybackCommand::Play)
+            .unwrap();
+    }
+    wait_for_audio(&h);
+    for _ in 0..8 {
         h.render();
-        let status = h.audio.as_ref().unwrap().status().unwrap();
-        if status.rejected_revision().is_some() {
-            assert_eq!(status.applied_audio_source(), Some(prior));
-            assert!(status.playing.load(Acquire));
-            break;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "positive latency must be refused until demand is supported"
-        );
+    }
+    let status = h.audio.as_ref().unwrap().status().unwrap();
+    assert!(status.playing.load(Acquire));
+    assert!(
+        status.position.load(Acquire) > status.audible_position.load(Acquire),
+        "Main processor reports latency"
+    );
+    assert!(status.rejected_revision().is_none());
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Seek(70_000))
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while h
+        .audio
+        .as_ref()
+        .unwrap()
+        .status()
+        .unwrap()
+        .position
+        .load(Acquire)
+        < 70_000
+    {
+        h.render();
+        assert!(Instant::now() < deadline, "streamed seek did not commit");
         std::thread::sleep(Duration::from_millis(1));
     }
     wait_for_audio(&h);
