@@ -7,6 +7,7 @@ mod current_sampler;
 mod domain_facts;
 #[cfg(feature = "allocation-probe")]
 mod fanout;
+mod granular;
 #[cfg(feature = "allocation-probe")]
 mod native_resources;
 #[cfg(feature = "allocation-probe")]
