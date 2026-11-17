@@ -3368,9 +3368,10 @@ fn run_worker(
             .as_ref()
             .and_then(resident_preview::Preview::clip_target)
             .is_some_and(|target| target.matches_release(&queued.request));
-        // A move can arrive after its audition was cancelled but before that
-        // preview publication has reached the callback. Keep its FIFO place
-        // behind the same bounded publication wait as a matching release.
+        // A move can arrive before its cancelled audition reaches the
+        // callback. A scope edit can also arrive before an earlier graph is
+        // applied. Keep their FIFO place and bound the wait before native
+        // preparation tries to borrow the preceding graph's sources.
         let queued = if events.resident_publication_enabled()
             && session.audio_mode() == DocumentAudioMode::Resident
             && (clip_audition_release
@@ -3378,7 +3379,9 @@ fn run_worker(
                     &queued.request,
                     Request::MoveExistingClips { .. }
                         | Request::Edit(
-                            Command::ToggleDeviceBypass { .. }
+                            Command::SetLoopRegion { .. }
+                                | Command::ToggleLoopRegion
+                                | Command::ToggleDeviceBypass { .. }
                                 | Command::SetDeviceBypass { .. }
                                 | Command::ReplaceDeviceState { .. }
                         )

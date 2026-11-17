@@ -89,6 +89,68 @@ fn set_loop(h: &mut ResidentHarness, applied: u64, start: u64, end: u64) -> u64 
 }
 
 #[test]
+fn scope_resize_waits_for_the_previous_graph_and_returns_a_terminal_on_timeout() {
+    let _native = native_fixture();
+    let files = Files::new();
+    let mut h = ResidentHarness::with_frame_limit(65_536);
+    h.next();
+    let (applied, _) = h.applied(0);
+    h.run(Request::Import(files.wav(48_000, 32_768)));
+    let (applied, _) = h.applied(applied);
+    let applied = set_loop(&mut h, applied, 0, 16_384);
+    let pending = h.run(Request::Edit(hex_project::Command::MasterGain {
+        gain: 0.5,
+    }));
+    let status = h.audio.as_ref().unwrap().status().unwrap();
+    assert!(status.publication_in_flight());
+    assert_eq!(
+        status.applied_revision.load(Acquire),
+        applied,
+        "leave the earlier graph queued in the actual callback",
+    );
+    let resize = || {
+        Request::Edit(hex_project::Command::SetLoopRegion {
+            start: 0,
+            end: 8_192,
+            enabled: true,
+        })
+    };
+
+    h.service.submit(resize()).unwrap();
+    let refused = h.next();
+    assert_eq!(
+        refused.error.as_deref(),
+        Some("edit cancelled · audio publication timed out")
+    );
+    assert_eq!(refused.state.revision, pending.state.revision);
+    assert_eq!(refused.state.project, pending.state.project);
+
+    h.service.submit(resize()).unwrap();
+    let (previous, _) = h.applied(applied);
+    let edited = h.next();
+    assert!(edited.error.is_none(), "{:?}", edited.error);
+    assert_eq!(edited.state.revision, pending.state.revision + 1);
+    assert_eq!(
+        edited.state.project.loop_region(),
+        Some(hex_project::LoopRegion::new(0, 8_192, true).unwrap())
+    );
+    // A toggle uses the same wait while the resized graph is still queued.
+    h.service
+        .submit(Request::Edit(hex_project::Command::ToggleLoopRegion))
+        .unwrap();
+    let (resized, metadata) = h.applied(previous);
+    assert_eq!(metadata.context.editor_revision, edited.state.revision);
+    let toggled = h.next();
+    assert!(toggled.error.is_none(), "{:?}", toggled.error);
+    assert_eq!(
+        toggled.state.project.loop_region(),
+        Some(hex_project::LoopRegion::new(0, 8_192, false).unwrap())
+    );
+    let (_, metadata) = h.applied(resized);
+    assert_eq!(metadata.context.editor_revision, toggled.state.revision);
+}
+
+#[test]
 fn loop_edits_while_playing_a_compensated_track_follow_the_playhead() {
     let _native = native_fixture();
     let files = Files::new();
