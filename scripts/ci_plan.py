@@ -83,10 +83,54 @@ def runtime_inputs(root: Path, env=None) -> dict:
             "metadata_exclusions": [p for p in paths if metadata_path(p)]}
 
 
-def changed_paths(root: Path, base: str, source: str, *, env=None) -> list[str]:
-    """Both sides of renames, deletions, and untracked inputs participate."""
+def committed_runtime_inputs(root: Path, source: str, *, env=None) -> dict:
+    """Hash actual committed bytes/modes without checkout, filters or exports.
+
+    Reuse reconstruction may read current selection sources only after this
+    identity equals the current executable-input identity. Gitlinks and other
+    unknown tree entries cannot establish that proof and require fresh checks.
+    """
+    entries = []
+    for raw in git(root, "ls-tree", "-rz", "--full-tree", source, env=env).split(b"\0"):
+        if not raw:
+            continue
+        header, name = raw.split(b"\t", 1)
+        mode, kind, oid = header.split()
+        if kind != b"blob" or mode not in {b"100644", b"100755", b"120000"}:
+            raise ValueError("historical runtime inputs contain an unsupported Git tree entry")
+        entries.append((name.decode(), mode, oid))
+    entries.sort()
+    executable = [(name, mode, oid) for name, mode, oid in entries if not metadata_path(name)]
+    blobs = subprocess.run(["git", "cat-file", "--batch"], cwd=root, env=env,
+                           input=b"".join(oid + b"\n" for _, _, oid in executable),
+                           capture_output=True, check=True).stdout
+    digest = hashlib.sha256()
+    offset = 0
+    for name, mode, oid in executable:
+        end = blobs.find(b"\n", offset)
+        fields = blobs[offset:end].split() if end >= 0 else []
+        if len(fields) != 3 or fields[:2] != [oid, b"blob"]:
+            raise ValueError("historical runtime blob is unavailable")
+        size = int(fields[2])
+        start = end + 1
+        if size < 0 or blobs[start + size:start + size + 1] != b"\n":
+            raise ValueError("historical runtime blob is incomplete")
+        for value in (name.encode(), str(int(mode, 8)).encode(), blobs[start:start + size]):
+            digest.update(len(value).to_bytes(8, "big"))
+            digest.update(value)
+        offset = start + size + 1
+    if offset != len(blobs):
+        raise ValueError("historical runtime blob response has unexpected data")
+    return {"version": POLICY_VERSION, "sha256": digest.hexdigest(),
+            "symlinks": [name for name, mode, _ in entries if mode == b"120000"],
+            "metadata_exclusions": [name for name, _, _ in entries if metadata_path(name)]}
+
+
+def changed_paths(root: Path, base: str, source: str, *, env=None, include_worktree: bool = True) -> list[str]:
+    """Both rename sides participate; historical reconstruction excludes current edits."""
     paths = set()
-    for arguments in ((base, source), (source,)):
+    comparisons = ((base, source), (source,)) if include_worktree else ((base, source),)
+    for arguments in comparisons:
         fields = git(root, "diff", "--name-status", "-z", "--find-renames", *arguments, env=env).decode().split("\0")
         index = 0
         while index < len(fields) and fields[index]:
@@ -94,7 +138,8 @@ def changed_paths(root: Path, base: str, source: str, *, env=None) -> list[str]:
             count = 2 if status[0] in "RC" else 1
             paths.update(fields[index + 1:index + 1 + count])
             index += count + 1
-    paths.update(git(root, "ls-files", "--others", "--exclude-standard", "-z", env=env).decode().split("\0"))
+    if include_worktree:
+        paths.update(git(root, "ls-files", "--others", "--exclude-standard", "-z", env=env).decode().split("\0"))
     return sorted(paths - {""})
 
 
@@ -1552,10 +1597,15 @@ def resolve(root: Path, *, profile: str, base: str, source: str, metadata: dict,
                          "merge the current base into the candidate first, then rerun "
                          "(--carry-report <last passed summary.json> reuses unaffected steps)")
     paths = changed_paths(root, base_sha, source_sha, env=env)
+    return _resolve_selection(root, profile, base_sha, source_sha, paths,
+                              cargo_inventory(metadata, root), runtime_inputs(root, env=env), env=env)
+
+
+def _resolve_selection(root: Path, profile: str, base_sha: str, source_sha: str, paths: list[str],
+                       inventory: list[dict], inputs: dict, *, env=None) -> dict:
+    """Select from admitted source inputs, shared by current and reuse reconstruction."""
     if not paths:
         raise ValueError("empty scope is not qualifying test evidence; use --profile full for an audit")
-    inventory = cargo_inventory(metadata, root)
-    inputs = runtime_inputs(root, env=env)
     if profile in {"merge", "full", "release"}:
         require_qualifying_inputs(inputs)
     if profile == "health" and git(root, "rev-parse", "--verify", source_sha + "^1", env=env).decode().strip() != base_sha:
@@ -1616,19 +1666,46 @@ def reuse_checks_from_snapshot(root: Path, plan: dict, report: Path, raw: bytes,
     if evidence.get("native_acceptance_opt_in") is not False:
         raise ValueError("native/external acceptance opt-in is present or unknown; runtime reuse refused")
     old_plan = evidence.get("plan")
+    if old_plan is not None and not isinstance(old_plan, dict):
+        raise ValueError("historical report plan must be an object")
     if (evidence.get("schema_version") != 2 or evidence.get("mode") not in {"full", "merge", "release"}
             or evidence.get("status") != "passed" or evidence.get("exit_code") != 0
             or evidence.get("stale") is not False or evidence.get("dirty") is not False
             or evidence.get("start_tree") != evidence.get("end_tree")
             or not evidence.get("steps") or any(s.get("status") != "passed" for s in evidence["steps"])
-            or old_plan and not old_plan.get("qualifies_merge")
+            or old_plan is not None and old_plan.get("qualifies_merge") is not True
             or evidence.get("runtime_inputs", {}).get("sha256") != plan["runtime_inputs"]["sha256"]):
         raise ValueError("runtime report is incomplete/failed/stale/partial or executable inputs changed")
     previous = evidence["commit"]
+    if (not isinstance(previous, str) or re.fullmatch(r"[0-9a-f]{40}", previous) is None
+            or git(root, "rev-parse", "--verify", previous + "^{commit}", env=env).decode().strip() != previous):
+        raise ValueError("historical report requires a canonical source commit")
     subprocess.run(["git", "merge-base", "--is-ancestor", previous, plan["source"]], cwd=root, env=env, check=True)
     delta = changed_paths(root, previous, plan["source"], env=env)
     if not delta or any(not metadata_path(p) for p in delta):
         raise ValueError("reused runtime evidence requires a nonempty prose-only continuation")
+    # The current canonical plan's inventory remains applicable because every
+    # manifest, policy and executable input must be identical to the old commit.
+    # Reconstruct from Git, never from the old plan's declared selection/hash.
+    historical_inputs = committed_runtime_inputs(root, previous, env=env)
+    if (historical_inputs["sha256"] != runtime_inputs(root, env=env)["sha256"]
+            or evidence.get("runtime_inputs") != historical_inputs):
+        raise ValueError("historical runtime inputs differ from committed/current executable source")
+    if old_plan is not None:
+        if (old_plan.get("profile") != evidence["mode"]
+                or old_plan.get("source") != previous):
+            raise ValueError("historical plan mode/source differs from its report")
+        base = old_plan.get("base")
+        if (not isinstance(base, str) or re.fullmatch(r"[0-9a-f]{40}", base) is None
+                or git(root, "rev-parse", "--verify", base + "^{commit}", env=env).decode().strip() != base
+                or subprocess.run(["git", "merge-base", "--is-ancestor", base, previous],
+                                  cwd=root, env=env, capture_output=True).returncode != 0):
+            raise ValueError("historical plan requires a canonical ancestor base")
+        expected = _resolve_selection(root, evidence["mode"], base, previous,
+            changed_paths(root, base, previous, env=env, include_worktree=False),
+            plan["cargo_inventory"], historical_inputs, env=env)
+        if old_plan != expected:
+            raise ValueError("historical plan differs from source-bound selection")
     dependency = evidence.get("target_cache", {}).get("dependency_inputs")
     if not isinstance(dependency, dict):
         raise ValueError("runtime report lacks guarded toolchain/dependency identity")

@@ -675,6 +675,8 @@ def reusable_plan(root: Path, plan: dict, report: Path, *, env=None) -> dict:
     if not isinstance(evidence, dict):
         raise ValueError("runtime report must be an object")
     old_plan = evidence.get("plan")
+    if old_plan is not None and not isinstance(old_plan, dict):
+        raise ValueError("historical report plan must be an object")
     if old_plan and old_plan.get("reuse"):
         raise ValueError("reference the original runtime report, not a chain of metadata reports")
     expected = planned_steps(old_plan or {"scope": "full"})
