@@ -87,7 +87,13 @@ impl SourceRegion {
             .checked_add(i128::from(self.phase))
             .ok_or(Error::Invalid("source region position overflow"))?;
         let local = if self.looping {
-            position.rem_euclid(i128::from(self.length))
+            // Normal transport and grain positions fit i64. Keep the i128
+            // fallback for the full public input domain and preserve Euclidean
+            // wrapping for negative positions.
+            match (i64::try_from(position), i64::try_from(self.length)) {
+                (Ok(position), Ok(length)) => i128::from(position.rem_euclid(length)),
+                _ => position.rem_euclid(i128::from(self.length)),
+            }
         } else if position < 0 || position >= i128::from(self.length) {
             return Ok(None);
         } else {

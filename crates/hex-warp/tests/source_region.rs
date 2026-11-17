@@ -85,3 +85,35 @@ fn malformed_region_and_gain_are_refused() {
     );
     assert!(SourceRegion::new(100, 0, 10, 0, false, Vec::with_capacity(MAX_POINTS + 1)).is_err());
 }
+
+#[test]
+fn loop_wrap_matches_full_width_euclidean_arithmetic() {
+    for length in [1, 20, hex_warp::MAX_STREAMED_OUTPUT_FRAMES] {
+        let phase = length - 1;
+        let region = SourceRegion::new(length, 0, length, phase, true, vec![]).unwrap();
+        for relative in [
+            i128::MIN,
+            i128::from(i64::MIN) - i128::from(phase) - 1,
+            i128::from(i64::MIN) - i128::from(phase),
+            i128::from(i64::MIN) - 1,
+            i128::from(i64::MIN),
+            -21,
+            -1,
+            0,
+            1,
+            i128::from(i64::MAX) - i128::from(phase),
+            i128::from(i64::MAX) - i128::from(phase) + 1,
+            i128::from(i64::MAX),
+            i128::from(i64::MAX) + 1,
+            i128::MAX,
+        ] {
+            match relative.checked_add(i128::from(phase)) {
+                Some(position) => assert_eq!(
+                    region.resolve(relative).unwrap(),
+                    Some((position.rem_euclid(i128::from(length)) as u64, 1.0))
+                ),
+                None => assert!(matches!(region.resolve(relative), Err(Error::Invalid(_)))),
+            }
+        }
+    }
+}
