@@ -584,6 +584,75 @@ fn foreign_content_origin_routes_track_return_main_and_latency_preserving_bypass
 }
 
 #[test]
+fn closed_stream_demand_refuses_foreign_return_to_track_feed() {
+    let mut f = fixture(&[&[], &[]], 64);
+    let Created::ReturnTrack(bus) = f
+        .editor
+        .execute(Command::AddReturnTrack {
+            name: "return".into(),
+        })
+        .unwrap()
+    else {
+        panic!("return")
+    };
+    f.editor
+        .execute(Command::SetReturnSend {
+            track: f.tracks[0],
+            return_track: bus,
+            gain: 1.0,
+        })
+        .unwrap();
+    f.editor
+        .execute(Command::SetAudioFeed {
+            source: hex_project::RoutingOwner::Return(bus),
+            destination: f.tracks[1],
+            gain: 0.5,
+        })
+        .unwrap();
+    let Created::Device(device) = f
+        .editor
+        .execute(Command::InsertReturnDevice {
+            return_track: bus,
+            before: None,
+            state: state(19).unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("device")
+    };
+    let definition = BorrowedDefinition {
+        binding_epoch: None,
+        unbounded_tail: false,
+        instances: vec![(
+            ProcessorInstanceIdentity::new(
+                ProcessorChainOwner::Return(bus.value()),
+                device.value(),
+            )
+            .unwrap(),
+            3,
+        )],
+    };
+    let definitions: [&dyn NativeDeviceDefinition; 1] = [&definition];
+    let registry = NativeDeviceRegistry::new(&definitions).unwrap();
+    let revision = PreparedRevision::prepare_with_registries(
+        f.editor.project(),
+        &f.media,
+        Arc::new(SineTable::new()),
+        None,
+        &registry,
+        &hex_devices::native_instrument_registry().unwrap(),
+    )
+    .unwrap();
+    let mut runtime = SessionPlayback::new(Arc::new(revision)).unwrap();
+    runtime.apply(SessionPlaybackCommand::Play).unwrap();
+    assert!(
+        runtime
+            .visit_next_stream_chunk(16, None, &mut |_| Ok(()))
+            .is_err()
+    );
+}
+
+#[test]
 fn foreign_late_failure_silences_whole_callback_and_revokes_instead_of_replaying() {
     let (revision, mut foreign, _) = prepared(2, false);
     let mut runtime = SessionPlayback::new(revision).unwrap();
