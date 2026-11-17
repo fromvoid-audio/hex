@@ -104,9 +104,32 @@ fn ordinary_long_granular(mode: hex_project::WarpMode) {
     h.run(Request::Redo);
     (applied, _) = h.applied(applied);
     play(&mut h);
-    let stretched = h.run(Request::Edit(hex_project::Command::SetProjectTempo {
+    let tempo_changed = h.run(Request::Edit(hex_project::Command::SetProjectTempo {
         tempo: hex_project::Tempo::new(90_000_000).unwrap(),
     }));
+    (applied, _) = h.applied(applied);
+    play(&mut h);
+    let before = tempo_changed.state.project.clip(clip).unwrap();
+    let end = before.duration() + 4_000_000;
+    let stretched = h.run(Request::Edit(hex_project::Command::StretchAudioClipEdge {
+        clip,
+        edge: hex_project::TrimEdge::Right,
+        frame: end,
+    }));
+    let after = stretched.state.project.clip(clip).unwrap();
+    assert_eq!(after.duration(), end);
+    assert_eq!(after.asset(), before.asset());
+    assert_eq!(
+        after
+            .audio_edit()
+            .unwrap()
+            .domain
+            .warp
+            .as_ref()
+            .unwrap()
+            .mode,
+        mode
+    );
     h.applied(applied);
     play(&mut h);
     let saved = files.0.join("granular.hex");

@@ -90,9 +90,8 @@ pub(super) fn retime(
     edit.sync_content_length()?;
     let origin = edit.projection_origin()?;
     let (_, frames, _, _) = edit.projected_domain(tempo)?;
-    if frames > MAX_AUDIO_DOMAIN_FRAMES {
-        return Err(transform_domain_limit(tempo.sample_rate()));
-    }
+    // Callers project the completed clip and apply its source-specific extent
+    // limit there, after the retimed fade and source metadata are in place.
     if frames == 0 {
         return Err(Invalid("stretch must retain a positive interval"));
     }
