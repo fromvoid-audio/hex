@@ -1023,6 +1023,11 @@ pub trait WorkerAudioSink: Send {
     fn verified_clip_move_update(&mut self, _update: VerifiedClipMoveUpdate) -> bool {
         false
     }
+    /// Replace or retire temporary Arrangement gain metadata. Acceptance is
+    /// a bounded control handoff, independent of callback application.
+    fn verified_arrangement_gain_update(&mut self, _update: VerifiedArrangementGainUpdate) -> bool {
+        false
+    }
     /// Synchronous private canonical/original PCM input; no borrow may survive.
     fn native_sampler_input(&mut self, _input: NativeSamplerInput<'_>) {}
     /// A bounded stopped Arrangement handshake, shared by structural edits and

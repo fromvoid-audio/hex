@@ -555,12 +555,16 @@ pub(crate) fn record_audio_backend_event(cx: &mut App, event: &crate::EditorAudi
                 P::Busy => "backpressure",
                 P::Submitted { .. }
                 | P::VerifiedPreviewSubmitted { .. }
+                | P::VerifiedArrangementGainSubmitted { .. }
                 | P::ResidentSubmitted { .. } => "submitted",
-                P::Refused(_) => "refused",
+                P::Refused(_) | P::VerifiedArrangementGainRefused(_) => "refused",
                 P::Fault(_) => "fault",
             };
             let (revision, preview, seek) = match state {
-                P::Submitted { audio_revision } => (Some(*audio_revision), None, None),
+                P::Submitted { audio_revision }
+                | P::VerifiedArrangementGainSubmitted { audio_revision } => {
+                    (Some(*audio_revision), None, None)
+                }
                 P::VerifiedPreviewSubmitted {
                     audio_revision,
                     identity,

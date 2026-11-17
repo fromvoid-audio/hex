@@ -276,6 +276,12 @@ impl NativeAudioSink {
         }
     }
     fn relinquish_output(&mut self) {
+        if matches!(
+            self.verified_preview,
+            Some(VerifiedSource::ArrangementGain(_))
+        ) {
+            self.verified_preview = None;
+        }
         self.document_rebind = None;
         self.initial_open_started = None;
         if let Some(identity) = self.output_identity {
@@ -555,6 +561,7 @@ impl NativeAudioSink {
         let revision = match &state {
             EditorPublicationState::Submitted { audio_revision }
             | EditorPublicationState::VerifiedPreviewSubmitted { audio_revision, .. }
+            | EditorPublicationState::VerifiedArrangementGainSubmitted { audio_revision }
             | EditorPublicationState::ResidentSubmitted { audio_revision, .. } => {
                 Some(*audio_revision)
             }
@@ -773,14 +780,9 @@ impl NativeAudioSink {
             let (quote, builtin_effects) = match snapshot.candidate_reservation_quote() {
                 Ok(quote) => quote,
                 Err(error) => {
-                    self.blocked = Some(context);
-                    self.verified_blocked = Some(key);
-                    self.observe(
-                        context,
-                        "refused",
-                        EditorPublicationState::Refused(format!(
-                            "this audio revision is unsupported: {error:?}"
-                        )),
+                    self.refuse_verified_source(
+                        &snapshot,
+                        format!("this audio revision is unsupported: {error:?}"),
                     );
                     return;
                 }
@@ -810,14 +812,9 @@ impl NativeAudioSink {
                 quote.storage_reservation(bytes).ok()
             });
             let Some(storage) = storage else {
-                self.blocked = Some(context);
-                self.verified_blocked = Some(key);
-                self.observe(
-                    context,
-                    "refused",
-                    EditorPublicationState::Refused(
-                        "audio preparation reservation exceeded".into(),
-                    ),
+                self.refuse_verified_source(
+                    &snapshot,
+                    "audio preparation reservation exceeded".into(),
                 );
                 return;
             };
@@ -830,13 +827,7 @@ impl NativeAudioSink {
             } else {
                 let current = self.next_catalog;
                 let Some(next) = current.checked_add(1) else {
-                    self.blocked = Some(context);
-                    self.verified_blocked = Some(key);
-                    self.observe(
-                        context,
-                        "refused",
-                        EditorPublicationState::Refused("source generation exhausted".into()),
-                    );
+                    self.refuse_verified_source(&snapshot, "source generation exhausted".into());
                     return;
                 };
                 self.next_catalog = next;
@@ -1117,13 +1108,20 @@ impl NativeAudioSink {
                 });
                 self.last_context = Some(context);
                 self.verified_last = Some(pending.snapshot.key());
-                let state = match pending.snapshot.preview_identity() {
-                    Some(identity) => EditorPublicationState::VerifiedPreviewSubmitted {
-                        audio_revision: revision,
-                        identity,
-                    },
-                    None => EditorPublicationState::Submitted {
-                        audio_revision: revision,
+                let state = match &pending.snapshot {
+                    VerifiedSource::ArrangementGain(_) => {
+                        EditorPublicationState::VerifiedArrangementGainSubmitted {
+                            audio_revision: revision,
+                        }
+                    }
+                    snapshot => match snapshot.preview_identity() {
+                        Some(identity) => EditorPublicationState::VerifiedPreviewSubmitted {
+                            audio_revision: revision,
+                            identity,
+                        },
+                        None => EditorPublicationState::Submitted {
+                            audio_revision: revision,
+                        },
                     },
                 };
                 self.observe(context, "submitted", state);
@@ -1150,8 +1148,6 @@ impl NativeAudioSink {
         mut pending: Preparation,
         error: String,
     ) {
-        let context = pending.snapshot.context();
-        let key = pending.snapshot.key();
         control.cancel_audio_candidate_preparation(pending.token);
         pending.cancelling = true;
         if let Some(token) = pending.domain
@@ -1163,10 +1159,20 @@ impl NativeAudioSink {
         {
             domain.request_retirement(control);
         }
+        self.refuse_verified_source(&pending.snapshot, error);
         self.preparation = Some(pending);
-        self.blocked = Some(context);
-        self.verified_blocked = Some(key);
-        self.observe(context, "refused", EditorPublicationState::Refused(error));
+    }
+    fn refuse_verified_source(&mut self, source: &VerifiedSource, error: String) {
+        let context = source.context();
+        self.verified_blocked = Some(source.key());
+        let state = if matches!(source, VerifiedSource::ArrangementGain(_)) {
+            self.verified_preview = None;
+            EditorPublicationState::VerifiedArrangementGainRefused(error)
+        } else {
+            self.blocked = Some(context);
+            EditorPublicationState::Refused(error)
+        };
+        self.observe(context, "refused", state);
     }
 }
 impl WorkerAudioSink for NativeAudioSink {
@@ -1814,6 +1820,12 @@ impl WorkerAudioSink for NativeAudioSink {
     ) -> bool {
         self.verified_clip_control
             .receive(self.desired.as_ref(), update)
+    }
+    fn verified_arrangement_gain_update(
+        &mut self,
+        update: hex_session::service::VerifiedArrangementGainUpdate,
+    ) -> bool {
+        self.receive_verified_arrangement_gain(update)
     }
     fn resident_publication_enabled(&self) -> bool {
         self.worker_owned_resident_graphs
