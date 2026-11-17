@@ -206,11 +206,51 @@ static void check_focus(NSWindowStyleMask style) {
 @end
 
 static NSEvent* key_event(NSWindow* window,NSEventType type,unichar character,
-                          unsigned short code,NSEventModifierFlags modifiers=0) {
+                          unsigned short code,NSEventModifierFlags modifiers=0,bool repeat=false) {
     NSString* text=[NSString stringWithCharacters:&character length:1];
     return [NSEvent keyEventWithType:type location:NSZeroPoint modifierFlags:modifiers
         timestamp:0 windowNumber:[window windowNumber] context:nil
-        characters:text charactersIgnoringModifiers:text isARepeat:NO keyCode:code];
+        characters:text charactersIgnoringModifiers:text isARepeat:repeat keyCode:code];
+}
+
+static void check_transport_space() {
+    auto* window=[[NSWindow alloc] initWithContentRect:NSMakeRect(0,0,320,240)
+        styleMask:NSWindowStyleMaskTitled backing:NSBackingStoreBuffered defer:NO];
+    ResizeView view(window);
+    EditorFrame host(window,&view);
+    view.handles_keys=true;
+    auto* down=key_event(window,NSEventTypeKeyDown,' ',49);
+    auto* up=key_event(window,NSEventTypeKeyUp,' ',49);
+    bool press=false;
+    assert(!host.handle_key_event(down,&press) && !press);
+    host.focus_changed(true);
+    // With the option off, the plug-in can claim both halves.
+    assert(host.handle_key_event(down) && host.handle_key_event(up));
+    assert(view.key_downs==1 && view.key_ups==1);
+    // Only the first physical down toggles; repeats and release stay reserved
+    // even if the user adds a modifier while still holding the key.
+    assert(host.handle_key_event(down,&press) && press);
+    press=false;
+    assert(host.handle_key_event(
+        key_event(window,NSEventTypeKeyDown,' ',49,NSEventModifierFlagShift,true),&press) && !press);
+    assert(host.handle_key_event(up,&press) && !press);
+    assert(view.key_downs==1 && view.key_ups==1);
+    assert(host.handle_key_event(
+        key_event(window,NSEventTypeKeyDown,' ',49,NSEventModifierFlagShift),&press) && !press);
+    assert(view.last_modifiers==kShiftKey);
+    assert(host.handle_key_event(up,&press));
+    assert(host.handle_key_event(key_event(window,NSEventTypeKeyDown,'a',0),&press) && !press);
+    assert(host.handle_key_event(key_event(window,NSEventTypeKeyUp,'a',0),&press));
+    assert(view.key_downs==3 && view.key_ups==3);
+    auto* text=[[MarkedTextResponder alloc] initWithFrame:NSMakeRect(0,0,20,20)];
+    [[window contentView] addSubview:text];
+    assert([window makeFirstResponder:text]);
+    assert(host.handle_key_event(down,&press) && press);
+    assert(host.handle_key_event(up,&press) && !press);
+    assert(view.key_downs==3 && view.key_ups==3);
+    [window makeFirstResponder:nil];
+    [text removeFromSuperview];[text release];
+    [window release];
 }
 
 static void check_keys() {
@@ -422,6 +462,7 @@ int main() {
         check_focus(NSWindowStyleMaskTitled|NSWindowStyleMaskClosable);
         check_focus(style);
         check_keys();
+        check_transport_space();
         check_printable_keys();
         check_reentrant_keys();
         auto* window=[[NSWindow alloc] initWithContentRect:NSMakeRect(40,60,320,240)

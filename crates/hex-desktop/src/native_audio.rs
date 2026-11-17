@@ -132,6 +132,7 @@ pub(super) struct NativeAudioSink {
     pending_degraded_event: Option<EditorAudioEvent>,
     pending_latency_event: Option<EditorAudioEvent>,
     pending_parameter_event: Option<EditorAudioEvent>,
+    pending_plugin_transport: Option<EditorAudioEvent>,
     /// Samples the default output route off this worker; `None` when the
     /// watch thread could not start, which only disables route following.
     route_watch: Option<hex_audio::OutputRouteWatch>,
@@ -217,6 +218,7 @@ impl NativeAudioSink {
             pending_degraded_event: None,
             pending_latency_event: None,
             pending_parameter_event: None,
+            pending_plugin_transport: None,
             route_watch: None,
             route_seen: 0,
             route_follow: Default::default(),
@@ -308,6 +310,7 @@ impl NativeAudioSink {
         self.pending_degraded_event = None;
         self.pending_latency_event = None;
         self.pending_parameter_event = None;
+        self.pending_plugin_transport = None;
         self.preparation = None;
         self.domains = std::array::from_fn(|_| None);
         self.submitted = std::array::from_fn(|_| None);
@@ -582,6 +585,7 @@ impl NativeAudioSink {
             &mut self.pending_route_event,
             &mut self.pending_degraded_event,
             &mut self.pending_latency_event,
+            &mut self.pending_plugin_transport,
             &mut self.pending_parameter_event,
         ] {
             let Some(event) = pending.take() else {
@@ -2169,6 +2173,20 @@ impl WorkerAudioSink for NativeAudioSink {
                 }
                 self.plugins.poll(&mut output, self.desired.as_deref());
                 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                if self.pending_plugin_transport.is_none()
+                    && let Some(desired) = self.desired.as_deref()
+                    && let Some(control) = output.publication.control()
+                {
+                    let project_generation = desired.context().project_generation;
+                    if self
+                        .plugins
+                        .take_transport_space(control, project_generation)
+                    {
+                        self.pending_plugin_transport =
+                            Some(EditorAudioEvent::PluginTransportToggle { project_generation });
+                    }
+                }
+                #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
                 if let Some(desired) = self.desired.as_deref() {
                     self.plugins.close_removed_editor(desired);
                 }
@@ -2228,6 +2246,7 @@ impl WorkerAudioSink for NativeAudioSink {
             && self.pending_degraded_event.is_none()
             && self.pending_latency_event.is_none()
             && self.pending_parameter_event.is_none()
+            && self.pending_plugin_transport.is_none()
             && self.sampler.is_none()
             && self.sampler_parameter.is_none()
             && self.sampler_budget_wait.is_none()

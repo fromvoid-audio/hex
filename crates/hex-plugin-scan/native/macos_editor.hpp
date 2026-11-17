@@ -24,7 +24,7 @@ class EditorFrame final : public IPlugFrame {
     IPlugView* view;
     NSSize accepted_size;
     bool resizing=false,focused=false;
-    // 0 = no down, 1 = AppKit, 2 = SDK, 3 = reentrant SDK plus AppKit.
+    // 0 = no down, 1 = AppKit, 2 = SDK, 3 = reentrant SDK plus AppKit, 4 = Hex transport.
     std::array<uint8_t,128> key_owners{};
     std::array<int16,128> key_values{};
     std::array<char16,128> key_characters{};
@@ -43,13 +43,30 @@ public:
     }
     // Unambiguous ASCII may be offered to the SDK when the responder is not a
     // text input client. Composition and other text remain with AppKit.
-    bool handle_key_event(NSEvent* event) {
+    bool handle_key_event(NSEvent* event,bool* transport_press=nullptr) {
+        if(transport_press) *transport_press=false;
         if(![NSThread isMainThread] || !window || !view || !focused ||
            [event window]!=window || ([event type]!=NSEventTypeKeyDown &&
                                       [event type]!=NSEventTypeKeyUp)) return false;
         const auto code=[event keyCode];
         if(code>=key_owners.size()) return false;
         auto& owner=key_owners[code];
+        const auto flags=[event modifierFlags];
+        if(owner==4) {
+            if([event type]==NSEventTypeKeyUp) { owner=0;++key_serials[code]; }
+            return true;
+        }
+        if(transport_press && !owner &&
+           !(flags&(NSEventModifierFlagShift|NSEventModifierFlagOption|
+                    NSEventModifierFlagCommand|NSEventModifierFlagControl|
+                    NSEventModifierFlagFunction|NSEventModifierFlagHelp)) &&
+           [[event charactersIgnoringModifiers] isEqualToString:@" "]) {
+            if([event type]==NSEventTypeKeyDown) {
+                owner=4;++key_serials[code];
+                *transport_press=![event isARepeat];
+            }
+            return true;
+        }
         if([event type]==NSEventTypeKeyUp && !owner) return false;
         // An unhandled down gives the complete pair, including repeats and
         // release, to AppKit. Never offer those later events to both owners.
@@ -70,7 +87,6 @@ public:
             }
             return false;
         };
-        const auto flags=[event modifierFlags];
         const int16 modifiers=(flags&NSEventModifierFlagShift?kShiftKey:0) |
             (flags&NSEventModifierFlagOption?kAlternateKey:0) |
             (flags&NSEventModifierFlagCommand?kCommandKey:0) |
@@ -449,7 +465,8 @@ public:
         next_application_check=std::chrono::steady_clock::now()+std::chrono::milliseconds(100);
         return is_open()?std::optional<EditorState>(EditorState::Open):unavailable();
     }
-    bool pump() {
+    template<class TransportPress>
+    bool pump(bool reserve_space,TransportPress send_transport_press) {
         if(!window) return true;
         @autoreleasepool {
             // Bound AppKit event work before the next control/cancellation check.
@@ -457,7 +474,10 @@ public:
                 NSEvent* event=[NSApp nextEventMatchingMask:NSEventMaskAny untilDate:[NSDate distantPast]
                     inMode:NSDefaultRunLoopMode dequeue:YES];
                 if(!event) break;
-                if(!frame || !frame->handle_key_event(event)) [NSApp sendEvent:event];
+                bool transport_press=false;
+                if(!frame || !frame->handle_key_event(event,reserve_space?&transport_press:nullptr))
+                    [NSApp sendEvent:event];
+                if(transport_press) send_transport_press();
             }
             if(is_open() && owner>0) {
                 const auto now=std::chrono::steady_clock::now();

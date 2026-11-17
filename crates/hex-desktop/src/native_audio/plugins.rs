@@ -148,6 +148,7 @@ impl std::fmt::Debug for PreparationObservation {
 #[derive(Default)]
 pub(super) struct Plugins {
     host: Option<Hosting>,
+    transport_space: bool,
     initialized: bool,
     unavailable: Option<String>,
     profile_failed: bool,
@@ -217,8 +218,25 @@ impl Plugins {
                     .with_file_name("plugin-catalog.json")
             })
             .filter(|path| path.is_absolute() && path.as_os_str().len() <= 4096);
+        self.transport_space = std::env::var_os("HOME").is_some_and(|home| {
+            let path = hex_preferences::vst3_editor_preferences_path(std::path::Path::new(&home));
+            match hex_preferences::load_vst3_editor_preferences(&path) {
+                Ok(preferences) => preferences.spacebar_controls_transport,
+                Err(error) => {
+                    eprintln!("could not load vst3 editor preferences: {error}");
+                    false
+                }
+            }
+        });
         match Hosting::current_on_control() {
-            Ok(host) => self.host = Some(host.with_grouped_editor_callbacks()),
+            Ok(host) => {
+                let host = host.with_grouped_editor_callbacks();
+                self.host = Some(if self.transport_space {
+                    host.with_transport_space()
+                } else {
+                    host
+                });
+            }
             Err(error) => self.unavailable = Some(error),
         }
     }
