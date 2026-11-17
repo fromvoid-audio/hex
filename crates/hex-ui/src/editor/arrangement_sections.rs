@@ -495,7 +495,7 @@ impl EditorView {
             .beat_to_frame(end)
             .map_err(|_| "selected section exceeds the timeline")?;
         if start >= end {
-            return Err("selected sections have an empty loop range");
+            return Err("selected sections have an empty scope");
         }
         Ok(Some((start, end)))
     }
