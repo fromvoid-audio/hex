@@ -382,18 +382,13 @@ mod tests {
             );
             let child = stage.source.child_id_on_control();
             let binding = stage.configuration.binding;
-            let (instance, _, _) = stage.resume_on_control(plan, || false).unwrap();
-            assert_eq!(instance.child_id_on_control(), child);
-            assert_eq!(instance.configuration().binding, binding);
-            assert_eq!(
-                instance.ready().presentation,
-                hex_plugin_host::protocol::Presentation::Applied
-            );
-            let (stopped, captured) = instance
-                .quiesce_retained_on_control()
-                .unwrap()
-                .capture_state_retained_on_control()
-                .unwrap();
+            let prepared = stage.prepared();
+            let effect = stage.complete_on_control(&observation, || false).unwrap();
+            assert_eq!(effect.prepared(), prepared);
+            assert_eq!(effect.binding(), binding);
+            let (stopped, _) = effect.into_quiescent_on_control().unwrap();
+            assert_eq!(stopped.child_id_on_control(), child);
+            let (stopped, captured) = stopped.capture_state_retained_on_control().unwrap();
             let decoded = hex_plugin_state::decode(&captured).unwrap();
             let bytes = decoded.component.unwrap();
             assert_eq!(
