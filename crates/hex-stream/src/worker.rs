@@ -1493,7 +1493,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn catalog_refuses_repitch_key_before_opening_a_raw_file() {
+    fn catalog_refuses_unadmitted_derived_sources_before_opening_a_raw_file() {
         let mut editor = Editor::new(Project::new(48_000).unwrap(), 2).unwrap();
         let Created::Asset(asset) = editor
             .execute(Command::AddAsset {
@@ -1530,6 +1530,16 @@ pub(crate) mod tests {
             WavReaderLimits::new(1024 * 1024, 4096, 128, 8192),
             1024 * 1024,
         );
+        let region = hex_warp::SourceRegion::new(4096, 0, 4096, 0, false, vec![]).unwrap();
+        let granular = raw
+            .with_granular(
+                &region,
+                &map,
+                hex_warp::Mode::Tones { grain_ms: 30 },
+                0,
+                Resampler::V2,
+            )
+            .unwrap();
         let mut definition = SourceDefinition::new("missing.wav".into(), raw, limits);
         definition.key = StreamSourceKey::repitch(identity);
         let config = StreamConfig::initial();
@@ -1538,6 +1548,17 @@ pub(crate) mod tests {
             build_catalog(
                 &config,
                 vec![definition],
+                &mut scratch,
+                0,
+                &AtomicBool::new(false)
+            ),
+            Err(StreamFailureKind::UnknownSource)
+        ));
+        let granular_definition = SourceDefinition::new("missing.wav".into(), granular, limits);
+        assert!(matches!(
+            build_catalog(
+                &config,
+                vec![granular_definition],
                 &mut scratch,
                 0,
                 &AtomicBool::new(false)
