@@ -4,16 +4,35 @@ use super::*;
 #[test]
 #[ignore = "explicit source-bound signed SDK receipts required"]
 fn native_latency_restart_rebuilds_compensation_on_the_original_source() {
-    run(false);
+    run(false, Route::Track);
 }
 
 #[test]
 #[ignore = "explicit source-bound signed SDK receipts required"]
 fn streamed_latency_restart_rebuilds_compensation_on_the_original_source() {
-    run(true);
+    run(true, Route::Track);
 }
 
-fn run(streamed: bool) {
+#[test]
+#[ignore = "explicit source-bound signed SDK receipts required"]
+fn streamed_return_latency_restart_preserves_parallel_impulse_alignment() {
+    run(true, Route::Return);
+}
+
+#[test]
+#[ignore = "explicit source-bound signed SDK receipts required"]
+fn streamed_main_latency_restart_preserves_summed_impulse_origin() {
+    run(true, Route::Main);
+}
+
+#[derive(Clone, Copy, Debug)]
+enum Route {
+    Track,
+    Return,
+    Main,
+}
+
+fn run(streamed: bool, route: Route) {
     const CHILD: &str = "HEX_DESKTOP_ANNOUNCED_LATENCY_CHILD";
     if std::env::var_os(CHILD).is_none() {
         let files = Files::new();
@@ -70,8 +89,8 @@ fn run(streamed: bool) {
     fs::write(&path, &wav).unwrap();
     h.run(Request::Import(path.clone()));
     let (applied, _) = h.applied(applied);
-    let state = h.run(Request::Import(path.clone())).state;
-    let (applied, _) = h.applied(applied);
+    let mut state = h.run(Request::Import(path.clone())).state;
+    let (mut applied, _) = h.applied(applied);
     assert_eq!(state.project.tracks().len(), 2);
     let sources = state.canonical_audio_source.as_ref().unwrap();
     assert!(sources.required_sources().next().is_some());
@@ -88,11 +107,30 @@ fn run(streamed: bool) {
         );
     }
     let track = state.project.tracks()[0].id();
+    let destination = match route {
+        Route::Track => PluginEffectDestination::Track(track),
+        Route::Main => PluginEffectDestination::Main,
+        Route::Return => {
+            let added = h.run(Request::Edit(Command::AddReturnTrack {
+                name: "latency".into(),
+            }));
+            (applied, _) = h.applied(applied);
+            let Some(Created::ReturnTrack(return_track)) = added.created else {
+                panic!("return track")
+            };
+            state = h
+                .run(Request::Edit(Command::SetReturnSend {
+                    track,
+                    return_track,
+                    gain: 0.5,
+                }))
+                .state;
+            (applied, _) = h.applied(applied);
+            PluginEffectDestination::Return(return_track)
+        }
+    };
     h.service
-        .submit(Request::InsertPluginEffect(request(
-            &state,
-            PluginEffectDestination::Track(track),
-        )))
+        .submit(Request::InsertPluginEffect(request(&state, destination)))
         .unwrap();
     assert!(h.next().error.is_none());
     let accepted = terminal(&mut h);
@@ -199,11 +237,17 @@ fn run(streamed: bool) {
         .enumerate()
         .filter(|(_, frame)| **frame != [0.0; 2])
         .collect();
-    // Both tracks have the same input impulse. The fixture's additional
-    // seven frames must shift both paths, and neither path may disappear.
+    // Both tracks have the same input impulse. Track/Return compensation
+    // aligns dry paths with the wet path; Main delays their complete sum.
+    // The bridge and seven algorithmic frames must each be counted once.
     assert_eq!(nonzero.len(), 1, "{nonzero:?}");
     assert_eq!(nonzero[0].0, 256 + 512 + 7);
-    let expected = 0.25 * (1.0 + 0.5 + (blocks_before_resume + 1) as f32 * 0.125);
+    let wet_gain = 0.5 + (blocks_before_resume + 1) as f32 * 0.125;
+    let expected = match route {
+        Route::Track => 0.25 + 0.25 * wet_gain,
+        Route::Return => 0.5 + 0.125 * wet_gain,
+        Route::Main => 0.5 * wet_gain,
+    };
     assert_eq!(
         *nonzero[0].1, [expected; 2],
         "parallel dry and original wet amplitudes"
@@ -218,7 +262,7 @@ fn run(streamed: bool) {
         state.project.assets().collect::<Vec<_>>()
     );
     println!(
-        "latency_restart,streamed={streamed},sdk_before_resume={observed:?},peak_frame={},peak={expected}",
+        "latency_restart,streamed={streamed},route={route:?},sdk_before_resume={observed:?},peak_frame={},peak={expected}",
         nonzero[0].0
     );
 }
