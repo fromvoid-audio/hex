@@ -247,13 +247,15 @@ std::optional<uint8_t> apply_presentation(hex_instance::Instance& instance,bool 
     if(!plan.known && !available) return 0;
     if(!plan.known && !plan.allow_unknown) return std::nullopt;
     const auto values=plan.known.value_or(wire::Presentation{});
-    const auto result=instance.set_presentation_latency(values.input,values.output);
+    const auto input=plan.known && plan.known_mode!=4?values.input:0;
+    const auto output=plan.known && plan.known_mode!=3?values.output:0;
+    const auto result=instance.set_presentation_latency(input,output);
     if(!available && result==Result::Absent) return 0;
-    if(available && result==Result::Applied) return plan.known?1:2;
+    if(available && result==Result::Applied) return plan.known?plan.known_mode:2;
     return std::nullopt;
 }
 void presentation_receipt(wire::Bytes& out,uint8_t mode,const wire::PresentationPlan& plan) {
-    wire::number(out,mode,1);wire::number(out,plan.known?1:0,1);
+    wire::number(out,mode,1);wire::number(out,plan.known?plan.known_mode:0,1);
     if(plan.known) { wire::number(out,plan.known->input,4);wire::number(out,plan.known->output,4); }
 }
 wire::Bytes ready_body(const wire::Config& config,const hex_instance::CapturedState& state,

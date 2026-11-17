@@ -1866,3 +1866,6 @@ fn actual_tail_change_during_resume_refuses_before_original_instance_restarts() 
     let observed = case.observation().unwrap();
     assert_eq!((observed[1], observed[8], observed[10]), (0, 1, 1));
 }
+
+#[path = "native_tests/presentation.rs"]
+mod presentation;
