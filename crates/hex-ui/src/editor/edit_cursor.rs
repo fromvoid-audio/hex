@@ -14,7 +14,7 @@ const PULSE_PERIOD: Duration = Duration::from_millis(1_200);
 const LOCK_PULSE_PERIOD_MS: u128 = 2_400;
 // A slow marker pulse needs at most 20 repaints per second.
 const LOCK_PULSE_STEP_MS: u128 = 50;
-const POINT_CLICK_SLOP_PX: f64 = 2.0;
+pub(super) const POINT_CLICK_SLOP_PX: f64 = 2.0;
 
 #[derive(Clone, Copy)]
 pub(super) struct EditCursor {
@@ -233,7 +233,7 @@ impl EditorView {
             && self.mode == EditorMode::Arrangement
     }
 
-    fn cursor_frame_at(
+    pub(super) fn cursor_frame_at(
         &self,
         pointer_x: f32,
         lane: super::drag::LaneBounds,
