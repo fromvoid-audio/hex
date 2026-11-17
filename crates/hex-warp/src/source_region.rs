@@ -58,6 +58,19 @@ impl SourceRegion {
     pub fn source_frames(&self) -> u64 {
         self.source_frames
     }
+    /// Immutable inputs that define how relative frames resolve into source audio.
+    pub fn start(&self) -> u64 {
+        self.start
+    }
+    pub fn phase(&self) -> u64 {
+        self.phase
+    }
+    pub fn looping(&self) -> bool {
+        self.looping
+    }
+    pub fn envelope(&self) -> &[GainPoint] {
+        &self.envelope
+    }
     pub fn length(&self) -> u64 {
         self.length
     }
