@@ -110,6 +110,7 @@ pub(crate) fn preparation_data_bound(
         paths,
         paths,
         manifests.min(config.max_manifest_bytes),
+        count.checked_mul(hex_media::VerifiedWavManifest::owner_payload_bytes())?,
         kernel_count.checked_mul(ResampleKernel::owner_payload_bytes())?,
         table_reservation,
         config
@@ -820,11 +821,13 @@ fn build_catalog(
         // mtime are unchanged; every page served later is still digest-verified.
         // If that identity changed, re-hash in full: the fingerprint check below
         // then accepts a touched-but-identical file and refuses a changed one.
-        let reused = definition.verified_manifest.as_ref().map(|manifest| {
+        // Move the supplied handle into the reader. A failed identity reuse
+        // must not retain an unused old manifest beside the replacement reader.
+        let reused = definition.verified_manifest.take().map(|manifest| {
             VerifiedWavReader::open_verified_with_cancel(
                 &definition.path,
                 reader_limits,
-                manifest.clone(),
+                manifest,
                 cancelled,
             )
         });
@@ -1041,12 +1044,14 @@ fn build_catalog(
             .ok_or(StreamFailureKind::CapacityExhausted)?;
         data.manifests = data
             .manifests
-            .checked_add(
-                layout
-                    .manifest_capacity
-                    .checked_mul(layout.manifest_element_bytes)
-                    .ok_or(StreamFailureKind::CapacityExhausted)?,
-            )
+            .checked_add(layout.manifest_owner_payload_bytes)
+            .and_then(|bytes| {
+                bytes.checked_add(
+                    layout
+                        .manifest_capacity
+                        .checked_mul(layout.manifest_element_bytes)?,
+                )
+            })
             .ok_or(StreamFailureKind::CapacityExhausted)?;
     }
     for (index, (_, _, kernel)) in kernels.iter().enumerate() {
@@ -2051,13 +2056,51 @@ pub(crate) mod tests {
         let config = StreamConfig::initial();
         let mut scratch = vec![[0.0; 2]; config.source_scratch_frames];
         let stop = AtomicBool::new(false);
-        let (sources, _, _) =
+        let (sources, _, data) =
             build_catalog(&config, vec![definition()], &mut scratch, 0, &stop).expect("rebuild");
+        let manifest_data =
+            verified.page_manifest_bytes() + hex_media::VerifiedWavManifest::owner_payload_bytes();
+        assert_eq!(data.manifests, manifest_data);
         assert_eq!(
             sources[0].reader.raw_page_reads(),
             1,
             "an unchanged pre-verified source reads only its header page"
         );
+        // Two readers may share immutable manifest DATA; reserve it per reader
+        // rather than omitting the sized owner or inferring exclusive custody.
+        let mut second = definition();
+        second.metadata = StreamedSourceMetadata::new(
+            StreamSourceKey::new(96, asset),
+            48_000,
+            48_000,
+            u64::from(FRAMES),
+            u64::from(FRAMES),
+            IDENTITY_CONVERSION,
+            *verified.fingerprint(),
+        )
+        .unwrap();
+        second.key = second.metadata.key();
+        let definitions = vec![definition(), second];
+        let mut shared_config = config;
+        shared_config.max_manifest_bytes = 2 * verified.page_manifest_bytes();
+        let mut short = shared_config;
+        short.max_manifest_bytes -= 1;
+        assert!(matches!(
+            build_catalog(&short, definitions.clone(), &mut scratch, 0, &stop),
+            Err(StreamFailureKind::CapacityExhausted)
+        ));
+        let (bound, _) =
+            preparation_data_bound(shared_config, &definitions, definitions.capacity()).unwrap();
+        let (shared, footprint, data) =
+            build_catalog(&shared_config, definitions, &mut scratch, 0, &stop).unwrap();
+        assert_eq!(data.manifests, 2 * manifest_data);
+        assert_eq!(footprint.manifest_bytes, 2 * verified.page_manifest_bytes());
+        assert!(std::ptr::eq(
+            shared[0].reader.page_digests().as_ptr(),
+            shared[1].reader.page_digests().as_ptr(),
+        ));
+        assert!(data.bytes().unwrap() <= bound);
+        drop(shared);
         // Without a manifest the same rebuild hashes every page.
         let (sources, _, _) = build_catalog(
             &config,
