@@ -491,6 +491,41 @@ impl AudioCandidatePreparation {
         self.sources.push((key.asset(), source));
         Ok(())
     }
+    /// Retain a granular stream only alongside its exact original source facts.
+    pub fn add_granular_streamed_source_on_control(
+        &mut self,
+        metadata: crate::StreamedSourceMetadata,
+    ) -> Result<(), AudioStorageError> {
+        use crate::audio_only_inputs::SourceKind;
+        self.collecting_slot()?;
+        let key = metadata.key();
+        let raw = self
+            .sources
+            .iter()
+            .find_map(|(asset, source)| {
+                if *asset != key.asset() {
+                    return None;
+                }
+                match &source.kind {
+                    SourceKind::Streamed(raw) if raw.key().is_raw() => Some(raw),
+                    _ => None,
+                }
+            })
+            .ok_or(AudioStorageError::SourceMismatch)?;
+        if !metadata.is_granular_of(raw) {
+            return Err(AudioStorageError::SourceMismatch);
+        }
+        if self.sources.iter().any(
+            |(_, source)| matches!(&source.kind, SourceKind::Streamed(old) if old.key() == key),
+        ) {
+            return Err(AudioStorageError::DuplicateAsset);
+        }
+        self.validate_collection_bytes(std::mem::size_of::<crate::StreamedSourceMetadata>())?;
+        let source = crate::OwnedAudioSource::try_granular_streamed(metadata)
+            .map_err(|refused| refused.reason)?;
+        self.sources.push((key.asset(), source));
+        Ok(())
+    }
     /// Low-level exact Project/context bridge. Session snapshots call this with
     /// their paired canonical Project and counters; numbers grant no custody.
     pub fn prepare_on_control(

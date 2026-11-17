@@ -1066,3 +1066,5 @@ fn sparse_native_arrangement_retains_only_event_pcm_and_recovers_source_bank() {
         assert!(refusal.inputs.source_view(&original).is_ok());
     }
 }
+
+mod granular;

@@ -66,6 +66,7 @@ enum StreamIngress {
     Raw,
     Pitch,
     Repitch,
+    Granular,
 }
 
 impl OwnedAudioSource {
@@ -132,6 +133,13 @@ impl OwnedAudioSource {
     ) -> Result<Self, Box<StreamedSourceRefusal>> {
         Self::streamed_with_kind(metadata, StreamIngress::Repitch)
     }
+    /// Construct granular facts for a derived-capable bank. The bank still
+    /// requires matching raw facts and the Project validates rendering identity.
+    pub fn try_granular_streamed(
+        metadata: StreamedSourceMetadata,
+    ) -> Result<Self, Box<StreamedSourceRefusal>> {
+        Self::streamed_with_kind(metadata, StreamIngress::Granular)
+    }
     fn streamed_with_kind(
         metadata: StreamedSourceMetadata,
         kind: StreamIngress,
@@ -142,6 +150,7 @@ impl OwnedAudioSource {
                 StreamIngress::Raw => !metadata.key().is_raw(),
                 StreamIngress::Pitch => pitch.is_none_or(|(cents, _)| cents == 0),
                 StreamIngress::Repitch => metadata.key().repitch_identity().is_none(),
+                StreamIngress::Granular => metadata.key().granular_identity().is_none(),
             } {
                 return Err(AudioStorageError::SourceMismatch);
             }
@@ -259,7 +268,7 @@ impl OwnedAudioInputs {
     ) -> Result<Self, Box<AudioInputsRefusal>> {
         Self::try_new_with_mode(sources, reservation, BankMode::Pitch)
     }
-    /// Bank of raw sources and exact supported derived pitch/Re-Pitch identities.
+    /// Bank of raw sources and exact supported pitch/Re-Pitch/granular identities.
     pub fn try_new_with_derived(
         sources: Vec<(AssetId, OwnedAudioSource)>,
         reservation: AudioStorageReservation,
@@ -446,7 +455,8 @@ impl OwnedAudioInputs {
                             .with_plain_pitch(cents, law)
                             .is_ok_and(|expected| &expected == metadata.arc().as_ref())
                 } else {
-                    matches!(mode, BankMode::Derived) && metadata.is_repitch_of(raw)
+                    matches!(mode, BankMode::Derived)
+                        && (metadata.is_repitch_of(raw) || metadata.is_granular_of(raw))
                 };
                 if !matches {
                     return Err(AudioStorageError::SourceMismatch);
@@ -509,6 +519,25 @@ impl OwnedAudioInputs {
         key: crate::StreamSourceKey,
     ) -> Result<AudioSourceToken, AudioStorageError> {
         if key.repitch_identity().is_none() {
+            return Err(AudioStorageError::SourceMismatch);
+        }
+        let index = self.sources.iter().position(|(asset, source)| *asset == key.asset()
+            && matches!(&source.kind, SourceKind::Streamed(metadata) if metadata.key() == key))
+            .ok_or(AudioStorageError::SourceMismatch)?;
+        Ok(AudioSourceToken {
+            bank: self.bank,
+            custodian: self.custodian,
+            source: index,
+            source_handle: self.sources[index].1.handle,
+            alias: None,
+        })
+    }
+    /// Nonowning token for an exact granular source; never falls back to raw PCM.
+    pub fn granular_source_token(
+        &self,
+        key: crate::StreamSourceKey,
+    ) -> Result<AudioSourceToken, AudioStorageError> {
+        if key.granular_identity().is_none() {
             return Err(AudioStorageError::SourceMismatch);
         }
         let index = self.sources.iter().position(|(asset, source)| *asset == key.asset()

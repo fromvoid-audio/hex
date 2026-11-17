@@ -86,6 +86,57 @@ pub(super) fn repitch_source_index(
         && matches!(&source.kind, SourceKind::Streamed(derived) if matching_streamed_repitch(project, clip, raw, derived)))
 }
 
+/// Match the same canonical map and verified source used by semantic compilation.
+pub(crate) fn matching_streamed_granular(
+    project: &hex_project::Project,
+    clip: &hex_project::Clip,
+    raw: &crate::StreamedSourceMetadata,
+    derived: &crate::StreamedSourceMetadata,
+) -> bool {
+    let Some(asset) = project.asset(clip.asset()) else {
+        return false;
+    };
+    let Some(edit) = clip.audio_edit() else {
+        return false;
+    };
+    if derived.key().granular_identity().is_none()
+        || !raw.key().is_raw()
+        || raw.key().asset() != asset.id()
+        || raw.project_rate() != project.sample_rate()
+        || raw.playback_frames() != asset.playback_frames()
+        || raw.source_rate() != asset.source_sample_rate()
+        || raw.source_frames() != asset.source_frames()
+        || raw.conversion_version() != asset.conversion_version()
+    {
+        return false;
+    }
+    crate::audio_transform::streamed_granular_root(
+        raw,
+        edit,
+        project.tempo_map(),
+        &std::sync::atomic::AtomicBool::new(false),
+    )
+    .is_ok_and(|root| root.metadata() == derived)
+}
+
+pub(super) fn granular_source_index(
+    project: &hex_project::Project,
+    bank: &OwnedAudioInputs,
+    clip: &hex_project::Clip,
+) -> Option<usize> {
+    let raw = bank.sources.iter().find_map(|(asset, source)| {
+        if *asset != clip.asset() {
+            return None;
+        }
+        match &source.kind {
+            SourceKind::Streamed(metadata) if metadata.key().is_raw() => Some(metadata),
+            _ => None,
+        }
+    })?;
+    bank.sources.iter().position(|(asset, source)| *asset == clip.asset()
+        && matches!(&source.kind, SourceKind::Streamed(derived) if matching_streamed_granular(project, clip, raw, derived)))
+}
+
 pub(super) fn pitched_source_index(
     project: &hex_project::Project,
     bank: &OwnedAudioInputs,
