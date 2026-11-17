@@ -14,7 +14,8 @@ use coreaudio::audio_unit::render_callback::{self, data};
 use coreaudio::audio_unit::{AudioUnit, Element, Scope};
 use objc2_audio_toolbox::{
     kAudioOutputUnitProperty_CurrentDevice, kAudioOutputUnitProperty_EnableIO,
-    kAudioUnitProperty_MaximumFramesPerSlice, kAudioUnitProperty_StreamFormat,
+    kAudioUnitProperty_Latency, kAudioUnitProperty_MaximumFramesPerSlice,
+    kAudioUnitProperty_StreamFormat, AudioUnitGetProperty,
 };
 use objc2_core_audio::kAudioDevicePropertyDeviceUID;
 use objc2_core_audio::kAudioObjectPropertyElementMain;
@@ -28,6 +29,10 @@ use objc2_core_audio::{
     AudioObjectGetPropertyDataSize, AudioObjectID, AudioObjectPropertyAddress,
     AudioObjectPropertyScope, AudioObjectSetPropertyData,
 };
+use objc2_core_audio::{
+    kAudioDevicePropertyLatency, kAudioDevicePropertySafetyOffset, kAudioDevicePropertyStreams,
+    kAudioStreamPropertyLatency,
+};
 use objc2_core_audio_types::{
     AudioBuffer, AudioBufferList, AudioStreamBasicDescription, AudioValueRange,
 };
@@ -36,7 +41,7 @@ use objc2_core_foundation::Type;
 
 pub use super::enumerate::{default_output_device, SupportedInputConfigs, SupportedOutputConfigs};
 use std::fmt;
-use std::mem::{self, size_of};
+use std::mem::{self, size_of, size_of_val};
 use std::ptr::{null, NonNull};
 use std::sync::mpsc::{channel, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
@@ -1177,6 +1182,532 @@ impl Drop for OutputBufferRollback {
                 );
             }
         }
+    }
+}
+
+/// One copied observation of the actual output unit and its pinned device.
+/// Device components are in hardware frames; the unit reports seconds. This
+/// grants no ongoing route validity: rate, buffer, stream, safety or latency
+/// changes invalidate it. Callers must observe those changes before using it
+/// for a persistent presentation plan. It is not measured physical latency.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct OutputTiming {
+    pub device_id: AudioDeviceID,
+    pub device_sample_rate: f64,
+    pub client_sample_rate: f64,
+    pub buffer_frames: u32,
+    pub safety_frames: u32,
+    pub device_frames: u32,
+    /// All output streams must report this same value; differing streams refuse.
+    pub stream_frames: u32,
+    pub audio_unit_seconds: f64,
+}
+
+impl OutputTiming {
+    /// Declared buffer/safety/device/stream path rounded up once to client
+    /// frames using exact integral-rate arithmetic. Fractional nominal rates
+    /// refuse. EXCLUDES the AudioUnit property: its device overlap is not
+    /// established by this query. Do not add it or infer full presentation
+    /// timing without a supported composition and route-validity contract.
+    pub fn hardware_path_client_frames(&self) -> Result<u32, BuildStreamError> {
+        if self.device_id == 0
+            || !self.device_sample_rate.is_finite()
+            || self.device_sample_rate < 1.0
+            || self.device_sample_rate > f64::from(u32::MAX)
+            || self.device_sample_rate.fract() != 0.0
+            || !self.client_sample_rate.is_finite()
+            || self.client_sample_rate < 1.0
+            || self.client_sample_rate > f64::from(u32::MAX)
+            || self.client_sample_rate.fract() != 0.0
+            || !self.audio_unit_seconds.is_finite()
+            || self.audio_unit_seconds < 0.0
+            || self.audio_unit_seconds * self.client_sample_rate > f64::from(u32::MAX)
+            || self.buffer_frames == 0
+        {
+            return Err(bounded_output_error("invalid coreaudio output timing"));
+        }
+        let hardware = self
+            .buffer_frames
+            .checked_add(self.safety_frames)
+            .and_then(|n| n.checked_add(self.device_frames))
+            .and_then(|n| n.checked_add(self.stream_frames))
+            .ok_or_else(|| bounded_output_error("coreaudio output timing overflow"))?;
+        // CPAL rates are integral. Exact integer arithmetic avoids adding a
+        // spurious frame when a floating-point quotient lands above an integer.
+        let numerator = u64::from(hardware)
+            .checked_mul(u64::from(self.client_sample_rate as u32))
+            .ok_or_else(|| bounded_output_error("coreaudio output timing overflow"))?;
+        u32::try_from(numerator.div_ceil(u64::from(self.device_sample_rate as u32)))
+            .map_err(|_| bounded_output_error("coreaudio output timing overflow"))
+    }
+}
+
+impl Stream {
+    /// Read declared output timing on CONTROL only. This locks and calls native
+    /// property APIs; never call from a data/error callback. Two equal bounded
+    /// snapshots detect observed setup changes, not atomicity or future changes.
+    /// Enumeration is capped at 16 output streams; no OS call deadline is claimed.
+    /// Missing, malformed or nonuniform properties return errors, never zero.
+    pub fn output_timing_on_control(&self) -> Result<OutputTiming, BuildStreamError> {
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| bounded_output_error("coreaudio output control is poisoned"))?;
+        stable_output_timing(&inner.audio_unit, inner.device_id)
+    }
+}
+
+fn stable_output_timing(
+    unit: &AudioUnit,
+    device: AudioDeviceID,
+) -> Result<OutputTiming, BuildStreamError> {
+    let first = output_timing_snapshot(unit, device)?;
+    let second = output_timing_snapshot(unit, device)?;
+    validate_stable_output_timing(first, second)
+}
+
+type OutputTimingSnapshot = (OutputTiming, [u32; 16], usize);
+
+fn validate_stable_output_timing(
+    first: OutputTimingSnapshot,
+    second: OutputTimingSnapshot,
+) -> Result<OutputTiming, BuildStreamError> {
+    if first != second {
+        return Err(bounded_output_error(
+            "coreaudio output timing changed during query",
+        ));
+    }
+    first.0.hardware_path_client_frames()?;
+    Ok(first.0)
+}
+
+fn output_timing_snapshot(
+    unit: &AudioUnit,
+    device: AudioDeviceID,
+) -> Result<(OutputTiming, [u32; 16], usize), BuildStreamError> {
+    let actual: AudioDeviceID = output_unit_timing_property(
+        unit,
+        kAudioOutputUnitProperty_CurrentDevice,
+        Scope::Global,
+        Element::Output,
+    )?;
+    let enabled: u32 = output_unit_timing_property(
+        unit,
+        kAudioOutputUnitProperty_EnableIO,
+        Scope::Output,
+        Element::Output,
+    )?;
+    if actual != device || device == 0 || enabled != 1 {
+        return Err(bounded_output_error(
+            "coreaudio output device is unavailable",
+        ));
+    }
+    let format: AudioStreamBasicDescription = output_unit_timing_property(
+        unit,
+        kAudioUnitProperty_StreamFormat,
+        Scope::Input,
+        Element::Output,
+    )?;
+    if format.mChannelsPerFrame == 0 {
+        return Err(bounded_output_error(
+            "coreaudio output channels are unavailable",
+        ));
+    }
+    let address = AudioObjectPropertyAddress {
+        mSelector: kAudioDevicePropertyNominalSampleRate,
+        mScope: kAudioObjectPropertyScopeGlobal,
+        mElement: kAudioObjectPropertyElementMain,
+    };
+    let mut rate = 0.0_f64;
+    let mut size = size_of::<f64>() as u32;
+    // SAFETY: These initialized writable outputs have the exact property type
+    // and lifetime for this synchronous native read; its returned size is checked.
+    let status = unsafe {
+        AudioObjectGetPropertyData(
+            device,
+            NonNull::from(&address),
+            0,
+            null(),
+            NonNull::from(&mut size),
+            NonNull::from(&mut rate).cast(),
+        )
+    };
+    coreaudio::Error::from_os_status(status)?;
+    if size != size_of::<f64>() as u32 {
+        return Err(bounded_output_error("invalid coreaudio device rate size"));
+    }
+    let (streams, count) = output_timing_streams(device)?;
+    let stream_frames = uniform_output_timing(&streams[..count], |stream| {
+        output_timing_u32(
+            stream,
+            kAudioStreamPropertyLatency,
+            kAudioObjectPropertyScopeGlobal,
+        )
+    })?;
+    let timing = OutputTiming {
+        device_id: device,
+        device_sample_rate: rate,
+        client_sample_rate: format.mSampleRate,
+        buffer_frames: device_buffer_frames(device)?,
+        safety_frames: output_timing_u32(
+            device,
+            kAudioDevicePropertySafetyOffset,
+            kAudioObjectPropertyScopeOutput,
+        )?,
+        device_frames: output_timing_u32(
+            device,
+            kAudioDevicePropertyLatency,
+            kAudioObjectPropertyScopeOutput,
+        )?,
+        stream_frames,
+        audio_unit_seconds: output_unit_timing_property(
+            unit,
+            kAudioUnitProperty_Latency,
+            Scope::Global,
+            Element::Output,
+        )?,
+    };
+    timing.hardware_path_client_frames()?;
+    Ok((timing, streams, count))
+}
+
+// This private, closed list contains only initialized native POD values with
+// valid arbitrary bit patterns. Do not implement for pointers or Rust owners.
+trait OutputTimingProperty: Copy {
+    fn initialized() -> Self;
+}
+impl OutputTimingProperty for u32 {
+    fn initialized() -> Self {
+        0
+    }
+}
+impl OutputTimingProperty for f64 {
+    fn initialized() -> Self {
+        0.0
+    }
+}
+impl OutputTimingProperty for AudioStreamBasicDescription {
+    fn initialized() -> Self {
+        Self {
+            mSampleRate: 0.0,
+            mFormatID: 0,
+            mFormatFlags: 0,
+            mBytesPerPacket: 0,
+            mFramesPerPacket: 0,
+            mBytesPerFrame: 0,
+            mChannelsPerFrame: 0,
+            mBitsPerChannel: 0,
+            mReserved: 0,
+        }
+    }
+}
+
+fn output_unit_timing_property<T: OutputTimingProperty>(
+    unit: &AudioUnit,
+    selector: u32,
+    scope: Scope,
+    element: Element,
+) -> Result<T, BuildStreamError> {
+    let mut value = T::initialized();
+    let mut size = size_of::<T>() as u32;
+    // SAFETY: The unit is borrowed and live, and the private POD list supplies
+    // initialized writable storage of the advertised size/alignment. All calls
+    // below use the documented property type. Returned sizes are checked rather
+    // than assuming an uninitialized native result is complete.
+    let status = unsafe {
+        AudioUnitGetProperty(
+            *unit.as_ref(),
+            selector,
+            scope as u32,
+            element as u32,
+            NonNull::from(&mut value).cast(),
+            NonNull::from(&mut size),
+        )
+    };
+    coreaudio::Error::from_os_status(status)?;
+    if size != size_of::<T>() as u32 {
+        return Err(bounded_output_error(
+            "invalid coreaudio output unit timing property size",
+        ));
+    }
+    Ok(value)
+}
+
+fn output_timing_u32(
+    object: u32,
+    selector: u32,
+    scope: AudioObjectPropertyScope,
+) -> Result<u32, BuildStreamError> {
+    let address = AudioObjectPropertyAddress {
+        mSelector: selector,
+        mScope: scope,
+        mElement: kAudioObjectPropertyElementMain,
+    };
+    let mut value = 0_u32;
+    let mut size = size_of::<u32>() as u32;
+    // SAFETY: The selected UInt32 property writes into a live initialized UInt32
+    // with its exact capacity. The synchronous read's returned size is checked.
+    let status = unsafe {
+        AudioObjectGetPropertyData(
+            object,
+            NonNull::from(&address),
+            0,
+            null(),
+            NonNull::from(&mut size),
+            NonNull::from(&mut value).cast(),
+        )
+    };
+    coreaudio::Error::from_os_status(status)?;
+    if size != size_of::<u32>() as u32 {
+        return Err(bounded_output_error(
+            "invalid coreaudio timing property size",
+        ));
+    }
+    Ok(value)
+}
+
+fn uniform_output_timing(
+    streams: &[u32],
+    mut read: impl FnMut(u32) -> Result<u32, BuildStreamError>,
+) -> Result<u32, BuildStreamError> {
+    let Some((first, rest)) = streams.split_first().filter(|_| streams.len() <= 16) else {
+        return Err(bounded_output_error(
+            "invalid coreaudio output stream count",
+        ));
+    };
+    let frames = read(*first)?;
+    for stream in rest {
+        if read(*stream)? != frames {
+            return Err(bounded_output_error(
+                "nonuniform coreaudio output stream latency",
+            ));
+        }
+    }
+    Ok(frames)
+}
+
+fn output_timing_streams(device: AudioDeviceID) -> Result<([u32; 16], usize), BuildStreamError> {
+    let address = AudioObjectPropertyAddress {
+        mSelector: kAudioDevicePropertyStreams,
+        mScope: kAudioObjectPropertyScopeOutput,
+        mElement: kAudioObjectPropertyElementMain,
+    };
+    let mut streams = [0_u32; 16];
+    let mut size = size_of_val(&streams) as u32;
+    // SAFETY: The initialized array provides the advertised writable capacity.
+    // Core Audio refuses insufficient space; count/alignment/IDs are checked
+    // before indexing. No returned size can extend the slice past this array.
+    let status = unsafe {
+        AudioObjectGetPropertyData(
+            device,
+            NonNull::from(&address),
+            0,
+            null(),
+            NonNull::from(&mut size),
+            NonNull::new(streams.as_mut_ptr())
+                .ok_or_else(|| bounded_output_error("coreaudio stream storage unavailable"))?
+                .cast(),
+        )
+    };
+    coreaudio::Error::from_os_status(status)?;
+    let count = validate_output_timing_streams(&streams, size as usize)?;
+    Ok((streams, count))
+}
+
+fn validate_output_timing_streams(
+    streams: &[u32; 16],
+    size: usize,
+) -> Result<usize, BuildStreamError> {
+    let count = size / size_of::<u32>();
+    if size == 0 || size > size_of_val(streams) || size % size_of::<u32>() != 0 {
+        return Err(bounded_output_error(
+            "invalid coreaudio output stream inventory",
+        ));
+    }
+    for i in 0..count {
+        if streams[i] == 0 || streams[..i].contains(&streams[i]) {
+            return Err(bounded_output_error(
+                "invalid coreaudio output stream identity",
+            ));
+        }
+    }
+    Ok(count)
+}
+
+#[cfg(test)]
+mod output_timing_regression {
+    use super::*;
+
+    fn timing() -> OutputTiming {
+        OutputTiming {
+            device_id: 1,
+            device_sample_rate: 48_000.0,
+            client_sample_rate: 44_100.0,
+            buffer_frames: 128,
+            safety_frames: 16,
+            device_frames: 7,
+            stream_frames: 9,
+            audio_unit_seconds: 0.125,
+        }
+    }
+
+    #[test]
+    fn changing_nonuniform_and_unavailable_observations_refuse() {
+        assert_eq!(uniform_output_timing(&[5, 6], |_| Ok(0)).unwrap(), 0);
+        assert!(uniform_output_timing(&[], |_| Ok(0)).is_err());
+        assert!(uniform_output_timing(&[1; 17], |_| Ok(0)).is_err());
+        assert!(uniform_output_timing(&[5, 6], Ok).is_err());
+        assert!(
+            uniform_output_timing(&[5], |_| Err(bounded_output_error("property unavailable")))
+                .is_err()
+        );
+        let first = (timing(), [5; 16], 1);
+        assert_eq!(
+            validate_stable_output_timing(first, first).unwrap(),
+            timing()
+        );
+        assert!(validate_stable_output_timing(
+            first,
+            (
+                OutputTiming {
+                    safety_frames: 17,
+                    ..timing()
+                },
+                first.1,
+                1
+            )
+        )
+        .is_err());
+        assert!(validate_stable_output_timing(first, (timing(), [6; 16], 1)).is_err());
+        assert!(validate_stable_output_timing(first, (timing(), first.1, 2)).is_err());
+    }
+
+    #[test]
+    fn units_round_once_and_do_not_double_count_unclassified_audio_unit_latency() {
+        let observed = timing();
+        assert_eq!(observed.hardware_path_client_frames().unwrap(), 147);
+        assert_eq!(
+            OutputTiming {
+                client_sample_rate: 48_000.0,
+                ..observed
+            }
+            .hardware_path_client_frames()
+            .unwrap(),
+            160
+        );
+        // The AU value remains a separate reported observation. It may already
+        // include hardware latency, so it must not silently enter the sum.
+        assert_eq!(observed.audio_unit_seconds, 0.125);
+        assert_eq!(
+            OutputTiming {
+                audio_unit_seconds: 0.0,
+                ..observed
+            }
+            .hardware_path_client_frames()
+            .unwrap(),
+            147
+        );
+    }
+
+    #[test]
+    fn malformed_and_overflowing_timing_never_becomes_known_zero() {
+        for value in [
+            44_100.5,
+            f64::NAN,
+            f64::INFINITY,
+            0.0,
+            -1.0,
+            f64::MIN_POSITIVE,
+            f64::MAX,
+        ] {
+            assert!(OutputTiming {
+                device_sample_rate: value,
+                ..timing()
+            }
+            .hardware_path_client_frames()
+            .is_err());
+            assert!(OutputTiming {
+                client_sample_rate: value,
+                ..timing()
+            }
+            .hardware_path_client_frames()
+            .is_err());
+        }
+        for value in [f64::NAN, f64::INFINITY, -1.0, f64::MAX] {
+            assert!(OutputTiming {
+                audio_unit_seconds: value,
+                ..timing()
+            }
+            .hardware_path_client_frames()
+            .is_err());
+        }
+        assert!(OutputTiming {
+            device_id: 0,
+            ..timing()
+        }
+        .hardware_path_client_frames()
+        .is_err());
+        assert!(OutputTiming {
+            buffer_frames: 0,
+            ..timing()
+        }
+        .hardware_path_client_frames()
+        .is_err());
+        assert!(OutputTiming {
+            device_frames: u32::MAX,
+            ..timing()
+        }
+        .hardware_path_client_frames()
+        .is_err());
+        assert!(OutputTiming {
+            device_sample_rate: 1.0,
+            client_sample_rate: f64::from(u32::MAX),
+            ..timing()
+        }
+        .hardware_path_client_frames()
+        .is_err());
+        let mut streams = [0; 16];
+        for size in [0, 1, 3, 4, 65, usize::MAX] {
+            assert!(validate_output_timing_streams(&streams, size).is_err());
+        }
+        streams[0] = 5;
+        assert_eq!(validate_output_timing_streams(&streams, 4).unwrap(), 1);
+        streams[1] = 5;
+        assert!(validate_output_timing_streams(&streams, 8).is_err());
+        streams[1] = 6;
+        assert_eq!(validate_output_timing_streams(&streams, 8).unwrap(), 2);
+        assert!(output_timing_u32(
+            0,
+            kAudioDevicePropertyLatency,
+            kAudioObjectPropertyScopeOutput
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn actual_pinned_output_unit_reports_component_observations_on_control() {
+        let device = default_output_device().expect("native timing probe needs an output device");
+        // No stream start, hardware buffer/rate mutation or audio callback.
+        let unit = audio_unit_on_device(&device, false, true).unwrap();
+        let stream = Stream::new(
+            StreamInner {
+                playing: false,
+                audio_unit: unit,
+                device_id: device.audio_device_id,
+                _loopback_device: None,
+            },
+            Box::new(|_| {}),
+        )
+        .unwrap();
+        let observed: crate::platform::CoreAudioOutputTiming =
+            stream.output_timing_on_control().unwrap();
+        assert_eq!(observed.device_id, device.audio_device_id);
+        assert_eq!(
+            observed.buffer_frames,
+            device_buffer_frames(device.audio_device_id).unwrap()
+        );
+        assert!(observed.hardware_path_client_frames().unwrap() > 0);
+        println!("control-only declared output components: {observed:?}");
     }
 }
 
