@@ -592,6 +592,15 @@ impl EditorView {
                         gpui::MouseButton::Left,
                         cx.listener(|view, event: &gpui::MouseDownEvent, _, cx| {
                             if event.modifiers == gpui::Modifiers::default() {
+                                let point =
+                                    (f32::from(event.position.x), f32::from(event.position.y));
+                                // Arrangement capture saw this press before the marker.
+                                // Discard its pending tail drag so the marker can claim it.
+                                if view.time_selection_gesture.as_ref().is_some_and(|gesture| {
+                                    !gesture.moved && gesture.tail_press == Some(point)
+                                }) {
+                                    view.time_selection_gesture = None;
+                                }
                                 view.toggle_play_start_lock(cx);
                                 cx.stop_propagation();
                             }
