@@ -192,14 +192,26 @@ impl SessionPlayback {
             visit,
             window: None,
         };
-        let report = self.inherit_state_planned(
-            previous,
-            None,
-            Some(&mut demand),
-            true,
-            fenced_restart,
-            continuation,
-        )?;
+        let report = self
+            .inherit_state_planned(
+                previous,
+                None,
+                Some(&mut demand),
+                true,
+                fenced_restart,
+                continuation,
+            )
+            .map_err(|error| {
+                // Keep a draining endpoint retryable. A frozen predecessor
+                // cannot clear ownership without a new transport action.
+                if error == SessionPlaybackError::ForeignTailSourceBusy
+                    && previous.renders_no_device_chains()
+                {
+                    SessionPlaybackError::ForeignTailSourcePaused
+                } else {
+                    error
+                }
+            })?;
         let window = demand
             .window
             .ok_or(SessionPlaybackError::ArithmeticOverflow)?;

@@ -1625,6 +1625,40 @@ fn exact_foreign_continuation_keeps_track_return_and_main_tail_in_the_running_ch
         ));
         assert_eq!(old.performance_frame, old_frame);
         let wrong = Arc::new(state(21).unwrap());
+        old.apply(SessionPlaybackCommand::Pause).unwrap();
+        assert!(old.renders_no_device_chains());
+        let mut silence = [[1.0; 2]; 8];
+        old.render_with_foreign_processors(&mut silence, None, None, None, &mut NonQuiet)
+            .unwrap();
+        assert_eq!(silence, [[0.0; 2]; 8]);
+        assert_eq!(old.performance_frame, old_frame);
+        let paused_refusal = refused
+            .preview_stream_handoff_with_continuation_and_report(
+                &mut old,
+                8,
+                None,
+                &mut |_| Ok(()),
+                true,
+                false,
+                None,
+            )
+            .unwrap_err();
+        assert_eq!(
+            paused_refusal,
+            SessionPlaybackError::ForeignTailSourcePaused
+        );
+        let refusal = crate::PlaybackHandoffError::Session(paused_refusal)
+            .rejection()
+            .unwrap();
+        assert_eq!(
+            refusal,
+            crate::PlaybackHandoffRejection::ForeignTailSourcePaused
+        );
+        assert_eq!(
+            crate::PlaybackHandoffRejection::from_code(refusal as u32),
+            Some(refusal)
+        );
+        old.apply(SessionPlaybackCommand::Play).unwrap();
         let wrong_proof = hex_lattice::ForeignConfigurationContinuation::new(
             identity, binding, &previous, &wrong,
         )
