@@ -6,6 +6,37 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 #[gpui::test]
+fn plugin_transport_space_uses_the_current_arrangement_play_start(cx: &mut TestAppContext) {
+    let (project, _, _, _) = audio_project();
+    let (handle, editor) = editor_window(cx, project, Arc::default());
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    editor.update(&mut visual, |view, cx| {
+        let (tx, rx) = std::sync::mpsc::channel();
+        view.audio_events = rx;
+        let generation = view.project_generation;
+        tx.send(crate::EditorAudioEvent::PluginTransportToggle {
+            project_generation: generation + 1,
+        })
+        .unwrap();
+        assert!(!view.poll_editor_audio_events(cx));
+        assert_eq!(view.last_transport_command, None);
+
+        tx.send(crate::EditorAudioEvent::PluginTransportToggle {
+            project_generation: generation,
+        })
+        .unwrap();
+        assert!(view.poll_editor_audio_events(cx));
+        assert_eq!(
+            view.last_transport_command,
+            Some(hex_engine::PlaybackCommand::PlayFrom(
+                view.playback_start_frame()
+            ))
+        );
+    });
+}
+
+#[gpui::test]
 fn double_stop_starts_at_zero_and_preserves_each_arrangement_selection(cx: &mut TestAppContext) {
     use gpui::{MouseDownEvent, MouseUpEvent};
     use hex_engine::PlaybackCommand::PlayFrom;

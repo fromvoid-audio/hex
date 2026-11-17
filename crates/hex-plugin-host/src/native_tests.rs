@@ -4,6 +4,27 @@ use crate::transport::Events;
 use hex_plugin_state::decode;
 use std::path::PathBuf;
 
+#[test]
+fn editor_transport_tokens_leave_the_independent_cancellation_direction_intact() {
+    use std::io::Write;
+    let PreparationCancellation {
+        token,
+        mut receiver,
+    } = PreparationCancellation::new_on_control().unwrap();
+    assert!(!token.take_transport_space_on_control());
+    receiver.write_all(&[1, 1]).unwrap();
+    assert!(token.take_transport_space_on_control());
+    assert!(token.take_transport_space_on_control());
+    assert!(!token.take_transport_space_on_control());
+    receiver.write_all(&[1]).unwrap();
+    token.cancel_on_control();
+    assert!(!token.take_transport_space_on_control());
+    receiver
+        .set_read_timeout(Some(Duration::from_millis(200)))
+        .unwrap();
+    assert_eq!(receiver.read(&mut [0]).unwrap(), 0);
+}
+
 fn build() -> InstanceBuild {
     InstanceBuild::inspect(&PathBuf::from(
         std::env::var_os("HEX_VST3_INSTANCE_RECEIPT").expect("explicit native instance receipt"),
