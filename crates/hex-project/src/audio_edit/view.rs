@@ -1322,13 +1322,19 @@ pub enum AudioViewResizeOperation {
     PlayStart {
         position: u64,
     },
+    /// Select a processing-root cycle while keeping the arrangement gate.
+    CycleRange {
+        start: u64,
+        end: u64,
+        looping: bool,
+    },
     /// Set the arrangement gate to the selected processing-root cycle.
     /// Scope movement is independent of the first read cursor. Keep an
     /// existing play start inside the new scope, otherwise use the scope start.
     /// Frozen processing keeps its original source clock and exact gate frames.
     /// Positions use this clip's AudioDomainClock (frames or raw BeatTime).
     /// Source processing, hidden events and original media remain retained.
-    CycleRange {
+    ScopeRange {
         start: u64,
         end: u64,
         looping: bool,
@@ -1454,7 +1460,7 @@ pub fn preview_view_resize(
             .is_some_and(|placement| placement.mode.leading_ticks() != 0)
     }) {
         return Err(Invalid(
-            "audio loop markers are read-only on a leading one-shot",
+            "audio scope markers are read-only on a leading one-shot",
         ));
     }
     if clip
@@ -1567,6 +1573,11 @@ pub fn preview_view_resize(
         start: first,
         end: last,
         looping,
+    }
+    | AudioViewResizeOperation::ScopeRange {
+        start: first,
+        end: last,
+        looping,
     } = operation
     {
         if first >= last || last > clock.length() {
@@ -1579,8 +1590,16 @@ pub fn preview_view_resize(
             AudioDomainClock::Beats(_) => AudioDomainClock::Beats(BeatTime::from_raw(n)),
         };
         let unchanged_range = (first, last) == (view_start, view_end);
+        let aligns_scope = matches!(operation, AudioViewResizeOperation::ScopeRange { .. });
+        let moves_gate = aligns_scope && !unchanged_range;
         let old_phase = old.map_or(0, |p| p.cycle_phase);
-        let phase = if unchanged_range {
+        let phase = if !aligns_scope {
+            if unchanged_range {
+                old_phase % (last - first)
+            } else {
+                0
+            }
+        } else if unchanged_range {
             if looping {
                 old_phase % (last - first)
             } else {
@@ -1593,10 +1612,10 @@ pub fn preview_view_resize(
                 .map_or(0, |cursor| cursor - first)
         };
         // Scope coordinates own gate geometry; read phase only selects audio.
-        let shift = if unchanged_range {
-            0
-        } else {
+        let shift = if moves_gate {
             i128::from(first) - i128::from(view_start)
+        } else {
+            0
         };
         let start = start
             .checked_add(shift)
@@ -1608,10 +1627,10 @@ pub fn preview_view_resize(
             } else {
                 AudioViewMode::Once
             },
-            outer_length: if unchanged_range {
-                old.map_or(length_clock(last - first), |p| p.outer_length)
-            } else {
+            outer_length: if moves_gate {
                 length_clock(last - first)
+            } else {
+                old.map_or(length_clock(view_end - view_start), |p| p.outer_length)
             },
             cycle_phase: phase,
         };
@@ -1625,7 +1644,7 @@ pub fn preview_view_resize(
             displacement,
         )?;
         let (frame_start, frame_end) = projected.outer_frame_bounds();
-        if !unchanged_range
+        if moves_gate
             && let Some(edit) = clip.audio_edit()
             && matches!(edit.timing, AudioClipTiming::Frozen { .. })
         {
@@ -1644,7 +1663,7 @@ pub fn preview_view_resize(
             frame_end,
             play_start_position: None,
             content_override: None,
-            outer_start: Some(frame_start),
+            outer_start: moves_gate.then_some(frame_start),
         });
     }
     let project_frame = match operation {
@@ -1652,6 +1671,7 @@ pub fn preview_view_resize(
         | AudioViewResizeOperation::RepeatOuterEnd { project_frame }
         | AudioViewResizeOperation::CycleEnd { project_frame } => project_frame,
         AudioViewResizeOperation::CycleRange { .. }
+        | AudioViewResizeOperation::ScopeRange { .. }
         | AudioViewResizeOperation::PlayStart { .. } => {
             return Err(Invalid("clip-local audio operation was not resolved"));
         }
@@ -1674,6 +1694,7 @@ pub fn preview_view_resize(
     let mut repeat_period = clip.audio_edit().and_then(|edit| edit.repeat_period);
     match operation {
         AudioViewResizeOperation::CycleRange { .. }
+        | AudioViewResizeOperation::ScopeRange { .. }
         | AudioViewResizeOperation::PlayStart { .. } => {
             return Err(Invalid("clip-local audio operation was not resolved"));
         }

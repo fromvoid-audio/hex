@@ -40,7 +40,7 @@ pub(super) fn loop_waveform_view(
             request
                 .preview
                 .audio_edit()
-                .map(|edit| AudioViewResizeOperation::CycleRange {
+                .map(|edit| AudioViewResizeOperation::ScopeRange {
                     start: edit.view_start,
                     end: edit.view_end,
                     looping: edit
@@ -160,7 +160,7 @@ mod marker_tests {
         );
         for operation in [
             AudioViewResizeOperation::PlayStart { position: 2 },
-            AudioViewResizeOperation::CycleRange {
+            AudioViewResizeOperation::ScopeRange {
                 start: 2,
                 end: 6,
                 looping: true,

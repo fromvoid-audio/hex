@@ -2635,7 +2635,7 @@ fn clip_loop_markers_define_arrangement_gate_in_both_clocks() {
         editor
             .execute(Command::ResizeAudioClipView {
                 clip: id,
-                operation: AudioViewResizeOperation::CycleRange {
+                operation: AudioViewResizeOperation::ScopeRange {
                     start: first,
                     end: last,
                     looping: true,
@@ -2706,7 +2706,7 @@ fn slipped_play_start_and_scope_gate_move_independently() {
         );
         let frozen_origin = (timing == "frozen").then(|| root.processing_origin().unwrap());
         for operation in [
-            AudioViewResizeOperation::CycleRange {
+            AudioViewResizeOperation::ScopeRange {
                 start: 0,
                 end: hundred,
                 looping: false,
@@ -2726,7 +2726,7 @@ fn slipped_play_start_and_scope_gate_move_independently() {
         ] {
             let before = editor.project().snapshot();
             let original = editor.project().clip(clip).unwrap();
-            let operation = AudioViewResizeOperation::CycleRange {
+            let operation = AudioViewResizeOperation::ScopeRange {
                 start: first,
                 end: last,
                 looping: false,

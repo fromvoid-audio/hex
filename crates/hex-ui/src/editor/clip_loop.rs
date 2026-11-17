@@ -165,7 +165,7 @@ impl EditorView {
                 {
                     AudioEdit::Toggle(!active)
                 }
-                Some((start, end)) => AudioEdit::Resize(AudioViewResizeOperation::CycleRange {
+                Some((start, end)) => AudioEdit::Resize(AudioViewResizeOperation::ScopeRange {
                     start,
                     end,
                     looping: true,

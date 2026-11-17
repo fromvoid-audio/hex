@@ -99,7 +99,7 @@ impl EditorView {
                         {
                             view.commit_audio_clip_loop(
                                 g.clip,
-                                AudioViewResizeOperation::CycleRange {
+                                AudioViewResizeOperation::ScopeRange {
                                     start: g.preview.0,
                                     end: g.preview.1,
                                     looping: g.looping,
@@ -228,7 +228,7 @@ impl EditorView {
                 clip,
                 state.project.tempo_map(),
                 asset.playback_frames(),
-                AudioViewResizeOperation::CycleRange {
+                AudioViewResizeOperation::ScopeRange {
                     start: g.preview.0,
                     end: g.preview.1,
                     looping: g.looping,
@@ -284,7 +284,7 @@ impl EditorView {
         let refusal = hex_project::preview_view_resize(
             clip,
             state.project.tempo_map(),
-            AudioViewResizeOperation::CycleRange {
+            AudioViewResizeOperation::ScopeRange {
                 start: root.view_start,
                 end: root.view_end,
                 looping,

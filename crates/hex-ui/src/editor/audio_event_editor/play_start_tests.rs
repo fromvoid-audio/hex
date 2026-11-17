@@ -728,14 +728,6 @@ fn directed_frame_repeat_start_matches_processed_pcm_through_receipt_and_roundtr
                     looping: true,
                 },
             },
-            // Scope selection now defines one 24_000-frame gate. Extend it
-            // explicitly so this directed-read test still covers many repeats.
-            Command::ResizeAudioClipView {
-                clip,
-                operation: AudioViewResizeOperation::RepeatOuterEnd {
-                    project_frame: 108_000,
-                },
-            },
             Command::ReverseClips(vec![clip]),
         ] {
             editor.update(&mut visual, |v, _| {
@@ -748,7 +740,7 @@ fn directed_frame_repeat_start_matches_processed_pcm_through_receipt_and_roundtr
                 assert!(v.enqueue(Request::Edit(Command::TrimClipEdge {
                     clip,
                     edge: hex_project::TrimEdge::Left,
-                    frame: 17_000
+                    frame: 5_000
                 })))
             });
             pump(&editor, &mut visual);
