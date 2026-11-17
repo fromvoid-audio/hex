@@ -12,7 +12,7 @@ use super::{
 };
 use crate::diagnostics::ActionTraceContext as _;
 use crate::theme;
-use gpui::{Context, MouseButton, MouseUpEvent, Window, div, prelude::*, px, rgb};
+use gpui::{AnimationExt, Context, MouseButton, MouseUpEvent, Window, div, prelude::*, px, rgb};
 use hex_project::Command;
 use hex_session::service::Request as SessionRequest;
 use std::sync::atomic::Ordering::Relaxed;
