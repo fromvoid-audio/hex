@@ -255,6 +255,42 @@ impl EditorView {
                     .child(theme::text(status)),
             );
         }
+        if let Some(control) = &self.bounce_control {
+            let phase = if control.is_cancelled() {
+                "cancelling bounce"
+            } else {
+                "bouncing audio · escape cancels"
+            };
+            let fill = div()
+                .absolute()
+                .h_full()
+                .w(px(16.0))
+                .bg(rgb(theme::color(theme::PaletteRole::Primary)))
+                .with_animation(
+                    "bounce-status-sweep",
+                    gpui::Animation::new(std::time::Duration::from_millis(1200)).repeat(),
+                    |fill, progress| fill.left(px(32.0 * (1.0 - (2.0 * progress - 1.0).abs()))),
+                );
+            bar = bar.child(
+                div()
+                    .id("bounce-status-progress")
+                    .debug_selector(|| "bounce-status-progress".into())
+                    .relative()
+                    .w(px(48.0))
+                    .h(px(4.0))
+                    .flex_shrink_0()
+                    .overflow_hidden()
+                    .bg(rgb(theme::color(theme::PaletteRole::Border)))
+                    .tooltip(move |_, cx| {
+                        cx.new(|_| super::transport::MiniTooltip {
+                            kind: crate::tooltips::Kind::Identification,
+                            description: theme::text(phase),
+                        })
+                        .into()
+                    })
+                    .child(fill),
+            );
+        }
         let offline = self
             .state
             .as_ref()
