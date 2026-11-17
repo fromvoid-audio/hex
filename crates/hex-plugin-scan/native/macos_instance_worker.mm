@@ -472,7 +472,11 @@ int main(int argc,char** argv) {
                     };
                     // An output-only observation can echo a preceding quantum.
                     // Keep the sequence of the last input for each parameter
-                    // until a later input replaces it. Inventory refreshes
+                    // until a later input replaces it. Native editor input owns
+                    // its controller target: processor smoothing/echo must not
+                    // replay over it, including after End or in output-only blocks.
+                    // Authored host input resumes ordinary processor feedback.
+                    // Inventory refreshes
                     // preserve the sorted ID set, including across epochs.
                     struct FeedbackOrigin { uint64 sequence=0; bool editor_input=false; };
                     std::array<FeedbackOrigin,hex_instance::HOST_PARAMETER_COUNT> feedback_sequences{};
@@ -595,7 +599,9 @@ int main(int argc,char** argv) {
                                 const auto sequence=feedback_sequence(point.id,is_input?
                                     std::optional<uint64>{editor_sequence?editor_sequence:host_frontier}:std::nullopt,
                                     is_input && editor_sequence);
-                                if(!sequence || !feedback.put(point.id,point.normalized,sequence->sequence,sequence->editor_input)) return false;
+                                if(!sequence) return false;
+                                if(!is_input && sequence->editor_input) continue;
+                                if(!feedback.put(point.id,point.normalized,sequence->sequence,sequence->editor_input)) return false;
                             }
                         }
                         return true;
@@ -762,7 +768,9 @@ int main(int argc,char** argv) {
                             hex_instance::ParameterPoint point{};
                             if(!parameter_output.point(index,point)) return false;
                             const auto sequence=feedback_sequence(point.id,std::nullopt);
-                            if(!sequence || !parameter_feedback.put(point.id,point.normalized,sequence->sequence,sequence->editor_input)) return false;
+                            if(!sequence) return false;
+                            if(sequence->editor_input) continue;
+                            if(!parameter_feedback.put(point.id,point.normalized,sequence->sequence,sequence->editor_input)) return false;
                         }
                         return true;
                     };
@@ -1062,7 +1070,9 @@ int main(int argc,char** argv) {
                                     editor_input=editor_sequence!=0;
                                 }
                                 const auto sequence=feedback_sequence(point.id,input_sequence,editor_input);
-                                if(!sequence || !parameter_feedback.put(point.id,point.normalized,sequence->sequence,sequence->editor_input)) valid=false;
+                                if(!sequence) {valid=false;break;}
+                                if(!use_input && sequence->editor_input) continue;
+                                if(!parameter_feedback.put(point.id,point.normalized,sequence->sequence,sequence->editor_input)) valid=false;
                             }
                             if(!valid || !packet.append_parameter_reply(first,parameter_output)) {
                                 worker_failure.store(ProtocolFailure);break;
