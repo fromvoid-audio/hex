@@ -65,6 +65,29 @@ mod tests {
 
     #[test]
     fn live_writer_lock_blocks_older_cooperating_sweeper() {
+        const CHILD: &str = "HEX_EXPORT_LOCK_TEST_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            // Other export tests start subprocesses. Isolate the locked file in
+            // this child so a concurrent fork cannot temporarily inherit its
+            // open file description and keep its flock alive after both drops.
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "stale_temporary::tests::live_writer_lock_blocks_older_cooperating_sweeper",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "lock child failed: {}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+            return;
+        }
         let path = std::env::temp_dir().join(format!(
             "hex-export-lock-{}-{}",
             std::process::id(),

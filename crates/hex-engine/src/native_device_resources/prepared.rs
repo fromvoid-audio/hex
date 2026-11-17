@@ -711,6 +711,7 @@ pub struct DeviceResourceAdmission<'a> {
     playback_resources: Option<&'a PreparedDeviceResources>,
     batch: Option<&'a DeviceResourcePublicationBatch>,
     repitch_requirements: Option<&'a crate::audio_transform::StreamedRepitchRequirements>,
+    granular_requirements: Option<&'a crate::audio_transform::StreamedGranularRequirements>,
 }
 impl<'a> DeviceResourceAdmission<'a> {
     pub fn new(
@@ -728,6 +729,7 @@ impl<'a> DeviceResourceAdmission<'a> {
             playback_resources: None,
             batch: None,
             repitch_requirements: None,
+            granular_requirements: None,
         }
     }
     /// Borrow actual unpublished worker-owned runtime leases while an output is unavailable or
@@ -756,6 +758,15 @@ impl<'a> DeviceResourceAdmission<'a> {
         requirements: &'a crate::audio_transform::StreamedRepitchRequirements,
     ) -> Self {
         self.repitch_requirements = Some(requirements);
+        self
+    }
+    /// Include complete control-owned granular roots in the existing storage
+    /// ledger. Shared aliases count once; no worker or publication lease is granted.
+    pub fn with_granular_requirements(
+        mut self,
+        requirements: &'a crate::audio_transform::StreamedGranularRequirements,
+    ) -> Self {
+        self.granular_requirements = Some(requirements);
         self
     }
     /// One actual captured set and its exact compiled revision, suitable for a bounded worker
@@ -809,6 +820,9 @@ impl<'a> DeviceResourceAdmission<'a> {
     ) -> Result<u64, AudioStorageError> {
         let mut frames = 0u64;
         if let Some(requirements) = self.repitch_requirements {
+            requirements.visit(ledger)?;
+        }
+        if let Some(requirements) = self.granular_requirements {
             requirements.visit(ledger)?;
         }
         for set in self.sets.iter().copied().chain(self.set) {

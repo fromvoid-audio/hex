@@ -8,6 +8,16 @@ use gpui::{
 };
 
 impl EditorView {
+    pub(in crate::editor) fn held_audio_play_start_position(&self) -> Option<u64> {
+        let gesture = self.audio_event_editor.gesture.as_ref()?;
+        if !self.event_context_current() {
+            return None;
+        }
+        match gesture.kind {
+            Kind::PlayStart { position } => Some(position),
+            _ => None,
+        }
+    }
     pub(super) fn audio_play_start_position(&self) -> Option<u64> {
         if let Some(Kind::PlayStart { position }) =
             self.audio_event_editor.gesture.as_ref().map(|g| g.kind)

@@ -113,8 +113,8 @@ pub(super) fn passive_audio_fragment(
             super::waveform::waveform_view_cached(
                 waveform,
                 clip,
-                start,
-                stop,
+                start..stop,
+                None,
                 cache,
                 theme::waveform_ink_for_fill(fill),
             )

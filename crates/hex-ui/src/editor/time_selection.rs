@@ -2,7 +2,7 @@
 use super::{
     EditorMode, EditorView,
     duplicate::MAX_QUEUED_REPEATS,
-    edit_cursor::EditCursor,
+    edit_cursor::{EditCursor, POINT_CLICK_SLOP_PX},
     pending_edit::{Disposition, Receipt},
 };
 use crate::theme;
@@ -43,6 +43,9 @@ pub(super) struct TimeSelectionGesture {
     pub generation: u64,
     pub revision: u64,
     pub moved: bool,
+    // The tail keeps its own timeline projection. An unmoved press leaves
+    // the existing point-click path and selection in charge.
+    pub(super) tail_press: Option<(f32, f32)>,
     pub(super) pointer_x: f32,
     pub(super) pointer_y: f32,
     pub(super) free_modifier: bool,
@@ -331,12 +334,64 @@ impl EditorView {
             generation,
             revision,
             moved: anchor.is_some(),
+            tail_press: None,
             pointer_x: x,
             pointer_y: y,
             free_modifier: free,
             last_tick: Instant::now(),
         });
         self.selected_clip = None;
+        true
+    }
+
+    pub(super) fn prepare_tail_time_selection(
+        &mut self,
+        x: f32,
+        y: f32,
+        lane: super::drag::LaneBounds,
+        free: bool,
+    ) -> bool {
+        if !self.range_input_available()
+            || self.time_selection_gesture.is_some()
+            || self.time_range_move_gesture.is_some()
+            || self.sections.held()
+            || self.loop_rail_gesture.is_some()
+            || self.arrangement_pan.is_some()
+            || self.scrub_active()
+            || self.track_resize_active()
+            || self.track_reorder_active()
+            || self.clip_paint_gesture.is_some()
+        {
+            return false;
+        }
+        let Some(state) = self.state.as_ref() else {
+            return false;
+        };
+        let (Some(first), Some(last)) = (
+            state.project.tracks().first(),
+            state.project.tracks().last(),
+        ) else {
+            return false;
+        };
+        let Some(frame) = self.cursor_frame_at(x, lane, free) else {
+            return false;
+        };
+        self.time_selection_gesture = Some(TimeSelectionGesture {
+            selection: TimeSelection {
+                anchor_track: Some(first.id()),
+                end_track: Some(last.id()),
+                anchor_frame: frame,
+                end_frame: frame,
+            },
+            generation: self.project_generation,
+            revision: state.revision,
+            moved: false,
+            tail_press: Some((x, y)),
+            pointer_x: x,
+            pointer_y: y,
+            free_modifier: free,
+            last_tick: Instant::now(),
+        });
         true
     }
 
@@ -500,6 +555,7 @@ impl EditorView {
             generation,
             revision,
             moved: anchor.is_some(),
+            tail_press: None,
             pointer_x: x,
             pointer_y: y,
             free_modifier: free,
@@ -1439,6 +1495,14 @@ impl EditorView {
         gesture.pointer_x = x;
         gesture.pointer_y = y;
         gesture.free_modifier = free;
+        let pending_tail = gesture.tail_press.filter(|_| !gesture.moved);
+        if let Some((start_x, start_y)) = pending_tail
+            && (!y.is_finite()
+                || f64::from(x - start_x).hypot(f64::from(y - start_y)) <= POINT_CLICK_SLOP_PX)
+        {
+            self.time_selection_gesture = Some(gesture);
+            return false;
+        }
         let Some((track, lane)) = self.time_gesture_lane_near_y(y) else {
             self.time_selection_gesture = Some(gesture);
             return false;
@@ -1464,6 +1528,20 @@ impl EditorView {
             self.time_selection_gesture = Some(gesture);
             return false;
         }
+        if pending_tail.is_some() {
+            self.advance_selection_intent();
+            self.retire_section_pointer_context_for_range();
+            self.clear_automation_range();
+            self.time_selection_project_scope = true;
+            self.edit_cursor = Some(EditCursor {
+                track: next.anchor_track,
+                frame: next.anchor_frame,
+                generation: gesture.generation,
+                pulse_color: theme::color(theme::PaletteRole::Text),
+                pulse_started: Instant::now(),
+            });
+            self.edit_cursor_in_selected_clip = None;
+        }
         gesture.selection = next;
         gesture.moved = true;
         self.time_selection = Some(next);
@@ -1481,6 +1559,9 @@ impl EditorView {
         let Some(gesture) = self.time_selection_gesture.take() else {
             return false;
         };
+        if gesture.tail_press.is_some() && !gesture.moved {
+            return false; // Keep the ordinary tail click.
+        }
         self.suppress_cursor_click = gesture.moved;
         if gesture.selection.anchor_track.is_none()
             && gesture.selection.anchor_frame == gesture.selection.end_frame

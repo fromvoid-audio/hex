@@ -8,6 +8,8 @@ use std::sync::Arc;
 mod candidate_storage;
 #[cfg(test)]
 mod idle_transition_tests;
+#[cfg(test)]
+mod live_track_audio_tests;
 mod metronome;
 pub(crate) mod transport_fade;
 pub use transport_fade::TransportFadeCompletion;
@@ -294,6 +296,7 @@ pub enum PlaybackHandoffRejection {
     StreamSourceChanged = 12,
     SharedSourceVoiceCapacity = 13,
     StreamedPageCapacity = 14,
+    ForeignTailSourcePaused = 15,
 }
 
 impl PlaybackHandoffRejection {
@@ -311,6 +314,9 @@ impl PlaybackHandoffRejection {
             ) => Self::SourceHistoryUnavailable,
             PlaybackHandoffError::Session(crate::SessionPlaybackError::CandidateAlreadyUsed) => {
                 Self::SessionRuntime
+            }
+            PlaybackHandoffError::Session(crate::SessionPlaybackError::ForeignTailSourcePaused) => {
+                Self::ForeignTailSourcePaused
             }
             PlaybackHandoffError::Session(_) => Self::SessionRuntime,
             PlaybackHandoffError::ActiveSessionStateCannotBeDropped => {
@@ -344,6 +350,7 @@ impl PlaybackHandoffRejection {
             12 => Some(Self::StreamSourceChanged),
             13 => Some(Self::SharedSourceVoiceCapacity),
             14 => Some(Self::StreamedPageCapacity),
+            15 => Some(Self::ForeignTailSourcePaused),
             _ => None,
         }
     }
@@ -373,6 +380,9 @@ impl PlaybackHandoffRejection {
             Self::StreamedPagesNotReady => "streamed playback page readiness is unavailable",
             Self::StreamedPageCapacity => "stream cache capacity is full · stop playback or retry",
             Self::StreamSourceChanged => "original media changed · reopen or relink it",
+            Self::ForeignTailSourcePaused => {
+                "native effect tail is paused · resume playback, then retry"
+            }
             Self::SharedSourceVoiceCapacity => {
                 "shared source voice capacity is full · release notes or wait for tails, then retry"
             }
@@ -1759,25 +1769,6 @@ impl Playback {
             })
     }
 
-    /// Arm a fresh, playing Arrangement candidate to pause at the exact
-    /// half-open section end. The canonical loop must already be disabled.
-    pub fn arm_section_once(&mut self, region: hex_project::LoopRegion) -> Result<(), Invalid> {
-        if region.enabled()
-            || self.position() != region.start()
-            || !self.playing()
-            || self.automation_capture_loop().is_some()
-            || self.session_runtime.as_ref().is_none_or(|runtime| {
-                runtime
-                    .admits_transport(&crate::SessionPlaybackCommand::Pause)
-                    .is_err()
-            })
-        {
-            return Err(Invalid("invalid one-shot section transport"));
-        }
-        self.transport_fade.section_end = Some(region.end());
-        Ok(())
-    }
-
     /// Callback-owned boundary for a prepared quantized seek. The caller keeps
     /// the current graph rendering until this frame, then installs the fresh
     /// preroll candidate using ordinary seek discontinuity semantics.
@@ -2005,9 +1996,6 @@ impl Playback {
                 )
             )
         {
-            if !transport_fade::pauses(action) {
-                self.transport_fade.section_end = None;
-            }
             self.reset_metronome();
         }
         result
@@ -2029,7 +2017,6 @@ impl Playback {
             )
             .is_ok()
         {
-            self.transport_fade.section_end = None;
             self.reset_metronome();
         }
     }
@@ -2165,17 +2152,7 @@ impl Playback {
         self.performance_clock_exhausted = previous.performance_clock_exhausted();
         self.playing = previous.playing();
         self.inherit_metronome(previous);
-        self.transport_fade.section_end = self.inherited_section_end(previous);
         Ok(())
-    }
-
-    fn inherited_section_end(&self, previous: &Self) -> Option<u64> {
-        previous
-            .transport_fade
-            .section_end
-            .filter(|_| self.automation_capture_loop().is_none())
-            .and_then(|end| remapped_linear_position(&self.project, &previous.project, end).ok())
-            .filter(|&end| end > self.position())
     }
 
     fn inherit_metronome(&mut self, previous: &Self) {
@@ -2230,7 +2207,6 @@ impl Playback {
         next.inherit_candidate_groups(old, groups)
             .map_err(PlaybackHandoffError::Session)?;
         self.inherit_metronome(previous);
-        self.transport_fade.section_end = self.inherited_section_end(previous);
         Ok(())
     }
 
@@ -2551,9 +2527,7 @@ impl Playback {
             previous.cancel_computer_keyboard();
         }
         // A fade in progress continues on the inheriting graph's transport.
-        let section_end = self.inherited_section_end(previous);
         *self.transport_fade = std::mem::take(&mut *previous.transport_fade);
-        self.transport_fade.section_end = section_end;
         Ok(())
     }
 
@@ -2668,6 +2642,108 @@ impl Playback {
 
     pub fn render(&mut self, output: &mut [Frame]) -> Result<(), Invalid> {
         self.render_with_post_node_observer(output, None)
+    }
+
+    /// Render one bounded physical callback with a borrowed live track block.
+    /// Track input follows transport fades; only timing-only project taps are admitted.
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_with_live_track_audio(
+        &mut self,
+        output: &mut [Frame],
+        track: hex_project::TrackId,
+        input: &[Frame],
+        pages: Option<&mut dyn MediaPages>,
+        observer: Option<&mut crate::NodeSignalObserver<'_>>,
+        project: Option<&mut crate::ProjectOutputTap<'_, '_>>,
+        foreign: &mut dyn hex_lattice::ForeignProcessors,
+    ) -> Result<(), Invalid> {
+        self.render_live_audio(
+            output, track, input, pages, observer, project, None, foreign,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn render_live_audio<P: MediaPages + ?Sized>(
+        &mut self,
+        output: &mut [Frame],
+        track: hex_project::TrackId,
+        input: &[Frame],
+        mut pages: Option<&mut P>,
+        mut observer: Option<&mut crate::NodeSignalObserver<'_>>,
+        mut project: Option<&mut crate::ProjectOutputTap<'_, '_>>,
+        sources: Option<&crate::native_device_resources::current_sampler::CurrentSamplerSources>,
+        foreign: &mut dyn hex_lattice::ForeignProcessors,
+    ) -> Result<(), Invalid> {
+        let source_ref = sources.map(crate::native_device_resources::SamplerSourcesRef::Current);
+        let valid = self.session_runtime.as_ref().is_some_and(|runtime| {
+            runtime
+                .validate_live_audio(
+                    track,
+                    input,
+                    output.len(),
+                    project.as_ref().is_some_and(|tap| !tap.is_timing_only()),
+                    source_ref,
+                )
+                .is_ok()
+        });
+        if !valid {
+            output.fill([0.0; 2]);
+            foreign.reject_callback();
+            return Err(Invalid("invalid live track audio request"));
+        }
+        self.render_declicked(output, |playback, output, offset| {
+            let mut shifted = ShiftedForeign {
+                inner: &mut *foreign,
+                offset,
+            };
+            let result = playback
+                .session_runtime
+                .as_mut()
+                .ok_or(Invalid(
+                    "live track audio requires a prepared session runtime",
+                ))
+                .and_then(|runtime| {
+                    with_part_offset(project.as_deref_mut(), offset, |project| {
+                        with_shifted_observer(observer.as_deref_mut(), offset, |observer| {
+                            if runtime.playing() {
+                                runtime.render_live_audio(
+                                    output,
+                                    track,
+                                    &input[offset..offset + output.len()],
+                                    pages.as_deref_mut(),
+                                    observer,
+                                    project,
+                                    source_ref,
+                                    &mut shifted,
+                                )
+                            } else if let Some(sources) = sources {
+                                runtime.render_current_sampler_with_foreign(
+                                    output,
+                                    pages.as_deref_mut(),
+                                    observer,
+                                    project,
+                                    sources,
+                                    &mut shifted,
+                                )
+                            } else {
+                                runtime.render_internal_without_live_audio(
+                                    output,
+                                    pages.as_deref_mut(),
+                                    observer,
+                                    project,
+                                    &mut shifted,
+                                )
+                            }
+                            .map_err(|error| Invalid(error.diagnostic_message()))
+                        })
+                    })
+                });
+            if result.is_err() {
+                foreign.reject_callback();
+                output.fill([0.0; 2]);
+            }
+            result
+        })
     }
 
     /// The normal canonical renderer with the audio owner's already retained
@@ -3104,13 +3180,13 @@ impl Playback {
         Ok(())
     }
 
-    /// Render one callback as parts split at a pending fade or section end.
+    /// Render one callback as parts split at a pending fade end.
     /// Each part is followed by its declick gain and then monitor-only metronome
     /// and tuning audio. A refused first part keeps the renderer's own atomic
     /// refusal (the output is left as the renderer left it). A part refused
     /// after an earlier part rendered silences the whole callback; rendered
     /// parts keep their committed clock, as consecutive callbacks would.
-    /// Without either boundary this is exactly one part.
+    /// Without a pending fade end this is exactly one part.
     fn render_declicked(
         &mut self,
         output: &mut [Frame],
@@ -3122,14 +3198,7 @@ impl Playback {
             let start = self.position();
             let playing = self.playing();
             let part_len = self.transport_fade.part_len(output.len() - offset, frames);
-            let remaining =
-                self.transport_fade
-                    .section_end
-                    .filter(|_| playing)
-                    .map(|section_end| {
-                        usize::try_from(section_end.saturating_sub(start)).unwrap_or(usize::MAX)
-                    });
-            let end = offset + remaining.map_or(part_len, |left| part_len.min(left));
+            let end = offset + part_len;
             let chunk = &mut output[offset..end];
             if let Err(error) = part(self, chunk, offset) {
                 if offset > 0 {
@@ -3142,15 +3211,6 @@ impl Playback {
             self.mix_tuning_audition(chunk);
             if completed {
                 self.complete_transport_fade();
-            }
-            if self
-                .transport_fade
-                .section_end
-                .is_some_and(|limit| self.playing() && self.position() >= limit)
-            {
-                self.transport_fade.section_end = None;
-                self.apply_now(PlaybackAction::Transport(PlaybackCommand::Pause))
-                    .map_err(|_| Invalid("could not pause at the section end"))?;
             }
             offset = end;
             if offset >= output.len() {

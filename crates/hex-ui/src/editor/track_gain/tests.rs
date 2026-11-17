@@ -816,7 +816,7 @@ fn header_volume_is_one_filled_numeric_field_not_a_separate_rail(cx: &mut TestAp
     let pan = self::bounds(&mut visual, "track-pan", track);
     let activator = self::bounds(&mut visual, "track-mute", track);
     let solo = self::bounds(&mut visual, "track-solo", track);
-    let arm = self::bounds(&mut visual, "track-arm-unavailable", track);
+    let arm = self::bounds(&mut visual, "track-audio-arm", track);
     assert_eq!(activator.size.height, px(14.0));
     assert_eq!(solo.size.width, px(16.0));
     assert_eq!(solo.size.height, px(14.0));
@@ -841,7 +841,7 @@ fn header_volume_is_one_filled_numeric_field_not_a_separate_rail(cx: &mut TestAp
     for suffix in [
         "track-mute",
         "track-solo",
-        "track-arm-unavailable",
+        "track-audio-arm",
         "track-volume",
         "track-pan",
     ] {
@@ -960,7 +960,7 @@ fn header_mixer_pan_entry_drag_cancel_and_activator_solo_are_real_commands(
     assert!(
         visual
             .debug_bounds(Box::leak(
-                format!("track-arm-unavailable-{}", track.value()).into_boxed_str()
+                format!("track-audio-arm-{}", track.value()).into_boxed_str()
             ))
             .is_some()
     );

@@ -172,6 +172,14 @@ impl<'a> ResidentEffectPreparation<'a> {
     pub fn restoring_plugin_state(&self) -> bool {
         self.restoring_plugin_state
     }
+    /// Canonical bypass state of one exact plugin visited by this preparation.
+    /// This copied display/control fact grants no native source or admission.
+    pub fn plugin_device_bypassed(&self, id: u64) -> Option<bool> {
+        self.project
+            .automation_devices()
+            .find(|device| device.id().value() == id && is_plugin_effect(device))
+            .map(|device| device.bypassed())
+    }
     /// Whether the saved document needs the fixed-quantum plugin output profile.
     pub fn requires_plugin_profile(&self) -> bool {
         requires_plugin_profile(self.project)
@@ -339,8 +347,15 @@ impl<'a> ResidentEffectPreparation<'a> {
 
 /// One private native bounce owner. It supplies exact compile facts before
 /// rendering and is dropped before Session adopts any of the output media.
-pub trait OfflineBounceSource: hex_export::ForeignBounceRenderer {
+pub trait OfflineBounceSource: hex_export::ForeignBounceRenderer + Send {
     fn retained_data_bytes(&self) -> usize;
+    /// Finalize this private source against the one compiled graph before any
+    /// render or publication. Failure aborts the export/bounce without adoption.
+    fn finalize_on_control(
+        &mut self,
+        revision: &hex_engine::PreparedRevision,
+        control: &hex_export::ExportControl,
+    ) -> Result<(), String>;
     fn prepare(
         &self,
         compile: &mut dyn FnMut(
@@ -381,6 +396,7 @@ pub enum ResidentSourceOrigin {
     ClipMovePreview,
     ClipStretchPreview,
     ClipPlayStartPreview,
+    ClipGainPreview,
 }
 
 /// Scalar identity for one worker-private ordinary resident graph. Neither preview correlation
@@ -515,6 +531,25 @@ pub enum ResidentPublicationAcceptance {
         audio_revision: u64,
     },
     OfflineRetained,
+}
+/// A control-side receipt for one exact prepared graph submission. It does not
+/// acknowledge callback application, retain a graph, or grant a source fence.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ResidentGraphSubmission {
+    pub output_identity: u64,
+    pub audio_revision: u64,
+    pub context: hex_engine::AudioSourceContext,
+}
+impl ResidentGraphSubmission {
+    /// Compare with the callback's correlated publication observation. A pending
+    /// successor is not a stable source for a stopped edit. The caller must still
+    /// establish and hold the exact fence before using this as a predecessor.
+    pub fn matches_applied(self, readiness: ResidentPublicationReadiness) -> bool {
+        matches!(readiness, ResidentPublicationReadiness::Applied {
+            submission: ResidentRuntimeLoop { output_identity, audio_revision, source_context: Some(context), .. },
+            publication_in_flight: false,
+        } if output_identity == self.output_identity && audio_revision == self.audio_revision && context == self.context)
+    }
 }
 /// Reason category for a refused resident publication. The unavailable
 /// category describes source custody only; it does not imply a deadline fault.
@@ -725,6 +760,18 @@ pub trait WorkerAudioSink: Send {
     fn take_plugin_parameters(&mut self) -> Option<PluginParameterResult> {
         None
     }
+    fn query_plugin_parameter_conversion(
+        &mut self,
+        _query: PluginParameterConversionQuery,
+    ) -> Result<(), String> {
+        Err("vst3 conversion unavailable for this output".into())
+    }
+    fn plugin_parameter_conversion_ready(&self) -> bool {
+        false
+    }
+    fn take_plugin_parameter_conversion(&mut self) -> Option<PluginParameterConversionResult> {
+        None
+    }
     /// Match the exact request control; never cancel an unrelated later source.
     /// Exact canonical terminal. Rejected requests retire only their matching native preparation;
     /// acceptance transfers display/request custody, never the native source's lifetime.
@@ -744,6 +791,25 @@ pub trait WorkerAudioSink: Send {
             -> Result<hex_engine::PreparedRevision, hex_engine::Invalid>,
     ) -> Result<Option<hex_engine::PreparedRevision>, String> {
         Ok(None)
+    }
+    /// Optionally hold the exact stopped predecessor while a saturated history
+    /// is prepared. False preserves the ordinary conservative history path.
+    /// A successful lease must remain held through its publication terminal.
+    fn begin_stopped_foreign_history(
+        &mut self,
+        _predecessor: ResidentGraphSubmission,
+        _successor: hex_engine::AudioSourceContext,
+    ) -> Result<bool, String> {
+        Ok(false)
+    }
+    /// Confirm a leased successor before canonical history commits. Hosts with
+    /// no lease leave the existing publication path unchanged.
+    fn confirm_stopped_foreign_history(
+        &mut self,
+        _context: hex_engine::AudioSourceContext,
+        _accepted: ResidentPublicationAcceptance,
+    ) -> Result<(), String> {
+        Ok(())
     }
     /// Actual original-worker pickup only, for bounded immutable program
     /// retention. Unknown/Empty retain existing history; only an actual empty
@@ -1759,6 +1825,16 @@ impl WorkerEvents {
             {
                 return Some(QueuedRequest::continuation(
                     Request::ContinuePluginParameters,
+                    document_intent,
+                ));
+            }
+            if self
+                .audio
+                .as_ref()
+                .is_some_and(|audio| audio.plugin_parameter_conversion_ready())
+            {
+                return Some(QueuedRequest::continuation(
+                    Request::ContinuePluginParameterConversion,
                     document_intent,
                 ));
             }

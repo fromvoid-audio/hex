@@ -40,7 +40,7 @@ enum Slot {
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Curve {
+pub(super) struct Curve {
     smooth: [bool; 2],
     in_start: u64,
     out_end: u64,
@@ -49,7 +49,7 @@ struct Curve {
 }
 
 impl Curve {
-    fn capture(fade: ClipFade) -> Self {
+    pub(super) fn capture(fade: ClipFade) -> Self {
         Self {
             smooth: fade.curve_laws().map(|law| law == FadeCurveLaw::SmoothStep),
             in_start: fade.in_start(),
@@ -59,7 +59,7 @@ impl Curve {
         }
     }
 
-    fn restore(self, fade: ClipFade) -> Result<ClipFade, StorageError> {
+    pub(super) fn restore(self, fade: ClipFade) -> Result<ClipFade, StorageError> {
         let [in_curve, out_curve] = self.bends;
         let [in_position, out_position] = self.positions;
         let fade = fade

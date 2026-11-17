@@ -95,6 +95,21 @@ impl Plugins {
         )
     }
 
+    pub(in crate::native_audio) fn take_transport_space(
+        &self,
+        control: &hex_audio::prepared::PublicationControl,
+        generation: u64,
+    ) -> bool {
+        self.transport_space
+            && self.sources.iter().any(|source| {
+                source.project_generation == generation
+                    && source.accepted
+                    && !source.retiring
+                    && (source.editor_open || self.editor_holds(source.binding))
+                    && control.take_native_source_transport_space(source.binding)
+            })
+    }
+
     fn editor_successor(&self, binding: Binding) -> Option<Binding> {
         let old = self
             .sources

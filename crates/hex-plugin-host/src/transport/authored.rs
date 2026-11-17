@@ -348,6 +348,106 @@ mod tests {
     }
 
     #[test]
+    fn queued_and_in_flight_requests_keep_rendered_values_after_program_release() {
+        let (control, mut callback, mut worker) = channel(binding(), 8).unwrap();
+        let render = |callback: &mut Callback, program: &RetainedProgram, start: usize| {
+            let mut output = [[0.0; 2]; 8];
+            let stage = || {
+                callback.begin_physical_callback(8).unwrap();
+                callback
+                    .stage_segment_with_authored_parameters(
+                        0,
+                        &[[0.0; 2]; 8],
+                        &[],
+                        &mut output,
+                        SegmentTiming {
+                            playing: Some(true),
+                            at: |index| {
+                                Some(ProcessTiming {
+                                    arrangement_frame: (start + index) as i64,
+                                    playing: true,
+                                    ..ProcessTiming::default()
+                                })
+                            },
+                        },
+                        AuthoredSegment {
+                            program,
+                            origin: &|index| Some((start + index) as u64),
+                        },
+                    )
+                    .unwrap();
+                callback.finish(true).unwrap();
+            };
+            #[cfg(feature = "allocation-probe")]
+            {
+                let measured = allocation_counter::measure(stage);
+                assert_eq!(
+                    (
+                        measured.count_total,
+                        measured.bytes_total,
+                        measured.count_current,
+                        measured.bytes_current
+                    ),
+                    (0, 0, 0, 0)
+                );
+            }
+            #[cfg(not(feature = "allocation-probe"))]
+            {
+                let mut stage = stage;
+                stage();
+            }
+        };
+        let first = Box::new(RetainedProgram {
+            current: NonZeroU64::new(1).unwrap(),
+            linear: false,
+        });
+        render(&mut callback, &first, 0);
+        let in_flight = worker.receive_request().unwrap().unwrap();
+        let second = Box::new(RetainedProgram {
+            current: NonZeroU64::new(2).unwrap(),
+            linear: false,
+        });
+        render(&mut callback, &second, 8);
+        assert_eq!(worker.pending_requests_for_test(), 1);
+        drop(first);
+        drop(second);
+
+        assert_eq!(in_flight.authored_program, NonZeroU64::new(1));
+        assert_eq!(
+            in_flight.block.parameters.as_slice().len(),
+            MAX_PARAMETER_POINTS
+        );
+        assert!(
+            in_flight
+                .block
+                .parameters
+                .as_slice()
+                .iter()
+                .all(|p| p.normalized == 0.25)
+        );
+        worker.complete(in_flight.block).unwrap();
+        let queued = worker.receive_request().unwrap().unwrap();
+        assert_eq!(queued.authored_program, NonZeroU64::new(2));
+        assert_eq!(
+            queued.block.parameters.as_slice().len(),
+            MAX_PARAMETER_POINTS
+        );
+        assert!(
+            queued
+                .block
+                .parameters
+                .as_slice()
+                .iter()
+                .all(|p| p.normalized == 0.5)
+        );
+        assert_eq!(
+            control.received_program().unwrap().program,
+            NonZeroU64::new(2)
+        );
+        worker.complete(queued.block).unwrap();
+    }
+
+    #[test]
     fn graph_revisions_keep_the_opening_step_or_linear_program_until_next_quantum() {
         for linear in [false, true] {
             let (control, mut callback, mut worker) = channel(binding(), 8).unwrap();

@@ -21,9 +21,24 @@ pub use controller::{
     NativeWorkerControllerQuery,
 };
 pub use hex_plugin_host::protocol::{
-    ControllerRequest, ParameterEdit, ParameterEditKind, ParameterPageQuery, PluginEditorPosition,
-    PluginEditorState, RecoveryEdits,
+    ControllerRequest, ParameterConversion, ParameterConversionStatus, ParameterEdit,
+    ParameterEditKind, ParameterPageQuery, ParameterText, PluginEditorPosition, PluginEditorState,
+    RecoveryEdits,
 };
+
+/// One successful slow helper exchange; diagnostic only, never audio acceptance.
+/// Samples are best-effort and may be discarded when their source retires.
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SlowPluginExchange {
+    pub binding: Binding,
+    pub sequence: u64,
+    pub exchange_ns: u64,
+    pub sdk_process_ns: u64,
+    pub quantum_ns: u64,
+    /// Samples dropped since the previous successful drain, saturating.
+    pub dropped: u64,
+}
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 mod edits;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -67,6 +82,10 @@ struct Signal {
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     failure_diagnostic: std::sync::Mutex<Option<String>>,
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    slow_exchange: std::sync::Mutex<Option<SlowPluginExchange>>,
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    slow_exchange_dropped: AtomicU64,
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     parameter_change_requested: std::sync::atomic::AtomicBool,
 }
 #[derive(Default)]
@@ -98,6 +117,10 @@ impl Signal {
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             failure_diagnostic: std::sync::Mutex::new(None),
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            slow_exchange: std::sync::Mutex::new(None),
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            slow_exchange_dropped: AtomicU64::new(0),
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             parameter_change_requested: std::sync::atomic::AtomicBool::new(false),
         }
     }
@@ -113,6 +136,31 @@ impl Signal {
         } else {
             self.blocks.store(blocks, Release);
         }
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn publish_slow_exchange(&self, sample: SlowPluginExchange) {
+        if let Ok(mut slot) = self.slow_exchange.try_lock()
+            && slot.is_none()
+        {
+            *slot = Some(sample);
+        } else {
+            let _ = self.slow_exchange_dropped.fetch_update(
+                std::sync::atomic::Ordering::Relaxed,
+                std::sync::atomic::Ordering::Relaxed,
+                |count| Some(count.saturating_add(1)),
+            );
+        }
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn take_slow_exchange(&self) -> Option<SlowPluginExchange> {
+        let mut slot = self.slow_exchange.try_lock().ok()?;
+        let mut sample = slot.take()?;
+        sample.dropped = self
+            .slow_exchange_dropped
+            .swap(0, std::sync::atomic::Ordering::Relaxed);
+        Some(sample)
     }
 }
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -336,6 +384,7 @@ impl State {
                     block,
                     performs: Default::default(),
                     restorations: Default::default(),
+                    sdk_process_ns: None,
                 }),
             Some(Processor::Function(_)) => Err(Fault::InvalidParameters),
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -369,20 +418,10 @@ impl State {
                     (None, true, true, None) => instance
                         .exchange_armed_authored_with_editor_on_worker(block, manual_parameter),
                     (None, false, true, None) => instance.exchange_editor_on_worker(block),
-                    (None, true, false, None) => instance
-                        .exchange_armed_authored_with_manual_on_worker(block, manual_parameter)
-                        .map(|block| hex_plugin_host::protocol::EditorPcm {
-                            block,
-                            performs: Default::default(),
-                            restorations: Default::default(),
-                        }),
-                    (None, false, false, None) => instance.exchange_on_worker(block).map(|block| {
-                        hex_plugin_host::protocol::EditorPcm {
-                            block,
-                            performs: Default::default(),
-                            restorations: Default::default(),
-                        }
-                    }),
+                    (None, true, false, None) => {
+                        instance.exchange_armed_authored_timed_on_worker(block, manual_parameter)
+                    }
+                    (None, false, false, None) => instance.exchange_timed_on_worker(block),
                 };
                 match result {
                     Ok(reply) => Ok(reply),
@@ -666,46 +705,74 @@ fn transport_runner_with_setup(
                     };
                     #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
                     let lost_origin = false;
-                    let result = state
-                        .process(
-                            block,
-                            authored,
-                            dense,
-                            manual_parameter,
-                            editor_scope.is_some(),
+                    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                    let exchange = match state.processor.as_ref() {
+                        Some(Processor::Native(instance)) => Some((
+                            block.binding,
+                            block.sequence,
+                            (f64::from(block.frames) * 1_000_000_000.0
+                                / instance.configuration().sample_rate)
+                                as u64,
+                            std::time::Instant::now(),
+                        )),
+                        _ => None,
+                    };
+                    let processed = state.process(
+                        block,
+                        authored,
+                        dense,
+                        manual_parameter,
+                        editor_scope.is_some(),
+                        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                        editor_touch,
+                    );
+                    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                    if let (Some((binding, sequence, quantum_ns, started)), Ok(reply)) =
+                        (exchange, &processed)
+                        && let Some(sdk_process_ns) = reply.sdk_process_ns
+                    {
+                        let exchange_ns =
+                            started.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64;
+                        if exchange_ns >= quantum_ns {
+                            published.publish_slow_exchange(SlowPluginExchange {
+                                binding,
+                                sequence,
+                                exchange_ns,
+                                sdk_process_ns,
+                                quantum_ns,
+                                dropped: 0,
+                            });
+                        }
+                    }
+                    let result = processed.and_then(
+                        |hex_plugin_host::protocol::EditorPcm {
+                             block: reply,
+                             performs,
+                             restorations,
+                             sdk_process_ns: _,
+                         }| {
+                            // Native exchange already validated the complete SDK
+                            // reply. Retain its private input receipt even if Stop
+                            // revokes the transport before callback publication.
+                            // The live terminal is still published only below.
                             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-                            editor_touch,
-                        )
-                        .and_then(
-                            |hex_plugin_host::protocol::EditorPcm {
-                                 block: reply,
-                                 performs,
-                                 restorations,
-                             }| {
-                                // Native exchange already validated the complete SDK
-                                // reply. Retain its private input receipt even if Stop
-                                // revokes the transport before callback publication.
-                                // The live terminal is still published only below.
-                                #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-                                let manual = state.complete_parameter_change(&reply)?;
-                                #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
-                                let manual = None;
-                                state.worker.complete_with_editor_facts(
-                                    reply,
-                                    manual,
-                                    editor_scope.map(|_| {
-                                        hex_plugin_host::transport::EditorPcmFacts {
-                                            performs,
-                                            restorations,
-                                            lost_origin,
-                                        }
-                                    }),
-                                )?;
-                                #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-                                state.observe_parameter_reply(&reply)?;
-                                Ok(())
-                            },
-                        );
+                            let manual = state.complete_parameter_change(&reply)?;
+                            #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+                            let manual = None;
+                            state.worker.complete_with_editor_facts(
+                                reply,
+                                manual,
+                                editor_scope.map(|_| hex_plugin_host::transport::EditorPcmFacts {
+                                    performs,
+                                    restorations,
+                                    lost_origin,
+                                }),
+                            )?;
+                            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                            state.observe_parameter_reply(&reply)?;
+                            Ok(())
+                        },
+                    );
                     if let Err(error) = result {
                         state.worker.revoke();
                         if error != Fault::Revoked {
@@ -902,6 +969,17 @@ impl NativeWorker {
         !self.retirement_requested && !self.reaper.control.is_revoked()
     }
 
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub(crate) fn take_slow_exchange_on_control(&self) -> Option<SlowPluginExchange> {
+        self.reaper.completed.take_slow_exchange()
+    }
+
+    pub(crate) fn take_concealed_output_on_control(
+        &self,
+    ) -> Option<hex_plugin_host::transport::ConcealedOutput> {
+        self.reaper.control.take_concealed_output()
+    }
+
     pub(crate) fn take_failure_diagnostic_on_control(&self) -> Option<String> {
         if let Some(diagnostic) = self
             .reaper
@@ -950,6 +1028,16 @@ impl NativeWorker {
         } else {
             ForeignProgramFrontier::Unknown
         }
+    }
+
+    /// Copied untouched-or-committed observation on the original live pair.
+    /// This is not a source, installation, or quiescence witness.
+    pub fn quantum_observation_on_control(
+        &self,
+    ) -> Option<hex_plugin_host::transport::QuantumObservation> {
+        self.transport_is_live_on_control()
+            .then(|| self.reaper.control.quantum_observation())
+            .flatten()
     }
 
     /// Last accepted callback quantum on this original pair. This is not an
@@ -1118,6 +1206,45 @@ impl NativeWorker {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn slow_exchange_sample_is_bounded_and_preserves_its_original_source() {
+        let signal = Signal::new(false);
+        let first = SlowPluginExchange {
+            binding: Binding {
+                root: 1,
+                instance: 2,
+                graph: 3,
+                epoch: 4,
+            },
+            sequence: 7,
+            exchange_ns: 900,
+            sdk_process_ns: 400,
+            quantum_ns: 800,
+            dropped: 0,
+        };
+        signal.publish_slow_exchange(first);
+        signal.publish_slow_exchange(SlowPluginExchange {
+            sequence: 8,
+            ..first
+        });
+        let held = signal.slow_exchange.lock().unwrap();
+        signal.publish_slow_exchange(SlowPluginExchange {
+            sequence: 9,
+            ..first
+        });
+        assert!(signal.take_slow_exchange().is_none());
+        drop(held);
+        assert_eq!(
+            signal.take_slow_exchange(),
+            Some(SlowPluginExchange {
+                dropped: 2,
+                ..first
+            })
+        );
+        assert!(signal.take_slow_exchange().is_none());
+    }
 
     fn run_offline_transport(offline: bool, blocks: u64, fail_at: Option<u64>) -> Duration {
         const QUANTUM: u16 = 256;
@@ -1411,11 +1538,13 @@ mod tests {
             epoch: 4,
         };
         let (control, mut callback, worker) = channel(binding, 8).unwrap();
-        let gate = Arc::new(std::sync::Barrier::new(2));
-        let processing = Arc::clone(&gate);
+        let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel(1);
+        let (resume_tx, resume_rx) = std::sync::mpsc::sync_channel(1);
         let mut reaper = spawn(control, worker, move |_| {
-            processing.wait();
-            processing.wait();
+            entered_tx.send(()).unwrap();
+            resume_rx
+                .recv_timeout(Duration::from_secs(3))
+                .expect("control did not release the worker fixture");
             panic!("original worker unwind fixture");
         })
         .unwrap();
@@ -1423,9 +1552,11 @@ mod tests {
             .stage(&[[0.5; 2]; 8], &[], &mut [[0.0; 2]; 8])
             .unwrap();
         callback.finish(true).unwrap();
-        gate.wait();
+        entered_rx
+            .recv_timeout(Duration::from_secs(3))
+            .expect("worker fixture did not begin processing");
         drop(callback); // worker endpoint is now the only owner of both rings
-        gate.wait();
+        resume_tx.send(()).unwrap();
         assert_eq!(reaper.join_on_control(), Err(Fault::Protocol));
         assert!(reaper.result.as_ref().unwrap().is_err());
         assert!(

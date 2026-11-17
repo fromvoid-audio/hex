@@ -1203,7 +1203,57 @@ impl SessionPlayback {
             }
             let old = previous.revision.arrangement().tracks();
             let new = self.revision.arrangement().tracks();
-            cold_added_track(new, old).or_else(|| cold_added_track(old, new))
+            cold_added_track(new, old)
+                .or_else(|| cold_added_track(old, new))
+                .or_else(|| {
+                    (old.len().checked_add(1) == Some(new.len())
+                        && same_base_timing
+                        && old_loop_region == new_loop_region
+                        && !self.revision.contains_streamed_sources()
+                        && !previous.revision.contains_streamed_sources())
+                    .then(|| {
+                        // The new source has no history before this handoff.
+                        // A looped cursor cannot prove age; its ready donor
+                        // must retain the complete matching stamp horizon.
+                        let ended_by = if old_loop_region.is_none() {
+                            self.compensation
+                                .as_ref()
+                                .zip(previous.compensation.as_ref())
+                                .filter(|(_, old)| old.delays.history_ready())
+                                .and_then(|(candidate, old)| {
+                                    previous.arrangement_frame.checked_sub(u64::from(
+                                        candidate.horizon().max(old.horizon()),
+                                    ))
+                                })
+                        } else {
+                            None
+                        };
+                        let clock_ready = ended_by.is_some()
+                            || (old_loop_region.is_some()
+                                && self
+                                    .compensation
+                                    .as_ref()
+                                    .zip(previous.compensation.as_ref())
+                                    .is_some_and(|(candidate, old)| {
+                                        old.delays.history_ready()
+                                            && candidate.horizon() == old.horizon()
+                                    }));
+                        // Hosted processors need separate continuity evidence.
+                        let mut has_foreign = false;
+                        if clock_ready {
+                            previous.visit_foreign_runtime_bindings(&mut |_| has_foreign = true);
+                            self.visit_foreign_runtime_bindings(&mut |_| has_foreign = true);
+                        }
+                        fresh_added_audio_track(
+                            new,
+                            old,
+                            previous.arrangement_frame,
+                            ended_by,
+                            clock_ready && !has_foreign,
+                        )
+                    })
+                    .flatten()
+                })
         });
         let compensation_pair = self
             .compensation
@@ -1253,6 +1303,42 @@ impl SessionPlayback {
         let fresh_history = compensation_pair.and_then(|(candidate, old)| {
             history_track
                 .map(crate::signal_graph::FreshHistory::Track)
+                .or_else(|| {
+                    if !previous.playing
+                        || !same_base_timing
+                        || self.revision.arrangement().tracks().len().checked_add(1)
+                            != Some(previous.revision.arrangement().tracks().len())
+                        || old_loop_region != new_loop_region
+                        || self.revision.contains_streamed_sources()
+                        || previous.revision.contains_streamed_sources()
+                        || !old.delays.history_ready()
+                        // The Arrangement cursor wraps, so it cannot prove
+                        // history age inside a loop. A ready donor with the
+                        // same horizon carries the loop-stamped history instead.
+                        || if old_loop_region.is_some() {
+                            candidate.horizon() != old.horizon()
+                        } else {
+                            previous.arrangement_frame
+                                < u64::from(candidate.horizon().max(old.horizon()))
+                        }
+                    {
+                        return None;
+                    }
+                    let mut has_foreign = false;
+                    previous.visit_foreign_runtime_bindings(&mut |_| has_foreign = true);
+                    self.visit_foreign_runtime_bindings(&mut |_| has_foreign = true);
+                    if has_foreign {
+                        return None;
+                    }
+                    fresh_added_audio_track(
+                        previous.revision.arrangement().tracks(),
+                        self.revision.arrangement().tracks(),
+                        previous.arrangement_frame,
+                        None,
+                        true,
+                    )
+                    .map(crate::signal_graph::FreshHistory::RemovedTrack)
+                })
                 .or_else(|| {
                     candidate
                         .graph
@@ -6453,6 +6539,48 @@ fn cold_added_track(candidate: &[Track], previous: &[Track]) -> Option<TrackId> 
             .iter()
             .any(|track| track.canonical_track_id() == Some(id)))
     .then_some(id)
+}
+
+/// One newly inserted resident audio track can start from its empty edges at
+/// the handoff when the unlooped clock is ready. The graph independently
+/// checks routing, retained edge identities, alignment and silent delay rings.
+fn fresh_added_audio_track(
+    candidate: &[Track],
+    previous: &[Track],
+    frame: u64,
+    ended_by: Option<u64>,
+    allow_any_clip: bool,
+) -> Option<TrackId> {
+    if candidate.len() != previous.len().checked_add(1)? {
+        return None;
+    }
+    let mut retained = previous.iter();
+    let mut next_retained = retained.next();
+    let mut added = None;
+    for track in candidate {
+        let id = track.canonical_track_id()?;
+        if next_retained.is_some_and(|old| old.canonical_track_id() == Some(id)) {
+            next_retained = retained.next();
+            continue;
+        }
+        if added.is_some()
+            || track.clips.is_empty()
+            || track.has_streamed_clips
+            || !track.device_chain.is_empty()
+            || track.instrument_id.is_some()
+            || track.source_id.is_some()
+            || track.midi_source_index.is_some()
+            || !(allow_any_clip
+                || crate::clip_index::all_start_after(&track.clip_index, track.clips.len(), frame)
+                || ended_by.is_some_and(|end| {
+                    crate::clip_index::all_end_by(&track.clip_index, track.clips.len(), end)
+                }))
+        {
+            return None;
+        }
+        added = Some(id);
+    }
+    if next_retained.is_some() { None } else { added }
 }
 
 /// The initial selective case is resident, Arrangement-owned audio only.

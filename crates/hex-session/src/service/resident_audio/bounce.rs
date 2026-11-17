@@ -181,7 +181,7 @@ pub(in crate::service) fn bounce_arrangement(
                 &mut **sink,
             )?;
             let project = captured.as_ref().unwrap_or(project);
-            let offline = sink.prepare_offline_bounce(effect_input(project), control)?;
+            let mut offline = sink.prepare_offline_bounce(effect_input(project), control)?;
             let mut isolated = inputs
                 .prepare_with_gain(
                     project,
@@ -197,6 +197,10 @@ pub(in crate::service) fn bounce_arrangement(
                 )
                 .map_err(|e| e.to_string())?;
             isolated.inputs = RuntimeInputs::default();
+            if let Some(owner) = offline.as_mut() {
+                owner.finalize_on_control(&isolated.prepared, control)?;
+            }
+
             let runtime =
                 hex_engine::SessionPlayback::linear_export_runtime_allowance(&isolated.prepared)
                     .map_err(|e| e.to_string())?
@@ -217,16 +221,13 @@ pub(in crate::service) fn bounce_arrangement(
                 .and_then(|n| n.checked_mul(std::mem::size_of::<hex_engine::Frame>() * 4))
                 .ok_or("bounce construction allowance overflows")?;
             inputs
-                .admit_with_repitch(
+                .admit_with_requirements(
                     &isolated.resources,
                     Some(&isolated.prepared),
                     &sink.resident_admission(),
                     runtime,
                     construction,
-                    isolated
-                        .file_sources
-                        .as_ref()
-                        .map(|files| files.repitches()),
+                    isolated.file_requirements(),
                 )
                 .map_err(|e| e.to_string())?;
             let files = crate::arrangement_bounce::streamed::BounceRevision::capture(

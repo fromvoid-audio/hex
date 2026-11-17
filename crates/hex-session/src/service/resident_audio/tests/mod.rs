@@ -31,6 +31,7 @@ fn interactive_sampler_session(files: &sampler_export::tests::Files) -> Session 
 #[derive(Default)]
 struct Observed {
     accepted: Mutex<Vec<(u64, thread::ThreadId)>>,
+    next_submission: Mutex<Option<(u64, u64)>>,
     refuse: AtomicBool,
     refuse_native_source: AtomicBool,
     refuse_source_confirmation: AtomicBool,
@@ -237,7 +238,15 @@ impl WorkerAudioSink for OfflineSink {
                     .lock()
                     .unwrap()
                     .push((metadata.context.editor_revision, thread::current().id()));
-                Ok(ResidentPublicationAcceptance::OfflineRetained)
+                Ok(match self.observed.next_submission.lock().unwrap().take() {
+                    Some((output_identity, audio_revision)) => {
+                        ResidentPublicationAcceptance::Submitted {
+                            output_identity,
+                            audio_revision,
+                        }
+                    }
+                    None => ResidentPublicationAcceptance::OfflineRetained,
+                })
             }
             Err(error) => Err(ResidentPublicationRefusal {
                 kind: if self.observed.refuse_native_source.load(Ordering::Acquire) {
@@ -1481,6 +1490,7 @@ fn section_seek_publication_uses_actual_loop_metadata_allowance() {
             let captured = Snapshot {
                 source_origin: current.source_origin,
                 prepared_context: current.prepared_context,
+                submission: None,
                 file_sources: current.file_sources.clone(),
                 prepared: Arc::clone(&current.prepared),
                 resources: current.resources.capture_on_control(bytes).unwrap(),

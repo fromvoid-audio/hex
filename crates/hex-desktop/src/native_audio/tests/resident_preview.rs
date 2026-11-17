@@ -48,6 +48,7 @@ fn assert_loop_pcm(h: &ResidentHarness, level: f32) -> [hex_engine::Frame; 64] {
 type PluginFixture = (
     hex_audio::plugin_effects::Hosting,
     Option<hex_audio::plugin_effects::EffectPresentation>,
+    Option<hex_diagnostics::DiagnosticsHandle>,
 );
 #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
 enum PluginFixture {}
@@ -732,6 +733,131 @@ fn held_stretch_audition_reaches_playing_callback_and_releases_once() {
             .load(Acquire),
         redone_audio
     );
+}
+
+#[test]
+fn held_clip_and_event_gains_reach_the_callback_without_editing_history() {
+    use hex_project::{AudioEventEdit, ClipGain, Command};
+    use hex_session::service::{ArrangementGainAudition, GainEdit, ResidentSourceOrigin};
+
+    let _native = native_fixture();
+    let files = Files::new();
+    // The event preview can retain the original, canonical composed root
+    // and newly gained root together while the callback replaces its graph.
+    let mut h = ResidentHarness::with_frame_limit(524_288);
+    h.next();
+    let (initial, _) = h.applied(0);
+    let imported = h.run(Request::Import(files.wav(48_000, 96_000)));
+    let clip = imported.state.project.tracks()[0].clips()[0].id();
+    let (applied, _) = h.applied(initial);
+    let split = h.run(Request::Edit(Command::EditAudioEvents {
+        clip,
+        operation: AudioEventEdit::Split { at: 48_000 },
+    }));
+    assert!(split.error.is_none(), "{:?}", split.error);
+    let (mut applied, metadata) = h.applied(applied);
+    let event = split
+        .state
+        .project
+        .clip(clip)
+        .unwrap()
+        .audio_events()
+        .events[0]
+        .id;
+    let original = split.state.project.snapshot();
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+
+    let assert_audio = |h: &ResidentHarness, gain: ClipGain| {
+        let expected = 0.25 * gain.linear();
+        let status = h.audio.as_ref().unwrap().status().unwrap();
+        let before = status.position.load(Acquire);
+        let output = h.render();
+        assert!(status.playing.load(Acquire));
+        assert_eq!(status.position.load(Acquire), before + 64);
+        assert!(
+            output.iter().all(|f| (f[0] - expected).abs() < 1e-5),
+            "audio should be {expected}"
+        );
+    };
+    let hold = |h: &ResidentHarness, edit| {
+        h.service
+            .audition_arrangement_gain(Some(ArrangementGainAudition {
+                context: metadata.context,
+                edit,
+            }));
+    };
+    let advance = |h: &mut ResidentHarness, after| {
+        let deadline = Instant::now() + Duration::from_millis(750);
+        loop {
+            h.pump();
+            let status = h.audio.as_ref().unwrap().status().unwrap();
+            let applied = status.applied_revision.load(Acquire);
+            if let Some((revision, metadata)) = h.submitted
+                && revision == applied
+                && revision > after
+            {
+                break (revision, metadata);
+            }
+            assert!(
+                Instant::now() < deadline,
+                "gain preview did not reach the callback"
+            );
+            if applied <= after {
+                h.render_worker_step();
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    };
+    assert_audio(&h, ClipGain::UNITY);
+    for millidb in [-6_000, -12_000] {
+        let gain = ClipGain::new(millidb).unwrap();
+        hold(&h, GainEdit::Clip { clip, gain });
+        let (revision, report) = advance(&mut h, applied);
+        applied = revision;
+        assert_eq!(report.source_origin, ResidentSourceOrigin::ClipGainPreview);
+        assert_audio(&h, gain);
+        assert!(
+            h.service.try_event().is_err(),
+            "held values must never edit the project"
+        );
+    }
+    h.service.audition_arrangement_gain(None);
+    let (applied, _) = advance(&mut h, applied);
+    assert_audio(&h, ClipGain::UNITY);
+
+    let gain = ClipGain::new(-3_000).unwrap();
+    hold(
+        &h,
+        GainEdit::Event {
+            clip,
+            sources: Default::default(),
+            event,
+            gain,
+        },
+    );
+    let (preview, report) = advance(&mut h, applied);
+    assert_eq!(report.source_origin, ResidentSourceOrigin::ClipGainPreview);
+    assert_audio(&h, gain);
+    h.service.finish_arrangement_gain_audition();
+    assert_audio(&h, gain);
+    let committed = h.run(Request::Edit(Command::EditAudioEvents {
+        clip,
+        operation: AudioEventEdit::SetGain { event, gain },
+    }));
+    assert!(committed.error.is_none(), "{:?}", committed.error);
+    assert_eq!(committed.state.revision, split.state.revision + 1);
+    h.service.retire_arrangement_gain_audition();
+    let (committed, _) = advance(&mut h, preview);
+    assert_audio(&h, gain);
+    let undone = h.run(Request::Undo);
+    assert_eq!(undone.state.project.snapshot(), original);
+    advance(&mut h, committed);
+    assert_audio(&h, ClipGain::UNITY);
 }
 
 #[test]
@@ -1706,6 +1832,20 @@ impl WorkerAudioSink for ResidentSink {
     fn take_plugin_parameters(&mut self) -> Option<hex_session::service::PluginParameterResult> {
         self.inner.take_plugin_parameters()
     }
+    fn query_plugin_parameter_conversion(
+        &mut self,
+        query: hex_session::service::PluginParameterConversionQuery,
+    ) -> Result<(), String> {
+        self.inner.query_plugin_parameter_conversion(query)
+    }
+    fn plugin_parameter_conversion_ready(&self) -> bool {
+        self.inner.plugin_parameter_conversion_ready()
+    }
+    fn take_plugin_parameter_conversion(
+        &mut self,
+    ) -> Option<hex_session::service::PluginParameterConversionResult> {
+        self.inner.take_plugin_parameter_conversion()
+    }
     fn plugin_editor_ready(&self) -> bool {
         self.inner.plugin_editor_ready()
     }
@@ -1728,6 +1868,22 @@ impl WorkerAudioSink for ResidentSink {
             -> Result<hex_engine::PreparedRevision, hex_engine::Invalid>,
     ) -> Result<Option<hex_engine::PreparedRevision>, String> {
         self.inner.prepare_resident_effects(input, prepare)
+    }
+    fn begin_stopped_foreign_history(
+        &mut self,
+        predecessor: hex_session::service::ResidentGraphSubmission,
+        context: AudioSourceContext,
+    ) -> Result<bool, String> {
+        self.inner
+            .begin_stopped_foreign_history(predecessor, context)
+    }
+    fn confirm_stopped_foreign_history(
+        &mut self,
+        context: AudioSourceContext,
+        accepted: hex_session::service::ResidentPublicationAcceptance,
+    ) -> Result<(), String> {
+        self.inner
+            .confirm_stopped_foreign_history(context, accepted)
     }
     fn received_foreign_program_on_control(
         &mut self,
@@ -2109,7 +2265,7 @@ impl ResidentHarness {
             Arc::new(AtomicBool::new(true)),
             4,
             rate,
-            Some((host, presentation)),
+            Some((host, presentation, None)),
             None,
             None,
             None,
@@ -2126,7 +2282,7 @@ impl ResidentHarness {
             Arc::new(AtomicBool::new(true)),
             4,
             48_000,
-            Some((host, presentation)),
+            Some((host, presentation, None)),
             Some(facts),
             None,
             None,
@@ -2141,6 +2297,24 @@ impl ResidentHarness {
         Self::with_plugins_at_rate_and_catalog(host, presentation, 48_000, catalog, 8192)
     }
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub(super) fn with_plugins_catalog_and_diagnostics(
+        host: hex_audio::plugin_effects::Hosting,
+        presentation: Option<hex_audio::plugin_effects::EffectPresentation>,
+        catalog: PathBuf,
+        diagnostics: hex_diagnostics::DiagnosticsHandle,
+    ) -> Self {
+        Self::with_plugin_fixture(
+            8192,
+            Arc::new(AtomicBool::new(true)),
+            4,
+            48_000,
+            Some((host, presentation, Some(diagnostics))),
+            None,
+            Some(catalog),
+            None,
+        )
+    }
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     pub(super) fn with_plugins_at_rate_and_catalog(
         host: hex_audio::plugin_effects::Hosting,
         presentation: Option<hex_audio::plugin_effects::EffectPresentation>,
@@ -2153,7 +2327,7 @@ impl ResidentHarness {
             Arc::new(AtomicBool::new(true)),
             4,
             rate,
-            Some((host, presentation)),
+            Some((host, presentation, None)),
             None,
             Some(catalog),
             None,
@@ -2173,7 +2347,7 @@ impl ResidentHarness {
             Arc::new(AtomicBool::new(true)),
             4,
             rate,
-            Some((host, presentation)),
+            Some((host, presentation, None)),
             None,
             Some(catalog),
             Some(recovery),
@@ -2211,8 +2385,9 @@ impl ResidentHarness {
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         let plugin_failure = Arc::new(Mutex::new(None));
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-        if let Some((host, presentation)) = plugin {
+        if let Some((host, presentation, diagnostics)) = plugin {
             inner.plugins = crate::native_audio::plugins::Plugins::with_fixture(host, presentation);
+            inner.plugins.set_diagnostics(diagnostics);
             inner.plugins.catalog = catalog;
             inner.plugins.facts_gate = facts_gate;
             inner.plugins.progress = Some(Arc::clone(&plugin_progress));

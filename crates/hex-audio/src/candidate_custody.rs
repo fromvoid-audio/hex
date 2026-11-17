@@ -672,6 +672,7 @@ impl CandidateRoot {
         self.begin_domain_preparation_inner(
             config,
             definitions,
+            None,
             readiness,
             #[cfg(feature = "stream-test-support")]
             None,
@@ -685,12 +686,29 @@ impl CandidateRoot {
         readiness: hex_stream::StreamReadinessReservation,
         gate: hex_stream::test_support::PageGate,
     ) -> Result<AudioCandidateDomainToken, AudioCandidateDomainStartError> {
-        self.begin_domain_preparation_inner(config, definitions, readiness, Some(gate))
+        self.begin_domain_preparation_inner(config, definitions, None, readiness, Some(gate))
+    }
+    pub(crate) fn begin_granular_domain_preparation(
+        &self,
+        config: hex_stream::StreamConfig,
+        definitions: Vec<hex_stream::SourceDefinition>,
+        granular: hex_stream::GranularWorkerBank,
+        readiness: hex_stream::StreamReadinessReservation,
+    ) -> Result<AudioCandidateDomainToken, AudioCandidateDomainStartError> {
+        self.begin_domain_preparation_inner(
+            config,
+            definitions,
+            Some(granular),
+            readiness,
+            #[cfg(feature = "stream-test-support")]
+            None,
+        )
     }
     fn begin_domain_preparation_inner(
         &self,
         config: hex_stream::StreamConfig,
         definitions: Vec<hex_stream::SourceDefinition>,
+        granular: Option<hex_stream::GranularWorkerBank>,
         readiness: hex_stream::StreamReadinessReservation,
         #[cfg(feature = "stream-test-support")] gate: Option<hex_stream::test_support::PageGate>,
     ) -> Result<AudioCandidateDomainToken, AudioCandidateDomainStartError> {
@@ -702,23 +720,31 @@ impl CandidateRoot {
                 ));
             }
         }
-        #[cfg(feature = "stream-test-support")]
-        let result = match gate {
-            Some(gate) => {
-                self.0
+        let result = if let Some(granular) = granular {
+            self.0
+                .eligible
+                .begin_granular_preparation(config, definitions, granular, readiness)
+        } else {
+            #[cfg(feature = "stream-test-support")]
+            let raw_result = match gate {
+                Some(gate) => self.0.eligible.begin_preparation_with_gate(
+                    config,
+                    definitions,
+                    readiness,
+                    gate,
+                ),
+                None => self
+                    .0
                     .eligible
-                    .begin_preparation_with_gate(config, definitions, readiness, gate)
-            }
-            None => self
+                    .begin_preparation(config, definitions, readiness),
+            };
+            #[cfg(not(feature = "stream-test-support"))]
+            let raw_result = self
                 .0
                 .eligible
-                .begin_preparation(config, definitions, readiness),
+                .begin_preparation(config, definitions, readiness);
+            raw_result
         };
-        #[cfg(not(feature = "stream-test-support"))]
-        let result = self
-            .0
-            .eligible
-            .begin_preparation(config, definitions, readiness);
         // The eligible bank itself retains successful late construction. Its
         // Starting cell was already occupied when terminal closure could win.
         crate::lifecycle::request_candidate_cleanup(self);
@@ -1611,3 +1637,6 @@ mod tests {
         assert!(root.recover(&next_ticket).is_some());
     }
 }
+
+#[cfg(test)]
+pub(crate) mod granular_test_fixture;

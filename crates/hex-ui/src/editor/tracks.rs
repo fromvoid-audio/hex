@@ -32,6 +32,57 @@ use hex_project::{BeatTime, Clip, MidiClip, Track};
 
 use clone_source_window::clone_source_window;
 
+impl EditorView {
+    fn audio_arm_button(
+        &self,
+        track: hex_project::TrackId,
+        eligible: bool,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<Div> {
+        let generation = self.project_generation;
+        let armed = self
+            .audio_recorder
+            .is_audio_armed(self.project_generation, track);
+        let (background, text) = if armed {
+            (
+                theme::color(theme::PaletteRole::Recording),
+                theme::color(theme::PaletteRole::Background),
+            )
+        } else {
+            super::track_gain::activator_colors(false)
+        };
+        toggle_button_with_style(
+            "○",
+            if !eligible {
+                "audio recording unavailable on this track"
+            } else if armed {
+                "disarm track for audio recording"
+            } else {
+                "arm track for audio recording"
+            },
+            ("track-audio-arm", track.value()),
+            theme::action_style().with_state_colors(background, text),
+        )
+        .debug_selector(move || format!("track-audio-arm-{}", track.value()))
+        .w(px(16.0))
+        .h(px(14.0))
+        .text_size(px(10.0))
+        .border_1()
+        .border_color(rgb(theme::control_style().border))
+        .flex_shrink_0()
+        .when(!eligible, |button| {
+            button.opacity(0.45).cursor(gpui::CursorStyle::Arrow)
+        })
+        .on_click(cx.listener(move |view, _, _, cx| {
+            if eligible {
+                cx.stop_propagation();
+                view.toggle_audio_arm(track, generation);
+                cx.notify();
+            }
+        }))
+    }
+}
+
 /// Observe the actual pixel-rounded resting clip rectangle. A clip's move hit
 /// strip excludes handles and cannot define its horizontal thirds. The canvas
 /// includes the parent's leading stroke; the trailing stroke belongs to the
@@ -1690,6 +1741,10 @@ impl EditorView {
                 .items_center()
                 .children([name_area.child(track_name_view).flex_1().min_w_0()])
                 .child(self.sample_arm_button(sample_source, cx))
+                .children(
+                    (resident_layout && !is_group)
+                        .then(|| self.audio_arm_button(track_id, true, cx)),
+                )
         } else if resident_layout {
             let (active_background, active_text) = super::track_gain::activator_colors(!muted);
             let (solo_background, solo_text) = super::track_gain::activator_colors(soloed);
@@ -1781,31 +1836,7 @@ impl EditorView {
                 view.toggle_solo(track_id, !event.modifiers().platform);
                 cx.notify();
             }));
-            let arm = div()
-                .id(("track-arm-unavailable", track_id.value()))
-                .debug_selector(move || format!("track-arm-unavailable-{}", track_id.value()))
-                .w(px(16.0))
-                .h(px(14.0))
-                .rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS))
-                .border_1()
-                .border_color(rgb(theme::control_style().border))
-                .flex_shrink_0()
-                .flex()
-                .items_center()
-                .justify_center()
-                .text_xs()
-                .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
-                .bg(rgb(theme::color(theme::PaletteRole::Raised)))
-                .cursor(gpui::CursorStyle::Arrow)
-                .opacity(0.45)
-                .tooltip(|_, cx| {
-                    cx.new(|_| ClipTooltip {
-                        kind: crate::tooltips::Kind::Identification,
-                        name: "recording unavailable · planned for hex 0.2".into(),
-                    })
-                    .into()
-                })
-                .child(theme::text("○"));
+            let arm = self.audio_arm_button(track_id, !is_group, cx);
             div()
                 .id(("arrangement-track-controls", track_id.value()))
                 .when(group_plate, |controls| controls.h_full())
@@ -2204,9 +2235,13 @@ impl EditorView {
             .or_else(|| self.arrangement_paste_view())
             .or_else(|| self.time_range_copy_view())
             .is_some_and(|view| std::ptr::eq(view.as_ref(), state));
-        for clip in track.clips() {
+        for canonical_clip in track.clips() {
+            let scope_preview = self.audio_scope_display_clip(canonical_clip, state);
+            let clip = scope_preview.as_ref();
             if hides_group_member(clip.id())
-                || (!is_committed_edit_view && !self.arrangement_clip_visible(clip.id()))
+                || (!is_committed_edit_view
+                    && std::ptr::eq(clip, canonical_clip)
+                    && !self.arrangement_clip_visible(clip.id()))
             {
                 continue;
             }
@@ -2776,7 +2811,32 @@ impl EditorView {
         grid: Option<super::waveform::WaveformGrid>,
         ink: u32,
     ) -> Div {
+        if self.audio_scope_preview_active(clip.id(), state)
+            && let Some(original) = state
+                .project
+                .clip(clip.id())
+                .filter(|original| !std::ptr::eq(*original, clip))
+        {
+            return super::waveform::preview_waveform_view_cached(
+                super::waveform::WaveformPreview {
+                    original,
+                    preview: clip,
+                    tempo: state.project.tempo_map(),
+                    asset: state.waveforms.get(&clip.asset()),
+                    prepared: state.audio_clip_waveforms.get(&clip.id()),
+                    ink,
+                },
+                visible_start,
+                visible_end,
+                std::rc::Rc::clone(&self.waveform_geometry_cache),
+                grid,
+            )
+            .unwrap_or_else(|| div().absolute().inset_0());
+        }
         let waveform = state.waveforms.get(&clip.asset());
+        let gain = self
+            .waveform_clip_gain(clip)
+            .filter(|gain| *gain != clip.gain());
         let body = if let Some(prepared) = state.audio_clip_waveforms.get(&clip.id()) {
             // The immutable prepared peaks cover the retained root. Cropping
             // changes its visible offset, never its processing/source origin.
@@ -2796,7 +2856,7 @@ impl EditorView {
                 super::waveform_geometry::WaveformMapping::Prepared {
                     timeline_origin: clip.start(),
                     root_offset: prepared.offset,
-                    gain: clip.gain(),
+                    gain: gain.unwrap_or(clip.gain()),
                 },
                 visible_start,
                 visible_end,
@@ -2817,6 +2877,7 @@ impl EditorView {
                     super::waveform_geometry::WaveformMapping::Clip {
                         clip: clip.clone(),
                         timeline_origin: clip.start(),
+                        gain: gain.map(hex_project::ClipGain::linear),
                         fade: Some(self.fade_preview(clip.id()).unwrap_or(clip.retained_fade())),
                     },
                     visible_start,
@@ -3259,7 +3320,7 @@ impl EditorView {
                         header_height: super::clip_name::CLIP_NAME_HEIGHT,
                         header_gradient: if !active_trim_preview {
                             super::clip_header_loop::audio(
-                                &self.audio_header_loop_clip(clip, state),
+                                clip,
                                 state.project.tempo_map(),
                                 visible_start..visible_end,
                                 clip_pixel_width * scale_factor,

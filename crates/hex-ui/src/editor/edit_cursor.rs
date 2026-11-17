@@ -14,7 +14,7 @@ const PULSE_PERIOD: Duration = Duration::from_millis(1_200);
 const LOCK_PULSE_PERIOD_MS: u128 = 2_400;
 // A slow marker pulse needs at most 20 repaints per second.
 const LOCK_PULSE_STEP_MS: u128 = 50;
-const POINT_CLICK_SLOP_PX: f64 = 2.0;
+pub(super) const POINT_CLICK_SLOP_PX: f64 = 2.0;
 
 #[derive(Clone, Copy)]
 pub(super) struct EditCursor {
@@ -233,7 +233,7 @@ impl EditorView {
             && self.mode == EditorMode::Arrangement
     }
 
-    fn cursor_frame_at(
+    pub(super) fn cursor_frame_at(
         &self,
         pointer_x: f32,
         lane: super::drag::LaneBounds,
@@ -592,6 +592,15 @@ impl EditorView {
                         gpui::MouseButton::Left,
                         cx.listener(|view, event: &gpui::MouseDownEvent, _, cx| {
                             if event.modifiers == gpui::Modifiers::default() {
+                                let point =
+                                    (f32::from(event.position.x), f32::from(event.position.y));
+                                // Arrangement capture saw this press before the marker.
+                                // Discard its pending tail drag so the marker can claim it.
+                                if view.time_selection_gesture.as_ref().is_some_and(|gesture| {
+                                    !gesture.moved && gesture.tail_press == Some(point)
+                                }) {
+                                    view.time_selection_gesture = None;
+                                }
                                 view.toggle_play_start_lock(cx);
                                 cx.stop_propagation();
                             }

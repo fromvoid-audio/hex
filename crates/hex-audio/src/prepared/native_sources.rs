@@ -43,6 +43,25 @@ pub struct NativeParameterContinuationRequest<'a> {
     pub normalized: f64,
 }
 
+fn stopped_program_frontier(
+    quantum: hex_plugin_host::transport::QuantumObservation,
+    worker: hex_engine::ForeignProgramFrontier,
+) -> hex_engine::ForeignProgramFrontier {
+    use crate::plugin_worker::CommittedQuantumState;
+    use hex_plugin_host::transport::QuantumObservation;
+    let open_quantum = match quantum {
+        QuantumObservation::Committed(quantum) => match quantum.state {
+            CommittedQuantumState::OpenProgram(key) => Some(key),
+            CommittedQuantumState::Closed | CommittedQuantumState::OpenUnprogrammed => None,
+        },
+        QuantumObservation::Untouched(_) => None,
+    };
+    hex_engine::ForeignProgramFrontier::Stopped {
+        open_quantum,
+        worker_empty: worker == hex_engine::ForeignProgramFrontier::Empty,
+    }
+}
+
 impl PublicationControl {
     fn stopped_native_quantum_fence_matches(
         &self,
@@ -79,6 +98,35 @@ impl PublicationControl {
             fence,
             quantum,
         }))
+    }
+
+    /// Combine the exact original callback's last coherent quantum and worker
+    /// pickup while the same stopped source fence remains ready. A proven
+    /// untouched pair is distinct from an absent or unavailable observation.
+    /// The worker's Unknown or keyed pickup is never promoted to an empty receipt. This is a control-side
+    /// observation only: callers must prove installed predecessor membership,
+    /// establish which programs can still be needed, and hold the fence until
+    /// the successor is installed or refused.
+    pub fn try_fenced_native_program_frontier_on_control(
+        &self,
+        source: AppliedAudioSource,
+        fence: StoppedEditFence,
+        binding: Binding,
+    ) -> Result<hex_engine::ForeignProgramFrontier, &'static str> {
+        if binding.root != source.output_identity
+            || !self.stopped_native_quantum_fence_matches(source, fence)
+        {
+            return Err("native quantum fence is not current");
+        }
+        let quantum = self
+            .candidate_root
+            .try_native_source_quantum_observation(binding)?
+            .ok_or("native callback quantum is unavailable")?;
+        let worker = self.try_native_source_program_frontier_on_control(binding)?;
+        if !self.stopped_native_quantum_fence_matches(source, fence) {
+            return Err("native quantum fence is not current");
+        }
+        Ok(stopped_program_frontier(quantum, worker))
     }
 
     /// Recheck the correlated fence only; this does not assert the callback
@@ -990,6 +1038,37 @@ impl PublicationControl {
             return None;
         }
         self.candidate_root.native_source_endpoint_status(binding)
+    }
+    /// Consume at most one editor Space press from the exact accepted helper.
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub fn take_native_source_transport_space(&self, binding: Binding) -> bool {
+        !self.status.closing.load(Acquire)
+            && self
+                .candidate_root
+                .take_native_source_transport_space(binding)
+    }
+    /// Drain one best-effort sample from this exact active native source.
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub fn take_native_source_slow_exchange(
+        &self,
+        binding: Binding,
+    ) -> Option<crate::plugin_worker::SlowPluginExchange> {
+        if self.status.closing.load(Acquire) {
+            return None;
+        }
+        self.candidate_root
+            .take_native_source_slow_exchange(binding)
+    }
+    /// Drain an accepted concealed quantum for the exact active source.
+    pub fn take_native_source_concealed_output(
+        &self,
+        binding: Binding,
+    ) -> Option<hex_plugin_host::transport::ConcealedOutput> {
+        if self.status.closing.load(Acquire) {
+            return None;
+        }
+        self.candidate_root
+            .take_native_source_concealed_output(binding)
     }
     /// Read the exact accepted endpoint's terminal diagnostic once, without
     /// joining its worker or exposing any callback state. Contention can defer it.

@@ -14,7 +14,9 @@ use coreaudio::audio_unit::render_callback::{self, data};
 use coreaudio::audio_unit::{AudioUnit, Element, Scope};
 use objc2_audio_toolbox::{
     kAudioOutputUnitProperty_CurrentDevice, kAudioOutputUnitProperty_EnableIO,
-    kAudioUnitProperty_MaximumFramesPerSlice, kAudioUnitProperty_StreamFormat,
+    kAudioUnitProperty_Latency, kAudioUnitProperty_MaximumFramesPerSlice,
+    kAudioUnitProperty_StreamFormat, AudioUnitAddPropertyListener, AudioUnitGetProperty,
+    AudioUnitRemovePropertyListenerWithUserData,
 };
 use objc2_core_audio::kAudioDevicePropertyDeviceUID;
 use objc2_core_audio::kAudioObjectPropertyElementMain;
@@ -28,18 +30,24 @@ use objc2_core_audio::{
     AudioObjectGetPropertyDataSize, AudioObjectID, AudioObjectPropertyAddress,
     AudioObjectPropertyScope, AudioObjectSetPropertyData,
 };
+use objc2_core_audio::{
+    kAudioDevicePropertyDeviceIsAlive, kAudioDevicePropertyLatency,
+    kAudioDevicePropertySafetyOffset, kAudioDevicePropertyStreams,
+    kAudioHardwarePropertyDefaultOutputDevice, kAudioObjectSystemObject,
+    kAudioStreamPropertyLatency, AudioObjectAddPropertyListener, AudioObjectRemovePropertyListener,
+};
 use objc2_core_audio_types::{
     AudioBuffer, AudioBufferList, AudioStreamBasicDescription, AudioValueRange,
 };
 use objc2_core_foundation::CFString;
 use objc2_core_foundation::Type;
 
-pub use super::enumerate::{
-    default_input_device, default_output_device, SupportedInputConfigs, SupportedOutputConfigs,
-};
+pub use super::enumerate::{default_output_device, SupportedInputConfigs, SupportedOutputConfigs};
+use std::ffi::c_void;
 use std::fmt;
 use std::mem::{self, size_of};
 use std::ptr::{null, NonNull};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{channel, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -391,12 +399,41 @@ pub struct Device {
     pub(crate) audio_device_id: AudioDeviceID,
 }
 
-fn is_default_input_device(device: &Device) -> bool {
-    default_input_device().is_some_and(|d| d.audio_device_id == device.audio_device_id)
-}
-
 fn is_default_output_device(device: &Device) -> bool {
     default_output_device().is_some_and(|d| d.audio_device_id == device.audio_device_id)
+}
+
+// The input stream is pinned to the selected device even when it is the
+// system default. Its disconnection must reach the stream's error callback.
+fn input_disconnect_callback<E>(callback: Arc<Mutex<E>>) -> super::ErrorCallback
+where
+    E: FnMut(StreamError) + Send + 'static,
+{
+    Box::new(move |err| {
+        invoke_error_callback(&callback, err);
+    })
+}
+
+#[cfg(test)]
+mod input_disconnect_regression {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn device_unavailable_reaches_the_input_error_callback() {
+        let observed = Arc::new(AtomicUsize::new(0));
+        let target = Arc::clone(&observed);
+        let callback = Arc::new(Mutex::new(move |error| {
+            if matches!(error, StreamError::DeviceNotAvailable) {
+                target.fetch_add(1, Ordering::Relaxed);
+            }
+        }));
+        // Input stream construction uses this same callback for every selected
+        // device, without a separate no-op route for the default device.
+        let mut disconnect = input_disconnect_callback(callback);
+        disconnect(StreamError::DeviceNotAvailable);
+        assert_eq!(observed.load(Ordering::Relaxed), 1);
+    }
 }
 
 impl Device {
@@ -895,19 +932,12 @@ impl Device {
             Ok(())
         })?;
 
-        // Create error callback for stream - either dummy or real based on device type
-        let error_callback_for_stream: super::ErrorCallback = if is_default_input_device(self) {
-            Box::new(|_: StreamError| {})
-        } else {
-            let error_callback_clone = error_callback_disconnect.clone();
-            Box::new(move |err: StreamError| {
-                invoke_error_callback(&error_callback_clone, err);
-            })
-        };
+        let error_callback_for_stream = input_disconnect_callback(error_callback_disconnect);
 
         let stream = Stream::new(
             StreamInner {
                 playing: true,
+                timing_watch: None,
                 audio_unit,
                 device_id: self.audio_device_id,
                 _loopback_device: loopback_aggregate,
@@ -1094,6 +1124,7 @@ impl Device {
         let stream = Stream::new(
             StreamInner {
                 playing: true,
+                timing_watch: None,
                 audio_unit,
                 device_id: self.audio_device_id,
                 _loopback_device: None,
@@ -1158,6 +1189,923 @@ impl Drop for OutputBufferRollback {
                 );
             }
         }
+    }
+}
+
+/// One copied observation of the actual output unit and its pinned device.
+/// Device components are in hardware frames; the unit reports seconds. This
+/// grants no ongoing route validity: rate, buffer, stream, safety or latency
+/// changes invalidate it. Callers must observe those changes before using it
+/// for a persistent presentation plan. It is not measured physical latency.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct OutputTiming {
+    pub device_id: AudioDeviceID,
+    pub device_sample_rate: f64,
+    pub client_sample_rate: f64,
+    pub buffer_frames: u32,
+    pub safety_frames: u32,
+    pub device_frames: u32,
+    /// All output streams must report this same value; differing streams refuse.
+    pub stream_frames: u32,
+    pub audio_unit_seconds: f64,
+}
+
+impl OutputTiming {
+    /// Declared buffer/safety/device/stream path rounded up once to client
+    /// frames using exact integral-rate arithmetic. Fractional nominal rates
+    /// refuse. EXCLUDES the AudioUnit property: its device overlap is not
+    /// established by this query. Do not add it or infer full presentation
+    /// timing without a supported composition and route-validity contract.
+    pub fn hardware_path_client_frames(&self) -> Result<u32, BuildStreamError> {
+        if self.device_id == 0
+            || !self.device_sample_rate.is_finite()
+            || self.device_sample_rate < 1.0
+            || self.device_sample_rate > f64::from(u32::MAX)
+            || self.device_sample_rate.fract() != 0.0
+            || !self.client_sample_rate.is_finite()
+            || self.client_sample_rate < 1.0
+            || self.client_sample_rate > f64::from(u32::MAX)
+            || self.client_sample_rate.fract() != 0.0
+            || !self.audio_unit_seconds.is_finite()
+            || self.audio_unit_seconds < 0.0
+            || self.audio_unit_seconds * self.client_sample_rate > f64::from(u32::MAX)
+            || self.buffer_frames == 0
+        {
+            return Err(bounded_output_error("invalid coreaudio output timing"));
+        }
+        let hardware = self
+            .buffer_frames
+            .checked_add(self.safety_frames)
+            .and_then(|n| n.checked_add(self.device_frames))
+            .and_then(|n| n.checked_add(self.stream_frames))
+            .ok_or_else(|| bounded_output_error("coreaudio output timing overflow"))?;
+        // CPAL rates are integral. Exact integer arithmetic avoids adding a
+        // spurious frame when a floating-point quotient lands above an integer.
+        let numerator = u64::from(hardware)
+            .checked_mul(u64::from(self.client_sample_rate as u32))
+            .ok_or_else(|| bounded_output_error("coreaudio output timing overflow"))?;
+        u32::try_from(numerator.div_ceil(u64::from(self.device_sample_rate as u32)))
+            .map_err(|_| bounded_output_error("coreaudio output timing overflow"))
+    }
+}
+
+impl Stream {
+    /// Read declared output timing on CONTROL only. This locks and calls native
+    /// property APIs; never call from a data/error callback. Two equal bounded
+    /// snapshots detect observed setup changes, not atomicity or future changes.
+    /// Enumeration is capped at 16 output streams; no OS call deadline is claimed.
+    /// Missing, malformed or nonuniform properties return errors, never zero.
+    pub fn output_timing_on_control(&self) -> Result<OutputTiming, BuildStreamError> {
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| bounded_output_error("coreaudio output control is poisoned"))?;
+        stable_output_timing(&inner.audio_unit, inner.device_id)
+    }
+}
+
+/// Identity of a watched observation. Only the original Stream can revalidate
+/// it. The receipt holds no Stream, listener or audio-thread custody.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OutputTimingReceipt(usize);
+
+// The OS treats user data as an opaque cookie. A callback never dereferences
+// it, even after failed removal or late delivery. A slot is reused only after
+// successful unregister, with a fresh serial. Quarantine on removal failure
+// bounds the number of surviving native registrations for this process.
+const WATCH_SLOTS: usize = 16;
+const WATCH_STRIDE: usize = WATCH_SLOTS * 2;
+const WATCH_DIRTY: usize = 1;
+static WATCH_SERIAL: AtomicUsize = AtomicUsize::new(1);
+// Array-repeat const operands support the pinned crate's Rust 1.78 MSRV.
+#[allow(clippy::declare_interior_mutable_const)]
+const EMPTY_WATCH_STATE: AtomicUsize = AtomicUsize::new(0);
+static WATCH_STATE: [AtomicUsize; WATCH_SLOTS] = [EMPTY_WATCH_STATE; WATCH_SLOTS];
+
+impl OutputTimingReceipt {
+    fn reserve() -> Result<Self, BuildStreamError> {
+        let serial = WATCH_SERIAL
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
+                (n < usize::MAX / WATCH_STRIDE).then(|| n + 1)
+            })
+            .map_err(|_| bounded_output_error("coreaudio timing receipt identity exhausted"))?;
+        for (index, slot) in WATCH_STATE.iter().enumerate() {
+            let receipt = Self(serial * WATCH_STRIDE + index * 2);
+            if slot
+                .compare_exchange(0, receipt.0, Ordering::AcqRel, Ordering::Relaxed)
+                .is_ok()
+            {
+                return Ok(receipt);
+            }
+        }
+        Err(bounded_output_error(
+            "coreaudio timing watch capacity exhausted",
+        ))
+    }
+
+    fn slot(self) -> &'static AtomicUsize {
+        &WATCH_STATE[(self.0 / 2) % WATCH_SLOTS]
+    }
+
+    fn current(self) -> bool {
+        self.slot().load(Ordering::Acquire) == self.0
+    }
+
+    fn invalidate(self) {
+        invalidate_watch_slot(self.slot(), self.0);
+    }
+
+    fn release(self) {
+        let _ = self.slot().compare_exchange(
+            self.0 | WATCH_DIRTY,
+            0,
+            Ordering::AcqRel,
+            Ordering::Relaxed,
+        );
+    }
+
+    fn user_data(self) -> *mut c_void {
+        self.0 as *mut c_void
+    }
+}
+
+fn invalidate_watch_slot(slot: &AtomicUsize, identity: usize) {
+    let _ = slot.compare_exchange(
+        identity,
+        identity | WATCH_DIRTY,
+        Ordering::AcqRel,
+        Ordering::Relaxed,
+    );
+}
+
+unsafe extern "C-unwind" fn invalidate_hal_timing(
+    _: AudioObjectID,
+    _: u32,
+    _: NonNull<AudioObjectPropertyAddress>,
+    data: *mut c_void,
+) -> i32 {
+    if !data.is_null() {
+        OutputTimingReceipt(data as usize).invalidate();
+    }
+    0
+}
+
+unsafe extern "C-unwind" fn invalidate_unit_timing(
+    data: NonNull<c_void>,
+    _: objc2_audio_toolbox::AudioUnit,
+    _: u32,
+    _: u32,
+    _: u32,
+) {
+    OutputTimingReceipt(data.as_ptr() as usize).invalidate();
+}
+
+const UNIT_TIMING_PROPERTIES: [u32; 4] = [
+    kAudioOutputUnitProperty_CurrentDevice,
+    kAudioOutputUnitProperty_EnableIO,
+    kAudioUnitProperty_StreamFormat,
+    kAudioUnitProperty_Latency,
+];
+
+fn timing_address(selector: u32, scope: AudioObjectPropertyScope) -> AudioObjectPropertyAddress {
+    AudioObjectPropertyAddress {
+        mSelector: selector,
+        mScope: scope,
+        mElement: kAudioObjectPropertyElementMain,
+    }
+}
+
+pub(super) struct OutputTimingWatch {
+    receipt: OutputTimingReceipt,
+    snapshot: OutputTimingSnapshot,
+    hal: Vec<(AudioObjectID, AudioObjectPropertyAddress)>,
+    unit_count: usize,
+}
+
+impl OutputTimingWatch {
+    fn install(unit: &AudioUnit, device: AudioDeviceID) -> Result<Self, BuildStreamError> {
+        let snapshot = output_timing_snapshot(unit, device)?;
+        let mut hal = Vec::new();
+        // Seven fixed addresses and at most sixteen stream latency properties.
+        hal.try_reserve_exact(7 + snapshot.2)
+            .map_err(|_| bounded_output_error("coreaudio timing watch storage unavailable"))?;
+        let mut watch = Self {
+            receipt: OutputTimingReceipt::reserve()?,
+            snapshot,
+            hal,
+            unit_count: 0,
+        };
+        if let Err(error) = watch
+            .register(unit, device)
+            .and_then(|()| watch.validate(unit, device))
+        {
+            watch.retire(unit);
+            return Err(error);
+        }
+        Ok(watch)
+    }
+
+    fn register(
+        &mut self,
+        unit: &AudioUnit,
+        device: AudioDeviceID,
+    ) -> Result<(), BuildStreamError> {
+        let global = kAudioObjectPropertyScopeGlobal;
+        let output = kAudioObjectPropertyScopeOutput;
+        for (object, address) in [
+            (
+                kAudioObjectSystemObject as AudioObjectID,
+                timing_address(kAudioHardwarePropertyDefaultOutputDevice, global),
+            ),
+            (
+                device,
+                timing_address(kAudioDevicePropertyDeviceIsAlive, global),
+            ),
+            (
+                device,
+                timing_address(kAudioDevicePropertyNominalSampleRate, global),
+            ),
+            (device, DEVICE_BUFFER_ADDRESS),
+            (
+                device,
+                timing_address(kAudioDevicePropertySafetyOffset, output),
+            ),
+            (device, timing_address(kAudioDevicePropertyLatency, output)),
+            (device, timing_address(kAudioDevicePropertyStreams, output)),
+        ] {
+            self.register_hal(object, address)?;
+        }
+        for index in 0..self.snapshot.2 {
+            let stream = self.snapshot.1[index];
+            self.register_hal(stream, timing_address(kAudioStreamPropertyLatency, global))?;
+        }
+        for selector in UNIT_TIMING_PROPERTIES {
+            // SAFETY: This is the live Stream's unit and a scalar property
+            // selector. The callback receives an opaque integer, never a borrow.
+            let status = unsafe {
+                AudioUnitAddPropertyListener(
+                    *unit.as_ref(),
+                    selector,
+                    Some(invalidate_unit_timing),
+                    self.receipt.user_data(),
+                )
+            };
+            coreaudio::Error::from_os_status(status)?;
+            self.unit_count += 1;
+        }
+        Ok(())
+    }
+
+    fn register_hal(
+        &mut self,
+        object: AudioObjectID,
+        address: AudioObjectPropertyAddress,
+    ) -> Result<(), BuildStreamError> {
+        // SAFETY: Core Audio reads this address synchronously. Callback data is
+        // an opaque cookie with no backing object lifetime.
+        let status = unsafe {
+            AudioObjectAddPropertyListener(
+                object,
+                NonNull::from(&address),
+                Some(invalidate_hal_timing),
+                self.receipt.user_data(),
+            )
+        };
+        coreaudio::Error::from_os_status(status)?;
+        self.hal.push((object, address));
+        Ok(())
+    }
+
+    fn validate(&self, unit: &AudioUnit, device: AudioDeviceID) -> Result<(), BuildStreamError> {
+        let result = (|| {
+            if !self.receipt.current() {
+                return Err(bounded_output_error("coreaudio output timing is stale"));
+            }
+            let now = output_timing_snapshot(unit, device)?;
+            validate_stable_output_timing(self.snapshot, now)?;
+            if !self.receipt.current() {
+                return Err(bounded_output_error(
+                    "coreaudio output timing changed during query",
+                ));
+            }
+            Ok(())
+        })();
+        if result.is_err() {
+            self.receipt.invalidate();
+        }
+        result
+    }
+
+    pub(super) fn retire(self, unit: &AudioUnit) {
+        self.receipt.invalidate();
+        let mut removed = true;
+        for &selector in &UNIT_TIMING_PROPERTIES[..self.unit_count] {
+            // SAFETY: This is the original unit and matching registered tuple,
+            // with the same opaque cookie. Even a late callback is harmless.
+            let status = unsafe {
+                AudioUnitRemovePropertyListenerWithUserData(
+                    *unit.as_ref(),
+                    selector,
+                    Some(invalidate_unit_timing),
+                    self.receipt.user_data(),
+                )
+            };
+            removed &= status == 0;
+        }
+        for (object, address) in self.hal {
+            // SAFETY: The address and opaque cookie match the registration.
+            let status = unsafe {
+                AudioObjectRemovePropertyListener(
+                    object,
+                    NonNull::from(&address),
+                    Some(invalidate_hal_timing),
+                    self.receipt.user_data(),
+                )
+            };
+            removed &= status == 0;
+        }
+        if removed {
+            self.receipt.release();
+        }
+    }
+}
+
+impl Stream {
+    /// Start a fresh observation on control and retire any previous watch.
+    /// A delivered notification permanently revokes a receipt. Registration
+    /// or query failure leaves no current receipt. One watch per stream and
+    /// sixteen process slots bound retained native notification registrations.
+    pub fn watch_output_timing_on_control(&self) -> Result<OutputTimingReceipt, BuildStreamError> {
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| bounded_output_error("coreaudio output control is poisoned"))?;
+        inner.clear_timing_watch();
+        let watch = OutputTimingWatch::install(&inner.audio_unit, inner.device_id)?;
+        let receipt = watch.receipt;
+        inner.timing_watch = Some(watch);
+        Ok(receipt)
+    }
+
+    /// Revalidate the original property values and notification state on
+    /// control. Notifications can arrive after a property change, so this is a
+    /// point-in-time check, with no guarantee beyond its final observation.
+    pub fn revalidate_output_timing_on_control(
+        &self,
+        receipt: OutputTimingReceipt,
+    ) -> Result<OutputTiming, BuildStreamError> {
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| bounded_output_error("coreaudio output control is poisoned"))?;
+        let watch = inner
+            .timing_watch
+            .as_ref()
+            .filter(|watch| watch.receipt == receipt)
+            .ok_or_else(|| {
+                bounded_output_error(
+                    "coreaudio output timing receipt is not current for this stream",
+                )
+            })?;
+        watch.validate(&inner.audio_unit, inner.device_id)?;
+        Ok(watch.snapshot.0)
+    }
+}
+
+fn stable_output_timing(
+    unit: &AudioUnit,
+    device: AudioDeviceID,
+) -> Result<OutputTiming, BuildStreamError> {
+    let first = output_timing_snapshot(unit, device)?;
+    let second = output_timing_snapshot(unit, device)?;
+    validate_stable_output_timing(first, second)
+}
+
+type OutputTimingSnapshot = (OutputTiming, [u32; 16], usize);
+
+fn validate_stable_output_timing(
+    first: OutputTimingSnapshot,
+    second: OutputTimingSnapshot,
+) -> Result<OutputTiming, BuildStreamError> {
+    if first != second {
+        return Err(bounded_output_error(
+            "coreaudio output timing changed during query",
+        ));
+    }
+    first.0.hardware_path_client_frames()?;
+    Ok(first.0)
+}
+
+fn output_timing_snapshot(
+    unit: &AudioUnit,
+    device: AudioDeviceID,
+) -> Result<(OutputTiming, [u32; 16], usize), BuildStreamError> {
+    let actual: AudioDeviceID = output_unit_timing_property(
+        unit,
+        kAudioOutputUnitProperty_CurrentDevice,
+        Scope::Global,
+        Element::Output,
+    )?;
+    let enabled: u32 = output_unit_timing_property(
+        unit,
+        kAudioOutputUnitProperty_EnableIO,
+        Scope::Output,
+        Element::Output,
+    )?;
+    if actual != device
+        || device == 0
+        || enabled != 1
+        || output_timing_u32(
+            device,
+            kAudioDevicePropertyDeviceIsAlive,
+            kAudioObjectPropertyScopeGlobal,
+        )? != 1
+    {
+        return Err(bounded_output_error(
+            "coreaudio output device is unavailable",
+        ));
+    }
+    let format: AudioStreamBasicDescription = output_unit_timing_property(
+        unit,
+        kAudioUnitProperty_StreamFormat,
+        Scope::Input,
+        Element::Output,
+    )?;
+    if format.mChannelsPerFrame == 0 {
+        return Err(bounded_output_error(
+            "coreaudio output channels are unavailable",
+        ));
+    }
+    let address = AudioObjectPropertyAddress {
+        mSelector: kAudioDevicePropertyNominalSampleRate,
+        mScope: kAudioObjectPropertyScopeGlobal,
+        mElement: kAudioObjectPropertyElementMain,
+    };
+    let mut rate = 0.0_f64;
+    let mut size = size_of::<f64>() as u32;
+    // SAFETY: These initialized writable outputs have the exact property type
+    // and lifetime for this synchronous native read; its returned size is checked.
+    let status = unsafe {
+        AudioObjectGetPropertyData(
+            device,
+            NonNull::from(&address),
+            0,
+            null(),
+            NonNull::from(&mut size),
+            NonNull::from(&mut rate).cast(),
+        )
+    };
+    coreaudio::Error::from_os_status(status)?;
+    if size != size_of::<f64>() as u32 {
+        return Err(bounded_output_error("invalid coreaudio device rate size"));
+    }
+    let (streams, count) = output_timing_streams(device)?;
+    let stream_frames = uniform_output_timing(&streams[..count], |stream| {
+        output_timing_u32(
+            stream,
+            kAudioStreamPropertyLatency,
+            kAudioObjectPropertyScopeGlobal,
+        )
+    })?;
+    let timing = OutputTiming {
+        device_id: device,
+        device_sample_rate: rate,
+        client_sample_rate: format.mSampleRate,
+        buffer_frames: device_buffer_frames(device)?,
+        safety_frames: output_timing_u32(
+            device,
+            kAudioDevicePropertySafetyOffset,
+            kAudioObjectPropertyScopeOutput,
+        )?,
+        device_frames: output_timing_u32(
+            device,
+            kAudioDevicePropertyLatency,
+            kAudioObjectPropertyScopeOutput,
+        )?,
+        stream_frames,
+        audio_unit_seconds: output_unit_timing_property(
+            unit,
+            kAudioUnitProperty_Latency,
+            Scope::Global,
+            Element::Output,
+        )?,
+    };
+    timing.hardware_path_client_frames()?;
+    Ok((timing, streams, count))
+}
+
+// This private, closed list contains only initialized native POD values with
+// valid arbitrary bit patterns. Do not implement for pointers or Rust owners.
+trait OutputTimingProperty: Copy {
+    fn initialized() -> Self;
+}
+impl OutputTimingProperty for u32 {
+    fn initialized() -> Self {
+        0
+    }
+}
+impl OutputTimingProperty for f64 {
+    fn initialized() -> Self {
+        0.0
+    }
+}
+impl OutputTimingProperty for AudioStreamBasicDescription {
+    fn initialized() -> Self {
+        Self {
+            mSampleRate: 0.0,
+            mFormatID: 0,
+            mFormatFlags: 0,
+            mBytesPerPacket: 0,
+            mFramesPerPacket: 0,
+            mBytesPerFrame: 0,
+            mChannelsPerFrame: 0,
+            mBitsPerChannel: 0,
+            mReserved: 0,
+        }
+    }
+}
+
+fn output_unit_timing_property<T: OutputTimingProperty>(
+    unit: &AudioUnit,
+    selector: u32,
+    scope: Scope,
+    element: Element,
+) -> Result<T, BuildStreamError> {
+    let mut value = T::initialized();
+    let mut size = size_of::<T>() as u32;
+    // SAFETY: The unit is borrowed and live, and the private POD list supplies
+    // initialized writable storage of the advertised size/alignment. All calls
+    // below use the documented property type. Returned sizes are checked rather
+    // than assuming an uninitialized native result is complete.
+    let status = unsafe {
+        AudioUnitGetProperty(
+            *unit.as_ref(),
+            selector,
+            scope as u32,
+            element as u32,
+            NonNull::from(&mut value).cast(),
+            NonNull::from(&mut size),
+        )
+    };
+    coreaudio::Error::from_os_status(status)?;
+    if size != size_of::<T>() as u32 {
+        return Err(bounded_output_error(
+            "invalid coreaudio output unit timing property size",
+        ));
+    }
+    Ok(value)
+}
+
+fn output_timing_u32(
+    object: u32,
+    selector: u32,
+    scope: AudioObjectPropertyScope,
+) -> Result<u32, BuildStreamError> {
+    let address = AudioObjectPropertyAddress {
+        mSelector: selector,
+        mScope: scope,
+        mElement: kAudioObjectPropertyElementMain,
+    };
+    let mut value = 0_u32;
+    let mut size = size_of::<u32>() as u32;
+    // SAFETY: The selected UInt32 property writes into a live initialized UInt32
+    // with its exact capacity. The synchronous read's returned size is checked.
+    let status = unsafe {
+        AudioObjectGetPropertyData(
+            object,
+            NonNull::from(&address),
+            0,
+            null(),
+            NonNull::from(&mut size),
+            NonNull::from(&mut value).cast(),
+        )
+    };
+    coreaudio::Error::from_os_status(status)?;
+    if size != size_of::<u32>() as u32 {
+        return Err(bounded_output_error(
+            "invalid coreaudio timing property size",
+        ));
+    }
+    Ok(value)
+}
+
+fn uniform_output_timing(
+    streams: &[u32],
+    mut read: impl FnMut(u32) -> Result<u32, BuildStreamError>,
+) -> Result<u32, BuildStreamError> {
+    let Some((first, rest)) = streams.split_first().filter(|_| streams.len() <= 16) else {
+        return Err(bounded_output_error(
+            "invalid coreaudio output stream count",
+        ));
+    };
+    let frames = read(*first)?;
+    for stream in rest {
+        if read(*stream)? != frames {
+            return Err(bounded_output_error(
+                "nonuniform coreaudio output stream latency",
+            ));
+        }
+    }
+    Ok(frames)
+}
+
+fn output_timing_streams(device: AudioDeviceID) -> Result<([u32; 16], usize), BuildStreamError> {
+    let address = AudioObjectPropertyAddress {
+        mSelector: kAudioDevicePropertyStreams,
+        mScope: kAudioObjectPropertyScopeOutput,
+        mElement: kAudioObjectPropertyElementMain,
+    };
+    let declared_bytes = || {
+        let mut bytes = 0;
+        // SAFETY: Core Audio reads the property address and writes one u32
+        // synchronously. Both objects live through this call.
+        let status = unsafe {
+            AudioObjectGetPropertyDataSize(
+                device,
+                NonNull::from(&address),
+                0,
+                null(),
+                NonNull::from(&mut bytes),
+            )
+        };
+        coreaudio::Error::from_os_status(status)?;
+        Ok::<u32, BuildStreamError>(bytes)
+    };
+    let expected = declared_bytes()?;
+    output_timing_stream_count(expected as usize)?;
+    let mut streams = [0_u32; 16];
+    let mut size = expected;
+    // SAFETY: The initialized array has at least the checked advertised
+    // capacity. The returned size cannot extend Rust access past the array.
+    let status = unsafe {
+        AudioObjectGetPropertyData(
+            device,
+            NonNull::from(&address),
+            0,
+            null(),
+            NonNull::from(&mut size),
+            NonNull::from(&mut streams).cast(),
+        )
+    };
+    coreaudio::Error::from_os_status(status)?;
+    if size != expected || declared_bytes()? != expected {
+        return Err(bounded_output_error(
+            "coreaudio output stream inventory changed during query",
+        ));
+    }
+    let count = validate_output_timing_streams(&streams, size as usize)?;
+    Ok((streams, count))
+}
+
+fn validate_output_timing_streams(
+    streams: &[u32; 16],
+    size: usize,
+) -> Result<usize, BuildStreamError> {
+    let count = output_timing_stream_count(size)?;
+    for i in 0..count {
+        if streams[i] == 0 || streams[..i].contains(&streams[i]) {
+            return Err(bounded_output_error(
+                "invalid coreaudio output stream identity",
+            ));
+        }
+    }
+    Ok(count)
+}
+
+fn output_timing_stream_count(size: usize) -> Result<usize, BuildStreamError> {
+    if size == 0 || size > size_of::<[u32; 16]>() || size % size_of::<u32>() != 0 {
+        return Err(bounded_output_error(
+            "invalid coreaudio output stream inventory",
+        ));
+    }
+    Ok(size / size_of::<u32>())
+}
+
+#[cfg(test)]
+mod output_timing_regression {
+    use super::*;
+
+    fn timing() -> OutputTiming {
+        OutputTiming {
+            device_id: 1,
+            device_sample_rate: 48_000.0,
+            client_sample_rate: 44_100.0,
+            buffer_frames: 128,
+            safety_frames: 16,
+            device_frames: 7,
+            stream_frames: 9,
+            audio_unit_seconds: 0.125,
+        }
+    }
+
+    #[test]
+    fn changing_nonuniform_and_unavailable_observations_refuse() {
+        assert_eq!(uniform_output_timing(&[5, 6], |_| Ok(0)).unwrap(), 0);
+        assert!(uniform_output_timing(&[], |_| Ok(0)).is_err());
+        assert!(uniform_output_timing(&[1; 17], |_| Ok(0)).is_err());
+        assert!(uniform_output_timing(&[5, 6], Ok).is_err());
+        assert!(
+            uniform_output_timing(&[5], |_| Err(bounded_output_error("property unavailable")))
+                .is_err()
+        );
+        let first = (timing(), [5; 16], 1);
+        assert_eq!(
+            validate_stable_output_timing(first, first).unwrap(),
+            timing()
+        );
+        assert!(validate_stable_output_timing(
+            first,
+            (
+                OutputTiming {
+                    safety_frames: 17,
+                    ..timing()
+                },
+                first.1,
+                1
+            )
+        )
+        .is_err());
+        assert!(validate_stable_output_timing(first, (timing(), [6; 16], 1)).is_err());
+        assert!(validate_stable_output_timing(first, (timing(), first.1, 2)).is_err());
+    }
+
+    #[test]
+    fn units_round_once_and_do_not_double_count_unclassified_audio_unit_latency() {
+        let observed = timing();
+        assert_eq!(observed.hardware_path_client_frames().unwrap(), 147);
+        assert_eq!(
+            OutputTiming {
+                client_sample_rate: 48_000.0,
+                ..observed
+            }
+            .hardware_path_client_frames()
+            .unwrap(),
+            160
+        );
+        // The AU value remains a separate reported observation. It may already
+        // include hardware latency, so it must not silently enter the sum.
+        assert_eq!(observed.audio_unit_seconds, 0.125);
+        assert_eq!(
+            OutputTiming {
+                audio_unit_seconds: 0.0,
+                ..observed
+            }
+            .hardware_path_client_frames()
+            .unwrap(),
+            147
+        );
+    }
+
+    #[test]
+    fn malformed_and_overflowing_timing_never_becomes_known_zero() {
+        for value in [
+            44_100.5,
+            f64::NAN,
+            f64::INFINITY,
+            0.0,
+            -1.0,
+            f64::MIN_POSITIVE,
+            f64::MAX,
+        ] {
+            assert!(OutputTiming {
+                device_sample_rate: value,
+                ..timing()
+            }
+            .hardware_path_client_frames()
+            .is_err());
+            assert!(OutputTiming {
+                client_sample_rate: value,
+                ..timing()
+            }
+            .hardware_path_client_frames()
+            .is_err());
+        }
+        for value in [f64::NAN, f64::INFINITY, -1.0, f64::MAX] {
+            assert!(OutputTiming {
+                audio_unit_seconds: value,
+                ..timing()
+            }
+            .hardware_path_client_frames()
+            .is_err());
+        }
+        assert!(OutputTiming {
+            device_id: 0,
+            ..timing()
+        }
+        .hardware_path_client_frames()
+        .is_err());
+        assert!(OutputTiming {
+            buffer_frames: 0,
+            ..timing()
+        }
+        .hardware_path_client_frames()
+        .is_err());
+        assert!(OutputTiming {
+            device_frames: u32::MAX,
+            ..timing()
+        }
+        .hardware_path_client_frames()
+        .is_err());
+        assert!(OutputTiming {
+            device_sample_rate: 1.0,
+            client_sample_rate: f64::from(u32::MAX),
+            ..timing()
+        }
+        .hardware_path_client_frames()
+        .is_err());
+        let mut streams = [0; 16];
+        for size in [0, 1, 3, 4, 65, usize::MAX] {
+            assert!(validate_output_timing_streams(&streams, size).is_err());
+        }
+        streams[0] = 5;
+        assert_eq!(validate_output_timing_streams(&streams, 4).unwrap(), 1);
+        streams[1] = 5;
+        assert!(validate_output_timing_streams(&streams, 8).is_err());
+        streams[1] = 6;
+        assert_eq!(validate_output_timing_streams(&streams, 8).unwrap(), 2);
+        assert!(output_timing_u32(
+            0,
+            kAudioDevicePropertyLatency,
+            kAudioObjectPropertyScopeOutput
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn a_late_signal_cannot_invalidate_a_reused_slot() {
+        // Local slot exercises the same matching rule without depending on
+        // parallel tests or actual native listener scheduling.
+        let slot = AtomicUsize::new(WATCH_STRIDE);
+        invalidate_watch_slot(&slot, WATCH_STRIDE);
+        assert_eq!(slot.load(Ordering::Acquire), WATCH_STRIDE | WATCH_DIRTY);
+        slot.store(2 * WATCH_STRIDE, Ordering::Release);
+        invalidate_watch_slot(&slot, WATCH_STRIDE);
+        assert_eq!(slot.load(Ordering::Acquire), 2 * WATCH_STRIDE);
+    }
+
+    #[test]
+    fn actual_pinned_output_unit_reports_component_observations_on_control() {
+        let device = default_output_device().expect("native timing probe needs an output device");
+        // No stream start, hardware buffer/rate mutation or audio callback.
+        let unit = audio_unit_on_device(&device, false, true).unwrap();
+        let stream = Stream::new(
+            StreamInner {
+                playing: false,
+                timing_watch: None,
+                audio_unit: unit,
+                device_id: device.audio_device_id,
+                _loopback_device: None,
+            },
+            Box::new(|_| {}),
+        )
+        .unwrap();
+        let observed: crate::platform::CoreAudioOutputTiming =
+            stream.output_timing_on_control().unwrap();
+        assert_eq!(observed.device_id, device.audio_device_id);
+        assert_eq!(
+            observed.buffer_frames,
+            device_buffer_frames(device.audio_device_id).unwrap()
+        );
+        assert!(observed.hardware_path_client_frames().unwrap() > 0);
+        println!("control-only declared output components: {observed:?}");
+        let received: crate::platform::CoreAudioOutputTimingReceipt =
+            stream.watch_output_timing_on_control().unwrap();
+        assert_eq!(
+            stream
+                .revalidate_output_timing_on_control(received)
+                .unwrap(),
+            observed
+        );
+        let foreign = OutputTimingReceipt::reserve().unwrap();
+        assert!(stream.revalidate_output_timing_on_control(foreign).is_err());
+        foreign.invalidate();
+        foreign.release();
+
+        // Inject a delivered HAL signal through the actual registered shim.
+        // No hardware device property is modified.
+        unsafe {
+            invalidate_hal_timing(
+                device.audio_device_id,
+                1,
+                NonNull::from(&DEVICE_BUFFER_ADDRESS),
+                received.user_data(),
+            );
+        }
+        assert!(stream
+            .revalidate_output_timing_on_control(received)
+            .is_err());
+        let fresh = stream.watch_output_timing_on_control().unwrap();
+        assert_ne!(received, fresh);
+        assert!(stream
+            .revalidate_output_timing_on_control(received)
+            .is_err());
+        received.invalidate(); // Simulate late delivery after unregister.
+        assert_eq!(
+            stream.revalidate_output_timing_on_control(fresh).unwrap(),
+            observed
+        );
+        drop(stream);
+        assert!(!fresh.current());
     }
 }
 

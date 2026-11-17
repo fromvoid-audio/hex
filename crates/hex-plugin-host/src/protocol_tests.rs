@@ -1476,3 +1476,6 @@ fn authored_parameter_permission_is_stricter_than_edit_permission() {
         );
     }
 }
+
+#[path = "protocol_tests/presentation.rs"]
+mod presentation;

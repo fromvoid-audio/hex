@@ -4,7 +4,7 @@
 
 use super::{End, FRAMES, Reader, Source, TimingSpan, timing};
 use std::{
-    fs::{File, OpenOptions},
+    fs::OpenOptions,
     io::{self, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     sync::Arc,
@@ -12,9 +12,9 @@ use std::{
     time::Duration,
 };
 
-const HEADER: u64 = 44;
-const FRAME_BYTES: u64 = 8;
-const MAX_FRAMES: u64 = (u32::MAX as u64 - (HEADER - 8)) / FRAME_BYTES;
+pub(crate) const HEADER: u64 = 44;
+pub(crate) const FRAME_BYTES: u64 = 8;
+pub(crate) const MAX_FRAMES: u64 = (u32::MAX as u64 - (HEADER - 8)) / FRAME_BYTES;
 
 #[derive(Clone, Debug)]
 pub struct Take {
@@ -170,7 +170,7 @@ pub(super) mod write_fault {
     }
 }
 
-fn write_header(file: &mut File, rate: u32, frames: u64) -> io::Result<()> {
+pub(crate) fn write_header(file: &mut impl Write, rate: u32, frames: u64) -> io::Result<()> {
     let bytes = u32::try_from(frames * FRAME_BYTES)
         .map_err(|_| io::Error::other("invalid sample recording WAV size"))?;
     file.write_all(b"RIFF")?;

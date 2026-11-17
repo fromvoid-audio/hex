@@ -460,6 +460,7 @@ fn end_label(end: End) -> &'static str {
         End::InvalidBlock => "audio was unavailable",
         End::UnsupportedOutput => "unsupported output mode",
         End::StorageFailed => "storage unavailable",
+        End::TransportChanged => "transport changed",
     }
 }
 
@@ -586,7 +587,25 @@ mod tests {
         #[cfg(target_os = "macos")]
         {
             cx.use_native_text_system().expect("native font shaping");
-            cx.update(|cx| theme::load_fonts(cx).expect("bundled fonts"));
+            cx.update(|cx| {
+                // Register the same embedded faces without enumerating every
+                // installed system font. Each shaped run is checked below.
+                let fonts: Vec<std::borrow::Cow<'static, [u8]>> = vec![
+                    std::borrow::Cow::Borrowed(include_bytes!(
+                        "../../../../assets/fonts/ioskeley-mono/ioskeley-mono-regular.ttf"
+                    )),
+                    std::borrow::Cow::Borrowed(include_bytes!(
+                        "../../../../assets/fonts/ioskeley-mono/ioskeley-mono-medium.ttf"
+                    )),
+                    std::borrow::Cow::Borrowed(include_bytes!(
+                        "../../../../assets/fonts/ioskeley-mono/ioskeley-mono-bold.ttf"
+                    )),
+                    std::borrow::Cow::Borrowed(include_bytes!(
+                        "../../../../assets/fonts/ioskeley-mono/ioskeley-mono-italic.ttf"
+                    )),
+                ];
+                cx.text_system().add_fonts(fonts).expect("bundled fonts");
+            });
         }
         let (project, _, _, _) = audio_project();
         let (window, editor) = editor_window(cx, project, Default::default());
@@ -594,22 +613,31 @@ mod tests {
         let check = |visual: &mut VisualTestContext, selector, label: &str| {
             let text = theme::text(label);
             let width = visual.update(|window, _| {
-                window
-                    .text_system()
-                    .shape_line(
-                        text.clone(),
-                        window.rem_size() * 0.75,
-                        &[gpui::TextRun {
-                            len: text.len(),
-                            font: gpui::font(theme::FONT_FAMILY),
-                            color: rgb(0xffffff).into(),
-                            background_color: None,
-                            underline: None,
-                            strikethrough: None,
-                        }],
-                        None,
-                    )
-                    .width
+                let text_system = window.text_system();
+                let shaped = text_system.shape_line(
+                    text.clone(),
+                    window.rem_size() * 0.75,
+                    &[gpui::TextRun {
+                        len: text.len(),
+                        font: gpui::font(theme::FONT_FAMILY),
+                        color: rgb(0xffffff).into(),
+                        background_color: None,
+                        underline: None,
+                        strikethrough: None,
+                    }],
+                    None,
+                );
+                #[cfg(target_os = "macos")]
+                {
+                    assert!(!shaped.runs.is_empty(), "label must have shaped glyphs");
+                    for run in &shaped.runs {
+                        let font = text_system
+                            .get_font_for_id(run.font_id)
+                            .expect("shaped font must be identified");
+                        assert_eq!(font.family.as_ref(), theme::FONT_FAMILY);
+                    }
+                }
+                shaped.width
             });
             let bounds = visual.debug_bounds(selector).expect("painted control");
             assert!(bounds.size.width > width, "{label} must fit its button");

@@ -73,6 +73,29 @@ impl PublicationControl {
         self.candidate_root
             .begin_domain_preparation(config, definitions, readiness)
     }
+    /// Move an already admitted granular bank into the same N2 reservation,
+    /// pending constructor and readiness/publication handoff as raw sources.
+    /// The combined quote covers this bank while retained here; its earlier
+    /// control preparation and caller custody remain separate obligations.
+    pub fn begin_audio_candidate_granular_domain_preparation(
+        &mut self,
+        config: hex_stream::StreamConfig,
+        definitions: Vec<hex_stream::SourceDefinition>,
+        granular: hex_stream::GranularWorkerBank,
+        readiness: hex_stream::StreamReadinessReservation,
+    ) -> Result<crate::AudioCandidateDomainToken, crate::AudioCandidateDomainStartError> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err(crate::AudioCandidateDomainStartError::Busy(
+                "candidate native custody unavailable",
+            ));
+        }
+        self.candidate_root.begin_granular_domain_preparation(
+            config,
+            definitions,
+            granular,
+            readiness,
+        )
+    }
     /// Test-only source-worker hold through the same reserved domain custody.
     #[cfg(feature = "stream-test-support")]
     pub fn begin_audio_candidate_domain_preparation_with_gate(
@@ -623,9 +646,9 @@ impl Callback {
             );
         }
         match decision {
-            InstallDecision::Retry => {
+            InstallDecision::Retry(reason) => {
                 self.trace_audio(
-                    AudioDiagnosticKind::PublicationWaiting,
+                    AudioDiagnosticKind::PublicationWaiting { reason },
                     revision,
                     context,
                     frames.unwrap_or(0),

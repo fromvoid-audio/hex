@@ -9,6 +9,8 @@
 //! catalog generation are distinct. These facts cannot grant a catalog lease, constructor owner or
 //! page readiness, and unavailable waveform data must not become fabricated peaks.
 mod file_waveform;
+#[cfg(test)]
+pub(crate) mod granular_tests;
 use crate::{AssetId, Audio, SessionError};
 use hex_engine::{PreparedRevision, PreparedSessionInventory, compile::PreparedAudioSource};
 use hex_media::{VerifiedWavReader, VerifiedWavReaderLimits};
@@ -283,6 +285,44 @@ pub(crate) fn repitch_source_metadata(
     raw.with_repitch(&map, law).map(Some)
 }
 
+/// Project an exact supported granular root from captured file facts only.
+/// Unsupported granular shapes fail explicitly; unrelated modes return `None`.
+/// This does not reopen the file, decode PCM or grant native source custody.
+pub(crate) fn granular_source_root(
+    project: &Project,
+    clip: &hex_project::Clip,
+    file: &VerifiedAudioFile,
+    generation: u64,
+) -> Result<Option<hex_engine::audio_transform::StreamedGranularRoot>, hex_engine::Invalid> {
+    let Some(edit) = clip.audio_edit() else {
+        return Ok(None);
+    };
+    if !edit.domain.warp_enabled
+        || !edit.domain.warp.as_ref().is_some_and(|warp| {
+            matches!(
+                warp.mode,
+                hex_project::WarpMode::Tones { .. } | hex_project::WarpMode::Texture { .. }
+            )
+        })
+    {
+        return Ok(None);
+    }
+    let asset = project
+        .asset(clip.asset())
+        .ok_or(hex_engine::Invalid("granular source asset unavailable"))?;
+    if !file.matches_asset(asset, project.sample_rate()) {
+        return Err(hex_engine::Invalid("granular file source facts differ"));
+    }
+    let raw = file.source_metadata(clip.asset(), generation)?;
+    hex_engine::audio_transform::streamed_granular_root(
+        &raw,
+        edit,
+        project.tempo_map(),
+        &std::sync::atomic::AtomicBool::new(false),
+    )
+    .map(Some)
+}
+
 impl MediaBank {
     pub(crate) fn required_verified_pitches(
         &self,
@@ -376,12 +416,19 @@ impl MediaBank {
             let Some(file) = self.verified.get(&clip.asset()) else {
                 continue;
             };
-            let Some(derived) = repitch_source_metadata(project, clip, file, self.epoch)? else {
-                continue;
+            let derived = match granular_source_root(project, clip, file, self.epoch)? {
+                Some(root) => root.metadata().clone(),
+                None => {
+                    let Some(derived) = repitch_source_metadata(project, clip, file, self.epoch)?
+                    else {
+                        continue;
+                    };
+                    derived
+                }
             };
             if let Some(existing) = pitched.get(&derived.key()) {
                 if existing.as_ref() != &derived {
-                    return Err(hex_engine::Invalid("conflicting repitch source metadata"));
+                    return Err(hex_engine::Invalid("conflicting derived source metadata"));
                 }
             } else {
                 pitched.insert(derived.key(), Arc::new(derived));

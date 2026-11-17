@@ -1,11 +1,12 @@
 //! Typed production signal topology and control-prepared compensation ownership.
 use crate::{Frame, Invalid, Project, Track, compensation::*};
+mod append_latency;
 mod latency_observation;
 mod legacy;
 #[cfg(feature = "instrument-test-support")]
 mod printed_branch_probe;
 use hex_project::{GroupOutputMuteRange, ReturnId, RoutingOwner, TrackId};
-pub use latency_observation::OutputLatency;
+pub use latency_observation::{OutputLatency, ProcessorGraphLatency};
 #[cfg(feature = "instrument-test-support")]
 pub use printed_branch_probe::PrintedBranchProbe;
 use std::{collections::BTreeMap, mem::size_of, sync::Arc};
@@ -33,10 +34,12 @@ impl NodeId {
             if id == track.value())
     }
 }
-/// One silent owner whose new compensation edges start empty.
+/// One isolated owner excluded from retained compensation history.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum FreshHistory {
     Track(TrackId),
+    /// A removed isolated source; its pre-Main PCM is cut at handoff.
+    RemovedTrack(TrackId),
     /// A muted, isolated existing track whose old and new local rings are silent.
     ChangedTrack(TrackId, u64),
     Return(ReturnId),
@@ -45,7 +48,7 @@ pub(crate) enum FreshHistory {
 impl FreshHistory {
     fn contains(self, node: NodeId) -> bool {
         match self {
-            Self::Track(id) => node.belongs_to_track(id),
+            Self::Track(id) | Self::RemovedTrack(id) => node.belongs_to_track(id),
             Self::ChangedTrack(id, device) => {
                 node.belongs_to_track(id) || node == NodeId::Device(device)
             }
@@ -936,9 +939,8 @@ impl SignalGraph {
         }
         false
     }
-    /// The closed streamed constructor may enumerate zero-latency group routes
-    /// using the same source frontier as its per-frame render. Authored feeds
-    /// remain outside that constructor's admitted graph class.
+    /// The original zero-latency group class excludes authored feeds; the
+    /// audio-only compensated class below handles them under tighter checks.
     pub(crate) fn supports_closed_group_stream(&self) -> bool {
         self.plan.max_latency_frames() == 0
             && self.has_group_outputs
@@ -947,6 +949,46 @@ impl SignalGraph {
                 .iter()
                 .all(|track| track.audio_feeds.is_empty() && track.printed_merge.is_none())
             && self.returns.iter().all(|bus| bus.audio_feeds.is_empty())
+    }
+    /// Grouped audio and track feeds read local sources at the current
+    /// transport frontier; edge delays retain PCM, not additional pages.
+    pub(crate) fn supports_closed_compensated_audio_groups(&self) -> bool {
+        self.has_group_outputs
+            && self.key_stages.is_empty()
+            && self.returns.is_empty()
+            && self.tracks.iter().all(|track| {
+                track.generator.is_none()
+                    && track.printed_merge.is_none()
+                    && track.group_output_mutes.is_empty()
+            })
+    }
+    /// Flat authored track feeds carry rendered PCM through graph edges; they
+    /// do not fetch additional pages beyond the local track source frontier.
+    pub(crate) fn supports_closed_compensated_track_feeds(&self) -> bool {
+        !self.has_group_outputs
+            && self.key_stages.is_empty()
+            && self.returns.is_empty()
+            && self
+                .tracks
+                .iter()
+                .any(|track| !track.audio_feeds.is_empty())
+            && self.tracks.iter().all(|track| {
+                track.generator.is_none()
+                    && track.printed_merge.is_none()
+                    && track.group_output_mutes.is_empty()
+                    && matches!(track.output, TrackOutput::Main { .. })
+            })
+    }
+    /// Return sends and feeds carry PCM rendered from the current source
+    /// frontier; their graph edges retain samples rather than stream pages.
+    pub(crate) fn supports_closed_compensated_audio_returns(&self) -> bool {
+        self.key_stages.is_empty()
+            && !self.returns.is_empty()
+            && self.tracks.iter().all(|track| {
+                track.generator.is_none()
+                    && track.printed_merge.is_none()
+                    && track.group_output_mutes.is_empty()
+            })
     }
     /// Serial Main latency needs clock history, but does not require rendering
     /// all upstream sources and effects one sample at a time. Typed audio feeds
@@ -1365,9 +1407,9 @@ impl SignalGraph {
     fn pre_main_history_maps_from(&self, other: &Self) -> bool {
         self.retained_pre_main_history_maps_from(other, None)
     }
-    /// A changed muted track is excluded only after the handoff owner proves
-    /// its narrow source contract. Its isolated local edges still require
-    /// silent history in both runtimes before copying any retained edges.
+    /// A changed owner is excluded only after the handoff proves its source
+    /// contract. Removed track history is cut; other excluded edges must be
+    /// silent in both runtimes before retained histories are copied.
     fn retained_pre_main_history_maps_from(
         &self,
         other: &Self,
@@ -1382,9 +1424,9 @@ impl SignalGraph {
             fresh
                 .is_none_or(|owner| {
                     key != Some(match owner {
-                        FreshHistory::Track(id) | FreshHistory::ChangedTrack(id, _) => {
-                            (false, id.value())
-                        }
+                        FreshHistory::Track(id)
+                        | FreshHistory::RemovedTrack(id)
+                        | FreshHistory::ChangedTrack(id, _) => (false, id.value()),
                         FreshHistory::Return(id) => (true, id.value()),
                     })
                 })
@@ -1392,9 +1434,12 @@ impl SignalGraph {
         };
         if self.key_stages != other.key_stages
             || match fresh {
-                Some(FreshHistory::Track(_) | FreshHistory::ChangedTrack(_, _)) | None => {
-                    self.returns.len() != other.returns.len()
-                }
+                Some(
+                    FreshHistory::Track(_)
+                    | FreshHistory::RemovedTrack(_)
+                    | FreshHistory::ChangedTrack(_, _),
+                )
+                | None => self.returns.len() != other.returns.len(),
                 Some(FreshHistory::Return(id)) => {
                     self.added_isolated_return_from(other) != Some(id)
                         && other.added_isolated_return_from(self) != Some(id)
@@ -1405,6 +1450,12 @@ impl SignalGraph {
                     || match owner {
                         FreshHistory::Track(track) => {
                             !self.is_isolated_main_track(track)
+                                || !other.is_isolated_main_track(track)
+                        }
+                        FreshHistory::RemovedTrack(track) => {
+                            self.tracks.iter().any(|entry| entry.id == Some(track))
+                                || !other.tracks.iter().any(|entry| entry.id == Some(track))
+                                || !self.is_isolated_main_track(track)
                                 || !other.is_isolated_main_track(track)
                         }
                         FreshHistory::ChangedTrack(track, device) => {
@@ -1465,7 +1516,7 @@ impl SignalGraph {
             ) => ta == tb && same_edge(a, b),
             _ => false,
         };
-        let retained = |track: &&TrackPlan| !matches!(fresh, Some(FreshHistory::Track(id) | FreshHistory::ChangedTrack(id, _)) if track.id == Some(id));
+        let retained = |track: &&TrackPlan| !matches!(fresh, Some(FreshHistory::Track(id) | FreshHistory::RemovedTrack(id) | FreshHistory::ChangedTrack(id, _)) if track.id == Some(id));
         let retained_return =
             |bus: &&ReturnPlan| !matches!(fresh, Some(FreshHistory::Return(id)) if bus.id == id);
         if !self
@@ -1912,7 +1963,7 @@ impl SignalRuntime {
                 && self.delay_graph.history_compatible(&self.graph)
                 && other.delay_graph.history_compatible(&other.graph)
                 && silent_owner(self)
-                && silent_owner(other)
+                && (matches!(owner, FreshHistory::RemovedTrack(_)) || silent_owner(other))
         } else {
             self.can_continue_pre_main(other)
         };

@@ -970,9 +970,50 @@ impl CandidateRoot {
         })
     }
 
+    pub(crate) fn take_native_source_transport_space(&self, binding: Binding) -> bool {
+        let cancellation = {
+            let Ok(bank) = self.0.eligible.bank.try_lock() else {
+                return false;
+            };
+            let Some(slot) = bank
+                .sources
+                .index(binding)
+                .and_then(|i| bank.sources.slots.get(i))
+            else {
+                return false;
+            };
+            if bank.closing
+                || slot.phase != Phase::Accepted
+                || slot.retiring
+                || slot.cancellation_requested
+            {
+                return false;
+            }
+            slot.cancellation.clone()
+        };
+        cancellation.is_some_and(|token| token.take_transport_space_on_control())
+    }
+
     pub(crate) fn take_native_source_failure_diagnostic(&self, binding: Binding) -> Option<String> {
         self.with_native_source_endpoint(binding, |_, endpoint| {
             endpoint.take_failure_diagnostic_on_control()
+        })?
+    }
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub(crate) fn take_native_source_slow_exchange(
+        &self,
+        binding: Binding,
+    ) -> Option<crate::plugin_worker::SlowPluginExchange> {
+        self.with_native_source_endpoint(binding, |_, endpoint| {
+            endpoint.take_slow_exchange_on_control()
+        })?
+    }
+    pub(crate) fn take_native_source_concealed_output(
+        &self,
+        binding: Binding,
+    ) -> Option<hex_plugin_host::transport::ConcealedOutput> {
+        self.with_native_source_endpoint(binding, |_, endpoint| {
+            endpoint.take_concealed_output_on_control()
         })?
     }
     fn with_native_source_endpoint<T>(

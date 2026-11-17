@@ -88,6 +88,7 @@ mod activation;
 mod activation_ui_test;
 mod arranger_navigation;
 mod audio_import_settings;
+mod audio_recording;
 pub(crate) mod changelog;
 mod clip_detail_resize;
 #[cfg(all(test, feature = "ui-test-support"))]
@@ -928,6 +929,7 @@ pub(super) struct EditorView {
     device_panel: device_panel::DevicePanelState,
     project_spectrum: project_spectrum::ProjectSpectrumState,
     sample_recorder: sample_recorder::Recorder,
+    audio_recorder: audio_recording::Recorder,
     worker_requests_pending: usize,
     sampler_load: sampler_load::State,
     sampler_parameter: sampler_parameter::State,
@@ -1736,6 +1738,7 @@ impl EditorView {
             device_panel: device_panel::DevicePanelState::default(),
             project_spectrum: Default::default(),
             sample_recorder: Default::default(),
+            audio_recorder: Default::default(),
             worker_requests_pending: 0,
             sampler_load: Default::default(),
             sampler_parameter: Default::default(),
@@ -2046,7 +2049,11 @@ impl EditorView {
                 }
                 self.queue_audio_command(PlaybackCommand::Pause);
             } else if let Some(source) = self.section_copy_play_source() {
-                self.queue_section_copy_play(self.playback_start_frame(), source);
+                if let Some(frame) = self.section_copy_play_start() {
+                    self.queue_section_copy_play(frame, source);
+                } else {
+                    self.error = Some("applying edit · wait for audio".into());
+                }
             } else {
                 self.error = Some("applying edit · wait for audio".into());
             }
@@ -2059,14 +2066,13 @@ impl EditorView {
                 .is_some_and(|status| status.playing.load(std::sync::atomic::Ordering::Acquire))
         });
         let start_frame = self.playback_start_frame();
-        if !self.desired_playing(device_playing) && self.recover_degraded_play_at(start_frame) {
-            return;
-        }
         let command = match self.play_toggle_action(device_playing, start_frame) {
             arrangement_seek::ToggleAction::Pause => PlaybackCommand::Pause,
             arrangement_seek::ToggleAction::PlayFrom(frame) => PlaybackCommand::PlayFrom(frame),
             arrangement_seek::ToggleAction::Unavailable => {
-                self.error = Some("playback source is unavailable · cannot seek safely".into());
+                if !self.recover_degraded_play_at(start_frame) {
+                    self.error = Some("playback source is unavailable · cannot seek safely".into());
+                }
                 return;
             }
         };
@@ -2082,6 +2088,10 @@ impl EditorView {
     /// selection, play-start lock and loop intact. The reset wins over all of
     /// those sources, including a loop whose start is later in the song.
     fn playback_start_frame(&self) -> u64 {
+        self.playback_start_frame_with_section_override(None)
+    }
+
+    fn playback_start_frame_with_section_override(&self, section: Option<u64>) -> u64 {
         if self.play_start_at_beginning {
             return 0;
         }
@@ -2106,7 +2116,7 @@ impl EditorView {
             return selection.start();
         }
         if let Some(frame) = self.selected_arrangement_play_start() {
-            return frame;
+            return section.unwrap_or(frame);
         }
         if let Some(cursor) = self
             .edit_cursor

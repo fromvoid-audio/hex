@@ -20,7 +20,10 @@
 //! graph replacement. Queued explicit Stop, foreign/unbound inputs and lifecycle shutdown remain
 //! terminal. Epoch transitions and note snapshots perform no callback allocation or reclamation.
 use crate::{
-    audio_diagnostics::{self, AudioDiagnosticEvent, AudioDiagnosticKind, AudioDiagnosticsFlags},
+    audio_diagnostics::{
+        self, AudioDiagnosticEvent, AudioDiagnosticKind, AudioDiagnosticsFlags,
+        PublicationWaitReason,
+    },
     processor_audition, spectrum_target,
     spectrum_worker::{SpectrumCapture, SpectrumStamp},
 };
@@ -72,6 +75,10 @@ pub use action_outcomes::{
 };
 mod admission;
 mod eligible_publication;
+#[cfg(target_os = "macos")]
+mod output_presentation;
+#[cfg(target_os = "macos")]
+pub(crate) use output_presentation::PluginOutputFence;
 mod endpoints;
 pub(crate) mod retired_scalar_receipts;
 pub use retired_scalar_receipts::{
@@ -98,6 +105,9 @@ mod applied_source;
 mod delay_tests;
 #[cfg(all(test, feature = "allocation-probe"))]
 mod device_resources_tests;
+pub mod input_monitor;
+#[cfg(test)]
+mod input_monitor_tests;
 #[cfg(all(test, feature = "allocation-probe"))]
 mod keyboard_activation_tests;
 #[cfg(all(test, feature = "allocation-probe"))]
@@ -1303,6 +1313,7 @@ pub struct Control {
     action_admission: Option<action_outcomes::Admission>,
     pub sample_preview: crate::sample_preview::Control,
     pub sample_recording: crate::sample_recording::Control,
+    pub input_monitor: input_monitor::Control,
     commands: Producer<QueuedCommand>,
     pub spectrum_target: spectrum_target::SpectrumTargetControl,
     pub processor_audition: processor_audition::ProcessorAuditionTargetControl,
@@ -1444,6 +1455,7 @@ pub struct Callback {
     transport_setup_open: bool,
     sample_preview: crate::sample_preview::Callback,
     sample_recording: crate::sample_recording::Callback,
+    input_monitor: input_monitor::Callback,
     publications: Consumer<QueuedPublication>,
     retired: Producer<ReturnedPublication>,
     candidate_root: crate::candidate_custody::CandidateRoot,
@@ -1538,6 +1550,7 @@ pub(crate) fn channel_with_interface(
     if !(8_000..=192_000).contains(&rate) {
         return Err(Invalid("unsupported playback sample rate"));
     }
+    let (input_monitor, callback_input_monitor) = input_monitor::channel(rate);
     let (mut sample_preview, callback_preview) = crate::sample_preview::channel(rate);
     let (sample_recording, callback_recording) = crate::sample_recording::channel(rate);
     let (publications, incoming) = RingBuffer::new(1);
@@ -1576,6 +1589,7 @@ pub(crate) fn channel_with_interface(
             action_admission: None,
             sample_preview,
             sample_recording,
+            input_monitor,
             commands,
             spectrum_target,
             processor_audition,
@@ -1617,6 +1631,7 @@ pub(crate) fn channel_with_interface(
             transport_setup_open: true,
             sample_preview: callback_preview,
             sample_recording: callback_recording,
+            input_monitor: callback_input_monitor,
             candidate_root,
             publications: incoming,
             retired: returning,
@@ -2726,6 +2741,7 @@ impl Control {
         self.status.sampler_keyboard.revoke_all();
         self.status.closing.store(true, Release);
         self.sample_preview.shutdown();
+        self.input_monitor.stop();
         self.stop();
     }
     /// Resident compatibility reclamation; Verified clients never own preview PCM.
@@ -2990,6 +3006,7 @@ impl Callback {
             .plus(crate::sample_recording::Control::callback_storage(
                 &self.sample_recording,
             )?)?
+            .plus(self.input_monitor.constructor_channel_storage()?)?
             .plus(self.gain_recording.constructor_channel_storage()?)?
             .plus(self.native_parameter_input.constructor_channel_storage()?)?
             .plus(
@@ -3327,6 +3344,10 @@ impl Callback {
     fn begin_block_inner(&mut self) {
         self.transport_setup_open = false;
         self.device_fault_fenced_in_block = false;
+        self.input_monitor.begin_block(
+            self.status.closing.load(Acquire),
+            self.status.device_fault.load(Acquire),
+        );
         if self.status.device_fault.load(Acquire) && !self.status.closing.load(Acquire) {
             self.fence_device_fault();
             return;
@@ -3890,6 +3911,14 @@ impl Callback {
                                 }
                             }
                         }
+                        self.trace_audio(
+                            AudioDiagnosticKind::PublicationWaiting {
+                                reason: PublicationWaitReason::PredecessorWindow,
+                            },
+                            next.revision,
+                            next.source_context,
+                            frames.unwrap_or(0),
+                        );
                         self.deferred = Some(next);
                         return;
                     }
@@ -4127,8 +4156,16 @@ impl Callback {
                         }
                     }
                     Some(Ok(None)) => {
+                        let reason = next
+                            .streams
+                            .as_mut()
+                            .and_then(|streams| streams.take_handoff_diagnostic())
+                            .map_or(
+                                PublicationWaitReason::StreamPages,
+                                PublicationWaitReason::RuntimeHandoff,
+                            );
                         self.trace_audio(
-                            AudioDiagnosticKind::PublicationWaiting,
+                            AudioDiagnosticKind::PublicationWaiting { reason },
                             next.revision,
                             next.source_context,
                             frames.unwrap_or(0),
@@ -4303,6 +4340,14 @@ impl Callback {
             match handoff {
                 Some(Err(error)) if error.is_transient() => {
                     let _promotions = promotions;
+                    self.trace_audio(
+                        AudioDiagnosticKind::PublicationWaiting {
+                            reason: PublicationWaitReason::RuntimeHandoff(error),
+                        },
+                        next.revision,
+                        next.source_context,
+                        frames.unwrap_or(0),
+                    );
                     if let Some(streams) = next.streams.as_mut() {
                         streams.cancel_install(&mut self.domain_pages);
                     }
@@ -5302,8 +5347,12 @@ impl Callback {
             .as_ref()
             .and_then(|c| c.project.as_ref())
             .is_some_and(|p| p.observing());
+        let recording_source = self.recording_source();
         if self.sample_recording.selection().is_some_and(|layout| {
             self.status.closing.load(Acquire)
+                || layout
+                    .expected_source
+                    .is_some_and(|source| Some(source) != recording_source)
                 || active.as_ref().is_none_or(|active| {
                     active.control_context_generation != layout.generation
                         || active.playback.sample_rate() != self.rate
@@ -5313,8 +5362,39 @@ impl Callback {
             self.sample_recording
                 .end(crate::sample_recording::End::SourceChanged);
         }
-        let recording = self.sample_recording.observation();
-        if !node_observed && !project_observed && recording.is_none() {
+        let mut recording = self.sample_recording.observation();
+        let monitor_track = self.input_monitor.target();
+        let monitor_supported = output.len() <= 256
+            && !project_observed
+            && recording
+                .as_ref()
+                .is_none_or(|(layout, _)| layout.timing_only)
+            && self
+                .active
+                .as_ref()
+                .is_some_and(|active| !active.streaming_enabled())
+            && active.as_ref().is_some_and(|active| {
+                monitor_track.is_some_and(|target| match target {
+                    hex_engine::OutputCaptureId::Track(track) => {
+                        active.playback.project_output_supported(&[track.value()])
+                    }
+                    _ => false,
+                })
+            });
+        let playing = active
+            .as_ref()
+            .is_some_and(|active| active.playback.playing());
+        let mut live_input = monitor_track.map(|_| [[0.0; 2]; 256]);
+        let live_len = output.len().min(256);
+        let monitor = live_input.as_mut().and_then(|input| {
+            self.input_monitor.read(
+                recording_source,
+                monitor_supported,
+                playing,
+                &mut input[..live_len],
+            )
+        });
+        if !node_observed && !project_observed && recording.is_none() && monitor.is_none() {
             return self.render_unobserved(output, capture_offset);
         }
         if self.status.closing.load(Acquire) {
@@ -5343,7 +5423,18 @@ impl Callback {
         let mut joined = [0; crate::sample_recording::TRACKS];
         let tracks =
             crate::sample_recording::merge_tracks(spectrum_tracks, record_tracks, &mut joined);
+        // A failed selection merge must invalidate recording even when its
+        // timing-only layout no longer relies on a Main PCM observation.
+        if project_observed
+            && tracks.is_none()
+            && let Some((layout, stage)) = recording.as_mut()
+        {
+            stage.observe(layout, hex_engine::ProjectSignal::Unavailable, 0, &[]);
+        }
         let recording_observed = recording.is_some();
+        let timing_only_recording = recording
+            .as_ref()
+            .is_some_and(|(layout, _)| layout.timing_only);
         let recording = std::cell::RefCell::new(recording);
         let mut observe_project = |signal, offset, frames: &[Frame]| {
             if let Some(project) = project_capture.as_mut()
@@ -5371,20 +5462,27 @@ impl Callback {
                 stage.observe_timing(capture_offset + offset, start, frames, map);
             }
         };
-        let mut project = tracks
-            .filter(|_| project_observed || recording_observed)
-            .and_then(|tracks| {
-                let tap = hex_engine::ProjectOutputTap::with_returns(
-                    tracks,
-                    returns,
-                    &mut observe_project,
-                )?;
-                Some(if recording_observed {
-                    tap.with_timing(&mut observe_timing)
-                } else {
-                    tap
+        let mut project = if timing_only_recording && !project_observed {
+            Some(hex_engine::ProjectOutputTap::timing_only(
+                &mut observe_timing,
+                &mut observe_project,
+            ))
+        } else {
+            tracks
+                .filter(|_| project_observed || recording_observed)
+                .and_then(|tracks| {
+                    let tap = hex_engine::ProjectOutputTap::with_returns(
+                        tracks,
+                        returns,
+                        &mut observe_project,
+                    )?;
+                    Some(if recording_observed {
+                        tap.with_timing(&mut observe_timing)
+                    } else {
+                        tap
+                    })
                 })
-            });
+        };
         let node: Option<&mut hex_engine::NodeSignalObserver<'_>> = if node_observed {
             Some(&mut observe)
         } else {
@@ -5454,12 +5552,23 @@ impl Callback {
             .as_mut()
             .and_then(ActivePublication::current_mut)
         {
-            active.playback.render_with_signal_observers(
-                output,
-                node,
-                project.as_mut(),
-                foreign,
-            )?;
+            if let (Some(track), Some(input)) = (monitor, live_input.as_ref()) {
+                active.playback.render_with_live_track_audio(
+                    output,
+                    track,
+                    &input[..live_len],
+                    node,
+                    project.as_mut(),
+                    foreign,
+                )?;
+            } else {
+                active.playback.render_with_signal_observers(
+                    output,
+                    node,
+                    project.as_mut(),
+                    foreign,
+                )?;
+            }
         } else {
             output.fill([0.0; 2]);
         }
@@ -5680,10 +5789,28 @@ impl Callback {
         self.finish_analysis_block(captured_start, output_valid).0
     }
 
+    pub(crate) fn set_sample_recording_output_clock(
+        &mut self,
+        mut clock: Option<crate::sample_recording::OutputClock>,
+    ) {
+        if let Some(clock) = &mut clock {
+            clock.graph_latency_frames = self
+                .active
+                .as_ref()
+                .and_then(ActivePublication::current)
+                .and_then(|active| active.playback.main_output_latency_frames());
+        }
+        self.sample_recording.set_output_clock(clock);
+    }
+
     pub(crate) fn finish_sample_recording(&mut self, output_valid: bool) {
+        let recording_source = self.recording_source();
         if output_valid
             && self.sample_recording.selection().is_some_and(|layout| {
                 self.status.closing.load(Acquire)
+                    || layout
+                        .expected_source
+                        .is_some_and(|source| Some(source) != recording_source)
                     || self
                         .active
                         .as_ref()
@@ -5800,6 +5927,9 @@ impl Callback {
     /// this when consumed; the rest of `invalidate_gain_recording` follows at
     /// its fade end.
     fn abort_transport_inputs(&mut self, reason: crate::gain_recording::AbortReason) {
+        if matches!(reason, crate::gain_recording::AbortReason::TransportChanged) {
+            self.sample_recording.end_bound_for_transport_change();
+        }
         self.gain_recording.abort(reason);
         self.invalidate_native_parameter_input(match reason {
             crate::gain_recording::AbortReason::SourceChanged => {
@@ -6159,6 +6289,7 @@ pub(crate) fn worker_boundary_storage_quote() -> Option<usize> {
         .checked_add(SESSION_ROUTE_CAPACITY.checked_mul(std::mem::size_of::<AtomicRouteSlot>())?)?
         .checked_add(crate::sample_preview::constructor_storage_quote()?)?
         .checked_add(crate::sample_recording::storage_quote()?)?
+        .checked_add(input_monitor::constructor_storage_quote()?)?
         .checked_add(crate::gain_recording::constructor_storage_quote()?)?
         .checked_add(crate::native_parameter_input::constructor_storage_quote()?)?
         .checked_add(crate::foreign_parameter_delivery::constructor_storage_quote()?)?
@@ -10141,6 +10272,444 @@ mod tests {
 
     #[test]
     #[cfg(feature = "allocation-probe")]
+    fn bound_timing_only_capture_tracks_loop_spans_and_output_confirmation() {
+        use crate::sample_recording::{OutputClock, OutputClockIndex};
+        use hex_project::{Command, Editor, Project};
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        editor
+            .execute(Command::AddTrack {
+                name: "input".into(),
+            })
+            .unwrap();
+        editor
+            .execute(Command::SetLoopRegion {
+                start: 32,
+                end: 160,
+                enabled: true,
+            })
+            .unwrap();
+        let revision = Arc::new(
+            hex_engine::PreparedRevision::prepare(
+                editor.project(),
+                &std::collections::BTreeMap::new(),
+                Arc::new(hex_engine::SineTable::new()),
+                None,
+            )
+            .unwrap(),
+        );
+        let playback = Playback::try_from_prepared_with_session(revision).unwrap();
+        let (mut control, mut callback) = channel(48_000).unwrap();
+        control
+            .publish_unaccounted_pcm_obligation(
+                playback,
+                PublicationPolicy::InstallFreshRuntime,
+                7,
+                true,
+                false,
+                Some(hex_engine::AudioSourceContext {
+                    project_generation: 7,
+                    editor_revision: 3,
+                }),
+            )
+            .unwrap();
+        callback.begin_block();
+        control.command(PlaybackCommand::Play).unwrap();
+        callback.begin_block();
+        let source = callback.recording_source().unwrap();
+        let mut reader = control.sample_recording.start_bound(source).unwrap();
+        assert!(reader.sources().is_empty());
+        let mut index = OutputClockIndex::new(&reader);
+        assert!(reader.ready());
+        for block in 0..4 {
+            let mut output = [[0.0; 2]; 64];
+            let measured = allocation_counter::measure(|| {
+                callback.begin_block();
+                callback.render(&mut output).unwrap();
+                callback.set_sample_recording_output_clock(Some(OutputClock {
+                    playback: cpal::StreamInstant::new(10, 0),
+                    offset_frames: block * 64,
+                    graph_latency_frames: None,
+                    origin: crate::sample_recording::OutputClockOrigin::Unknown,
+                }));
+                callback.finish_sample_recording(true);
+            });
+            assert_eq!(
+                (
+                    measured.count_total,
+                    measured.bytes_total,
+                    measured.count_current,
+                    measured.bytes_current
+                ),
+                (0, 0, 0, 0)
+            );
+            assert_eq!(index.poll(&mut reader), Ok(None));
+        }
+        let starts: Vec<_> = (0..index.len())
+            .map(|n| {
+                index
+                    .packet(n)
+                    .unwrap()
+                    .timing
+                    .iter()
+                    .map(|span| (span.take_start, span.take_end, span.timeline_start))
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        assert_eq!(
+            starts,
+            vec![
+                vec![(0, 64, 0)],
+                vec![(0, 64, 64)],
+                vec![(0, 32, 128), (32, 64, 32)],
+                vec![(0, 64, 64)]
+            ]
+        );
+        control.sample_recording.stop();
+        callback.begin_block();
+        callback.render(&mut [[0.0; 2]; 1]).unwrap();
+        assert_eq!(
+            index.poll(&mut reader),
+            Ok(Some(crate::sample_recording::End::Stopped))
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "allocation-probe")]
+    fn recorded_audible_clock_accounts_for_actual_main_limiter_delay() {
+        use crate::input_capture::{
+            InputConfig, InputTake, InputTakeEnd, InputTiming, SharedClock, align_audible_take,
+        };
+        use crate::sample_recording::{End, OutputClock, OutputClockIndex};
+        use hex_engine::AudioSourceContext;
+        use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
+        use hex_project::{Command, Created, Editor, Project};
+        use std::collections::BTreeMap;
+
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let Created::Imported { track, asset, clip } = editor
+            .execute(Command::ImportPreparedAudioTrack {
+                name: "transient".into(),
+                path: "memory/transient.wav".into(),
+                source_sample_rate: 48_000,
+                source_frames: 4_096,
+                playback_frames: 4_096,
+                conversion_version: hex_project::IDENTITY_CONVERSION,
+            })
+            .unwrap()
+        else {
+            panic!("import")
+        };
+        editor
+            .execute(Command::MoveClip {
+                clip,
+                track,
+                start: 4_800,
+            })
+            .unwrap();
+        let definition = &hex_devices::limiter::DEFINITION;
+        let state = definition
+            .patch_parameter(
+                &definition.default_state().unwrap(),
+                hex_devices::limiter::parameter::LOOKAHEAD,
+                ParameterValue::Choice(2),
+            )
+            .unwrap();
+        editor
+            .execute(Command::InsertMainDevice {
+                before: None,
+                state,
+            })
+            .unwrap();
+        let mut pcm = vec![[0.0; 2]; 4_096];
+        pcm[0] = [0.25; 2];
+        let revision = Arc::new(
+            hex_engine::PreparedRevision::prepare(
+                editor.project(),
+                &BTreeMap::from([(asset, hex_engine::Audio::new(48_000, pcm).unwrap())]),
+                Arc::new(hex_engine::SineTable::new()),
+                None,
+            )
+            .unwrap(),
+        );
+        assert_eq!(revision.arrangement().main_latency_frames(), 288);
+
+        for block_size in [63, 256] {
+            let playback = Playback::try_from_prepared_with_session(Arc::clone(&revision)).unwrap();
+            let (mut control, mut callback) = channel(48_000).unwrap();
+            control
+                .publish_unaccounted_pcm_obligation(
+                    playback,
+                    PublicationPolicy::InstallFreshRuntime,
+                    7,
+                    true,
+                    false,
+                    Some(AudioSourceContext {
+                        project_generation: 7,
+                        editor_revision: 3,
+                    }),
+                )
+                .unwrap();
+            callback.begin_block();
+            control.command(PlaybackCommand::Play).unwrap();
+            callback.begin_block();
+            let source = callback.recording_source().unwrap();
+            let mut reader = control.sample_recording.start_bound(source).unwrap();
+            assert!(
+                reader.sources().is_empty(),
+                "source-bound capture retains timing only"
+            );
+            let mut index = OutputClockIndex::new(&reader);
+            assert!(reader.ready());
+            let origin = cpal::StreamInstant::new(10, 0);
+            let mut output = vec![[0.0; 2]; 6_000];
+            for (number, block) in output.chunks_mut(block_size).enumerate() {
+                let measured = allocation_counter::measure(|| {
+                    callback.begin_block();
+                    callback.render(block).unwrap();
+                    callback.set_sample_recording_output_clock(Some(OutputClock {
+                        playback: origin,
+                        offset_frames: (number * block_size) as u32,
+                        graph_latency_frames: None,
+                        origin: crate::sample_recording::OutputClockOrigin::Unknown,
+                    }));
+                    callback.finish_sample_recording(true);
+                });
+                assert_eq!(
+                    (
+                        measured.count_total,
+                        measured.bytes_total,
+                        measured.count_current,
+                        measured.bytes_current
+                    ),
+                    (0, 0, 0, 0)
+                );
+                assert_eq!(index.poll(&mut reader), Ok(None));
+            }
+            assert!(output[5_088][0] > 0.01);
+            control.sample_recording.stop();
+            callback.begin_block();
+            callback.render(&mut [[0.0; 2]; 1]).unwrap();
+            assert_eq!(index.poll(&mut reader), Ok(Some(End::Stopped)));
+            let take = InputTake {
+                path: std::path::PathBuf::new(),
+                input_device: format!("{}:test-input", cpal::default_host().id())
+                    .parse()
+                    .unwrap(),
+                input_config: InputConfig {
+                    sample_rate: 48_000,
+                    channels: 1,
+                },
+                sample_rate: 48_000,
+                frames: 16,
+                preroll_frames: 0,
+                timing: vec![InputTiming {
+                    take_start: 0,
+                    frames: 16,
+                    captured_at: origin,
+                    offset_frames: 5_088,
+                }],
+                end: InputTakeEnd::Stopped,
+                open_error: None,
+            };
+            assert_eq!(
+                align_audible_take(SharedClock, &take, &index)
+                    .unwrap()
+                    .timeline_start,
+                4_800
+            );
+            assert_eq!(
+                index.packet(0).unwrap().clock.graph_latency_frames,
+                Some(288)
+            );
+            control.sample_recording.reclaim();
+            let mut seek_take = control.sample_recording.start_bound(source).unwrap();
+            assert!(seek_take.ready());
+            callback.begin_block();
+            callback.render(&mut [[0.0; 2]; 1]).unwrap();
+            callback.finish_sample_recording(true);
+            let position = control.status.position.load(Acquire);
+            control.command(PlaybackCommand::Seek(position)).unwrap();
+            let measured = allocation_counter::measure(|| {
+                callback.begin_block();
+                callback.render(&mut [[0.0; 2]; 1]).unwrap();
+                callback.finish_sample_recording(true);
+            });
+            assert_eq!(
+                (
+                    measured.count_total,
+                    measured.bytes_total,
+                    measured.count_current,
+                    measured.bytes_current
+                ),
+                (0, 0, 0, 0)
+            );
+            assert_eq!(seek_take.drain(|_, _, _| {}), Some(End::TransportChanged));
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "allocation-probe")]
+    fn bound_output_recording_rejects_replaced_source() {
+        use crate::native_callback_owner::{NativeRetirement, reserve_native_worker};
+        use crate::sample_recording::{End, OutputClock, OutputClockIndex};
+        use hex_engine::AudioSourceContext;
+
+        let _serial = super::candidate_tests::serial();
+        let (mut control, mut callback) = channel(48_000).unwrap();
+        let context = AudioSourceContext {
+            project_generation: 0,
+            editor_revision: 4,
+        };
+        let (graph, _, _, _) = session_audio_graph();
+        control
+            .publish_unaccounted_pcm_obligation(
+                graph,
+                PublicationPolicy::InstallFreshRuntime,
+                0,
+                true,
+                false,
+                Some(context),
+            )
+            .unwrap();
+        callback.begin_block();
+        let root = control.native_candidate_root();
+        let (mut data, errors, terminals, mut client, mut publication) =
+            reserve_native_worker(control, callback, None);
+        let mut retirement = NativeRetirement::new(terminals, root);
+        client.activate();
+        client.bind_resident_transport(0);
+        let source = client.status().unwrap().recording_source().unwrap();
+        let wrong = AppliedAudioSource {
+            audio_revision: source.audio_revision + 1,
+            ..source
+        };
+        assert!(client.start_bound_output_recording(wrong).is_err());
+        let mut take = client.start_bound_output_recording(source).unwrap();
+        let mut index = OutputClockIndex::new(&take);
+        assert_eq!(index.source_binding(), Some(source));
+        assert!(take.ready());
+        let mut output = [[0.0; 2]; 8];
+        let measured = allocation_counter::measure(|| {
+            data.owner_mut().unwrap().run(|c, _| {
+                c.begin_block();
+                c.render(&mut output).unwrap();
+                c.set_sample_recording_output_clock(Some(OutputClock {
+                    playback: cpal::StreamInstant::new(10, 0),
+                    offset_frames: 0,
+                    graph_latency_frames: Some(0),
+                    origin: crate::sample_recording::OutputClockOrigin::Unknown,
+                }));
+                c.finish_sample_recording(true);
+            });
+        });
+        assert_eq!(
+            (
+                measured.count_total,
+                measured.bytes_total,
+                measured.count_current,
+                measured.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        assert_eq!(index.poll(&mut take), Ok(None));
+        assert_eq!(index.len(), 1);
+
+        // Hold a rendered packet until after the next source has been applied.
+        data.owner_mut().unwrap().run(|c, _| {
+            c.begin_block();
+            c.render(&mut output).unwrap();
+            c.set_sample_recording_output_clock(Some(OutputClock {
+                playback: cpal::StreamInstant::new(11, 0),
+                offset_frames: 0,
+                graph_latency_frames: Some(0),
+                origin: crate::sample_recording::OutputClockOrigin::Unknown,
+            }));
+        });
+        let control = publication.control().unwrap();
+        let (graph, _, _, _) = session_audio_graph();
+        control
+            .publish_unaccounted_pcm_obligation(
+                graph,
+                PublicationPolicy::InheritRuntime,
+                0,
+                true,
+                false,
+                Some(context),
+            )
+            .unwrap();
+        let measured = allocation_counter::measure(|| {
+            data.owner_mut().unwrap().run(|c, _| {
+                c.begin_block();
+                c.finish_sample_recording(true);
+            });
+        });
+        assert_eq!(
+            (
+                measured.count_total,
+                measured.bytes_total,
+                measured.count_current,
+                measured.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        assert_eq!(index.poll(&mut take), Ok(Some(End::SourceChanged)));
+        assert_eq!(index.len(), 1);
+        assert!(client.start_bound_output_recording(source).is_err());
+        client.reclaim_sample_recording();
+        let current = client.status().unwrap().recording_source().unwrap();
+        let mut next = client.start_bound_output_recording(current).unwrap();
+        assert!(next.ready());
+        let control = publication.control().unwrap();
+        let (graph, _, _, _) = session_audio_graph();
+        control
+            .publish_unaccounted_pcm_obligation(
+                graph,
+                PublicationPolicy::InheritRuntime,
+                0,
+                true,
+                false,
+                Some(context),
+            )
+            .unwrap();
+        let measured = allocation_counter::measure(|| {
+            data.owner_mut().unwrap().run(|c, _| {
+                c.begin_block();
+                c.render(&mut output).unwrap();
+                c.finish_sample_recording(true);
+            });
+        });
+        assert_eq!(
+            (
+                measured.count_total,
+                measured.bytes_total,
+                measured.count_current,
+                measured.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        assert_eq!(
+            next.drain(|_, _, _| panic!("changed source published a packet")),
+            Some(End::SourceChanged)
+        );
+        client.close();
+        publication.close();
+        drop(data);
+        drop(errors);
+        assert!(
+            crate::lifecycle::test_dispose_backend(
+                &mut Some(()),
+                &mut false,
+                &mut false,
+                &mut retirement,
+                |_| Ok(())
+            )
+            .unwrap()
+        );
+        assert!(retirement.advance().unwrap());
+    }
+
+    #[test]
+    #[cfg(feature = "allocation-probe")]
     fn source_bound_seek_preserves_playback_and_rejects_replaced_source() {
         use crate::native_callback_owner::{NativeRetirement, reserve_native_worker};
         use hex_engine::AudioSourceContext;
@@ -12777,6 +13346,7 @@ mod tests {
     #[test]
     fn transient_handoff_keeps_candidate_gated_retries_and_old_graph_renders() {
         let (mut control, mut callback) = channel(48_000).unwrap();
+        control.set_audio_diagnostics(AudioDiagnosticsFlags::READINESS);
         let (old, _) = graph();
         assert_eq!(
             control
@@ -12800,6 +13370,18 @@ mod tests {
         callback.test_transient_handoff_refusals = 2;
         callback.begin_block();
         assert_eq!(control.status.applied_revision.load(Acquire), 1);
+        let waiting = control.take_audio_diagnostic().unwrap();
+        assert_eq!(waiting.revision, 2);
+        assert_eq!(
+            waiting.kind,
+            AudioDiagnosticKind::PublicationWaiting {
+                reason: PublicationWaitReason::RuntimeHandoff(
+                    hex_engine::PlaybackHandoffError::Session(
+                        hex_engine::SessionPlaybackError::ReleaseBankFull,
+                    ),
+                ),
+            }
+        );
         assert!(callback.deferred.is_some());
         assert_eq!(
             control.publish(graph().0).unwrap_err().reason,

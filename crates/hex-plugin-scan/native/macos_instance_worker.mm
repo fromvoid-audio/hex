@@ -192,8 +192,10 @@ public:
     bool start() {
         channel=::dup(STDOUT_FILENO);if(channel<0) return false;
         int kind=0;socklen_t size=sizeof kind;
+        const int enabled=1;
         if(::fcntl(channel,F_SETFD,FD_CLOEXEC)<0 ||
-            ::getsockopt(channel,SOL_SOCKET,SO_TYPE,&kind,&size)!=0 || kind!=SOCK_STREAM) {
+            ::getsockopt(channel,SOL_SOCKET,SO_TYPE,&kind,&size)!=0 || kind!=SOCK_STREAM ||
+            ::setsockopt(channel,SOL_SOCKET,SO_NOSIGPIPE,&enabled,sizeof enabled)!=0) {
             ::close(channel);channel=-1;return false;
         }
         try {
@@ -204,6 +206,12 @@ public:
             });
         } catch(...) { ::close(channel);channel=-1;return false; }
         return true;
+    }
+    // Reverse direction only. Never stall the AppKit lane or encode a
+    // transport key as a cancellation, controller or audio message.
+    void send_transport_press() const {
+        const uint8_t press=1;
+        if(channel>=0) (void)::send(channel,&press,1,MSG_DONTWAIT);
     }
     ~CancellationGuardian() {
         if(channel<0) return;
@@ -247,13 +255,15 @@ std::optional<uint8_t> apply_presentation(hex_instance::Instance& instance,bool 
     if(!plan.known && !available) return 0;
     if(!plan.known && !plan.allow_unknown) return std::nullopt;
     const auto values=plan.known.value_or(wire::Presentation{});
-    const auto result=instance.set_presentation_latency(values.input,values.output);
+    const auto input=plan.known && plan.known_mode!=4?values.input:0;
+    const auto output=plan.known && plan.known_mode!=3?values.output:0;
+    const auto result=instance.set_presentation_latency(input,output);
     if(!available && result==Result::Absent) return 0;
-    if(available && result==Result::Applied) return plan.known?1:2;
+    if(available && result==Result::Applied) return plan.known?plan.known_mode:2;
     return std::nullopt;
 }
 void presentation_receipt(wire::Bytes& out,uint8_t mode,const wire::PresentationPlan& plan) {
-    wire::number(out,mode,1);wire::number(out,plan.known?1:0,1);
+    wire::number(out,mode,1);wire::number(out,plan.known?plan.known_mode:0,1);
     if(plan.known) { wire::number(out,plan.known->input,4);wire::number(out,plan.known->output,4); }
 }
 wire::Bytes ready_body(const wire::Config& config,const hex_instance::CapturedState& state,
@@ -279,6 +289,8 @@ int main(int argc,char** argv) {
     const bool editor_groups=argc==3 && !std::strcmp(argv[2],"--test-grouped-editor");
     const bool supervised=(argc==2 || offline || editor_groups) && !std::strcmp(argv[1],"--supervised");
     if(argc!=1 && !supervised) return Configuration;
+    const auto* transport_space=std::getenv("HEX_VST3_TRANSPORT_SPACE");
+    const bool reserve_space=supervised && !offline && transport_space && !std::strcmp(transport_space,"1");
     const auto process_mode=offline?kOffline:kRealtime;
     // Static lifetime keeps cancellation live through main-thread TLS/atexit
     // cleanup registered by subsequently loaded SDK modules, not just main.
@@ -470,7 +482,11 @@ int main(int argc,char** argv) {
                     };
                     // An output-only observation can echo a preceding quantum.
                     // Keep the sequence of the last input for each parameter
-                    // until a later input replaces it. Inventory refreshes
+                    // until a later input replaces it. Native editor input owns
+                    // its controller target: processor smoothing/echo must not
+                    // replay over it, including after End or in output-only blocks.
+                    // Authored host input resumes ordinary processor feedback.
+                    // Inventory refreshes
                     // preserve the sorted ID set, including across epochs.
                     struct FeedbackOrigin { uint64 sequence=0; bool editor_input=false; };
                     std::array<FeedbackOrigin,hex_instance::HOST_PARAMETER_COUNT> feedback_sequences{};
@@ -593,7 +609,9 @@ int main(int argc,char** argv) {
                                 const auto sequence=feedback_sequence(point.id,is_input?
                                     std::optional<uint64>{editor_sequence?editor_sequence:host_frontier}:std::nullopt,
                                     is_input && editor_sequence);
-                                if(!sequence || !feedback.put(point.id,point.normalized,sequence->sequence,sequence->editor_input)) return false;
+                                if(!sequence) return false;
+                                if(!is_input && sequence->editor_input) continue;
+                                if(!feedback.put(point.id,point.normalized,sequence->sequence,sequence->editor_input)) return false;
                             }
                         }
                         return true;
@@ -760,7 +778,9 @@ int main(int argc,char** argv) {
                             hex_instance::ParameterPoint point{};
                             if(!parameter_output.point(index,point)) return false;
                             const auto sequence=feedback_sequence(point.id,std::nullopt);
-                            if(!sequence || !parameter_feedback.put(point.id,point.normalized,sequence->sequence,sequence->editor_input)) return false;
+                            if(!sequence) return false;
+                            if(sequence->editor_input) continue;
+                            if(!parameter_feedback.put(point.id,point.normalized,sequence->sequence,sequence->editor_input)) return false;
                         }
                         return true;
                     };
@@ -1029,7 +1049,7 @@ int main(int argc,char** argv) {
                             window.processContext=slice?&packet.timing_changes[slice-1].context:(packet.context?&*packet.context:nullptr);
                             window.numSamples=width;phase.store(2,std::memory_order_release);
                             const auto host_frontier=instance.editor_frontier_on_worker();
-                            const bool processed=instance.process(window);
+                            const bool processed=instance.process(window,packet.observe_sdk_timing?&packet.sdk_process_ns:nullptr);
                             // No SDK stop/unload beneath a retained borrowed queue.
                             const bool input_returned=parameter_input.end_sdk(),output_returned=parameter_output.end_sdk();
                             const bool notes_returned=!event_channels || input_notes.end();
@@ -1060,7 +1080,9 @@ int main(int argc,char** argv) {
                                     editor_input=editor_sequence!=0;
                                 }
                                 const auto sequence=feedback_sequence(point.id,input_sequence,editor_input);
-                                if(!sequence || !parameter_feedback.put(point.id,point.normalized,sequence->sequence,sequence->editor_input)) valid=false;
+                                if(!sequence) {valid=false;break;}
+                                if(!use_input && sequence->editor_input) continue;
+                                if(!parameter_feedback.put(point.id,point.normalized,sequence->sequence,sequence->editor_input)) valid=false;
                             }
                             if(!valid || !packet.append_parameter_reply(first,parameter_output)) {
                                 worker_failure.store(ProtocolFailure);break;
@@ -1391,7 +1413,8 @@ int main(int argc,char** argv) {
                         std::_Exit(Cancelled);
                     }
                     try {
-                        if(!editor.pump()) control_failure(Teardown);
+                        if(!editor.pump(reserve_space,[&] { guardian.send_transport_press(); }))
+                            control_failure(Teardown);
                     } catch(...) {
                         editor.quarantine();
                         control_failure(Unexpected);

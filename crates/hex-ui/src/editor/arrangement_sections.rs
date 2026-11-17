@@ -182,6 +182,8 @@ struct Pending {
     // Projected clip rows at submission, superseded by an exact copy view
     // when available. Retired with the receipt and canonical installation.
     layout: Option<Arc<ViewState>>,
+    // The created ID belongs to the exact committed copy observation.
+    copied: Option<SectionId>,
     receipt: Receipt,
     selection_intent_epoch: Option<u64>,
 }
@@ -493,7 +495,7 @@ impl EditorView {
             .beat_to_frame(end)
             .map_err(|_| "selected section exceeds the timeline")?;
         if start >= end {
-            return Err("selected sections have an empty loop range");
+            return Err("selected sections have an empty scope");
         }
         Ok(Some((start, end)))
     }
@@ -596,6 +598,7 @@ impl EditorView {
             })
             .collect();
         pending.display.tempo = state.project.tempo_map().clone();
+        pending.copied = Some(copy);
         pending.layout = Some(state);
         self.start_ahead_section_duplicate();
         true
@@ -627,7 +630,7 @@ impl EditorView {
             .filter(|layout| pending.revision.checked_add(1) == Some(layout.revision))
     }
 
-    /// An early keyboard-copy start is safe only for the exact installed graph
+    /// An early copy start is safe only for the exact installed graph
     /// and its own non-preroll metadata. The ordinary receipt still owns the view.
     pub(super) fn section_copy_play_source(
         &self,
@@ -635,10 +638,10 @@ impl EditorView {
         use std::sync::atomic::Ordering::Acquire;
 
         let pending = self.sections.pending.as_ref()?;
-        let Command::DuplicateArrangementSection(section) = &pending.command else {
-            return None;
+        let section = match &pending.command {
+            Command::DuplicateArrangementSection(section) => *section,
+            command => copied_section_source(command)?,
         };
-        let section = *section;
         let current = self.state.as_ref()?;
         let committed = self.committed_section_copy_view()?;
         if self.document_audio_mode != hex_session::DocumentAudioMode::Resident
@@ -696,6 +699,30 @@ impl EditorView {
             return None;
         }
         Some(source)
+    }
+
+    /// Use the selection the successful terminal will install, without
+    /// installing that selection or the committed project prematurely.
+    pub(super) fn section_copy_play_start(&self) -> Option<u64> {
+        let pending = self.sections.pending.as_ref()?;
+        let Some(source) = copied_section_source(&pending.command) else {
+            return Some(self.playback_start_frame());
+        };
+        let selects_copy = self.device_panel.main_selected == Some(self.project_generation)
+            && self.sections.selected == Some(source)
+            && pending.selection_intent_epoch.is_some()
+            && pending.selection_intent_epoch == self.selection_intent_epoch;
+        if !selects_copy {
+            return Some(self.playback_start_frame());
+        }
+        let committed = self.committed_section_copy_view()?;
+        let copy = committed.project.arrangement_section(pending.copied?)?;
+        let frame = committed
+            .project
+            .tempo_map()
+            .beat_to_frame(copy.start())
+            .ok()?;
+        Some(self.playback_start_frame_with_section_override(Some(frame)))
     }
 
     pub(super) fn section_install_pending(&self) -> bool {
@@ -965,7 +992,7 @@ impl EditorView {
             .tooltip(|_, cx| {
                 cx.new(|_| super::transport::MiniTooltip {
                     kind: crate::tooltips::Kind::Identification,
-                    description: "play section · hold l to loop".into(),
+                    description: "play from section · hold l to loop".into(),
                 })
                 .into()
             })
@@ -1518,6 +1545,7 @@ impl EditorView {
             command: command.clone(),
             display,
             layout,
+            copied: None,
             receipt: Receipt::new(generation),
             selection_intent_epoch: self.selection_intent_epoch,
         });
@@ -2152,8 +2180,8 @@ impl EditorView {
         self.submit_section(command, display, self.project_generation, state.revision);
     }
 
-    /// Admit one queued keyboard duplicate only against the exact committed
-    /// predecessor. Both FIFO receipts retain their own terminal custody.
+    /// Admit one queued duplicate of the same source only against the exact
+    /// committed predecessor. Both FIFO receipts retain their terminal custody.
     fn start_ahead_section_duplicate(&mut self) {
         if self.sections.ahead.is_some()
             || self.worker_requests_pending != 1
@@ -2166,8 +2194,12 @@ impl EditorView {
         let Some(primary) = self.sections.pending.as_ref() else {
             return;
         };
-        let Command::DuplicateArrangementSection(section) = primary.command else {
-            return;
+        let section = match &primary.command {
+            Command::DuplicateArrangementSection(section) => *section,
+            command => match copied_section_source(command) {
+                Some(section) => section,
+                None => return,
+            },
         };
         let Some(queued) = self.sections.queued.as_ref() else {
             return;
@@ -2189,6 +2221,9 @@ impl EditorView {
         }) else {
             return;
         };
+        if view.project.arrangement_section(section).is_none() {
+            return;
+        }
         let revision = view.revision;
         let command = queued.command.clone();
         self.sections.ahead = Some(Pending {
@@ -2197,6 +2232,7 @@ impl EditorView {
             command: command.clone(),
             display: primary.display.clone(),
             layout: None,
+            copied: None,
             receipt: Receipt::new(self.project_generation),
             selection_intent_epoch: primary.selection_intent_epoch,
         });
@@ -4834,6 +4870,7 @@ pub(super) mod tests {
                 command,
                 display: g.display,
                 layout: None,
+                copied: None,
                 receipt,
             });
             v.worker_requests_pending = 2;
@@ -6492,6 +6529,7 @@ pub(super) mod tests {
                 command: command.clone(),
                 display: primary.display.clone(),
                 layout: None,
+                copied: None,
                 receipt: Receipt::new(primary.generation),
                 selection_intent_epoch: primary.selection_intent_epoch,
             });
@@ -6639,11 +6677,29 @@ pub(super) mod tests {
 
     #[gpui::test]
     fn newer_selection_does_not_admit_an_ahead_section_copy(cx: &mut TestAppContext) {
+        newer_selection_rejects_ahead_section_copy(cx, false);
+    }
+
+    #[gpui::test]
+    fn newer_selection_does_not_admit_a_duplicate_after_pointer_copy(cx: &mut TestAppContext) {
+        newer_selection_rejects_ahead_section_copy(cx, true);
+    }
+
+    fn newer_selection_rejects_ahead_section_copy(cx: &mut TestAppContext, pointer_first: bool) {
         let (handle, editor, ids) = fixture(cx);
         let mut visual = VisualTestContext::from_window(handle, cx);
         editor.update(&mut visual, |view, _| {
             view.select_section_metadata(Some(ids[0]));
-            view.section_metadata(Command::DuplicateArrangementSection(ids[0]));
+            let first = if pointer_first {
+                Command::DuplicateArrangementSectionAt {
+                    section: ids[0],
+                    target: ids[0],
+                    after: true,
+                }
+            } else {
+                Command::DuplicateArrangementSection(ids[0])
+            };
+            view.section_metadata(first);
             view.section_metadata(Command::DuplicateArrangementSection(ids[0]));
         });
         let deadline = crate::test_wait::hang_deadline();
@@ -6668,6 +6724,41 @@ pub(super) mod tests {
             assert_eq!(view.sections.selected, Some(ids[1]));
             // The already requested command remains in the ordinary queue.
             assert!(view.sections.queued.is_some());
+        });
+    }
+
+    #[gpui::test]
+    fn pointer_copy_keeps_a_different_queued_duplicate_ordered(cx: &mut TestAppContext) {
+        let (handle, editor, ids) = fixture(cx);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        editor.update(&mut visual, |view, _| {
+            view.select_section_metadata(Some(ids[0]));
+            view.section_metadata(Command::DuplicateArrangementSectionAt {
+                section: ids[0],
+                target: ids[0],
+                after: true,
+            });
+            view.section_metadata(Command::DuplicateArrangementSection(ids[1]));
+        });
+        let deadline = crate::test_wait::hang_deadline();
+        let first = loop {
+            if let Ok(view) =
+                editor.read_with(&visual, |view, _| view.service.try_arrangement_edit_view())
+            {
+                break view;
+            }
+            assert!(Instant::now() < deadline, "first section view");
+            std::thread::yield_now();
+        };
+        let terminal = editor.read_with(&visual, |view, _| next(&view.service));
+        editor.update(&mut visual, |view, _| {
+            assert!(view.observe_duplicate_view(first));
+            assert!(
+                view.sections.ahead.is_none(),
+                "different source must not be admitted ahead"
+            );
+            assert!(view.sections.queued.is_some());
+            view.receive(terminal);
         });
     }
 
@@ -6879,11 +6970,30 @@ pub(super) mod tests {
 
     #[gpui::test]
     fn held_recovery_allows_next_section_copy_and_applied_play(cx: &mut TestAppContext) {
+        held_recovery_allows_queued_duplicate(cx, 0);
+    }
+
+    #[gpui::test]
+    fn held_pointer_copy_allows_queued_duplicate_and_applied_play(cx: &mut TestAppContext) {
+        held_recovery_allows_queued_duplicate(cx, 1);
+    }
+
+    #[gpui::test]
+    fn held_append_copy_allows_queued_duplicate_and_applied_play(cx: &mut TestAppContext) {
+        held_recovery_allows_queued_duplicate(cx, 2);
+    }
+
+    #[gpui::test]
+    fn held_replacement_copy_allows_queued_duplicate_and_applied_play(cx: &mut TestAppContext) {
+        held_recovery_allows_queued_duplicate(cx, 3);
+    }
+
+    fn held_recovery_allows_queued_duplicate(cx: &mut TestAppContext, copy_kind: u8) {
         use std::sync::atomic::Ordering::Acquire;
 
         let environment = super::super::test_environment::Environment::new().unwrap();
         let recovery = environment.root().join("held-section.hex-journal");
-        let commands = vec![
+        let mut commands = vec![
             Command::AddTrack {
                 name: "track".into(),
             },
@@ -6894,6 +7004,14 @@ pub(super) mod tests {
                 end: BeatTime::from_quarters(12).unwrap(),
             },
         ];
+        if copy_kind == 3 {
+            commands.push(Command::AddArrangementSection {
+                name: "target".into(),
+                color: ElementColor::Blue,
+                start: BeatTime::from_quarters(12).unwrap(),
+                end: BeatTime::from_quarters(16).unwrap(),
+            });
+        }
         let mut fixture = super::super::worker_ui_fixture::open_with_section_and_recovery(
             cx,
             commands,
@@ -6911,7 +7029,30 @@ pub(super) mod tests {
             view.play_start_at_beginning = false;
             let expected = view.playback_start_frame();
             let revision = view.state.as_ref().unwrap().revision;
-            view.section_metadata(Command::DuplicateArrangementSection(section));
+            let first = if copy_kind == 1 {
+                Command::DuplicateArrangementSectionAt {
+                    section,
+                    target: section,
+                    after: true,
+                }
+            } else if copy_kind == 2 {
+                Command::AppendArrangementSectionCopy {
+                    section,
+                    start: BeatTime::from_quarters(16).unwrap(),
+                    gap_name: "gap".into(),
+                    gap_color: ElementColor::Blue,
+                }
+            } else if copy_kind == 3 {
+                let target = view.state.as_ref().unwrap().project.arrangement_sections()[1].id();
+                Command::ReplaceArrangementSection {
+                    source: section,
+                    target,
+                    copy: true,
+                }
+            } else {
+                Command::DuplicateArrangementSection(section)
+            };
+            view.section_metadata(first);
             view.section_metadata(Command::DuplicateArrangementSection(section));
             (revision, expected)
         });
@@ -6953,6 +7094,12 @@ pub(super) mod tests {
             );
             std::thread::yield_now();
         }
+        let first_copy = match &first.as_ref().unwrap().kind {
+            hex_session::service::ArrangementEditViewKind::Duplicate(
+                hex_project::Created::ArrangementSection(id),
+            ) => *id,
+            _ => panic!("expected first copied section"),
+        };
         editor.update(&mut visual, |view, cx| {
             assert!(
                 view.service.try_event().is_err(),
@@ -6981,6 +7128,25 @@ pub(super) mod tests {
         };
         let committed = second.state.upgrade().unwrap();
         assert_eq!(committed.revision, revision + 2);
+        let first_copy_start = committed
+            .project
+            .arrangement_section(first_copy)
+            .unwrap()
+            .start();
+        assert_eq!(
+            first_copy_start,
+            BeatTime::from_quarters(if copy_kind == 2 { 20 } else { 16 }).unwrap(),
+            "the queued duplicate must target the original section"
+        );
+        let expected = if copy_kind != 0 {
+            committed
+                .project
+                .tempo_map()
+                .beat_to_frame(first_copy_start)
+                .unwrap()
+        } else {
+            expected
+        };
         editor.update(&mut visual, |view, cx| {
             assert!(
                 view.service.try_event().is_err(),
@@ -7086,11 +7252,228 @@ pub(super) mod tests {
                     .project
                     .arrangement_sections()
                     .len(),
-                2
+                if copy_kind == 2 { 3 } else { 2 }
             )
+        });
+        editor.update(&mut visual, |view, cx| {
+            view.history_action(Request::Redo, cx)
+        });
+        loop {
+            fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+            let redone = editor.update(&mut visual, |view, cx| {
+                view.tick(cx);
+                view.state
+                    .as_ref()
+                    .is_some_and(|state| state.revision == revision + 4)
+            });
+            if redone {
+                break;
+            }
+            assert!(Instant::now() < deadline, "redo after durable copies");
+            std::thread::yield_now();
+        }
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(*view.state.as_ref().unwrap().project, *committed.project);
         });
         fixture.finish(cx);
         drop(environment);
+    }
+
+    #[gpui::test]
+    fn applied_pointer_section_copy_plays_from_the_selected_copy(cx: &mut TestAppContext) {
+        pointer_section_copy_plays_from_the_selected_copy(cx, 0);
+    }
+
+    #[gpui::test]
+    fn appended_section_copy_with_gap_plays_from_the_selected_copy(cx: &mut TestAppContext) {
+        pointer_section_copy_plays_from_the_selected_copy(cx, 1);
+    }
+
+    #[gpui::test]
+    fn replaced_section_copy_plays_from_the_selected_copy(cx: &mut TestAppContext) {
+        pointer_section_copy_plays_from_the_selected_copy(cx, 2);
+    }
+
+    fn pointer_section_copy_plays_from_the_selected_copy(cx: &mut TestAppContext, copy_kind: u8) {
+        let environment = super::super::test_environment::Environment::new().unwrap();
+        let recovery = environment.root().join("held-pointer-section.hex-journal");
+        let mut commands = vec![
+            Command::AddTrack {
+                name: "track".into(),
+            },
+            Command::AddArrangementSection {
+                name: "section".into(),
+                color: ElementColor::Blue,
+                start: BeatTime::from_quarters(8).unwrap(),
+                end: BeatTime::from_quarters(12).unwrap(),
+            },
+        ];
+        if copy_kind == 2 {
+            commands.push(Command::AddArrangementSection {
+                name: "target".into(),
+                color: ElementColor::Blue,
+                start: BeatTime::from_quarters(12).unwrap(),
+                end: BeatTime::from_quarters(16).unwrap(),
+            });
+        }
+        let mut fixture = super::super::worker_ui_fixture::open_with_section_and_recovery(
+            cx,
+            commands,
+            false,
+            true,
+            Some(recovery.clone()),
+        );
+        let editor = fixture.editor.clone();
+        let mut visual = VisualTestContext::from_window(fixture.handle, cx);
+        visual.run_until_parked();
+        let mut gate = hex_session::service::hold_next_checkpoint(recovery).unwrap();
+        let original_revision = editor.update(&mut visual, |view, _| {
+            let section = view.state.as_ref().unwrap().project.arrangement_sections()[0].id();
+            view.select_section_metadata(Some(section));
+            view.play_start_at_beginning = false;
+            let revision = view.state.as_ref().unwrap().revision;
+            let command = if copy_kind == 1 {
+                Command::AppendArrangementSectionCopy {
+                    section,
+                    start: BeatTime::from_quarters(16).unwrap(),
+                    gap_name: "gap".into(),
+                    gap_color: ElementColor::Blue,
+                }
+            } else if copy_kind == 2 {
+                let target = view.state.as_ref().unwrap().project.arrangement_sections()[1].id();
+                Command::ReplaceArrangementSection {
+                    source: section,
+                    target,
+                    copy: true,
+                }
+            } else {
+                Command::DuplicateArrangementSectionAt {
+                    section,
+                    target: section,
+                    after: true,
+                }
+            };
+            view.section_metadata(command);
+            revision
+        });
+        let deadline = crate::test_wait::hang_deadline();
+        let observation = loop {
+            fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+            if let Ok(observation) =
+                editor.read_with(&visual, |view, _| view.service.try_arrangement_edit_view())
+            {
+                break observation;
+            }
+            assert!(Instant::now() < deadline, "committed section view");
+            std::thread::yield_now();
+        };
+        let committed = observation.state.upgrade().unwrap();
+        loop {
+            match gate.try_entered() {
+                Ok(()) => break,
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    assert!(Instant::now() < deadline, "checkpoint was not held");
+                    std::thread::yield_now();
+                }
+                Err(error) => panic!("checkpoint gate failed: {error}"),
+            }
+        }
+        let copied = match observation.kind {
+            hex_session::service::ArrangementEditViewKind::Duplicate(
+                hex_project::Created::ArrangementSection(id),
+            ) => id,
+            _ => panic!("unexpected committed view"),
+        };
+        let expected = committed
+            .project
+            .tempo_map()
+            .beat_to_frame(
+                committed
+                    .project
+                    .arrangement_section(copied)
+                    .unwrap()
+                    .start(),
+            )
+            .unwrap();
+        editor.update(&mut visual, |view, cx| {
+            assert!(view.observe_duplicate_view(observation));
+            assert_eq!(view.state.as_ref().unwrap().revision, original_revision);
+            cx.notify();
+        });
+        loop {
+            fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+            let applied = editor.update(&mut visual, |view, cx| {
+                view.tick(cx);
+                view.audio_status()
+                    .unwrap()
+                    .recording_source()
+                    .is_some_and(|source| source.context.editor_revision == original_revision + 1)
+            });
+            if applied {
+                break;
+            }
+            assert!(Instant::now() < deadline, "applied copied section source");
+            std::thread::yield_now();
+        }
+        editor.update(&mut visual, |view, cx| {
+            assert_eq!(view.state.as_ref().unwrap().revision, original_revision);
+            assert!(
+                view.service.try_event().is_err(),
+                "terminal must still be held"
+            );
+            let observation = view.pending_publication_observation.as_mut().unwrap();
+            observation.output_identity += 1;
+            assert!(
+                view.section_copy_play_source().is_none(),
+                "wrong output must refuse"
+            );
+            view.pending_publication_observation
+                .as_mut()
+                .unwrap()
+                .output_identity -= 1;
+            let epoch = view.selection_intent_epoch;
+            view.advance_selection_intent();
+            assert!(
+                view.section_copy_play_source().is_none(),
+                "changed selection must refuse"
+            );
+            view.selection_intent_epoch = epoch;
+            view.play_start_at_beginning = true;
+            assert_eq!(view.section_copy_play_start(), Some(0));
+            view.play_start_at_beginning = false;
+            view.toggle_play();
+            assert_eq!(
+                view.last_transport_command,
+                Some(hex_engine::playback::PlaybackCommand::PlayFrom(expected))
+            );
+            cx.notify();
+        });
+        fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+        editor.read_with(&visual, |view, _| {
+            assert!(
+                view.audio_status()
+                    .unwrap()
+                    .playing
+                    .load(std::sync::atomic::Ordering::Acquire)
+            );
+        });
+        gate.release()
+            .expect("checkpoint remains held until after Play");
+        let terminal = loop {
+            fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+            if let Ok(event) = editor.read_with(&visual, |view, _| view.service.try_event()) {
+                break event;
+            }
+            assert!(Instant::now() < deadline, "section terminal");
+            std::thread::yield_now();
+        };
+        assert!(terminal.error.is_none(), "{:?}", terminal.error);
+        editor.update(&mut visual, |view, cx| {
+            view.receive(terminal);
+            assert_eq!(view.playback_start_frame(), expected);
+            cx.notify();
+        });
+        fixture.finish(cx);
     }
 
     #[gpui::test]

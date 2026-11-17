@@ -1,7 +1,7 @@
 //! # Purpose
-//! Own native output lifecycle, bounded prepared-graph publication, callback command delivery and
-//! off-callback reclamation. Owns copied isolated-processor endpoints and their joining control
-//! worker; plugin ABI loading and native instance admission remain outside this crate.
+//! Own native input discovery and capture, output lifecycle, bounded prepared-graph publication, callback
+//! command delivery and off-callback reclamation. Owns copied isolated-processor endpoints and their
+//! joining control worker; plugin ABI loading and native instance admission remain outside this crate.
 //!
 //! # Dependencies
 //! Uses hex-engine for musical rendering, hex-stream for verified pages, CPAL for device I/O and
@@ -20,6 +20,8 @@
 pub mod audio_diagnostics;
 pub mod cpu_meter;
 mod device;
+pub mod input_capture;
+pub mod input_devices;
 mod open_outcome;
 mod output_route;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -28,6 +30,8 @@ pub mod plugin_worker;
 mod render_fault;
 pub mod sample_preview;
 pub mod sample_recording;
+#[cfg(target_os = "macos")]
+pub use device::PluginOutputObservation;
 pub use device::{PreparedOutput, WorkerOutputProfile, WorkerPreparedOutput};
 pub use lifecycle::{
     AudioLifecycleFailure, RecoveryOpen, RecoveryOpenError, WorkerRecoveryOpen,

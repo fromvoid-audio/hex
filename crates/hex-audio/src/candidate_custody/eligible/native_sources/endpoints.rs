@@ -747,6 +747,153 @@ mod tests {
         }
     }
     #[test]
+    #[cfg(feature = "allocation-probe")]
+    #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+    fn separate_native_epochs_preserve_queued_audio_while_only_one_runs() {
+        use hex_lattice::{ForeignProcessorNode, ForeignProcessors};
+        use std::time::{Duration, Instant};
+
+        let root = root();
+        root.configure_native_sources(2, source_reservation())
+            .unwrap();
+        let mut bindings = Vec::new();
+        let mut nodes = Vec::new();
+        for _ in 0..2 {
+            let binding = start(&root);
+            root.complete_native_source(
+                binding,
+                Some(hex_plugin_host::protocol::PresentationLatency {
+                    input_frames: 77,
+                    output_frames: 91,
+                }),
+            )
+            .unwrap();
+            root.start_native_effect(binding).unwrap();
+            let work = lock(&root.work);
+            let index = lock(&root.bank).sources.index(binding).unwrap();
+            let Some(Owner::Effect(effect)) = work.sources.cells[index].owner.as_ref() else {
+                panic!("actual effect")
+            };
+            nodes.push((
+                effect.identity(),
+                effect.prepared(),
+                effect.configuration().clone(),
+            ));
+            bindings.push(binding);
+        }
+        assert_ne!(bindings[0], bindings[1]);
+        assert_eq!(
+            root.native_source_prepared_state(bindings[0]).unwrap(),
+            root.native_source_prepared_state(bindings[1]).unwrap()
+        );
+        let mut bank = NativeEndpointBank::new().unwrap();
+        for binding in &bindings {
+            assert!(
+                bank.install(binding.root, root.loan_native_endpoint(*binding).unwrap())
+                    .is_ok()
+            );
+        }
+        let render = |bank: &mut NativeEndpointBank, index: usize, frames: &mut [[f32; 2]; 8]| {
+            let (identity, prepared, configuration) = &nodes[index];
+            let node = ForeignProcessorNode {
+                owner: identity.owner(),
+                device_id: identity.device_id(),
+                device_type: configuration.type_id(),
+                sample_rate: 48_000,
+                configuration,
+                prepared: *prepared,
+                automation: None,
+                bypassed: false,
+                input_gain: 1.0,
+                output_gain: 1.0,
+            };
+            let operation = || {
+                bank.begin_rendering(8).unwrap();
+                bank.process_segment(node, 0, frames, None).unwrap();
+                bank.finish_rendering(true).unwrap();
+            };
+            let measured = allocation_counter::measure(operation);
+            assert_eq!(
+                (
+                    measured.count_total,
+                    measured.bytes_total,
+                    measured.count_current,
+                    measured.bytes_current
+                ),
+                (0, 0, 0, 0)
+            );
+        };
+        let completed = |binding: Binding| {
+            let work = lock(&root.work);
+            let index = lock(&root.bank).sources.index(binding).unwrap();
+            let Some(Owner::Loaned(owner)) = work.sources.cells[index].owner.as_ref() else {
+                panic!("loaned original worker")
+            };
+            crate::plugin_effects::NativeEffectReference::Loaned(owner)
+                .completed_blocks_on_control()
+        };
+        let wait = |binding: Binding, blocks: u64| {
+            let until = Instant::now() + Duration::from_secs(3);
+            loop {
+                if completed(binding) == blocks {
+                    break;
+                }
+                assert!(
+                    Instant::now() < until,
+                    "native worker did not complete block {blocks}"
+                );
+                std::thread::yield_now();
+            }
+        };
+        let mut impulse = [[0.0; 2]; 8];
+        impulse[0] = [0.5, -0.25];
+        render(&mut bank, 0, &mut impulse);
+        assert_eq!(impulse, [[0.0; 2]; 8]);
+        wait(bindings[0], 1);
+        for count in 1..=4 {
+            let mut live = [[0.25; 2]; 8];
+            render(&mut bank, 1, &mut live);
+            wait(bindings[1], count);
+            let gain = if count <= 2 {
+                0.0
+            } else {
+                0.5 + (count - 3) as f32 * 0.125
+            };
+            assert_eq!(live, [[0.25 * gain; 2]; 8]);
+        }
+        assert_eq!(completed(bindings[0]), 1);
+        let mut silence = [[0.0; 2]; 8];
+        render(&mut bank, 0, &mut silence);
+        assert_eq!(silence, [[0.0; 2]; 8]);
+        wait(bindings[0], 2);
+        render(&mut bank, 0, &mut silence);
+        let mut expected = [[0.0; 2]; 8];
+        expected[0] = [0.25, -0.125];
+        assert_eq!(
+            silence, expected,
+            "the original endpoint retains its queued impulse"
+        );
+        wait(bindings[0], 3);
+        bank.request_epoch_return();
+        for index in 0..2 {
+            assert!(
+                root.ingest_native_endpoint(bank.take_requested(index).unwrap())
+                    .is_ok()
+            );
+        }
+        for (binding, blocks) in bindings.into_iter().zip([3, 4]) {
+            assert!(root.retire_native_source(binding));
+            dispose(&root, binding);
+            let returned = root.recover_native_source(binding).unwrap();
+            assert!(returned.error.is_none() && returned.cleanup_error.is_none());
+            assert!(
+                matches!(returned.disposal, PreparationDisposal::Reaped(retired)
+                if retired.status.success() && retired.terminal.is_some_and(|terminal|
+                    terminal.blocks == blocks && terminal.frames == blocks * 8))
+            );
+        }
+    }
+    #[test]
     #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
     fn actual_root_parameter_segments_and_feedback_keep_original_loan_and_final_acceptance() {
         use hex_lattice::{ForeignProcessorNode, ForeignProcessors};

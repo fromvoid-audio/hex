@@ -10,9 +10,18 @@
 mod beats;
 pub mod fft;
 mod granular;
+pub use granular::{GrainAnalysis, GrainDecision, GrainSynthesis, analyze_grain};
+mod granular_overlap;
+mod granular_sequential;
+pub use granular_overlap::GranularOverlap;
+pub use granular_sequential::{
+    GranularCheckpoint, GranularSource, SequentialGranular, SequentialGranularConfig,
+};
 mod resample;
 pub use resample::{PitchWindow, RepitchWindow, Resampler, V2_MAX_TAPS};
+mod source_region;
 mod spectral;
+pub use source_region::SourceRegion;
 use std::fmt;
 
 pub type Frame = [f32; 2];
@@ -51,6 +60,64 @@ impl std::error::Error for Error {}
 pub struct GainPoint {
     pub source_frame: u64,
     pub gain_q16: u32,
+}
+
+/// Incremental, bounded stereo reference selection used by granular warp.
+///
+/// Request each region-relative offset in order, resolve phase, looping and any
+/// source gain in the caller, then submit the resulting stereo sample. The scan
+/// owns no source, performs no IO, and visits at most 4096 samples regardless of
+/// region length. Floating-point accumulation and left-on-tie selection match
+/// the resident renderer; samples are not sanitized or reordered here.
+#[derive(Debug)]
+pub struct ReferenceChannelScan {
+    count: u64,
+    stride: u64,
+    next: u64,
+    energy: [f64; 2],
+}
+
+impl ReferenceChannelScan {
+    /// Start a scan over a nonempty logical source region.
+    pub fn new(region_length: u64) -> Result<Self, Error> {
+        if region_length == 0 {
+            return Err(Error::Invalid("reference scan needs a nonempty region"));
+        }
+        let count = region_length.min(4096);
+        Ok(Self {
+            count,
+            stride: (region_length / count).max(1),
+            next: 0,
+            energy: [0.0; 2],
+        })
+    }
+
+    /// The next region-relative source offset, or `None` after all samples.
+    pub fn next_offset(&self) -> Option<u64> {
+        // next < count and stride = floor(length / count), so this product is
+        // strictly less than the original nonzero region length.
+        (self.next < self.count).then(|| self.next * self.stride)
+    }
+
+    /// Submit exactly the requested offset; rejected submissions do not advance.
+    pub fn observe(&mut self, offset: u64, frame: [f64; 2]) -> Result<(), Error> {
+        if self.next_offset() != Some(offset) {
+            return Err(Error::Invalid("reference scan sample is out of order"));
+        }
+        for (energy, sample) in self.energy.iter_mut().zip(frame) {
+            *energy += sample * sample;
+        }
+        self.next += 1;
+        Ok(())
+    }
+
+    /// Return the selected channel only after all requested samples arrive.
+    pub fn finish(&self) -> Result<usize, Error> {
+        if self.next != self.count {
+            return Err(Error::Invalid("reference scan is incomplete"));
+        }
+        Ok(usize::from(self.energy[1] > self.energy[0]))
+    }
 }
 #[derive(Clone, Copy)]
 pub struct Input<'a> {
@@ -108,41 +175,38 @@ impl Input<'_> {
         [f64::from(frame[0]) * gain, f64::from(frame[1]) * gain]
     }
     fn gain(self, frame: u64) -> f64 {
-        if self.envelope.is_empty() {
-            return 1.0;
-        }
-        let next = self
-            .envelope
-            .partition_point(|point| point.source_frame <= frame);
-        let value = match (
-            next.checked_sub(1).and_then(|i| self.envelope.get(i)),
-            self.envelope.get(next),
-        ) {
-            (Some(a), Some(b)) => {
-                let span = b.source_frame - a.source_frame;
-                let offset = frame - a.source_frame;
-                (u128::from(a.gain_q16) * u128::from(span - offset)
-                    + u128::from(b.gain_q16) * u128::from(offset)) as f64
-                    / span as f64
-            }
-            (Some(a), None) => f64::from(a.gain_q16),
-            (None, Some(b)) => f64::from(b.gain_q16),
-            (None, None) => 65_536.0,
-        };
-        value / 65_536.0
+        source_gain(self.envelope, frame)
     }
-    fn reference_channel(self) -> usize {
-        let count = self.region_length.min(4_096);
-        let step = (self.region_length / count.max(1)).max(1);
-        let mut energy = [0.0_f64; 2];
-        for i in 0..count {
-            let frame = self.frame(i128::from(i * step));
-            for channel in 0..2 {
-                energy[channel] += frame[channel] * frame[channel];
-            }
+    fn reference_channel(self) -> Result<usize, Error> {
+        let mut scan = ReferenceChannelScan::new(self.region_length)?;
+        while let Some(offset) = scan.next_offset() {
+            scan.observe(offset, self.frame(i128::from(offset)))?;
         }
-        usize::from(energy[1] > energy[0])
+        scan.finish()
     }
+}
+
+fn source_gain(envelope: &[GainPoint], frame: u64) -> f64 {
+    if envelope.is_empty() {
+        return 1.0;
+    }
+    let next = envelope.partition_point(|point| point.source_frame <= frame);
+    let value = match (
+        next.checked_sub(1).and_then(|i| envelope.get(i)),
+        envelope.get(next),
+    ) {
+        (Some(a), Some(b)) => {
+            let span = b.source_frame - a.source_frame;
+            let offset = frame - a.source_frame;
+            (u128::from(a.gain_q16) * u128::from(span - offset)
+                + u128::from(b.gain_q16) * u128::from(offset)) as f64
+                / span as f64
+        }
+        (Some(a), None) => f64::from(a.gain_q16),
+        (None, Some(b)) => f64::from(b.gain_q16),
+        (None, None) => 65_536.0,
+    };
+    value / 65_536.0
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

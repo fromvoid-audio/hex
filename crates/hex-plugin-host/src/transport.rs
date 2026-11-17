@@ -14,6 +14,10 @@
 //! discard their late output. The audio host uses aligned dry input for effects
 //! and silence for instruments. No stale-buffer replay, waiting, waking,
 //! allocation or DSP rollback occurs; persistent misses still revoke the epoch.
+//! A one-slot atomic observation reports the first accepted concealed quantum
+//! and worker phase; a boolean records additional gaps while the slot is busy.
+//! The callback performs one bounded publication attempt only after host-format
+//! acceptance. Polling or source retirement may lose diagnostic observations.
 
 type Frame = [f32; 2];
 use crate::protocol::{EditorPerforms, EditorRestorations};
@@ -23,7 +27,7 @@ use std::num::NonZeroU64;
 use std::sync::{
     Arc,
     atomic::{
-        AtomicU8, AtomicU64,
+        AtomicBool, AtomicU8, AtomicU64,
         Ordering::{AcqRel, Acquire, Relaxed, Release},
     },
 };
@@ -86,6 +90,15 @@ pub struct DeadlineMiss {
     pub worker_phase: DeadlineWorkerPhase,
 }
 
+/// Best-effort observation of an accepted concealed quantum. An overflow flag
+/// means at least one other accepted gap could not occupy the single slot.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ConcealedOutput {
+    pub binding: Binding,
+    pub miss: DeadlineMiss,
+    pub overflowed: bool,
+}
+
 /// The callback's last accepted state within its copied transport quantum.
 /// This observation grants no graph, worker, quiescence or reclamation authority.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -93,6 +106,15 @@ pub enum CommittedQuantumState {
     Closed,
     OpenUnprogrammed,
     OpenProgram(NonZeroU64),
+}
+
+/// A bounded snapshot from the exact callback pair. Untouched means no
+/// callback stage was accepted at observation time; a later callback can change
+/// it immediately. This grants no worker, graph or publication authority.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QuantumObservation {
+    Untouched(Binding),
+    Committed(CommittedQuantum),
 }
 
 /// A coherent diagnostic snapshot from the original constructor-paired callback.
@@ -110,6 +132,10 @@ struct Revocation {
     processed_prefix: AtomicU64,
     missed_reply: AtomicU64,
     missed_phase: AtomicU8,
+    concealed_slot: AtomicU8,
+    concealed_reply: AtomicU64,
+    concealed_phase: AtomicU8,
+    concealed_overflow: AtomicBool,
     quantum_serial: AtomicU64,
     quantum_program: AtomicU64,
     quantum_state: AtomicU8,
@@ -132,6 +158,10 @@ impl Revocation {
             processed_prefix: AtomicU64::new(0),
             missed_reply: AtomicU64::new(0),
             missed_phase: AtomicU8::new(0),
+            concealed_slot: AtomicU8::new(0),
+            concealed_reply: AtomicU64::new(0),
+            concealed_phase: AtomicU8::new(0),
+            concealed_overflow: AtomicBool::new(false),
             quantum_serial: AtomicU64::new(0),
             quantum_program: AtomicU64::new(0),
             quantum_state: AtomicU8::new(0),
@@ -154,14 +184,22 @@ impl Revocation {
     fn publish_quantum(&self, quantum: CommittedQuantumState) {
         use std::sync::atomic::Ordering::SeqCst;
         let serial = self.quantum_serial.load(SeqCst);
-        let Some(next) = serial.checked_add(2) else {
-            self.quantum_serial.store(u64::MAX, SeqCst);
-            return;
+        // Serial 1 is reserved for the first accepted-stage transition. It
+        // was marked before callback acceptance, so an observer cannot mistake
+        // the acceptance/publication gap for an untouched callback.
+        let next = if serial == 1 {
+            2
+        } else {
+            if serial & 1 != 0 {
+                return;
+            }
+            let Some(next) = serial.checked_add(2) else {
+                self.quantum_serial.store(u64::MAX, SeqCst);
+                return;
+            };
+            self.quantum_serial.store(serial + 1, SeqCst);
+            next
         };
-        if serial & 1 != 0 {
-            return;
-        }
-        self.quantum_serial.store(serial + 1, SeqCst);
         let (state, key) = match quantum {
             CommittedQuantumState::Closed => (1, 0),
             CommittedQuantumState::OpenUnprogrammed => (2, 0),
@@ -201,16 +239,36 @@ impl Revocation {
         (prefix == self.received_prefix.load(Acquire)).then_some((sequence, NonZeroU64::new(key)))
     }
 
-    fn record_deadline_miss(&self, sequence: u64) {
-        let phase = if self.processed_prefix.load(Acquire) > sequence {
+    fn worker_phase(&self, sequence: u64) -> DeadlineWorkerPhase {
+        if self.processed_prefix.load(Acquire) > sequence {
             DeadlineWorkerPhase::Publishing
         } else if self.received_prefix.load(Acquire) > sequence {
             DeadlineWorkerPhase::Processing
         } else {
             DeadlineWorkerPhase::AwaitingPickup
-        };
+        }
+    }
+
+    fn record_deadline_miss(&self, sequence: u64) {
+        let phase = self.worker_phase(sequence);
         self.missed_reply.store(sequence, Relaxed);
         self.missed_phase.store(phase as u8, Release);
+    }
+
+    // Single callback producer and single control consumer. Neither side
+    // retries or waits when the other owns the slot.
+    fn publish_concealment(&self, miss: DeadlineMiss) {
+        if self
+            .concealed_slot
+            .compare_exchange(0, 1, Acquire, Relaxed)
+            .is_err()
+        {
+            self.concealed_overflow.store(true, Relaxed);
+            return;
+        }
+        self.concealed_reply.store(miss.reply_sequence, Relaxed);
+        self.concealed_phase.store(miss.worker_phase as u8, Relaxed);
+        self.concealed_slot.store(2, Release);
     }
 
     fn decode_fault(code: u8) -> Option<Fault> {
@@ -555,6 +613,22 @@ impl Control {
         })
     }
 
+    /// Distinguish an untouched paired callback from a committed quantum.
+    /// None includes a concurrent first acceptance, contention, revocation,
+    /// and exhausted observation serial. Neither result stays valid by itself.
+    pub fn quantum_observation(&self) -> Option<QuantumObservation> {
+        use std::sync::atomic::Ordering::SeqCst;
+        if self.revoked.is_revoked() {
+            return None;
+        }
+        let serial = self.revoked.quantum_serial.load(SeqCst);
+        if serial == 0 {
+            return (self.revoked.quantum_serial.load(SeqCst) == 0 && !self.revoked.is_revoked())
+                .then_some(QuantumObservation::Untouched(self.revoked.binding));
+        }
+        self.committed_quantum().map(QuantumObservation::Committed)
+    }
+
     /// Read one bounded snapshot of the exact paired callback's most recently
     /// accepted quantum. None means no observation, contention, exhaustion, or
     /// revocation. A copied binding is not proof of any graph installation.
@@ -619,6 +693,32 @@ impl Control {
         Some(DeadlineMiss {
             reply_sequence: self.revoked.missed_reply.load(Relaxed),
             worker_phase,
+        })
+    }
+    /// Drain at most one accepted concealment from this exact pair. Contention
+    /// defers the read; an absent value is not evidence that no gap occurred.
+    pub fn take_concealed_output(&self) -> Option<ConcealedOutput> {
+        self.revoked
+            .concealed_slot
+            .compare_exchange(2, 1, Acquire, Relaxed)
+            .ok()?;
+        let sequence = self.revoked.concealed_reply.load(Relaxed);
+        let phase = self.revoked.concealed_phase.load(Relaxed);
+        let overflowed = self.revoked.concealed_overflow.swap(false, Relaxed);
+        self.revoked.concealed_slot.store(0, Release);
+        let worker_phase = match phase {
+            1 => DeadlineWorkerPhase::AwaitingPickup,
+            2 => DeadlineWorkerPhase::Processing,
+            3 => DeadlineWorkerPhase::Publishing,
+            _ => return None,
+        };
+        Some(ConcealedOutput {
+            binding: self.revoked.binding,
+            miss: DeadlineMiss {
+                reply_sequence: sequence,
+                worker_phase,
+            },
+            overflowed,
         })
     }
     /// The exact callback's first actionable fault, once. A control/worker
@@ -811,6 +911,7 @@ struct Stage {
     request: Option<InputRequest>,
     manual: Option<AcceptedManualParameter>,
     editor: Option<AcceptedEditorQuantum>,
+    concealed: Option<DeadlineMiss>,
     expected_frames: usize,
     staged_frames: usize,
     input_events: usize,
@@ -1056,6 +1157,7 @@ impl Callback {
             request: None,
             manual: None,
             editor: None,
+            concealed: None,
             expected_frames: frames,
             staged_frames: 0,
             input_events: 0,
@@ -1327,6 +1429,10 @@ impl Callback {
                         sequence - 2,
                     )?;
                     if stage.state.output_gap {
+                        stage.concealed = Some(DeadlineMiss {
+                            reply_sequence: sequence - 2,
+                            worker_phase: self.revoked.worker_phase(sequence - 2),
+                        });
                         let start = result.concealed_output.map_or(index, |span| span.0);
                         result.concealed_output =
                             Some((start, input.len().min(index + quantum_frames)));
@@ -1476,6 +1582,12 @@ impl Callback {
     /// Call only after final host-format validation. Refusal terminates this
     /// epoch; consumed replies and foreign DSP are never rolled back/replayed.
     pub fn finish(&mut self, host_accepted: bool) -> Result<(), Fault> {
+        if self.committed_quantum.is_none() {
+            // Mark the first transition before any state can be accepted.
+            self.revoked
+                .quantum_serial
+                .store(1, std::sync::atomic::Ordering::SeqCst);
+        }
         if !host_accepted {
             return self.fail(Fault::Protocol);
         }
@@ -1514,6 +1626,9 @@ impl Callback {
         if self.committed_quantum != Some(quantum) {
             self.revoked.publish_quantum(quantum);
             self.committed_quantum = Some(quantum);
+        }
+        if let Some(miss) = stage.concealed {
+            self.revoked.publish_concealment(miss);
         }
         Ok(())
     }

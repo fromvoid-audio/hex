@@ -57,14 +57,24 @@ impl NativeAudioSink {
             if private_output {
                 self.check_replacement_deadline()?;
             }
-            if self.poll_resident_files(files.sources)? {
+            let cancellation = self.request_cancellation.clone();
+            let preparing_edit = self.plugins.preparing_edit(metadata.context);
+            if self.poll_resident_files(files.sources, || {
+                files.shutdown.load(Acquire)
+                    || files.cancel.is_some_and(|flag| flag.load(Acquire))
+                    || (preparing_edit && cancellation.as_ref().is_some_and(|c| c.is_cancelled()))
+            })? {
                 return Ok(());
             }
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
     }
 
-    pub(super) fn poll_resident_files(&mut self, files: &ResidentFileSet) -> Result<bool, String> {
+    pub(super) fn poll_resident_files(
+        &mut self,
+        files: &ResidentFileSet,
+        mut cancelled: impl FnMut() -> bool,
+    ) -> Result<bool, String> {
         let refs = files
             .files()
             .iter()
@@ -76,6 +86,7 @@ impl NativeAudioSink {
             files: &refs,
             pitches: files.pitches(),
             repitches: files.repitches().requirements(),
+            granulars: files.granulars().requirements(),
         };
         let policy = self.policy.as_ref().map_err(Clone::clone)?;
         let control = self
@@ -129,13 +140,31 @@ impl NativeAudioSink {
                     return Ok(false);
                 };
                 let sources = DomainSources::capture_files(&input, catalog)?;
-                let token = control
-                    .begin_audio_candidate_domain_preparation(
+                let (definitions, granular) = sources.prepare_for_files(
+                    &input,
+                    policy.stream,
+                    policy.granular,
+                    &mut cancelled,
+                )?;
+                let started = match granular {
+                    Some(bank) => control.begin_audio_candidate_granular_domain_preparation(
                         policy.stream,
-                        sources
-                            .definitions_for_files(&input, policy.stream.max_kernel_table_bytes)?,
+                        definitions,
+                        bank,
+                        hex_stream::StreamReadinessReservation {
+                            extents_per_role: policy
+                                .readiness
+                                .extents_per_role
+                                .min(policy.stream.page_buffers.saturating_sub(2)),
+                        },
+                    ),
+                    None => control.begin_audio_candidate_domain_preparation(
+                        policy.stream,
+                        definitions,
                         policy.readiness,
-                    )
+                    ),
+                };
+                let token = started
                     .map_err(|error| format!("ordinary source preparation refused: {error:?}"))?;
                 self.domains[index] = Some(Domain {
                     token,

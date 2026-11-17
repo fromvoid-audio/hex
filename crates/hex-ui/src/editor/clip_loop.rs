@@ -123,7 +123,7 @@ impl EditorView {
             if let Some((a, b)) = self.midi_time_selection_bounds().filter(|(a, b)| a != b) {
                 let (first, last) = (a.min(b), a.max(b));
                 if last > values.source_length {
-                    self.error = Some("clip loop selection exceeds its source".into());
+                    self.error = Some("clip scope selection exceeds its source".into());
                     return true;
                 }
                 values.looping = if (first, last) == (values.loop_start, values.loop_end) {
@@ -165,7 +165,7 @@ impl EditorView {
                 {
                     AudioEdit::Toggle(!active)
                 }
-                Some((start, end)) => AudioEdit::Resize(AudioViewResizeOperation::CycleRange {
+                Some((start, end)) => AudioEdit::Resize(AudioViewResizeOperation::ScopeRange {
                     start,
                     end,
                     looping: true,

@@ -31,8 +31,13 @@ mod transport;
 pub use definition::{NativeEffectDefinition, UnavailableEffect};
 use transport::EffectTransport;
 mod hosting;
+mod offline_preparation;
+pub use offline_preparation::OfflineEffectPreparation;
 pub(crate) mod manual_base_capture;
 pub use hex_lattice_contract::ForeignProcessorBinding as EffectBinding;
+pub use hex_plugin_host::protocol::{
+    Presentation as EffectPresentationReceipt, PresentationPlan as EffectPresentationPlan,
+};
 pub use hosting::{EffectPresentation, EffectSelection, Hosting, PluginProfile};
 pub(crate) use manual_base_capture::BaseCaptureSource;
 pub use manual_base_capture::ManualBaseCapture;
@@ -92,7 +97,8 @@ pub struct NativeEffect {
     state_authority: hex_lattice_contract::Vst3StateAuthority,
 }
 
-/// Private original-source facts retained by Root while the SDK lease renews.
+/// Original-source facts retained by Root or private offline preparation while
+/// the same SDK lease renews.
 /// No copied metadata or external caller can construct this authority packet.
 pub(crate) struct NativeEffectRenewal {
     binding: Binding,

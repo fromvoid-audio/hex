@@ -121,6 +121,7 @@ impl Plugins {
             self.poll_restore(control, Some(query.context));
         }
         if self.parameters.is_some()
+            || self.parameter_conversion.is_some()
             || self.editor.is_some()
             || self.restore.is_some()
             || self.parameter_gesture.is_some()

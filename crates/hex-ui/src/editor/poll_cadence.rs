@@ -229,6 +229,7 @@ impl EditorView {
                 .try_borrow()
                 .is_ok_and(|cache| cache.overrange_busy())
             || self.play_intent.desired_playing(actual_playing)
+            || self.audio_recorder.needs_poll()
             || self.edit_pending()
             || self.automation_close_preflight.waiting()
             || self.automation_take_recovery.polling()

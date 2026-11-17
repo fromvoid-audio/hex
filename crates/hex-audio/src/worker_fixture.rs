@@ -4,6 +4,8 @@
 //! application-only completion witness; no CPAL/OS stop success is asserted.
 use crate::native_callback_owner::{ErrorCallbackOwner, Guard, NativeCallbackOwner};
 
+pub use crate::input_capture::fixture::{InputObserver, monitored_input};
+
 pub struct HeadlessBackend {
     data: Option<Guard<NativeCallbackOwner>>,
     errors: Option<Guard<ErrorCallbackOwner>>,
@@ -60,6 +62,35 @@ impl HeadlessBackend {
         });
         result
     }
+    /// Render and confirm one output timing packet using a synthetic common
+    /// clock. This proves no native timestamp, device or playback behavior.
+    pub fn render_recording_fixture(
+        &mut self,
+        output: &mut [hex_engine::Frame],
+        offset: u32,
+    ) -> Result<(), hex_engine::Invalid> {
+        let owner = self
+            .data
+            .as_mut()
+            .and_then(Guard::owner_mut)
+            .ok_or(hex_engine::Invalid("headless backend is closed"))?;
+        let mut result = Ok(());
+        owner.run(|callback, _| {
+            callback.begin_block();
+            result = callback.render(output);
+            callback.set_sample_recording_output_clock(Some(
+                crate::sample_recording::OutputClock {
+                    playback: cpal::StreamInstant::new(50, 0),
+                    offset_frames: offset,
+                    graph_latency_frames: None,
+                    origin: crate::sample_recording::OutputClockOrigin::CoreAudioHostTime,
+                },
+            ));
+            callback.finish_sample_recording(result.is_ok());
+        });
+        result
+    }
+
     /// Simulate a direct stereo f32 host sink through the actual native final
     /// conversion/receipt boundary. Caller buffers stay borrowed; no owner escapes.
     /// This is headless sink delivery, not an OS callback or physical playback.
