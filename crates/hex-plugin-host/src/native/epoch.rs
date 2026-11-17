@@ -433,6 +433,15 @@ impl Quiescent {
         next: Binding,
         presentation: Option<PresentationLatency>,
     ) -> Result<Prepared> {
+        self.resume_with_plan_on_control(next, presentation.into())
+    }
+    /// Same joined control-side completion with an explicit known/unknown plan.
+    /// Retained failure custody and native ACK validation are unchanged.
+    pub fn resume_with_plan_on_control(
+        self,
+        next: Binding,
+        presentation: protocol::PresentationPlan,
+    ) -> Result<Prepared> {
         self.resume_retained_on_control(next, presentation)
             .map_err(PreparationFailure::finish_on_control)
     }
@@ -440,12 +449,33 @@ impl Quiescent {
     /// original cancelled lease in PreparationFailure for control-side polling;
     /// it cannot yield another Quiescent or a reusable Prepared instance.
     pub fn resume_retained_on_control(
-        mut self,
+        self,
         next: Binding,
         presentation: impl Into<protocol::PresentationPlan>,
     ) -> std::result::Result<Prepared, PreparationFailure> {
-        let presentation = presentation.into();
+        self.resume_retained_while_on_control(next, presentation.into(), || false)
+    }
+    /// Joined completion that also checks the private export's cancellation
+    /// during existing bounded I/O waits. Refusal retains the same native lease.
+    pub fn resume_with_plan_while_on_control(
+        self,
+        next: Binding,
+        presentation: protocol::PresentationPlan,
+        is_cancelled: impl FnMut() -> bool,
+    ) -> Result<Prepared> {
+        self.resume_retained_while_on_control(next, presentation, is_cancelled)
+            .map_err(PreparationFailure::finish_on_control)
+    }
+    fn resume_retained_while_on_control(
+        mut self,
+        next: Binding,
+        presentation: protocol::PresentationPlan,
+        mut is_cancelled: impl FnMut() -> bool,
+    ) -> std::result::Result<Prepared, PreparationFailure> {
         let result = (|| {
+            if is_cancelled() {
+                return Err(Error::Cancelled);
+            }
             self.instance.require_live_epoch()?;
             if self.instance.parameter_page.is_some() {
                 return Err(Error::Protocol("controller page is still pending"));
@@ -456,14 +486,22 @@ impl Quiescent {
             config.binding = next;
             let until = end_after(self.instance.limits.startup)?;
             let token = self.instance.lease.cancellation.clone();
+            let mut check = || {
+                token.check()?;
+                if is_cancelled() {
+                    Err(Error::Cancelled)
+                } else {
+                    Ok(())
+                }
+            };
             self.instance
                 .lease
                 .channel
-                .send(&request, until, &mut || token.check())?;
+                .send(&request, until, &mut check)?;
             self.instance
                 .lease
                 .channel
-                .read(&mut self.instance.packet, until, &mut || token.check())?;
+                .read(&mut self.instance.packet, until, &mut check)?;
             if self.instance.packet.magic() == b"HXVIER01" {
                 // A refusal can precede binding installation or follow restart.
                 // Either actual stamped error is terminal, never resume proof.

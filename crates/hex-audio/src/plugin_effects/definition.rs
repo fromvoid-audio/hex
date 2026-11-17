@@ -78,6 +78,50 @@ impl<'a> NativeEffectDefinition<'a> {
             unavailable,
         })
     }
+    /// Borrow actual zero-PCM private offline leases and their reserved epochs.
+    /// Their original owners must complete those epochs before any rendering;
+    /// this definition cannot admit sources into a live Root.
+    pub(super) fn from_offline_preparations(
+        effects: &'a [super::OfflineEffectPreparation],
+    ) -> Result<Self, DeviceContractError> {
+        let mut selected = Vec::new();
+        selected
+            .try_reserve_exact(effects.len().min(hex_lattice::MAX_STATEFUL_PROCESSORS))
+            .map_err(|_| DeviceContractError::RuntimeBudgetExceeded)?;
+        for effect in effects {
+            let configuration = effect.configuration()?;
+            Self::push_configuration(&mut selected, configuration)?;
+        }
+        Ok(Self {
+            effects: selected,
+            canonical: &[],
+            unavailable: Vec::new(),
+        })
+    }
+    fn push_configuration(
+        selected: &mut Vec<&'a Configuration>,
+        configuration: &'a Configuration,
+    ) -> Result<(), DeviceContractError> {
+        if selected.len() == hex_lattice::MAX_STATEFUL_PROCESSORS {
+            return Err(DeviceContractError::RuntimeBudgetExceeded);
+        }
+        if selected
+            .iter()
+            .any(|old| old.identity.device_id() == configuration.identity.device_id())
+            || selected.first().is_some_and(|first| {
+                first.binding.root != configuration.binding.root
+                    || first.sample_rate != configuration.sample_rate
+                    || first.prepared.quantum_frames() != configuration.prepared.quantum_frames()
+            })
+        {
+            return Err(DeviceContractError::InvalidId);
+        }
+        selected
+            .try_reserve(1)
+            .map_err(|_| DeviceContractError::RuntimeBudgetExceeded)?;
+        selected.push(configuration);
+        Ok(())
+    }
     pub fn new(effects: &'a [NativeEffect]) -> Result<Self, DeviceContractError> {
         if effects.len() > hex_lattice::MAX_STATEFUL_PROCESSORS {
             return Err(DeviceContractError::RuntimeBudgetExceeded);
@@ -184,26 +228,10 @@ impl<'a> NativeEffectDefinition<'a> {
     ) -> Result<Self, DeviceContractError> {
         let mut selected: Vec<&'a Configuration> = Vec::new();
         for (configuration, paired) in effects {
-            if selected.len() == hex_lattice::MAX_STATEFUL_PROCESSORS {
-                return Err(DeviceContractError::RuntimeBudgetExceeded);
-            }
-            if !paired
-                || selected
-                    .iter()
-                    .any(|old| old.identity.device_id() == configuration.identity.device_id())
-                || selected.first().is_some_and(|first| {
-                    first.binding.root != configuration.binding.root
-                        || first.sample_rate != configuration.sample_rate
-                        || first.prepared.quantum_frames()
-                            != configuration.prepared.quantum_frames()
-                })
-            {
+            if !paired {
                 return Err(DeviceContractError::InvalidId);
             }
-            selected
-                .try_reserve(1)
-                .map_err(|_| DeviceContractError::RuntimeBudgetExceeded)?;
-            selected.push(configuration);
+            Self::push_configuration(&mut selected, configuration)?;
         }
         Ok(Self {
             effects: selected,

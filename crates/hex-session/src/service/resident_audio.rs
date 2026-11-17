@@ -101,7 +101,7 @@ pub(super) fn prepare_private_export(
         restoring_plugin_state: false,
         preparing_edit: false,
     };
-    let owner = sink
+    let mut owner = sink
         .prepare_offline_bounce(input, control)?
         .ok_or("private vst3 export processor unavailable")?;
     let mut snapshot = inputs
@@ -119,6 +119,7 @@ pub(super) fn prepare_private_export(
         )
         .map_err(|error| error.to_string())?;
     snapshot.inputs = RuntimeInputs::default();
+    owner.finalize_on_control(&snapshot.prepared, control)?;
     if cancellation.is_cancelled() {
         return Err("export cancelled".into());
     }

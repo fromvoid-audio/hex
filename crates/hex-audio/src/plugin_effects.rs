@@ -31,6 +31,8 @@ mod transport;
 pub use definition::{NativeEffectDefinition, UnavailableEffect};
 use transport::EffectTransport;
 mod hosting;
+mod offline_preparation;
+pub use offline_preparation::OfflineEffectPreparation;
 pub(crate) mod manual_base_capture;
 pub use hex_lattice_contract::ForeignProcessorBinding as EffectBinding;
 pub use hosting::{EffectPresentation, EffectSelection, Hosting, PluginProfile};

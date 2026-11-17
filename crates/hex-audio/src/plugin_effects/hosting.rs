@@ -75,7 +75,8 @@ impl Hosting {
         profile: PluginProfile,
         state: &NativeDeviceState,
         authored: Option<&AuthoredSelection>,
-    ) -> Result<NativeEffect, String> {
+        bypassed: bool,
+    ) -> Result<OfflineEffectPreparation, String> {
         let identity =
             ProcessorInstanceIdentity::new(owner, device_id).map_err(|e| e.to_string())?;
         let pending = native::Pending::prepare_offline_restored_on_control(
@@ -102,13 +103,16 @@ impl Hosting {
             native::TrustUserCode::Acknowledged,
         )
         .map_err(|e| e.to_string())?;
-        // A private bounce has no device presentation and this source is
-        // configured before the isolated downstream graph has been compiled.
+        // Bootstrap one real offline source before its graph exists. It will
+        // be stopped at zero PCM and completed from that graph before rendering.
         let instance = pending
             .complete_with_plan_on_control(PresentationPlan::AllowUnknown)
             .map_err(|e| e.to_string())?;
+        if !instance.is_offline_on_control() {
+            return Err("offline vst3 source profile differs".into());
+        }
         let data_limit = Self::source_data_reservation()?.max_retained_data_bytes;
-        NativeEffect::prepare_with_renewal_on_control(
+        let effect = NativeEffect::prepare_with_renewal_on_control(
             identity,
             instance,
             data_limit,
@@ -116,7 +120,13 @@ impl Hosting {
             None,
             authored.and_then(AuthoredSelection::dense_parameter),
         )
-        .map_err(|e| e.finish_on_control().to_string())
+        .map_err(|e| e.finish_on_control().to_string())?;
+        OfflineEffectPreparation::from_effect_on_control(
+            effect,
+            data_limit,
+            authored.cloned(),
+            bypassed,
+        )
     }
     /// Maximum payload for the single pending native capture response.
     pub const CAPTURE_RESPONSE_DATA_BYTES: usize = hex_plugin_state::MAX_ENVELOPE_BYTES;
