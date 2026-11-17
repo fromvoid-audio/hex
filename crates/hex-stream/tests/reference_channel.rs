@@ -2260,3 +2260,126 @@ fn distant_granular_page_replay_is_resumable_and_cancelled_without_publication()
     let returned = pages.reclaim().unwrap();
     assert_eq!(returned.as_ptr(), pointer);
 }
+
+// The two paths share grain analysis and synthesis kernels, but independently
+// schedule the complete resident render and checkpointed verified streaming.
+fn distant_page_matches_resident(mode: hex_warp::Mode) {
+    use hex_engine::STREAM_PAGE_FRAMES;
+    use hex_stream::{
+        GranularPageProgress, VerifiedGranularBuffers, VerifiedGranularPages,
+        scan_verified_granular_region_on_control,
+    };
+    use hex_warp::{Resampler, SequentialGranularConfig, SourceRegion};
+
+    let (wav, pcm) = Wav::create(8192, false);
+    let (mut reader, plan, metadata) = setup(&wav, 8192, 48_000, ResampleVersion::V1);
+    let mut raw = vec![[0.0; 2]; 8192];
+    let mut cache = vec![[0.0; 2]; 8192];
+    let region = SourceRegion::new(8192, 0, 8192, 0, true, vec![]).unwrap();
+    let reference = scan_verified_granular_region_on_control(
+        &metadata,
+        region,
+        &mut reader,
+        &plan,
+        &mut raw,
+        &mut cache,
+        || false,
+    )
+    .unwrap();
+    let page_index = 257;
+    let target = page_index * STREAM_PAGE_FRAMES;
+    let total = target + STREAM_PAGE_FRAMES;
+    let map = granular_map(total as u64);
+    let resident = hex_warp::render_with_resampler(
+        &hex_warp::Request {
+            attacks: &[],
+            input: hex_warp::Input {
+                frames: &pcm,
+                sample_rate: 48_000,
+                region_start: 0,
+                region_length: 8192,
+                phase: 0,
+                looping: true,
+                envelope: &[],
+            },
+            map: &map,
+            output_frames: total,
+            pitch_cents: 0,
+            mode,
+        },
+        Resampler::V1,
+        &mut || false,
+    )
+    .unwrap();
+    let mut pages = VerifiedGranularPages::new(
+        reference.clone(),
+        SequentialGranularConfig {
+            map,
+            sample_rate: 48_000,
+            mode,
+            pitch_cents: 0,
+            resampler: Resampler::V1,
+            reference_channel: reference.channel(),
+        },
+        2,
+        8 * 1024 * 1024,
+        &mut || false,
+    )
+    .unwrap();
+    let mut grain = vec![[0.0; 2]; pages.max_source_frames()];
+    let page = vec![[0.0; 2]; STREAM_PAGE_FRAMES].into_boxed_slice();
+    pages
+        .begin_page_replaying(
+            page_index as u64,
+            page,
+            hex_stream::MAX_GRANULAR_PREROLL_FRAMES,
+            &mut reader,
+            &plan,
+            || false,
+        )
+        .unwrap();
+    let mut complete = false;
+    for _ in 0..1000 {
+        if pages
+            .step(
+                &mut reader,
+                &plan,
+                VerifiedGranularBuffers {
+                    source: &mut raw,
+                    cache: &mut cache,
+                    grain: &mut grain,
+                },
+                || false,
+            )
+            .unwrap()
+            == GranularPageProgress::Complete
+        {
+            complete = true;
+            break;
+        }
+        assert!(pages.take_complete().is_none());
+    }
+    assert!(
+        complete,
+        "distant page did not finish within the fixture's step bound"
+    );
+    let page = pages.take_complete().unwrap();
+    assert_eq!(page.page_index, page_index as u64);
+    assert_eq!(page.valid_frames, STREAM_PAGE_FRAMES);
+    assert!(page.frames.iter().any(|frame| *frame != [0.0; 2]));
+    assert_eq!(&*page.frames, &resident.frames[target..total]);
+}
+
+#[test]
+fn distant_tones_page_matches_resident() {
+    distant_page_matches_resident(hex_warp::Mode::Tones { grain_ms: 200 });
+}
+
+#[test]
+fn distant_texture_page_matches_resident() {
+    distant_page_matches_resident(hex_warp::Mode::Texture {
+        grain_ms: 200,
+        fluctuation: 35,
+        seed: 42,
+    });
+}
