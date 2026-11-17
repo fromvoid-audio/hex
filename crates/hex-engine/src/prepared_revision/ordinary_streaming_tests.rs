@@ -1077,6 +1077,8 @@ enum FeedTopology {
     GroupSource,
     GroupDestination,
     ReturnSource,
+    GroupReturnSource,
+    GroupReturnDestination,
 }
 
 #[test]
@@ -1111,6 +1113,22 @@ fn closed_return_feed_latency_matches_resident() {
 fn closed_return_feed_zero_latency_matches_resident() {
     feed_stream_demand_matches_resident(FeedTopology::ReturnSource, false);
 }
+#[test]
+fn closed_group_return_source_latency_matches_resident() {
+    feed_stream_demand_matches_resident(FeedTopology::GroupReturnSource, true);
+}
+#[test]
+fn closed_group_return_source_zero_latency_matches_resident() {
+    feed_stream_demand_matches_resident(FeedTopology::GroupReturnSource, false);
+}
+#[test]
+fn closed_group_return_destination_latency_matches_resident() {
+    feed_stream_demand_matches_resident(FeedTopology::GroupReturnDestination, true);
+}
+#[test]
+fn closed_group_return_destination_zero_latency_matches_resident() {
+    feed_stream_demand_matches_resident(FeedTopology::GroupReturnDestination, false);
+}
 
 fn feed_stream_demand_matches_resident(topology: FeedTopology, limiter: bool) {
     use hex_project::{Command, Created, TrackSelectionIds};
@@ -1127,8 +1145,10 @@ fn feed_stream_demand_matches_resident(topology: FeedTopology, limiter: bool) {
             let group_tracks = match topology {
                 FeedTopology::Flat | FeedTopology::ReturnSource => None,
                 FeedTopology::Siblings => Some(vec![source, destination]),
-                FeedTopology::GroupSource => Some(vec![source]),
-                FeedTopology::GroupDestination => Some(vec![destination]),
+                FeedTopology::GroupSource | FeedTopology::GroupReturnSource => Some(vec![source]),
+                FeedTopology::GroupDestination | FeedTopology::GroupReturnDestination => {
+                    Some(vec![destination])
+                }
             };
             let group = group_tracks.map(|tracks| {
                 let Created::Track(group) = f
@@ -1143,18 +1163,29 @@ fn feed_stream_demand_matches_resident(topology: FeedTopology, limiter: bool) {
                 };
                 group
             });
-            let source = if matches!(topology, FeedTopology::GroupSource) {
+            let source = if matches!(
+                topology,
+                FeedTopology::GroupSource | FeedTopology::GroupReturnSource
+            ) {
                 group.unwrap()
             } else {
                 source
             };
-            let destination = if matches!(topology, FeedTopology::GroupDestination) {
+            let destination = if matches!(
+                topology,
+                FeedTopology::GroupDestination | FeedTopology::GroupReturnDestination
+            ) {
                 group.unwrap()
             } else {
                 destination
             };
             let mut return_bus = None;
-            let feed_source = if matches!(topology, FeedTopology::ReturnSource) {
+            let feed_source = if matches!(
+                topology,
+                FeedTopology::ReturnSource
+                    | FeedTopology::GroupReturnSource
+                    | FeedTopology::GroupReturnDestination
+            ) {
                 let Created::ReturnTrack(bus) = f
                     .editor
                     .execute(Command::AddReturnTrack {

@@ -23,7 +23,7 @@ impl SessionPlayback {
     /// This is derived from the retained runtime graph, not a caller-declared
     /// readiness mode. Serial Main-only latency reads the ordinary source
     /// frontier for Arrangement and Session audio. Flat audio-only tracks and
-    /// grouped audio, track feeds and flat Return feeds may use upstream
+    /// grouped audio, track feeds and Return feeds may use upstream
     /// compensation with closed native effects. Instruments, foreign effects
     /// and keyboard remain excluded from these compensated extensions.
     pub(super) fn supports_closed_stream_demand(&self) -> bool {

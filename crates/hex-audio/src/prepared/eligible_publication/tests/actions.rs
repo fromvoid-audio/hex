@@ -1096,6 +1096,10 @@ fn grouped_fed_track_session_scene_waits_for_pages_and_renders_without_allocatio
 fn return_feed_session_scene_waits_for_pages_and_renders_without_allocations() {
     real_immediate_scene(true, true, false, false, true);
 }
+#[test]
+fn grouped_return_feed_session_waits_for_pages_and_renders_without_allocations() {
+    real_immediate_scene(true, true, true, false, true);
+}
 
 fn real_immediate_scene(
     with_latency: bool,
