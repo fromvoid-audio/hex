@@ -22,15 +22,41 @@ pub(super) enum ScalarOriginHistory<'a> {
 impl SessionPlayback {
     /// This is derived from the retained runtime graph, not a caller-declared
     /// readiness mode. Serial Main-only latency reads the ordinary source
-    /// frontier for Arrangement-only content; Session audio, upstream
-    /// compensated routes and keyboard remain excluded.
+    /// frontier for Arrangement-only content. Flat audio-only tracks may also
+    /// use upstream compensation with closed native effects; Session audio,
+    /// instruments, foreign effects, routed upstream graphs and keyboard remain excluded.
     pub(super) fn supports_closed_stream_demand(&self) -> bool {
         self.computer_keyboard.is_none()
             && self.compensation.as_ref().is_none_or(|runtime| {
                 runtime.graph.supports_closed_group_stream()
                     || (runtime.graph.independent_main_routes()
-                        && !runtime.graph.needs_upstream_frame_routing()
-                        && self.revision.session().audio_clips().is_empty())
+                        && self.revision.session().audio_clips().is_empty()
+                        && (!runtime.graph.needs_upstream_frame_routing()
+                            || (self.revision.session().midi_clips().is_empty()
+                                && runtime.graph.tracks.iter().enumerate().all(|(index, _)| {
+                                    runtime.graph.resident_main_alignment(index).is_some()
+                                })
+                                && self
+                                    .revision
+                                    .arrangement()
+                                    .tracks()
+                                    .iter()
+                                    .flat_map(|track| track.device_chain.iter())
+                                    .chain(self.revision.arrangement().main_device_chain.iter())
+                                    .all(|device| {
+                                        crate::native_effect_storage::is_closed_type(
+                                            device.device_type,
+                                        ) && !matches!(
+                                            device.definition,
+                                            Some(hex_lattice::PreparedProcessorFactory::Foreign(_))
+                                        )
+                                    })
+                                && self.revision.arrangement().tracks().iter().all(|track| {
+                                    track.instrument_id.is_none()
+                                        && track.instrument.is_none()
+                                        && track.foreign_instrument.is_none()
+                                        && track.midi_source_index.is_none()
+                                }))))
             })
     }
 
