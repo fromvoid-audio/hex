@@ -40,7 +40,8 @@ impl From<Error> for VerifiedGranularStepError {
 /// Only pages read on this call are verified. A bounded cache lives only for
 /// this grain; a cached value can outlive a file change during the same call,
 /// so this is not a whole-file snapshot. The caller must invalidate the result
-/// on source replacement and discard a poisoned renderer after partial failure.
+/// on source replacement. After partial failure, discard a poisoned renderer or
+/// restore an instance-bound checkpoint only after revalidating source identity.
 /// This blocks on I/O: use a separate control/analysis worker, never an audio
 /// callback or the sole worker serving active playback. Cancellation is checked
 /// during verified reads, conversion-window boundaries and sample iteration.

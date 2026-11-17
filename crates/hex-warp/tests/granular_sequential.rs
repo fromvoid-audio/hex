@@ -404,3 +404,159 @@ fn sequential_and_resident_profile() {
         }
     }
 }
+
+fn render_chunk(
+    state: &mut SequentialGranular,
+    src: &mut Source,
+    scratch: &mut [[f64; 2]],
+    count: usize,
+    partition: usize,
+) -> Vec<Frame> {
+    let end = state.position() as usize + count;
+    let mut result = Vec::with_capacity(count);
+    while (state.position() as usize) < end {
+        if state.available() == 0 {
+            state.advance(src, scratch, &mut || false).unwrap();
+        }
+        let n = state
+            .available()
+            .min(partition)
+            .min(end - state.position() as usize);
+        let start = result.len();
+        result.resize(start + n, [0.0; 2]);
+        state.drain(&mut result[start..]).unwrap();
+    }
+    result
+}
+
+#[test]
+fn checkpoints_restore_exact_overlap_and_unfinished_drain() {
+    for mode in [
+        Mode::Tones { grain_ms: 8 },
+        Mode::Texture {
+            grain_ms: 8,
+            fluctuation: 35,
+            seed: 42,
+        },
+    ] {
+        for law in [Resampler::V1, Resampler::V2] {
+            let mut state = SequentialGranular::new(config(512, mode, law), &mut || false).unwrap();
+            let mut src = source(true);
+            let mut scratch = vec![[0.0; 2]; state.max_source_frames()];
+            let first = render_chunk(&mut state, &mut src, &mut scratch, 1, 1);
+            assert_eq!(first, resident(&source(true), mode, law, 512)[..1]);
+            assert!(state.available() > 0);
+            let available = state.available();
+            let snapshot = state.checkpoint(MAX_SCRATCH_BYTES).unwrap();
+            assert_eq!(snapshot.position(), 1);
+            let bytes = snapshot.backing_bytes().unwrap();
+            assert!(bytes > 0);
+            assert!(matches!(state.checkpoint(0), Err(Error::ScratchLimit)));
+            let original = render_chunk(&mut state, &mut src, &mut scratch, 400, 13);
+            state.restore(&snapshot).unwrap();
+            assert_eq!(state.position(), 1);
+            assert_eq!(state.available(), available);
+            let restored = render_chunk(&mut state, &mut src, &mut scratch, 400, 1);
+            assert_eq!(restored, original, "{mode:?} {law:?}");
+            assert_eq!(restored, resident(&source(true), mode, law, 512)[1..401]);
+        }
+    }
+}
+
+#[test]
+fn foreign_checkpoint_refuses_without_mutating_the_receiver() {
+    let mode = Mode::Texture {
+        grain_ms: 8,
+        fluctuation: 35,
+        seed: 42,
+    };
+    let mut a = SequentialGranular::new(config(256, mode, Resampler::V1), &mut || false).unwrap();
+    let mut b = SequentialGranular::new(config(256, mode, Resampler::V1), &mut || false).unwrap();
+    let mut src = source(true);
+    let mut scratch = vec![[0.0; 2]; a.max_source_frames()];
+    let snapshot = a.checkpoint(MAX_SCRATCH_BYTES).unwrap();
+    let prefix = render_chunk(&mut b, &mut src, &mut scratch, 17, 3);
+    let pos = b.position();
+    let available = b.available();
+    assert!(matches!(b.restore(&snapshot), Err(Error::Invalid(_))));
+    assert_eq!((b.position(), b.available()), (pos, available));
+    assert_eq!(
+        prefix,
+        resident(&source(true), mode, Resampler::V1, 256)[..17]
+    );
+    assert_eq!(
+        render_chunk(&mut a, &mut source(true), &mut scratch, 17, 4),
+        prefix
+    );
+}
+
+#[test]
+fn valid_checkpoint_recovers_from_partial_cancel_on_unchanged_source() {
+    let mode = Mode::Texture {
+        grain_ms: 200,
+        fluctuation: 0,
+        seed: 1,
+    };
+    let mut state =
+        SequentialGranular::new(config(4096, mode, Resampler::V1), &mut || false).unwrap();
+    let mut src = source(false);
+    let mut scratch = vec![[0.0; 2]; state.max_source_frames()];
+    let snapshot = state.checkpoint(MAX_SCRATCH_BYTES).unwrap();
+    let checks = std::cell::Cell::new(0);
+    let error = state.advance(&mut src, &mut scratch, &mut || {
+        checks.set(checks.get() + 1);
+        checks.get() == 3
+    });
+    assert_eq!(error, Err(SourceError::Warp(Error::Cancelled)));
+    assert!(state.is_poisoned());
+    assert!(matches!(
+        state.checkpoint(MAX_SCRATCH_BYTES),
+        Err(Error::Invalid(_))
+    ));
+    state.restore(&snapshot).unwrap();
+    assert!(!state.is_poisoned());
+    assert_eq!(
+        render_chunk(&mut state, &mut src, &mut scratch, 256, 17),
+        resident(&source(false), mode, Resampler::V1, 1024)[..256]
+    );
+}
+
+#[test]
+#[ignore = "controlled optimized checkpoint timing fixture"]
+fn checkpoint_profile() {
+    use std::time::Instant;
+    let mut cfg = config(
+        20_000_000,
+        Mode::Texture {
+            grain_ms: 200,
+            fluctuation: 0,
+            seed: 1,
+        },
+        Resampler::V2,
+    );
+    cfg.sample_rate = 192_000;
+    cfg.pitch_cents = 0;
+    let mut state = SequentialGranular::new(cfg, &mut || false).unwrap();
+    let mut capture = Vec::new();
+    let mut restore = Vec::new();
+    let mut bytes = 0;
+    for iteration in 0..25 {
+        let start = Instant::now();
+        let checkpoint = state.checkpoint(MAX_SCRATCH_BYTES).unwrap();
+        let capture_ns = start.elapsed().as_nanos();
+        bytes = checkpoint.backing_bytes().unwrap();
+        let start = Instant::now();
+        state.restore(&checkpoint).unwrap();
+        let restore_ns = start.elapsed().as_nanos();
+        if iteration >= 5 {
+            capture.push(capture_ns);
+            restore.push(restore_ns);
+        }
+    }
+    capture.sort_unstable();
+    restore.sort_unstable();
+    eprintln!(
+        "granular_checkpoint rate=192000 grain_ms=200 law=V2 output=20000000 bytes={bytes} warmup=5 samples=20 capture_p50_ns={} restore_p50_ns={}",
+        capture[10], restore[10]
+    );
+}

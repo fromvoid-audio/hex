@@ -14,7 +14,9 @@ pub use granular::{GrainAnalysis, GrainDecision, GrainSynthesis, analyze_grain};
 mod granular_overlap;
 mod granular_sequential;
 pub use granular_overlap::GranularOverlap;
-pub use granular_sequential::{GranularSource, SequentialGranular, SequentialGranularConfig};
+pub use granular_sequential::{
+    GranularCheckpoint, GranularSource, SequentialGranular, SequentialGranularConfig,
+};
 mod resample;
 pub use resample::{PitchWindow, RepitchWindow, Resampler, V2_MAX_TAPS};
 mod source_region;
