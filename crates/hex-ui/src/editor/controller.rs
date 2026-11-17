@@ -4587,12 +4587,17 @@ impl EditorView {
             self.error = Some("applying edit · wait for audio".into());
             return;
         }
-        if self.stopped_playback_restore.is_some() && intent_desired_playing(action) == Some(true) {
+        if intent_desired_playing(action) == Some(true)
+            && (self.stopped_playback_restore.is_some()
+                || self.stopped_plugin_parameter_terminal_pending())
+        {
             self.deferred_play = Some((action, revision, self.project_generation));
-            replace_status(
-                &mut self.status,
-                "restoring stopped playback · playback starts when ready",
-            );
+            let message = if self.stopped_playback_restore.is_some() {
+                "restoring stopped playback · playback starts when ready"
+            } else {
+                "applying vst3 parameter · playback starts when ready"
+            };
+            replace_status(&mut self.status, message);
             return;
         }
         if let PlaybackAction::Transport(PlaybackCommand::PlayFrom(frame)) = action
@@ -4783,10 +4788,28 @@ impl EditorView {
         true
     }
 
-    /// Start an explicit Play once the stopped restore or audio recovery
-    /// settles. A failed fresh recovery or replaced project drops the intent.
+    /// Starting the callback with a stopped VST3 terminal in flight can
+    /// invalidate its transport fence before the original source commits.
+    fn stopped_plugin_parameter_terminal_pending(&self) -> bool {
+        self.device_gesture.has_pending_terminal()
+            && self.device_gesture.snapshot().is_some_and(|gesture| {
+                matches!(
+                    gesture.target,
+                    hex_session::device_gesture::GestureTarget::PluginParameter { .. }
+                )
+            })
+            && self
+                .audio_status()
+                .is_some_and(|status| !status.playing.load(Acquire))
+    }
+
+    /// Start an explicit Play once the stopped restore, VST3 edit or audio
+    /// recovery settles. A replaced project drops the intent.
     pub(super) fn tick_deferred_play(&mut self) -> bool {
-        if self.stopped_playback_restore.is_some() || self.recovery.generation().is_some() {
+        if self.stopped_playback_restore.is_some()
+            || self.recovery.generation().is_some()
+            || self.stopped_plugin_parameter_terminal_pending()
+        {
             return false;
         }
         let Some((action, revision, generation)) = self.deferred_play.take() else {
