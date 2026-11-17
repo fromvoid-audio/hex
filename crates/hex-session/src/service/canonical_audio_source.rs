@@ -186,6 +186,13 @@ impl CanonicalAudioSourceSnapshot {
         &self,
         project: &Project,
     ) -> Result<hex_engine::AudioCandidateReservationQuote, hex_engine::AudioStorageError> {
+        self.candidate_reservation_quote_for_effects(project, None)
+    }
+    fn candidate_reservation_quote_for_effects(
+        &self,
+        project: &Project,
+        effects: Option<&hex_engine::AudioCandidateEffects<'_, '_>>,
+    ) -> Result<hex_engine::AudioCandidateReservationQuote, hex_engine::AudioStorageError> {
         use hex_engine::AudioStorageError;
         if hex_engine::native_device_resources::requires_private_sampler_sources(project) {
             return Err(hex_engine::AudioStorageError::UnsupportedGraph);
@@ -245,9 +252,12 @@ impl CanonicalAudioSourceSnapshot {
             .checked_add(derived_count)
             .ok_or(AudioStorageError::Overflow)?;
         let streams: Vec<_> = streams.into_values().collect();
-        hex_engine::AudioCandidateReservationQuote::for_project_with_pitched_streams(
-            project, sources, &streams,
-        )
+        match effects {
+            Some(effects) => effects.quote_with_pitched_streams(project, sources, &streams),
+            None => hex_engine::AudioCandidateReservationQuote::for_project_with_pitched_streams(
+                project, sources, &streams,
+            ),
+        }
     }
     pub fn context(&self) -> hex_engine::AudioSourceContext {
         self.context
@@ -291,10 +301,7 @@ impl CanonicalAudioSourceSnapshot {
         &self,
         effects: &hex_engine::AudioCandidateEffects<'_, '_>,
     ) -> Result<hex_engine::AudioCandidateReservationQuote, hex_engine::AudioStorageError> {
-        if hex_engine::native_device_resources::requires_private_sampler_sources(&self.project) {
-            return Err(hex_engine::AudioStorageError::UnsupportedGraph);
-        }
-        effects.quote(&self.project, self.required_sources().count())
+        self.candidate_reservation_quote_for_effects(&self.project, Some(effects))
     }
     /// Keep a host's already-rooted input bank in place during all fallible
     /// preparation. Native custody still comes only from the actual constructor.
