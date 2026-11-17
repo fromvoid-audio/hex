@@ -342,6 +342,7 @@ fn ordinary_file_pitch_prepares_only_with_exact_host_metadata() {
         files: &rows,
         pitches: &pitches,
         repitches: &[],
+        granulars: &[],
     };
     catalog.validate_for(&input).unwrap();
     assert!(missing.validate_for(&input).is_err());
@@ -360,6 +361,7 @@ fn ordinary_file_pitch_prepares_only_with_exact_host_metadata() {
             files: input.files,
             pitches: input.pitches,
             repitches: input.repitches,
+            granulars: &[],
         })
         .unwrap()
         .unwrap();
@@ -467,6 +469,13 @@ impl WorkerAudioSink for CatalogSink {
             let raw = sources
                 .get(&requirement.asset())
                 .ok_or("repitch file missing")?;
+            let derived = requirement.metadata_for(raw).map_err(|e| e.to_string())?;
+            pitched.insert(derived.key(), Arc::new(derived));
+        }
+        for requirement in input.granulars {
+            let raw = sources
+                .get(&requirement.asset())
+                .ok_or("granular file missing")?;
             let derived = requirement.metadata_for(raw).map_err(|e| e.to_string())?;
             pitched.insert(derived.key(), Arc::new(derived));
         }
@@ -719,6 +728,7 @@ fn verified_recovered_sampler_and_file_prepare_in_one_bounded_control_graph() {
         files: &refs,
         pitches: &[],
         repitches: captured.repitches().requirements(),
+        granulars: &[],
     };
     captured.metadata().validate_for(&input).unwrap();
     let foreign_path = clip_files.wav("foreign.wav", 16_000, 16, 2048);
@@ -963,4 +973,186 @@ fn verified_recovered_sampler_and_file_prepare_in_one_bounded_control_graph() {
     sink.reject = false;
     assert!(build(&mut sink).is_err());
     assert_eq!(old.project().snapshot(), before);
+}
+
+#[test]
+fn ordinary_granular_metadata_capture_rejects_missing_duplicate_stale_and_foreign_facts() {
+    use hex_engine::audio_transform::StreamedGranularRequirement;
+    use hex_project::{Command, Created, Editor, Project, WarpMode};
+    for mode in [
+        WarpMode::Tones { grain_ms: 32 },
+        WarpMode::Texture {
+            grain_ms: 32,
+            fluctuation: 35,
+            seed: 42,
+        },
+    ] {
+        let files = VerifiedFiles::new();
+        let path = files.wav("granular.wav", 16_000, 8192, 1024);
+        let foreign_path = files.wav("foreign-granular.wav", 16_000, 8192, 2048);
+        let file = crate::VerifiedAudioFile::inspect(
+            path.clone(),
+            16_000,
+            file_reservation(2).reader,
+            || false,
+        )
+        .unwrap();
+        let foreign = crate::VerifiedAudioFile::inspect(
+            foreign_path,
+            16_000,
+            file_reservation(2).reader,
+            || false,
+        )
+        .unwrap();
+        let mut editor = Editor::new(Project::new(16_000).unwrap(), 8).unwrap();
+        let Created::Imported { clip, asset, .. } = editor
+            .execute(Command::ImportAudioTrack {
+                name: "granular".into(),
+                path,
+                sample_rate: 16_000,
+                frames: 8192,
+            })
+            .unwrap()
+        else {
+            panic!("fixture")
+        };
+        editor
+            .execute(Command::SetClipFades {
+                clip,
+                fade_in: 0,
+                fade_out: 0,
+            })
+            .unwrap();
+        let warp = hex_project::default_audio_warp(
+            editor.project().clip(clip).unwrap(),
+            editor.project().tempo_map(),
+            mode,
+        )
+        .unwrap();
+        editor
+            .execute(Command::SetAudioClipWarp {
+                clip,
+                settings: Some(warp),
+            })
+            .unwrap();
+        let raw = file.source_metadata(asset, 7).unwrap();
+        let requirement = StreamedGranularRequirement::new(
+            &raw,
+            editor.project().clip(clip).unwrap().audio_edit().unwrap(),
+            editor.project().tempo_map(),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        let metadata = requirement.metadata_for(&raw).unwrap();
+        let catalog = ResidentFileMetadata::new_with_derived(
+            7,
+            BTreeMap::from([(asset, Arc::new(raw.clone()))]),
+            BTreeMap::from([(metadata.key(), Arc::new(metadata.clone()))]),
+        )
+        .unwrap();
+        let rows = [(asset, &file)];
+        let requirements = [requirement.clone()];
+        let input = ResidentFileInput {
+            context: hex_engine::AudioSourceContext {
+                project_generation: 1,
+                editor_revision: 1,
+            },
+            semantic_source_epoch: 1,
+            files: &rows,
+            pitches: &[],
+            repitches: &[],
+            granulars: &requirements,
+        };
+        catalog.validate_for(&input).unwrap();
+        let captured =
+            ResidentFileSet::capture(ResidentFileInput { ..input }, catalog.clone()).unwrap();
+        assert_eq!(captured.granulars().requirements().len(), 1);
+        assert_eq!(
+            captured.granulars().requirements()[0]
+                .metadata_for(&raw)
+                .unwrap(),
+            metadata
+        );
+        let missing = ResidentFileMetadata::new(7, catalog.sources().clone()).unwrap();
+        assert!(missing.validate_for(&input).is_err());
+        let foreign_rows = [(asset, &foreign)];
+        assert!(
+            catalog
+                .validate_for(&ResidentFileInput {
+                    files: &foreign_rows,
+                    ..input
+                })
+                .is_err()
+        );
+        editor
+            .execute(Command::SetAudioClipPitch { clip, cents: 300 })
+            .unwrap();
+        let changed = StreamedGranularRequirement::new(
+            &raw,
+            editor.project().clip(clip).unwrap().audio_edit().unwrap(),
+            editor.project().tempo_map(),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        let changed_metadata = changed.metadata_for(&raw).unwrap();
+        assert_ne!(metadata.key(), changed_metadata.key());
+        assert!(
+            catalog
+                .validate_for(&ResidentFileInput {
+                    granulars: &[changed],
+                    ..input
+                })
+                .is_err()
+        );
+        let two = ResidentFileMetadata::new_with_derived(
+            7,
+            catalog.sources().clone(),
+            BTreeMap::from([
+                (metadata.key(), Arc::new(metadata)),
+                (changed_metadata.key(), Arc::new(changed_metadata)),
+            ]),
+        )
+        .unwrap();
+        assert!(
+            two.validate_for(&ResidentFileInput {
+                granulars: &[requirement.clone(), requirement.clone()],
+                ..input
+            })
+            .is_err()
+        );
+        let full = [captured.include_requirements(DeviceResourceAdmission::default())];
+        let phase = |registered| DeviceResourcePhase {
+            stores: &[],
+            registered,
+            selections: &[],
+            outbound: &[],
+            legacy: &[],
+            checked_runtime_bytes: 0,
+            construction_bytes: 0,
+        };
+        let limits = hex_engine::AudioStorageLedgerReservation {
+            data_rows: 256,
+            handle_rows: 256,
+            root_rows: 64,
+            max_retained_bytes: 1_000_000,
+            max_construction_peak_bytes: 1_000_000,
+        };
+        let inventory = hex_engine::native_device_resources::inspect_device_resource_union(
+            &phase(&full),
+            &phase(&full),
+            limits,
+        )
+        .unwrap();
+        let empty = hex_engine::native_device_resources::inspect_device_resource_union(
+            &phase(&[]),
+            &phase(&[]),
+            limits,
+        )
+        .unwrap();
+        assert!(
+            inventory.retained.retained_bytes
+                >= empty.retained.retained_bytes + requirement.retained_bytes().unwrap()
+        );
+        assert_eq!(inventory.retained_frames, 0);
+    }
 }

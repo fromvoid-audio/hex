@@ -258,6 +258,7 @@ fn native_control_binds_actual_verified_file_to_ordinary_catalog_metadata() {
             files: &rows,
             pitches: &[],
             repitches: &[],
+            granulars: &[],
         })
         .unwrap()
         .unwrap();
@@ -278,6 +279,7 @@ fn native_control_binds_actual_verified_file_to_ordinary_catalog_metadata() {
         files: &rows,
         pitches: &[],
         repitches: &[],
+        granulars: &[],
     };
     let pitch_input = ResidentFileInput {
         context: source.context(),
@@ -285,6 +287,7 @@ fn native_control_binds_actual_verified_file_to_ordinary_catalog_metadata() {
         files: &rows,
         pitches: &pitches,
         repitches: &[],
+        granulars: &[],
     };
     let raw_domain = crate::native_sources::DomainSources::capture_files(&raw_input, 19).unwrap();
     assert!(!raw_domain.matches_files(&pitch_input));
@@ -343,6 +346,7 @@ fn native_control_binds_actual_verified_file_to_ordinary_catalog_metadata() {
         files: &rows,
         pitches: &[],
         repitches: &repitches,
+        granulars: &[],
     };
     assert!(!pitch_domain.matches_files(&repitch_input));
     let repitch_domain =
@@ -375,6 +379,7 @@ fn native_control_binds_actual_verified_file_to_ordinary_catalog_metadata() {
         files: &foreign_rows,
         pitches: &[],
         repitches: &repitches,
+        granulars: &[],
     };
     assert!(!repitch_domain.matches_files(&foreign_input));
     assert!(crate::native_sources::DomainSources::capture_files(&foreign_input, 19).is_err());
@@ -403,6 +408,7 @@ fn native_control_binds_actual_verified_file_to_ordinary_catalog_metadata() {
         files: &rows,
         pitches: &[],
         repitches: &changed_repitches,
+        granulars: &[],
     };
     assert!(!repitch_domain.matches_files(&changed_input));
     assert!(

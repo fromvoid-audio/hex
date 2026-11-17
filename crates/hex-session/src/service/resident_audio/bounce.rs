@@ -217,16 +217,13 @@ pub(in crate::service) fn bounce_arrangement(
                 .and_then(|n| n.checked_mul(std::mem::size_of::<hex_engine::Frame>() * 4))
                 .ok_or("bounce construction allowance overflows")?;
             inputs
-                .admit_with_repitch(
+                .admit_with_requirements(
                     &isolated.resources,
                     Some(&isolated.prepared),
                     &sink.resident_admission(),
                     runtime,
                     construction,
-                    isolated
-                        .file_sources
-                        .as_ref()
-                        .map(|files| files.repitches()),
+                    isolated.file_requirements(),
                 )
                 .map_err(|e| e.to_string())?;
             let files = crate::arrangement_bounce::streamed::BounceRevision::capture(

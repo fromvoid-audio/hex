@@ -366,12 +366,10 @@ impl NativeAudioSink {
                         &pending.playback,
                         pending.resources.as_ref(),
                     );
-                    match pending.file_sources.as_ref() {
-                        Some(files) if !files.repitches().requirements().is_empty() => {
-                            view.with_repitch_requirements(files.repitches())
-                        }
-                        _ => view,
-                    }
+                    pending
+                        .file_sources
+                        .as_ref()
+                        .map_or(view, |files| files.include_requirements(view))
                 }),
         ]
     }
@@ -1046,7 +1044,10 @@ impl NativeAudioSink {
             return;
         };
         if let Some(files) = pending.file_sources.as_ref() {
-            match self.poll_resident_files(files) {
+            let cancellation = self.request_cancellation.clone();
+            match self.poll_resident_files(files, || {
+                cancellation.as_ref().is_some_and(|c| c.is_shutting_down())
+            }) {
                 Ok(true) => {}
                 Ok(false) => {
                     self.resident.pending = Some(pending);

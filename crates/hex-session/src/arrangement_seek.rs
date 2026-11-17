@@ -1391,6 +1391,7 @@ mod tests {
                 files: &[],
                 pitches: &[],
                 repitches: &[],
+                granulars: &[],
             },
             ResidentFileMetadata::new(1, std::collections::BTreeMap::new()).unwrap(),
         )
