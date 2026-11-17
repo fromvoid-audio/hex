@@ -153,6 +153,8 @@ impl EditorView {
             && self.active_native_device_drag.is_none()
             && self.active_fade_drag.is_none()
             && !self.clip_gain.held()
+            && !self.clip_loop_held()
+            && self.held_audio_play_start_position().is_none()
             && self.active_trim_drag.is_none()
             && self.active_midi_trim_drag.is_none()
             && self.time_range_move_gesture.is_none()

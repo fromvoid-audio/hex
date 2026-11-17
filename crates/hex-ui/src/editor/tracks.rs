@@ -2235,9 +2235,13 @@ impl EditorView {
             .or_else(|| self.arrangement_paste_view())
             .or_else(|| self.time_range_copy_view())
             .is_some_and(|view| std::ptr::eq(view.as_ref(), state));
-        for clip in track.clips() {
+        for canonical_clip in track.clips() {
+            let scope_preview = self.audio_scope_display_clip(canonical_clip, state);
+            let clip = scope_preview.as_ref();
             if hides_group_member(clip.id())
-                || (!is_committed_edit_view && !self.arrangement_clip_visible(clip.id()))
+                || (!is_committed_edit_view
+                    && std::ptr::eq(clip, canonical_clip)
+                    && !self.arrangement_clip_visible(clip.id()))
             {
                 continue;
             }
@@ -2807,6 +2811,28 @@ impl EditorView {
         grid: Option<super::waveform::WaveformGrid>,
         ink: u32,
     ) -> Div {
+        if self.audio_scope_preview_active(clip.id(), state)
+            && let Some(original) = state
+                .project
+                .clip(clip.id())
+                .filter(|original| !std::ptr::eq(*original, clip))
+        {
+            return super::waveform::preview_waveform_view_cached(
+                super::waveform::WaveformPreview {
+                    original,
+                    preview: clip,
+                    tempo: state.project.tempo_map(),
+                    asset: state.waveforms.get(&clip.asset()),
+                    prepared: state.audio_clip_waveforms.get(&clip.id()),
+                    ink,
+                },
+                visible_start,
+                visible_end,
+                std::rc::Rc::clone(&self.waveform_geometry_cache),
+                grid,
+            )
+            .unwrap_or_else(|| div().absolute().inset_0());
+        }
         let waveform = state.waveforms.get(&clip.asset());
         let body = if let Some(prepared) = state.audio_clip_waveforms.get(&clip.id()) {
             // The immutable prepared peaks cover the retained root. Cropping
@@ -3290,7 +3316,7 @@ impl EditorView {
                         header_height: super::clip_name::CLIP_NAME_HEIGHT,
                         header_gradient: if !active_trim_preview {
                             super::clip_header_loop::audio(
-                                &self.audio_header_loop_clip(clip, state),
+                                clip,
                                 state.project.tempo_map(),
                                 visible_start..visible_end,
                                 clip_pixel_width * scale_factor,
