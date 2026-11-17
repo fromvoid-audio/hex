@@ -200,7 +200,7 @@ fn mixed_direction_wire_refuses_bad_mode_values_binding_and_extent_before_sdk() 
                 pending.configuration().binding
             )
             .unwrap(),
-            5
+            8 // protocol refusal precedes any SDK setter
         );
         assert!(
             !pending
