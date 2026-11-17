@@ -51,6 +51,10 @@ impl DomainSources {
             let (file, metadata) = requirement.map_err(|error| error.to_string())?;
             Self::add_derived_member(&mut members, file, metadata)?;
         }
+        for requirement in snapshot.required_granular_roots(catalog_generation) {
+            let (file, root) = requirement.map_err(|error| error.to_string())?;
+            Self::add_derived_member(&mut members, file, root.metadata().clone())?;
+        }
         Ok(Self {
             project_generation: snapshot.context().project_generation,
             catalog_generation,
@@ -346,6 +350,9 @@ impl DomainSources {
             .try_reserve_exact(self.members.len())
             .map_err(|_| "could not reserve source definitions")?;
         for member in &self.members {
+            if member.metadata.key().granular_identity().is_some() {
+                return Err("granular sources require source-bank preparation".into());
+            }
             if member.metadata.key().repitch_identity().is_some() {
                 return Err("repitch source requires its canonical snapshot".into());
             }
@@ -360,14 +367,22 @@ impl DomainSources {
         }
         Ok(definitions)
     }
-    /// Reconstruct maps from the captured snapshot only while creating worker
-    /// definitions. DomainSources retains no extra map allocation.
+    /// Reconstruct raw/pitch/Re-Pitch worker definitions from captured facts.
+    /// Granular entries need their separate source-bank preparation; they must
+    /// never be relabeled as ordinary raw definitions. No map is retained here.
     pub(super) fn definitions_for_snapshot(
         &self,
         snapshot: &CanonicalAudioSourceSnapshot,
     ) -> Result<Vec<hex_stream::SourceDefinition>, String> {
         if !self.matches_snapshot(snapshot) {
             return Err("source projection differs from snapshot".into());
+        }
+        if self
+            .members
+            .iter()
+            .any(|member| member.metadata.key().granular_identity().is_some())
+        {
+            return Err("granular sources require source-bank preparation".into());
         }
         let mut definitions = Vec::new();
         definitions
@@ -452,6 +467,12 @@ impl DomainSources {
                 .all(|requirement| {
                     requirement.is_ok_and(|(file, expected)| self.contains_member(file, &expected))
                 })
+            && snapshot
+                .required_granular_roots(self.catalog_generation)
+                .all(|requirement| {
+                    requirement
+                        .is_ok_and(|(file, root)| self.contains_member(file, root.metadata()))
+                })
     }
     fn contains_member(
         &self,
@@ -505,6 +526,17 @@ impl DomainSources {
                         })
                     })
                 })
+            && snapshot
+                .required_granular_roots(self.catalog_generation)
+                .all(|requirement| {
+                    requirement.is_ok_and(|(_, root)| {
+                        self.metadata_for(root.metadata().key())
+                            .is_some_and(|metadata| {
+                                metadata == root.metadata()
+                                    && control.audio_candidate_domain_covers_source(token, metadata)
+                            })
+                    })
+                })
     }
     pub(super) fn metadata_for(
         &self,
@@ -549,12 +581,25 @@ impl DomainSources {
                 .ok_or(AudioStorageError::SourceMismatch)?;
             candidate.add_repitch_streamed_source_on_control(metadata.clone())?;
         }
+        for requirement in snapshot.required_granular_roots(self.catalog_generation) {
+            let (_, root) = requirement.map_err(|_| AudioStorageError::SourceMismatch)?;
+            let expected = root.metadata();
+            if !seen.insert(expected.key()) {
+                continue;
+            }
+            let metadata = self
+                .metadata_for(expected.key())
+                .filter(|actual| *actual == expected)
+                .ok_or(AudioStorageError::SourceMismatch)?;
+            candidate.add_granular_streamed_source_on_control(metadata.clone())?;
+        }
         Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
+    mod granular;
     use super::*;
     use hex_session::{
         DocumentAudioMode, SourcePlanReservation,
