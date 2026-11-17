@@ -151,6 +151,9 @@ pub enum SessionPlaybackError {
     /// publication owner may retry pure handoff planning after real rendering
     /// advances that tail; it must not duplicate, reset or substitute the source.
     ForeignTailSourceBusy,
+    /// The predecessor currently renders no device chains, so retrying the
+    /// streamed handoff cannot advance the outgoing foreign effect tail.
+    ForeignTailSourcePaused,
     /// The retained group path is still processing an outgoing tail. The
     /// publication owner can retry once the predecessor drains or stops.
     GroupTailRoutingBusy,
@@ -207,6 +210,9 @@ impl SessionPlaybackError {
             }
             Self::ForeignTailSourceBusy => {
                 "native effect endpoint is still owned by an outgoing tail"
+            }
+            Self::ForeignTailSourcePaused => {
+                "native effect tail is paused · resume playback, then retry"
             }
             Self::GroupTailRoutingBusy => {
                 "group routing change is waiting for an outgoing tail · stop or wait for it to finish"

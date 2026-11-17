@@ -3654,9 +3654,16 @@ fn partial_domain_readiness_case(replace_while_stalled: bool) {
 enum GatedPageAction {
     Resume,
     Retire,
+    ScopePause,
     Seek,
     SeekCold,
     SeekColdStop,
+}
+
+#[cfg(feature = "stream-test-support")]
+#[test]
+fn streamed_scope_edit_can_install_after_pause_with_the_previous_page_held() {
+    prepared_audio_domain_gate(GatedPageAction::ScopePause);
 }
 
 #[cfg(feature = "stream-test-support")]
@@ -3752,7 +3759,7 @@ fn prepared_audio_domain_gate(action: GatedPageAction) {
         .run(|callback, _| callback.begin_block());
     let revision = control
         .publish_with_admission_and_source_on_control(
-            compile(&project, metadata, &store),
+            compile(&project, metadata.clone(), &store),
             PublicationPolicy::InheritRuntime,
             hex_engine::AudioSourceContext {
                 project_generation: 7,
@@ -3844,7 +3851,57 @@ fn prepared_audio_domain_gate(action: GatedPageAction) {
     assert!(starved > 0, "mid-play page hold was not counted");
     measured_render(&mut data, &mut output);
     assert!(control.status.stream_starved_callbacks.load(Relaxed) > starved);
-    if action == GatedPageAction::Retire {
+    if action == GatedPageAction::ScopePause {
+        let mut editor = hex_project::Editor::new(project, 4).unwrap();
+        editor
+            .execute(hex_project::Command::SetLoopRegion {
+                start: 0,
+                end: frames,
+                enabled: true,
+            })
+            .unwrap();
+        control.set_audio_diagnostics(AudioDiagnosticsFlags::READINESS);
+        let replacement = control
+            .publish_with_admission_and_source_on_control(
+                compile(editor.project(), metadata, &store),
+                PublicationPolicy::InheritRuntime,
+                hex_engine::AudioSourceContext {
+                    project_generation: 7,
+                    editor_revision: 4,
+                },
+                |_| Ok::<_, ()>(()),
+            )
+            .unwrap();
+        measured_render(&mut data, &mut output);
+        assert_eq!(control.status.applied_revision.load(Acquire), revision);
+        let waiting = control.take_audio_diagnostic().unwrap();
+        assert_eq!(waiting.revision, replacement);
+        assert_eq!(
+            waiting.kind,
+            AudioDiagnosticKind::PublicationWaiting {
+                reason: PublicationWaitReason::PredecessorWindow,
+            }
+        );
+        let pause_position = control.status.position.load(Acquire);
+        control.command(PlaybackCommand::Pause).unwrap();
+        for _ in 0..4 {
+            measured_render(&mut data, &mut output);
+        }
+        assert!(!control.status.playing.load(Acquire));
+        assert_eq!(control.status.position.load(Acquire), pause_position);
+        assert_eq!(control.status.rejected_revision(), None);
+        assert_eq!(control.status.applied_revision.load(Acquire), replacement);
+        release.send(()).unwrap();
+        control.command(PlaybackCommand::Play).unwrap();
+        while !output.iter().all(|frame| *frame == [0.25; 2]) {
+            measured_render(&mut data, &mut output);
+            assert!(
+                std::time::Instant::now() < deadline,
+                "scope edit did not resume"
+            );
+            std::thread::yield_now();
+        }
+    } else if action == GatedPageAction::Retire {
         control.stop();
         measured_render(&mut data, &mut output);
         assert!(!control.status.playing.load(Acquire));

@@ -646,9 +646,9 @@ impl Callback {
             );
         }
         match decision {
-            InstallDecision::Retry => {
+            InstallDecision::Retry(reason) => {
                 self.trace_audio(
-                    AudioDiagnosticKind::PublicationWaiting,
+                    AudioDiagnosticKind::PublicationWaiting { reason },
                     revision,
                     context,
                     frames.unwrap_or(0),

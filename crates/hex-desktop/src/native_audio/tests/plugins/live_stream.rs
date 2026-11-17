@@ -4,37 +4,43 @@ use super::*;
 #[test]
 #[ignore = "explicit source-bound signed SDK receipts required"]
 fn verified_stream_through_native_main_effect_keeps_compensated_pcm() {
-    verify_streamed_effect(EffectRoute::Main, Renewal::NotRequested);
+    verify_streamed_effect(EffectRoute::Main, AfterPlayback::NotRequested);
 }
 
 #[test]
 #[ignore = "explicit source-bound signed SDK receipts required"]
 fn verified_stream_through_native_track_effect_keeps_compensated_pcm() {
-    verify_streamed_effect(EffectRoute::Track, Renewal::NotRequested);
+    verify_streamed_effect(EffectRoute::Track, AfterPlayback::NotRequested);
 }
 
 #[test]
 #[ignore = "explicit source-bound signed SDK receipts required"]
 fn verified_stream_through_native_return_effect_keeps_compensated_pcm() {
-    verify_streamed_effect(EffectRoute::Return, Renewal::NotRequested);
+    verify_streamed_effect(EffectRoute::Return, AfterPlayback::NotRequested);
+}
+
+#[test]
+#[ignore = "explicit source-bound signed SDK receipts required"]
+fn verified_stream_native_main_effect_scope_resize_overlaps_pause() {
+    verify_streamed_effect(EffectRoute::Main, AfterPlayback::ScopeResize);
 }
 
 #[test]
 #[ignore = "explicit source-bound signed SDK receipts required"]
 fn verified_stream_native_main_effect_renews_after_stop() {
-    verify_streamed_effect(EffectRoute::Main, Renewal::FixedLatency);
+    verify_streamed_effect(EffectRoute::Main, AfterPlayback::FixedLatency);
 }
 
 #[test]
 #[ignore = "explicit source-bound signed SDK receipts required"]
 fn verified_stream_native_track_effect_renews_after_stop() {
-    verify_streamed_effect(EffectRoute::Track, Renewal::FixedLatency);
+    verify_streamed_effect(EffectRoute::Track, AfterPlayback::FixedLatency);
 }
 
 #[test]
 #[ignore = "explicit source-bound signed SDK receipts required"]
 fn verified_stream_native_return_effect_renews_after_stop() {
-    verify_streamed_effect(EffectRoute::Return, Renewal::FixedLatency);
+    verify_streamed_effect(EffectRoute::Return, AfterPlayback::FixedLatency);
 }
 
 #[test]
@@ -64,14 +70,15 @@ fn verified_stream_native_main_effect_refuses_unannounced_latency_on_renewal() {
         assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
         return;
     }
-    verify_streamed_effect(EffectRoute::Main, Renewal::UnannouncedLatency);
+    verify_streamed_effect(EffectRoute::Main, AfterPlayback::UnannouncedLatency);
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Renewal {
+enum AfterPlayback {
     NotRequested,
     FixedLatency,
     UnannouncedLatency,
+    ScopeResize,
 }
 
 enum EffectRoute {
@@ -84,8 +91,11 @@ fn source_sample(frame: usize) -> f32 {
     (4096 + 4 * (frame % 2048)) as f32 / 32768.0
 }
 
-fn verify_streamed_effect(location: EffectRoute, renewal: Renewal) {
-    let renew = renewal != Renewal::NotRequested;
+fn verify_streamed_effect(location: EffectRoute, after: AfterPlayback) {
+    let renew = matches!(
+        after,
+        AfterPlayback::FixedLatency | AfterPlayback::UnannouncedLatency
+    );
     let _native = native_fixture();
     let files = Files::new();
     let path = files.wav(48_000, 24_000);
@@ -192,6 +202,9 @@ fn verify_streamed_effect(location: EffectRoute, renewal: Renewal) {
         };
         assert_eq!(*frame, [expected; 2], "streamed frame {index}");
     }
+    if after == AfterPlayback::ScopeResize {
+        verify_scope_resize_overlaps_pause(&mut h, applied);
+    }
     if renew {
         let old = h
             .audio
@@ -222,7 +235,7 @@ fn verify_streamed_effect(location: EffectRoute, renewal: Renewal) {
         let restored = restored_terminal(&mut h);
         assert_eq!(restored.state.project, accepted.state.project);
         assert_eq!(restored.state.revision, accepted.state.revision);
-        if renewal == Renewal::UnannouncedLatency {
+        if after == AfterPlayback::UnannouncedLatency {
             let error = restored
                 .error
                 .as_ref()
@@ -341,4 +354,91 @@ fn verify_streamed_effect(location: EffectRoute, renewal: Renewal) {
         accepted.state.project.assets().collect::<Vec<_>>(),
         imported.state.project.assets().collect::<Vec<_>>()
     );
+}
+
+fn verify_scope_resize_overlaps_pause(h: &mut ResidentHarness, applied: u64) {
+    let status = |h: &ResidentHarness| {
+        let status = h.audio.as_ref().unwrap().status().unwrap();
+        assert_eq!(status.rejected_revision(), None);
+        assert_eq!(status.rejected_action(), None);
+        (
+            status.applied_revision.load(Acquire),
+            status.playing.load(Acquire),
+            status.position.load(Acquire),
+        )
+    };
+    let command = |h: &mut ResidentHarness, command| {
+        h.audio.as_mut().unwrap().control.command(command).unwrap();
+    };
+    command(h, PlaybackCommand::Pause);
+    instruments::render_completed_block(h);
+    assert!(!status(h).1);
+    // The callback consumed the incident's Play From before attempting the
+    // graph handoff. Enter the range before queueing the successor here too.
+    command(h, PlaybackCommand::PlayFrom(4992));
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while !status(h).1 {
+        h.pump();
+        instruments::render_completed_block(h);
+        assert!(
+            Instant::now() < deadline,
+            "play from inside the new scope remained pending"
+        );
+    }
+
+    let first = h.run(Request::Edit(Command::SetLoopRegion {
+        start: 4096,
+        end: 7168,
+        enabled: true,
+    }));
+    assert!(first.error.is_none(), "{:?}", first.error);
+    assert_eq!(status(h).0, applied);
+    assert!(
+        h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .publication_in_flight()
+    );
+    instruments::render_completed_block(h);
+    command(h, PlaybackCommand::Pause);
+    let deadline = Instant::now() + Duration::from_secs(1);
+    let (first_revision, paused_position) = loop {
+        let (revision, playing, position) = status(h);
+        if revision > applied && !playing {
+            break (revision, position);
+        }
+        h.pump();
+        instruments::render_completed_block(h);
+        assert!(Instant::now() < deadline, "scope or pause remained pending");
+    };
+    assert!(paused_position >= 4992, "pause must preserve the playhead");
+
+    let next = h.run(Request::Edit(Command::SetLoopRegion {
+        start: 4096,
+        end: 8192,
+        enabled: true,
+    }));
+    assert!(next.error.is_none(), "{:?}", next.error);
+    assert_eq!(next.state.revision, first.state.revision + 1);
+    assert_eq!(
+        next.state.project.loop_region(),
+        Some(hex_project::LoopRegion::new(4096, 8192, true).unwrap())
+    );
+    h.applied(first_revision);
+    command(h, PlaybackCommand::Play);
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while !instruments::render_completed_block(h)
+        .iter()
+        .any(|frame| frame[0] != 0.0)
+    {
+        assert!(
+            Instant::now() < deadline,
+            "streamed playback did not resume"
+        );
+    }
+    let (_, playing, position) = status(h);
+    assert!(playing);
+    assert!(position > paused_position);
 }

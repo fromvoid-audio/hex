@@ -20,7 +20,10 @@
 //! graph replacement. Queued explicit Stop, foreign/unbound inputs and lifecycle shutdown remain
 //! terminal. Epoch transitions and note snapshots perform no callback allocation or reclamation.
 use crate::{
-    audio_diagnostics::{self, AudioDiagnosticEvent, AudioDiagnosticKind, AudioDiagnosticsFlags},
+    audio_diagnostics::{
+        self, AudioDiagnosticEvent, AudioDiagnosticKind, AudioDiagnosticsFlags,
+        PublicationWaitReason,
+    },
     processor_audition, spectrum_target,
     spectrum_worker::{SpectrumCapture, SpectrumStamp},
 };
@@ -3908,6 +3911,14 @@ impl Callback {
                                 }
                             }
                         }
+                        self.trace_audio(
+                            AudioDiagnosticKind::PublicationWaiting {
+                                reason: PublicationWaitReason::PredecessorWindow,
+                            },
+                            next.revision,
+                            next.source_context,
+                            frames.unwrap_or(0),
+                        );
                         self.deferred = Some(next);
                         return;
                     }
@@ -4145,8 +4156,16 @@ impl Callback {
                         }
                     }
                     Some(Ok(None)) => {
+                        let reason = next
+                            .streams
+                            .as_mut()
+                            .and_then(|streams| streams.take_handoff_diagnostic())
+                            .map_or(
+                                PublicationWaitReason::StreamPages,
+                                PublicationWaitReason::RuntimeHandoff,
+                            );
                         self.trace_audio(
-                            AudioDiagnosticKind::PublicationWaiting,
+                            AudioDiagnosticKind::PublicationWaiting { reason },
                             next.revision,
                             next.source_context,
                             frames.unwrap_or(0),
@@ -4321,6 +4340,14 @@ impl Callback {
             match handoff {
                 Some(Err(error)) if error.is_transient() => {
                     let _promotions = promotions;
+                    self.trace_audio(
+                        AudioDiagnosticKind::PublicationWaiting {
+                            reason: PublicationWaitReason::RuntimeHandoff(error),
+                        },
+                        next.revision,
+                        next.source_context,
+                        frames.unwrap_or(0),
+                    );
                     if let Some(streams) = next.streams.as_mut() {
                         streams.cancel_install(&mut self.domain_pages);
                     }
@@ -13319,6 +13346,7 @@ mod tests {
     #[test]
     fn transient_handoff_keeps_candidate_gated_retries_and_old_graph_renders() {
         let (mut control, mut callback) = channel(48_000).unwrap();
+        control.set_audio_diagnostics(AudioDiagnosticsFlags::READINESS);
         let (old, _) = graph();
         assert_eq!(
             control
@@ -13342,6 +13370,18 @@ mod tests {
         callback.test_transient_handoff_refusals = 2;
         callback.begin_block();
         assert_eq!(control.status.applied_revision.load(Acquire), 1);
+        let waiting = control.take_audio_diagnostic().unwrap();
+        assert_eq!(waiting.revision, 2);
+        assert_eq!(
+            waiting.kind,
+            AudioDiagnosticKind::PublicationWaiting {
+                reason: PublicationWaitReason::RuntimeHandoff(
+                    hex_engine::PlaybackHandoffError::Session(
+                        hex_engine::SessionPlaybackError::ReleaseBankFull,
+                    ),
+                ),
+            }
+        );
         assert!(callback.deferred.is_some());
         assert_eq!(
             control.publish(graph().0).unwrap_err().reason,
