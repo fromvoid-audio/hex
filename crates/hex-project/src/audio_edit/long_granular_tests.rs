@@ -1,6 +1,78 @@
 use crate::{ClipEdit, Command, Created, Editor, Project, TrimEdge, WarpMode};
 
 #[test]
+fn long_neutral_warp_can_be_disabled_without_losing_settings_or_history() {
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+    let Created::Imported { clip, asset, .. } = editor
+        .execute(Command::ImportAudioTrack {
+            name: "long".into(),
+            path: "long.wav".into(),
+            sample_rate: 48_000,
+            frames: 20_000_000,
+        })
+        .unwrap()
+    else {
+        panic!("fixture import");
+    };
+    let mut settings = editor
+        .project()
+        .audio_warp_settings_for_enable(clip)
+        .unwrap();
+    settings.mode = WarpMode::Texture {
+        grain_ms: 32,
+        fluctuation: 35,
+        seed: 42,
+    };
+    editor
+        .execute(Command::SetAudioClipWarp {
+            clip,
+            settings: Some(settings.clone()),
+        })
+        .unwrap();
+    editor
+        .execute(Command::SetProjectTempo {
+            tempo: crate::Tempo::new(90_000_000).unwrap(),
+        })
+        .unwrap();
+    let warped = editor.project().snapshot();
+    let original_extent = editor.project().clip(clip).unwrap().duration();
+    let off = Command::SetAudioClipWarp {
+        clip,
+        settings: None,
+    };
+    editor.execute(off.clone()).unwrap();
+    let inactive = editor.project().clip(clip).unwrap();
+    assert_eq!(inactive.asset(), asset);
+    assert_eq!(inactive.duration(), original_extent);
+    assert!(!inactive.audio_edit().unwrap().domain.warp_enabled);
+    assert_eq!(
+        editor
+            .project()
+            .audio_warp_settings_for_enable(clip)
+            .unwrap(),
+        settings
+    );
+    let disabled = editor.project().snapshot();
+    assert!(editor.undo());
+    assert_eq!(editor.project().snapshot(), warped);
+    assert!(editor.redo());
+    assert_eq!(editor.project().snapshot(), disabled);
+    editor
+        .execute(Command::SetAudioClipWarp {
+            clip,
+            settings: Some(settings),
+        })
+        .unwrap();
+    assert_eq!(editor.project().snapshot(), warped);
+    editor
+        .execute(Command::SetAudioClipPitch { clip, cents: 300 })
+        .unwrap();
+    let pitched = editor.project().snapshot();
+    assert!(editor.execute(off).is_err());
+    assert_eq!(editor.project().snapshot(), pitched);
+}
+
+#[test]
 fn enabling_warp_chooses_modes_per_source_and_keeps_one_history_step() {
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
     let [short, long] = [48_000, 20_000_000].map(|frames| {
