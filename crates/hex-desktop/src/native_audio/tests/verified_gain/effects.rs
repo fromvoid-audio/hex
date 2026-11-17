@@ -207,11 +207,19 @@ fn wait_for_audio(h: &Harness) {
 fn verified_track_limiter_running_tempo_edit_preserves_beat_and_audio() {
     let _native = native_fixture();
     for partition in [1, 257] {
-        verified_limiter_tempo_case(partition);
+        verified_limiter_tempo_case(partition, None);
     }
 }
 
-fn verified_limiter_tempo_case(partition: usize) {
+#[test]
+fn verified_track_limiter_running_tempo_edit_wraps_the_retimed_loop() {
+    let _native = native_fixture();
+    for partition in [1, 257] {
+        verified_limiter_tempo_case(partition, Some(6015..6207));
+    }
+}
+
+fn verified_limiter_tempo_case(partition: usize, loop_range: Option<std::ops::Range<u64>>) {
     let files = Files::new();
     let mut h = actual_native_harness();
     h.wait = Duration::from_secs(3);
@@ -248,12 +256,23 @@ fn verified_limiter_tempo_case(partition: usize) {
         before: None,
         state: limiter,
     }));
-    let previous = h.applied(h.context.unwrap());
+    let mut previous = h.applied(h.context.unwrap());
+    if let Some(range) = &loop_range {
+        h.run(Request::Edit(Command::SetLoopRegion {
+            start: range.start,
+            end: range.end,
+            enabled: true,
+        }));
+        previous = h.applied(h.context.unwrap());
+    }
     h.audio
         .as_mut()
         .unwrap()
         .control
-        .command(PlaybackCommand::Play)
+        .command(match &loop_range {
+            Some(range) => PlaybackCommand::PlayFrom(range.start),
+            None => PlaybackCommand::Play,
+        })
         .unwrap();
     wait_for_audio(&h);
     let old_tempo = imported.state.project.tempo_map().clone();
@@ -307,10 +326,30 @@ fn verified_limiter_tempo_case(partition: usize) {
         .tempo_map()
         .beat_to_frame(beat)
         .unwrap();
-    assert_eq!(after, expected + partition as u64, "partition {partition}");
+    let advanced = expected + partition as u64;
+    let expected = if let Some(old_range) = &loop_range {
+        let region = edited.state.project.loop_region().unwrap();
+        assert!(region.enabled());
+        assert_eq!(region.start()..region.end(), 8020..8276);
+        assert!(old_range.contains(&before));
+        assert!((region.start()..region.end()).contains(&expected));
+        if partition == 257 {
+            assert!(advanced >= region.end(), "publication block must wrap");
+        }
+        region.start() + (advanced - region.start()) % (region.end() - region.start())
+    } else {
+        advanced
+    };
+    assert_eq!(after, expected, "partition {partition}");
     let status = h.audio.as_ref().unwrap().status().unwrap();
     assert!(status.playing.load(Acquire));
     assert!(status.rejected_revision().is_none());
+    if loop_range.is_some() {
+        // Clear any samples buffered in the limiter before observing new audio.
+        for _ in 0..8 {
+            h.render();
+        }
+    }
     wait_for_audio(&h);
 }
 
