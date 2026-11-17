@@ -60,18 +60,57 @@ impl VerifiedSource {
     }
     pub(super) fn candidate_reservation_quote(
         &self,
-    ) -> Result<hex_engine::AudioCandidateReservationQuote, hex_engine::AudioStorageError> {
-        match self {
+    ) -> Result<(hex_engine::AudioCandidateReservationQuote, bool), hex_engine::AudioStorageError>
+    {
+        let plain = match self {
             Self::Canonical(source) => source.candidate_reservation_quote(),
             Self::Gain(source) => source.candidate_reservation_quote(),
             Self::Device(source) => source.candidate_reservation_quote(),
+        };
+        match plain {
+            Ok(quote) => Ok((quote, false)),
+            Err(hex_engine::AudioStorageError::UnsupportedGraph) => {
+                hex_engine::AudioCandidateEffects::with_host_definitions(&[], |effects| {
+                    Ok(match self {
+                        Self::Canonical(source) => source.reservation_quote_with_effects(effects),
+                        Self::Gain(source) => source.reservation_quote_with_effects(effects),
+                        Self::Device(source) => source.reservation_quote_with_effects(effects),
+                    })
+                })
+                .map_err(|_| hex_engine::AudioStorageError::UnsupportedGraph)?
+                .map(|quote| (quote, true))
+            }
+            Err(error) => Err(error),
         }
     }
     pub(super) fn prepare_candidate_on_control(
         &self,
         catalog: u64,
         destination: &mut hex_engine::AudioCandidatePreparation,
+        builtin_effects: bool,
     ) -> Result<(), hex_engine::AudioStorageError> {
+        if builtin_effects {
+            return hex_engine::AudioCandidateEffects::with_host_definitions(&[], |effects| {
+                Ok(match self {
+                    Self::Canonical(source) => source.prepare_candidate_with_effects_on_control(
+                        catalog,
+                        destination,
+                        effects,
+                    ),
+                    Self::Gain(source) => source.prepare_candidate_with_effects_on_control(
+                        catalog,
+                        destination,
+                        effects,
+                    ),
+                    Self::Device(source) => source.prepare_candidate_with_effects_on_control(
+                        catalog,
+                        destination,
+                        effects,
+                    ),
+                })
+            })
+            .map_err(|_| hex_engine::AudioStorageError::UnsupportedGraph)?;
+        }
         match self {
             Self::Canonical(source) => source.prepare_candidate_on_control(catalog, destination),
             Self::Gain(source) => source.prepare_candidate_on_control(catalog, destination),

@@ -86,6 +86,7 @@ struct Submitted {
 }
 struct Preparation {
     resident_copy_frames: u64,
+    builtin_effects: bool,
     token: AudioCandidatePreparationToken,
     snapshot: VerifiedSource,
     catalog: u64,
@@ -730,7 +731,7 @@ impl NativeAudioSink {
                 self.observe(context, "busy", EditorPublicationState::Busy);
                 return;
             }
-            let quote = match snapshot.candidate_reservation_quote() {
+            let (quote, builtin_effects) = match snapshot.candidate_reservation_quote() {
                 Ok(quote) => quote,
                 Err(error) => {
                     self.blocked = Some(context);
@@ -825,6 +826,7 @@ impl NativeAudioSink {
                         self.verified_pcm_frames.saturating_add(copied_frames);
                     self.preparation = Some(Preparation {
                         resident_copy_frames: copied_frames,
+                        builtin_effects,
                         token,
                         snapshot: snapshot.clone(),
                         catalog,
@@ -1000,9 +1002,11 @@ impl NativeAudioSink {
                 {
                     return Err(hex_engine::AudioStorageError::SourceMismatch);
                 }
-                pending
-                    .snapshot
-                    .prepare_candidate_on_control(pending.catalog, cell)?;
+                pending.snapshot.prepare_candidate_on_control(
+                    pending.catalog,
+                    cell,
+                    pending.builtin_effects,
+                )?;
                 if cell.resident_pcm_capacity_frames()? > pending.resident_copy_frames {
                     return Err(hex_engine::AudioStorageError::ReservationExceeded);
                 }

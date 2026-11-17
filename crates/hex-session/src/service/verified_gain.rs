@@ -122,6 +122,29 @@ impl VerifiedTrackGainSource {
         self.canonical
             .candidate_reservation_quote_for(self.project())
     }
+    /// Borrow host effect facts while retaining the canonical source and context.
+    pub fn reservation_quote_with_effects(
+        &self,
+        effects: &hex_engine::AudioCandidateEffects<'_, '_>,
+    ) -> Result<hex_engine::AudioCandidateReservationQuote, hex_engine::AudioStorageError> {
+        self.canonical
+            .candidate_reservation_quote_for_effects(self.project(), Some(effects))
+    }
+    /// Construct the same overlay using host-borrowed effect facts.
+    pub fn prepare_candidate_with_effects_on_control(
+        &self,
+        catalog: u64,
+        destination: &mut hex_engine::AudioCandidatePreparation,
+        effects: &hex_engine::AudioCandidateEffects<'_, '_>,
+    ) -> Result<(), hex_engine::AudioStorageError> {
+        effects.prepare(
+            destination,
+            self.project(),
+            catalog,
+            self.canonical.context(),
+            None,
+        )
+    }
     /// Compile in the existing reserved host cell, retaining the actual canonical
     /// context and catalog. No resident fallback or source-owner extraction.
     pub fn prepare_candidate_on_control(
