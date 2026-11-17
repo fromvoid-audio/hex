@@ -1210,7 +1210,25 @@ impl SessionPlayback {
                         && old_loop_region == new_loop_region
                         && !self.revision.contains_streamed_sources()
                         && !previous.revision.contains_streamed_sources())
-                    .then(|| future_audio_track(new, old, previous.arrangement_frame))
+                    .then(|| {
+                        // A past clip is silent only once its entire signal can
+                        // have left both retained compensation histories. A
+                        // loop can revisit it, so never use this proof there.
+                        let ended_by = if old_loop_region.is_none() {
+                            self.compensation
+                                .as_ref()
+                                .zip(previous.compensation.as_ref())
+                                .filter(|(_, old)| old.delays.history_ready())
+                                .and_then(|(candidate, old)| {
+                                    previous.arrangement_frame.checked_sub(u64::from(
+                                        candidate.horizon().max(old.horizon()),
+                                    ))
+                                })
+                        } else {
+                            None
+                        };
+                        silent_added_audio_track(new, old, previous.arrangement_frame, ended_by)
+                    })
                     .flatten()
                 })
         });
@@ -6464,11 +6482,17 @@ fn cold_added_track(candidate: &[Track], previous: &[Track]) -> Option<TrackId> 
     .then_some(id)
 }
 
-/// One newly inserted resident audio track has no prior input when every clip
-/// starts after the current position. Loop changes are excluded by the caller.
+/// A newly inserted resident track is silent in the relevant past when every
+/// clip starts later, or all clips ended before the supplied unlooped history
+/// horizon. The caller supplies no ended proof for loops or arithmetic underflow.
 /// The graph independently checks
 /// routing, retained edge identities, equal alignment and silent delay rings.
-fn future_audio_track(candidate: &[Track], previous: &[Track], frame: u64) -> Option<TrackId> {
+fn silent_added_audio_track(
+    candidate: &[Track],
+    previous: &[Track],
+    frame: u64,
+    ended_by: Option<u64>,
+) -> Option<TrackId> {
     if candidate.len() != previous.len().checked_add(1)? {
         return None;
     }
@@ -6488,7 +6512,10 @@ fn future_audio_track(candidate: &[Track], previous: &[Track], frame: u64) -> Op
             || track.instrument_id.is_some()
             || track.source_id.is_some()
             || track.midi_source_index.is_some()
-            || !crate::clip_index::all_start_after(&track.clip_index, track.clips.len(), frame)
+            || !(crate::clip_index::all_start_after(&track.clip_index, track.clips.len(), frame)
+                || ended_by.is_some_and(|end| {
+                    crate::clip_index::all_end_by(&track.clip_index, track.clips.len(), end)
+                }))
         {
             return None;
         }
