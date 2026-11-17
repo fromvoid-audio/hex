@@ -48,7 +48,9 @@ fn offline_control_is_notified_of_ready_pages_and_failures() {
     let mut runtime = StreamRuntime::new(config, vec![definition]).unwrap();
     runtime.wait_until_ready(Duration::from_secs(1)).unwrap();
 
-    for (index, success) in [(1, true), (3, false)] {
+    // One cache slot and a single turnover buffer. Fetching successive pages
+    // exercises reuse before observing an intentional out-of-range failure.
+    for (index, success) in [(0, true), (1, true), (2, true), (3, false)] {
         runtime.request_page(key, index);
         runtime.wake_worker();
         let deadline = Instant::now() + Duration::from_millis(750);
@@ -65,12 +67,14 @@ fn offline_control_is_notified_of_ready_pages_and_failures() {
             if runtime.take_failures(&mut failure) != 0 {
                 assert!(!success);
                 assert_eq!(failure[0].page_index, index);
+                assert_eq!(failure[0].kind, StreamFailureKind::DecodeFailed);
                 break;
             }
             if let Some(page) = runtime.page(key, index) {
                 assert!(success);
-                assert_eq!(page.frames.len(), STREAM_PAGE_FRAMES);
-                assert_ne!(page.frames[0], [0.0; 2]);
+                let remaining = 12_001 - index as usize * STREAM_PAGE_FRAMES;
+                assert_eq!(page.frames.len(), remaining.min(STREAM_PAGE_FRAMES));
+                assert_ne!(page.frames[1], [0.0; 2]);
                 break;
             }
             thread::park_timeout(remaining);
@@ -109,6 +113,16 @@ fn benchmark_offline_page_notifications() {
                 runtime.wake_worker();
                 loop {
                     runtime.pump_ready(8);
+                    let mut failure = [StreamFailure {
+                        key: definition.key.into(),
+                        page_index: 0,
+                        kind: StreamFailureKind::Cancelled,
+                    }];
+                    assert_eq!(
+                        runtime.take_failures(&mut failure),
+                        0,
+                        "page {index}: {failure:?}"
+                    );
                     if let Some(page) = runtime.page(definition.key, index) {
                         read += page.frames.len() as u64;
                         break;

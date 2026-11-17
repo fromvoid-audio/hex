@@ -564,9 +564,9 @@ pub(crate) fn run_worker(
             }
             continue;
         }
-        let Some(mut page) = free_pages.pop() else {
-            // No source buffer is available until the endpoint returns an
-            // evicted/stale page. Preserve the request without an allocation.
+        // A fast consumer can send a returned buffer and its next request
+        // after the loop's first drain. Recheck after acquiring the request.
+        let Some(mut page) = free_pages.pop().or_else(|| queues.returns.pop().ok()) else {
             let failure = StreamFailure {
                 key: key.source,
                 page_index: key.page_index,
