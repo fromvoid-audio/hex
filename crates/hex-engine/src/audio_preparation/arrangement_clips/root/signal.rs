@@ -149,6 +149,180 @@ impl ArrangementRootAssembly {
 mod tests {
     use super::*;
     #[test]
+    fn flat_track_feed_constructor_accounts_for_graph_and_recovers_input() {
+        use hex_project::{Command, Created, Editor, RoutingOwner, TrackDeviceSlot};
+        if !crate::audio_storage_constructor_layout_supported() {
+            return;
+        }
+        let (project, mut bank) = crate::audio_preparation::tests::fixture(1);
+        let pointer = bank.sources.as_ptr();
+        bank.reservation.allocation_items = 1024;
+        bank.reservation.handle_obligations = 256;
+        let mut editor = Editor::new(project, 16).unwrap();
+        let source = editor.project().tracks()[0].id();
+        let Created::Track(destination) = editor
+            .execute(Command::InsertTrackWithDevice {
+                name: "receiver".into(),
+                before_track: None,
+                slot: TrackDeviceSlot::Instrument,
+                state: hex_project::default_instrument_state().unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("track")
+        };
+        editor
+            .execute(Command::RemoveInstrument { track: destination })
+            .unwrap();
+        editor
+            .execute(Command::SetAudioFeed {
+                source: RoutingOwner::Track(source),
+                destination,
+                gain: 0.5,
+            })
+            .unwrap();
+        editor
+            .execute(Command::InsertDevice {
+                track: source,
+                before: None,
+                state: crate::default_native_device_state_for_class(
+                    crate::NativeDeviceClass::Effect,
+                    crate::DeviceTypeId::from_static("hex.limiter"),
+                )
+                .unwrap(),
+            })
+            .unwrap();
+        let registry = hex_devices::native_registry().unwrap();
+        let quote = crate::AudioCandidateReservationQuote::for_project_with_effect_registry(
+            editor.project(),
+            1,
+            &registry,
+        )
+        .unwrap();
+        let mut custody = crate::AudioPreparationCustody::try_new_on_control().unwrap();
+        let token = custody
+            .begin_input_on_control(
+                crate::AudioArrangementInput::new(editor.project(), 11, bank)
+                    .with_audio_prepared_revision()
+                    .with_effect_registry(&registry),
+            )
+            .unwrap_or_else(|e| panic!("constructor: {:?}", e.reason));
+        let revision = custody.candidate_root_view(&token).unwrap();
+        let graph = revision.arrangement().signal_graph.as_ref().unwrap();
+        assert!(graph.main_latency() > 0);
+        assert_eq!(
+            graph
+                .tracks
+                .iter()
+                .map(|track| track.audio_feeds.len())
+                .sum::<usize>(),
+            1
+        );
+        let mut owner = crate::AudioCandidateOwner::try_new_on_control(custody, token)
+            .ok()
+            .unwrap();
+        let summary = owner
+            .seal_constructor_on_control(crate::AudioStorageLedgerReservation {
+                data_rows: quote.data_rows,
+                handle_rows: quote.handle_rows,
+                root_rows: 8,
+                max_retained_bytes: usize::MAX,
+                max_construction_peak_bytes: usize::MAX,
+            })
+            .unwrap();
+        assert_eq!(summary.data.unknown_storage, 0);
+        let asset = editor.project().assets().next().unwrap().id();
+        let media = std::collections::BTreeMap::from([(
+            asset,
+            crate::Audio::new(48_000, vec![[0.25; 2]; 8]).unwrap(),
+        )]);
+        let reference = Arc::new(
+            crate::PreparedRevision::prepare(
+                editor.project(),
+                &media,
+                Arc::new(crate::SineTable::new()),
+                None,
+            )
+            .unwrap(),
+        );
+        let mut reference = crate::SessionPlayback::new(reference).unwrap();
+        assert!(
+            reference
+                .visit_next_stream_chunk(32, None, &mut |_| Ok(()))
+                .is_err()
+        );
+        reference
+            .apply(crate::SessionPlaybackCommand::Play)
+            .unwrap();
+        owner
+            .test_apply_action(crate::PlaybackAction::Transport(
+                crate::PlaybackCommand::Play,
+            ))
+            .unwrap();
+        let mut expected = [[0.0; 2]; 2048];
+        let mut observed = expected;
+        reference.render(&mut expected).unwrap();
+        owner.test_render(&mut observed).unwrap();
+        assert!(expected.iter().any(|frame| *frame != [0.0; 2]));
+        assert_eq!(observed, expected);
+        owner.dispose_on_control().unwrap();
+        assert_eq!(
+            owner.recover_inputs_on_control().unwrap().sources.as_ptr(),
+            pointer
+        );
+        let (_, mut cancelled_bank) = crate::audio_preparation::tests::fixture(1);
+        let cancelled_pointer = cancelled_bank.sources.as_ptr();
+        cancelled_bank.reservation.allocation_items = 1024;
+        cancelled_bank.reservation.handle_obligations = 256;
+        let mut cancelled = crate::AudioPreparationCustody::try_new_on_control().unwrap();
+        let cancelled_token = cancelled
+            .begin_input_on_control(
+                crate::AudioArrangementInput::new(editor.project(), 12, cancelled_bank)
+                    .with_audio_prepared_revision()
+                    .with_effect_registry(&registry),
+            )
+            .unwrap_or_else(|e| panic!("constructor: {:?}", e.reason));
+        assert!(cancelled.cancel(&cancelled_token));
+        cancelled.cleanup_on_control();
+        assert_eq!(
+            cancelled
+                .recover_on_control(&cancelled_token)
+                .unwrap()
+                .sources
+                .as_ptr(),
+            cancelled_pointer
+        );
+
+        let mut with_return = Editor::new(editor.project().clone(), 8).unwrap();
+        with_return
+            .execute(Command::AddReturnTrack {
+                name: "return".into(),
+            })
+            .unwrap();
+        assert!(matches!(
+            crate::AudioCandidateReservationQuote::for_project_with_effect_registry(
+                with_return.project(),
+                1,
+                &registry,
+            ),
+            Err(AudioStorageError::UnsupportedGraph)
+        ));
+        editor
+            .execute(Command::GroupTracks {
+                tracks: hex_project::TrackSelectionIds::new(&[source, destination]).unwrap(),
+                name: "group".into(),
+            })
+            .unwrap();
+        assert!(matches!(
+            crate::AudioCandidateReservationQuote::for_project_with_effect_registry(
+                editor.project(),
+                1,
+                &registry,
+            ),
+            Err(AudioStorageError::UnsupportedGraph)
+        ));
+    }
+    #[test]
     fn equal_plan_and_layout_are_not_the_original_runtime_graph() {
         if !crate::audio_storage_constructor_layout_supported() {
             return;
