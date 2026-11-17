@@ -382,8 +382,27 @@ mod tests {
             );
             let child = stage.source.child_id_on_control();
             let binding = stage.configuration.binding;
+            let listed_bytes = stage.retained_data_bytes();
+            assert!(
+                listed_bytes
+                    >= stage
+                        .source
+                        .retained_storage_on_control()
+                        .unwrap()
+                        .data_bytes
+                        + std::mem::size_of::<OfflineEffectPreparation>()
+            );
             let prepared = stage.prepared();
             let effect = stage.complete_on_control(&observation, || false).unwrap();
+            assert!(
+                effect
+                    .constructor_storage_on_control()
+                    .unwrap()
+                    .data_bytes()
+                    .unwrap()
+                    + std::mem::size_of::<NativeEffect>()
+                    <= listed_bytes
+            );
             assert_eq!(effect.prepared(), prepared);
             assert_eq!(effect.binding(), binding);
             let (stopped, _) = effect.into_quiescent_on_control().unwrap();
