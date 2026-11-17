@@ -1556,7 +1556,7 @@ mod output_timing_regression {
         assert_eq!(uniform_output_timing(&[5, 6], |_| Ok(0)).unwrap(), 0);
         assert!(uniform_output_timing(&[], |_| Ok(0)).is_err());
         assert!(uniform_output_timing(&[1; 17], |_| Ok(0)).is_err());
-        assert!(uniform_output_timing(&[5, 6], |id| Ok(id)).is_err());
+        assert!(uniform_output_timing(&[5, 6], Ok).is_err());
         assert!(
             uniform_output_timing(&[5], |_| Err(bounded_output_error("property unavailable")))
                 .is_err()
