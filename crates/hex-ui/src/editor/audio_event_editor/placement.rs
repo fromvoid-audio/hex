@@ -252,7 +252,7 @@ impl Preview {
                 Arc::clone(waveform),
                 0,
                 a..b,
-                self.clip().gain(),
+                self.clip().gain().linear(),
                 true,
                 cache,
                 ink,

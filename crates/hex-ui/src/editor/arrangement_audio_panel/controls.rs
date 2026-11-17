@@ -17,6 +17,7 @@ use std::collections::BTreeMap;
 pub(crate) struct Controls {
     key: Option<(ClipId, u64, u64)>,
     capture: Option<ClipWindow>,
+    gain_preview: Option<(ClipWindow, hex_project::ClipGain)>,
     numbers: BTreeMap<Field, Number>,
     toggles: BTreeMap<bool, Switch>,
     pending: Option<Pending>,
@@ -64,6 +65,7 @@ impl Controls {
         changed
     }
     fn retire_bindings(&mut self) {
+        self.gain_preview = None;
         self.retired_focus
             .extend(self.numbers.iter().map(|(field, n)| RetiredFocus {
                 focus: n.focus.clone(),
@@ -106,6 +108,13 @@ impl Controls {
     }
     pub(crate) fn has_pending(&self) -> bool {
         self.pending.is_some()
+    }
+    pub(in crate::editor) fn gain_preview(
+        &self,
+        view: &EditorView,
+    ) -> Option<(ClipId, hex_project::ClipGain, hex_project::ClipGain)> {
+        let (window, gain) = self.gain_preview?;
+        clip_window_is_current(view, window).then_some((window.clip, window.gain, gain))
     }
 }
 fn same_command(a: &Command, b: &Command) -> bool {
@@ -416,6 +425,22 @@ pub(super) fn number(
         });
         entity.update(cx, |n, cx| n.set_tab_navigation(true, cx));
         let sub = cx.subscribe(&entity, move |view, _, e: &NumericControlEvent, cx| {
+            if field == Field::Gain {
+                match e.phase {
+                    NumericEventPhase::Change | NumericEventPhase::Commit
+                        if clip_window_is_current(view, window)
+                            && !view.audio_clip_controls.has_pending()
+                            && e.value.is_finite() =>
+                    {
+                        view.audio_clip_controls.gain_preview =
+                            hex_project::ClipGain::new((e.value * 1000.0).round() as i32)
+                                .ok()
+                                .map(|gain| (window, gain));
+                    }
+                    NumericEventPhase::Cancel => view.audio_clip_controls.gain_preview = None,
+                    _ => {}
+                }
+            }
             if e.phase == NumericEventPhase::Commit {
                 if !view.edit_pending() && clip_window_is_current(view, window) {
                     let multiple = view.selected_clip_ids().len() > 1;

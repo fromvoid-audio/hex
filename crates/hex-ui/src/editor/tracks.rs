@@ -2834,6 +2834,9 @@ impl EditorView {
             .unwrap_or_else(|| div().absolute().inset_0());
         }
         let waveform = state.waveforms.get(&clip.asset());
+        let gain = self
+            .waveform_clip_gain(clip)
+            .filter(|gain| *gain != clip.gain());
         let body = if let Some(prepared) = state.audio_clip_waveforms.get(&clip.id()) {
             // The immutable prepared peaks cover the retained root. Cropping
             // changes its visible offset, never its processing/source origin.
@@ -2853,7 +2856,7 @@ impl EditorView {
                 super::waveform_geometry::WaveformMapping::Prepared {
                     timeline_origin: clip.start(),
                     root_offset: prepared.offset,
-                    gain: clip.gain(),
+                    gain: gain.unwrap_or(clip.gain()),
                 },
                 visible_start,
                 visible_end,
@@ -2874,6 +2877,7 @@ impl EditorView {
                     super::waveform_geometry::WaveformMapping::Clip {
                         clip: clip.clone(),
                         timeline_origin: clip.start(),
+                        gain: gain.map(hex_project::ClipGain::linear),
                         fade: Some(self.fade_preview(clip.id()).unwrap_or(clip.retained_fade())),
                     },
                     visible_start,
