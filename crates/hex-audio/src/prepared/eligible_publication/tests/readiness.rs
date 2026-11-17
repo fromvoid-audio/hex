@@ -21,6 +21,10 @@ fn fed_track_limiter_buffers_and_handoffs_without_callback_allocations() {
     first_play(false, false, true, true);
 }
 #[test]
+fn fed_group_limiter_buffers_and_handoffs_without_callback_allocations() {
+    first_play(true, false, true, true);
+}
+#[test]
 fn priority_stop_revokes_buffered_play_before_installation() {
     assert!(
         hex_engine::audio_storage_constructor_layout_supported(),
@@ -111,6 +115,40 @@ fn first_play(grouped: bool, stop_pending: bool, limiter: bool, feed: bool) {
                 })
                 .unwrap();
         }
+        editor.project().clone()
+    } else {
+        project
+    };
+    let project = if grouped && feed {
+        let mut editor = hex_project::Editor::new(project, 8).unwrap();
+        let group = editor
+            .project()
+            .tracks()
+            .iter()
+            .find(|track| track.is_group())
+            .unwrap()
+            .id();
+        let hex_project::Created::Track(receiver) = editor
+            .execute(hex_project::Command::InsertTrackWithDevice {
+                name: "receiver".into(),
+                before_track: None,
+                slot: hex_project::TrackDeviceSlot::Instrument,
+                state: hex_project::default_instrument_state().unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("receiver")
+        };
+        editor
+            .execute(hex_project::Command::RemoveInstrument { track: receiver })
+            .unwrap();
+        editor
+            .execute(hex_project::Command::SetAudioFeed {
+                source: hex_project::RoutingOwner::Track(group),
+                destination: receiver,
+                gain: 0.5,
+            })
+            .unwrap();
         editor.project().clone()
     } else {
         project

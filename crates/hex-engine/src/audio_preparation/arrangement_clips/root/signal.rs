@@ -294,8 +294,9 @@ mod tests {
             .unwrap(),
         );
         let mut reference = crate::SessionPlayback::new(reference).unwrap();
-        let demand = reference.visit_next_stream_chunk(32, None, &mut |_| Ok(()));
-        assert_eq!(demand.is_err(), topology != FeedTopology::Flat);
+        reference
+            .visit_next_stream_chunk(32, None, &mut |_| Ok(()))
+            .unwrap();
         reference
             .apply(crate::SessionPlaybackCommand::Play)
             .unwrap();
