@@ -1,40 +1,79 @@
 //! Live original file-backed audio through the actual VST3 bridge.
 use super::*;
+use std::path::Path;
 
 #[test]
 #[ignore = "explicit source-bound signed SDK receipts required"]
 fn verified_stream_through_native_main_effect_keeps_compensated_pcm() {
-    verify_streamed_effect(EffectRoute::Main, false);
+    verify_streamed_effect(EffectRoute::Main, None);
 }
 
 #[test]
 #[ignore = "explicit source-bound signed SDK receipts required"]
 fn verified_stream_through_native_track_effect_keeps_compensated_pcm() {
-    verify_streamed_effect(EffectRoute::Track, false);
+    verify_streamed_effect(EffectRoute::Track, None);
 }
 
 #[test]
 #[ignore = "explicit source-bound signed SDK receipts required"]
 fn verified_stream_through_native_return_effect_keeps_compensated_pcm() {
-    verify_streamed_effect(EffectRoute::Return, false);
+    verify_streamed_effect(EffectRoute::Return, None);
 }
 
 #[test]
 #[ignore = "explicit source-bound signed SDK receipts required"]
 fn verified_stream_native_main_effect_renews_after_stop() {
-    verify_streamed_effect(EffectRoute::Main, true);
+    verify_streamed_effect(EffectRoute::Main, Some(Renewal::FixedLatency));
 }
 
 #[test]
 #[ignore = "explicit source-bound signed SDK receipts required"]
 fn verified_stream_native_track_effect_renews_after_stop() {
-    verify_streamed_effect(EffectRoute::Track, true);
+    verify_streamed_effect(EffectRoute::Track, Some(Renewal::FixedLatency));
 }
 
 #[test]
 #[ignore = "explicit source-bound signed SDK receipts required"]
 fn verified_stream_native_return_effect_renews_after_stop() {
-    verify_streamed_effect(EffectRoute::Return, true);
+    verify_streamed_effect(EffectRoute::Return, Some(Renewal::FixedLatency));
+}
+
+#[test]
+#[ignore = "explicit source-bound signed SDK receipts required"]
+fn verified_stream_native_main_renewal_refuses_unannounced_latency_change() {
+    const CHILD: &str = "HEX_DESKTOP_STREAM_LATENCY_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                std::thread::current().name().unwrap(),
+                "--ignored",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .env("HEX_ORIGINAL_INSTANCE_VARIANT", "68")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        print!("{}", String::from_utf8_lossy(&output.stdout));
+        return;
+    }
+    assert_eq!(
+        std::env::var("HEX_ORIGINAL_INSTANCE_VARIANT").unwrap(),
+        "68"
+    );
+    verify_streamed_effect(EffectRoute::Main, Some(Renewal::ChangedLatency));
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Renewal {
+    FixedLatency,
+    ChangedLatency,
 }
 
 enum EffectRoute {
@@ -47,7 +86,8 @@ fn source_sample(frame: usize) -> f32 {
     (4096 + 4 * (frame % 2048)) as f32 / 32768.0
 }
 
-fn verify_streamed_effect(location: EffectRoute, renew: bool) {
+fn verify_streamed_effect(location: EffectRoute, renewal: Option<Renewal>) {
+    let renew = renewal.is_some();
     let _native = native_fixture();
     let files = Files::new();
     let path = files.wav(48_000, 24_000);
@@ -182,6 +222,37 @@ fn verify_streamed_effect(location: EffectRoute, renew: bool) {
         );
         h.service.submit(Request::RestoreStoppedPlayback).unwrap();
         let restored = restored_terminal(&mut h);
+        if renewal == Some(Renewal::ChangedLatency) {
+            // Variant68 reports one extra frame after quiescence and renewed
+            // presentation, without a restart notification. Root must
+            // refuse the mismatched epoch before any resumed foreign DSP.
+            assert!(
+                restored
+                    .error
+                    .as_ref()
+                    .is_some_and(|error| error.contains("presentation latency refused")),
+                "streamed changed-latency renewal: {:?}",
+                restored.error
+            );
+            assert_eq!(restored.state.project, accepted.state.project);
+            assert!(
+                !h.audio
+                    .as_ref()
+                    .unwrap()
+                    .status()
+                    .unwrap()
+                    .playing
+                    .load(Acquire)
+            );
+            assert_eq!(h.render_plugin_block(), [[0.0; 2]; 256]);
+            assert_source_unchanged(
+                &path,
+                &original,
+                &accepted.state.project,
+                &imported.state.project,
+            );
+            return;
+        }
         assert!(
             restored.error.is_none(),
             "streamed renewal: {:?}",
@@ -257,13 +328,24 @@ fn verify_streamed_effect(location: EffectRoute, renew: bool) {
             assert_eq!(*frame, [expected; 2], "renewed streamed frame {index}");
         }
     }
-    assert_eq!(fs::read(path).unwrap(), original);
-    assert_eq!(
-        accepted.state.project.tracks()[0].clips(),
-        imported.state.project.tracks()[0].clips()
+    assert_source_unchanged(
+        &path,
+        &original,
+        &accepted.state.project,
+        &imported.state.project,
     );
+}
+
+fn assert_source_unchanged(
+    path: &Path,
+    original: &[u8],
+    project: &hex_project::Project,
+    imported: &hex_project::Project,
+) {
+    assert_eq!(fs::read(path).unwrap(), original);
+    assert_eq!(project.tracks()[0].clips(), imported.tracks()[0].clips());
     assert_eq!(
-        accepted.state.project.assets().collect::<Vec<_>>(),
-        imported.state.project.assets().collect::<Vec<_>>()
+        project.assets().collect::<Vec<_>>(),
+        imported.assets().collect::<Vec<_>>()
     );
 }
