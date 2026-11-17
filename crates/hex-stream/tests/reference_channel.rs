@@ -2339,7 +2339,8 @@ fn distant_page_matches_resident(mode: hex_warp::Mode) {
         )
         .unwrap();
     let mut complete = false;
-    for _ in 0..1000 {
+    // The 8 ms fixture needs about 11,000 one-grain turns at this distance.
+    for _ in 0..12_000 {
         if pages
             .step(
                 &mut reader,
@@ -2379,6 +2380,15 @@ fn distant_tones_page_matches_resident() {
 fn distant_texture_page_matches_resident() {
     distant_page_matches_resident(hex_warp::Mode::Texture {
         grain_ms: 200,
+        fluctuation: 35,
+        seed: 42,
+    });
+}
+
+#[test]
+fn distant_short_texture_page_matches_resident() {
+    distant_page_matches_resident(hex_warp::Mode::Texture {
+        grain_ms: 8,
         fluctuation: 35,
         seed: 42,
     });
