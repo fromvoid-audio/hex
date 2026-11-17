@@ -30,6 +30,11 @@ fn stretched_long_texture_matches_resident_main_export_and_bounce() {
     compare(texture, Some(texture));
 }
 
+#[test]
+fn stretched_long_repitch_matches_resident_main_export_and_bounce() {
+    compare(WarpMode::RePitch, Some(WarpMode::RePitch));
+}
+
 fn compare(mode: WarpMode, authored: Option<WarpMode>) {
     let files = Files::new();
     let short = varied(&files, "resident-prefix.wav", RATE, SHARED_FRAMES);
@@ -93,11 +98,20 @@ fn compare(mode: WarpMode, authored: Option<WarpMode>) {
             .prepared_pcm_frames,
         0
     );
-    let mut roots = source.required_granular_roots(1);
-    let (root_file, root) = roots.next().unwrap().unwrap();
-    assert_eq!(root_file, file);
-    assert_eq!(root.metadata().playback_frames(), LONG_FRAMES * 6 / 5);
-    assert!(roots.next().is_none());
+    if mode == WarpMode::RePitch {
+        let mut sources = source.required_repitch_metadata(1);
+        let (source_file, metadata) = sources.next().unwrap().unwrap();
+        assert_eq!(metadata.key().asset(), asset);
+        assert_eq!(source_file, file);
+        assert_eq!(metadata.playback_frames(), LONG_FRAMES * 6 / 5);
+        assert!(sources.next().is_none());
+    } else {
+        let mut roots = source.required_granular_roots(1);
+        let (root_file, root) = roots.next().unwrap().unwrap();
+        assert_eq!(root_file, file);
+        assert_eq!(root.metadata().playback_frames(), LONG_FRAMES * 6 / 5);
+        assert!(roots.next().is_none());
+    }
 
     let exported = export_pcm(&streamed, &stretched, &files.0.join("streamed-main.wav"));
     assert_pcm(&exported, &expected);

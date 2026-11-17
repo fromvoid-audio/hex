@@ -139,7 +139,7 @@ fn pitched_and_raw_file_pages_case() {
             &revision,
             |_| Ok(&file),
             &[],
-            GranularCapture::Captured(&[]),
+            DerivedCapture::Captured(&[]),
             Some(&path),
             config,
             &cancelled
@@ -155,7 +155,7 @@ fn pitched_and_raw_file_pages_case() {
                 Ok(&file)
             },
             &[],
-            GranularCapture::Captured(&[]),
+            DerivedCapture::Captured(&[]),
             None,
             config,
             &cancelled
@@ -166,7 +166,7 @@ fn pitched_and_raw_file_pages_case() {
         &revision,
         |_| Ok(&file),
         &[],
-        GranularCapture::Captured(&[]),
+        DerivedCapture::Captured(&[]),
         None,
         config,
         &cancelled,
@@ -255,7 +255,7 @@ fn pitched_and_raw_file_pages_case() {
             &repitched,
             |_| Ok(&file),
             &[],
-            GranularCapture::Captured(&[]),
+            DerivedCapture::Captured(&[]),
             None,
             config,
             &cancelled
@@ -267,7 +267,7 @@ fn pitched_and_raw_file_pages_case() {
             &repitched,
             |_| Ok(&other),
             &requirements,
-            GranularCapture::Captured(&[]),
+            DerivedCapture::Captured(&[]),
             None,
             config,
             &cancelled
@@ -292,7 +292,7 @@ fn pitched_and_raw_file_pages_case() {
             &repitched,
             |_| Ok(&file),
             &[changed_requirement],
-            GranularCapture::Captured(&[]),
+            DerivedCapture::Captured(&[]),
             None,
             config,
             &cancelled
@@ -306,7 +306,7 @@ fn pitched_and_raw_file_pages_case() {
             &repitched,
             |_| Ok(&file),
             &requirements,
-            GranularCapture::Captured(&[]),
+            DerivedCapture::Captured(&[]),
             None,
             no_map_budget,
             &cancelled
@@ -317,7 +317,7 @@ fn pitched_and_raw_file_pages_case() {
         &repitched,
         |_| Ok(&file),
         &requirements,
-        GranularCapture::Captured(&[]),
+        DerivedCapture::Captured(&[]),
         None,
         config,
         &cancelled,
@@ -401,7 +401,7 @@ fn scalar_offline_capture_refuses_before_source_resolution() {
             Err(ExportError::Invalid("unexpected source resolution"))
         },
         &[],
-        GranularCapture::Captured(&[]),
+        DerivedCapture::Captured(&[]),
         None,
         StreamConfig::with_pool_pages(3),
         &AtomicBool::new(false),
@@ -702,7 +702,7 @@ fn history_seek_case(mode: Option<hex_project::WarpMode>) {
             &revision,
             |_| Ok(&file),
             &[],
-            GranularCapture::Captured(&granular_requirements),
+            DerivedCapture::Captured(&granular_requirements),
             None,
             StreamConfig::with_pool_pages(3),
             &cancelled,
@@ -800,7 +800,7 @@ fn history_seek_case(mode: Option<hex_project::WarpMode>) {
             &revision,
             |_| Ok(&file),
             &[],
-            GranularCapture::Captured(&granular_requirements),
+            DerivedCapture::Captured(&granular_requirements),
             None,
             StreamConfig::initial(),
             &cancelled,

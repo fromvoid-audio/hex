@@ -51,6 +51,44 @@ impl StreamedBounceRequest<'_> {
     pub fn repitches(&self) -> &[hex_engine::audio_transform::StreamedRepitchRequirement] {
         self.repitches
     }
+    /// Without retained requirements, project one asset's Re-Pitch candidates
+    /// lazily from the same isolated Project used to compile the bounce. The
+    /// caller reserves projection workspace and checks exact derived metadata.
+    pub fn projected_repitch_requirements(
+        &self,
+        asset: AssetId,
+        generation: u64,
+    ) -> Option<
+        impl Iterator<
+            Item = Result<
+                hex_engine::audio_transform::StreamedRepitchRequirement,
+                hex_engine::Invalid,
+            >,
+        > + '_,
+    > {
+        let project = self.isolated_project?;
+        let file = self.file(asset)?;
+        Some(
+            project
+                .tracks()
+                .iter()
+                .flat_map(|track| track.clips())
+                .filter(move |clip| clip.asset() == asset)
+                .filter_map(move |clip| {
+                    let edit = clip
+                        .audio_edit()
+                        .filter(|edit| edit.is_streamed_repitch_root())?;
+                    Some(file.source_metadata(asset, generation).and_then(|raw| {
+                        hex_engine::audio_transform::StreamedRepitchRequirement::new(
+                            &raw,
+                            edit,
+                            project.tempo_map(),
+                            &std::sync::atomic::AtomicBool::new(false),
+                        )
+                    }))
+                }),
+        )
+    }
     /// Exact granular roots retained with the isolated ordinary revision.
     pub fn granulars(&self) -> &[hex_engine::audio_transform::StreamedGranularRequirement] {
         self.granulars
