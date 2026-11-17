@@ -90,6 +90,7 @@ pub struct WorkerData {
     pub kernel_weights: usize,
     pub pitch_filter_weights: usize,
     pub kernel_handles: usize,
+    pub manifest_handles: usize,
     pub source_scratch: AllocationData,
     pub pitch_scratch: AllocationData,
     pub free_page_handles: AllocationData,

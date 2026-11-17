@@ -16,6 +16,22 @@ pub struct GranularRuntimeData {
     pub loans: AllocationData,
 }
 impl GranularRuntimeData {
+    pub(crate) fn requested(
+        bank: &GranularWorkerBank,
+        config: StreamConfig,
+    ) -> Result<Self, StreamRuntimeError> {
+        if config.page_buffers < 3 {
+            return Err(StreamRuntimeError::InvalidConfiguration);
+        }
+        let data = Self {
+            worker: GranularWorkerControl::data_bound(bank, config.page_buffers)?,
+            metadata: AllocationData::of::<StreamedSourceMetadata>(bank.metadata().len()),
+            loans: AllocationData::of::<Loan>(config.page_buffers),
+        };
+        data.bytes()
+            .ok_or(StreamRuntimeError::InvalidConfiguration)?;
+        Ok(data)
+    }
     pub fn bytes(self) -> Option<usize> {
         crate::footprint::sum([
             self.worker.bytes()?,
@@ -46,11 +62,9 @@ impl PreparedGranular {
         config: StreamConfig,
         allowance: GranularWorkerAllowance,
     ) -> Result<Self, StreamRuntimeError> {
-        if config.page_buffers < 3 {
-            return Err(StreamRuntimeError::InvalidConfiguration);
-        }
+        let requested = GranularRuntimeData::requested(&bank, config)?;
         let capacity = config.page_buffers;
-        let worker = GranularWorkerControl::data_bound(&bank, capacity)?;
+        let worker = requested.worker;
         if worker.bytes().is_none_or(|n| n > allowance.max_data_bytes)
             || worker
                 .shared_handle_bound()
@@ -73,8 +87,15 @@ impl PreparedGranular {
             metadata: AllocationData::of::<StreamedSourceMetadata>(metadata.capacity()),
             loans: AllocationData::of::<Loan>(loans.capacity()),
         };
-        data.bytes()
-            .ok_or(StreamRuntimeError::InvalidConfiguration)?;
+        if data
+            .bytes()
+            .ok_or(StreamRuntimeError::InvalidConfiguration)?
+            > requested
+                .bytes()
+                .ok_or(StreamRuntimeError::InvalidConfiguration)?
+        {
+            return Err(StreamRuntimeError::InvalidConfiguration);
+        }
         Ok(Self {
             bank,
             capacity,
@@ -86,6 +107,12 @@ impl PreparedGranular {
             #[cfg(feature = "test-support")]
             gate: None,
         })
+    }
+    pub(crate) fn bank(&self) -> &GranularWorkerBank {
+        &self.bank
+    }
+    pub(crate) fn data(&self) -> GranularRuntimeData {
+        self.data
     }
     pub(crate) fn metadata(&self) -> &[StreamedSourceMetadata] {
         &self.metadata

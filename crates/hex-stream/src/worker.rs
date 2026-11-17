@@ -1102,6 +1102,7 @@ fn build_catalog(
     data.construction_kernel_cache =
         crate::AllocationData::of::<(u32, u32, ResampleKernel)>(kernels.capacity());
     data.kernel_handles = sources.len();
+    data.manifest_handles = sources.len();
     let mut kernel_coverage_known = true;
     for source in &sources {
         let Source {

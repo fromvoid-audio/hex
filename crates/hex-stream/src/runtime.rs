@@ -35,7 +35,10 @@ pub use native_custody::{
     ConstructorStreamDomain, StreamDomainConstructorSummary, StreamDomainSealRefusal,
 };
 mod pending;
-pub use pending::{PendingStreamDomain, StreamPreparationAllowance, StreamPreparationBound};
+pub use pending::{
+    GranularStreamPreparationAllowance, PendingStreamDomain, StreamPreparationAllowance,
+    StreamPreparationBound,
+};
 mod disposal;
 #[cfg(test)]
 mod read_outcome_tests;
@@ -365,8 +368,8 @@ impl StreamRuntime {
     /// existing endpoint and original page pool, alongside raw/scalar sources.
     /// The allowance covers the dedicated worker's listed DATA/known handles;
     /// ordinary runtime and loan metadata DATA remain separate. This blocking
-    /// control constructor is not host/native aggregate admission. Until that
-    /// owner supports the extra lifetimes, constructor-domain sealing refuses.
+    /// control constructor is not pending aggregate admission. Hosts should use
+    /// PendingStreamDomain's combined granular preparation allowance.
     /// At least three pool buffers are required: one granular loan, cached
     /// content and ordinary turnover. Granular admission keeps only one loan
     /// active and reduces the endpoint cache limit by one.
@@ -429,9 +432,6 @@ impl StreamRuntime {
         #[cfg(feature = "test-support")] page_gate: Option<crate::test_support::PageGate>,
     ) -> Result<(Self, Option<PreparedStreamDisposal>), StreamRuntimeError> {
         let config = config.validate()?;
-        if granular.is_some() && reserve_disposal {
-            return Err(StreamRuntimeError::InvalidConfiguration);
-        }
         let granular_count = granular.as_ref().map_or(0, |g| g.metadata().len());
         if definitions
             .len()
@@ -605,12 +605,13 @@ impl StreamRuntime {
             // Now validate the actual control-side capacities before a live
             // JoinHandle can exist. Worker payload is separately capped by its
             // exact source/manifest/kernel/scratch constructor limits.
-            let bound = PendingStreamDomain::preparation_bound_with_scalar_sources(
+            let bound = PendingStreamDomain::preparation_bound_inner(
                 config,
                 &definitions,
                 definitions.capacity(),
                 &scalar_definitions,
                 scalar_definitions.capacity(),
+                granular.as_ref().map(|prepared| prepared.bank()),
                 None,
             )?;
             let (worker_data, worker_peak) =
@@ -642,11 +643,23 @@ impl StreamRuntime {
                 free_handles,
             ])
             .ok_or(StreamRuntimeError::AllocationFailed)?;
+            let granular_extra = granular
+                .as_ref()
+                .map_or(Some(0), |prepared| {
+                    prepared.data().bytes()?.checked_add(
+                        prepared.metadata().len().checked_mul(std::mem::size_of::<
+                            hex_engine::StreamedSourceMetadata,
+                        >())?,
+                    )
+                })
+                .ok_or(StreamRuntimeError::AllocationFailed)?;
             let actual = common
-                .checked_add(worker_data)
+                .checked_add(granular_extra)
+                .and_then(|n| n.checked_add(worker_data))
                 .ok_or(StreamRuntimeError::AllocationFailed)?;
             let peak = common
-                .checked_add(worker_peak)
+                .checked_add(granular_extra)
+                .and_then(|n| n.checked_add(worker_peak))
                 .and_then(|n| n.checked_add(transport_data.page_boxing_overlap))
                 .ok_or(StreamRuntimeError::AllocationFailed)?;
             if actual > bound.retained_data_bytes || peak > bound.construction_peak_data_bytes {
