@@ -2651,8 +2651,10 @@ fn canonical_granular_projection_drives_verified_page_matching_resident() {
     let page = source.take_complete().expect("canonical page completed");
     assert_eq!(page.valid_frames, STREAM_PAGE_FRAMES);
     assert_eq!(&*page.frames, &expected[..STREAM_PAGE_FRAMES]);
-    let pointer = page.frames.as_ptr();
-    source.begin_page(0, page.frames, 0, || false).unwrap();
+    let (returned_source, returned_page) = exercise_granular_worker(source, page.frames, &expected);
+    let mut source = returned_source;
+    let pointer = returned_page.as_ptr();
+    source.begin_page(0, returned_page, 0, || false).unwrap();
     OpenOptions::new()
         .write(true)
         .open(&wav.0)
@@ -2675,4 +2677,180 @@ fn canonical_granular_projection_drives_verified_page_matching_resident() {
     assert!(source.take_complete().is_none());
     let returned = source.reclaim().unwrap();
     assert_eq!(returned.as_ptr(), pointer);
+}
+
+fn exercise_granular_worker(
+    source: hex_stream::VerifiedGranularSource,
+    page: Box<[[f32; 2]]>,
+    expected: &[[f32; 2]],
+) -> (hex_stream::VerifiedGranularSource, Box<[[f32; 2]]>) {
+    use hex_engine::STREAM_PAGE_FRAMES;
+    use hex_stream::{
+        GranularWorkerError, GranularWorkerExitReason, GranularWorkerKey, GranularWorkerQueues,
+        GranularWorkerRequest, GranularWorkerResult, GranularWorkerSeek, run_granular_worker,
+    };
+    use std::{
+        sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        },
+        thread,
+        time::{Duration, Instant},
+    };
+    let key = GranularWorkerKey {
+        source: source.metadata().key(),
+        page_index: 0,
+        seek: GranularWorkerSeek::Strict {
+            max_preroll_frames: 0,
+        },
+    };
+    let (mut requests, request_rx) = rtrb::RingBuffer::new(2);
+    let (result_tx, mut results) = rtrb::RingBuffer::new(1);
+    let stop = Arc::new(AtomicBool::new(false));
+    let worker_stop = Arc::clone(&stop);
+    let join = thread::spawn(move || {
+        run_granular_worker(
+            source,
+            GranularWorkerQueues {
+                requests: request_rx,
+                results: result_tx,
+            },
+            &worker_stop,
+        )
+    });
+    let pointer = page.as_ptr() as usize;
+    assert!(
+        requests
+            .push(GranularWorkerRequest { key, frames: page })
+            .is_ok()
+    );
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let outcome = loop {
+        if let Ok(outcome) = results.pop() {
+            break outcome;
+        }
+        assert!(Instant::now() < deadline, "worker did not return a page");
+        thread::yield_now();
+    };
+    assert_eq!(outcome.key, key);
+    let GranularWorkerResult::Ready(page) = outcome.result else {
+        panic!("expected page")
+    };
+    assert_eq!(page.metadata.key(), key.source);
+    assert_eq!(page.page_index, 0);
+    assert_eq!(page.valid_frames, STREAM_PAGE_FRAMES);
+    assert_eq!(page.frames.as_ptr() as usize, pointer);
+    assert_eq!(&*page.frames, &expected[..STREAM_PAGE_FRAMES]);
+
+    let invalid = GranularWorkerKey {
+        page_index: u64::MAX,
+        ..key
+    };
+    assert!(
+        requests
+            .push(GranularWorkerRequest {
+                key: invalid,
+                frames: page.frames
+            })
+            .is_ok()
+    );
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let outcome = loop {
+        if let Ok(outcome) = results.pop() {
+            break outcome;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "worker did not reject invalid page"
+        );
+        thread::yield_now();
+    };
+    let GranularWorkerResult::Failed {
+        error: GranularWorkerError::Page(_),
+        frames,
+    } = outcome.result
+    else {
+        panic!("expected invalid page failure")
+    };
+    assert_eq!(frames.as_ptr() as usize, pointer);
+    let foreign = GranularWorkerKey {
+        source: StreamSourceKey::new(8, asset(8192)),
+        ..key
+    };
+    assert_ne!(foreign.source, key.source);
+    // Fill the result queue, then force one held outcome and one queued request.
+    assert!(
+        requests
+            .push(GranularWorkerRequest {
+                key: foreign,
+                frames
+            })
+            .is_ok()
+    );
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while results.slots() == 0 {
+        assert!(
+            Instant::now() < deadline,
+            "worker did not fill result queue"
+        );
+        thread::yield_now();
+    }
+    let held_page = vec![[0.0; 2]; STREAM_PAGE_FRAMES].into_boxed_slice();
+    let held_pointer = held_page.as_ptr() as usize;
+    assert!(
+        requests
+            .push(GranularWorkerRequest {
+                key: foreign,
+                frames: held_page
+            })
+            .is_ok()
+    );
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while requests.slots() != 2 {
+        assert!(
+            Instant::now() < deadline,
+            "worker did not dequeue held request"
+        );
+        thread::yield_now();
+    }
+    let queued_page = vec![[0.0; 2]; STREAM_PAGE_FRAMES].into_boxed_slice();
+    let queued_pointer = queued_page.as_ptr() as usize;
+    assert!(
+        requests
+            .push(GranularWorkerRequest {
+                key,
+                frames: queued_page
+            })
+            .is_ok()
+    );
+    stop.store(true, Ordering::Release);
+    join.thread().unpark();
+    let mut exit = join.join().unwrap();
+    assert_eq!(exit.reason, GranularWorkerExitReason::Stopped);
+    assert!(exit.interrupted.is_none());
+    let held = exit.held.take().expect("full result queue retains outcome");
+    let GranularWorkerResult::Failed {
+        error: GranularWorkerError::UnknownSource,
+        frames,
+    } = held.result
+    else {
+        panic!("expected foreign source failure")
+    };
+    assert_eq!(frames.as_ptr() as usize, held_pointer);
+    let queued = exit
+        .queues
+        .requests
+        .pop()
+        .expect("queued request remains for control");
+    assert_eq!(queued.frames.as_ptr() as usize, queued_pointer);
+    let outcome = results.pop().expect("first outcome remains queued");
+    let GranularWorkerResult::Failed {
+        error: GranularWorkerError::UnknownSource,
+        frames,
+    } = outcome.result
+    else {
+        panic!("expected foreign source failure")
+    };
+    assert_eq!(frames.as_ptr() as usize, pointer);
+    (exit.source, frames)
 }

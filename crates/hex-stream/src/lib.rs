@@ -19,6 +19,7 @@ mod granular_checkpoint_cache;
 mod granular_page;
 mod granular_seek;
 mod granular_source;
+mod granular_worker;
 pub use granular_checkpoint_cache::{
     CheckpointCacheError, CheckpointRecord, VerifiedGranularCheckpointCache,
 };
@@ -31,6 +32,11 @@ pub use granular_seek::{
 };
 pub use granular_source::{
     GranularSourceBuffers, GranularSourceError, GranularSourcePreparation, VerifiedGranularSource,
+};
+pub use granular_worker::{
+    GranularWorkerError, GranularWorkerExit, GranularWorkerExitReason, GranularWorkerKey,
+    GranularWorkerOutcome, GranularWorkerQueues, GranularWorkerRequest, GranularWorkerResult,
+    GranularWorkerSeek, run_granular_worker,
 };
 mod reference;
 pub use footprint::{AllocationData, EndpointData, StreamDataFootprint, TransportData, WorkerData};
