@@ -84,7 +84,9 @@ pub const RETAINED_RECEIVER_SCHEMA_VERSION: u32 = 68;
 /// Schema69 stores the Compressor's authored stereo sidechain source.
 pub const SIDECHAIN_SCHEMA_VERSION: u32 = 69;
 /// Newest schema this build opens; anything above it is refused as newer.
-pub const NEWEST_SCHEMA_VERSION: u32 = LONG_GRANULAR_SCHEMA_VERSION;
+pub const NEWEST_SCHEMA_VERSION: u32 = LONG_INACTIVE_WARP_SCHEMA_VERSION;
+/// Schema121 stores long raw clips with retained inactive Warp settings.
+pub const LONG_INACTIVE_WARP_SCHEMA_VERSION: u32 = 121;
 /// Schema120 stores bounded long Tones/Texture roots over a valid prior document.
 /// Older readers refuse this extension; see `schema::long_granular`.
 pub const LONG_GRANULAR_SCHEMA_VERSION: u32 = 120;
@@ -272,7 +274,11 @@ fn contains_extended_frame_events(project: &Project) -> bool {
 /// Schema115 wraps the appropriate prior document only when an authored device
 /// lane has two points at one beat. Projects with unique beats retain their format.
 pub fn schema_version_for(project: &Project) -> u32 {
-    if schema::long_granular::contains(project) {
+    use schema::long_granular::{self, LongWarpSchema};
+    if long_granular::contains(project, LongWarpSchema::Inactive) {
+        return LONG_INACTIVE_WARP_SCHEMA_VERSION;
+    }
+    if long_granular::contains(project, LongWarpSchema::Granular) {
         return LONG_GRANULAR_SCHEMA_VERSION;
     }
     if schema::long_pitch_fade::contains(project) {
@@ -556,8 +562,12 @@ impl From<serde_json::Error> for StorageError {
 /// but the codec materializes metadata and is not a streaming or OOM-proof reader.
 /// Nonempty serial units use schema80; flat projects retain their prior layout.
 pub fn encode(project: &Project) -> Result<Vec<u8>, StorageError> {
-    if schema::long_granular::contains(project) {
-        return schema::long_granular::encode(project);
+    use schema::long_granular::{self, LongWarpSchema};
+    if long_granular::contains(project, LongWarpSchema::Inactive) {
+        return long_granular::encode(project, LongWarpSchema::Inactive);
+    }
+    if long_granular::contains(project, LongWarpSchema::Granular) {
+        return long_granular::encode(project, LongWarpSchema::Granular);
     }
     if schema::long_pitch_fade::contains(project) {
         return schema::long_pitch_fade::encode(project);
@@ -897,6 +907,7 @@ fn decode_base(bytes: &[u8]) -> Result<Project, StorageError> {
 }
 
 fn decode_impl(bytes: &[u8], inside_envelope: bool) -> Result<Project, StorageError> {
+    use schema::long_granular::{self, LongWarpSchema};
     #[derive(serde::Deserialize)]
     struct CurrentHeader<'a> {
         format: &'a str,
@@ -906,8 +917,11 @@ fn decode_impl(bytes: &[u8], inside_envelope: bool) -> Result<Project, StorageEr
     if header.format != "hex-project" {
         return Err(StorageError::Invalid("unsupported project format"));
     }
+    if header.version == LONG_INACTIVE_WARP_SCHEMA_VERSION && !inside_envelope {
+        return long_granular::decode(bytes, LongWarpSchema::Inactive);
+    }
     if header.version == LONG_GRANULAR_SCHEMA_VERSION && !inside_envelope {
-        return schema::long_granular::decode(bytes);
+        return long_granular::decode(bytes, LongWarpSchema::Granular);
     }
     if header.version == LONG_PITCH_FADE_SCHEMA_VERSION && !inside_envelope {
         return schema::long_pitch_fade::decode(bytes);
@@ -1037,7 +1051,12 @@ fn decode_impl(bytes: &[u8], inside_envelope: bool) -> Result<Project, StorageEr
             "unsupported older project schema; open a copy with the hex build that saved it and retain the original for recovery",
         )),
     }?;
-    if schema::long_granular::contains(&project) {
+    if long_granular::contains(&project, LongWarpSchema::Inactive) {
+        return Err(StorageError::Invalid(
+            "long inactive warp roots require their current project schema",
+        ));
+    }
+    if long_granular::contains(&project, LongWarpSchema::Granular) {
         return Err(StorageError::Invalid(
             "long granular roots require their current project schema",
         ));

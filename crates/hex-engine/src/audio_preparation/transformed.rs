@@ -164,12 +164,17 @@ pub(super) fn pitched_source_index(
     })
 }
 
+pub(super) fn requires_transformed_origin(clip: &hex_project::Clip) -> bool {
+    clip.audio_edit()
+        .is_some_and(|edit| !edit.is_long_inactive_warp_root(clip.duration()))
+}
+
 pub(crate) fn transformed_count(project: &hex_project::Project) -> usize {
     project
         .tracks()
         .iter()
         .flat_map(|track| track.clips())
-        .filter(|clip| clip.audio_edit().is_some())
+        .filter(|clip| requires_transformed_origin(clip))
         .count()
 }
 
@@ -220,6 +225,9 @@ fn clip_quote(
     let Some(edit) = clip.audio_edit() else {
         return Ok((0, 0, 0));
     };
+    if edit.is_long_inactive_warp_root(clip.duration()) {
+        return Ok((0, 0, 0));
+    }
     let grouped = edit
         .domain
         .events
@@ -433,7 +441,7 @@ pub(super) fn validate_sources(
         {
             return Err(AudioStorageError::SourceMismatch);
         }
-        if clip.audio_edit().is_some() && !matches!(source.kind, SourceKind::Resident(_)) {
+        if requires_transformed_origin(clip) && !matches!(source.kind, SourceKind::Resident(_)) {
             return Err(AudioStorageError::UnsupportedGraph);
         }
     }

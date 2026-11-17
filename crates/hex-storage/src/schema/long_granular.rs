@@ -1,15 +1,54 @@
-//! Schema120 extends valid saved states to long bounded Tones/Texture roots.
+//! Schema120 stores long active Tones/Texture roots. Schema121 stores long
+//! neutral inactive Warp roots, including their markers and algorithm.
 //! The base is an independently valid older document with these clips' edits
 //! removed; rows restore the complete existing audio-edit DTO, never PCM.
 //! Supported older documents migrate in memory through their existing codecs
 //! without changes. The actual format comparison in FileToken retains Save As,
 //! cancel and explicit overwrite custody. No original file/media is rewritten.
 use super::s_curve_fades::Curve;
-use crate::{LONG_GRANULAR_SCHEMA_VERSION, Project, StorageError, audio_edit::AudioEditDto};
-use hex_project::{MAX_AUDIO_DOMAIN_FRAMES, MAX_CLIPS, TrackContentSnapshot};
+use crate::{
+    LONG_GRANULAR_SCHEMA_VERSION, LONG_INACTIVE_WARP_SCHEMA_VERSION, Project, StorageError,
+    audio_edit::AudioEditDto,
+};
+use hex_project::{
+    AudioClipEdit, MAX_AUDIO_DOMAIN_FRAMES, MAX_CLIPS, TempoMap, TrackContentSnapshot,
+};
 use serde::{Deserialize, Serialize, de};
 use serde_json::value::RawValue;
 use std::collections::{BTreeMap, BTreeSet};
+
+#[derive(Clone, Copy)]
+pub(crate) enum LongWarpSchema {
+    Granular,
+    Inactive,
+}
+
+impl LongWarpSchema {
+    fn version(self) -> u32 {
+        match self {
+            Self::Granular => LONG_GRANULAR_SCHEMA_VERSION,
+            Self::Inactive => LONG_INACTIVE_WARP_SCHEMA_VERSION,
+        }
+    }
+
+    fn matches(self, edit: &AudioClipEdit, tempo: &TempoMap) -> bool {
+        match self {
+            Self::Granular => {
+                edit.is_streamed_granular_root()
+                    && edit
+                        .projected_domain(tempo)
+                        .is_ok_and(|(_, length, _, _)| length > MAX_AUDIO_DOMAIN_FRAMES)
+            }
+            Self::Inactive => {
+                !edit.domain.warp_enabled
+                    && edit.domain.warp.is_some()
+                    && edit
+                        .projected_domain(tempo)
+                        .is_ok_and(|(_, length, _, _)| edit.is_long_inactive_warp_root(length))
+            }
+        }
+    }
+}
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -46,13 +85,13 @@ fn bounded_rows<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<Row>, D::E
     impl<'de> de::Visitor<'de> for Rows {
         type Value = Vec<Row>;
         fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            f.write_str("bounded long granular clip edits")
+            f.write_str("bounded long warp clip edits")
         }
         fn visit_seq<A: de::SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
             let mut rows = Vec::new();
             while let Some(row) = seq.next_element()? {
                 if rows.len() == MAX_CLIPS {
-                    return Err(de::Error::custom("long granular clip limit reached"));
+                    return Err(de::Error::custom("long warp clip limit reached"));
                 }
                 rows.push(row);
             }
@@ -61,28 +100,24 @@ fn bounded_rows<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<Row>, D::E
     }
     d.deserialize_seq(Rows)
 }
-fn is_long(project: &Project, clip: &hex_project::Clip) -> bool {
-    clip.audio_edit().is_some_and(|edit| {
-        edit.is_streamed_granular_root()
-            && edit
-                .projected_domain(project.tempo_map())
-                .is_ok_and(|(_, length, _, _)| length > MAX_AUDIO_DOMAIN_FRAMES)
-    })
+fn is_long(project: &Project, clip: &hex_project::Clip, schema: LongWarpSchema) -> bool {
+    clip.audio_edit()
+        .is_some_and(|edit| schema.matches(edit, project.tempo_map()))
 }
-pub(crate) fn contains(project: &Project) -> bool {
+pub(crate) fn contains(project: &Project, schema: LongWarpSchema) -> bool {
     project
         .tracks()
         .iter()
         .flat_map(|track| track.clips())
-        .any(|clip| is_long(project, clip))
+        .any(|clip| is_long(project, clip, schema))
 }
-pub(crate) fn encode(project: &Project) -> Result<Vec<u8>, StorageError> {
+pub(crate) fn encode(project: &Project, schema: LongWarpSchema) -> Result<Vec<u8>, StorageError> {
     let mut snapshot = project.snapshot();
     let mut ids: BTreeSet<_> = project
         .tracks()
         .iter()
         .flat_map(|track| track.clips())
-        .filter(|clip| is_long(project, clip))
+        .filter(|clip| is_long(project, clip, schema))
         .map(|clip| clip.id().value())
         .collect();
     let aliases: BTreeSet<_> = snapshot
@@ -102,7 +137,7 @@ pub(crate) fn encode(project: &Project) -> Result<Vec<u8>, StorageError> {
     let long_ids = ids.clone();
     ids.extend(members.keys());
     if ids.is_empty() || ids.len() > MAX_CLIPS {
-        return Err(StorageError::Invalid("invalid long granular inventory"));
+        return Err(StorageError::Invalid("invalid long warp inventory"));
     }
     snapshot
         .aliases
@@ -132,7 +167,7 @@ pub(crate) fn encode(project: &Project) -> Result<Vec<u8>, StorageError> {
                     Some(
                         clip.edit
                             .take()
-                            .ok_or(StorageError::Invalid("long granular edit missing"))?
+                            .ok_or(StorageError::Invalid("long warp edit missing"))?
                             .into(),
                     )
                 } else {
@@ -152,12 +187,12 @@ pub(crate) fn encode(project: &Project) -> Result<Vec<u8>, StorageError> {
     let base = crate::encode(&prior)?;
     crate::encode_document(&Document {
         format: "hex-project",
-        version: LONG_GRANULAR_SCHEMA_VERSION,
+        version: schema.version(),
         base: serde_json::from_slice(&base)?,
         clips: rows,
     })
 }
-pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
+pub(crate) fn decode(bytes: &[u8], schema: LongWarpSchema) -> Result<Project, StorageError> {
     if bytes.len() > crate::MAX_PROJECT_DOCUMENT_BYTES {
         return Err(StorageError::Invalid(
             "project exceeds the document size limit",
@@ -170,14 +205,15 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
     }
     let base = document.base.get().as_bytes();
     let header: Header = serde_json::from_slice(base)?;
-    if header.version >= LONG_GRANULAR_SCHEMA_VERSION
+    if document.version != schema.version()
+        || header.version >= schema.version()
         || document.clips.is_empty()
         || document
             .clips
             .windows(2)
             .any(|pair| pair[0].clip >= pair[1].clip)
     {
-        return Err(StorageError::Invalid("invalid long granular envelope"));
+        return Err(StorageError::Invalid("invalid long warp envelope"));
     }
     let mut wanted: BTreeMap<_, _> = document
         .clips
@@ -199,21 +235,17 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
             if let Some((edit, alias, curve)) = wanted.remove(&clip.id) {
                 let edit = if let Some(edit) = edit {
                     if clip.edit.is_some() {
-                        return Err(StorageError::Invalid(
-                            "long granular base clip is not plain",
-                        ));
+                        return Err(StorageError::Invalid("long warp base clip is not plain"));
                     }
                     let mut edit = hex_project::AudioClipEdit::try_from(edit)?;
                     let curve =
-                        curve.ok_or(StorageError::Invalid("long granular fade curve missing"))?;
+                        curve.ok_or(StorageError::Invalid("long warp fade curve missing"))?;
                     std::sync::Arc::make_mut(&mut edit.domain).fade =
                         curve.restore(edit.domain.fade)?;
-                    if !edit.is_streamed_granular_root()
-                        || !edit
-                            .projected_domain(&tempo)
-                            .is_ok_and(|(_, length, _, _)| length > MAX_AUDIO_DOMAIN_FRAMES)
-                    {
-                        return Err(StorageError::Invalid("invalid long granular root"));
+                    if !schema.matches(&edit, &tempo) {
+                        return Err(StorageError::Invalid(
+                            "invalid long warp root for project schema",
+                        ));
                     }
                     if let Some(source) = alias {
                         long_aliases.insert(source);
@@ -221,15 +253,15 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
                     edit
                 } else {
                     if alias.is_none() || curve.is_some() {
-                        return Err(StorageError::Invalid("missing long granular edit"));
+                        return Err(StorageError::Invalid("missing long warp edit"));
                     }
                     clip.edit
                         .take()
-                        .ok_or(StorageError::Invalid("granular alias base edit missing"))?
+                        .ok_or(StorageError::Invalid("long warp alias base edit missing"))?
                 };
                 if let Some(source) = alias {
                     if source == 0 || snapshot.aliases.sources.iter().any(|old| old.id == source) {
-                        return Err(StorageError::Invalid("invalid long granular alias source"));
+                        return Err(StorageError::Invalid("invalid long warp alias source"));
                     }
                     let content = hex_project::AliasContentSnapshot::Audio {
                         asset: clip.asset,
@@ -237,9 +269,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
                     };
                     if let Some(old) = restored_aliases.get(&source) {
                         if old != &content {
-                            return Err(StorageError::Invalid(
-                                "long granular alias content differs",
-                            ));
+                            return Err(StorageError::Invalid("long warp alias content differs"));
                         }
                     } else {
                         restored_aliases.insert(source, content);
@@ -257,13 +287,13 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
         }
     }
     if !wanted.is_empty() {
-        return Err(StorageError::Invalid("long granular clip is missing"));
+        return Err(StorageError::Invalid("long warp clip is missing"));
     }
     if restored_aliases
         .keys()
         .any(|source| !long_aliases.contains(source))
     {
-        return Err(StorageError::Invalid("granular alias has no long root"));
+        return Err(StorageError::Invalid("long warp alias has no long root"));
     }
     snapshot.aliases.sources.extend(
         restored_aliases
