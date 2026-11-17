@@ -530,6 +530,35 @@ class ReportStepAdmissionTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "malformed test counts"):
                 local_ci.validate_report_steps(evidence, allow_carried=True)
 
+    def test_malformed_nested_selection_refuses_before_inheritance(self):
+        for value in ([], None, 42):
+            evidence = self.evidence()
+            evidence["plan"]["python_tests"] = value
+            for allow_carried in (False, True):
+                with self.subTest(value=value, carry=allow_carried), \
+                        self.assertRaisesRegex(ValueError, "historical report selection"):
+                    local_ci.validate_report_steps(evidence, allow_carried=allow_carried)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            report = root / "old.json"
+            report.write_text(json.dumps(evidence))
+            runner = local_ci.LocalCiRunner(root, mode="merge", plan={"scope": "full"}, carry_report=report)
+            runner._carry = [{"action": "carry"}]
+            runner._prepare_carry()
+            self.assertIsNone(runner._carry)
+            self.assertIn("historical report selection", runner.summary["carry"]["refused"])
+            self.assertIn("every step runs fresh", runner.summary["carry"]["refused"])
+
+    def test_malformed_narrowed_selector_groups_refuse(self):
+        evidence = self.evidence()
+        evidence["plan"]["python_tests"]["test_selectors"] = None
+        row = next(row for row in evidence["steps"] if row["step_id"] == "runner-tests")
+        row["carry"] = {"planned_argv": row["argv"],
+                        "carried_remainder_from": {"report": "old.json", "commit": "a" * 40}}
+        row["argv"] = ["python3", "scripts/python_shards.py", "--", "test_local_ci"]
+        with self.assertRaisesRegex(ValueError, "unknown narrowed"):
+            local_ci.validate_report_steps(evidence, allow_carried=True)
+
     def test_module_source_cannot_escape_verified_workspace(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()

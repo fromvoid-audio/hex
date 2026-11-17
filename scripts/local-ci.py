@@ -675,7 +675,10 @@ def validate_report_steps(evidence: dict, *, allow_carried: bool = False) -> Non
     old_plan = evidence.get("plan")
     if old_plan is not None and not isinstance(old_plan, dict):
         raise ValueError("historical report plan must be an object")
-    expected = planned_steps(old_plan or {"scope": "full"})
+    try:
+        expected = planned_steps(old_plan or {"scope": "full"})
+    except (AttributeError, KeyError, TypeError, ValueError) as error:
+        raise ValueError(f"historical report selection is malformed: {error}") from error
     rows = evidence.get("steps", [])
     if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
         raise ValueError("runtime report steps must be objects")
@@ -686,11 +689,13 @@ def validate_report_steps(evidence: dict, *, allow_carried: bool = False) -> Non
         if not isinstance(carry, dict):
             raise ValueError("runtime report has malformed carried configuration")
         if allow_carried and "planned_argv" in carry:
-            groups = (old_plan or {}).get("python_tests", {}).get("test_selectors", [])
+            selection = (old_plan or {}).get("python_tests")
+            groups = selection.get("test_selectors") if isinstance(selection, dict) else None
             origin = carry.get("carried_remainder_from")
             if (row.get("step_id") != "runner-tests" or row.get("status") != "passed" or not isinstance(argv, list)
                     or argv[:3] != ["python3", "scripts/python_shards.py", "--"] or not argv[3:]
                     or not isinstance(origin, dict) or not origin.get("report") or not origin.get("commit")
+                    or not isinstance(groups, list) or any(not isinstance(group, str) for group in groups)
                     or any(not isinstance(selector, str) or not any(
                         selector == group or selector.startswith(group + ".") for group in groups)
                            for selector in argv[3:])):
