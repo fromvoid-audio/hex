@@ -10,20 +10,22 @@ fn hash(mut value: u64) -> u64 {
     value = (value ^ (value >> 27)).wrapping_mul(0x94d049bb133111eb);
     value ^ (value >> 31)
 }
-fn period(
-    input: Input<'_>,
+fn period<E: From<Error>>(
+    sample_rate: u32,
+    read: &mut impl FnMut(i128) -> Result<[f64; 2], E>,
     center: f64,
     channel: usize,
     work: &mut Work<'_>,
-) -> Result<Option<f64>, Error> {
-    let step = (input.sample_rate / 8_000).max(1) as i128;
-    let minimum = (input.sample_rate / 2_000).max(2) as usize / step as usize;
-    let maximum = ((input.sample_rate / 50) as usize / step as usize).min(200);
+) -> Result<Option<f64>, E> {
+    let step = (sample_rate / 8_000).max(1) as i128;
+    let minimum = (sample_rate / 2_000).max(2) as usize / step as usize;
+    let maximum = ((sample_rate / 50) as usize / step as usize).min(200);
     let minimum = minimum.max(2).min(maximum.saturating_sub(1));
     let mut correlations = [0.0_f64; 202];
     let center = center.round() as i128;
     let width = 256;
-    work.check(((maximum - minimum + 1) * width * 2) as u64)?;
+    work.check(((maximum - minimum + 1) * width * 2) as u64)
+        .map_err(E::from)?;
     for (lag, correlation) in correlations
         .iter_mut()
         .enumerate()
@@ -35,8 +37,8 @@ fn period(
         let mut yy = 0.0;
         for index in 0..width {
             let at = center + (index as i128 - width as i128 / 2) * step;
-            let x = input.frame(at)[channel];
-            let y = input.frame(at - lag as i128 * step)[channel];
+            let x = read(at)?[channel];
+            let y = read(at - lag as i128 * step)?[channel];
             xy += x * y;
             xx += x * x;
             yy += y * y;
@@ -64,19 +66,21 @@ fn period(
     };
     Ok(Some((lag as f64 + adjustment) * step as f64))
 }
-fn similarity_anchor(
-    input: Input<'_>,
+fn similarity_anchor<E: From<Error>>(
+    sample_rate: u32,
+    read: &mut impl FnMut(i128) -> Result<[f64; 2], E>,
     desired: f64,
     expected: f64,
     channel: usize,
     window: usize,
     work: &mut Work<'_>,
-) -> Result<f64, Error> {
+) -> Result<f64, E> {
     let range = (window / 4).min(256) as i64;
-    let step = (input.sample_rate / 8_000).max(1) as i64;
+    let step = (sample_rate / 8_000).max(1) as i64;
     let mut best = desired;
     let mut score = f64::NEG_INFINITY;
-    work.check((range as u64 * 2 / step as u64 + 1) * 64)?;
+    work.check((range as u64 * 2 / step as u64 + 1) * 64)
+        .map_err(E::from)?;
     for offset in (-range..=range).step_by(step as usize) {
         let candidate = desired + offset as f64;
         let mut xy = 0.0;
@@ -84,8 +88,8 @@ fn similarity_anchor(
         let mut yy = 0.0;
         for i in 0..64 {
             let delta = (i as i128 - 32) * i128::from(step);
-            let x = input.frame(candidate.round() as i128 + delta)[channel];
-            let y = input.frame(expected.round() as i128 + delta)[channel];
+            let x = read(candidate.round() as i128 + delta)?[channel];
+            let y = read(expected.round() as i128 + delta)?[channel];
             xy += x * y;
             xx += x * x;
             yy += y * y;
@@ -102,6 +106,151 @@ fn similarity_anchor(
         }
     }
     Ok(best)
+}
+/// Parameters for one Tones or Texture grain's control-side analysis.
+/// Positions are unwrapped region-relative source frames; `previous_anchor`
+/// must be the prior grain's committed result. The caller owns this state.
+#[derive(Clone, Copy, Debug)]
+pub struct GrainAnalysis {
+    pub sample_rate: u32,
+    pub mode: Mode,
+    pub pitch_cents: i16,
+    pub center: i128,
+    pub desired: f64,
+    pub previous_anchor: Option<f64>,
+    pub grain_index: u64,
+    pub reference_channel: usize,
+}
+
+/// A grain's source anchor and window length, and analysis work charged.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GrainDecision {
+    pub anchor: f64,
+    pub length: usize,
+    pub work_units: u64,
+}
+
+/// Analyze a single grain using source samples resolved by the caller.
+///
+/// The reader receives unwrapped integral region-relative frame positions and
+/// must apply the source's phase, looping, gain and out-of-region silence, just
+/// as the resident input does. It should use preloaded bounded windows; this
+/// function may request the same position repeatedly and performs no I/O itself.
+/// It requests at most 167,552 frames per grain; cancellation is checked at
+/// analysis phase boundaries, not between individual sample requests. A reader
+/// may use a bounded demand-filled cache instead of preloading all windows.
+/// The reader error type must accept warp errors; source errors are returned
+/// unchanged so callers can retain their specific I/O or custody context.
+/// A reader error or cancellation returns no decision, though reader side effects
+/// are not rolled back. Construction and analysis belong on a control worker,
+/// never the audio callback. Source identity and custody remain with the caller.
+pub fn analyze_grain<E: From<Error>>(
+    input: GrainAnalysis,
+    read: &mut impl FnMut(i128) -> Result<[f64; 2], E>,
+    cancel: &mut dyn FnMut() -> bool,
+) -> Result<GrainDecision, E> {
+    let (grain_ms, texture) = match input.mode {
+        Mode::Tones { grain_ms } if (8..=200).contains(&grain_ms) => (grain_ms, None),
+        Mode::Texture {
+            grain_ms,
+            fluctuation,
+            seed,
+        } if (8..=200).contains(&grain_ms) && fluctuation <= 100 => {
+            (grain_ms, Some((fluctuation, seed)))
+        }
+        _ => return Err(Error::Invalid("invalid granular analysis mode").into()),
+    };
+    // Map metadata is bounded to 2^40 source frames; allow room for
+    // extrapolated edge grains and preceding anchors without float saturation.
+    let valid_position = |value: f64| value.is_finite() && value.abs() <= (1_u64 << 42) as f64;
+    if !(8_000..=192_000).contains(&input.sample_rate)
+        || !(-4_800..=4_800).contains(&input.pitch_cents)
+        || input.center.unsigned_abs() > u128::from(MAX_STREAMED_OUTPUT_FRAMES) + 38_400
+        || !valid_position(input.desired)
+        || input
+            .previous_anchor
+            .is_some_and(|value| !valid_position(value))
+        || input.reference_channel > 1
+    {
+        return Err(Error::Invalid("invalid granular analysis parameters").into());
+    }
+    let nominal = (u64::from(input.sample_rate) * u64::from(grain_ms) / 1_000).max(16) as usize;
+    let pitch = 2.0_f64.powf(f64::from(input.pitch_cents) / 1_200.0);
+    let mut work = Work {
+        cancel,
+        used: 0,
+        limit: MAX_WORK_UNITS,
+        scratch: 0,
+        base_scratch: 0,
+        resampler: Resampler::V1,
+    };
+    work.check(0).map_err(E::from)?;
+    let (anchor, length) = analyze(
+        input.sample_rate,
+        nominal,
+        texture,
+        pitch,
+        input.center,
+        input.desired,
+        input.previous_anchor,
+        input.grain_index,
+        input.reference_channel,
+        read,
+        &mut work,
+    )?;
+    Ok(GrainDecision {
+        anchor,
+        length,
+        work_units: work.used,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn analyze<E: From<Error>>(
+    sample_rate: u32,
+    nominal: usize,
+    texture: Option<(u8, u64)>,
+    pitch: f64,
+    center: i128,
+    desired: f64,
+    previous: Option<f64>,
+    grain_index: u64,
+    channel: usize,
+    read: &mut impl FnMut(i128) -> Result<[f64; 2], E>,
+    work: &mut Work<'_>,
+) -> Result<(f64, usize), E> {
+    let hop = (nominal / 4).max(1);
+    if let Some((fluctuation, seed)) = texture {
+        let random = (hash(seed ^ grain_index) >> 11) as f64 / ((1_u64 << 53) as f64) * 2.0 - 1.0;
+        let desired = desired + random * f64::from(fluctuation) / 100.0 * nominal as f64 * 0.5;
+        let anchor = if let Some(previous) = previous {
+            similarity_anchor(
+                sample_rate,
+                read,
+                desired,
+                previous + pitch * hop as f64,
+                channel,
+                nominal,
+                work,
+            )?
+        } else {
+            desired
+        };
+        Ok((anchor, nominal))
+    } else if let Some(period) = period(sample_rate, read, desired, channel, work)? {
+        let correction =
+            (pitch * center as f64 - desired + period * 0.5).rem_euclid(period) - period * 0.5;
+        let length = (period * (nominal as f64 / period).round().max(2.0))
+            .round()
+            .clamp(nominal as f64 * 0.5, nominal as f64 * 2.0) as usize;
+        Ok((desired + correction, length.max(2)))
+    } else {
+        let expected = previous.map_or(desired, |anchor: f64| anchor + pitch * hop as f64);
+        Ok((
+            similarity_anchor(sample_rate, read, desired, expected, channel, nominal, work)?,
+            nominal,
+        ))
+    }
 }
 pub(super) fn grains(
     request: &Request<'_>,
@@ -157,41 +306,20 @@ pub(super) fn grains(
     let mut previous = None;
     while center < (request.output_frames + half_limit) as i128 {
         let desired = request.map.position(center)?;
-        let (anchor, length) = if let Some((fluctuation, seed)) = texture {
-            let random =
-                (hash(seed ^ grain_index) >> 11) as f64 / ((1_u64 << 53) as f64) * 2.0 - 1.0;
-            {
-                let desired =
-                    desired + random * f64::from(fluctuation) / 100.0 * nominal as f64 * 0.5;
-                let anchor = if let Some(previous) = previous {
-                    similarity_anchor(
-                        request.input,
-                        desired,
-                        previous + pitch * hop as f64,
-                        channel,
-                        nominal,
-                        work,
-                    )?
-                } else {
-                    desired
-                };
-                (anchor, nominal)
-            }
-        } else if let Some(period) = period(request.input, desired, channel, work)? {
-            let correction =
-                (pitch * center as f64 - desired + period * 0.5).rem_euclid(period) - period * 0.5;
-            let length = (period * (nominal as f64 / period).round().max(2.0))
-                .round()
-                .clamp(nominal as f64 * 0.5, nominal as f64 * 2.0)
-                as usize;
-            (desired + correction, length.max(2))
-        } else {
-            let expected = previous.map_or(desired, |anchor: f64| anchor + pitch * hop as f64);
-            (
-                similarity_anchor(request.input, desired, expected, channel, nominal, work)?,
-                nominal,
-            )
-        };
+        let mut read = |position| Ok::<_, Error>(request.input.frame(position));
+        let (anchor, length) = analyze(
+            request.input.sample_rate,
+            nominal,
+            texture,
+            pitch,
+            center,
+            desired,
+            previous,
+            grain_index,
+            channel,
+            &mut read,
+            work,
+        )?;
         work.check(length as u64 * 64)?;
         previous = Some(anchor);
         let first = center - (length / 2) as i128;
@@ -491,7 +619,8 @@ mod tests {
                 resampler: Resampler::V1,
             };
             let measured = period(
-                input,
+                input.sample_rate,
+                &mut |position| Ok::<_, Error>(input.frame(position)),
                 2_000.0,
                 input.reference_channel().unwrap(),
                 &mut work,
