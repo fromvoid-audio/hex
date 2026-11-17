@@ -14,6 +14,28 @@ pub struct GranularOverlap {
     weights: Vec<f64>,
 }
 
+/// Private snapshot of the complete normalization ring, including undrained sums.
+pub(super) struct OverlapCheckpoint {
+    cursor: u64,
+    samples: Vec<[f64; 2]>,
+    weights: Vec<f64>,
+}
+impl OverlapCheckpoint {
+    pub(super) fn position(&self) -> u64 {
+        self.cursor
+    }
+    pub(super) fn backing_bytes(&self) -> Option<usize> {
+        self.samples
+            .capacity()
+            .checked_mul(std::mem::size_of::<[f64; 2]>())?
+            .checked_add(
+                self.weights
+                    .capacity()
+                    .checked_mul(std::mem::size_of::<f64>())?,
+            )
+    }
+}
+
 impl GranularOverlap {
     /// Allocate a nonempty ring within the granular scratch ceiling.
     pub fn new(total_frames: u64, ring_frames: usize) -> Result<Self, Error> {
@@ -49,6 +71,46 @@ impl GranularOverlap {
                     .capacity()
                     .checked_mul(std::mem::size_of::<f64>())?,
             )
+    }
+
+    pub(super) fn checkpoint(&self, budget: usize) -> Result<OverlapCheckpoint, Error> {
+        let requested = self
+            .samples
+            .len()
+            .checked_mul(24)
+            .ok_or(Error::ScratchLimit)?;
+        if requested > budget {
+            return Err(Error::ScratchLimit);
+        }
+        let mut samples = buffer(self.samples.len(), [0.0; 2])?;
+        let mut weights = buffer(self.weights.len(), 0.0)?;
+        samples.copy_from_slice(&self.samples);
+        weights.copy_from_slice(&self.weights);
+        let checkpoint = OverlapCheckpoint {
+            cursor: self.cursor,
+            samples,
+            weights,
+        };
+        if checkpoint
+            .backing_bytes()
+            .is_none_or(|bytes| bytes > budget)
+        {
+            return Err(Error::ScratchLimit);
+        }
+        Ok(checkpoint)
+    }
+
+    pub(super) fn restore(&mut self, checkpoint: &OverlapCheckpoint) -> Result<(), Error> {
+        if checkpoint.samples.len() != self.samples.len()
+            || checkpoint.weights.len() != self.weights.len()
+            || checkpoint.cursor > self.total
+        {
+            return Err(Error::Invalid("incompatible granular overlap checkpoint"));
+        }
+        self.samples.copy_from_slice(&checkpoint.samples);
+        self.weights.copy_from_slice(&checkpoint.weights);
+        self.cursor = checkpoint.cursor;
+        Ok(())
     }
 
     /// The next output frame to be drained.

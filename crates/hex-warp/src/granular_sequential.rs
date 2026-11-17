@@ -1,8 +1,36 @@
 //! Sequential control-side scheduling for bounded granular reconstruction.
+use crate::granular_overlap::OverlapCheckpoint;
 use crate::{
     Error, Frame, GrainAnalysis, GrainSynthesis, GranularOverlap, MAX_SCRATCH_BYTES,
     MAX_STREAMED_OUTPUT_FRAMES, Mode, Q32, Resampler, TimeMap, analyze_grain,
 };
+use std::sync::atomic::{AtomicU64, Ordering};
+
+// IDs never repeat in this process. This is control-side only; exhaustion is
+// reported rather than allowing a checkpoint from another renderer to match.
+static NEXT_RENDERER_ID: AtomicU64 = AtomicU64::new(1);
+
+/// Instance-bound snapshot of granular overlap and scheduling state.
+/// Checkpoints own no source or filter; callers own total checkpoint admission,
+/// eviction and generation validation, and must keep them off the audio callback.
+pub struct GranularCheckpoint {
+    owner: u64,
+    overlap: OverlapCheckpoint,
+    center: i128,
+    index: u64,
+    previous: Option<f64>,
+    ready_end: u64,
+}
+impl GranularCheckpoint {
+    /// Output cursor captured with this checkpoint.
+    pub fn position(&self) -> u64 {
+        self.overlap.position()
+    }
+    /// Retained ring allocation, excluding the inline checkpoint value.
+    pub fn backing_bytes(&self) -> Option<usize> {
+        self.overlap.backing_bytes()
+    }
+}
 
 /// Logical source access for a single sequential render. Both methods must
 /// resolve the same unwrapped region-relative positions, including the source's
@@ -33,6 +61,7 @@ pub struct SequentialGranularConfig {
 /// an audio callback or a worker solely responsible for active playback pages.
 pub struct SequentialGranular {
     config: SequentialGranularConfig,
+    owner: u64,
     synth: GrainSynthesis,
     overlap: GranularOverlap,
     total: u64,
@@ -84,10 +113,16 @@ impl SequentialGranular {
         // Full source interval spans at most 2*nominal at this pitch, plus
         // filter halo and rounding allowance, independent of output duration.
         let max_source_frames = (2.0 * nominal as f64 * pitch).ceil() as usize + 520;
+        let owner = NEXT_RENDERER_ID
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |next| {
+                next.checked_add(1)
+            })
+            .map_err(|_| Error::Invalid("granular renderer identity exhausted"))?;
         let synth = GrainSynthesis::new(config.pitch_cents, config.resampler, cancel)?;
         let overlap = GranularOverlap::new(total, ring)?;
         let result = Self {
             config,
+            owner,
             synth,
             overlap,
             total,
@@ -128,6 +163,50 @@ impl SequentialGranular {
             .checked_add(self.overlap.backing_bytes()?)
     }
 
+    /// Capture exact state, including completed but undrained frames.
+    /// `budget` limits this checkpoint's allocated ring payload. The caller must
+    /// also admit all retained checkpoints and external source memory in its
+    /// aggregate budget. Poisoned state cannot be captured.
+    pub fn checkpoint(&self, budget: usize) -> Result<GranularCheckpoint, Error> {
+        if self.poisoned {
+            return Err(Error::Invalid("granular renderer is poisoned"));
+        }
+        let available = MAX_SCRATCH_BYTES
+            .checked_sub(self.backing_bytes().ok_or(Error::ScratchLimit)?)
+            .and_then(|n| {
+                self.max_source_frames
+                    .checked_mul(std::mem::size_of::<[f64; 2]>())
+                    .and_then(|scratch| n.checked_sub(scratch))
+            })
+            .ok_or(Error::ScratchLimit)?;
+        let overlap = self.overlap.checkpoint(budget.min(available))?;
+        Ok(GranularCheckpoint {
+            owner: self.owner,
+            overlap,
+            center: self.center,
+            index: self.index,
+            previous: self.previous,
+            ready_end: self.ready_end,
+        })
+    }
+
+    /// Restore only a checkpoint captured by this renderer. The caller must
+    /// first verify the same source identity and generation still apply; this
+    /// state cannot do so. Restoring a valid checkpoint also clears poison after
+    /// a partial failure. A foreign checkpoint is refused without mutation.
+    pub fn restore(&mut self, checkpoint: &GranularCheckpoint) -> Result<(), Error> {
+        if checkpoint.owner != self.owner {
+            return Err(Error::Invalid("foreign granular checkpoint"));
+        }
+        self.overlap.restore(&checkpoint.overlap)?;
+        self.center = checkpoint.center;
+        self.index = checkpoint.index;
+        self.previous = checkpoint.previous;
+        self.ready_end = checkpoint.ready_end;
+        self.poisoned = false;
+        Ok(())
+    }
+
     /// Maximum caller-owned source scratch required for any one grain.
     pub fn max_source_frames(&self) -> usize {
         self.max_source_frames
@@ -140,7 +219,7 @@ impl SequentialGranular {
     pub fn position(&self) -> u64 {
         self.overlap.position()
     }
-    /// A poisoned state must be discarded; no retry or drain is permitted.
+    /// A poisoned state cannot advance or drain until a valid checkpoint is restored.
     pub fn is_poisoned(&self) -> bool {
         self.poisoned
     }
@@ -153,7 +232,7 @@ impl SequentialGranular {
     /// output is complete. Source or scratch errors before accumulation leave
     /// renderer state unchanged; scratch and source side effects may remain.
     /// Any reconstruction error, including cancellation before its first sample,
-    /// poisons the renderer, which must be discarded.
+    /// poisons the renderer, which must be discarded or restored from a valid checkpoint.
     /// The caller must not advance while completed frames remain undrained.
     pub fn advance<S: GranularSource>(
         &mut self,
