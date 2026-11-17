@@ -70,6 +70,38 @@ impl VerifiedGranularCursor {
         self.seeking
     }
 
+    pub(crate) fn owns_checkpoint(&self, checkpoint: &GranularCheckpoint) -> bool {
+        self.renderer.owns_checkpoint(checkpoint)
+    }
+    pub(crate) fn is_pristine(&self) -> bool {
+        self.seeking.is_none() && self.renderer.is_pristine()
+    }
+    pub(crate) fn checkpoint_storage_limit(&self) -> Option<usize> {
+        let used = self
+            .renderer
+            .backing_bytes()?
+            .checked_add(
+                self.renderer
+                    .max_source_frames()
+                    .checked_mul(std::mem::size_of::<[f64; 2]>())?,
+            )?
+            .checked_add(
+                self.reference
+                    .region()
+                    .map_or(Some(0), |region| region.backing_bytes())?,
+            )?;
+        hex_warp::MAX_SCRATCH_BYTES.checked_sub(used)
+    }
+    pub(crate) fn refresh_checkpoint(
+        &self,
+        checkpoint: &mut GranularCheckpoint,
+    ) -> Result<(), Error> {
+        if self.seeking.is_some() {
+            return Err(Error::Invalid("granular seek is pending"));
+        }
+        self.renderer.refresh_checkpoint(checkpoint)
+    }
+
     /// Capture at a normal output boundary; checkpoint storage is caller-owned.
     pub fn checkpoint(&self, budget: usize) -> Result<GranularCheckpoint, Error> {
         if self.seeking.is_some() {

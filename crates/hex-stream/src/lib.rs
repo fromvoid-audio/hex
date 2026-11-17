@@ -15,7 +15,11 @@
 
 mod footprint;
 mod granular;
+mod granular_checkpoint_cache;
 mod granular_seek;
+pub use granular_checkpoint_cache::{
+    CheckpointCacheError, CheckpointRecord, VerifiedGranularCheckpointCache,
+};
 pub use granular_seek::{
     GranularSeekProgress, MAX_GRANULAR_PREROLL_FRAMES, MAX_GRANULAR_SEEK_STEPS,
     VerifiedGranularCursor,

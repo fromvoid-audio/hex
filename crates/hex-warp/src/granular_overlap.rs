@@ -100,6 +100,21 @@ impl GranularOverlap {
         Ok(checkpoint)
     }
 
+    pub(super) fn refresh_checkpoint(
+        &self,
+        checkpoint: &mut OverlapCheckpoint,
+    ) -> Result<(), Error> {
+        if checkpoint.samples.len() != self.samples.len()
+            || checkpoint.weights.len() != self.weights.len()
+        {
+            return Err(Error::Invalid("incompatible granular overlap checkpoint"));
+        }
+        checkpoint.samples.copy_from_slice(&self.samples);
+        checkpoint.weights.copy_from_slice(&self.weights);
+        checkpoint.cursor = self.cursor;
+        Ok(())
+    }
+
     pub(super) fn restore(&mut self, checkpoint: &OverlapCheckpoint) -> Result<(), Error> {
         if checkpoint.samples.len() != self.samples.len()
             || checkpoint.weights.len() != self.weights.len()
