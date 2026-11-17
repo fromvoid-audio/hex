@@ -1420,3 +1420,438 @@ fn verified_granular_seek_rejects_invalid_source_budget_and_foreign_marks() {
     );
     assert_eq!(cursor.seek_target(), Some(100));
 }
+
+#[test]
+fn granular_checkpoint_cache_evicts_lru_and_selects_nearest_prior() {
+    use hex_stream::{
+        CheckpointCacheError, CheckpointRecord, GranularSeekProgress,
+        VerifiedGranularCheckpointCache, VerifiedGranularCursor,
+    };
+    use hex_warp::{Mode, Resampler};
+    let (wav, _) = Wav::create(8192, false);
+    let (mut reader, plan, meta) = setup(&wav, 8192, 48_000, ResampleVersion::V1);
+    let mut raw = vec![[0.0; 2]; 8192];
+    let mut cache = vec![[0.0; 2]; 2048];
+    let reference =
+        scan_reference_channel_on_control(&meta, &mut reader, &plan, &mut raw, &mut cache, || {
+            false
+        })
+        .unwrap();
+    for mode in [
+        Mode::Tones { grain_ms: 8 },
+        Mode::Texture {
+            grain_ms: 8,
+            fluctuation: 35,
+            seed: 42,
+        },
+    ] {
+        for law in [Resampler::V1, Resampler::V2] {
+            let mut cursor = VerifiedGranularCursor::new(
+                granular_state(plan.output_frames(), 48_000, mode, law, reference.channel()),
+                reference.clone(),
+            )
+            .unwrap();
+            let mut bank = VerifiedGranularCheckpointCache::new(&cursor, 3, 1_000_000).unwrap();
+            let mut grain = vec![[0.0; 2]; cursor.max_source_frames()];
+            let first = cursor_read(
+                &mut cursor,
+                &mut reader,
+                &plan,
+                &mut raw,
+                &mut cache,
+                &mut grain,
+                128,
+            );
+            assert_eq!(bank.record(&cursor), Ok(CheckpointRecord::Added));
+            let second = cursor_read(
+                &mut cursor,
+                &mut reader,
+                &plan,
+                &mut raw,
+                &mut cache,
+                &mut grain,
+                128,
+            );
+            assert_eq!(bank.record(&cursor), Ok(CheckpointRecord::Added));
+            let bytes = bank.backing_bytes().unwrap();
+            assert_eq!(bank.len(), 3);
+            assert!(bytes <= 1_000_000);
+            assert_eq!(
+                bank.begin_seek(&mut cursor, 128, 0, &mut reader, &plan, || false),
+                Ok(GranularSeekProgress::Reached { position: 128 })
+            );
+            assert_eq!(
+                cursor_read(
+                    &mut cursor,
+                    &mut reader,
+                    &plan,
+                    &mut raw,
+                    &mut cache,
+                    &mut grain,
+                    128
+                ),
+                second
+            );
+            let third = cursor_read(
+                &mut cursor,
+                &mut reader,
+                &plan,
+                &mut raw,
+                &mut cache,
+                &mut grain,
+                128,
+            );
+            assert_eq!(
+                bank.record(&cursor),
+                Ok(CheckpointRecord::Replaced {
+                    evicted_position: 256
+                })
+            );
+            assert_eq!(bank.backing_bytes(), Some(bytes));
+            assert_eq!(
+                bank.begin_seek(&mut cursor, 256, 0, &mut reader, &plan, || false),
+                Err(CheckpointCacheError::NotCovered)
+            );
+            assert_eq!(cursor.position(), 384);
+            assert_eq!(
+                bank.begin_seek(&mut cursor, 300, 200, &mut reader, &plan, || false),
+                Ok(GranularSeekProgress::Pending { position: 128 })
+            );
+            let mut discard = [[0.0; 2]; 32];
+            loop {
+                if matches!(
+                    cursor
+                        .continue_seek(
+                            &mut reader,
+                            &plan,
+                            hex_stream::VerifiedGranularBuffers {
+                                source: &mut raw,
+                                cache: &mut cache,
+                                grain: &mut grain
+                            },
+                            &mut discard,
+                            1,
+                            || false
+                        )
+                        .unwrap(),
+                    GranularSeekProgress::Reached { position: 300 }
+                ) {
+                    break;
+                }
+            }
+            assert_eq!(
+                cursor_read(
+                    &mut cursor,
+                    &mut reader,
+                    &plan,
+                    &mut raw,
+                    &mut cache,
+                    &mut grain,
+                    84
+                ),
+                third[44..]
+            );
+            assert_eq!(
+                bank.begin_seek(&mut cursor, 128, 0, &mut reader, &plan, || false),
+                Ok(GranularSeekProgress::Reached { position: 128 })
+            );
+            assert_eq!(
+                cursor_read(
+                    &mut cursor,
+                    &mut reader,
+                    &plan,
+                    &mut raw,
+                    &mut cache,
+                    &mut grain,
+                    256
+                ),
+                [second, third].concat()
+            );
+            assert_eq!(
+                bank.begin_seek(&mut cursor, 0, 0, &mut reader, &plan, || false),
+                Ok(GranularSeekProgress::Reached { position: 0 })
+            );
+            assert_eq!(
+                cursor_read(
+                    &mut cursor,
+                    &mut reader,
+                    &plan,
+                    &mut raw,
+                    &mut cache,
+                    &mut grain,
+                    128
+                ),
+                first
+            );
+        }
+    }
+}
+
+#[test]
+fn granular_checkpoint_cache_refuses_foreign_capacity_pending_and_cancel() {
+    use hex_stream::{
+        CheckpointCacheError, GranularSeekProgress, VerifiedGranularCheckpointCache,
+        VerifiedGranularCursor, VerifiedGranularStepError,
+    };
+    use hex_warp::{Error, Mode, Resampler};
+    let (wav, _) = Wav::create(8192, false);
+    let (mut reader, plan, meta) = setup(&wav, 8192, 48_000, ResampleVersion::V1);
+    let mut raw = vec![[0.0; 2]; 8192];
+    let mut cache = vec![[0.0; 2]; 2048];
+    let reference =
+        scan_reference_channel_on_control(&meta, &mut reader, &plan, &mut raw, &mut cache, || {
+            false
+        })
+        .unwrap();
+    let make = || {
+        VerifiedGranularCursor::new(
+            granular_state(
+                plan.output_frames(),
+                48_000,
+                Mode::Tones { grain_ms: 8 },
+                Resampler::V1,
+                reference.channel(),
+            ),
+            reference.clone(),
+        )
+        .unwrap()
+    };
+    let mut cursor = make();
+    let other = make();
+    assert!(matches!(
+        VerifiedGranularCheckpointCache::new(&cursor, 1, 1_000_000),
+        Err(CheckpointCacheError::Warp(Error::Invalid(_)))
+    ));
+    assert!(matches!(
+        VerifiedGranularCheckpointCache::new(&cursor, 3, 0),
+        Err(CheckpointCacheError::Warp(Error::ScratchLimit))
+    ));
+    let mut bank = VerifiedGranularCheckpointCache::new(&cursor, 3, 1_000_000).unwrap();
+    let bytes = bank.backing_bytes();
+    assert!(matches!(
+        bank.record(&other),
+        Err(CheckpointCacheError::Warp(Error::Invalid(_)))
+    ));
+    assert_eq!(bank.len(), 1);
+    assert_eq!(bank.backing_bytes(), bytes);
+    assert!(matches!(
+        bank.begin_seek(&mut cursor, 10, 10, &mut reader, &plan, || true),
+        Err(CheckpointCacheError::Seek(
+            VerifiedGranularStepError::Source(StreamFailureKind::Cancelled)
+        ))
+    ));
+    assert_eq!(cursor.position(), 0);
+    assert_eq!(bank.len(), 1);
+    let kernel = ResampleKernel::with_version(48_000, 48_000, ResampleVersion::V2).unwrap();
+    let wrong_plan = ResamplePlan::with_kernel(kernel, 8192, 8192, 16384, 4096).unwrap();
+    assert_eq!(
+        bank.begin_seek(&mut cursor, 10, 10, &mut reader, &wrong_plan, || false),
+        Err(CheckpointCacheError::Seek(
+            VerifiedGranularStepError::Source(StreamFailureKind::UnknownSource)
+        ))
+    );
+    assert_eq!(bank.len(), 1);
+    assert_eq!(
+        bank.begin_seek(&mut cursor, 10, 10, &mut reader, &plan, || false),
+        Ok(GranularSeekProgress::Pending { position: 0 })
+    );
+    assert!(matches!(
+        bank.record(&cursor),
+        Err(CheckpointCacheError::Warp(Error::Invalid(_)))
+    ));
+}
+
+#[test]
+fn granular_checkpoint_cache_refuses_poisoned_cursor_without_eviction() {
+    use hex_stream::{
+        CheckpointCacheError, VerifiedGranularBuffers, VerifiedGranularCheckpointCache,
+        VerifiedGranularCursor,
+    };
+    use hex_warp::{Error, Mode, Resampler};
+    let (wav, _) = Wav::create(8192, false);
+    let (mut reader, plan, meta) = setup(&wav, 8192, 48_000, ResampleVersion::V1);
+    let mut raw = vec![[0.0; 2]; 8192];
+    let mut cache = vec![[0.0; 2]; 2048];
+    let reference =
+        scan_reference_channel_on_control(&meta, &mut reader, &plan, &mut raw, &mut cache, || {
+            false
+        })
+        .unwrap();
+    let mut observed = false;
+    for stop_at in 2..64 {
+        let mut cursor = VerifiedGranularCursor::new(
+            granular_state(
+                plan.output_frames(),
+                48_000,
+                Mode::Texture {
+                    grain_ms: 200,
+                    fluctuation: 0,
+                    seed: 1,
+                },
+                Resampler::V1,
+                reference.channel(),
+            ),
+            reference.clone(),
+        )
+        .unwrap();
+        let mut bank = VerifiedGranularCheckpointCache::new(&cursor, 2, 1_000_000).unwrap();
+        let bytes = bank.backing_bytes();
+        let mut grain = vec![[0.0; 2]; cursor.max_source_frames()];
+        let calls = std::cell::Cell::new(0);
+        let _ = cursor.advance(
+            &mut reader,
+            &plan,
+            VerifiedGranularBuffers {
+                source: &mut raw,
+                cache: &mut cache,
+                grain: &mut grain,
+            },
+            || {
+                calls.set(calls.get() + 1);
+                calls.get() >= stop_at
+            },
+        );
+        if cursor.is_poisoned() {
+            assert!(matches!(
+                bank.record(&cursor),
+                Err(CheckpointCacheError::Warp(Error::Invalid(_)))
+            ));
+            assert_eq!(bank.len(), 1);
+            assert_eq!(bank.backing_bytes(), bytes);
+            observed = true;
+            break;
+        }
+    }
+    assert!(observed, "expected cancellation inside reconstruction");
+}
+
+#[test]
+fn granular_checkpoint_cache_reuses_storage_under_byte_budget() {
+    use hex_stream::{CheckpointRecord, VerifiedGranularCheckpointCache, VerifiedGranularCursor};
+    use hex_warp::{MAX_SCRATCH_BYTES, Mode, Resampler};
+    let (wav, _) = Wav::create(8192, false);
+    let (mut reader, plan, meta) = setup(&wav, 8192, 48_000, ResampleVersion::V1);
+    let mut raw = vec![[0.0; 2]; 8192];
+    let mut cache = vec![[0.0; 2]; 2048];
+    let reference =
+        scan_reference_channel_on_control(&meta, &mut reader, &plan, &mut raw, &mut cache, || {
+            false
+        })
+        .unwrap();
+    let mut cursor = VerifiedGranularCursor::new(
+        granular_state(
+            plan.output_frames(),
+            48_000,
+            Mode::Texture {
+                grain_ms: 8,
+                fluctuation: 0,
+                seed: 1,
+            },
+            Resampler::V1,
+            reference.channel(),
+        ),
+        reference,
+    )
+    .unwrap();
+    let snapshot_bytes = cursor
+        .checkpoint(MAX_SCRATCH_BYTES)
+        .unwrap()
+        .backing_bytes()
+        .unwrap();
+    let initial_bytes = VerifiedGranularCheckpointCache::new(&cursor, 3, 1_000_000)
+        .unwrap()
+        .backing_bytes()
+        .unwrap();
+    let budget = initial_bytes + snapshot_bytes + snapshot_bytes / 2;
+    let mut bank = VerifiedGranularCheckpointCache::new(&cursor, 3, budget).unwrap();
+    let mut grain = vec![[0.0; 2]; cursor.max_source_frames()];
+    cursor_read(
+        &mut cursor,
+        &mut reader,
+        &plan,
+        &mut raw,
+        &mut cache,
+        &mut grain,
+        128,
+    );
+    assert_eq!(bank.record(&cursor), Ok(CheckpointRecord::Added));
+    let bytes = bank.backing_bytes().unwrap();
+    cursor_read(
+        &mut cursor,
+        &mut reader,
+        &plan,
+        &mut raw,
+        &mut cache,
+        &mut grain,
+        128,
+    );
+    assert_eq!(
+        bank.record(&cursor),
+        Ok(CheckpointRecord::Replaced {
+            evicted_position: 128
+        })
+    );
+    assert_eq!(bank.len(), 2);
+    assert_eq!(bank.backing_bytes(), Some(bytes));
+    assert!(bytes <= budget);
+}
+
+#[test]
+#[ignore = "controlled optimized checkpoint cache timing fixture"]
+fn granular_checkpoint_cache_profile() {
+    use hex_stream::{CheckpointRecord, VerifiedGranularCheckpointCache, VerifiedGranularCursor};
+    use hex_warp::{Mode, Resampler};
+    let (wav, _) = Wav::create(8192, false);
+    let (mut reader, plan, meta) = setup(&wav, 8192, 48_000, ResampleVersion::V1);
+    let mut raw = vec![[0.0; 2]; 8192];
+    let mut cache = vec![[0.0; 2]; 2048];
+    let reference =
+        scan_reference_channel_on_control(&meta, &mut reader, &plan, &mut raw, &mut cache, || {
+            false
+        })
+        .unwrap();
+    let mut cursor = VerifiedGranularCursor::new(
+        granular_state(
+            plan.output_frames(),
+            48_000,
+            Mode::Texture {
+                grain_ms: 200,
+                fluctuation: 0,
+                seed: 1,
+            },
+            Resampler::V1,
+            reference.channel(),
+        ),
+        reference,
+    )
+    .unwrap();
+    let mut bank = VerifiedGranularCheckpointCache::new(&cursor, 2, 1_500_000).unwrap();
+    let mut grain = vec![[0.0; 2]; cursor.max_source_frames()];
+    let mut times = Vec::new();
+    for i in 0..26 {
+        cursor_read(
+            &mut cursor,
+            &mut reader,
+            &plan,
+            &mut raw,
+            &mut cache,
+            &mut grain,
+            32,
+        );
+        let start = std::time::Instant::now();
+        let effect = bank.record(&cursor).unwrap();
+        let elapsed = start.elapsed().as_nanos();
+        if i > 0 {
+            assert!(matches!(effect, CheckpointRecord::Replaced { .. }));
+        }
+        if i >= 6 {
+            times.push(elapsed);
+        }
+    }
+    times.sort_unstable();
+    eprintln!(
+        "checkpoint_cache rate=48000 grain_ms=200 law=V1 slots=2 retained_bytes={} warmup=5 samples=20 replace_p50_ns={}",
+        bank.backing_bytes().unwrap(),
+        times[10]
+    );
+}

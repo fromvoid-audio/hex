@@ -203,6 +203,28 @@ impl SequentialGranular {
         })
     }
 
+    /// Whether a checkpoint belongs to this exact renderer instance.
+    pub fn owns_checkpoint(&self, checkpoint: &GranularCheckpoint) -> bool {
+        checkpoint.owner == self.owner
+    }
+
+    /// Replace an owned checkpoint in place without allocating new ring storage.
+    /// Poisoned state and foreign checkpoints are refused before mutation.
+    pub fn refresh_checkpoint(&self, checkpoint: &mut GranularCheckpoint) -> Result<(), Error> {
+        if self.poisoned {
+            return Err(Error::Invalid("granular renderer is poisoned"));
+        }
+        if !self.owns_checkpoint(checkpoint) {
+            return Err(Error::Invalid("foreign granular checkpoint"));
+        }
+        self.overlap.refresh_checkpoint(&mut checkpoint.overlap)?;
+        checkpoint.center = self.center;
+        checkpoint.index = self.index;
+        checkpoint.previous = self.previous;
+        checkpoint.ready_end = self.ready_end;
+        Ok(())
+    }
+
     /// Restore only a checkpoint captured by this renderer. The caller must
     /// first verify the same source identity and generation still apply; this
     /// state cannot do so. Restoring a valid checkpoint also clears poison after
