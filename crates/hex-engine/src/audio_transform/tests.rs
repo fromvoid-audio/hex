@@ -19,6 +19,8 @@ mod content_resampler;
 mod content_reverse;
 #[path = "tests/musical_sharing.rs"]
 mod musical_sharing;
+#[path = "tests/streamed_granular.rs"]
+mod streamed_granular;
 #[path = "tests/view_placement.rs"]
 mod view_placement;
 

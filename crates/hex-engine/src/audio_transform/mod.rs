@@ -131,6 +131,122 @@ pub fn streamed_repitch_map(
     Ok((map, render_resampler(domain)))
 }
 
+/// Canonical granular root inputs, not a file owner, worker or page lease.
+/// A future worker must bind the raw asset/generation to the verified reader
+/// and retain the existing aggregate memory and source invalidation contracts.
+pub struct StreamedGranularRoot {
+    metadata: crate::StreamedSourceMetadata,
+    region: hex_warp::SourceRegion,
+    map: hex_warp::TimeMap,
+    mode: hex_warp::Mode,
+    pitch_cents: i16,
+    law: hex_warp::Resampler,
+}
+impl StreamedGranularRoot {
+    pub fn metadata(&self) -> &crate::StreamedSourceMetadata {
+        &self.metadata
+    }
+    /// Actual retained map and envelope payload, excluding this inline value.
+    pub fn backing_bytes(&self) -> Option<usize> {
+        self.region
+            .backing_bytes()?
+            .checked_add(self.map.backing_bytes()?)
+    }
+    /// Move the exact projected inputs to their eventual control-side owner.
+    pub fn into_parts(
+        self,
+    ) -> (
+        crate::StreamedSourceMetadata,
+        hex_warp::SourceRegion,
+        hex_warp::TimeMap,
+        hex_warp::Mode,
+        i16,
+        hex_warp::Resampler,
+    ) {
+        (
+            self.metadata,
+            self.region,
+            self.map,
+            self.mode,
+            self.pitch_cents,
+            self.law,
+        )
+    }
+}
+
+/// Project a validated canonical Tones/Texture root for a future worker.
+/// The caller validates the edit and binds its asset to `raw`; this operation
+/// only derives bounded metadata and grants no source or playback admission.
+/// The map covers the full processing root; consumers apply view cropping.
+/// Output fades and composed/directed placements are refused until their
+/// consumers implement them. Warped phase belongs in the map, so the source
+/// region has zero phase just like resident root preparation.
+pub fn streamed_granular_root(
+    raw: &crate::StreamedSourceMetadata,
+    edit: &AudioClipEdit,
+    tempo: &hex_project::TempoMap,
+    cancel: &AtomicBool,
+) -> Result<StreamedGranularRoot, Invalid> {
+    let domain = &edit.domain;
+    if cancel.load(Ordering::Acquire) {
+        return Err(Invalid("audio preparation cancelled"));
+    }
+    if !raw.key().is_raw()
+        || raw.project_rate() != tempo.sample_rate()
+        || !domain.warp_enabled
+        || domain.events.is_some()
+        || domain.musical_event_source.is_some()
+        || domain.source_gain.len() > hex_warp::MAX_POINTS
+        || !domain.fade.is_neutral()
+        || edit.content_view.is_some()
+        || edit.placement.is_some()
+        || edit.repeat_period.is_some()
+    {
+        return Err(Invalid("unsupported streamed granular root"));
+    }
+    let mode = render_mode(domain)?;
+    if !matches!(
+        mode,
+        hex_warp::Mode::Tones { .. } | hex_warp::Mode::Texture { .. }
+    ) {
+        return Err(Invalid("unsupported streamed granular mode"));
+    }
+    let (map, attacks) = mapping::prepare_streamed_map(edit, tempo, cancel)?;
+    if !attacks.is_empty() {
+        return Err(Invalid("streamed granular root has beat attacks"));
+    }
+    let mut envelope = Vec::new();
+    envelope
+        .try_reserve_exact(domain.source_gain.len())
+        .map_err(|_| Invalid("source envelope allocation failed"))?;
+    envelope.extend(domain.source_gain.iter().map(|point| hex_warp::GainPoint {
+        source_frame: point.frame,
+        gain_q16: point.gain_q16,
+    }));
+    let region = hex_warp::SourceRegion::new(
+        raw.playback_frames(),
+        domain.source_offset,
+        domain.source_length,
+        0,
+        domain.looping,
+        envelope,
+    )
+    .map_err(warp_error)?;
+    let law = render_resampler(domain);
+    let metadata = raw.with_granular(&region, &map, mode, domain.pitch_cents, law)?;
+    if cancel.load(Ordering::Acquire) {
+        return Err(Invalid("audio preparation cancelled"));
+    }
+    Ok(StreamedGranularRoot {
+        metadata,
+        region,
+        map,
+        mode,
+        pitch_cents: domain.pitch_cents,
+        law,
+    })
+}
+
 /// Immutable control-side file facts and canonical map for one streamed
 /// Re-Pitch source. This is not a worker, page lease or publication authority.
 #[derive(Clone)]
