@@ -45,7 +45,7 @@ use objc2_core_foundation::Type;
 pub use super::enumerate::{default_output_device, SupportedInputConfigs, SupportedOutputConfigs};
 use std::ffi::c_void;
 use std::fmt;
-use std::mem::{self, size_of, size_of_val};
+use std::mem::{self, size_of};
 use std::ptr::{null, NonNull};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{channel, RecvTimeoutError};
@@ -1815,11 +1815,28 @@ fn output_timing_streams(device: AudioDeviceID) -> Result<([u32; 16], usize), Bu
         mScope: kAudioObjectPropertyScopeOutput,
         mElement: kAudioObjectPropertyElementMain,
     };
+    let declared_bytes = || {
+        let mut bytes = 0;
+        // SAFETY: Core Audio reads the property address and writes one u32
+        // synchronously. Both objects live through this call.
+        let status = unsafe {
+            AudioObjectGetPropertyDataSize(
+                device,
+                NonNull::from(&address),
+                0,
+                null(),
+                NonNull::from(&mut bytes),
+            )
+        };
+        coreaudio::Error::from_os_status(status)?;
+        Ok::<u32, BuildStreamError>(bytes)
+    };
+    let expected = declared_bytes()?;
+    output_timing_stream_count(expected as usize)?;
     let mut streams = [0_u32; 16];
-    let mut size = size_of_val(&streams) as u32;
-    // SAFETY: The initialized array provides the advertised writable capacity.
-    // Core Audio refuses insufficient space; count/alignment/IDs are checked
-    // before indexing. No returned size can extend the slice past this array.
+    let mut size = expected;
+    // SAFETY: The initialized array has at least the checked advertised
+    // capacity. The returned size cannot extend Rust access past the array.
     let status = unsafe {
         AudioObjectGetPropertyData(
             device,
@@ -1827,12 +1844,15 @@ fn output_timing_streams(device: AudioDeviceID) -> Result<([u32; 16], usize), Bu
             0,
             null(),
             NonNull::from(&mut size),
-            NonNull::new(streams.as_mut_ptr())
-                .ok_or_else(|| bounded_output_error("coreaudio stream storage unavailable"))?
-                .cast(),
+            NonNull::from(&mut streams).cast(),
         )
     };
     coreaudio::Error::from_os_status(status)?;
+    if size != expected || declared_bytes()? != expected {
+        return Err(bounded_output_error(
+            "coreaudio output stream inventory changed during query",
+        ));
+    }
     let count = validate_output_timing_streams(&streams, size as usize)?;
     Ok((streams, count))
 }
@@ -1841,12 +1861,7 @@ fn validate_output_timing_streams(
     streams: &[u32; 16],
     size: usize,
 ) -> Result<usize, BuildStreamError> {
-    let count = size / size_of::<u32>();
-    if size == 0 || size > size_of_val(streams) || size % size_of::<u32>() != 0 {
-        return Err(bounded_output_error(
-            "invalid coreaudio output stream inventory",
-        ));
-    }
+    let count = output_timing_stream_count(size)?;
     for i in 0..count {
         if streams[i] == 0 || streams[..i].contains(&streams[i]) {
             return Err(bounded_output_error(
@@ -1855,6 +1870,15 @@ fn validate_output_timing_streams(
         }
     }
     Ok(count)
+}
+
+fn output_timing_stream_count(size: usize) -> Result<usize, BuildStreamError> {
+    if size == 0 || size > size_of::<[u32; 16]>() || size % size_of::<u32>() != 0 {
+        return Err(bounded_output_error(
+            "invalid coreaudio output stream inventory",
+        ));
+    }
+    Ok(size / size_of::<u32>())
 }
 
 #[cfg(test)]
