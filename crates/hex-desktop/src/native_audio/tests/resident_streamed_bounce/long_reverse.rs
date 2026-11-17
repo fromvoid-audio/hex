@@ -30,41 +30,13 @@ fn long_reverse_bounce_matches_resident_across_a_stream_page() {
 fn compare(output: Output) {
     let _native = native_fixture();
     let files = Files::new();
-    let short = files.constant_wav("resident.wav", 48_000, TAIL_FRAMES as u32, &[0]);
-    let long = files.constant_wav("streamed.wav", 48_000, 1, &[0]);
-    let ramp: Vec<i16> = (0..TAIL_FRAMES)
-        .map(|frame| frame as i16 * 3 - 12_000)
+    let short = files.0.join("resident.wav");
+    let long = files.0.join("streamed.wav");
+    let pattern: Vec<u8> = (0..TAIL_FRAMES)
+        .map(|frame| (frame * 37 % 251 + 1) as u8)
         .collect();
-    let bytes: Vec<u8> = ramp
-        .iter()
-        .flat_map(|sample| sample.to_le_bytes())
-        .collect();
-    let header = {
-        let mut wav = fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(&long)
-            .unwrap();
-        let mut header = [0; WAV_HEADER_BYTES];
-        wav.read_exact(&mut header).unwrap();
-        let data_bytes = (LONG_FRAMES * 2) as u32;
-        header[4..8].copy_from_slice(&(data_bytes + 36).to_le_bytes());
-        header[40..44].copy_from_slice(&data_bytes.to_le_bytes());
-        wav.rewind().unwrap();
-        wav.write_all(&header).unwrap();
-        wav.seek(SeekFrom::Start(
-            WAV_HEADER_BYTES as u64 + (LONG_FRAMES - TAIL_FRAMES) * 2,
-        ))
-        .unwrap();
-        wav.write_all(&bytes).unwrap();
-        header
-    };
-    let mut resident_file = fs::OpenOptions::new().write(true).open(&short).unwrap();
-    resident_file
-        .seek(SeekFrom::Start(WAV_HEADER_BYTES as u64))
-        .unwrap();
-    resident_file.write_all(&bytes).unwrap();
-    drop(resident_file);
+    write_pcm8(&short, TAIL_FRAMES, &pattern);
+    let header = write_pcm8(&long, LONG_FRAMES, &pattern);
 
     let page = hex_engine::STREAM_PAGE_FRAMES as u64;
     let start = LONG_FRAMES % page - RANGE_FRAMES / 2;
@@ -72,12 +44,12 @@ fn compare(output: Output) {
     // The reverse cursor starts in the last source page and crosses back into
     // the preceding page. The resident tail has the same relative coordinates.
     assert_ne!((LONG_FRAMES - 1 - start) / page, (LONG_FRAMES - end) / page);
-    let oracle: Vec<_> = ramp
+    let oracle: Vec<_> = pattern
         .iter()
         .rev()
         .skip(start as usize)
         .take(RANGE_FRAMES as usize)
-        .map(|sample| [f32::from(*sample) / 32_768.0; 2])
+        .map(|sample| [(f32::from(*sample) - 128.0) / 128.0; 2])
         .collect();
     let resident = render_resident(&short, start);
     let streamed = render_streamed(&long, start, output);
@@ -85,7 +57,32 @@ fn compare(output: Output) {
     assert_eq!(streamed.len(), RANGE_FRAMES as usize);
     assert_matches(&resident, &oracle, "resident reverse source frame oracle");
     assert_matches(&streamed, &resident, "streamed reverse");
-    assert_original_bytes(&long, &header, &bytes);
+    assert_original_bytes(&long, &header, &pattern);
+}
+
+fn write_pcm8(path: &Path, frames: u64, tail: &[u8]) -> Vec<u8> {
+    let data_bytes = frames as u32;
+    let mut header = Vec::from(*b"RIFF");
+    header.extend_from_slice(&(36 + data_bytes).to_le_bytes());
+    header.extend_from_slice(b"WAVEfmt ");
+    header.extend_from_slice(&16u32.to_le_bytes()); // fmt chunk size
+    header.extend_from_slice(&1u16.to_le_bytes()); // linear PCM
+    header.extend_from_slice(&1u16.to_le_bytes()); // mono
+    header.extend_from_slice(&48_000u32.to_le_bytes()); // sample rate
+    header.extend_from_slice(&48_000u32.to_le_bytes()); // byte rate
+    header.extend_from_slice(&1u16.to_le_bytes()); // bytes per frame
+    header.extend_from_slice(&8u16.to_le_bytes());
+    header.extend_from_slice(b"data");
+    header.extend_from_slice(&data_bytes.to_le_bytes());
+    assert_eq!(header.len(), WAV_HEADER_BYTES);
+    let mut wav = fs::File::create(path).unwrap();
+    wav.write_all(&header).unwrap();
+    wav.seek(SeekFrom::Start(
+        WAV_HEADER_BYTES as u64 + frames - tail.len() as u64,
+    ))
+    .unwrap();
+    wav.write_all(tail).unwrap();
+    header
 }
 
 fn render_resident(path: &Path, start: u64) -> Vec<hex_engine::Frame> {
@@ -113,14 +110,14 @@ fn assert_original_bytes(path: &Path, header: &[u8], tail: &[u8]) {
     let mut wav = fs::File::open(path).unwrap();
     assert_eq!(
         wav.metadata().unwrap().len(),
-        WAV_HEADER_BYTES as u64 + LONG_FRAMES * 2
+        WAV_HEADER_BYTES as u64 + LONG_FRAMES
     );
     let mut actual_header = [0; WAV_HEADER_BYTES];
     wav.read_exact(&mut actual_header).unwrap();
     assert_eq!(actual_header, header);
     let zeroes = [0; 65_536];
     let mut block = [0; 65_536];
-    let mut remaining = (LONG_FRAMES - TAIL_FRAMES) * 2;
+    let mut remaining = LONG_FRAMES - TAIL_FRAMES;
     while remaining != 0 {
         let frames = remaining.min(block.len() as u64) as usize;
         wav.read_exact(&mut block[..frames]).unwrap();
