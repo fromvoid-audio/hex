@@ -112,6 +112,8 @@ impl FactsGate {
 pub(super) struct PreparationObservation {
     pub(super) output: Option<u64>,
     pub(super) binding: Option<Binding>,
+    /// First two accepted (device, binding, completed prefix) facts; no custody authority.
+    pub(super) source_bindings: [Option<(u64, Binding, Option<u64>)>; 2],
     pub(super) pending: bool,
     pub(super) accepted: bool,
     pub(super) retiring: bool,
@@ -771,9 +773,22 @@ impl Plugins {
                 let restore_refused = observed.restore_refused;
                 let editor_receipts = observed.editor_receipts;
                 let editor_receipt_count = observed.editor_receipt_count;
+                let mut source_bindings = [None; 2];
+                for (entry, source) in source_bindings.iter_mut().zip(
+                    self.sources
+                        .iter()
+                        .filter(|source| source.accepted && !source.retiring),
+                ) {
+                    *entry = Some((
+                        source.device,
+                        source.binding,
+                        control.native_source_completed_blocks(source.binding),
+                    ));
+                }
                 *observed = PreparationObservation {
                     output: control.output_identity(),
                     binding: source.map(|source| source.binding),
+                    source_bindings,
                     pending: self.pending.is_some(),
                     accepted: source.is_some_and(|source| source.accepted),
                     retiring: source.is_some_and(|source| source.retiring),
