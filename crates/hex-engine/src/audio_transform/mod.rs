@@ -93,9 +93,9 @@ fn warp_law(law: WarpResampler) -> hex_warp::Resampler {
 }
 
 /// Check the existing renderer's projected stretch capability without PCM or
-/// preparation/cache ownership. Allocates the same bounded metadata map (at most
-/// 8192 segments and 1024 explicit attacks); this is control-side work, not a
-/// callback API and not a proof of available render memory or work budget.
+/// preparation/cache ownership. Supported streamed roots use their bounded map
+/// extent. Map allocation (at most 8192 segments and 1024 explicit attacks) and
+/// ratio checks run on control, before any file, page or render admission.
 pub fn validate_clip_warp_preview(
     clip: &hex_project::Clip,
     tempo: &hex_project::TempoMap,
@@ -103,7 +103,12 @@ pub fn validate_clip_warp_preview(
     let Some(edit) = clip.audio_edit() else {
         return Ok(());
     };
-    let (map, _) = mapping::prepare_map(edit, tempo, &AtomicBool::new(false))?;
+    let cancel = AtomicBool::new(false);
+    let (map, _) = if edit.is_streamed_repitch_root() || edit.is_streamed_granular_root() {
+        mapping::prepare_streamed_map(edit, tempo, &cancel)?
+    } else {
+        mapping::prepare_map(edit, tempo, &cancel)?
+    };
     map.validate_stretch(render_mode(&edit.domain)?, edit.domain.pitch_cents)
         .map_err(warp_error)
 }

@@ -1,4 +1,87 @@
-use crate::{Command, Created, Editor, Project, WarpMode};
+use crate::{Command, Created, Editor, Project, TrimEdge, WarpMode};
+
+#[test]
+fn long_streamable_warp_stretch_keeps_preview_command_and_history_aligned() {
+    const SOURCE: u64 = 20_000_000;
+    const END: u64 = 24_000_000;
+    for mode in [
+        WarpMode::RePitch,
+        WarpMode::Tones { grain_ms: 32 },
+        WarpMode::Texture {
+            grain_ms: 32,
+            fluctuation: 35,
+            seed: 42,
+        },
+    ] {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let Created::Imported { clip, .. } = editor
+            .execute(Command::ImportAudioTrack {
+                name: "long".into(),
+                path: "long.wav".into(),
+                sample_rate: 48_000,
+                frames: SOURCE,
+            })
+            .unwrap()
+        else {
+            panic!("fixture import");
+        };
+        editor
+            .execute(Command::SetClipFades {
+                clip,
+                fade_in: 0,
+                fade_out: 0,
+            })
+            .unwrap();
+        let project = editor.project();
+        let settings =
+            crate::default_audio_warp(project.clip(clip).unwrap(), project.tempo_map(), mode)
+                .unwrap();
+        editor
+            .execute(Command::SetAudioClipWarp {
+                clip,
+                settings: Some(settings),
+            })
+            .unwrap();
+        let project = editor.project();
+        let before = project.snapshot();
+        let original = project.clip(clip).unwrap();
+        let preview = crate::preview_audio_clip_stretch(
+            original,
+            TrimEdge::Right,
+            END,
+            project.tempo_map(),
+            SOURCE,
+        )
+        .unwrap();
+        assert_eq!(preview.duration(), END);
+        assert_eq!(preview.asset(), original.asset());
+        assert_eq!(preview.source_length(), SOURCE);
+        assert_eq!(
+            preview
+                .audio_edit()
+                .unwrap()
+                .domain
+                .warp
+                .as_ref()
+                .unwrap()
+                .mode,
+            mode
+        );
+        editor
+            .execute(Command::StretchAudioClipEdge {
+                clip,
+                edge: TrimEdge::Right,
+                frame: END,
+            })
+            .unwrap();
+        assert_eq!(editor.project().clip(clip), Some(&preview));
+        let after = editor.project().snapshot();
+        assert!(editor.undo());
+        assert_eq!(editor.project().snapshot(), before);
+        assert!(editor.redo());
+        assert_eq!(editor.project().snapshot(), after);
+    }
+}
 #[test]
 fn full_long_granular_roots_preserve_history_and_refuse_resident_shapes() {
     for mode in [
