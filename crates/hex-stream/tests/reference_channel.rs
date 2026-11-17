@@ -2393,3 +2393,187 @@ fn distant_short_texture_page_matches_resident() {
         seed: 42,
     });
 }
+
+#[test]
+fn canonical_granular_projection_drives_verified_page_matching_resident() {
+    use hex_engine::{STREAM_PAGE_FRAMES, audio_transform::streamed_granular_root};
+    use hex_project::{SourceGainPoint, WarpMode, default_audio_warp};
+    use hex_stream::{
+        GranularPageProgress, VerifiedGranularBuffers, VerifiedGranularPages,
+        scan_verified_granular_region_on_control,
+    };
+    use hex_warp::SequentialGranularConfig;
+    use std::sync::atomic::AtomicBool;
+
+    let (wav, pcm) = Wav::create(8192, false);
+    let (mut reader, plan, _) = setup(&wav, 8192, 48_000, ResampleVersion::V1);
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+    let Created::Imported { clip, asset, .. } = editor
+        .execute(Command::ImportAudioTrack {
+            name: "source".into(),
+            path: "source.wav".into(),
+            sample_rate: 48_000,
+            frames: 8192,
+        })
+        .unwrap()
+    else {
+        panic!("audio fixture")
+    };
+    editor
+        .execute(Command::SetClipFades {
+            clip,
+            fade_in: 0,
+            fade_out: 0,
+        })
+        .unwrap();
+    editor
+        .execute(Command::SetClipLooping {
+            clip,
+            looping: true,
+        })
+        .unwrap();
+    editor
+        .execute(Command::SetClipSourcePhase { clip, phase: 137 })
+        .unwrap();
+    editor
+        .execute(Command::SetAudioClipSourceGain {
+            clip,
+            points: vec![
+                SourceGainPoint {
+                    frame: 0,
+                    gain_q16: 40_000,
+                },
+                SourceGainPoint {
+                    frame: 4_000,
+                    gain_q16: 60_000,
+                },
+            ],
+        })
+        .unwrap();
+    editor
+        .execute(Command::SetAudioClipMusical {
+            clip,
+            enabled: true,
+        })
+        .unwrap();
+    let settings = default_audio_warp(
+        editor.project().clip(clip).unwrap(),
+        editor.project().tempo_map(),
+        WarpMode::Texture {
+            grain_ms: 32,
+            fluctuation: 35,
+            seed: 42,
+        },
+    )
+    .unwrap();
+    editor
+        .execute(Command::SetAudioClipWarp {
+            clip,
+            settings: Some(settings),
+        })
+        .unwrap();
+    editor
+        .execute(Command::SetAudioClipPitch { clip, cents: 300 })
+        .unwrap();
+    let raw = StreamedSourceMetadata::new(
+        StreamSourceKey::new(7, asset),
+        48_000,
+        48_000,
+        8192,
+        8192,
+        IDENTITY_CONVERSION,
+        *reader.fingerprint(),
+    )
+    .unwrap();
+    let edit = editor.project().clip(clip).unwrap().audio_edit().unwrap();
+    let root = streamed_granular_root(
+        &raw,
+        edit,
+        editor.project().tempo_map(),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let (metadata, region, map, mode, pitch, law) = root.into_parts();
+    let expected = hex_warp::render_with_resampler(
+        &hex_warp::Request {
+            attacks: &[],
+            input: hex_warp::Input {
+                frames: &pcm,
+                sample_rate: 48_000,
+                region_start: region.start(),
+                region_length: region.length(),
+                phase: region.phase(),
+                looping: region.looping(),
+                envelope: region.envelope(),
+            },
+            map: &map,
+            output_frames: metadata.playback_frames() as usize,
+            pitch_cents: pitch,
+            mode,
+        },
+        law,
+        &mut || false,
+    )
+    .unwrap()
+    .frames;
+    let mut raw_scratch = vec![[0.0; 2]; 8192];
+    let mut cache = vec![[0.0; 2]; 8192];
+    let reference = scan_verified_granular_region_on_control(
+        &raw,
+        region,
+        &mut reader,
+        &plan,
+        &mut raw_scratch,
+        &mut cache,
+        || false,
+    )
+    .unwrap();
+    let mut pages = VerifiedGranularPages::new(
+        reference.clone(),
+        SequentialGranularConfig {
+            map,
+            sample_rate: 48_000,
+            mode,
+            pitch_cents: pitch,
+            resampler: law,
+            reference_channel: reference.channel(),
+        },
+        2,
+        8 * 1024 * 1024,
+        &mut || false,
+    )
+    .unwrap();
+    assert_eq!(pages.metadata(), &metadata);
+    let mut grain = vec![[0.0; 2]; pages.max_source_frames()];
+    pages
+        .begin_page(
+            0,
+            vec![[0.0; 2]; STREAM_PAGE_FRAMES].into_boxed_slice(),
+            0,
+            &mut reader,
+            &plan,
+            || false,
+        )
+        .unwrap();
+    for _ in 0..1000 {
+        if pages
+            .step(
+                &mut reader,
+                &plan,
+                VerifiedGranularBuffers {
+                    source: &mut raw_scratch,
+                    cache: &mut cache,
+                    grain: &mut grain,
+                },
+                || false,
+            )
+            .unwrap()
+            == GranularPageProgress::Complete
+        {
+            break;
+        }
+    }
+    let page = pages.take_complete().expect("canonical page completed");
+    assert_eq!(page.valid_frames, STREAM_PAGE_FRAMES);
+    assert_eq!(&*page.frames, &expected[..STREAM_PAGE_FRAMES]);
+}
