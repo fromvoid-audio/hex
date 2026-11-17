@@ -246,11 +246,9 @@ mod tests {
             .unwrap(),
         );
         let mut reference = crate::SessionPlayback::new(reference).unwrap();
-        assert!(
-            reference
-                .visit_next_stream_chunk(32, None, &mut |_| Ok(()))
-                .is_err()
-        );
+        reference
+            .visit_next_stream_chunk(32, None, &mut |_| Ok(()))
+            .unwrap();
         reference
             .apply(crate::SessionPlaybackCommand::Play)
             .unwrap();

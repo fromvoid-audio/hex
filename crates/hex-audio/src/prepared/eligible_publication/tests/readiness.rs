@@ -2,19 +2,23 @@
 use super::*;
 #[test]
 fn real_first_play_buffers_without_ack_clock_or_samples_then_installs_exact_worker_pages() {
-    first_play(false, false, false);
+    first_play(false, false, false, false);
 }
 #[test]
 fn grouped_closed_constructor_buffers_and_renders_verified_worker_pages() {
-    first_play(true, false, false);
+    first_play(true, false, false, false);
 }
 #[test]
 fn track_limiter_closed_stream_buffers_then_renders_without_callback_allocations() {
-    first_play(false, false, true);
+    first_play(false, false, true, false);
 }
 #[test]
 fn group_limiter_closed_stream_buffers_then_renders_without_callback_allocations() {
-    first_play(true, false, true);
+    first_play(true, false, true, false);
+}
+#[test]
+fn fed_track_limiter_buffers_and_handoffs_without_callback_allocations() {
+    first_play(false, false, true, true);
 }
 #[test]
 fn priority_stop_revokes_buffered_play_before_installation() {
@@ -22,9 +26,9 @@ fn priority_stop_revokes_buffered_play_before_installation() {
         hex_engine::audio_storage_constructor_layout_supported(),
         "this regression requires the real sealed-source constructor"
     );
-    first_play(false, true, false);
+    first_play(false, true, false, false);
 }
-fn first_play(grouped: bool, stop_pending: bool, limiter: bool) {
+fn first_play(grouped: bool, stop_pending: bool, limiter: bool, feed: bool) {
     let _serial = serial();
     if !hex_engine::audio_storage_constructor_layout_supported() {
         return;
@@ -84,6 +88,29 @@ fn first_play(grouped: bool, stop_pending: bool, limiter: bool) {
                 state,
             })
             .unwrap();
+        if feed {
+            let hex_project::Created::Track(receiver) = editor
+                .execute(hex_project::Command::InsertTrackWithDevice {
+                    name: "receiver".into(),
+                    before_track: None,
+                    slot: hex_project::TrackDeviceSlot::Instrument,
+                    state: hex_project::default_instrument_state().unwrap(),
+                })
+                .unwrap()
+            else {
+                panic!("receiver")
+            };
+            editor
+                .execute(hex_project::Command::RemoveInstrument { track: receiver })
+                .unwrap();
+            editor
+                .execute(hex_project::Command::SetAudioFeed {
+                    source: hex_project::RoutingOwner::Track(track),
+                    destination: receiver,
+                    gain: 0.5,
+                })
+                .unwrap();
+        }
         editor.project().clone()
     } else {
         project
@@ -294,7 +321,7 @@ fn first_play(grouped: bool, stop_pending: bool, limiter: bool) {
         assert!(
             output
                 .iter()
-                .all(|frame| frame[0] >= 0.0 && frame[0] <= 0.25)
+                .all(|frame| frame[0] >= 0.0 && frame[0] <= if feed { 0.375 } else { 0.25 })
         );
     } else {
         assert_eq!(output, [[if grouped { 0.125 } else { 0.25 }; 2]; 8]);
