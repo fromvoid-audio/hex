@@ -1238,7 +1238,7 @@ impl SessionPlayback {
                             old,
                             previous.arrangement_frame,
                             ended_by,
-                            !has_foreign,
+                            ended_by.is_some() && !has_foreign,
                         )
                     })
                     .flatten()
@@ -1292,6 +1292,36 @@ impl SessionPlayback {
         let fresh_history = compensation_pair.and_then(|(candidate, old)| {
             history_track
                 .map(crate::signal_graph::FreshHistory::Track)
+                .or_else(|| {
+                    if !previous.playing
+                        || !same_base_timing
+                        || self.revision.arrangement().tracks().len().checked_add(1)
+                            != Some(previous.revision.arrangement().tracks().len())
+                        || old_loop_region.is_some()
+                        || new_loop_region.is_some()
+                        || self.revision.contains_streamed_sources()
+                        || previous.revision.contains_streamed_sources()
+                        || !old.delays.history_ready()
+                        || previous.arrangement_frame
+                            < u64::from(candidate.horizon().max(old.horizon()))
+                    {
+                        return None;
+                    }
+                    let mut has_foreign = false;
+                    previous.visit_foreign_runtime_bindings(&mut |_| has_foreign = true);
+                    self.visit_foreign_runtime_bindings(&mut |_| has_foreign = true);
+                    if has_foreign {
+                        return None;
+                    }
+                    fresh_added_audio_track(
+                        previous.revision.arrangement().tracks(),
+                        self.revision.arrangement().tracks(),
+                        previous.arrangement_frame,
+                        None,
+                        true,
+                    )
+                    .map(crate::signal_graph::FreshHistory::RemovedTrack)
+                })
                 .or_else(|| {
                     candidate
                         .graph
@@ -6502,7 +6532,7 @@ fn fresh_added_audio_track(
     previous: &[Track],
     frame: u64,
     ended_by: Option<u64>,
-    no_foreign: bool,
+    allow_any_clip: bool,
 ) -> Option<TrackId> {
     if candidate.len() != previous.len().checked_add(1)? {
         return None;
@@ -6523,10 +6553,10 @@ fn fresh_added_audio_track(
             || track.instrument_id.is_some()
             || track.source_id.is_some()
             || track.midi_source_index.is_some()
-            || !(crate::clip_index::all_start_after(&track.clip_index, track.clips.len(), frame)
+            || !(allow_any_clip
+                || crate::clip_index::all_start_after(&track.clip_index, track.clips.len(), frame)
                 || ended_by.is_some_and(|end| {
-                    no_foreign
-                        || crate::clip_index::all_end_by(&track.clip_index, track.clips.len(), end)
+                    crate::clip_index::all_end_by(&track.clip_index, track.clips.len(), end)
                 }))
         {
             return None;
