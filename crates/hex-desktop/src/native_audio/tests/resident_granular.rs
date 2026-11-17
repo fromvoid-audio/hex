@@ -23,6 +23,22 @@ fn play_level_at(h: &mut ResidentHarness, frame: u64, level: f32) {
             .flatten()
             .all(|sample| (*sample - level).abs() < 0.0001)
         {
+            if frame != 0 {
+                // The two rate cases have opposite signs in this window.
+                // A later block at the requested level does not prove the read.
+                let end = h
+                    .audio
+                    .as_ref()
+                    .unwrap()
+                    .status()
+                    .unwrap()
+                    .position
+                    .load(Acquire);
+                assert!(
+                    (frame..=frame + 1_600).contains(&end),
+                    "matched level {level} outside the expected read window at {end}"
+                );
+            }
             break;
         }
         assert!(
