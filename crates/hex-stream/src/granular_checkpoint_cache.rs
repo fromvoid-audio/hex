@@ -203,4 +203,29 @@ impl VerifiedGranularCheckpointCache {
         self.entries[index].age = self.clock;
         Ok(progress)
     }
+    /// Start one bounded segment toward a distant target, selecting the latest
+    /// retained checkpoint. This does not promise a deadline for the full replay.
+    pub(crate) fn begin_seek_toward(
+        &mut self,
+        cursor: &mut VerifiedGranularCursor,
+        target: u64,
+        segment_frames: u64,
+        reader: &mut VerifiedWavReader,
+        plan: &ResamplePlan,
+        cancelled: impl FnMut() -> bool,
+    ) -> Result<GranularSeekProgress, CheckpointCacheError> {
+        self.check_cursor(cursor)?;
+        if segment_frames == 0 || segment_frames > crate::MAX_GRANULAR_PREROLL_FRAMES {
+            return Err(Error::Invalid("invalid granular replay segment").into());
+        }
+        let position = self
+            .entries
+            .iter()
+            .map(|entry| entry.checkpoint.position())
+            .filter(|&position| position <= target)
+            .max()
+            .ok_or(CheckpointCacheError::NotCovered)?;
+        let waypoint = position.saturating_add(segment_frames).min(target);
+        self.begin_seek(cursor, waypoint, segment_frames, reader, plan, cancelled)
+    }
 }

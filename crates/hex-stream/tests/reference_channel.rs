@@ -1998,16 +1998,30 @@ fn granular_pages_match_resident_and_preserve_buffer_custody() {
         assert_eq!(page.as_ptr(), ptr);
         let mut page = page;
         for index in [0, 2, 1, 0] {
-            pages
-                .begin_page(
-                    index,
-                    page,
-                    STREAM_PAGE_FRAMES as u64,
-                    &mut reader,
-                    &plan,
-                    || false,
-                )
-                .unwrap();
+            if index == 2 {
+                let (error, returned) = pages
+                    .begin_page(index, page, 1024, &mut reader, &plan, || false)
+                    .unwrap_err();
+                assert_eq!(
+                    error,
+                    GranularPageError::Cache(hex_stream::CheckpointCacheError::NotCovered)
+                );
+                page = returned;
+                pages
+                    .begin_page_replaying(index, page, 1024, &mut reader, &plan, || false)
+                    .unwrap();
+            } else {
+                pages
+                    .begin_page(
+                        index,
+                        page,
+                        STREAM_PAGE_FRAMES as u64,
+                        &mut reader,
+                        &plan,
+                        || false,
+                    )
+                    .unwrap();
+            }
             assert!(pages.take_complete().is_none());
             let mut steps = 0;
             loop {
@@ -2109,4 +2123,140 @@ fn granular_pages_match_resident_and_preserve_buffer_custody() {
     assert!(pages.take_complete().is_none());
     let reclaimed = pages.reclaim().unwrap();
     assert_eq!(reclaimed.as_ptr(), ptr);
+}
+
+#[test]
+fn distant_granular_page_replay_is_resumable_and_cancelled_without_publication() {
+    use hex_engine::STREAM_PAGE_FRAMES;
+    use hex_stream::{
+        CheckpointCacheError, GranularPageError, GranularPageProgress, VerifiedGranularBuffers,
+        VerifiedGranularPages, scan_verified_granular_region_on_control,
+    };
+    use hex_warp::{Mode, Resampler, SequentialGranularConfig, SourceRegion};
+    let (wav, _) = Wav::create(8192, false);
+    let (mut reader, plan, meta) = setup(&wav, 8192, 48_000, ResampleVersion::V1);
+    let mut raw = vec![[0.0; 2]; 8192];
+    let mut cache = vec![[0.0; 2]; 8192];
+    let region = SourceRegion::new(8192, 0, 8192, 0, true, vec![]).unwrap();
+    let reference = scan_verified_granular_region_on_control(
+        &meta,
+        region,
+        &mut reader,
+        &plan,
+        &mut raw,
+        &mut cache,
+        || false,
+    )
+    .unwrap();
+    let mut pages = VerifiedGranularPages::new(
+        reference.clone(),
+        SequentialGranularConfig {
+            map: granular_map(1_060_000),
+            sample_rate: 48_000,
+            mode: Mode::Tones { grain_ms: 8 },
+            pitch_cents: 0,
+            resampler: Resampler::V1,
+            reference_channel: reference.channel(),
+        },
+        2,
+        8 * 1024 * 1024,
+        &mut || false,
+    )
+    .unwrap();
+    let mut grain = vec![[0.0; 2]; pages.max_source_frames()];
+    let page = vec![[0.0; 2]; STREAM_PAGE_FRAMES].into_boxed_slice();
+    let pointer = page.as_ptr();
+    let (error, page) = pages
+        .begin_page(
+            257,
+            page,
+            hex_stream::MAX_GRANULAR_PREROLL_FRAMES,
+            &mut reader,
+            &plan,
+            || false,
+        )
+        .unwrap_err();
+    assert_eq!(
+        error,
+        GranularPageError::Cache(CheckpointCacheError::NotCovered)
+    );
+    let (error, page) = pages
+        .begin_page_replaying(257, page, 0, &mut reader, &plan, || false)
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        GranularPageError::Cache(CheckpointCacheError::Warp(hex_warp::Error::Invalid(_)))
+    ));
+    pages
+        .begin_page_replaying(257, page, 64, &mut reader, &plan, || false)
+        .unwrap();
+    for _ in 0..12 {
+        assert_eq!(
+            pages
+                .step(
+                    &mut reader,
+                    &plan,
+                    VerifiedGranularBuffers {
+                        source: &mut raw,
+                        cache: &mut cache,
+                        grain: &mut grain
+                    },
+                    || false
+                )
+                .unwrap(),
+            GranularPageProgress::Pending
+        );
+        assert!(pages.take_complete().is_none());
+    }
+    assert_eq!(
+        pages.step(
+            &mut reader,
+            &plan,
+            VerifiedGranularBuffers {
+                source: &mut raw,
+                cache: &mut cache,
+                grain: &mut grain
+            },
+            || true
+        ),
+        Err(GranularPageError::Step(
+            hex_stream::VerifiedGranularStepError::Source(StreamFailureKind::Cancelled)
+        ))
+    );
+    assert!(pages.take_complete().is_none());
+    let page = pages.reclaim().unwrap();
+    assert_eq!(page.as_ptr(), pointer);
+    pages
+        .begin_page_replaying(257, page, 64, &mut reader, &plan, || false)
+        .unwrap();
+    OpenOptions::new()
+        .write(true)
+        .open(&wav.0)
+        .unwrap()
+        .set_len(100)
+        .unwrap();
+    let result = loop {
+        match pages.step(
+            &mut reader,
+            &plan,
+            VerifiedGranularBuffers {
+                source: &mut raw,
+                cache: &mut cache,
+                grain: &mut grain,
+            },
+            || false,
+        ) {
+            Ok(GranularPageProgress::Pending) => continue,
+            other => break other,
+        }
+    };
+    assert_eq!(
+        result,
+        Err(GranularPageError::Step(
+            hex_stream::VerifiedGranularStepError::Source(StreamFailureKind::SourceChanged)
+        ))
+    );
+    assert!(pages.take_complete().is_none());
+    let returned = pages.reclaim().unwrap();
+    assert_eq!(returned.as_ptr(), pointer);
 }
