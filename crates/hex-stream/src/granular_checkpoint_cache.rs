@@ -90,6 +90,19 @@ impl VerifiedGranularCheckpointCache {
             clock: 0,
         })
     }
+    /// Initial state plus one reusable noninitial checkpoint; no allocation.
+    pub(crate) fn minimum_recording_budget(&self) -> Option<usize> {
+        self.entries
+            .capacity()
+            .checked_mul(std::mem::size_of::<Entry>())?
+            .checked_add(
+                self.entries
+                    .first()?
+                    .checkpoint
+                    .backing_bytes()?
+                    .checked_mul(2)?,
+            )
+    }
     pub(crate) fn reserved_budget(&self) -> usize {
         self.budget
     }

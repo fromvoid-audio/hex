@@ -200,6 +200,9 @@ impl VerifiedGranularSource {
             return Err(GranularSourceError::InvalidSource);
         }
         if let Some(limit) = automatic_processing_limit {
+            if !pages.checkpoint_recording_fits() {
+                return Err(GranularSourceError::ScratchLimit);
+            }
             let grain_bytes = pages
                 .max_source_frames()
                 .checked_mul(std::mem::size_of::<[f64; 2]>())

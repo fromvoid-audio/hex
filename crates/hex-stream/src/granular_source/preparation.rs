@@ -10,6 +10,7 @@ pub struct GranularSourcePreparationLimits {
     /// Original-rate stereo frames, independent of the file's total duration.
     pub source_scratch_frames: usize,
     pub checkpoint_entries: usize,
+    /// Must fit the initial checkpoint and one reusable replacement.
     pub checkpoint_budget: usize,
     /// Complete retained renderer/region/checkpoint/buffer payload, at most 32 MiB.
     pub max_processing_bytes: usize,

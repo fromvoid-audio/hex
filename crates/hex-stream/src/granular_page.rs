@@ -120,6 +120,11 @@ impl VerifiedGranularPages {
             pending: None,
         })
     }
+    pub(crate) fn checkpoint_recording_fits(&self) -> bool {
+        self.cache
+            .minimum_recording_budget()
+            .is_some_and(|bytes| bytes <= self.cache.reserved_budget())
+    }
     pub(crate) fn reserved_processing_bytes(&self) -> Option<usize> {
         self.cursor
             .backing_bytes()?

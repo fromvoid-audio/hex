@@ -56,7 +56,7 @@ fn preparation_limits() -> GranularSourcePreparationLimits {
     GranularSourcePreparationLimits {
         source_scratch_frames: 8192,
         checkpoint_entries: 2,
-        checkpoint_budget: 1_000_000,
+        checkpoint_budget: 2_000_000,
         max_processing_bytes: hex_warp::MAX_SCRATCH_BYTES,
         max_construction_peak_bytes: 96 * 1024 * 1024,
     }
@@ -801,7 +801,7 @@ fn runtime_routes_mixed_raw_tones_and_texture_pages_and_admits_native_custody() 
     use hex_stream::{ConstructorStreamDomain, StreamConfig, StreamRuntime};
     let (_raw_wav, raw, raw_pcm) = raw_definition();
     let raw_key = raw.metadata.key();
-    let (_tones_wav, tones, tones_pcm) = source(WarpMode::Tones { grain_ms: 32 });
+    let (_tones_wav, tones, tones_pcm) = source(WarpMode::Tones { grain_ms: 200 });
     let (_texture_wav, texture, texture_pcm) = source_at_rate(
         WarpMode::Texture {
             grain_ms: 32,
@@ -1201,7 +1201,7 @@ fn pending_granular_short_resource_allowances_and_invalid_inputs_refuse_before_s
     use hex_stream::{
         PendingStreamDomain, StreamConfig, StreamReadinessReservation, StreamRuntimeError,
     };
-    for case in 0..8 {
+    for case in 0..9 {
         let (_files, definitions, bank) = pending_fixture();
         let mut config = StreamConfig::with_pool_pages(4);
         let mut readiness = Some(StreamReadinessReservation {
@@ -1323,7 +1323,7 @@ fn allocated_scratch_matches_manual_owner_and_exact_processing_limit() {
                             },
                             scratch_budget: 1_000_000,
                             checkpoint_entries: 2,
-                            checkpoint_budget: 1_000_000,
+                            checkpoint_budget: preparation_limits().checkpoint_budget,
                         },
                         || false,
                     )
@@ -1358,9 +1358,11 @@ fn allocated_scratch_matches_manual_owner_and_exact_processing_limit() {
 
 #[test]
 fn allocated_scratch_refuses_invalid_peak_cache_identity_and_cancellation() {
-    for case in 0..8 {
+    for case in 0..9 {
         let (_wav, result, _) = source_fixture_using(
-            WarpMode::Tones { grain_ms: 32 },
+            WarpMode::Tones {
+                grain_ms: if case == 8 { 200 } else { 32 },
+            },
             48_000,
             false,
             |mut raw, root, reader, mut plan| {
@@ -1410,6 +1412,7 @@ fn allocated_scratch_refuses_invalid_peak_cache_identity_and_cancellation() {
                         )
                         .unwrap();
                     }
+                    8 => limits.checkpoint_budget = 1_000_000,
                     _ => {}
                 }
                 VerifiedGranularSource::prepare_from_reader_on_control(
@@ -1426,7 +1429,7 @@ fn allocated_scratch_refuses_invalid_peak_cache_identity_and_cancellation() {
             result.is_err(),
             "case {case} returned a partial source owner"
         );
-        if case <= 4 {
+        if case <= 4 || case == 8 {
             assert!(
                 matches!(result, Err(GranularSourceError::ScratchLimit)),
                 "case {case}"
