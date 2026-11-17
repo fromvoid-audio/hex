@@ -101,7 +101,13 @@ fn assert_audio_loop_receipt(cx: &mut TestAppContext, start_edge: bool) {
         clip,
         ..
     } = open(cx, start_edge);
+    if !editor.read_with(&visual, |v, _| v.audio_loop_grid().is_off()) {
+        visual.simulate_keystrokes("cmd-4");
+    }
+    visual.run_until_parked();
     let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
+    let selector = Box::leak(format!("clip-visual-{}", clip.value()).into_boxed_str());
+    let original_bounds = visual.debug_bounds(selector).unwrap();
     let outside = point(px(640.), px(10.));
     visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
     assert!(editor.read_with(&visual, |v, _| v.clip_loop_held()));
@@ -128,8 +134,28 @@ fn assert_audio_loop_receipt(cx: &mut TestAppContext, start_edge: bool) {
         })
     );
     let preview = editor.read_with(&visual, |v, _| {
-        v.clip_loop.audio_gesture.as_ref().unwrap().preview
+        assert!(v.audio_loop_grid().is_off());
+        let gesture = v.clip_loop.audio_gesture.as_ref().unwrap();
+        assert_ne!(
+            gesture.preview,
+            (gesture.root.view_start, gesture.root.view_end)
+        );
+        gesture.preview
     });
+    let held_bounds = visual.debug_bounds(selector).unwrap();
+    if start_edge {
+        assert!(
+            held_bounds.left() > original_bounds.left(),
+            "scope {preview:?}: {original_bounds:?} -> {held_bounds:?}"
+        );
+        assert_eq!(held_bounds.right(), original_bounds.right());
+    } else {
+        assert_eq!(held_bounds.left(), original_bounds.left());
+        assert!(
+            held_bounds.right() < original_bounds.right(),
+            "scope {preview:?}: {original_bounds:?} -> {held_bounds:?}"
+        );
+    }
     visual.simulate_mouse_up(
         point(moved.x, px(10.)),
         MouseButton::Left,
@@ -145,6 +171,7 @@ fn assert_audio_loop_receipt(cx: &mut TestAppContext, start_edge: bool) {
     for _ in 0..3 {
         editor.update(&mut visual, |_, cx| cx.notify());
         visual.run_until_parked();
+        assert_eq!(visual.debug_bounds(selector).unwrap(), held_bounds);
         editor.read_with(&visual, |v, _| {
             assert!(!v.clip_loop_held());
             let root = v.pending_clip_loop_audio(clip).unwrap().audio_event_root();
@@ -168,6 +195,7 @@ fn assert_audio_loop_receipt(cx: &mut TestAppContext, start_edge: bool) {
         cx.notify();
     });
     visual.run_until_parked();
+    assert_eq!(visual.debug_bounds(selector).unwrap(), held_bounds);
     assert!(editor.read_with(&visual, |v, _| v.pending_clip_loop_audio(clip).is_none()));
 }
 
