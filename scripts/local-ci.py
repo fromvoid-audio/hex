@@ -1166,6 +1166,28 @@ class FreshTargetReservation:
 
 
 class LocalCiRunner:
+    def _selection_error(self) -> str | None:
+        """Authenticate supplied qualifying selection before target custody.
+
+        Use the source-bound resolver and this runner's Cargo metadata, even
+        for a declared metadata-only plan. Reconstruct reuse overlays through
+        their existing report validation rather than trusting supplied fields.
+        """
+        if self.plan is None or self.plan.get("qualifies_merge") is not True:
+            return None
+        try:
+            if self._plan_metadata is None:
+                return "qualifying selection requires current Cargo metadata"
+            expected = ci_plan.resolve(self.root, profile=self.mode, base=self.plan["base"],
+                                       source=self.plan["source"], metadata=self._plan_metadata, env=self.env)
+            if self.plan.get("reuse"):
+                expected = reusable_plan(self.root, expected, Path(self.plan["reuse"]["report"]), env=self.env)
+            if self.plan != expected:
+                return "qualifying selection differs from source-bound resolution with current Cargo metadata"
+        except (KeyError, TypeError, ValueError, OSError, subprocess.SubprocessError) as error:
+            return f"cannot authenticate qualifying selection: {error}"
+        return None
+
     def _git_scope_error(self) -> str | None:
         """Check supplied qualifying Git scope independently of its own hash.
 
@@ -1298,6 +1320,7 @@ class LocalCiRunner:
         self.target_owner_path: Path | None = None
         self.target_owner_claimed = False
         self._release_metadata = None
+        self._plan_metadata = None
         self._dependency_inputs = None
         self._compiler_inputs = None
         self._workspace_inputs = None
@@ -1446,6 +1469,7 @@ class LocalCiRunner:
         self.summary.pop("cargo_identity", None)
         self.summary.pop("cargo_metadata_error", None)
         self._cargo_reservation = None
+        self._plan_metadata = None
         resolved = False
         try:
             resolved = self._resolve_cargo_identity_inner(reservation)
@@ -1588,6 +1612,7 @@ class LocalCiRunner:
             "owner_path": str(owner_path),
         }
         self.summary["cargo_identity"] = self.cargo_identity
+        self._plan_metadata = metadata
         return True
 
     @staticmethod
@@ -2963,13 +2988,17 @@ class LocalCiRunner:
                     or self.summary["runtime_inputs"] != self.plan["runtime_inputs"]):
                 self.summary.update(status="failed", exit_code=2,
                                     metadata_error="resolved plan source/inputs changed or are dirty")
-            elif any(self._uses_cargo_target(step) for step in self.steps) and not (
+            elif (any(self._uses_cargo_target(step) for step in self.steps)
+                  or self.plan is not None and self.plan.get("qualifies_merge") is True) and not (
                     self._resolve_cargo_identity() if reservation is None
                     else self._resolve_cargo_identity(reservation)):
                 self.summary["status"] = "failed"
                 self.summary["exit_code"] = 2
                 self.summary["metadata_error"] = "could not resolve exact Cargo workspace and target identity"
                 print(self.summary["cargo_metadata_error"], file=sys.stderr, flush=True)
+            elif (error := self._selection_error()) is not None:
+                self.summary.update(status="failed", verification_status="failed", exit_code=2,
+                                    selection_error=error)
             elif not self._check_disk_headroom():
                 self.summary["status"] = "failed"
                 self.summary["exit_code"] = 2
