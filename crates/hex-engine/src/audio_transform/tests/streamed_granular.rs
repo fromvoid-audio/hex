@@ -1,5 +1,72 @@
 use super::*;
 
+#[test]
+fn long_warp_stretch_preview_checks_the_streamed_map_and_ratio() {
+    const SOURCE: u64 = 20_000_000;
+    let mut editor = Editor::new(Project::new(16_000).unwrap(), 8).unwrap();
+    let Created::Imported { clip, .. } = editor
+        .execute(Command::ImportAudioTrack {
+            name: "long".into(),
+            path: "long.wav".into(),
+            sample_rate: 16_000,
+            frames: SOURCE,
+        })
+        .unwrap()
+    else {
+        panic!("fixture import");
+    };
+    editor
+        .execute(Command::SetClipFades {
+            clip,
+            fade_in: 0,
+            fade_out: 0,
+        })
+        .unwrap();
+    let project = editor.project();
+    let settings = default_audio_warp(
+        project.clip(clip).unwrap(),
+        project.tempo_map(),
+        WarpMode::Tones { grain_ms: 32 },
+    )
+    .unwrap();
+    editor
+        .execute(Command::SetAudioClipWarp {
+            clip,
+            settings: Some(settings),
+        })
+        .unwrap();
+    let project = editor.project();
+    let tempo = project.tempo_map();
+    let preview = |frame| {
+        hex_project::preview_audio_clip_stretch(
+            project.clip(clip).unwrap(),
+            hex_project::TrimEdge::Right,
+            frame,
+            tempo,
+            SOURCE,
+        )
+        .unwrap()
+    };
+    for (frame, allowed) in [(24_000_000, true), (SOURCE * 9, false)] {
+        let candidate = preview(frame);
+        let edit = candidate.audio_edit().unwrap();
+        let ready = streamed_granular_root(
+            &raw(&editor, clip, SOURCE),
+            edit,
+            tempo,
+            &AtomicBool::new(false),
+        );
+        assert_eq!(ready.is_ok(), allowed);
+        assert_eq!(
+            validate_clip_warp_preview(&candidate, tempo).is_ok(),
+            allowed
+        );
+        if let Ok(root) = ready {
+            assert_eq!(root.metadata().playback_frames(), frame);
+        }
+    }
+}
+
 fn setup(mode: WarpMode, looping: bool, neutral_fade: bool) -> (Editor, hex_project::ClipId) {
     let (mut editor, clip, _) = fixture(looping);
     if neutral_fade {
