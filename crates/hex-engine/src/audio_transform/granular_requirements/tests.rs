@@ -13,11 +13,13 @@ fn fixture_frames(
 ) -> (Editor, hex_project::ClipId, crate::StreamedSourceMetadata) {
     let mut editor = Editor::new(Project::new(16_000).unwrap(), 16).unwrap();
     let Created::Imported { clip, asset, .. } = editor
-        .execute(Command::ImportAudioTrack {
+        .execute(Command::ImportPreparedAudioTrack {
             name: "audio".into(),
             path: "original.wav".into(),
-            sample_rate: 16_000,
-            frames,
+            source_sample_rate: 8_000,
+            source_frames: frames / 2,
+            playback_frames: frames,
+            conversion_version: hex_project::SINC_CONVERSION_V2,
         })
         .unwrap()
     else {
