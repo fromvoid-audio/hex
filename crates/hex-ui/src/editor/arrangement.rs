@@ -493,9 +493,23 @@ impl EditorView {
                             {
                                 return (false, false);
                             }
-                            // The body click owns a point in the trailing space.
-                            // Lane gesture probes must leave click suppression intact there.
-                            if view.painted_arrangement_tail(x, y).is_some() {
+                            // The body still handles a click. Only a drag takes
+                            // over the selection, using the full painted tail.
+                            if let Some(lane) = view.painted_arrangement_tail(x, y) {
+                                if event.click_count == 1
+                                    && !event.modifiers.shift
+                                    && !event.modifiers.alt
+                                    && !event.modifiers.control
+                                    && !cx.has_active_drag()
+                                    && view.prepare_tail_time_selection(
+                                        x,
+                                        y,
+                                        lane,
+                                        event.modifiers.platform,
+                                    )
+                                {
+                                    view.focus.focus(window);
+                                }
                                 return (false, false);
                             }
                             if view.pointer_hits_section_launch(x, y) {
@@ -688,6 +702,53 @@ impl EditorView {
             .absolute()
             .inset_0(),
         );
+        if let Some(selection) = self.time_selection.filter(|selection| {
+            self.time_selection_project_scope && selection.anchor_frame != selection.end_frame
+        }) {
+            let owner = cx.entity();
+            body = body.child(
+                canvas(
+                    |_, _, _| (),
+                    move |_, _, window, cx| {
+                        let view = owner.read(cx);
+                        let (Some(lane), Some(state)) =
+                            (view.painted_arrangement_tail_bounds(), view.state.as_ref())
+                        else {
+                            return;
+                        };
+                        let viewport = view.visible_viewport(state.timeline_frames);
+                        let (start, end) = (
+                            selection.anchor_frame.min(selection.end_frame),
+                            selection.anchor_frame.max(selection.end_frame),
+                        );
+                        let Some(view_end) = viewport.end() else {
+                            return;
+                        };
+                        let start = start.max(viewport.start);
+                        let end = end.min(view_end);
+                        if start >= end {
+                            return;
+                        }
+                        let (Some(left), Some(right)) =
+                            (viewport.fraction(start), viewport.fraction(end))
+                        else {
+                            return;
+                        };
+                        let fill = gpui::Background::from(rgb(theme::time_selection_fill()))
+                            .opacity(theme::TIME_SELECTION_OPACITY);
+                        window.paint_quad(gpui::fill(
+                            gpui::Bounds::new(
+                                point(px(lane.left + left * lane.width), px(lane.top)),
+                                gpui::size(px((right - left) * lane.width), px(lane.height)),
+                            ),
+                            fill,
+                        ));
+                    },
+                )
+                .absolute()
+                .inset_0(),
+            );
+        }
         body = body.children(self.arrangement_device_drop_preview());
         let insertion_line_y = if self
             .state()

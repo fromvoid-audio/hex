@@ -335,6 +335,67 @@ fn empty_arrangement_space_matches_a_scrolled_zoomed_lane_and_keeps_selection(
 }
 
 #[gpui::test]
+fn dragging_below_the_last_track_selects_project_time(cx: &mut TestAppContext) {
+    let (project, first, last, _) = audio_project();
+    let (handle, editor) = editor_window(cx, project, Arc::default());
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    let viewport = super::viewport::Viewport {
+        start: 48_000,
+        length: 128_000,
+    };
+    editor.update(&mut visual, |view, cx| {
+        view.viewport = Some(viewport);
+        cx.notify();
+    });
+    visual.run_until_parked();
+
+    let (lane, last_row) = editor.read_with(&visual, |view, _| {
+        (
+            view.drag_lanes[&first],
+            view.painted_track_drop_lane(last).unwrap(),
+        )
+    });
+    let body = visual.debug_bounds("arrangement-content").unwrap();
+    let last_bottom = px(last_row.top + last_row.height);
+    assert!(
+        last_bottom < body.bottom(),
+        "the drag starts in visible space below the last track"
+    );
+    let y = (last_bottom + body.bottom()) / 2.0;
+    let at = |fraction| point(px(lane.left + lane.width * fraction), y);
+    let frame_at = |x| super::seek::pointer_to_frame(x, lane.left, lane.width, viewport).unwrap();
+    let start = at(0.65);
+    let end = at(0.25);
+    let free = Modifiers {
+        platform: true,
+        ..Modifiers::default()
+    };
+    visual.simulate_mouse_down(start, MouseButton::Left, free);
+    visual.simulate_mouse_move(end, MouseButton::Left, free);
+    visual.run_until_parked();
+
+    let assert_range = |visual: &VisualTestContext| {
+        editor.read_with(visual, |view, _| {
+            let range = view
+                .normalized_time_selection()
+                .expect("project range from empty space");
+            assert!(view.time_selection_project_scope);
+            assert_eq!(range.tracks(), &[first, last]);
+            assert_eq!(
+                (range.start(), range.end()),
+                (frame_at(f32::from(end.x)), frame_at(f32::from(start.x)))
+            );
+            assert_eq!(view.last_transport_command, None);
+        });
+    };
+    assert_range(&visual);
+    visual.simulate_mouse_up(end, MouseButton::Left, free);
+    visual.run_until_parked();
+    assert_range(&visual);
+    assert!(visual.debug_bounds("main-project-time-selection").is_some());
+}
+
+#[gpui::test]
 fn empty_project_click_places_a_visible_play_start_without_tracks(cx: &mut TestAppContext) {
     cx.update(super::bind_editor_keys);
     let project = hex_project::Project::new(48_000).unwrap();
