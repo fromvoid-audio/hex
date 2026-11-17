@@ -101,6 +101,15 @@ pub(super) fn editor_window(
     project: Project,
     midi_preview: Arc<hex_engine::MidiArrangementPreview>,
 ) -> (gpui::AnyWindowHandle, gpui::Entity<EditorView>) {
+    editor_window_with_timeline(cx, project, midi_preview, TIMELINE_FRAMES)
+}
+
+fn editor_window_with_timeline(
+    cx: &mut TestAppContext,
+    project: Project,
+    midi_preview: Arc<hex_engine::MidiArrangementPreview>,
+    timeline_frames: u64,
+) -> (gpui::AnyWindowHandle, gpui::Entity<EditorView>) {
     let bootstrap = cx.add_window(|_, _| Empty);
     let handle = *bootstrap;
     let editor = cx
@@ -113,7 +122,7 @@ pub(super) fn editor_window(
             editor.update(cx, |view, cx| {
                 // Geometry fixtures use a fixed frame span, independent of the
                 // application's default trailing navigation allowance.
-                view.viewport = Some(super::viewport::Viewport::fit(TIMELINE_FRAMES));
+                view.viewport = Some(super::viewport::Viewport::fit(timeline_frames));
                 view.state = Some(Arc::new(ViewState {
                     canonical_audio_source: None,
                     comparison_audio: None,
@@ -123,7 +132,7 @@ pub(super) fn editor_window(
                     audio_clip_waveforms: std::collections::BTreeMap::new(),
                     midi_preview,
                     gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
-                    timeline_frames: TIMELINE_FRAMES,
+                    timeline_frames,
                     can_undo: false,
                     can_redo: false,
                     revision: 1,
@@ -2797,17 +2806,16 @@ fn shift_edge_stretches_a_long_warped_clip_to_the_painted_endpoint(cx: &mut Test
             settings: Some(settings),
         })
         .unwrap();
-    let (handle, editor) = editor_window(cx, project.project().clone(), Arc::default());
-    let mut visual = VisualTestContext::from_window(handle, cx);
-    editor.update(&mut visual, |view, cx| {
-        let state = Arc::get_mut(view.state.as_mut().unwrap()).unwrap();
-        state.timeline_frames = 32_000_000;
+    let (handle, editor) =
+        editor_window_with_timeline(cx, project.project().clone(), Arc::default(), 32_000_000);
+    editor.update(cx, |view, cx| {
         view.viewport = Some(super::viewport::Viewport {
             start: 18_000_000,
             length: 6_000_000,
         });
         cx.notify();
     });
+    let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
     let selector = Box::leak(format!("clip-trim-right-{}", clip.value()).into_boxed_str());
     let down = visual.debug_bounds(selector).unwrap().center();
