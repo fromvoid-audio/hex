@@ -482,33 +482,33 @@ fn delay_catalog_growth_keeps_scrolling_choices_searchable_on_all_owners(cx: &mu
                     && menu.bottom() <= panel.bottom(),
                 "{width}/{owner:?}: {menu:?} in {panel:?}"
             );
+            let search = visual.debug_bounds("device-picker-search").unwrap();
+            visual.simulate_click(search.center(), Modifiers::default());
             for class in [NativeDeviceClass::Instrument, NativeDeviceClass::Effect] {
                 if class == NativeDeviceClass::Instrument && owner.is_some() {
                     continue;
                 }
                 for entry in hex_engine::native_device_catalog_for_class(class).unwrap() {
+                    let type_name = entry.type_id.as_str().unwrap();
                     let selector = if let Some(owner) = owner {
-                        format!(
-                            "add-{}-effect-{}",
-                            owner.prefix(),
-                            entry.type_id.as_str().unwrap()
-                        )
+                        format!("add-{}-effect-{type_name}", owner.prefix())
                     } else {
                         format!(
-                            "add-native-{}-{}",
+                            "add-native-{}-{type_name}",
                             if class == NativeDeviceClass::Effect {
                                 "effect"
                             } else {
                                 "instrument"
-                            },
-                            entry.type_id.as_str().unwrap()
+                            }
                         )
                     };
-                    let search = visual.debug_bounds("device-picker-search").unwrap();
-                    visual.simulate_click(search.center(), Modifiers::default());
-                    visual.simulate_keystrokes("cmd-a");
-                    visual.simulate_input(entry.type_id.as_str().unwrap());
-                    visual.run_until_parked();
+                    // Exercise the real input with one edit per query.
+                    visual.update(|_, cx| {
+                        cx.write_to_clipboard(gpui::ClipboardItem::new_string(
+                            type_name.to_owned(),
+                        ));
+                    });
+                    visual.simulate_keystrokes("cmd-a cmd-v");
                     let menu = visual.debug_bounds("device-add-menu").unwrap();
                     let bounds = visual
                         .debug_bounds(Box::leak(selector.into_boxed_str()))
