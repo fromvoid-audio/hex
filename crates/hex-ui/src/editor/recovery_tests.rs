@@ -871,7 +871,7 @@ fn stop_restarts_audio_from_zero_when_a_vst3_worker_is_degraded(cx: &mut gpui::T
 }
 
 #[gpui::test]
-fn play_restarts_audio_if_stop_has_already_degraded_the_worker(cx: &mut gpui::TestAppContext) {
+fn play_recovers_a_faulted_output_with_a_degraded_worker(cx: &mut gpui::TestAppContext) {
     degraded_worker_recovers(cx, false, None);
 }
 
@@ -902,6 +902,7 @@ fn degraded_worker_recovers(
     if !stop_first {
         client.stop();
         backend.render(&mut [[0.0; 2]; 64]).unwrap();
+        client.status().unwrap().device_fault.store(true, Release);
     }
 
     let (_, editor) = super::super::clip_drag_ui_test::editor_window(
@@ -942,6 +943,98 @@ fn degraded_worker_recovers(
         assert_eq!(view.recovery.position(), Some(explicit_frame.unwrap_or(0)));
         view.stop();
         assert!(view.deferred_play.is_none());
+    });
+    drop(backend);
+    output.publication.close();
+}
+
+#[gpui::test]
+fn play_after_pause_keeps_the_applied_output_when_a_vst3_is_degraded(
+    cx: &mut gpui::TestAppContext,
+) {
+    play_on_degraded_output(cx, None);
+}
+
+#[gpui::test]
+fn explicit_play_from_keeps_the_requested_cursor_when_a_vst3_is_degraded(
+    cx: &mut gpui::TestAppContext,
+) {
+    play_on_degraded_output(cx, Some(18_000));
+}
+
+fn play_on_degraded_output(cx: &mut gpui::TestAppContext, explicit_frame: Option<u64>) {
+    let _output_serial = hex_audio::worker_fixture::serial_output();
+    let (mut output, mut backend) =
+        hex_audio::worker_fixture::open_after_retirement(48_000, false).unwrap();
+    let source = hex_engine::Audio::new(48_000, vec![[0.25; 2]; 20_000]).unwrap();
+    let clip = hex_engine::Clip::new(source, 0, 20_000, false).unwrap();
+    let track = hex_engine::Track::new(vec![clip], 1.0, false).unwrap();
+    let playback = Playback::new(hex_engine::Project::new(48_000, vec![track]).unwrap());
+    let revision = output
+        .publication
+        .control()
+        .unwrap()
+        .publish(playback)
+        .unwrap();
+    let mut client = output.take_client().unwrap();
+    let identity = client.output_identity().unwrap();
+    client.command(PlaybackCommand::Play).unwrap();
+    let mut frames = [[0.0; 2]; 64];
+    backend.render(&mut frames).unwrap();
+
+    let (_, editor) = super::super::clip_drag_ui_test::editor_window(
+        cx,
+        hex_project::Project::new(48_000).unwrap(),
+        Arc::default(),
+    );
+    editor.update(cx, |view, _| {
+        view.audio = Some(EditorAudio {
+            control: client,
+            sample_rate: 48_000,
+            label: "degraded vst3 fixture".into(),
+            spectrum_error: None,
+            mode: hex_session::DocumentAudioMode::Resident,
+        });
+        let state = Arc::clone(view.state.as_ref().unwrap());
+        view.applied_project_revision = Some(state.revision);
+        view.audible_playback = Some(super::super::PlaybackCandidate {
+            clip_preview_identity: None,
+            worker_requires_preroll: Some(false),
+            observation: None,
+            audio_revision: revision,
+            project_generation: view.project_generation,
+            state,
+            prepared_revision: None,
+            seek_request_id: None,
+            device_preview_identity: None,
+            tuning_preview_identity: None,
+        });
+        view.degraded_plugins = crate::editor_backend::DegradedDevices::new(vec![2]);
+        view.toggle_play();
+        backend.render(&mut frames).unwrap();
+        backend.render(&mut frames).unwrap();
+        assert!(!view.audio_status().unwrap().playing.load(Acquire));
+
+        if let Some(frame) = explicit_frame {
+            view.queue_audio_command(PlaybackCommand::PlayFrom(frame));
+        } else {
+            view.toggle_play();
+        }
+        assert!(view.pending_restart_request.is_none());
+        assert!(view.deferred_play.is_none());
+        assert_eq!(
+            view.audio.as_ref().unwrap().control.output_identity(),
+            Some(identity)
+        );
+        backend.render(&mut frames).unwrap();
+        let status = view.audio_status().unwrap();
+        assert!(status.playing.load(Acquire));
+        assert_eq!(status.applied_revision.load(Acquire), revision);
+        assert_eq!(
+            status.position.load(Acquire),
+            explicit_frame.unwrap_or(0) + 64
+        );
+        assert!(frames.iter().any(|frame| *frame != [0.0; 2]));
     });
     drop(backend);
     output.publication.close();
