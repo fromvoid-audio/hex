@@ -10,6 +10,7 @@
 use crate::{AssetId, VerifiedAudioFile};
 use hex_engine::{PreparedRevision, native_device_resources::PreparedDeviceResources};
 use hex_export::ForeignBounceRenderer;
+use hex_project::Project;
 use std::{collections::BTreeMap, path::Path, sync::Arc};
 
 /// Stateless host capability: render one isolated bounce item to `path` with
@@ -26,6 +27,7 @@ pub struct StreamedBounceRequest<'a> {
     pub(crate) files: &'a BTreeMap<AssetId, VerifiedAudioFile>,
     pub(crate) repitches: &'a [hex_engine::audio_transform::StreamedRepitchRequirement],
     pub(crate) granulars: &'a [hex_engine::audio_transform::StreamedGranularRequirement],
+    isolated_project: Option<&'a Project>,
     pub(crate) path: &'a Path,
     pub(crate) start: u64,
     pub(crate) frames: u64,
@@ -52,6 +54,32 @@ impl StreamedBounceRequest<'_> {
     /// Exact granular roots retained with the isolated ordinary revision.
     pub fn granulars(&self) -> &[hex_engine::audio_transform::StreamedGranularRequirement] {
         self.granulars
+    }
+    /// Without a retained catalog, the offline worker may project one exact
+    /// asset's candidate roots from the same isolated Project used to compile
+    /// this item. The caller bounds projection workspace and matches the
+    /// complete constructor metadata before admitting any page owner.
+    pub fn projected_granular_roots(
+        &self,
+        asset: AssetId,
+        generation: u64,
+    ) -> impl Iterator<
+        Item = Result<hex_engine::audio_transform::StreamedGranularRoot, hex_engine::Invalid>,
+    > + '_ {
+        self.isolated_project
+            .zip(self.file(asset))
+            .into_iter()
+            .flat_map(move |(project, file)| {
+                project
+                    .tracks()
+                    .iter()
+                    .flat_map(|track| track.clips())
+                    .filter(move |clip| clip.asset() == asset)
+                    .filter_map(move |clip| {
+                        crate::audio_sources::granular_source_root(project, clip, file, generation)
+                            .transpose()
+                    })
+            })
     }
     pub fn path(&self) -> &Path {
         self.path
@@ -100,6 +128,7 @@ impl BounceRevision {
 pub(crate) fn render(
     path: &Path,
     revision: BounceRevision,
+    isolated_project: Option<&Project>,
     resources: Option<&PreparedDeviceResources>,
     start: u64,
     frames: u64,
@@ -128,6 +157,7 @@ pub(crate) fn render(
                     .file_sources
                     .as_ref()
                     .map_or(&[], |files| files.granulars().requirements()),
+                isolated_project,
                 path,
                 start,
                 frames,
