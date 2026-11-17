@@ -145,7 +145,7 @@ pub(super) fn grains(
             .unwrap_or(0);
     let mut accumulator = Accumulator::new(request.output_frames, ring, work, extra)?;
     let bank = Bandlimited::new(pitch, work)?;
-    let channel = request.input.reference_channel();
+    let channel = request.input.reference_channel()?;
     let mut center = -(half_limit as i128);
     let mut grain_index = 0_u64;
     let mut previous = None;
@@ -211,6 +211,130 @@ pub(super) fn grains(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn incremental_reference_matches_resident_loop_phase_and_gain() {
+        let frames: Vec<_> = (0..8192)
+            .map(|i| [(i as f32 * 0.021).sin(), (i as f32 * 0.037).cos() * 0.8])
+            .collect();
+        let envelope = [
+            GainPoint {
+                source_frame: 0,
+                gain_q16: 32_768,
+            },
+            GainPoint {
+                source_frame: 4000,
+                gain_q16: 98_304,
+            },
+        ];
+        for (length, looping, phase) in [(31, false, 0), (4096, false, 0), (8000, true, 97)] {
+            let input = Input {
+                frames: &frames,
+                sample_rate: 16_000,
+                region_start: 8,
+                region_length: length,
+                phase,
+                looping,
+                envelope: &envelope,
+            };
+            let count = length.min(4096);
+            let stride = (length / count).max(1);
+            let mut energy = [0.0; 2];
+            for index in 0..count {
+                let frame = input.frame(i128::from(index * stride));
+                for channel in 0..2 {
+                    energy[channel] += frame[channel] * frame[channel];
+                }
+            }
+            assert_eq!(
+                input.reference_channel().unwrap(),
+                usize::from(energy[1] > energy[0])
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "explicit optimized reference-scan and PCM profile"]
+    fn reference_scan_and_granular_pcm_profile() {
+        use std::hint::black_box;
+        use std::time::Instant;
+        let frames: Vec<_> = (0..8192)
+            .map(|i| {
+                [
+                    (i as f32 * 0.021).sin() * 0.25,
+                    (i as f32 * 0.037).cos() * 0.75,
+                ]
+            })
+            .collect();
+        let envelope = [
+            GainPoint {
+                source_frame: 0,
+                gain_q16: 32_768,
+            },
+            GainPoint {
+                source_frame: 4096,
+                gain_q16: 65_536,
+            },
+        ];
+        let input = Input {
+            frames: &frames,
+            sample_rate: 16_000,
+            region_start: 8,
+            region_length: 8000,
+            phase: 97,
+            looping: true,
+            envelope: &envelope,
+        };
+        let map = TimeMap::new(
+            vec![MapSegment {
+                output_start: 0,
+                output_end: 1024,
+                source_start_q32: 0,
+                source_end_q32: 768 * Q32,
+            }],
+            1024,
+        )
+        .unwrap();
+        for law in [Resampler::V1, Resampler::V2] {
+            for mode in [
+                Mode::Tones { grain_ms: 8 },
+                Mode::Texture {
+                    grain_ms: 8,
+                    fluctuation: 35,
+                    seed: 42,
+                },
+            ] {
+                let request = Request {
+                    input,
+                    map: &map,
+                    output_frames: 1024,
+                    pitch_cents: 300,
+                    mode,
+                    attacks: &[],
+                };
+                let pcm = render_with_resampler(&request, law, &mut || false)
+                    .unwrap()
+                    .frames;
+                let hash = pcm
+                    .iter()
+                    .flatten()
+                    .fold(0xcbf29ce484222325u64, |h, sample| {
+                        (h ^ u64::from(sample.to_bits())).wrapping_mul(0x100000001b3)
+                    });
+                eprintln!("granular_pcm law={law:?} mode={mode:?} frames=1024 hash={hash:016x}");
+            }
+        }
+        for _ in 0..5 {
+            let start = Instant::now();
+            for _ in 0..100 {
+                black_box(input.reference_channel().unwrap());
+            }
+            eprintln!(
+                "reference_scan rate=16000 region=8000 samples=4096 iterations=100 elapsed_ns={}",
+                start.elapsed().as_nanos()
+            );
+        }
+    }
     #[test]
     fn cache_falls_back_when_original_scratch_budget_is_full() {
         let frames: Vec<_> = (0..256)
@@ -300,9 +424,14 @@ mod tests {
                 base_scratch: 0,
                 resampler: Resampler::V1,
             };
-            let measured = period(input, 2_000.0, input.reference_channel(), &mut work)
-                .unwrap()
-                .unwrap();
+            let measured = period(
+                input,
+                2_000.0,
+                input.reference_channel().unwrap(),
+                &mut work,
+            )
+            .unwrap()
+            .unwrap();
             assert!((16_000.0 / measured - frequency).abs() < frequency * 0.01);
         }
     }
