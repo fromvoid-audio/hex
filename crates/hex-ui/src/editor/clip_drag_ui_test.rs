@@ -635,6 +635,10 @@ fn new_track_clip_release_keeps_preview_until_worker_accepts_or_refuses(cx: &mut
                         );
                         let destination = &view.state.as_ref().unwrap().project.tracks()[1];
                         assert_eq!(destination.gain(), 0.5);
+                        if !copy {
+                            assert_eq!(view.selected_clip(), Some(clip));
+                            assert_eq!(view.selected_track(), Some(destination.id()));
+                        }
                         let cursor = view.edit_cursor.unwrap();
                         assert_eq!(
                             (cursor.track, cursor.frame),
@@ -3199,6 +3203,13 @@ fn rendered_move_released_after_first_drag_motion_commits(cx: &mut TestAppContex
                 project.clone(),
             )
         });
+        editor.update(&mut visual, |view, cx| {
+            // Exercise dragging a clip whose header has never selected it.
+            view.selected_clip = None;
+            view.reconcile_clip_selection();
+            cx.notify();
+        });
+        visual.run_until_parked();
         let source = visual
             .debug_bounds(selector(format!("clip-drag-surface-{}", clip.value())))
             .unwrap();
@@ -3254,6 +3265,7 @@ fn rendered_move_released_after_first_drag_motion_commits(cx: &mut TestAppContex
         });
         pump_move(&editor, &mut visual);
         editor.read_with(&visual, |v, _| {
+            assert_eq!(v.selected_clip_ids(), vec![clip]);
             let project = &v.state.as_ref().unwrap().project;
             assert_ne!(project.snapshot(), before.snapshot());
             match destination {
@@ -3265,6 +3277,12 @@ fn rendered_move_released_after_first_drag_motion_commits(cx: &mut TestAppContex
                 }
             }
         });
+        let selected_edge = selector(format!(
+            "{}clip-selected-trailing-{}",
+            if midi { "midi-" } else { "" },
+            clip.value()
+        ));
+        assert!(visual.debug_bounds(selected_edge).is_some());
         let moved = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
         visual.simulate_keystrokes("cmd-z");
         pump_move(&editor, &mut visual);
