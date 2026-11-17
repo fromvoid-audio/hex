@@ -1662,22 +1662,44 @@ fn closed_latency_demand_matches_resident(upstream: bool) {
 
 #[test]
 fn closed_main_latency_session_audio_demand_matches_resident_routes() {
-    closed_session_audio_demand_matches_resident(None);
+    closed_session_audio_demand_matches_resident(None, false);
 }
 
 #[test]
 fn closed_upstream_latency_session_audio_demand_matches_resident_routes() {
     for latency_track in [0, 1] {
-        closed_session_audio_demand_matches_resident(Some(latency_track));
+        closed_session_audio_demand_matches_resident(Some(latency_track), false);
     }
 }
 
-fn closed_session_audio_demand_matches_resident(latency_track: Option<usize>) {
+#[test]
+fn closed_grouped_session_audio_latency_demand_matches_resident_routes() {
+    for latency_track in [0, 2] {
+        closed_session_audio_demand_matches_resident(Some(latency_track), true);
+    }
+}
+
+fn closed_session_audio_demand_matches_resident(latency_track: Option<usize>, grouped: bool) {
     use hex_project::{Command, Created};
     let mut f = if latency_track.is_some() {
         crate::signal_graph::tests::fixture(&[&[], &[]], 1024)
     } else {
         crate::signal_graph::tests::fixture(&[&[]], 1024)
+    };
+    let group = if grouped {
+        let Created::Track(group) = f
+            .editor
+            .execute(Command::GroupTracks {
+                tracks: hex_project::TrackSelectionIds::new(&f.tracks).unwrap(),
+                name: "group".into(),
+            })
+            .unwrap()
+        else {
+            panic!("group")
+        };
+        Some(group)
+    } else {
+        None
     };
     let asset = *f.media.keys().next().unwrap();
     let key = StreamSourceKey::new(40, asset);
@@ -1728,7 +1750,11 @@ fn closed_session_audio_demand_matches_resident(latency_track: Option<usize>) {
     .unwrap();
     let command = if let Some(index) = latency_track {
         Command::InsertDevice {
-            track: f.tracks[index],
+            track: if index == 2 {
+                group.unwrap()
+            } else {
+                f.tracks[index]
+            },
             before: None,
             state,
         }

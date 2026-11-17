@@ -1064,20 +1064,25 @@ fn seek_pause_stop_case(grouped: bool) {
 
 #[test]
 fn real_immediate_scene_waits_before_route_and_play_then_restarts_actual_clip() {
-    real_immediate_scene(false, false);
+    real_immediate_scene(false, false, false);
 }
 
 #[test]
 fn main_latency_session_scene_waits_for_pages_and_renders_without_allocations() {
-    real_immediate_scene(true, false);
+    real_immediate_scene(true, false, false);
 }
 
 #[test]
 fn upstream_latency_session_scene_waits_for_pages_and_renders_without_allocations() {
-    real_immediate_scene(true, true);
+    real_immediate_scene(true, true, false);
 }
 
-fn real_immediate_scene(with_latency: bool, upstream: bool) {
+#[test]
+fn grouped_latency_session_scene_waits_for_pages_and_renders_without_allocations() {
+    real_immediate_scene(true, true, true);
+}
+
+fn real_immediate_scene(with_latency: bool, upstream: bool, grouped: bool) {
     let _serial = serial();
     if !hex_engine::audio_storage_constructor_layout_supported() {
         return;
@@ -1116,6 +1121,21 @@ fn real_immediate_scene(with_latency: bool, upstream: bool) {
     let project = hex_project::Project::from_snapshot(snapshot).unwrap();
     let project = if with_latency {
         let mut editor = hex_project::Editor::new(project, 8).unwrap();
+        let source_track = editor.project().tracks()[0].id();
+        let destination = if grouped {
+            let hex_project::Created::Track(group) = editor
+                .execute(hex_project::Command::GroupTracks {
+                    tracks: hex_project::TrackSelectionIds::new(&[source_track]).unwrap(),
+                    name: "group".into(),
+                })
+                .unwrap()
+            else {
+                panic!("group")
+            };
+            group
+        } else {
+            source_track
+        };
         let state = hex_engine::default_native_device_state(hex_engine::DeviceTypeId::from_static(
             if upstream {
                 "hex.limiter"
@@ -1126,7 +1146,7 @@ fn real_immediate_scene(with_latency: bool, upstream: bool) {
         .unwrap();
         let command = if upstream {
             hex_project::Command::InsertDevice {
-                track: editor.project().tracks()[0].id(),
+                track: destination,
                 before: None,
                 state,
             }
@@ -1147,6 +1167,11 @@ fn real_immediate_scene(with_latency: bool, upstream: bool) {
         panic!("audio fixture")
     };
     let clip = audio.id();
+    let track_index = project
+        .tracks()
+        .iter()
+        .position(|track| track.id() == project.session_cells()[0].track())
+        .unwrap();
     let wav = stream_fixture::Wav::with_rate_and_samples(4096, 24_000, |f| {
         if f < 2048 { 8192 } else { 16384 }
     });
@@ -1218,7 +1243,7 @@ fn real_immediate_scene(with_latency: bool, upstream: bool) {
                 .current()
                 .unwrap()
                 .playback
-                .session_route_status(0)
+                .session_route_status(track_index)
                 .unwrap()
                 .owner,
             hex_engine::SessionPlaybackOwner::Arrangement
@@ -1251,7 +1276,7 @@ fn real_immediate_scene(with_latency: bool, upstream: bool) {
                 .current()
                 .unwrap()
                 .playback
-                .session_route_status(0)
+                .session_route_status(track_index)
                 .unwrap()
                 .owner,
             hex_engine::SessionPlaybackOwner::Session { clip }
