@@ -148,6 +148,36 @@ impl EditorView {
             .filter(|d| d.clip.id() == clip)
             .map(|d| d.preview)
     }
+    pub(super) fn waveform_clip_gain(&self, clip: &Clip) -> Option<ClipGain> {
+        let id = clip.id();
+        if let Some(gain) = self.displayed_clip_gain(id) {
+            return Some(gain);
+        }
+        if let Some(drag) = self.clip_gain.held.as_ref().filter(|d| d.current(self))
+            && self.clip_is_selected(drag.clip.id())
+            && self.clip_is_selected(id)
+        {
+            return relative_gain(clip.gain(), drag.clip.gain(), drag.preview);
+        }
+        if let Some(pending) = self.clip_gain.pending.as_ref()
+            && pending.drag.source_current(self)
+            && let Command::EditClips {
+                clips,
+                edit: hex_project::ClipEdit::GainBy { millidb },
+            } = &pending.command
+            && clips.contains(&id)
+        {
+            return ClipGain::new(clip.gain().millidb() + millidb).ok();
+        }
+        let (anchor, original, gain) = self.audio_clip_controls.gain_preview(self)?;
+        if anchor == id {
+            Some(gain)
+        } else if self.clip_is_selected(id) && self.clip_is_selected(anchor) {
+            relative_gain(clip.gain(), original, gain)
+        } else {
+            None
+        }
+    }
     fn update_clip_gain(
         &mut self,
         position: Point<Pixels>,
@@ -437,4 +467,8 @@ impl EditorView {
         });
         abandoned && self.retire_clip_gain()
     }
+}
+
+fn relative_gain(gain: ClipGain, original: ClipGain, preview: ClipGain) -> Option<ClipGain> {
+    ClipGain::new(gain.millidb() + preview.millidb() - original.millidb()).ok()
 }
