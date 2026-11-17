@@ -83,3 +83,22 @@ the public typed control API, not audible or physical latency. Pure cases cover
 unit conversion, overflow, invalid inventory, changed snapshots, unavailable
 properties and nonuniform streams. Research provenance is recorded in
 `research/catalog/coreaudio-output-timing-2026-11-17.json` in the Hex repository.
+
+The optional `watch_output_timing_on_control` API binds a receipt to the
+existing Stream. Device, default route, stream and AudioUnit listeners latch
+invalidation for the original observation. Control also rereads the original
+properties before returning timing. A new watch replaces the previous one;
+play/pause transitions and stream destruction retire the watch. Notifications
+can arrive after the property changes, so revalidation describes the checked
+instant. The eventual live caller must handle invalidation before establishing
+a persistent presentation plan.
+
+Each of sixteen process slots supports one native watch. Listener userdata is
+an opaque serial and slot index, never a Rust pointer to storage. Notifications
+use one matching atomic compare-exchange with no lock, allocation or property
+read. Retirement invalidates before unregistering. A failed unregister
+quarantines its already-invalid slot. Late callbacks cannot affect a newer
+receipt or access a disposed Stream. The native regression registers on an
+actual unstarted output and injects a delivered signal through the registered
+shim. Hardware property-notification delivery and physical timing still need
+native acceptance.
