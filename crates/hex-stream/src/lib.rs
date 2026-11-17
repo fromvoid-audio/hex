@@ -19,6 +19,7 @@ mod reference;
 pub use footprint::{AllocationData, EndpointData, StreamDataFootprint, TransportData, WorkerData};
 pub use granular::{
     VerifiedGranularBuffers, VerifiedGranularStepError, advance_verified_granular_on_control,
+    scan_verified_granular_region_on_control,
 };
 pub use reference::{VerifiedReferenceChannel, scan_reference_channel_on_control};
 mod endpoint;

@@ -17,7 +17,9 @@ pub use granular_overlap::GranularOverlap;
 pub use granular_sequential::{GranularSource, SequentialGranular, SequentialGranularConfig};
 mod resample;
 pub use resample::{PitchWindow, RepitchWindow, Resampler, V2_MAX_TAPS};
+mod source_region;
 mod spectral;
+pub use source_region::SourceRegion;
 use std::fmt;
 
 pub type Frame = [f32; 2];
@@ -171,28 +173,7 @@ impl Input<'_> {
         [f64::from(frame[0]) * gain, f64::from(frame[1]) * gain]
     }
     fn gain(self, frame: u64) -> f64 {
-        if self.envelope.is_empty() {
-            return 1.0;
-        }
-        let next = self
-            .envelope
-            .partition_point(|point| point.source_frame <= frame);
-        let value = match (
-            next.checked_sub(1).and_then(|i| self.envelope.get(i)),
-            self.envelope.get(next),
-        ) {
-            (Some(a), Some(b)) => {
-                let span = b.source_frame - a.source_frame;
-                let offset = frame - a.source_frame;
-                (u128::from(a.gain_q16) * u128::from(span - offset)
-                    + u128::from(b.gain_q16) * u128::from(offset)) as f64
-                    / span as f64
-            }
-            (Some(a), None) => f64::from(a.gain_q16),
-            (None, Some(b)) => f64::from(b.gain_q16),
-            (None, None) => 65_536.0,
-        };
-        value / 65_536.0
+        source_gain(self.envelope, frame)
     }
     fn reference_channel(self) -> Result<usize, Error> {
         let mut scan = ReferenceChannelScan::new(self.region_length)?;
@@ -201,6 +182,29 @@ impl Input<'_> {
         }
         scan.finish()
     }
+}
+
+fn source_gain(envelope: &[GainPoint], frame: u64) -> f64 {
+    if envelope.is_empty() {
+        return 1.0;
+    }
+    let next = envelope.partition_point(|point| point.source_frame <= frame);
+    let value = match (
+        next.checked_sub(1).and_then(|i| envelope.get(i)),
+        envelope.get(next),
+    ) {
+        (Some(a), Some(b)) => {
+            let span = b.source_frame - a.source_frame;
+            let offset = frame - a.source_frame;
+            (u128::from(a.gain_q16) * u128::from(span - offset)
+                + u128::from(b.gain_q16) * u128::from(offset)) as f64
+                / span as f64
+        }
+        (Some(a), None) => f64::from(a.gain_q16),
+        (None, Some(b)) => f64::from(b.gain_q16),
+        (None, None) => 65_536.0,
+    };
+    value / 65_536.0
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

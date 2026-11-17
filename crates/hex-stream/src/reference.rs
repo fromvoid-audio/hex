@@ -9,12 +9,30 @@ use hex_warp::ReferenceChannelScan;
 pub struct VerifiedReferenceChannel {
     metadata: StreamedSourceMetadata,
     channel: usize,
+    region: Option<hex_warp::SourceRegion>,
 }
 
 impl VerifiedReferenceChannel {
     /// Raw source and conversion facts supplied by the caller and checked here.
     pub fn metadata(&self) -> &StreamedSourceMetadata {
         &self.metadata
+    }
+
+    /// Region used for selection, or neutral full-source audio when absent.
+    pub fn region(&self) -> Option<&hex_warp::SourceRegion> {
+        self.region.as_ref()
+    }
+
+    pub(crate) fn with_region(
+        metadata: StreamedSourceMetadata,
+        channel: usize,
+        region: hex_warp::SourceRegion,
+    ) -> Self {
+        Self {
+            metadata,
+            channel,
+            region: Some(region),
+        }
     }
 
     /// The selected stereo channel: zero for left, one for right.
@@ -103,6 +121,7 @@ pub fn scan_reference_channel_on_control(
     Ok(VerifiedReferenceChannel {
         metadata: metadata.clone(),
         channel: scan.finish().map_err(|_| StreamFailureKind::DecodeFailed)?,
+        region: None,
     })
 }
 
