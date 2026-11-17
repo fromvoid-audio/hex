@@ -2687,18 +2687,19 @@ fn exercise_granular_worker(
     use hex_engine::STREAM_PAGE_FRAMES;
     use hex_stream::{
         GranularWorkerError, GranularWorkerExitReason, GranularWorkerKey, GranularWorkerQueues,
-        GranularWorkerRequest, GranularWorkerResult, GranularWorkerSeek, run_granular_worker,
+        GranularWorkerRequest, GranularWorkerResult, GranularWorkerSeek,
     };
     use std::{
         sync::{
             Arc,
-            atomic::{AtomicBool, Ordering},
+            atomic::{AtomicBool, AtomicU64, Ordering},
         },
         thread,
         time::{Duration, Instant},
     };
-    let key = GranularWorkerKey {
+    let mut key = GranularWorkerKey {
         source: source.metadata().key(),
+        epoch: 1,
         page_index: 0,
         seek: GranularWorkerSeek::Strict {
             max_preroll_frames: 0,
@@ -2708,17 +2709,73 @@ fn exercise_granular_worker(
     let (result_tx, mut results) = rtrb::RingBuffer::new(1);
     let stop = Arc::new(AtomicBool::new(false));
     let worker_stop = Arc::clone(&stop);
+    let epoch = Arc::new(AtomicU64::new(1));
+    let worker_epoch = Arc::clone(&epoch);
+    #[cfg(feature = "test-support")]
+    let (at_step_tx, at_step_rx) = std::sync::mpsc::sync_channel(1);
+    #[cfg(feature = "test-support")]
+    let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
     let join = thread::spawn(move || {
-        run_granular_worker(
-            source,
-            GranularWorkerQueues {
-                requests: request_rx,
-                results: result_tx,
-            },
-            &worker_stop,
-        )
+        let queues = GranularWorkerQueues {
+            requests: request_rx,
+            results: result_tx,
+        };
+        #[cfg(feature = "test-support")]
+        {
+            let mut first = true;
+            hex_stream::test_support::run_granular_worker_with_step_hook(
+                source,
+                queues,
+                &worker_stop,
+                &worker_epoch,
+                move || {
+                    if first {
+                        first = false;
+                        let _ = at_step_tx.send(());
+                        let _ = release_rx.recv_timeout(Duration::from_secs(3));
+                    }
+                },
+            )
+        }
+        #[cfg(not(feature = "test-support"))]
+        hex_stream::run_granular_worker(source, queues, &worker_stop, &worker_epoch)
     });
     let pointer = page.as_ptr() as usize;
+    #[cfg(feature = "test-support")]
+    let page = {
+        assert!(
+            requests
+                .push(GranularWorkerRequest { key, frames: page })
+                .is_ok()
+        );
+        at_step_rx
+            .recv_timeout(Duration::from_secs(3))
+            .expect("active worker reached step");
+        epoch.store(2, Ordering::Release);
+        release_tx.send(()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let outcome = loop {
+            if let Ok(outcome) = results.pop() {
+                break outcome;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "active cancellation did not return"
+            );
+            thread::yield_now();
+        };
+        assert_eq!(outcome.key, key);
+        let GranularWorkerResult::Cancelled { frames } = outcome.result else {
+            panic!("active obsolete page was not cancelled")
+        };
+        assert_eq!(frames.as_ptr() as usize, pointer);
+        key.epoch = 2;
+        frames
+    };
+    #[cfg(not(feature = "test-support"))]
+    {
+        key.epoch = epoch.load(Ordering::Acquire);
+    }
     assert!(
         requests
             .push(GranularWorkerRequest { key, frames: page })
@@ -2742,6 +2799,30 @@ fn exercise_granular_worker(
     assert_eq!(page.frames.as_ptr() as usize, pointer);
     assert_eq!(&*page.frames, &expected[..STREAM_PAGE_FRAMES]);
 
+    // A queued request from an older demand is cancelled without rendering.
+    let stale = key;
+    key.epoch += 1;
+    epoch.store(key.epoch, Ordering::Release);
+    assert!(
+        requests
+            .push(GranularWorkerRequest {
+                key: stale,
+                frames: page.frames
+            })
+            .is_ok()
+    );
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let outcome = loop {
+        if let Ok(outcome) = results.pop() {
+            break outcome;
+        }
+        assert!(Instant::now() < deadline, "stale request was not returned");
+        thread::yield_now();
+    };
+    let GranularWorkerResult::Cancelled { frames } = outcome.result else {
+        panic!("expected stale request cancellation")
+    };
+    assert_eq!(frames.as_ptr() as usize, pointer);
     let invalid = GranularWorkerKey {
         page_index: u64::MAX,
         ..key
@@ -2750,7 +2831,7 @@ fn exercise_granular_worker(
         requests
             .push(GranularWorkerRequest {
                 key: invalid,
-                frames: page.frames
+                frames
             })
             .is_ok()
     );
@@ -2773,7 +2854,7 @@ fn exercise_granular_worker(
         panic!("expected invalid page failure")
     };
     assert_eq!(frames.as_ptr() as usize, pointer);
-    let foreign = GranularWorkerKey {
+    let mut foreign = GranularWorkerKey {
         source: StreamSourceKey::new(8, asset(8192)),
         ..key
     };
@@ -2810,6 +2891,66 @@ fn exercise_granular_worker(
         assert!(
             Instant::now() < deadline,
             "worker did not dequeue held request"
+        );
+        thread::yield_now();
+    }
+    // Advancing demand while an outcome is held cancels that outcome after
+    // the full result queue is drained. Already queued outcomes carry the old
+    // epoch and must be fenced by the consumer.
+    key.epoch += 1;
+    epoch.store(key.epoch, Ordering::Release);
+    foreign.epoch = key.epoch;
+    let old_outcome = results.pop().expect("first outcome remains queued");
+    assert_ne!(old_outcome.key.epoch, key.epoch);
+    let GranularWorkerResult::Failed { frames, .. } = old_outcome.result else {
+        panic!("expected queued foreign-source failure")
+    };
+    assert_eq!(frames.as_ptr() as usize, pointer);
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let old_held = loop {
+        if let Ok(outcome) = results.pop() {
+            break outcome;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "stale held outcome did not return"
+        );
+        thread::yield_now();
+    };
+    let GranularWorkerResult::Cancelled { frames: held_page } = old_held.result else {
+        panic!("stale held outcome was not cancelled")
+    };
+    assert_eq!(held_page.as_ptr() as usize, held_pointer);
+    // Refill both positions at the new epoch, then stop with a third queued page.
+    assert!(
+        requests
+            .push(GranularWorkerRequest {
+                key: foreign,
+                frames
+            })
+            .is_ok()
+    );
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while results.slots() == 0 {
+        assert!(
+            Instant::now() < deadline,
+            "worker did not refill result queue"
+        );
+        thread::yield_now();
+    }
+    assert!(
+        requests
+            .push(GranularWorkerRequest {
+                key: foreign,
+                frames: held_page
+            })
+            .is_ok()
+    );
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while requests.slots() != 2 {
+        assert!(
+            Instant::now() < deadline,
+            "worker did not hold next outcome"
         );
         thread::yield_now();
     }
