@@ -45,7 +45,8 @@ fn verified_granular_edits_publish_worker_audio_in_both_modes() {
         });
         h.open();
         h.applied(h.context.unwrap());
-        let imported = h.run(Request::Import(long_converted_source(&files)));
+        let path = long_converted_source(&files);
+        let imported = h.run(Request::Import(path.clone()));
         h.applied(h.context.unwrap());
         let clip = imported.state.project.tracks()[0].clips()[0].id();
         let neutral = h.run(Request::Edit(hex_project::Command::SetClipFades {
@@ -121,5 +122,51 @@ fn verified_granular_edits_publish_worker_audio_in_both_modes() {
         );
         h.applied(h.context.unwrap());
         play_from_start_expecting(&mut h, 0.25);
+        let prior_actual = h
+            .audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .applied_audio_source();
+        fs::remove_file(path).unwrap();
+        let missing = h.run(Request::Edit(hex_project::Command::SetAudioClipPitch {
+            clip,
+            cents: 300,
+        }));
+        assert!(
+            missing.error.is_none(),
+            "canonical edit must remain editable"
+        );
+        let failed_context = h.context.unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            h.render();
+            assert_eq!(
+                h.audio
+                    .as_ref()
+                    .unwrap()
+                    .status()
+                    .unwrap()
+                    .applied_audio_source(),
+                prior_actual,
+                "failed granular construction must preserve the installed publication"
+            );
+            if let Ok(EditorAudioEvent::Publication {
+                context,
+                state: EditorPublicationState::Refused(reason),
+                ..
+            }) = h.events.try_recv()
+                && context == failed_context
+            {
+                assert!(!reason.is_empty());
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "missing granular source was not refused"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
     }
 }
