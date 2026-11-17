@@ -83,6 +83,16 @@ fn cold_track_add_and_remove_preserve_pcm_without_callback_allocations()
 #[test]
 fn future_audio_track_add_preserves_pcm_without_callback_allocations() -> Result<(), Box<dyn Error>>
 {
+    verify_added_audio_track(false)
+}
+
+#[test]
+fn ended_audio_track_add_preserves_pcm_without_callback_allocations() -> Result<(), Box<dyn Error>>
+{
+    verify_added_audio_track(true)
+}
+
+fn verify_added_audio_track(ended: bool) -> Result<(), Box<dyn Error>> {
     let mut editor = Editor::new(Project::new(RATE)?, 8)?;
     let Created::Imported { track, asset, .. } = editor.execute(Command::ImportAudioTrack {
         name: "source".into(),
@@ -118,6 +128,7 @@ fn future_audio_track_add_preserves_pcm_without_callback_allocations() -> Result
     measured_block(&mut callback, &mut actual);
     oracle.render(&mut expected)?;
     assert_eq!(actual, expected);
+    let frames = if ended { 16 } else { 1024 };
     let Created::Imported {
         track: added,
         asset: added_asset,
@@ -126,17 +137,22 @@ fn future_audio_track_add_preserves_pcm_without_callback_allocations() -> Result
         name: "later".into(),
         path: "memory/later.wav".into(),
         sample_rate: RATE,
-        frames: 1024,
+        frames,
     })?
     else {
         return Err("expected added track".into());
     };
-    editor.execute(Command::MoveClip {
-        clip,
-        track: added,
-        start: 2048,
-    })?;
-    media.insert(added_asset, Audio::new(RATE, vec![[0.125; 2]; 1024])?);
+    if !ended {
+        editor.execute(Command::MoveClip {
+            clip,
+            track: added,
+            start: 2048,
+        })?;
+    }
+    media.insert(
+        added_asset,
+        Audio::new(RATE, vec![[0.125; 2]; frames as usize])?,
+    );
     let next = Arc::new(PreparedRevision::prepare(
         editor.project(),
         &media,
