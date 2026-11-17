@@ -38,8 +38,11 @@ impl OfflineEffectPreparation {
             || source.facts().algorithmic_latency_frames
                 != configuration.prepared.processor_latency_frames()
         {
-            let _ = source.cancel_and_reap_on_control();
-            return Err("offline vst3 preparation changed before graph planning".into());
+            let reason = "offline vst3 preparation changed before graph planning";
+            return Err(match source.cancel_and_reap_on_control() {
+                Ok(_) => reason.into(),
+                Err(cleanup) => format!("{reason} · {cleanup}"),
+            });
         }
         configuration.binding.epoch = configuration
             .binding
@@ -53,7 +56,12 @@ impl OfflineEffectPreparation {
         let bytes = source
             .retained_storage_on_control()
             .and_then(|s| s.data_bytes.checked_add(std::mem::size_of::<Self>()))
-            .map(|bytes| bytes.max(original_bytes))
+            .and_then(|bytes| {
+                original_bytes
+                    .checked_add(std::mem::size_of::<NativeEffect>())
+                    .and_then(|original| original.checked_add(std::mem::size_of::<Self>()))
+                    .map(|original| bytes.max(original))
+            })
             .ok_or("offline vst3 storage unavailable")?;
         Ok(Self {
             source,
