@@ -879,24 +879,30 @@ impl NativeEffectCallback {
             self.reject_callback();
             return Err(DeviceContractError::ForeignProcessingUnavailable);
         }
-        let mut events = InputEvents::default();
-        for note in notes {
-            let status = if note.on { 0x90 } else { 0x80 };
-            if note.channel >= 16
-                || events
-                    .push(MidiEvent {
-                        frame: note.frame,
-                        bytes: [status | note.channel, note.pitch, note.velocity],
-                        len: 3,
-                        note_id: note.note_id,
-                    })
-                    .is_err()
-            {
-                self.reject_callback();
-                frames.fill([0.0; 2]);
-                return Err(DeviceContractError::ForeignProcessingFailed);
+        let mut events;
+        let events: &[MidiEvent] = if notes.is_empty() {
+            &[]
+        } else {
+            events = InputEvents::default();
+            for note in notes {
+                let status = if note.on { 0x90 } else { 0x80 };
+                if note.channel >= 16
+                    || events
+                        .push(MidiEvent {
+                            frame: note.frame,
+                            bytes: [status | note.channel, note.pitch, note.velocity],
+                            len: 3,
+                            note_id: note.note_id,
+                        })
+                        .is_err()
+                {
+                    self.reject_callback();
+                    frames.fill([0.0; 2]);
+                    return Err(DeviceContractError::ForeignProcessingFailed);
+                }
             }
-        }
+            events.as_slice()
+        };
         if self.configuration.prepared.is_instrument_profile() {
             frames.fill([0.0; 2]);
         }
@@ -956,10 +962,10 @@ impl NativeEffectCallback {
                 loop_pass: clock.loop_pass_at_offset(index)?,
             })
         };
-        let result = self.transport.stage_effect_segment(
+        let result = self.transport.stage_effect_pcm_segment(
             offset,
             input,
-            events.as_slice(),
+            events,
             parameters,
             frames,
             timing,
@@ -975,7 +981,7 @@ impl NativeEffectCallback {
                 normalized: lane.normalized,
             }),
         );
-        let Ok(reply) = result else {
+        let Ok(concealed_output) = result else {
             // The transport revoked only this endpoint's epoch. Leave the
             // aligned dry input so a containing carrier can keep rendering.
             frames.copy_from_slice(&self.dry_output[..frames.len()]);
@@ -987,7 +993,7 @@ impl NativeEffectCallback {
             }
             return Err(DeviceContractError::ForeignProcessingFailed);
         };
-        if let Some((start, end)) = reply.concealed_output {
+        if let Some((start, end)) = concealed_output {
             // The transport still owns this epoch. Replace just the missing
             // wet samples with the same latency-aligned dry history used for
             // bypass. An instrument's dry history is already silence.
