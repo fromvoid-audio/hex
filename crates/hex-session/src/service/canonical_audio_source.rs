@@ -188,7 +188,7 @@ impl CanonicalAudioSourceSnapshot {
     ) -> Result<hex_engine::AudioCandidateReservationQuote, hex_engine::AudioStorageError> {
         self.candidate_reservation_quote_for_effects(project, None)
     }
-    fn candidate_reservation_quote_for_effects(
+    pub(super) fn candidate_reservation_quote_for_effects(
         &self,
         project: &Project,
         effects: Option<&hex_engine::AudioCandidateEffects<'_, '_>>,
