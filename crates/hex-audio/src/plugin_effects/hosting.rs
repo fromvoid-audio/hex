@@ -264,6 +264,7 @@ impl Hosting {
             build,
             limits,
             grouped_editor_callbacks: false,
+            transport_space: false,
         }
     }
     /// Opt in before a live SDK controller is constructed. This grants no
