@@ -836,16 +836,7 @@ fn runtime_raw_service_and_stop_progress_while_granular_work_is_held() {
     let raw_key = raw.metadata.key();
     let (_wav, source, _) = source(WarpMode::Tones { grain_ms: 32 });
     let key = source.metadata().key();
-    let (_other_wav, other, _) = source_at_rate(
-        WarpMode::Texture {
-            grain_ms: 32,
-            fluctuation: 35,
-            seed: 42,
-        },
-        48_000,
-    );
-    let other_key = other.metadata().key();
-    let bank = admit(vec![source, other]);
+    let bank = admit(vec![source]);
     let allowance = runtime_allowance(&bank, 3);
     let (gate, entered, _release) = PageGate::new(hex_stream::PageKey {
         source: key,
@@ -867,10 +858,9 @@ fn runtime_raw_service_and_stop_progress_while_granular_work_is_held() {
     runtime.request_page(key, 0);
     entered.recv_timeout(Duration::from_secs(3)).unwrap();
     runtime.request_page(key, 1);
-    runtime.request_page(other_key, 0);
     let mut failures = [hex_stream::StreamFailure {
-        key: other_key.into(),
-        page_index: 0,
+        key: key.into(),
+        page_index: 1,
         kind: StreamFailureKind::Cancelled,
     }; 1];
     let deadline = Instant::now() + Duration::from_secs(3);
@@ -881,13 +871,21 @@ fn runtime_raw_service_and_stop_progress_while_granular_work_is_held() {
         );
         thread::yield_now();
     }
-    assert_eq!(failures[0].key, other_key.into());
+    assert_eq!(failures[0].key, key.into());
+    assert_eq!(failures[0].page_index, 1);
     assert_eq!(failures[0].kind, StreamFailureKind::CapacityExhausted);
     let actual = runtime_page(&mut runtime, raw_key, 0);
     assert_eq!(actual, expected[..STREAM_PAGE_FRAMES]);
+    for index in [1, 0, 1] {
+        let start = index as usize * STREAM_PAGE_FRAMES;
+        assert_eq!(
+            runtime_page(&mut runtime, raw_key, index),
+            expected[start..start + STREAM_PAGE_FRAMES]
+        );
+    }
     assert!(runtime.page(key, 0).is_none());
     // Never release the held child: parent Stop must stop/join it and reclaim
-    // both its active and queued original-pool buffers.
+    // its active original-pool buffer, with ordinary cache turnover complete.
     let report = runtime.shutdown().unwrap();
     assert_eq!(report.page_buffers, 3);
     assert!(report.accounting_complete && report.worker_joined);
@@ -902,9 +900,9 @@ fn runtime_granular_failure_returns_pool_page_for_following_raw_request() {
     let (_wav, source, _) = source(WarpMode::Tones { grain_ms: 32 });
     let key = source.metadata().key();
     let bank = admit(vec![source]);
-    let allowance = runtime_allowance(&bank, 2);
+    let allowance = runtime_allowance(&bank, 3);
     let mut runtime = StreamRuntime::spawn_with_granular_sources(
-        StreamConfig::with_pool_pages(2),
+        StreamConfig::with_pool_pages(3),
         vec![raw],
         vec![],
         bank,
@@ -942,9 +940,9 @@ fn runtime_refuses_source_changed_after_preparation_before_catalog_eligibility()
     file.write_all(&1234i16.to_le_bytes()).unwrap();
     drop(file);
     let bank = admit(vec![source]);
-    let allowance = runtime_allowance(&bank, 2);
+    let allowance = runtime_allowance(&bank, 3);
     let mut runtime = StreamRuntime::spawn_with_granular_sources(
-        StreamConfig::with_pool_pages(2),
+        StreamConfig::with_pool_pages(3),
         vec![],
         vec![],
         bank,
@@ -966,9 +964,9 @@ fn runtime_float_preflight_refuses_nan_outside_granular_region() {
     use hex_stream::{StreamConfig, StreamRuntime, StreamRuntimeError};
     let (_wav, source, _) = source_fixture(WarpMode::Tones { grain_ms: 32 }, 48_000, true);
     let bank = admit(vec![source]);
-    let allowance = runtime_allowance(&bank, 2);
+    let allowance = runtime_allowance(&bank, 3);
     let mut runtime = StreamRuntime::spawn_with_granular_sources(
-        StreamConfig::with_pool_pages(2),
+        StreamConfig::with_pool_pages(3),
         vec![],
         vec![],
         bank,

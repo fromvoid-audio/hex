@@ -367,6 +367,9 @@ impl StreamRuntime {
     /// ordinary runtime and loan metadata DATA remain separate. This blocking
     /// control constructor is not host/native aggregate admission. Until that
     /// owner supports the extra lifetimes, constructor-domain sealing refuses.
+    /// At least three pool buffers are required: one granular loan, cached
+    /// content and ordinary turnover. Granular admission keeps only one loan
+    /// active and reduces the endpoint cache limit by one.
     pub fn spawn_with_granular_sources(
         config: StreamConfig,
         definitions: Vec<SourceDefinition>,
@@ -574,7 +577,7 @@ impl StreamRuntime {
         #[cfg(test)]
         let test_panic = disposal::take_worker_test_panic();
         let pair_id = Arc::new(());
-        let endpoint = Endpoint::new(
+        let mut endpoint = Endpoint::new(
             config.page_buffers,
             config.request_capacity,
             source_keys,
@@ -586,6 +589,11 @@ impl StreamRuntime {
             },
         )
         .map_err(|_| StreamRuntimeError::AllocationFailed)?;
+        if granular.is_some() {
+            endpoint
+                .reserve_granular_loan_on_control()
+                .map_err(|_| StreamRuntimeError::InvalidConfiguration)?;
+        }
         let disposal = reserve_disposal
             .then(|| {
                 PreparedStreamDisposal::reserve_for_pair(Arc::clone(&pair_id), config.page_buffers)

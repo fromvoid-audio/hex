@@ -46,6 +46,9 @@ impl PreparedGranular {
         config: StreamConfig,
         allowance: GranularWorkerAllowance,
     ) -> Result<Self, StreamRuntimeError> {
+        if config.page_buffers < 3 {
+            return Err(StreamRuntimeError::InvalidConfiguration);
+        }
         let capacity = config.page_buffers;
         let worker = GranularWorkerControl::data_bound(&bank, capacity)?;
         if worker.bytes().is_none_or(|n| n > allowance.max_data_bytes)
@@ -78,7 +81,7 @@ impl PreparedGranular {
             allowance,
             metadata,
             loans,
-            loan_limit: config.page_buffers - 1,
+            loan_limit: 1,
             data,
             #[cfg(feature = "test-support")]
             gate: None,
