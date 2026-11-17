@@ -216,3 +216,44 @@ fn verified_session_commits_granular_edits_and_refusal_preserves_history_and_sou
         assert_eq!(std::fs::read(fixture.file.path()).unwrap(), original_bytes);
     }
 }
+
+#[test]
+fn full_long_verified_granular_snapshot_prepares_zero_pcm_candidate() {
+    for mode in [
+        WarpMode::Tones { grain_ms: 32 },
+        WarpMode::Texture {
+            grain_ms: 32,
+            fluctuation: 35,
+            seed: 42,
+        },
+    ] {
+        let fixture = Fixture::with_frames(mode, false, 20_000_000);
+        let source = snapshot(&fixture);
+        let quote = source.candidate_reservation_quote().unwrap();
+        assert_eq!(quote.prepared_pcm_frames, 0);
+        let mut candidate = hex_engine::AudioCandidatePreparation::try_new_on_control(
+            2,
+            quote.storage_reservation(4096).unwrap(),
+        )
+        .unwrap();
+        candidate
+            .add_streamed_source_on_control(
+                fixture.file.source_metadata(fixture.asset, 19).unwrap(),
+            )
+            .unwrap();
+        let roots: Vec<_> = source
+            .required_granular_roots(19)
+            .map(Result::unwrap)
+            .collect();
+        assert_eq!(roots.len(), 1);
+        assert_eq!(roots[0].1.metadata().playback_frames(), 20_000_000);
+        candidate
+            .add_granular_streamed_source_on_control(roots[0].1.metadata().clone())
+            .unwrap();
+        source
+            .prepare_candidate_on_control(19, &mut candidate)
+            .unwrap();
+        assert_eq!(candidate.resident_pcm_capacity_frames().unwrap(), 0);
+        candidate.cleanup_on_control().unwrap();
+    }
+}
