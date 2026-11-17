@@ -2724,7 +2724,7 @@ fn exercise_granular_worker(
         {
             let mut first = true;
             hex_stream::test_support::run_granular_worker_with_step_hook(
-                source,
+                vec![source],
                 queues,
                 &worker_stop,
                 &worker_epoch,
@@ -2738,7 +2738,7 @@ fn exercise_granular_worker(
             )
         }
         #[cfg(not(feature = "test-support"))]
-        hex_stream::run_granular_worker(source, queues, &worker_stop, &worker_epoch)
+        hex_stream::run_granular_worker(vec![source], queues, &worker_stop, &worker_epoch)
     });
     let pointer = page.as_ptr() as usize;
     #[cfg(feature = "test-support")]
@@ -2993,5 +2993,8 @@ fn exercise_granular_worker(
         panic!("expected foreign source failure")
     };
     assert_eq!(frames.as_ptr() as usize, pointer);
-    (exit.source, frames)
+    (exit.sources.pop().unwrap(), frames)
 }
+
+#[path = "reference_channel/granular_bank.rs"]
+mod granular_bank;

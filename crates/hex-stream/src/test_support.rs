@@ -58,11 +58,11 @@ impl PageGate {
 /// Run the granular worker with a test-only hook before each active step.
 /// The hook must not outlive its test or prevent Stop and join.
 pub fn run_granular_worker_with_step_hook(
-    source: crate::VerifiedGranularSource,
+    sources: Vec<crate::VerifiedGranularSource>,
     queues: crate::GranularWorkerQueues,
     stop: &std::sync::atomic::AtomicBool,
     epoch: &std::sync::atomic::AtomicU64,
     hook: impl FnMut(),
 ) -> crate::GranularWorkerExit {
-    crate::granular_worker::run_with_step_hook(source, queues, stop, epoch, hook)
+    crate::granular_worker::run_with_step_hook(sources, queues, stop, epoch, hook)
 }
