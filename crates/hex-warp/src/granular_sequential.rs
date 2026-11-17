@@ -114,6 +114,11 @@ impl SequentialGranular {
         Ok(result)
     }
 
+    /// Project rate and chosen reference channel used by this renderer.
+    pub fn source_parameters(&self) -> (u32, usize) {
+        (self.config.sample_rate, self.config.reference_channel)
+    }
+
     /// Retained map, filter and overlap allocations; excludes the inline object.
     pub fn backing_bytes(&self) -> Option<usize> {
         self.config

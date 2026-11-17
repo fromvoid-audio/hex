@@ -340,3 +340,356 @@ fn sparse_twenty_million_frame_source_uses_only_bounded_samples() {
     assert_eq!(reader.read_frames_into(0, &mut still_owned).unwrap(), 1);
     assert_eq!(still_owned[0], samples[0]);
 }
+
+fn granular_map(total: u64) -> hex_warp::TimeMap {
+    hex_warp::TimeMap::new_streamed(
+        vec![hex_warp::MapSegment {
+            output_start: 0,
+            output_end: total,
+            source_start_q32: 0,
+            source_end_q32: i128::from(total) << 32,
+        }],
+        total,
+    )
+    .unwrap()
+}
+fn granular_state(
+    total: u64,
+    rate: u32,
+    mode: hex_warp::Mode,
+    law: hex_warp::Resampler,
+    channel: usize,
+) -> hex_warp::SequentialGranular {
+    hex_warp::SequentialGranular::new(
+        hex_warp::SequentialGranularConfig {
+            map: granular_map(total),
+            sample_rate: rate,
+            mode,
+            pitch_cents: 300,
+            resampler: law,
+            reference_channel: channel,
+        },
+        &mut || false,
+    )
+    .unwrap()
+}
+fn resident_prefix(
+    pcm: &[[f32; 2]],
+    rate: u32,
+    mode: hex_warp::Mode,
+    law: hex_warp::Resampler,
+) -> Vec<[f32; 2]> {
+    let map = granular_map(1024);
+    hex_warp::render_with_resampler(
+        &hex_warp::Request {
+            attacks: &[],
+            input: hex_warp::Input {
+                frames: pcm,
+                sample_rate: rate,
+                region_start: 0,
+                region_length: pcm.len() as u64,
+                phase: 0,
+                looping: false,
+                envelope: &[],
+            },
+            map: &map,
+            output_frames: 1024,
+            pitch_cents: 300,
+            mode,
+        },
+        law,
+        &mut || false,
+    )
+    .unwrap()
+    .frames[..256]
+        .to_vec()
+}
+fn verified_prefix(
+    state: &mut hex_warp::SequentialGranular,
+    reference: &hex_stream::VerifiedReferenceChannel,
+    reader: &mut VerifiedWavReader,
+    plan: &ResamplePlan,
+) -> Vec<[f32; 2]> {
+    let mut raw = vec![[0.0; 2]; 8192];
+    let mut cache = vec![[0.0; 2]; 2048];
+    let mut grain = vec![[0.0; 2]; state.max_source_frames()];
+    let mut result = vec![[0.0; 2]; 256];
+    while state.position() < 256 {
+        if state.available() == 0 {
+            hex_stream::advance_verified_granular_on_control(
+                state,
+                reference,
+                reader,
+                plan,
+                hex_stream::VerifiedGranularBuffers {
+                    source: &mut raw,
+                    cache: &mut cache,
+                    grain: &mut grain,
+                },
+                || false,
+            )
+            .unwrap();
+        }
+        let start = state.position() as usize;
+        let n = state.available().min(256 - start);
+        state.drain(&mut result[start..start + n]).unwrap();
+    }
+    result
+}
+#[test]
+fn verified_granular_prefix_matches_resident_for_long_and_converted_sources() {
+    for (frames, rate, sparse) in [(20_000_000, 48_000, true), (8192, 44_100, false)] {
+        let (wav, pcm) = Wav::create(frames, sparse);
+        let (mut reader, plan, meta) = setup(
+            &wav,
+            frames,
+            rate,
+            if sparse {
+                ResampleVersion::V1
+            } else {
+                ResampleVersion::V2
+            },
+        );
+        let mut raw = vec![[0.0; 2]; 8192];
+        let mut scan = vec![[0.0; 2]; 4096];
+        let reference = scan_reference_channel_on_control(
+            &meta,
+            &mut reader,
+            &plan,
+            &mut raw,
+            &mut scan,
+            || false,
+        )
+        .unwrap();
+        let resident = if sparse {
+            let mut prefix = vec![[0.0; 2]; 4096];
+            prefix[0] = pcm[0];
+            prefix
+        } else {
+            resample_with_version(
+                &Audio::new(48_000, pcm).unwrap(),
+                rate,
+                ResampleLimits {
+                    max_source_frames: frames as usize,
+                    max_output_frames: frames as usize * 2,
+                },
+                ResampleVersion::V2,
+            )
+            .unwrap()
+            .frames()
+            .to_vec()
+        };
+        let before = reader.raw_page_reads();
+        let started = std::time::Instant::now();
+        for mode in [
+            hex_warp::Mode::Tones { grain_ms: 8 },
+            hex_warp::Mode::Texture {
+                grain_ms: 8,
+                fluctuation: 35,
+                seed: 42,
+            },
+        ] {
+            for law in [hex_warp::Resampler::V1, hex_warp::Resampler::V2] {
+                let expected = resident_prefix(&resident, rate, mode, law);
+                let mut state =
+                    granular_state(plan.output_frames(), rate, mode, law, reference.channel());
+                let reads = reader.raw_page_reads();
+                let timer = std::time::Instant::now();
+                let actual = verified_prefix(&mut state, &reference, &mut reader, &plan);
+                let elapsed = timer.elapsed();
+                eprintln!(
+                    "verified_step frames={frames} project_rate={rate} mode={mode:?} law={law:?} prefix=256 elapsed_us={} verified_reads={}",
+                    elapsed.as_micros(),
+                    reader.raw_page_reads() - reads
+                );
+                assert_eq!(actual, expected, "{frames} {mode:?} {law:?}");
+            }
+        }
+        eprintln!(
+            "verified_granular frames={frames} source_rate=48000 project_rate={rate} prefix=256 modes=2 laws=2 elapsed_ms={} verified_reads={}",
+            started.elapsed().as_millis(),
+            reader.raw_page_reads() - before
+        );
+    }
+}
+
+#[test]
+fn verified_granular_refuses_mismatch_capacity_cancel_and_changed_media() {
+    use hex_stream::{
+        VerifiedGranularBuffers, VerifiedGranularStepError, advance_verified_granular_on_control,
+    };
+    let (wav, _) = Wav::create(8192, false);
+    let (mut reader, plan, meta) = setup(&wav, 8192, 48_000, ResampleVersion::V1);
+    let mut raw = vec![[0.0; 2]; 8192];
+    let mut cache = vec![[0.0; 2]; 2048];
+    let reference =
+        scan_reference_channel_on_control(&meta, &mut reader, &plan, &mut raw, &mut cache, || {
+            false
+        })
+        .unwrap();
+    let mode = hex_warp::Mode::Tones { grain_ms: 8 };
+    let mut state = granular_state(
+        plan.output_frames(),
+        48_000,
+        mode,
+        hex_warp::Resampler::V1,
+        1 - reference.channel(),
+    );
+    let mut grain = vec![[0.0; 2]; state.max_source_frames()];
+    let before = reader.raw_page_reads();
+    assert_eq!(
+        advance_verified_granular_on_control(
+            &mut state,
+            &reference,
+            &mut reader,
+            &plan,
+            VerifiedGranularBuffers {
+                source: &mut raw,
+                cache: &mut cache,
+                grain: &mut grain
+            },
+            || false
+        ),
+        Err(VerifiedGranularStepError::Source(
+            StreamFailureKind::UnknownSource
+        ))
+    );
+    assert_eq!(reader.raw_page_reads(), before);
+    let mut state = granular_state(
+        plan.output_frames(),
+        48_000,
+        mode,
+        hex_warp::Resampler::V1,
+        reference.channel(),
+    );
+    assert_eq!(
+        advance_verified_granular_on_control(
+            &mut state,
+            &reference,
+            &mut reader,
+            &plan,
+            VerifiedGranularBuffers {
+                source: &mut raw,
+                cache: &mut [],
+                grain: &mut grain
+            },
+            || false
+        ),
+        Err(VerifiedGranularStepError::Source(
+            StreamFailureKind::CapacityExhausted
+        ))
+    );
+    let kernel = ResampleKernel::with_version(48_000, 48_000, ResampleVersion::V2).unwrap();
+    let wrong_plan = ResamplePlan::with_kernel(kernel, 8192, 8192, 16384, 4096).unwrap();
+    assert_eq!(
+        advance_verified_granular_on_control(
+            &mut state,
+            &reference,
+            &mut reader,
+            &wrong_plan,
+            VerifiedGranularBuffers {
+                source: &mut raw,
+                cache: &mut cache,
+                grain: &mut grain
+            },
+            || false
+        ),
+        Err(VerifiedGranularStepError::Source(
+            StreamFailureKind::UnknownSource
+        ))
+    );
+    assert_eq!(
+        advance_verified_granular_on_control(
+            &mut state,
+            &reference,
+            &mut reader,
+            &plan,
+            VerifiedGranularBuffers {
+                source: &mut raw[..1],
+                cache: &mut cache,
+                grain: &mut grain
+            },
+            || false
+        ),
+        Err(VerifiedGranularStepError::Source(
+            StreamFailureKind::CapacityExhausted
+        ))
+    );
+    assert_eq!(reader.raw_page_reads(), before);
+    let (other_wav, _) = Wav::create(8192, false);
+    let mut other_file = OpenOptions::new().write(true).open(&other_wav.0).unwrap();
+    other_file.seek(SeekFrom::Start(44)).unwrap();
+    other_file.write_all(&[1, 2, 3, 4]).unwrap();
+    drop(other_file);
+    let (mut other_reader, _, _) = setup(&other_wav, 8192, 48_000, ResampleVersion::V1);
+    let other_before = other_reader.raw_page_reads();
+    assert_eq!(
+        advance_verified_granular_on_control(
+            &mut state,
+            &reference,
+            &mut other_reader,
+            &plan,
+            VerifiedGranularBuffers {
+                source: &mut raw,
+                cache: &mut cache,
+                grain: &mut grain
+            },
+            || false
+        ),
+        Err(VerifiedGranularStepError::Source(
+            StreamFailureKind::SourceChanged
+        ))
+    );
+    assert_eq!(other_reader.raw_page_reads(), other_before);
+    let cancelled = advance_verified_granular_on_control(
+        &mut state,
+        &reference,
+        &mut reader,
+        &plan,
+        VerifiedGranularBuffers {
+            source: &mut raw,
+            cache: &mut cache,
+            grain: &mut grain,
+        },
+        || true,
+    );
+    assert!(matches!(
+        cancelled,
+        Err(VerifiedGranularStepError::Warp(hex_warp::Error::Cancelled))
+            | Err(VerifiedGranularStepError::Source(
+                StreamFailureKind::Cancelled
+            ))
+    ));
+    assert_eq!(state.position(), 0);
+    assert!(!state.is_poisoned());
+    let mut file = OpenOptions::new().write(true).open(&wav.0).unwrap();
+    file.seek(SeekFrom::Start(44)).unwrap();
+    file.write_all(&[7, 8, 9, 10]).unwrap();
+    drop(file);
+    let mut changed = false;
+    for _ in 0..16 {
+        match advance_verified_granular_on_control(
+            &mut state,
+            &reference,
+            &mut reader,
+            &plan,
+            VerifiedGranularBuffers {
+                source: &mut raw,
+                cache: &mut cache,
+                grain: &mut grain,
+            },
+            || false,
+        ) {
+            Err(VerifiedGranularStepError::Source(StreamFailureKind::SourceChanged)) => {
+                changed = true;
+                break;
+            }
+            Ok(true) => {
+                let mut output = vec![[0.0; 2]; state.available()];
+                state.drain(&mut output).unwrap();
+            }
+            other => panic!("unexpected result: {other:?}"),
+        }
+    }
+    assert!(changed);
+}

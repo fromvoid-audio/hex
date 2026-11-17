@@ -46,23 +46,7 @@ pub fn scan_reference_channel_on_control(
     output_scratch: &mut [Frame],
     mut cancelled: impl FnMut() -> bool,
 ) -> Result<VerifiedReferenceChannel, StreamFailureKind> {
-    if !metadata.key().is_raw()
-        || metadata.source_rate() != reader.sample_rate()
-        || metadata.source_frames() != reader.source_frames()
-        || metadata.source_rate() != plan.source_rate()
-        || metadata.project_rate() != plan.target_rate()
-        || metadata.source_frames() != plan.source_frames()
-        || metadata.source_playback_frames() != plan.output_frames()
-        || metadata.playback_frames() != plan.output_frames()
-        || ResampleVersion::for_conversion(metadata.conversion_version())
-            .map_err(map_import_error)?
-            != plan.version()
-    {
-        return Err(StreamFailureKind::UnknownSource);
-    }
-    if metadata.fingerprint() != *reader.fingerprint() {
-        return Err(StreamFailureKind::SourceChanged);
-    }
+    validate_source(metadata, reader, plan)?;
     if source_scratch.is_empty()
         || output_scratch.is_empty()
         || plan.max_output_window_frames() == 0
@@ -120,4 +104,30 @@ pub fn scan_reference_channel_on_control(
         metadata: metadata.clone(),
         channel: scan.finish().map_err(|_| StreamFailureKind::DecodeFailed)?,
     })
+}
+
+/// Check raw source facts without taking custody or reading pages.
+pub(crate) fn validate_source(
+    metadata: &StreamedSourceMetadata,
+    reader: &VerifiedWavReader,
+    plan: &ResamplePlan,
+) -> Result<(), StreamFailureKind> {
+    if !metadata.key().is_raw()
+        || metadata.source_rate() != reader.sample_rate()
+        || metadata.source_frames() != reader.source_frames()
+        || metadata.source_rate() != plan.source_rate()
+        || metadata.project_rate() != plan.target_rate()
+        || metadata.source_frames() != plan.source_frames()
+        || metadata.source_playback_frames() != plan.output_frames()
+        || metadata.playback_frames() != plan.output_frames()
+        || ResampleVersion::for_conversion(metadata.conversion_version())
+            .map_err(map_import_error)?
+            != plan.version()
+    {
+        return Err(StreamFailureKind::UnknownSource);
+    }
+    if metadata.fingerprint() != *reader.fingerprint() {
+        return Err(StreamFailureKind::SourceChanged);
+    }
+    Ok(())
 }
