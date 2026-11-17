@@ -296,10 +296,12 @@ section snapping; **control** remains an alias, including during marker-only edi
 release outside the section lane to accept the last valid preview, or press **escape**
 to cancel.
 
-click a section's play button, or turn on **section autoplay and loop** in the
-top toolbar and click a section body. hex sets the arrangement scope to that
-section, turns looping on and starts playback at the section start.
-**enter** launches the focused section button. **space** controls play and
+click a section's play button or press **enter** on the focused button
+to play from the section start and continue through the arrangement. a plain
+launch turns off the arrangement loop. hold **l** while clicking the play
+button to loop that section. you can also turn on **section autoplay and loop**
+in the top toolbar and click a section body to start and loop that section.
+**space** controls play and
 pause even while the button has focus. the launch dropdown in the toolbar also
 sets quantization for console clip and scene launches: **none**, **8 bars**,
 **4 bars**, **2 bars**, **1 bar**, **1/2**, **1/2t**, **1/4**, **1/4t**, **1/8**,

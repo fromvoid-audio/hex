@@ -1761,25 +1761,6 @@ impl Playback {
             })
     }
 
-    /// Arm a fresh, playing Arrangement candidate to pause at the exact
-    /// half-open section end. The canonical loop must already be disabled.
-    pub fn arm_section_once(&mut self, region: hex_project::LoopRegion) -> Result<(), Invalid> {
-        if region.enabled()
-            || self.position() != region.start()
-            || !self.playing()
-            || self.automation_capture_loop().is_some()
-            || self.session_runtime.as_ref().is_none_or(|runtime| {
-                runtime
-                    .admits_transport(&crate::SessionPlaybackCommand::Pause)
-                    .is_err()
-            })
-        {
-            return Err(Invalid("invalid one-shot section transport"));
-        }
-        self.transport_fade.section_end = Some(region.end());
-        Ok(())
-    }
-
     /// Callback-owned boundary for a prepared quantized seek. The caller keeps
     /// the current graph rendering until this frame, then installs the fresh
     /// preroll candidate using ordinary seek discontinuity semantics.
@@ -2007,9 +1988,6 @@ impl Playback {
                 )
             )
         {
-            if !transport_fade::pauses(action) {
-                self.transport_fade.section_end = None;
-            }
             self.reset_metronome();
         }
         result
@@ -2031,7 +2009,6 @@ impl Playback {
             )
             .is_ok()
         {
-            self.transport_fade.section_end = None;
             self.reset_metronome();
         }
     }
@@ -2167,17 +2144,7 @@ impl Playback {
         self.performance_clock_exhausted = previous.performance_clock_exhausted();
         self.playing = previous.playing();
         self.inherit_metronome(previous);
-        self.transport_fade.section_end = self.inherited_section_end(previous);
         Ok(())
-    }
-
-    fn inherited_section_end(&self, previous: &Self) -> Option<u64> {
-        previous
-            .transport_fade
-            .section_end
-            .filter(|_| self.automation_capture_loop().is_none())
-            .and_then(|end| remapped_linear_position(&self.project, &previous.project, end).ok())
-            .filter(|&end| end > self.position())
     }
 
     fn inherit_metronome(&mut self, previous: &Self) {
@@ -2232,7 +2199,6 @@ impl Playback {
         next.inherit_candidate_groups(old, groups)
             .map_err(PlaybackHandoffError::Session)?;
         self.inherit_metronome(previous);
-        self.transport_fade.section_end = self.inherited_section_end(previous);
         Ok(())
     }
 
@@ -2553,9 +2519,7 @@ impl Playback {
             previous.cancel_computer_keyboard();
         }
         // A fade in progress continues on the inheriting graph's transport.
-        let section_end = self.inherited_section_end(previous);
         *self.transport_fade = std::mem::take(&mut *previous.transport_fade);
-        self.transport_fade.section_end = section_end;
         Ok(())
     }
 
@@ -3208,13 +3172,13 @@ impl Playback {
         Ok(())
     }
 
-    /// Render one callback as parts split at a pending fade or section end.
+    /// Render one callback as parts split at a pending fade end.
     /// Each part is followed by its declick gain and then monitor-only metronome
     /// and tuning audio. A refused first part keeps the renderer's own atomic
     /// refusal (the output is left as the renderer left it). A part refused
     /// after an earlier part rendered silences the whole callback; rendered
     /// parts keep their committed clock, as consecutive callbacks would.
-    /// Without either boundary this is exactly one part.
+    /// Without a pending fade end this is exactly one part.
     fn render_declicked(
         &mut self,
         output: &mut [Frame],
@@ -3226,14 +3190,7 @@ impl Playback {
             let start = self.position();
             let playing = self.playing();
             let part_len = self.transport_fade.part_len(output.len() - offset, frames);
-            let remaining =
-                self.transport_fade
-                    .section_end
-                    .filter(|_| playing)
-                    .map(|section_end| {
-                        usize::try_from(section_end.saturating_sub(start)).unwrap_or(usize::MAX)
-                    });
-            let end = offset + remaining.map_or(part_len, |left| part_len.min(left));
+            let end = offset + part_len;
             let chunk = &mut output[offset..end];
             if let Err(error) = part(self, chunk, offset) {
                 if offset > 0 {
@@ -3246,15 +3203,6 @@ impl Playback {
             self.mix_tuning_audition(chunk);
             if completed {
                 self.complete_transport_fade();
-            }
-            if self
-                .transport_fade
-                .section_end
-                .is_some_and(|limit| self.playing() && self.position() >= limit)
-            {
-                self.transport_fade.section_end = None;
-                self.apply_now(PlaybackAction::Transport(PlaybackCommand::Pause))
-                    .map_err(|_| Invalid("could not pause at the section end"))?;
             }
             offset = end;
             if offset >= output.len() {
