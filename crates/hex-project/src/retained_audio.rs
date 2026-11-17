@@ -143,6 +143,13 @@ impl Project {
         }
         clip.fade.validate_segment(clip.duration)?;
         if let Some(edit) = clip.audio_edit() {
+            if edit.is_streamed_granular_root()
+                && edit.projected_domain(&root.tempo)?.1 > crate::MAX_AUDIO_DOMAIN_FRAMES
+            {
+                return Err(Invalid(
+                    "long granular roots cannot yet be nested as retained audio sources",
+                ));
+            }
             if edit.repeat_period.is_some() {
                 return Err(Invalid(
                     "silent repeat gaps cannot yet be nested in grouped audio",

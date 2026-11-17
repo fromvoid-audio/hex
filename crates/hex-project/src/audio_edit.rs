@@ -1000,6 +1000,26 @@ impl AudioClipEdit {
             && self.placement.is_none()
     }
 
+    /// Shape supported by bounded Tones/Texture source workers. This grants no
+    /// resident expansion or file/page custody; consumers validate the exact map,
+    /// source extent and rendering identity independently.
+    pub fn is_streamed_granular_root(&self) -> bool {
+        let domain = &self.domain;
+        domain.source_length > 0
+            && domain.source_length <= MAX_SPARSE_AUDIO_TIMELINE_FRAMES
+            && domain.fade.is_neutral()
+            && domain.events.is_none()
+            && domain.musical_event_source.is_none()
+            && domain.source_gain.len() <= MAX_AUDIO_POINTS
+            && domain.warp_enabled
+            && domain.warp.as_ref().is_some_and(|warp| {
+                matches!(warp.mode, WarpMode::Tones { .. } | WarpMode::Texture { .. })
+            })
+            && self.content_view.is_none()
+            && self.placement.is_none()
+            && self.repeat_period.is_none()
+    }
+
     pub(crate) fn accepts_projected_extent(&self, length: u64, clip: &Clip) -> bool {
         if length <= MAX_AUDIO_DOMAIN_FRAMES {
             return true;
@@ -1008,6 +1028,7 @@ impl AudioClipEdit {
             && (self.is_plain_reversed_capture(clip)
                 || self.is_plain_pitch_capture(clip)
                 || self.is_streamed_repitch_root()
+                || self.is_streamed_granular_root()
                 || (self.plain_frame_event_root()
                     && self.domain.events.as_ref().is_some_and(|events| {
                         events
@@ -1656,3 +1677,6 @@ pub(crate) use aliases::rebase_alias_content;
 
 #[cfg(test)]
 mod long_pitch_tests;
+
+#[cfg(test)]
+mod long_granular_tests;
