@@ -460,6 +460,7 @@ impl EditorView {
         self.audio_admission.reset_audio();
         // A new output prepares fresh endpoints; it reports its own set.
         self.degraded_plugins = Default::default();
+        self.plugin_editor_windows.clear();
         if self
             .pending_publication_observation
             .as_ref()
@@ -674,6 +675,22 @@ impl EditorView {
                         let _scope = crate::diagnostics::action_scope(cx, "hex_editor::TogglePlay");
                         self.toggle_play();
                         changed = true;
+                    }
+                }
+                crate::EditorAudioEvent::PluginEditorWindows {
+                    project_generation,
+                    output_identity,
+                    devices,
+                } => {
+                    if project_generation == self.project_generation
+                        && self
+                            .audio
+                            .as_ref()
+                            .and_then(|audio| audio.control.output_identity())
+                            == Some(output_identity)
+                    {
+                        changed |= self.plugin_editor_windows != devices;
+                        self.plugin_editor_windows = devices;
                     }
                 }
                 crate::EditorAudioEvent::PluginParameterTouched {
@@ -2998,6 +3015,7 @@ impl EditorView {
             self.pending_resident_publication = None;
             self.clear_route_telemetry();
             self.degraded_plugins = Default::default();
+            self.plugin_editor_windows.clear();
             self.drag_lanes.clear();
             self.track_drop_lanes.clear();
             self.drag_lane_epochs.clear();

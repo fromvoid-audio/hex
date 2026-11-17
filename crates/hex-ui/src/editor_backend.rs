@@ -81,6 +81,12 @@ pub enum EditorAudioEvent {
     },
     /// A plain Space press reserved by the focused native VST3 editor.
     PluginTransportToggle { project_generation: u64 },
+    /// Current logical VST3 editor windows on this output and document.
+    PluginEditorWindows {
+        project_generation: u64,
+        output_identity: u64,
+        devices: Vec<u64>,
+    },
     /// Latest native editor touch observed on an exact retained source. This
     /// carries an optional SDK-confirmed Perform value for immediate display.
     /// Controller pages still own metadata and edit authority.

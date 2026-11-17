@@ -838,6 +838,7 @@ pub(super) struct EditorView {
     route_follow: Option<u64>,
     /// Vst3 devices the current output reports as degraded.
     degraded_plugins: crate::editor_backend::DegradedDevices,
+    plugin_editor_windows: Vec<u64>,
     pending_audio_result: Option<PendingEditorAudioResult>,
     pending_publication_observation: Option<PendingEditorPublicationObservation>,
     document_audio_mode: hex_session::DocumentAudioMode,
@@ -1653,6 +1654,7 @@ impl EditorView {
             pending_recovery_generation: None,
             route_follow: None,
             degraded_plugins: Default::default(),
+            plugin_editor_windows: Vec::new(),
             pending_audio_result: None,
             pending_publication_observation: None,
             document_audio_mode: hex_session::DocumentAudioMode::Resident,

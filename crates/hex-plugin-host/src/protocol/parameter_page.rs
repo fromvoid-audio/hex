@@ -203,6 +203,8 @@ pub enum ControllerRequest {
     },
     ToggleEditor,
     CloseEditor,
+    /// Observe the logical AppKit editor attachment without altering focus or custody.
+    EditorVisibility,
     /// Seal editor callback admission on the stopped original worker. Accepted
     /// callbacks and their receipts remain owned until separately drained.
     SealEditorEdits,
@@ -236,6 +238,7 @@ impl ControllerRequest {
             }
             Self::ToggleEditor
             | Self::CloseEditor
+            | Self::EditorVisibility
             | Self::SealEditorEdits
             | Self::DetachEditor
             | Self::DetachEditorWhenIdle
@@ -300,6 +303,7 @@ pub fn parameter_page_request(
         }
         ControllerRequest::ToggleEditor => out[82] = 6,
         ControllerRequest::CloseEditor => out[82] = 7,
+        ControllerRequest::EditorVisibility => out[82] = 15,
         ControllerRequest::SealEditorEdits => out[82] = 13,
         // New kinds prevent a pre-placement helper from closing the old
         // window and returning a positionless legacy acknowledgement.
@@ -369,6 +373,7 @@ pub fn parameter_page(
         }),
         ControllerRequest::ToggleEditor
         | ControllerRequest::CloseEditor
+        | ControllerRequest::EditorVisibility
         | ControllerRequest::SealEditorEdits
         | ControllerRequest::DetachEditor
         | ControllerRequest::DetachEditorWhenIdle
@@ -400,6 +405,9 @@ pub fn parameter_page(
         };
         let valid = match request {
             ControllerRequest::CloseEditor => state == PluginEditorState::Closed,
+            ControllerRequest::EditorVisibility => {
+                matches!(state, PluginEditorState::Open | PluginEditorState::Closed)
+            }
             ControllerRequest::DetachEditor => state != PluginEditorState::Unavailable,
             ControllerRequest::DetachEditorWhenIdle => state != PluginEditorState::Unavailable,
             ControllerRequest::ReopenEditor(_) => state != PluginEditorState::Closed,
