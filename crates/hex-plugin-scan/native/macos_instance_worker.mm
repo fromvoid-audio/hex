@@ -417,6 +417,7 @@ int main(int argc,char** argv) {
             bool editor_edits_sealed=false;
             std::optional<hex_instance::EditorPosition> detached_editor_position;
             uint32_t page_failure=0;
+            std::atomic<bool> pcm_since_main_pump{false};
             std::thread worker([&] {
                 bool started=false;
                 try {
@@ -1111,6 +1112,7 @@ int main(int argc,char** argv) {
                         instance.publish_parameter_feedback(parameter_feedback);
                         if(!packet.write(channel)) { worker_failure.store(Cancelled);break; }
                         ++blocks;frames+=packet.frames;
+                        pcm_since_main_pump.store(true,std::memory_order_relaxed);
                         if(trace_messages) {
                             diagnostic_pcm_blocks.store(blocks,std::memory_order_relaxed);
                             if(nonzero_input) diagnostic_nonzero_input_blocks.fetch_add(1,std::memory_order_relaxed);
@@ -1145,6 +1147,8 @@ int main(int argc,char** argv) {
             // Foreign timers and controller calls can also autorelease work
             // on turns that do not visit the editor's AppKit event pump.
             auto next_message_report=std::chrono::steady_clock::time_point::min();
+            constexpr auto quiet_pcm_window=std::chrono::milliseconds(40);
+            auto active_pcm_until=std::chrono::steady_clock::now()+quiet_pcm_window;
             std::optional<std::chrono::steady_clock::time_point> retirement_deadline;
             const auto may_cancel_closed_peer=[&] {
                 if(!worker_retiring.load(std::memory_order_acquire)) return true;
@@ -1421,7 +1425,16 @@ int main(int argc,char** argv) {
                         editor.quarantine();
                         control_failure(Unexpected);
                     }
-                    CFRunLoopRunInMode(kCFRunLoopDefaultMode,0.001,true);
+                    // Keep AppKit and active PCM/control on the existing cadence.
+                    // A closed, quiet helper still services SDK timers and checks
+                    // new control mail within one bounded run-loop wait.
+                    const auto now=std::chrono::steady_clock::now();
+                    if(pcm_since_main_pump.exchange(false,std::memory_order_relaxed))
+                        active_pcm_until=now+quiet_pcm_window;
+                    const bool busy=now<active_pcm_until || editor.is_open() || stage!=Idle ||
+                        page_stage.load(std::memory_order_acquire)!=PageIdle ||
+                        live_stage.load(std::memory_order_acquire)!=LiveIdle;
+                    CFRunLoopRunInMode(kCFRunLoopDefaultMode,busy?0.001:0.004,true);
                 } catch(...) { control_failure(Unexpected); }
             }
             worker.join();failure=worker_failure.load()&0xFF;
