@@ -10,6 +10,8 @@
 mod beats;
 pub mod fft;
 mod granular;
+mod granular_overlap;
+pub use granular_overlap::GranularOverlap;
 mod resample;
 pub use resample::{PitchWindow, RepitchWindow, Resampler, V2_MAX_TAPS};
 mod spectral;
