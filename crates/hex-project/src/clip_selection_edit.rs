@@ -4,18 +4,12 @@
 //! batch. Arrangement rows are therefore detached once, each selected member is
 //! edited in isolation, and complete restored rows undergo final validation. No
 //! partial history, intermediate cuts, source transplantation or DSP work occurs.
+use crate::audio_edit::{DEFAULT_WARP_MODE, initial_audio_warp};
 use crate::{
-    BeatsPreserve, BeatsTail, ClipFlavor, ClipId, Command, Created, Invalid,
-    MAX_AUDIO_DOMAIN_FRAMES, MAX_CLIPS, NoteId, Project, Tempo, TrackContent, WarpMode,
-    WarpSettings,
+    BeatsPreserve, BeatsTail, ClipFlavor, ClipId, Command, Created, Invalid, MAX_CLIPS, NoteId,
+    Project, Tempo, TrackContent, WarpMode, WarpSettings,
 };
 use std::collections::BTreeSet;
-
-const DEFAULT_WARP_MODE: WarpMode = WarpMode::Beats {
-    preserve: BeatsPreserve::Transients,
-    tail: BeatsTail::Forward,
-    decay: 100,
-};
 
 /// A clip-wide value applied to one frozen Arrangement selection. Audio-only
 /// values explicitly leave selected MIDI clips unchanged; zero eligible clips refuse.
@@ -83,23 +77,11 @@ impl Project {
         {
             return Ok(settings.clone());
         }
-        let long_neutral_source = source.duration() > MAX_AUDIO_DOMAIN_FRAMES
-            && source.source_offset() == 0
-            && source.source_length() == source.duration()
-            && !source.looping()
-            && source.retained_fade().is_neutral()
-            && self
-                .asset(source.asset())
-                .is_some_and(|asset| asset.playback_frames() == source.source_length())
-            && source
-                .audio_edit()
-                .is_none_or(|edit| edit.is_plain_pitch_capture(source));
-        let mode = if long_neutral_source {
-            WarpMode::Tones { grain_ms: 40 }
-        } else {
-            DEFAULT_WARP_MODE
-        };
-        crate::default_audio_warp(source, self.tempo_map(), mode)
+        let asset_frames = self
+            .asset(source.asset())
+            .ok_or(Invalid("selected audio clip media is missing"))?
+            .playback_frames();
+        initial_audio_warp(source, self.tempo_map(), asset_frames)
     }
 }
 

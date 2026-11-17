@@ -179,6 +179,29 @@ fn long_warp_off_uses_raw_pcm_and_reopens_with_authored_settings() {
 
 #[test]
 fn enabling_default_warp_on_long_file_publishes_pcm_and_preserves_history() {
+    initial_long_warp_plays_and_preserves_history(20_000_000, |project, clip| {
+        hex_project::Command::SetAudioClipWarp {
+            clip,
+            settings: Some(project.audio_warp_settings_for_enable(clip).unwrap()),
+        }
+    });
+}
+
+#[test]
+fn directly_stretching_a_long_file_publishes_pcm_and_preserves_history() {
+    use hex_project::{Command, TrimEdge};
+    const END: u64 = 24_000_000;
+    initial_long_warp_plays_and_preserves_history(END, |_, clip| Command::StretchAudioClipEdge {
+        clip,
+        edge: TrimEdge::Right,
+        frame: END,
+    });
+}
+
+fn initial_long_warp_plays_and_preserves_history(
+    expected_extent: u64,
+    command: impl FnOnce(&hex_project::Project, hex_project::ClipId) -> hex_project::Command,
+) {
     let _native = native_fixture();
     let files = Files::new();
     let path = super::granular_playback::long_source_at_rate(&files, 48_000);
@@ -195,16 +218,16 @@ fn enabling_default_warp_on_long_file_publishes_pcm_and_preserves_history() {
     let clip = source.id();
     assert_eq!(source.source_length(), 20_000_000);
     assert!(source.retained_fade().is_neutral());
-    let settings = imported
-        .state
-        .project
-        .audio_warp_settings_for_enable(clip)
-        .unwrap();
-    assert!(matches!(settings.mode, hex_project::WarpMode::Tones { .. }));
-    let enabled = h.run(Request::Edit(hex_project::Command::SetAudioClipWarp {
-        clip,
-        settings: Some(settings),
-    }));
+    assert!(source.audio_edit().is_none());
+    let enabled = h.run(Request::Edit(command(&imported.state.project, clip)));
+    let stretched = enabled.state.project.clip(clip).unwrap();
+    assert_eq!(stretched.duration(), expected_extent);
+    let domain = &stretched.audio_edit().unwrap().domain;
+    assert!(domain.warp_enabled);
+    assert!(matches!(
+        domain.warp.as_ref().unwrap().mode,
+        hex_project::WarpMode::Tones { .. }
+    ));
     let canonical = enabled.state.canonical_audio_source.as_ref().unwrap();
     let AudioSourceBinding::VerifiedFile(before) = &imported
         .state

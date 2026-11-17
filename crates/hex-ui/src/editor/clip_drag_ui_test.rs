@@ -2774,6 +2774,18 @@ fn check_shift_edge(cx: &mut TestAppContext, edge: hex_project::TrimEdge) {
 
 #[gpui::test]
 fn shift_edge_stretches_a_long_warped_clip_to_the_painted_endpoint(cx: &mut TestAppContext) {
+    check_long_stretch_to_painted_endpoint(cx, Some(hex_project::WarpMode::Tones { grain_ms: 32 }));
+}
+
+#[gpui::test]
+fn shift_edge_stretches_a_fresh_long_clip_to_the_painted_endpoint(cx: &mut TestAppContext) {
+    check_long_stretch_to_painted_endpoint(cx, None);
+}
+
+fn check_long_stretch_to_painted_endpoint(
+    cx: &mut TestAppContext,
+    authored_mode: Option<hex_project::WarpMode>,
+) {
     const SOURCE: u64 = 20_000_000;
     let mut project = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
     let Created::Imported { clip, .. } = project
@@ -2787,25 +2799,21 @@ fn shift_edge_stretches_a_long_warped_clip_to_the_painted_endpoint(cx: &mut Test
     else {
         panic!("fixture import");
     };
-    project
-        .execute(Command::SetClipFades {
-            clip,
-            fade_in: 0,
-            fade_out: 0,
-        })
+    if let Some(mode) = authored_mode {
+        let settings = hex_project::default_audio_warp(
+            project.project().clip(clip).unwrap(),
+            project.project().tempo_map(),
+            mode,
+        )
         .unwrap();
-    let settings = hex_project::default_audio_warp(
-        project.project().clip(clip).unwrap(),
-        project.project().tempo_map(),
-        hex_project::WarpMode::Tones { grain_ms: 32 },
-    )
-    .unwrap();
-    project
-        .execute(Command::SetAudioClipWarp {
-            clip,
-            settings: Some(settings),
-        })
-        .unwrap();
+        project
+            .execute(Command::SetAudioClipWarp {
+                clip,
+                settings: Some(settings),
+            })
+            .unwrap();
+    }
+    let before = project.project().snapshot();
     let (handle, editor) =
         editor_window_with_timeline(cx, project.project().clone(), Arc::default(), 32_000_000);
     editor.update(cx, |view, cx| {
@@ -2833,6 +2841,17 @@ fn shift_edge_stretches_a_long_warped_clip_to_the_painted_endpoint(cx: &mut Test
         let preview = drag.preview.borrow();
         let preview = &preview.as_ref().unwrap().clip;
         assert!(preview.duration() > SOURCE);
+        assert_eq!(
+            preview
+                .audio_edit()
+                .unwrap()
+                .domain
+                .warp
+                .as_ref()
+                .unwrap()
+                .mode,
+            authored_mode.unwrap_or(hex_project::WarpMode::Tones { grain_ms: 40 })
+        );
         preview.clone()
     });
     visual.simulate_mouse_up(end, MouseButton::Left, shift);
@@ -2843,6 +2862,8 @@ fn shift_edge_stretches_a_long_warped_clip_to_the_painted_endpoint(cx: &mut Test
     ));
     project.execute(command).unwrap();
     assert_eq!(project.project().clip(clip), Some(&painted));
+    assert!(project.undo());
+    assert_eq!(project.project().snapshot(), before);
 }
 
 #[gpui::test]
