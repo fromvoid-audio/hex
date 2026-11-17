@@ -978,11 +978,11 @@ impl SignalGraph {
                     && matches!(track.output, TrackOutput::Main { .. })
             })
     }
-    /// Return feeds carry PCM already rendered from the current source
+    /// Return sends and feeds carry PCM rendered from the current source
     /// frontier; their graph edges retain samples rather than stream pages.
-    pub(crate) fn supports_closed_compensated_return_feeds(&self) -> bool {
+    pub(crate) fn supports_closed_compensated_audio_returns(&self) -> bool {
         self.key_stages.is_empty()
-            && self.returns.iter().any(|bus| !bus.audio_feeds.is_empty())
+            && !self.returns.is_empty()
             && self.tracks.iter().all(|track| {
                 track.generator.is_none()
                     && track.printed_merge.is_none()

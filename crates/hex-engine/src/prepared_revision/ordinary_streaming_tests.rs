@@ -1079,6 +1079,8 @@ enum FeedTopology {
     ReturnSource,
     GroupReturnSource,
     GroupReturnDestination,
+    ReturnSend,
+    GroupReturnSend,
 }
 
 #[test]
@@ -1129,6 +1131,22 @@ fn closed_group_return_destination_latency_matches_resident() {
 fn closed_group_return_destination_zero_latency_matches_resident() {
     feed_stream_demand_matches_resident(FeedTopology::GroupReturnDestination, false);
 }
+#[test]
+fn closed_return_send_latency_matches_resident() {
+    feed_stream_demand_matches_resident(FeedTopology::ReturnSend, true);
+}
+#[test]
+fn closed_return_send_zero_latency_matches_resident() {
+    feed_stream_demand_matches_resident(FeedTopology::ReturnSend, false);
+}
+#[test]
+fn closed_group_return_send_latency_matches_resident() {
+    feed_stream_demand_matches_resident(FeedTopology::GroupReturnSend, true);
+}
+#[test]
+fn closed_group_return_send_zero_latency_matches_resident() {
+    feed_stream_demand_matches_resident(FeedTopology::GroupReturnSend, false);
+}
 
 fn feed_stream_demand_matches_resident(topology: FeedTopology, limiter: bool) {
     use hex_project::{Command, Created, TrackSelectionIds};
@@ -1143,9 +1161,11 @@ fn feed_stream_demand_matches_resident(topology: FeedTopology, limiter: bool) {
             let source = f.tracks[1];
             let destination = f.tracks[0];
             let group_tracks = match topology {
-                FeedTopology::Flat | FeedTopology::ReturnSource => None,
+                FeedTopology::Flat | FeedTopology::ReturnSource | FeedTopology::ReturnSend => None,
                 FeedTopology::Siblings => Some(vec![source, destination]),
-                FeedTopology::GroupSource | FeedTopology::GroupReturnSource => Some(vec![source]),
+                FeedTopology::GroupSource
+                | FeedTopology::GroupReturnSource
+                | FeedTopology::GroupReturnSend => Some(vec![source]),
                 FeedTopology::GroupDestination | FeedTopology::GroupReturnDestination => {
                     Some(vec![destination])
                 }
@@ -1165,7 +1185,9 @@ fn feed_stream_demand_matches_resident(topology: FeedTopology, limiter: bool) {
             });
             let source = if matches!(
                 topology,
-                FeedTopology::GroupSource | FeedTopology::GroupReturnSource
+                FeedTopology::GroupSource
+                    | FeedTopology::GroupReturnSource
+                    | FeedTopology::GroupReturnSend
             ) {
                 group.unwrap()
             } else {
@@ -1183,6 +1205,8 @@ fn feed_stream_demand_matches_resident(topology: FeedTopology, limiter: bool) {
             let feed_source = if matches!(
                 topology,
                 FeedTopology::ReturnSource
+                    | FeedTopology::ReturnSend
+                    | FeedTopology::GroupReturnSend
                     | FeedTopology::GroupReturnSource
                     | FeedTopology::GroupReturnDestination
             ) {
@@ -1207,13 +1231,18 @@ fn feed_stream_demand_matches_resident(topology: FeedTopology, limiter: bool) {
             } else {
                 hex_project::RoutingOwner::Track(source)
             };
-            f.editor
-                .execute(Command::SetAudioFeed {
-                    source: feed_source,
-                    destination,
-                    gain: 0.5,
-                })
-                .unwrap();
+            if !matches!(
+                topology,
+                FeedTopology::ReturnSend | FeedTopology::GroupReturnSend
+            ) {
+                f.editor
+                    .execute(Command::SetAudioFeed {
+                        source: feed_source,
+                        destination,
+                        gain: 0.5,
+                    })
+                    .unwrap();
+            }
             if limiter {
                 let state = crate::default_native_device_state_for_class(
                     crate::NativeDeviceClass::Effect,
@@ -2175,7 +2204,7 @@ fn closed_session_audio_demand_matches_resident(latency_track: Option<usize>, gr
 }
 
 #[test]
-fn closed_routed_upstream_latency_with_or_without_session_audio_remains_refused() {
+fn closed_empty_return_with_or_without_session_audio_accepts_upstream_latency() {
     for session_audio in [false, true] {
         let mut f = crate::signal_graph::tests::fixture(&[&[]], 1024);
         let asset = *f.media.keys().next().unwrap();
@@ -2253,7 +2282,7 @@ fn closed_routed_upstream_latency_with_or_without_session_audio_remains_refused(
         assert!(
             playback
                 .visit_next_stream_chunk(64, None, &mut |_| Ok(()))
-                .is_err()
+                .is_ok()
         );
         assert!(
             playback

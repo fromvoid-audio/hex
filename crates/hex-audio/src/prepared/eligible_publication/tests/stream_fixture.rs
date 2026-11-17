@@ -115,7 +115,10 @@ pub(super) fn owner_with_context(
 ) -> hex_engine::AudioCandidateOwner {
     owner_sources(project, vec![metadata], context)
 }
-pub(super) fn project_with_return_feed(project: hex_project::Project) -> hex_project::Project {
+pub(super) fn project_with_return_feed(
+    project: hex_project::Project,
+    include_feed: bool,
+) -> hex_project::Project {
     use hex_project::{Command, Created, Editor, RoutingOwner, TrackDeviceSlot};
     let mut editor = Editor::new(project, 16).unwrap();
     let source = editor.project().tracks()[0].id();
@@ -158,13 +161,15 @@ pub(super) fn project_with_return_feed(project: hex_project::Project) -> hex_pro
             .unwrap(),
         })
         .unwrap();
-    editor
-        .execute(Command::SetAudioFeed {
-            source: RoutingOwner::Return(bus),
-            destination: receiver,
-            gain: 0.5,
-        })
-        .unwrap();
+    if include_feed {
+        editor
+            .execute(Command::SetAudioFeed {
+                source: RoutingOwner::Return(bus),
+                destination: receiver,
+                gain: 0.5,
+            })
+            .unwrap();
+    }
     editor.project().clone()
 }
 pub(super) fn owner_sources(
