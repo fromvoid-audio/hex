@@ -2,17 +2,21 @@ use super::*;
 use std::io::Write;
 
 pub(super) fn long_converted_source(files: &Files) -> PathBuf {
+    long_source_at_rate(files, 24_000)
+}
+
+pub(super) fn long_source_at_rate(files: &Files, rate: u32) -> PathBuf {
     let path = files.0.join("long-granular.wav");
     let mut file = fs::File::create(&path).unwrap();
-    let data_bytes = 40_000_000u32; // 20M original frames, 40M at the project rate.
+    let data_bytes = 40_000_000u32; // 20M original mono frames.
     file.write_all(b"RIFF").unwrap();
     file.write_all(&(36 + data_bytes).to_le_bytes()).unwrap();
     file.write_all(b"WAVEfmt ").unwrap();
     file.write_all(&16u32.to_le_bytes()).unwrap();
     file.write_all(&1u16.to_le_bytes()).unwrap();
     file.write_all(&1u16.to_le_bytes()).unwrap();
-    file.write_all(&24_000u32.to_le_bytes()).unwrap();
-    file.write_all(&48_000u32.to_le_bytes()).unwrap();
+    file.write_all(&rate.to_le_bytes()).unwrap();
+    file.write_all(&(rate * 2).to_le_bytes()).unwrap();
     file.write_all(&2u16.to_le_bytes()).unwrap();
     file.write_all(&16u16.to_le_bytes()).unwrap();
     file.write_all(b"data").unwrap();
