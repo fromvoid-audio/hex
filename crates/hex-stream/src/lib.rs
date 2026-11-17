@@ -40,7 +40,8 @@ pub use granular_seek::{
     VerifiedGranularCursor,
 };
 pub use granular_source::{
-    GranularSourceBuffers, GranularSourceError, GranularSourcePreparation, VerifiedGranularSource,
+    GranularSourceBuffers, GranularSourceError, GranularSourcePreparation,
+    GranularSourcePreparationLimits, VerifiedGranularSource,
 };
 pub use granular_worker::{
     GranularWorkerError, GranularWorkerExit, GranularWorkerExitReason, GranularWorkerKey,

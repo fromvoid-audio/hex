@@ -218,7 +218,7 @@ pub fn scan_verified_granular_region_on_control(
 
 // Four windows of this size cover the common analysis working set across a
 // wrap; smaller regions can still require both sides on every comparison.
-fn region_min_slot(rate: u32) -> usize {
+pub(crate) fn region_min_slot(rate: u32) -> usize {
     if (rate / 8_000).max(1) <= 6 {
         2048
     } else {

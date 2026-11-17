@@ -3,10 +3,11 @@ use super::*;
 use hex_engine::{STREAM_PAGE_FRAMES, audio_transform::streamed_granular_root};
 use hex_project::{WarpMode, default_audio_warp};
 use hex_stream::{
-    GranularBankAllowance, GranularBankError, GranularSourceBuffers, GranularSourcePreparation,
-    GranularWorkerBank, GranularWorkerError, GranularWorkerExitReason, GranularWorkerKey,
-    GranularWorkerQueues, GranularWorkerRequest, GranularWorkerResult, GranularWorkerSeek,
-    VerifiedGranularSource, run_granular_worker,
+    GranularBankAllowance, GranularBankError, GranularSourceBuffers, GranularSourceError,
+    GranularSourcePreparation, GranularSourcePreparationLimits, GranularWorkerBank,
+    GranularWorkerError, GranularWorkerExitReason, GranularWorkerKey, GranularWorkerQueues,
+    GranularWorkerRequest, GranularWorkerResult, GranularWorkerSeek, VerifiedGranularSource,
+    run_granular_worker,
 };
 use std::{
     sync::{
@@ -38,6 +39,43 @@ fn source_fixture(
     rate: u32,
     nan_tail: bool,
 ) -> (Wav, VerifiedGranularSource, Vec<[f32; 2]>) {
+    let (wav, source, expected) =
+        source_fixture_using(mode, rate, nan_tail, |raw, root, reader, plan| {
+            VerifiedGranularSource::prepare_from_reader_on_control(
+                raw,
+                root,
+                reader,
+                plan,
+                preparation_limits(),
+                || false,
+            )
+        });
+    (wav, source.unwrap(), expected)
+}
+fn preparation_limits() -> GranularSourcePreparationLimits {
+    GranularSourcePreparationLimits {
+        source_scratch_frames: 8192,
+        checkpoint_entries: 2,
+        checkpoint_budget: 2_000_000,
+        max_processing_bytes: hex_warp::MAX_SCRATCH_BYTES,
+        max_construction_peak_bytes: 96 * 1024 * 1024,
+    }
+}
+fn source_fixture_using(
+    mode: WarpMode,
+    rate: u32,
+    nan_tail: bool,
+    prepare: impl FnOnce(
+        StreamedSourceMetadata,
+        hex_engine::audio_transform::StreamedGranularRoot,
+        VerifiedWavReader,
+        ResamplePlan,
+    ) -> Result<VerifiedGranularSource, GranularSourceError>,
+) -> (
+    Wav,
+    Result<VerifiedGranularSource, GranularSourceError>,
+    Vec<[f32; 2]>,
+) {
     let (wav, pcm) = Wav::create(8192, false);
     if nan_tail {
         let mut bytes = fs::read(&wav.0).unwrap()[..44].to_vec();
@@ -190,25 +228,7 @@ fn source_fixture(
     )
     .unwrap()
     .frames;
-    let root = root();
-    let source = VerifiedGranularSource::prepare(
-        GranularSourcePreparation {
-            raw,
-            root,
-            reader,
-            plan,
-            buffers: GranularSourceBuffers {
-                source: vec![[0.0; 2]; 8192].into_boxed_slice(),
-                cache: vec![[0.0; 2]; 8192].into_boxed_slice(),
-                grain: vec![[0.0; 2]; 10_000].into_boxed_slice(),
-            },
-            scratch_budget: 1_000_000,
-            checkpoint_entries: 2,
-            checkpoint_budget: 1_000_000,
-        },
-        || false,
-    )
-    .unwrap();
+    let source = prepare(raw.clone(), root(), reader, plan);
     (wav, source, expected)
 }
 
@@ -781,7 +801,7 @@ fn runtime_routes_mixed_raw_tones_and_texture_pages_and_admits_native_custody() 
     use hex_stream::{ConstructorStreamDomain, StreamConfig, StreamRuntime};
     let (_raw_wav, raw, raw_pcm) = raw_definition();
     let raw_key = raw.metadata.key();
-    let (_tones_wav, tones, tones_pcm) = source(WarpMode::Tones { grain_ms: 32 });
+    let (_tones_wav, tones, tones_pcm) = source(WarpMode::Tones { grain_ms: 200 });
     let (_texture_wav, texture, texture_pcm) = source_at_rate(
         WarpMode::Texture {
             grain_ms: 32,
@@ -1181,7 +1201,7 @@ fn pending_granular_short_resource_allowances_and_invalid_inputs_refuse_before_s
     use hex_stream::{
         PendingStreamDomain, StreamConfig, StreamReadinessReservation, StreamRuntimeError,
     };
-    for case in 0..8 {
+    for case in 0..9 {
         let (_files, definitions, bank) = pending_fixture();
         let mut config = StreamConfig::with_pool_pages(4);
         let mut readiness = Some(StreamReadinessReservation {
@@ -1272,5 +1292,157 @@ fn pending_granular_cancellation_before_and_after_catalog_returns_every_page() {
         assert_eq!(report.page_buffers, 4);
         assert!(report.accounting_complete && report.worker_joined);
         assert!(pending.advance_disposal_on_control().is_err());
+    }
+}
+
+#[test]
+fn allocated_scratch_matches_manual_owner_and_exact_processing_limit() {
+    for mode in [
+        WarpMode::Tones { grain_ms: 32 },
+        WarpMode::Texture {
+            grain_ms: 32,
+            fluctuation: 35,
+            seed: 42,
+        },
+    ] {
+        for rate in [44_100, 48_000] {
+            let (_wav, automatic, expected) = source_at_rate(mode, rate);
+            let bound = automatic.reserved_processing_bytes();
+            let (_wav, manual, manual_expected) =
+                source_fixture_using(mode, rate, false, |raw, root, reader, plan| {
+                    VerifiedGranularSource::prepare(
+                        GranularSourcePreparation {
+                            raw,
+                            root,
+                            reader,
+                            plan,
+                            buffers: GranularSourceBuffers {
+                                source: vec![[0.0; 2]; 8192].into_boxed_slice(),
+                                cache: vec![[0.0; 2]; 8192].into_boxed_slice(),
+                                grain: vec![[0.0; 2]; 10000].into_boxed_slice(),
+                            },
+                            scratch_budget: 1_000_000,
+                            checkpoint_entries: 2,
+                            checkpoint_budget: preparation_limits().checkpoint_budget,
+                        },
+                        || false,
+                    )
+                });
+            assert_eq!(expected, manual_expected);
+            assert!(manual.unwrap().reserved_processing_bytes() >= bound);
+            for short in [false, true] {
+                let (_wav, result, _) =
+                    source_fixture_using(mode, rate, false, |raw, root, reader, plan| {
+                        let mut limits = preparation_limits();
+                        limits.max_processing_bytes = bound - usize::from(short);
+                        limits.max_construction_peak_bytes =
+                            limits.construction_processing_bound(rate).unwrap();
+                        VerifiedGranularSource::prepare_from_reader_on_control(
+                            raw,
+                            root,
+                            reader,
+                            plan,
+                            limits,
+                            || false,
+                        )
+                    });
+                if short {
+                    assert!(matches!(result, Err(GranularSourceError::ScratchLimit)));
+                } else {
+                    assert_eq!(result.unwrap().reserved_processing_bytes(), bound);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn allocated_scratch_refuses_invalid_peak_cache_identity_and_cancellation() {
+    for case in 0..9 {
+        let (_wav, result, _) = source_fixture_using(
+            WarpMode::Tones {
+                grain_ms: if case == 8 { 200 } else { 32 },
+            },
+            48_000,
+            false,
+            |mut raw, root, reader, mut plan| {
+                let mut limits = preparation_limits();
+                match case {
+                    0 => limits.source_scratch_frames = 0,
+                    1 => limits.checkpoint_entries = 1,
+                    2 => limits.checkpoint_budget = usize::MAX,
+                    3 => {
+                        limits.max_construction_peak_bytes =
+                            limits.construction_processing_bound(48_000).unwrap() - 1
+                    }
+                    4 => {
+                        let kernel = ResampleKernel::with_version(
+                            plan.source_rate(),
+                            plan.target_rate(),
+                            plan.version(),
+                        )
+                        .unwrap();
+                        plan =
+                            ResamplePlan::with_kernel(kernel, plan.source_frames(), 8192, 16384, 1)
+                                .unwrap();
+                    }
+                    5 => {
+                        raw = StreamedSourceMetadata::new(
+                            StreamSourceKey::new(99, raw.key().asset()),
+                            raw.source_rate(),
+                            raw.project_rate(),
+                            raw.source_frames(),
+                            raw.playback_frames(),
+                            raw.conversion_version(),
+                            raw.fingerprint(),
+                        )
+                        .unwrap()
+                    }
+                    6 => {
+                        let mut fingerprint = raw.fingerprint();
+                        fingerprint[0] ^= 1;
+                        raw = StreamedSourceMetadata::new(
+                            raw.key(),
+                            raw.source_rate(),
+                            raw.project_rate(),
+                            raw.source_frames(),
+                            raw.playback_frames(),
+                            raw.conversion_version(),
+                            fingerprint,
+                        )
+                        .unwrap();
+                    }
+                    8 => limits.checkpoint_budget = 1_000_000,
+                    _ => {}
+                }
+                VerifiedGranularSource::prepare_from_reader_on_control(
+                    raw,
+                    root,
+                    reader,
+                    plan,
+                    limits,
+                    || case == 7,
+                )
+            },
+        );
+        assert!(
+            result.is_err(),
+            "case {case} returned a partial source owner"
+        );
+        if case <= 4 || case == 8 {
+            assert!(
+                matches!(result, Err(GranularSourceError::ScratchLimit)),
+                "case {case}"
+            );
+        }
+        if case == 5 {
+            assert!(matches!(result, Err(GranularSourceError::InvalidSource)));
+        }
+        if case == 7 {
+            assert!(matches!(
+                result,
+                Err(GranularSourceError::Source(StreamFailureKind::Cancelled))
+            ));
+        }
     }
 }

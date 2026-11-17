@@ -3,7 +3,7 @@ use crate::{GranularSeekProgress, VerifiedGranularCursor, VerifiedGranularStepEr
 use hex_media::{ResamplePlan, VerifiedWavReader};
 use hex_warp::{Error, GranularCheckpoint};
 
-const MAX_ENTRIES: usize = 64;
+pub(crate) const MAX_ENTRIES: usize = 64;
 
 /// Cache operations preserve the cursor's source and warp error details.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -89,6 +89,19 @@ impl VerifiedGranularCheckpointCache {
             budget,
             clock: 0,
         })
+    }
+    /// Initial state plus one reusable noninitial checkpoint; no allocation.
+    pub(crate) fn minimum_recording_budget(&self) -> Option<usize> {
+        self.entries
+            .capacity()
+            .checked_mul(std::mem::size_of::<Entry>())?
+            .checked_add(
+                self.entries
+                    .first()?
+                    .checkpoint
+                    .backing_bytes()?
+                    .checked_mul(2)?,
+            )
     }
     pub(crate) fn reserved_budget(&self) -> usize {
         self.budget
