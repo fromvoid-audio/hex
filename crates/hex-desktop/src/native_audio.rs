@@ -877,22 +877,47 @@ impl NativeAudioSink {
                     DomainSources::capture(pending.snapshot.canonical(), pending.catalog).and_then(
                         |sources| {
                             sources
-                                .definitions_for_snapshot(pending.snapshot.canonical())
-                                .map(|definitions| (sources, definitions))
+                                .prepare_for_snapshot(
+                                    pending.snapshot.canonical(),
+                                    policy.stream,
+                                    policy.granular,
+                                    || {
+                                        self.request_cancellation
+                                            .as_ref()
+                                            .is_some_and(|c| c.is_cancelled())
+                                    },
+                                )
+                                .map(|(definitions, granular)| (sources, definitions, granular))
                         },
                     );
-                let (sources, definitions) = match projection {
+                let (sources, definitions, granular) = match projection {
                     Ok(pair) => pair,
                     Err(error) => {
                         self.fail_preparation(control, pending, error);
                         return;
                     }
                 };
-                match control.begin_audio_candidate_domain_preparation(
-                    policy.stream,
-                    definitions,
-                    policy.readiness,
-                ) {
+                let started = match granular {
+                    Some(bank) => control.begin_audio_candidate_granular_domain_preparation(
+                        policy.stream,
+                        definitions,
+                        bank,
+                        hex_stream::StreamReadinessReservation {
+                            // The existing pool retains one ordinary free page and
+                            // the granular worker may hold one original-pool loan.
+                            extents_per_role: policy
+                                .readiness
+                                .extents_per_role
+                                .min(policy.stream.page_buffers.saturating_sub(2)),
+                        },
+                    ),
+                    None => control.begin_audio_candidate_domain_preparation(
+                        policy.stream,
+                        definitions,
+                        policy.readiness,
+                    ),
+                };
+                match started {
                     Ok(token) => {
                         pending.domain = Some(token);
                         self.domains[index] = Some(Domain {
@@ -997,6 +1022,12 @@ impl NativeAudioSink {
                         .snapshot
                         .canonical()
                         .required_repitch_sources()
+                        .next()
+                        .is_some()
+                    || pending
+                        .snapshot
+                        .canonical()
+                        .required_granular_roots(pending.catalog)
                         .next()
                         .is_some()
                 {

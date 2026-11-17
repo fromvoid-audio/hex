@@ -1,4 +1,5 @@
 use super::*;
+use crate::audio_policy::GranularPolicy;
 use hex_project::{Command, WarpMode};
 #[test]
 fn granular_projection_deduplicates_and_collects_exact_converted_roots() {
@@ -53,12 +54,67 @@ fn granular_projection_deduplicates_and_collects_exact_converted_roots() {
             assert!(domain.contains_member(file, root.metadata()));
         }
         assert!(domain.definitions().is_err());
+        assert_eq!(domain.definitions_for_snapshot(snapshot).unwrap().len(), 1);
+        let config = hex_stream::StreamConfig::initial();
+        let policy = GranularPolicy::initial();
         assert!(
             domain
-                .definitions_for_snapshot(snapshot)
-                .unwrap_err()
-                .contains("granular")
+                .prepare_for_snapshot(snapshot, config, policy, || true)
+                .is_err()
         );
+        for short in [
+            GranularPolicy {
+                max_bank_bytes: 0,
+                ..policy
+            },
+            GranularPolicy {
+                max_construction_bytes: 0,
+                ..policy
+            },
+            GranularPolicy {
+                max_bank_bytes: 1024 * 1024,
+                ..policy
+            },
+            GranularPolicy {
+                max_construction_bytes: 1024 * 1024,
+                ..policy
+            },
+        ] {
+            assert!(
+                domain
+                    .prepare_for_snapshot(snapshot, config, short, || false)
+                    .is_err()
+            );
+        }
+        let mut cancellation_checks = 0;
+        assert!(
+            domain
+                .prepare_for_snapshot(snapshot, config, policy, || {
+                    cancellation_checks += 1;
+                    cancellation_checks >= 4
+                })
+                .is_err()
+        );
+        assert!(
+            cancellation_checks >= 4,
+            "cancellation must interrupt construction after entry"
+        );
+        let (definitions, bank) = domain
+            .prepare_for_snapshot(snapshot, config, policy, || false)
+            .unwrap();
+        assert_eq!(
+            definitions.len(),
+            1,
+            "only the raw source uses an ordinary definition"
+        );
+        let bank = bank.unwrap();
+        assert_eq!(
+            bank.metadata().len(),
+            1,
+            "repeated clips prepare one source"
+        );
+        assert!(bank.data().bytes().unwrap() <= policy.max_bank_bytes);
+        drop(bank);
         let quote = snapshot.candidate_reservation_quote().unwrap();
         assert_eq!(quote.prepared_pcm_frames, 0);
         let mut candidate = hex_engine::AudioCandidatePreparation::try_new_on_control(
@@ -108,6 +164,20 @@ fn granular_projection_deduplicates_and_collects_exact_converted_roots() {
                 .members[1]
                 .metadata,
             changed_domain.members[1].metadata
+        );
+        files.wav("granular.wav", 2000);
+        assert!(
+            domain
+                .prepare_for_snapshot(snapshot, config, policy, || false)
+                .is_err(),
+            "changed captured bytes must not produce a source bank"
+        );
+        std::fs::remove_file(domain.members[0].file.path()).unwrap();
+        assert!(
+            domain
+                .prepare_for_snapshot(snapshot, config, policy, || false)
+                .is_err(),
+            "missing captured media must not produce a source bank"
         );
     }
 }
