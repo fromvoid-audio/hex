@@ -987,6 +987,11 @@ hex opens the system's default output device with that device's default
 configuration. **settings…** is available from the hex menu or **command+,**;
 it does not currently provide an audio device, sample-rate or buffer-size chooser.
 
+**space controls transport in vst3 editors** is on by default. plain **space**
+starts or pauses playback while a vst3 editor has focus. turn the setting off
+to give plain **space** to the plug-in. restart hex to apply changes. modified
+**space** and other shortcuts still go to the plug-in.
+
 if the toolbar reports unavailable output, check the default output and device
 connection in macos. the toolbar offers **restart default audio output · stays
 stopped**. restart does not start the transport; confirm the status before playing.
