@@ -400,6 +400,16 @@ pub(super) fn replay_reopened_instrument(
     device: hex_project::DeviceId,
     blocks: usize,
 ) -> Vec<[f32; 2]> {
+    replay_reopened_instrument_using(h, path, device, blocks, render_completed_block)
+}
+
+pub(super) fn replay_reopened_instrument_using(
+    h: &mut ResidentHarness,
+    path: &std::path::Path,
+    device: hex_project::DeviceId,
+    blocks: usize,
+    render: impl Fn(&ResidentHarness) -> [hex_engine::Frame; 256],
+) -> Vec<[f32; 2]> {
     let old_output = h.audio.as_ref().unwrap().control.output_identity().unwrap();
     h.service.submit(Request::Open(path.to_owned())).unwrap();
     let deadline = Instant::now() + Duration::from_secs(3);
@@ -464,7 +474,7 @@ pub(super) fn replay_reopened_instrument(
         .unwrap();
     let mut pcm = Vec::with_capacity(blocks * 256);
     for _ in 0..blocks {
-        pcm.extend(render_completed_block(h));
+        pcm.extend(render(h));
     }
     pcm
 }
@@ -472,6 +482,25 @@ pub(super) fn replay_reopened_instrument(
 pub(super) fn render_completed_block(harness: &ResidentHarness) -> [hex_engine::Frame; 256] {
     let frames = harness.render_plugin_block();
     let deadline = Instant::now() + Duration::from_millis(800);
+    wait_for_committed_plugin_block(harness, deadline);
+    // Give the other asynchronous owner a real turn after the published DSP
+    // prefix. Commit cleanup can enqueue Release only after observing that
+    // prefix; accelerated headless quanta must not starve this control lane.
+    let polled = harness.control_polls.load(Acquire);
+    while harness.control_polls.load(Acquire) == polled {
+        assert!(Instant::now() < deadline, "native control did not poll");
+        std::thread::yield_now();
+    }
+    frames
+}
+
+pub(super) fn render_replay_block(harness: &ResidentHarness) -> [hex_engine::Frame; 256] {
+    let frames = harness.render_plugin_block();
+    wait_for_committed_plugin_block(harness, Instant::now() + Duration::from_millis(800));
+    frames
+}
+
+fn wait_for_committed_plugin_block(harness: &ResidentHarness, deadline: Instant) {
     // Session's optional diagnostic is sampled on a different control cadence.
     // An increase can describe an older request, leaving this request in flight.
     // Pace the headless host by the exact installed endpoints' published prefix.
@@ -494,15 +523,6 @@ pub(super) fn render_completed_block(harness: &ResidentHarness) -> [hex_engine::
         );
         std::thread::yield_now();
     }
-    // Give the other asynchronous owner a real turn after the published DSP
-    // prefix. Commit cleanup can enqueue Release only after observing that
-    // prefix; accelerated headless quanta must not starve this control lane.
-    let polled = harness.control_polls.load(Acquire);
-    while harness.control_polls.load(Acquire) == polled {
-        assert!(Instant::now() < deadline, "native control did not poll");
-        std::thread::yield_now();
-    }
-    frames
 }
 
 fn verify_saved_instrument_automation(
