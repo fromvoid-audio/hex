@@ -112,7 +112,9 @@ fn dragging_audio_scope_body_moves_both_edges_and_keeps_released_gate(cx: &mut T
         visual.run_until_parked();
         let held = visual.debug_bounds(selector).unwrap();
         assert!(held.left() > original.left());
-        assert_eq!(held.size.width, original.size.width);
+        assert!(held.right() > original.right());
+        // The painted edges can round to different half-pixel positions.
+        assert!(f32::from(held.size.width - original.size.width).abs() <= 1.0);
         editor.read_with(&visual, |v, _| {
             let g = v.clip_loop.audio_gesture.as_ref().unwrap();
             assert_eq!(g.preview, (48_000, 96_000));
