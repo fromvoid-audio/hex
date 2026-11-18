@@ -1734,13 +1734,14 @@ mod tests {
 
     #[test]
     fn raw_asset_compilation_refuses_derived_pitch_pages() {
+        const FRAMES: u64 = 20_000_000;
         let mut editor = Editor::new(CanonicalProject::new(48_000).unwrap(), 4).unwrap();
-        let Created::Imported { asset, .. } = editor
+        let Created::Imported { asset, clip, .. } = editor
             .execute(Command::ImportAudioTrack {
                 name: "plain".into(),
                 path: "plain.wav".into(),
                 sample_rate: 48_000,
-                frames: 4096,
+                frames: FRAMES,
             })
             .unwrap()
         else {
@@ -1750,19 +1751,41 @@ mod tests {
             crate::StreamSourceKey::new(7, asset),
             48_000,
             48_000,
-            4096,
-            4096,
+            FRAMES,
+            FRAMES,
             hex_project::IDENTITY_CONVERSION,
             [7; 32],
         )
         .unwrap();
         let pitched = raw.with_plain_pitch(700, WarpResampler::V2).unwrap();
-        let sources = BTreeMap::from([(asset, PreparedAudioSource::Streamed(Arc::new(raw)))]);
-        assert!(project_with_prepared_audio_sources(editor.project(), &sources, 7).is_ok());
-        let sources = BTreeMap::from([(asset, PreparedAudioSource::Streamed(Arc::new(pitched)))]);
-        assert!(
-            project_with_prepared_audio_sources(editor.project(), &sources, 7).is_err(),
-            "a raw clip must never consume pitched pages"
-        );
+        let raw_sources = BTreeMap::from([(asset, PreparedAudioSource::Streamed(Arc::new(raw)))]);
+        let pitched_sources =
+            BTreeMap::from([(asset, PreparedAudioSource::Streamed(Arc::new(pitched)))]);
+        let check_sources = |project: &CanonicalProject| {
+            let compiled = project_with_prepared_audio_sources(project, &raw_sources, 7).unwrap();
+            assert!(compiled.contains_streamed_sources());
+            assert!(
+                project_with_prepared_audio_sources(project, &pitched_sources, 7).is_err(),
+                "a raw clip must never consume pitched pages"
+            );
+        };
+        check_sources(editor.project());
+        let settings = editor
+            .project()
+            .audio_warp_settings_for_enable(clip)
+            .unwrap();
+        editor
+            .execute(Command::SetAudioClipWarp {
+                clip,
+                settings: Some(settings),
+            })
+            .unwrap();
+        editor
+            .execute(Command::SetAudioClipWarp {
+                clip,
+                settings: None,
+            })
+            .unwrap();
+        check_sources(editor.project());
     }
 }

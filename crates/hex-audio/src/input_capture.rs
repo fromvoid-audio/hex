@@ -3,8 +3,9 @@
 //! The worker owns the CPAL stream and the paired callback terminals. Dropping
 //! the public handle requests stop without joining; the worker retains the
 //! exclusive input lease until the stream and both callback owners return.
-//! One 32-packet SPSC queue holds at most 8192 stereo frames. Input callbacks
-//! validate and copy at most 8192 frames without allocation, waiting, logging,
+//! Each 32-packet SPSC feed holds at most 8192 stereo frames. A monitor-only
+//! source uses one feed and stops when its consumer abandons it or overruns.
+//! Input callbacks validate and copy at most 8192 frames without allocation, waiting, logging,
 //! file work or final endpoint destruction. A full queue ends the take with
 //! its accepted prefix. Stop is observed at callback entry, so an already
 //! started callback can finish its bounded block. Input capture times are not
@@ -138,6 +139,32 @@ struct Shared {
     terminal: AtomicU8,
 }
 impl Shared {
+    fn opening() -> Arc<Self> {
+        Arc::new(Self {
+            phase: AtomicU8::new(OPENING),
+            stop: AtomicBool::new(false),
+            fault: AtomicU8::new(NO_FAULT),
+            terminal: AtomicU8::new(0),
+        })
+    }
+
+    fn phase(&self) -> InputPhase {
+        let phase = self.phase.load(Acquire);
+        if phase == FINISHED {
+            return InputPhase::Finished(end(self.terminal.load(Acquire)));
+        }
+        if self.stop.load(Acquire) {
+            return InputPhase::Stopping;
+        }
+        match phase {
+            OPENING => InputPhase::Opening,
+            READY => InputPhase::Ready,
+            STARTING => InputPhase::Starting,
+            CAPTURING => InputPhase::Capturing,
+            _ => InputPhase::Stopping,
+        }
+    }
+
     fn fail(&self, fault: u8) {
         let _ = self
             .fault
@@ -146,6 +173,17 @@ impl Shared {
     }
 }
 struct Lease;
+impl Lease {
+    fn acquire(config: InputConfig) -> Result<Self, InputCaptureError> {
+        if !(8_000..=192_000).contains(&config.sample_rate) || !(1..=2).contains(&config.channels) {
+            return Err(InputCaptureError::InvalidConfiguration);
+        }
+        INPUT_OCCUPIED
+            .compare_exchange(false, true, AcqRel, Acquire)
+            .map_err(|_| InputCaptureError::Busy)?;
+        Ok(Self)
+    }
+}
 impl Drop for Lease {
     fn drop(&mut self) {
         INPUT_OCCUPIED.store(false, Release);
@@ -164,13 +202,31 @@ struct MonitorWriter<T> {
     output: Producer<Block<T>>,
     overrun: Arc<AtomicBool>,
 }
+impl<T> MonitorWriter<T> {
+    fn publish(&mut self, block: Block<T>) -> bool {
+        if self.overrun.load(Acquire) || self.output.is_abandoned() {
+            return false;
+        }
+        if self.output.push(block).is_err() {
+            self.overrun.store(true, Release);
+            return false;
+        }
+        true
+    }
+}
+enum WriterOutput<T> {
+    Recording {
+        output: Producer<Block<T>>,
+        monitor: Option<MonitorWriter<T>>,
+    },
+    Monitoring(MonitorWriter<T>),
+}
 struct Writer<T> {
-    output: Producer<Block<T>>,
+    output: WriterOutput<T>,
     shared: Arc<Shared>,
     channels: usize,
     sequence: u64,
     previous: Option<T>,
-    monitor: Option<MonitorWriter<T>>,
 }
 impl<T: Copy + Ord> Writer<T> {
     fn submit(&mut self, input: &[f32], stamp: T) {
@@ -216,22 +272,23 @@ impl<T: Copy + Ord> Writer<T> {
                     [input[0], input[1]]
                 };
             }
-            if let Some(monitor) = &mut self.monitor {
-                let live = block;
-                if self.output.push(block).is_err() {
-                    self.shared.fail(BACKPRESSURE);
-                    return;
+            match &mut self.output {
+                WriterOutput::Recording { output, monitor } => {
+                    if output.push(block).is_err() {
+                        self.shared.fail(BACKPRESSURE);
+                        return;
+                    }
+                    if let Some(monitor) = monitor {
+                        // Monitor loss does not stop or truncate a take.
+                        monitor.publish(block);
+                    }
                 }
-                if !monitor.overrun.load(Acquire)
-                    && !monitor.output.is_abandoned()
-                    && monitor.output.push(live).is_err()
-                {
-                    // A monitor discontinuity must never stop or truncate a take.
-                    monitor.overrun.store(true, Release);
+                WriterOutput::Monitoring(monitor) => {
+                    if !monitor.publish(block) {
+                        self.shared.stop.store(true, Release);
+                        return;
+                    }
                 }
-            } else if self.output.push(block).is_err() {
-                self.shared.fail(BACKPRESSURE);
-                return;
             }
             self.sequence = next;
         }
@@ -253,6 +310,7 @@ pub struct InputMonitor {
     shared: Arc<Shared>,
     id: InputDeviceId,
     config: InputConfig,
+    stop_input_on_drop: bool,
 }
 
 /// A monitor feed cannot provide more continuous input. This is not evidence
@@ -286,6 +344,29 @@ impl fmt::Display for InputMonitorEnd {
 impl std::error::Error for InputMonitorEnd {}
 
 impl InputMonitor {
+    fn channel(
+        id: InputDeviceId,
+        config: InputConfig,
+        shared: &Arc<Shared>,
+        stop_input_on_drop: bool,
+    ) -> (MonitorWriter<cpal::StreamInstant>, Self) {
+        let (output, input) = RingBuffer::new(PACKETS);
+        let overrun = Arc::new(AtomicBool::new(false));
+        let writer = MonitorWriter {
+            output,
+            overrun: Arc::clone(&overrun),
+        };
+        let monitor = Self {
+            input,
+            overrun,
+            shared: Arc::clone(shared),
+            id,
+            config,
+            stop_input_on_drop,
+        };
+        (writer, monitor)
+    }
+
     /// The requested input and configuration; opening may still fail on the worker.
     pub fn source(&self) -> (&InputDeviceId, InputConfig) {
         (&self.id, self.config)
@@ -316,22 +397,36 @@ impl InputMonitor {
     }
 }
 
+impl Drop for InputMonitor {
+    fn drop(&mut self) {
+        if self.stop_input_on_drop {
+            // The input worker observes this even if the device supplies no
+            // further callbacks. This feed is destroyed on control.
+            self.shared.stop.store(true, Release);
+        }
+    }
+}
+
 /// A control/worker-side handle, never an audio-callback owner. The queue is
 /// finite; consumers must drain promptly. Dropping it requests asynchronous
 /// stop and abandons unread packets. The input lease remains held until
 /// callback quiescence; an uncertain native owner stays quarantined.
 pub struct InputCapture {
+    worker: CaptureWorker,
     id: InputDeviceId,
     config: InputConfig,
     input: Consumer<Block<cpal::StreamInstant>>,
-    shared: Arc<Shared>,
-    worker: JoinHandle<()>,
-    error: Receiver<String>,
     prefetched: Option<Block<cpal::StreamInstant>>,
     preroll_frames: u64,
     // Bit 0 means ready, bit 1 means stopped. One atomic orders stop against
     // the writer's ready transition, so a cancelled preparation cannot start.
     recording_ready: Option<Arc<AtomicU8>>,
+}
+
+struct CaptureWorker {
+    shared: Arc<Shared>,
+    handle: JoinHandle<()>,
+    error: Receiver<String>,
 }
 
 /// A control-side stop request for one capture. It remains bound to that
@@ -362,7 +457,8 @@ impl InputCapture {
         id: InputDeviceId,
         config: InputConfig,
     ) -> Result<Self, InputCaptureError> {
-        Self::open_inner(id, config, None)
+        let lease = Lease::acquire(config)?;
+        Self::open_recording(id, config, lease, Shared::opening(), None)
     }
 
     /// Open one capture with an independent optional monitor feed. The feed
@@ -372,59 +468,159 @@ impl InputCapture {
         id: InputDeviceId,
         config: InputConfig,
     ) -> Result<(Self, InputMonitor), InputCaptureError> {
-        let (output, input) = RingBuffer::new(PACKETS);
-        let overrun = Arc::new(AtomicBool::new(false));
-        let monitor = MonitorWriter {
-            output,
-            overrun: Arc::clone(&overrun),
-        };
-        let capture = Self::open_inner(id, config, Some(monitor))?;
-        let shared = Arc::clone(&capture.shared);
-        let id = capture.id.clone();
-        Ok((
-            capture,
-            InputMonitor {
-                input,
-                overrun,
-                shared,
-                id,
-                config,
-            },
-        ))
+        let lease = Lease::acquire(config)?;
+        let shared = Shared::opening();
+        let (writer, monitor) = InputMonitor::channel(id.clone(), config, &shared, false);
+        let capture = Self::open_recording(id, config, lease, shared, Some(writer))?;
+        Ok((capture, monitor))
     }
 
-    fn open_inner(
+    fn open_recording(
         id: InputDeviceId,
         config: InputConfig,
+        lease: Lease,
+        shared: Arc<Shared>,
         monitor: Option<MonitorWriter<cpal::StreamInstant>>,
     ) -> Result<Self, InputCaptureError> {
-        if !(8_000..=192_000).contains(&config.sample_rate) || !(1..=2).contains(&config.channels) {
-            return Err(InputCaptureError::InvalidConfiguration);
+        let (output, input) = RingBuffer::new(PACKETS);
+        let worker = CaptureWorker::spawn(
+            id.clone(),
+            config,
+            lease,
+            shared,
+            WriterOutput::Recording { output, monitor },
+        )?;
+        Ok(Self {
+            worker,
+            id,
+            config,
+            input,
+            prefetched: None,
+            preroll_frames: 0,
+            recording_ready: None,
+        })
+    }
+
+    /// The exact selected source and requested stream configuration.
+    /// The worker may still reject it while opening.
+    pub fn source(&self) -> (&InputDeviceId, InputConfig) {
+        (&self.id, self.config)
+    }
+
+    pub fn phase(&self) -> InputPhase {
+        match capture_phase(&self.input, &self.worker.shared) {
+            InputPhase::Finished(_) if self.prefetched.is_some() => InputPhase::Stopping,
+            phase => phase,
         }
-        if INPUT_OCCUPIED
-            .compare_exchange(false, true, AcqRel, Acquire)
-            .is_err()
-        {
-            return Err(InputCaptureError::Busy);
+    }
+
+    /// Queue a start for a prepared stream. `Capturing` confirms that CPAL
+    /// accepted it; a concurrent Stop may cancel an admitted start.
+    pub fn start_on_control(&self) -> bool {
+        self.worker.start()
+    }
+
+    pub fn stop_on_control(&self) {
+        self.worker.stop();
+    }
+
+    /// Retain an independent stop request before moving this reader to a
+    /// writer. Creating or dropping the handle does not start or stop capture.
+    pub fn stop_handle_on_control(&self) -> InputStop {
+        InputStop {
+            shared: Arc::clone(&self.worker.shared),
+            worker: self.worker.handle.thread().clone(),
         }
-        let lease = Lease;
-        let (producer, input) = RingBuffer::new(PACKETS);
-        let shared = Arc::new(Shared {
-            phase: AtomicU8::new(OPENING),
-            stop: AtomicBool::new(false),
-            fault: AtomicU8::new(NO_FAULT),
-            terminal: AtomicU8::new(0),
-        });
+    }
+
+    /// A reported failure while teardown may still be in progress. Only
+    /// `Finished` or a read terminal proves callback quiescence.
+    pub fn failure(&self) -> Option<InputEnd> {
+        self.worker.failure()
+    }
+
+    /// One original open error, if the asynchronous open failed.
+    pub fn take_open_error_on_control(&mut self) -> Option<String> {
+        self.worker.error.try_recv().ok()
+    }
+
+    /// Return an accepted packet before reporting the terminal. None means
+    /// no packet is ready yet; the producer may still be active.
+    pub fn try_read_on_control(&mut self) -> Result<Option<InputPacket>, InputEnd> {
+        self.read_block().map(|block| block.map(packet))
+    }
+    fn read_block(&mut self) -> Result<Option<Block<cpal::StreamInstant>>, InputEnd> {
+        if let Some(block) = self.prefetched.take() {
+            return Ok(Some(block));
+        }
+        read(&mut self.input, &self.worker.shared)
+    }
+}
+
+/// The control-side owner of a physical input opened solely for monitoring.
+/// Dropping it requests asynchronous shutdown. The same exclusive lease used
+/// for takes stays with the worker until the native callbacks have returned.
+pub struct MonitorCapture {
+    worker: CaptureWorker,
+}
+impl MonitorCapture {
+    /// Open the exact input on the existing worker. The requested feed
+    /// begins only after a start request. No take queue or file is created.
+    /// Dropping either endpoint requests shutdown. Keep the control handle
+    /// through `Finished` when handing the input lease to a recording take.
+    pub fn open_on_control(
+        id: InputDeviceId,
+        config: InputConfig,
+    ) -> Result<(Self, InputMonitor), InputCaptureError> {
+        let lease = Lease::acquire(config)?;
+        let shared = Shared::opening();
+        let (writer, monitor) = InputMonitor::channel(id.clone(), config, &shared, true);
+        let worker =
+            CaptureWorker::spawn(id, config, lease, shared, WriterOutput::Monitoring(writer))?;
+        Ok((Self { worker }, monitor))
+    }
+
+    /// `Finished` confirms the device lease has been released. Feed overrun
+    /// is reported by the associated `InputMonitor`.
+    pub fn phase(&self) -> InputPhase {
+        match self.worker.shared.phase() {
+            InputPhase::Finished(_) if !self.worker.handle.is_finished() => InputPhase::Stopping,
+            phase => phase,
+        }
+    }
+
+    /// Queue one start for a ready monitor. Poll the phase for device acceptance.
+    pub fn start_on_control(&self) -> bool {
+        self.worker.start()
+    }
+
+    pub fn stop_on_control(&self) {
+        self.worker.stop();
+    }
+
+    /// One original open or start error from the input worker.
+    pub fn take_open_error_on_control(&mut self) -> Option<String> {
+        self.worker.error.try_recv().ok()
+    }
+}
+
+impl CaptureWorker {
+    fn spawn(
+        id: InputDeviceId,
+        config: InputConfig,
+        lease: Lease,
+        shared: Arc<Shared>,
+        output: WriterOutput<cpal::StreamInstant>,
+    ) -> Result<Self, InputCaptureError> {
         let (error_sender, error) = mpsc::sync_channel(1);
-        let selected = id.clone();
         let worker_state = Arc::clone(&shared);
-        let worker = thread::Builder::new()
+        let handle = thread::Builder::new()
             .name("hex-audio-input".into())
             .spawn(move || {
                 let _lease = lease;
                 let mut custody = Custody::default();
                 let result = catch_unwind(AssertUnwindSafe(|| {
-                    run_worker(&mut custody, &worker_state, producer, id, config, monitor)
+                    run_worker(&mut custody, &worker_state, id, config, output)
                 }));
                 match result {
                     Ok(Ok(())) => {}
@@ -445,34 +641,13 @@ impl InputCapture {
             })
             .map_err(InputCaptureError::Spawn)?;
         Ok(Self {
-            id: selected,
-            config,
-            input,
             shared,
-            worker,
+            handle,
             error,
-            prefetched: None,
-            preroll_frames: 0,
-            recording_ready: None,
         })
     }
 
-    /// The exact selected source and requested stream configuration.
-    /// The worker may still reject it while opening.
-    pub fn source(&self) -> (&InputDeviceId, InputConfig) {
-        (&self.id, self.config)
-    }
-
-    pub fn phase(&self) -> InputPhase {
-        match capture_phase(&self.input, &self.shared) {
-            InputPhase::Finished(_) if self.prefetched.is_some() => InputPhase::Stopping,
-            phase => phase,
-        }
-    }
-
-    /// Queue a start for a prepared stream. `Capturing` confirms that CPAL
-    /// accepted it; a concurrent Stop may cancel an admitted start.
-    pub fn start_on_control(&self) -> bool {
+    fn start(&self) -> bool {
         if self.shared.stop.load(Acquire) {
             return false;
         }
@@ -482,71 +657,30 @@ impl InputCapture {
             .compare_exchange(READY, STARTING, AcqRel, Acquire)
             .is_ok();
         if accepted {
-            self.worker.thread().unpark();
+            self.handle.thread().unpark();
         }
         accepted && !self.shared.stop.load(Acquire)
     }
 
-    pub fn stop_on_control(&self) {
-        request_stop(&self.shared, self.worker.thread());
+    fn stop(&self) {
+        request_stop(&self.shared, self.handle.thread());
     }
 
-    /// Retain an independent stop request before moving this reader to a
-    /// writer. Creating or dropping the handle does not start or stop capture.
-    pub fn stop_handle_on_control(&self) -> InputStop {
-        InputStop {
-            shared: Arc::clone(&self.shared),
-            worker: self.worker.thread().clone(),
-        }
-    }
-
-    /// A reported failure while teardown may still be in progress. Only
-    /// `Finished` or a read terminal proves callback quiescence.
-    pub fn failure(&self) -> Option<InputEnd> {
+    fn failure(&self) -> Option<InputEnd> {
         let fault = self.shared.fault.load(Acquire);
         (fault != NO_FAULT).then(|| end(fault.saturating_add(1)))
     }
-
-    /// One original open error, if the asynchronous open failed.
-    pub fn take_open_error_on_control(&mut self) -> Option<String> {
-        self.error.try_recv().ok()
-    }
-
-    /// Return an accepted packet before reporting the terminal. None means
-    /// no packet is ready yet; the producer may still be active.
-    pub fn try_read_on_control(&mut self) -> Result<Option<InputPacket>, InputEnd> {
-        self.read_block().map(|block| block.map(packet))
-    }
-    fn read_block(&mut self) -> Result<Option<Block<cpal::StreamInstant>>, InputEnd> {
-        if let Some(block) = self.prefetched.take() {
-            return Ok(Some(block));
-        }
-        read(&mut self.input, &self.shared)
-    }
 }
-impl Drop for InputCapture {
+impl Drop for CaptureWorker {
     fn drop(&mut self) {
-        self.stop_on_control();
+        self.stop();
     }
 }
+
 fn capture_phase<T>(input: &Consumer<Block<T>>, shared: &Shared) -> InputPhase {
-    let phase = shared.phase.load(Acquire);
-    if phase == FINISHED {
-        return if input.is_empty() {
-            InputPhase::Finished(end(shared.terminal.load(Acquire)))
-        } else {
-            InputPhase::Stopping
-        };
-    }
-    if shared.stop.load(Acquire) {
-        return InputPhase::Stopping;
-    }
-    match phase {
-        OPENING => InputPhase::Opening,
-        READY => InputPhase::Ready,
-        STARTING => InputPhase::Starting,
-        CAPTURING => InputPhase::Capturing,
-        _ => InputPhase::Stopping,
+    match shared.phase() {
+        InputPhase::Finished(_) if !input.is_empty() => InputPhase::Stopping,
+        phase => phase,
     }
 }
 
@@ -620,10 +754,9 @@ fn finish_worker(mut custody: Custody, shared: &Shared) {
 fn run_worker(
     custody: &mut Custody,
     shared: &Arc<Shared>,
-    producer: Producer<Block<cpal::StreamInstant>>,
     id: InputDeviceId,
     config: InputConfig,
-    monitor: Option<MonitorWriter<cpal::StreamInstant>>,
+    output: WriterOutput<cpal::StreamInstant>,
 ) -> Result<(), String> {
     let host = cpal::default_host();
     if id.cpal_id().0 != host.id() {
@@ -671,12 +804,11 @@ fn run_worker(
         return Ok(());
     }
     let writer = Writer {
-        output: producer,
+        output,
         shared: Arc::clone(shared),
         channels: usize::from(config.channels),
         sequence: 0,
         previous: None,
-        monitor,
     };
     let (mut data, terminal) = crate::native_callback_owner::reserve(writer);
     let (errors, error_terminal) = crate::native_callback_owner::reserve(Arc::clone(shared));
@@ -755,6 +887,152 @@ pub(crate) fn test_monitor_source() -> (TestMonitorSource, Box<MonitorStream>) {
 mod tests {
     use super::*;
 
+    const MONITOR_CONFIG: InputConfig = InputConfig {
+        sample_rate: 48_000,
+        channels: 1,
+    };
+    static INPUT_LEASE_TEST: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn monitor_only_channel(shared: &Arc<Shared>) -> (Writer<cpal::StreamInstant>, InputMonitor) {
+        let id = format!("{}:test-monitor", cpal::default_host().id())
+            .parse()
+            .unwrap();
+        let (output, monitor) = InputMonitor::channel(id, MONITOR_CONFIG, shared, true);
+        (
+            Writer {
+                output: WriterOutput::Monitoring(output),
+                shared: Arc::clone(shared),
+                channels: 1,
+                sequence: 0,
+                previous: None,
+            },
+            monitor,
+        )
+    }
+
+    #[test]
+    fn monitor_only_respects_start_stop_and_returns_the_input_lease_after_quiescence() {
+        let _exclusive = INPUT_LEASE_TEST.lock().unwrap();
+        let lease = Lease::acquire(MONITOR_CONFIG).unwrap();
+        let shared = Shared::opening();
+        let (writer, mut monitor) = monitor_only_channel(&shared);
+        let (mut data, data_terminal) = crate::native_callback_owner::reserve(writer);
+        let (mut errors, error_terminal) =
+            crate::native_callback_owner::reserve(Arc::clone(&shared));
+        let custody = Custody {
+            stream: None,
+            data: Some(data_terminal),
+            errors: Some(error_terminal),
+        };
+        let (_, error) = mpsc::sync_channel(1);
+        let worker_state = Arc::clone(&shared);
+        let handle = thread::spawn(move || {
+            let _lease = lease;
+            while !worker_state.stop.load(Acquire) {
+                thread::park();
+            }
+            finish_worker(custody, &worker_state);
+        });
+        let capture = MonitorCapture {
+            worker: CaptureWorker {
+                shared: Arc::clone(&shared),
+                handle,
+                error,
+            },
+        };
+        let stamp = cpal::StreamInstant::new(10, 512);
+        assert!(matches!(
+            InputCapture::open_on_control(monitor.id.clone(), MONITOR_CONFIG),
+            Err(InputCaptureError::Busy)
+        ));
+        assert_eq!(capture.phase(), InputPhase::Opening);
+        assert!(!capture.start_on_control());
+        shared.phase.store(READY, Release);
+        data.owner_mut().unwrap().submit(&[0.25], stamp);
+        assert!(monitor.try_read().unwrap().is_none());
+        assert!(capture.start_on_control());
+        assert!(!capture.start_on_control());
+        data.owner_mut().unwrap().submit(&[0.75], stamp);
+        let packet = monitor.try_read().unwrap().unwrap();
+        assert_eq!(
+            (packet.captured_at, packet.sequence, packet.offset_frames),
+            (stamp, 0, 0)
+        );
+        assert_eq!(packet.frames(), &[[0.75; 2]]);
+
+        capture.stop_on_control();
+        data.owner_mut().unwrap().submit(&[0.5], stamp);
+        assert!(monitor.input.is_empty());
+        assert!(matches!(
+            monitor.try_read(),
+            Err(InputMonitorEnd::StopRequested)
+        ));
+        data.close();
+        assert_eq!(capture.phase(), InputPhase::Stopping);
+        assert!(matches!(
+            Lease::acquire(MONITOR_CONFIG),
+            Err(InputCaptureError::Busy)
+        ));
+        errors.close();
+        let deadline = std::time::Instant::now() + Duration::from_millis(500);
+        while capture.phase() != InputPhase::Finished(InputEnd::Stopped) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "input lease did not return"
+            );
+            thread::yield_now();
+        }
+        assert!(Lease::acquire(MONITOR_CONFIG).is_ok());
+    }
+
+    #[test]
+    fn monitor_only_overrun_and_abandonment_stop_the_writer_without_callback_drops() {
+        for abandon in [false, true] {
+            let shared = Shared::opening();
+            shared.phase.store(CAPTURING, Release);
+            let (writer, monitor) = monitor_only_channel(&shared);
+            let overrun = Arc::clone(&monitor.overrun);
+            let mut monitor = Some(monitor);
+            let (mut guard, mut terminal) = crate::native_callback_owner::reserve(writer);
+            let block = [0.25; MAX_CALLBACK_FRAMES];
+            let final_sample = [0.5];
+            let stamp = cpal::StreamInstant::new(10, 0);
+            if abandon {
+                drop(monitor.take());
+                assert!(shared.stop.load(Acquire));
+            }
+            let mut submit_and_return = || {
+                let writer = guard.owner_mut().unwrap();
+                writer.submit(&block, stamp);
+                writer.submit(&final_sample, stamp);
+                guard.close();
+            };
+            #[cfg(feature = "allocation-probe")]
+            {
+                let counts = allocation_counter::measure(&mut submit_and_return);
+                assert_eq!(
+                    (
+                        counts.count_total,
+                        counts.bytes_total,
+                        counts.count_current,
+                        counts.bytes_current
+                    ),
+                    (0, 0, 0, 0)
+                );
+            }
+            #[cfg(not(feature = "allocation-probe"))]
+            submit_and_return();
+
+            assert!(shared.stop.load(Acquire));
+            assert_eq!(shared.fault.load(Acquire), NO_FAULT);
+            assert_eq!(overrun.load(Acquire), !abandon);
+            if let Some(monitor) = monitor.as_mut() {
+                assert!(matches!(monitor.try_read(), Err(InputMonitorEnd::Overrun)));
+            }
+            assert!(terminal.take().is_some());
+        }
+    }
+
     fn channel(channels: usize) -> (Writer<u64>, Consumer<Block<u64>>, Arc<Shared>) {
         let (output, input) = RingBuffer::new(PACKETS);
         let shared = Arc::new(Shared {
@@ -765,12 +1043,14 @@ mod tests {
         });
         (
             Writer {
-                output,
+                output: WriterOutput::Recording {
+                    output,
+                    monitor: None,
+                },
                 shared: Arc::clone(&shared),
                 channels,
                 sequence: 0,
                 previous: None,
-                monitor: None,
             },
             input,
             shared,
@@ -786,42 +1066,31 @@ mod tests {
         Arc<Shared>,
     ) {
         let (output, recording) = RingBuffer::new(PACKETS);
-        let (monitor_output, input) = RingBuffer::new(PACKETS);
-        let overrun = Arc::new(AtomicBool::new(false));
         let shared = Arc::new(Shared {
             phase: AtomicU8::new(CAPTURING),
             stop: AtomicBool::new(false),
             fault: AtomicU8::new(NO_FAULT),
             terminal: AtomicU8::new(0),
         });
+        let id = format!("{}:test-input", cpal::default_host().id())
+            .parse()
+            .unwrap();
+        let config = InputConfig {
+            sample_rate: 48_000,
+            channels: channels as u16,
+        };
+        let (monitor_writer, monitor) = InputMonitor::channel(id, config, &shared, false);
         let writer = Writer {
-            output,
+            output: WriterOutput::Recording {
+                output,
+                monitor: Some(monitor_writer),
+            },
             shared: Arc::clone(&shared),
             channels,
             sequence: 0,
             previous: None,
-            monitor: Some(MonitorWriter {
-                output: monitor_output,
-                overrun: Arc::clone(&overrun),
-            }),
         };
-        (
-            writer,
-            recording,
-            InputMonitor {
-                input,
-                overrun,
-                shared: Arc::clone(&shared),
-                id: format!("{}:test-input", cpal::default_host().id())
-                    .parse()
-                    .unwrap(),
-                config: InputConfig {
-                    sample_rate: 48_000,
-                    channels: channels as u16,
-                },
-            },
-            shared,
-        )
+        (writer, recording, monitor, shared)
     }
 
     #[test]
@@ -1199,6 +1468,11 @@ mod tests {
         });
         let (_, error) = mpsc::sync_channel(1);
         let capture = InputCapture {
+            worker: CaptureWorker {
+                shared: state,
+                handle: worker,
+                error,
+            },
             id: format!("{}:test-input", cpal::default_host().id())
                 .parse()
                 .unwrap(),
@@ -1207,9 +1481,6 @@ mod tests {
                 channels: 1,
             },
             input,
-            shared: state,
-            worker,
-            error,
             prefetched: None,
             preroll_frames: 0,
             recording_ready: None,
@@ -1242,12 +1513,14 @@ mod tests {
             terminal: AtomicU8::new(0),
         });
         let writer: Writer<cpal::StreamInstant> = Writer {
-            output,
+            output: WriterOutput::Recording {
+                output,
+                monitor: None,
+            },
             shared: Arc::clone(&shared),
             channels: 1,
             sequence: 0,
             previous: None,
-            monitor: None,
         };
         let (mut data, data_terminal) = crate::native_callback_owner::reserve(writer);
         let (mut errors, error_terminal) = crate::native_callback_owner::reserve(shared);
@@ -1274,12 +1547,14 @@ mod tests {
                 terminal: AtomicU8::new(0),
             });
             let writer = Writer::<cpal::StreamInstant> {
-                output,
+                output: WriterOutput::Recording {
+                    output,
+                    monitor: None,
+                },
                 shared: Arc::clone(&state),
                 channels: 1,
                 sequence: 0,
                 previous: None,
-                monitor: None,
             };
             let (data, data_terminal) = crate::native_callback_owner::reserve(writer);
             let (errors, error_terminal) =
@@ -1313,6 +1588,7 @@ mod tests {
     #[test]
     #[ignore = "queries the actual host device list; no stream is opened"]
     fn missing_device_fails_without_falling_back() {
+        let _exclusive = INPUT_LEASE_TEST.lock().unwrap();
         let host = cpal::default_host().id();
         let id: InputDeviceId = format!("{host}:hex-nonexistent-input-8227")
             .parse()

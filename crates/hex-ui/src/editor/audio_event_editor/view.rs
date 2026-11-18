@@ -20,6 +20,10 @@ pub(in crate::editor) fn view(
     let state = view.state.as_ref()?;
     let revision = state.revision;
     let clip = state.project.clip(clip_id)?.clone();
+    let clip_gain = view
+        .waveform_clip_gain(&clip)
+        .unwrap_or(clip.gain())
+        .linear();
     let events = match clip.editable_audio_events() {
         Ok(events) => events,
         Err(error) => {
@@ -276,7 +280,7 @@ pub(in crate::editor) fn view(
                     0,
                     visible_start.saturating_sub(pasted.frame_start)
                         ..visible_end.saturating_sub(pasted.frame_start),
-                    clip.gain(),
+                    clip_gain,
                     true,
                     std::rc::Rc::clone(&view.clip_waveform_geometry_cache),
                     ink,
@@ -309,6 +313,13 @@ pub(in crate::editor) fn view(
                 .checked_add(visible_start - start)?;
             let end_frame = source_frame.checked_add(visible_end - visible_start)?;
             if let Some(prepared) = state.audio_clip_waveforms.get(&clip_id) {
+                // The prepared peaks already include the canonical event
+                // gain. Scale only the held or pending difference.
+                let gain = if event.gain == original.gain {
+                    clip_gain
+                } else {
+                    clip_gain * (event.gain.linear() / original.gain.linear())
+                };
                 element = element.child(
                     waveform::waveform_source_segment_gain_view_cached(
                         std::sync::Arc::clone(
@@ -322,7 +333,7 @@ pub(in crate::editor) fn view(
                         ),
                         0,
                         source_root + (visible_start - start)..source_root + (visible_end - start),
-                        clip.gain(),
+                        gain,
                         true,
                         std::rc::Rc::clone(&view.clip_waveform_geometry_cache),
                         ink,
@@ -336,8 +347,8 @@ pub(in crate::editor) fn view(
                     waveform::waveform_view_cached(
                         wave,
                         &clip,
-                        source_frame,
-                        end_frame,
+                        source_frame..end_frame,
+                        Some(clip_gain * event.gain.linear()),
                         std::rc::Rc::clone(&view.clip_waveform_geometry_cache),
                         ink,
                     )

@@ -140,8 +140,6 @@ pub struct TransportFadeCompletion {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(crate) struct TransportFade {
-    /// Content frame at which a one-shot Arrangement section pauses.
-    pub(super) section_end: Option<u64>,
     /// The deferred Pause/Stop, applied once `out_elapsed` reaches `F`.
     pending: Option<Pending>,
     out_elapsed: u32,

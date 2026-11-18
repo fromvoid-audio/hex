@@ -172,7 +172,7 @@ impl EditorView {
         let Some(state) = self.state.as_ref() else {
             return;
         };
-        let control = Arc::new(PluginEffectControl::default());
+        let control = Arc::new(PluginEffectControl::opening_editor());
         let request = PluginEffectInsertion {
             context: hex_engine::AudioSourceContext {
                 project_generation: self.project_generation,

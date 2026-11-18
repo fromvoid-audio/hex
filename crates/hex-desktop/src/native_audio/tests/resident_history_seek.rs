@@ -373,6 +373,12 @@ fn assert_pcm(
 }
 
 fn history_case() {
+    let profile = std::env::var_os("HEX_TEST_HISTORY_READINESS_PROFILE").is_some();
+    assert!(
+        !profile || !cfg!(debug_assertions),
+        "profile requires an optimized build"
+    );
+    let setup_started = Instant::now();
     let _native = native_fixture();
     let files = Files::new();
     let frames = 32_768;
@@ -521,11 +527,18 @@ fn history_case() {
         )
         .unwrap(),
     );
+    if profile {
+        println!(
+            "HISTORY_READY_SETUP,rate=48000,tracks=2,voices=1,feedback=0.3,streamed_frames={frames},track_effect=dc_remove,return_effect=dc_remove,setup_us={}",
+            setup_started.elapsed().as_micros()
+        );
+    }
     for (id, destination, playing) in [(1, 512, true), (3, 24_004, false)] {
         let mut intent = h.seek_intent(id, authored.state.revision, None, None);
         intent.history = ResidentSeekHistory::Preserve;
         intent.destination_frame = destination;
         intent.start_playing = playing;
+        let submitted_at = Instant::now();
         h.service.submit_resident_arrangement_seek(intent).unwrap();
         assert!(h.next().error.is_none());
         let result = h.seek_result();
@@ -535,7 +548,16 @@ fn history_case() {
         else {
             panic!("native submission")
         };
+        let submitted_result_at = Instant::now();
         let (revision, metadata) = h.applied(applied);
+        if profile {
+            println!(
+                "HISTORY_READY_SAMPLE,destination={destination},start_playing={playing},submit_to_accept_us={},accept_to_ack_us={},submit_to_ack_us={}",
+                submitted_result_at.duration_since(submitted_at).as_micros(),
+                submitted_result_at.elapsed().as_micros(),
+                submitted_at.elapsed().as_micros()
+            );
+        }
         assert_eq!(revision, audio_revision);
         assert_eq!(metadata.seek_request, Some(id));
         applied = revision;

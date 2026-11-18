@@ -1,4 +1,5 @@
 use super::*;
+use crate::signal_graph::FreshHistory;
 use crate::{MidiTiming, Track};
 use std::sync::Weak;
 mod shared_sources;
@@ -939,6 +940,11 @@ impl SessionPlayback {
         continuation: Option<&hex_lattice::ForeignConfigurationContinuation<'_>>,
         anchor: Option<&PreparedTempoAnchor>,
     ) -> Result<SessionHandoffReport, SessionPlaybackError> {
+        if self.stopped_input.map(|scope| scope.track)
+            != previous.stopped_input.map(|scope| scope.track)
+        {
+            return Err(SessionPlaybackError::InvalidCommand);
+        }
         if previous.pending_shared_chase.is_some() || previous.pending_shared_live.is_some() {
             return Err(SessionPlaybackError::MutableInstrumentChase);
         }
@@ -1193,28 +1199,69 @@ impl SessionPlayback {
                 .any(|tail| tail.output_active);
         // None: the delay layout cannot carry the moved clock (refused below
         // unless a paused donor takes the reset at its cursor).
-        // A cold, independent added or removed track also needs a fresh delay history
-        // when no foreign instrument is present. Foreign handoff admission
-        // retains its narrower `fresh` input above; compensation proves the
-        // isolated routing and silent rings independently below.
-        let history_track = fresh.or_else(|| {
-            if !previous.playing {
-                return None;
-            }
+        // A track with no source qualifies for the cold history check even
+        // when another track has a hosted generator. The gate handoff above
+        // still uses its separate fresh-generator admission check.
+        let history_track = if previous.playing {
             let old = previous.revision.arrangement().tracks();
             let new = self.revision.arrangement().tracks();
             cold_added_track(new, old)
                 .or_else(|| cold_added_track(old, new))
+                .map(FreshHistory::ColdTrack)
+                .or(fresh.map(FreshHistory::Track))
                 .or_else(|| {
-                    (same_base_timing
-                        && old_loop_region.is_none()
-                        && new_loop_region.is_none()
+                    (old.len().checked_add(1) == Some(new.len())
+                        && same_base_timing
+                        && old_loop_region == new_loop_region
                         && !self.revision.contains_streamed_sources()
                         && !previous.revision.contains_streamed_sources())
-                    .then(|| future_audio_track(new, old, previous.arrangement_frame))
+                    .then(|| {
+                        // The new source has no history before this handoff.
+                        // A looped cursor cannot prove age; its ready donor
+                        // must retain the complete matching stamp horizon.
+                        let ended_by = if old_loop_region.is_none() {
+                            self.compensation
+                                .as_ref()
+                                .zip(previous.compensation.as_ref())
+                                .filter(|(_, old)| old.delays.history_ready())
+                                .and_then(|(candidate, old)| {
+                                    previous.arrangement_frame.checked_sub(u64::from(
+                                        candidate.horizon().max(old.horizon()),
+                                    ))
+                                })
+                        } else {
+                            None
+                        };
+                        let clock_ready = ended_by.is_some()
+                            || (old_loop_region.is_some()
+                                && self
+                                    .compensation
+                                    .as_ref()
+                                    .zip(previous.compensation.as_ref())
+                                    .is_some_and(|(candidate, old)| {
+                                        old.delays.history_ready()
+                                            && candidate.horizon() == old.horizon()
+                                    }));
+                        // Hosted processors need separate continuity evidence.
+                        let mut has_foreign = false;
+                        if clock_ready {
+                            previous.visit_foreign_runtime_bindings(&mut |_| has_foreign = true);
+                            self.visit_foreign_runtime_bindings(&mut |_| has_foreign = true);
+                        }
+                        fresh_added_audio_track(
+                            new,
+                            old,
+                            previous.arrangement_frame,
+                            ended_by,
+                            clock_ready && !has_foreign,
+                        )
+                    })
                     .flatten()
+                    .map(FreshHistory::Track)
                 })
-        });
+        } else {
+            None
+        };
         let compensation_pair = self
             .compensation
             .as_ref()
@@ -1262,23 +1309,56 @@ impl SessionPlayback {
         }
         let fresh_history = compensation_pair.and_then(|(candidate, old)| {
             history_track
-                .map(crate::signal_graph::FreshHistory::Track)
+                .or_else(|| {
+                    if !previous.playing
+                        || !same_base_timing
+                        || self.revision.arrangement().tracks().len().checked_add(1)
+                            != Some(previous.revision.arrangement().tracks().len())
+                        || old_loop_region != new_loop_region
+                        || self.revision.contains_streamed_sources()
+                        || previous.revision.contains_streamed_sources()
+                        || !old.delays.history_ready()
+                        // The Arrangement cursor wraps, so it cannot prove
+                        // history age inside a loop. A ready donor with the
+                        // same horizon carries the loop-stamped history instead.
+                        || if old_loop_region.is_some() {
+                            candidate.horizon() != old.horizon()
+                        } else {
+                            previous.arrangement_frame
+                                < u64::from(candidate.horizon().max(old.horizon()))
+                        }
+                    {
+                        return None;
+                    }
+                    let mut has_foreign = false;
+                    previous.visit_foreign_runtime_bindings(&mut |_| has_foreign = true);
+                    self.visit_foreign_runtime_bindings(&mut |_| has_foreign = true);
+                    if has_foreign {
+                        return None;
+                    }
+                    fresh_added_audio_track(
+                        previous.revision.arrangement().tracks(),
+                        self.revision.arrangement().tracks(),
+                        previous.arrangement_frame,
+                        None,
+                        true,
+                    )
+                    .map(FreshHistory::RemovedTrack)
+                })
                 .or_else(|| {
                     candidate
                         .graph
                         .has_one_more_node_than(&old.graph)
                         .then(|| muted_isolated_latency_addition(self, previous))
                         .flatten()
-                        .map(|(track, device)| {
-                            crate::signal_graph::FreshHistory::ChangedTrack(track, device)
-                        })
+                        .map(|(track, device)| FreshHistory::ChangedTrack(track, device))
                 })
                 .or_else(|| {
                     candidate
                         .graph
                         .added_isolated_return_from(&old.graph)
                         .or(removed_return)
-                        .map(crate::signal_graph::FreshHistory::Return)
+                        .map(FreshHistory::Return)
                 })
                 .filter(|_| !candidate.can_copy_from(old, None))
         });
@@ -1528,6 +1608,7 @@ impl SessionPlayback {
         }
         if (self.compensation.is_some() || previous.compensation.is_some() || force_restart)
             && (!previous.playing || running_restart || running_relocate)
+            && !previous.stopped_input_has_history()
             && (paused_cursor.is_some()
                 || running_restart
                 || running_relocate
@@ -5626,6 +5707,9 @@ impl SessionPlayback {
         // before this donor has ever monitored. Preserve that admission as
         // well as existing release intent when a later edit removes the input.
         self.monitor_source_releases |= previous.monitor_source_releases;
+        if previous.stopped_input_has_history() {
+            self.stopped_input = previous.stopped_input;
+        }
         self.capture_epoch = capture_epoch;
         previous.capture_epoch = previous_capture_epoch;
         self.anchor = candidate_anchor;
@@ -6453,6 +6537,9 @@ fn fresh_unconnected_track(candidate: &[Track], previous: &[Track]) -> Option<Tr
 /// A track absent from the other revision with no authored or live source.
 /// The compensation graph separately proves isolated routing and silent rings.
 fn cold_added_track(candidate: &[Track], previous: &[Track]) -> Option<TrackId> {
+    if candidate.len().checked_sub(1) != Some(previous.len()) {
+        return None;
+    }
     let id = fresh_unconnected_track(candidate, previous)?;
     let track = candidate
         .iter()
@@ -6465,10 +6552,16 @@ fn cold_added_track(candidate: &[Track], previous: &[Track]) -> Option<TrackId> 
     .then_some(id)
 }
 
-/// One newly inserted resident audio track has no prior input when every clip
-/// starts after the current unlooped position. The graph independently checks
-/// routing, retained edge identities, equal alignment and silent delay rings.
-fn future_audio_track(candidate: &[Track], previous: &[Track], frame: u64) -> Option<TrackId> {
+/// One newly inserted resident audio track can start from its empty edges at
+/// the handoff when the unlooped clock is ready. The graph independently
+/// checks routing, retained edge identities, alignment and silent delay rings.
+fn fresh_added_audio_track(
+    candidate: &[Track],
+    previous: &[Track],
+    frame: u64,
+    ended_by: Option<u64>,
+    allow_any_clip: bool,
+) -> Option<TrackId> {
     if candidate.len() != previous.len().checked_add(1)? {
         return None;
     }
@@ -6488,7 +6581,11 @@ fn future_audio_track(candidate: &[Track], previous: &[Track], frame: u64) -> Op
             || track.instrument_id.is_some()
             || track.source_id.is_some()
             || track.midi_source_index.is_some()
-            || !crate::clip_index::all_start_after(&track.clip_index, track.clips.len(), frame)
+            || !(allow_any_clip
+                || crate::clip_index::all_start_after(&track.clip_index, track.clips.len(), frame)
+                || ended_by.is_some_and(|end| {
+                    crate::clip_index::all_end_by(&track.clip_index, track.clips.len(), end)
+                }))
         {
             return None;
         }

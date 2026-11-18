@@ -71,9 +71,11 @@ mod streamed_export;
 pub use streamed_export::{StreamedExportRequest, StreamedExporter};
 mod clip_audition;
 pub use clip_audition::{
-    ArrangementMoveAudition, ArrangementMoveDestination, ArrangementMoveMode,
-    ArrangementPlayStartAudition, ArrangementStretchAudition, ClipMovePreviewDestination,
-    ClipMovePreviewIdentity, NewTrackMoveDestination, PlayStartEdit, VerifiedClipMoveUpdate,
+    ArrangementGainAudition, ArrangementMoveAudition, ArrangementMoveDestination,
+    ArrangementMoveMode, ArrangementPlayStartAudition, ArrangementStretchAudition,
+    ClipMovePreviewDestination, ClipMovePreviewIdentity, GainEdit, NewTrackMoveDestination,
+    PlayStartEdit, VerifiedArrangementGainSource, VerifiedArrangementGainUpdate,
+    VerifiedClipMoveUpdate,
 };
 mod publication_wait;
 mod resident_audio;
@@ -90,15 +92,15 @@ mod sampler_parameter;
 use audio_sink::WorkerEvents;
 pub use audio_sink::{
     ArrangementEditPosition, NativeSamplerInput, NativeSamplerReservationHold,
-    NativeSamplerRetryFacts, OfflineBounceSource, PluginEditorRecordingInput,
-    PluginParameterCapture, PluginParameterDelivery, PluginParameterGestureError,
-    PluginParameterGestureInput, PluginParameterGestureResult, PluginParameterObservation,
-    PluginParameterOverride, ResidentEffectPreparation, ResidentFileInput, ResidentFileMetadata,
-    ResidentFilePitch, ResidentFilePublication, ResidentFileSeekPreparer, ResidentFileSeekRequest,
-    ResidentFileSet, ResidentFreshRuntimeFence, ResidentGraphSubmission,
-    ResidentPublicationAcceptance, ResidentPublicationFailure, ResidentPublicationMetadata,
-    ResidentPublicationPolicy, ResidentPublicationReadiness, ResidentPublicationRefusal,
-    ResidentRuntimeLoop, ResidentSourceOrigin, WorkerAudioSink,
+    NativeSamplerRetryFacts, OfflineBounceSource, PausedInputMonitorRequest, PausedNoteGraph,
+    PluginEditorRecordingInput, PluginParameterCapture, PluginParameterDelivery,
+    PluginParameterGestureError, PluginParameterGestureInput, PluginParameterGestureResult,
+    PluginParameterObservation, PluginParameterOverride, ResidentEffectPreparation,
+    ResidentFileInput, ResidentFileMetadata, ResidentFilePitch, ResidentFilePublication,
+    ResidentFileSeekPreparer, ResidentFileSeekRequest, ResidentFileSet, ResidentFreshRuntimeFence,
+    ResidentGraphSubmission, ResidentPublicationAcceptance, ResidentPublicationFailure,
+    ResidentPublicationMetadata, ResidentPublicationPolicy, ResidentPublicationReadiness,
+    ResidentPublicationRefusal, ResidentRuntimeLoop, ResidentSourceOrigin, WorkerAudioSink,
 };
 pub use comparison_audio::ComparisonAudioBinding;
 use export_lane::ExportLane;
@@ -962,6 +964,12 @@ pub enum Request {
         revision: u64,
         track: hex_project::TrackId,
     },
+    /// Prepare a stopped monitor for the exact observed graph, with one
+    /// nonblocking reply. The caller supplies an empty one-slot reply channel.
+    PreparePausedInputMonitor {
+        request: PausedInputMonitorRequest,
+        reply: SyncSender<Result<hex_engine::PausedTrackMonitor, String>>,
+    },
     /// Check all stamps before preparation or history, including requests delayed in either queue.
     GainLane {
         project_generation: u64,
@@ -1242,6 +1250,7 @@ impl Request {
                 | Self::QueryFailedPluginAutomation { .. }
                 | Self::InspectSealedAutomationRecovery { .. }
                 | Self::QueryDeviceAutomationCloseSafety { .. }
+                | Self::PreparePausedInputMonitor { .. }
         )
     }
     /// The canonical `ExportRange` parts of an export request; `Export` is its
@@ -1535,6 +1544,7 @@ fn canonical_exporter() -> Exporter {
 struct ExportJob {
     job_id: u64,
     streamed: Option<streamed_export::StreamedExportJob>,
+    foreign: Option<Box<dyn OfflineBounceSource>>,
     sources: Option<hex_engine::native_device_resources::ControlSamplerSources>,
     resources: Option<hex_engine::native_device_resources::PreparedDeviceResources>,
     revision: u64,
@@ -1996,6 +2006,28 @@ impl Service {
     pub fn retire_arrangement_play_start_audition(&self) {
         self.clip_audition
             .clear(Some(clip_audition::Kind::PlayStart), false);
+    }
+
+    /// Replace only the latest held gain target. The worker coalesces pointer
+    /// values before preparation, and the preview does not enter history.
+    pub fn audition_arrangement_gain(&self, target: Option<ArrangementGainAudition>) {
+        match target {
+            Some(target) if target.edit.valid() => {
+                self.clip_audition.set(clip_audition::Target::Gain(target));
+            }
+            _ => self
+                .clip_audition
+                .clear(Some(clip_audition::Kind::Gain), true),
+        }
+    }
+
+    pub fn finish_arrangement_gain_audition(&self) {
+        self.clip_audition.release(clip_audition::Kind::Gain);
+    }
+
+    pub fn retire_arrangement_gain_audition(&self) {
+        self.clip_audition
+            .clear(Some(clip_audition::Kind::Gain), false);
     }
 
     /// Replace the complete held group target. An invalid target cancels the
@@ -2836,6 +2868,7 @@ fn run_worker(
     let mut resident_preview: Option<resident_preview::Preview> = None;
     let mut clip_audition_lane = clip_audition::Lane::default();
     let mut verified_clip_audition_lane = clip_audition::VerifiedLane::default();
+    let mut verified_gain_lane = clip_audition::VerifiedGainLane::default();
     let mut device_gesture = GestureMachine::default();
     let mut tuning_gesture = TuningGestureMachine::default();
     if events.resident_publication_enabled()
@@ -3180,24 +3213,32 @@ fn run_worker(
                     && !plugin_recording.editor_active()
                     && !plugin_recording.pending();
                 let pending = audio.is_some_and(|sink| {
+                    let context = hex_engine::AudioSourceContext {
+                        project_generation,
+                        editor_revision: revision,
+                    };
+                    let verified_available =
+                        available && session.audio_mode() == DocumentAudioMode::VerifiedStreaming;
                     let verified_pending = verified_clip_audition_lane.drive(
                         &clip_audition,
                         &state,
                         session.project(),
-                        hex_engine::AudioSourceContext {
-                            project_generation,
-                            editor_revision: revision,
-                        },
+                        context,
                         sink,
-                        available && session.audio_mode() == DocumentAudioMode::VerifiedStreaming,
+                        verified_available,
                     );
-                    clip_audition_lane.drive(
+                    let verified_gain_pending = verified_gain_lane.drive(
+                        &clip_audition,
+                        &state,
+                        session.project(),
+                        context,
+                        sink,
+                        verified_available,
+                    );
+                    let clip_pending = clip_audition_lane.drive(
                         &clip_audition,
                         &session,
-                        hex_engine::AudioSourceContext {
-                            project_generation,
-                            editor_revision: revision,
-                        },
+                        context,
                         &mut resident_snapshot,
                         &mut resident_preview,
                         sink,
@@ -3212,7 +3253,35 @@ fn run_worker(
                             None,
                         ),
                         available,
-                    ) || verified_pending
+                    );
+                    let pause_snapshot = resident_snapshot.as_ref().filter(|snapshot| {
+                        available
+                            && resident_preview.is_none()
+                            && snapshot
+                                .submission
+                                .is_some_and(|source| source.context == context)
+                    });
+                    let cancellation = RequestCancellation::new(
+                        Arc::clone(&session.shutdown),
+                        Arc::clone(&document_intent),
+                        document_intent.load(Ordering::Acquire),
+                    );
+                    let notes_pending = session.poll_resident_paused_notes(
+                        pause_snapshot,
+                        sink,
+                        export_lane.admission_with_resident_owners(
+                            compiled.as_ref().map(|(_, prepared)| {
+                                hex_engine::native_device_resources::ControlSamplerSelection {
+                                    sources: current_sources.as_ref(),
+                                    prepared: Some(prepared),
+                                }
+                            }),
+                            resident_seek.as_ref(),
+                            resident_preview.as_ref(),
+                        ),
+                        &cancellation,
+                    );
+                    clip_pending || verified_pending || verified_gain_pending || notes_pending
                 });
                 // Cancelling a preview can prepare a new canonical audio owner.
                 if let Some(snapshot) = resident_snapshot.as_ref()
@@ -3367,9 +3436,10 @@ fn run_worker(
             .as_ref()
             .and_then(resident_preview::Preview::clip_target)
             .is_some_and(|target| target.matches_release(&queued.request));
-        // A move can arrive after its audition was cancelled but before that
-        // preview publication has reached the callback. Keep its FIFO place
-        // behind the same bounded publication wait as a matching release.
+        // A move can arrive before its cancelled audition reaches the
+        // callback. A scope edit can also arrive before an earlier graph is
+        // applied. Keep their FIFO place and bound the wait before native
+        // preparation tries to borrow the preceding graph's sources.
         let queued = if events.resident_publication_enabled()
             && session.audio_mode() == DocumentAudioMode::Resident
             && (clip_audition_release
@@ -3377,7 +3447,9 @@ fn run_worker(
                     &queued.request,
                     Request::MoveExistingClips { .. }
                         | Request::Edit(
-                            Command::ToggleDeviceBypass { .. }
+                            Command::SetLoopRegion { .. }
+                                | Command::ToggleLoopRegion
+                                | Command::ToggleDeviceBypass { .. }
                                 | Command::SetDeviceBypass { .. }
                                 | Command::ReplaceDeviceState { .. }
                         )
@@ -5403,6 +5475,9 @@ fn run_worker(
                     path: path.clone(),
                     result: Err(reason.clone().into()),
                 });
+            }
+            if let Request::PreparePausedInputMonitor { reply, .. } = &request {
+                let _ = reply.try_send(Err(reason.clone()));
             }
             error = Some(reason);
         } else {
@@ -8232,6 +8307,41 @@ fn run_worker(
                         }
                     }
                 }
+                Request::PreparePausedInputMonitor { request, reply } => {
+                    let result = (|| {
+                        if request.source.context
+                            != (hex_engine::AudioSourceContext {
+                                project_generation,
+                                editor_revision: revision,
+                            })
+                            || session.audio_mode() != DocumentAudioMode::Resident
+                        {
+                            return Err("paused input monitor source changed".into());
+                        }
+                        let sink = events
+                            .resident_audio()
+                            .ok_or("paused input monitor output is unavailable")?;
+                        let snapshot = resident_snapshot
+                            .as_ref()
+                            .ok_or("paused input monitor graph is unavailable")?;
+                        session.prepare_resident_paused_input_monitor(
+                            request,
+                            snapshot,
+                            sink,
+                            export_lane.admission_with_resident_owners(
+                                compiled.as_ref().map(|(_, p)| {
+                                    hex_engine::native_device_resources::ControlSamplerSelection {
+                                        sources: current_sources.as_ref(),
+                                        prepared: Some(p),
+                                    }
+                                }),
+                                resident_seek.as_ref(),
+                                resident_preview.as_ref(),
+                            ),
+                        )
+                    })();
+                    let _ = reply.try_send(result);
+                }
                 Request::ArmGainRecording {
                     project_generation: expected_generation,
                     revision: expected_revision,
@@ -9061,30 +9171,41 @@ fn run_worker(
                 request @ (Request::Export(_) | Request::ExportRange { .. }) => {
                     // Both spellings are export requests, so their parts always exist.
                     if let Some((path, frames, controlled)) = request.into_export_range() {
-                        let job = match compiled.as_ref() {
-                            Some((compiled_revision, prepared))
-                                if *compiled_revision == revision =>
-                            {
-                                hex_export::controlled_frame_count(
-                                    prepared.arrangement(),
-                                    controlled.start,
-                                    frames,
-                                    &controlled.signal,
-                                )
-                                .map_err(|error| error.to_string())
-                                .map(|frames| ExportJob {
-                                    job_id: 0,
-                                    streamed: None,
-                                    sources: None,
-                                    resources: None,
-                                    revision,
-                                    path: path.clone(),
-                                    prepared: Arc::clone(prepared),
-                                    frames,
-                                    controlled: Some(controlled),
-                                })
+                        let job = if audio_sink::requires_plugin_profile(session.project())
+                            && export_destination_is_original_media(
+                                session.project(),
+                                &path,
+                                media_base.as_deref(),
+                            ) {
+                            Err("export destination is original media; choose another path"
+                                .to_owned())
+                        } else {
+                            match compiled.as_ref() {
+                                Some((compiled_revision, prepared))
+                                    if *compiled_revision == revision =>
+                                {
+                                    hex_export::controlled_frame_count(
+                                        prepared.arrangement(),
+                                        controlled.start,
+                                        frames,
+                                        &controlled.signal,
+                                    )
+                                    .map_err(|error| error.to_string())
+                                    .map(|frames| ExportJob {
+                                        job_id: 0,
+                                        streamed: None,
+                                        foreign: None,
+                                        sources: None,
+                                        resources: None,
+                                        revision,
+                                        path: path.clone(),
+                                        prepared: Arc::clone(prepared),
+                                        frames,
+                                        controlled: Some(controlled),
+                                    })
+                                }
+                                _ => Err("latest project revision has not compiled".to_owned()),
                             }
-                            _ => Err("latest project revision has not compiled".to_owned()),
                         }
                         .and_then(|mut job| {
                             if session.audio_mode() == DocumentAudioMode::VerifiedStreaming
@@ -10301,18 +10422,78 @@ fn run_worker(
         if let Some(job) = export_job.as_mut() {
             let streamed = job.streamed.is_some();
             let verified_only = session.audio_mode() == DocumentAudioMode::VerifiedStreaming;
-            if let Err(reason) = export_lane.prepare_job(
-                job,
-                &session,
-                current_sources.as_ref().filter(|_| !streamed),
-                resident_snapshot.as_ref().filter(|_| !verified_only).zip(
-                    events
-                        .resident_audio()
-                        .map(|sink| &*sink as &dyn WorkerAudioSink),
-                ),
-                resident_seek.as_ref(),
-                resident_preview.as_ref(),
-            ) {
+            let needs_private = audio_sink::requires_plugin_profile(session.project());
+            let result = if needs_private {
+                let preflight = export_lane.preflight_private_job(job);
+                let control = job
+                    .controlled
+                    .as_ref()
+                    .map(|c| c.control.clone())
+                    .unwrap_or_default();
+                let cancellation = RequestCancellation::new(
+                    Arc::clone(&session.shutdown),
+                    Arc::clone(&document_intent),
+                    document_intent.load(Ordering::Acquire),
+                )
+                .with_bounce(&control);
+                let context = hex_engine::AudioSourceContext {
+                    project_generation,
+                    editor_revision: revision,
+                };
+                preflight.and_then(|()| match events.resident_audio() {
+                    Some(sink) => {
+                        let prepared = {
+                            let admission = export_lane.admission_with_resident_owners(
+                                compiled.as_ref().map(|(_, prepared)| {
+                                    hex_engine::native_device_resources::ControlSamplerSelection {
+                                        sources: current_sources.as_ref(),
+                                        prepared: Some(prepared),
+                                    }
+                                }),
+                                resident_seek.as_ref(),
+                                resident_preview.as_ref(),
+                            );
+                            resident_audio::prepare_private_export(
+                                &session,
+                                context,
+                                sink,
+                                admission,
+                                resident_snapshot.as_ref(),
+                                &cancellation,
+                                &control,
+                            )
+                        };
+                        prepared.and_then(|(snapshot, owner)| {
+                            job.prepared = Arc::clone(&snapshot.prepared);
+                            job.foreign = Some(owner);
+                            export_lane.prepare_private_job(
+                                job,
+                                &session,
+                                &snapshot,
+                                resident_snapshot.as_ref(),
+                                sink,
+                                resident_seek.as_ref(),
+                                resident_preview.as_ref(),
+                            )
+                        })
+                    }
+                    None => Err("private vst3 export is unavailable for this output".into()),
+                })
+            } else {
+                export_lane.prepare_job(
+                    job,
+                    &session,
+                    current_sources.as_ref().filter(|_| !streamed),
+                    resident_snapshot.as_ref().filter(|_| !verified_only).zip(
+                        events
+                            .resident_audio()
+                            .map(|sink| &*sink as &dyn WorkerAudioSink),
+                    ),
+                    resident_seek.as_ref(),
+                    resident_preview.as_ref(),
+                )
+            };
+            if let Err(reason) = result {
                 let failed = export_job.take();
                 if let Some(job) = failed {
                     export_completion = Some(ExportEvent {
@@ -10580,6 +10761,44 @@ fn run_worker(
     }
 }
 
+fn export_destination_is_original_media(
+    project: &Project,
+    destination: &Path,
+    base: Option<&Path>,
+) -> bool {
+    let Ok(destination_metadata) = std::fs::metadata(destination) else {
+        return false;
+    };
+    let destination_path = std::fs::canonicalize(destination).ok();
+    project.assets().any(|asset| {
+        let source = asset.path();
+        let source = if source.is_absolute() {
+            source.to_path_buf()
+        } else {
+            base.unwrap_or(Path::new(".")).join(source)
+        };
+        let Ok(source_metadata) = std::fs::metadata(&source) else {
+            return false;
+        };
+        same_media_file(&source_metadata, &destination_metadata)
+            || destination_path.as_ref().is_some_and(|destination| {
+                std::fs::canonicalize(&source).is_ok_and(|source| &source == destination)
+            })
+    })
+}
+
+#[cfg(unix)]
+fn same_media_file(left: &std::fs::Metadata, right: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    left.dev() == right.dev() && left.ino() == right.ino()
+}
+
+#[cfg(not(unix))]
+fn same_media_file(_left: &std::fs::Metadata, _right: &std::fs::Metadata) -> bool {
+    // The native VST hosting boundary currently supports macOS only.
+    false
+}
+
 fn latest_timeline_content_end(project: &Project) -> u64 {
     let audio_end = project
         .tracks()
@@ -10639,6 +10858,9 @@ fn run_export_worker(
                         .unwrap_or_else(ControlledExport::whole_main);
                     match controlled.publication(&job.path) {
                         Ok(publication) => (streamed.render)(&StreamedExportRequest {
+                            foreign: std::cell::RefCell::new(job.foreign.as_deref_mut().map(
+                                |source| source as &mut dyn hex_export::ForeignBounceRenderer,
+                            )),
                             source: &streamed.source,
                             prepared: &job.prepared,
                             resources: job.resources.as_ref(),
@@ -10652,6 +10874,32 @@ fn run_export_worker(
                         }),
                         Err(error) => Err(error.into()),
                     }
+                }
+            } else if let Some(foreign) = job.foreign.as_deref_mut() {
+                let controlled = job
+                    .controlled
+                    .take()
+                    .unwrap_or_else(ControlledExport::whole_main);
+                match controlled.publication(&job.path) {
+                    Ok(publication)
+                        if matches!(controlled.signal, hex_export::ExportSignal::Main) =>
+                    {
+                        hex_export::render_linear_main_with_foreign(
+                            &job.path,
+                            Arc::clone(&job.prepared),
+                            job.resources.as_ref(),
+                            controlled.start,
+                            job.frames,
+                            controlled.format,
+                            &controlled.control,
+                            &publication,
+                            None,
+                            foreign,
+                        )
+                        .map_err(ExportFailure::from)
+                    }
+                    Ok(_) => Err("private vst3 export requires main output".into()),
+                    Err(error) => Err(error.into()),
                 }
             } else if job.sources.is_some() && job.resources.is_some() {
                 Err("export cannot combine private and ordinary source scopes".into())

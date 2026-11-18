@@ -49,6 +49,9 @@ mod bounce;
 mod controlled;
 mod dither;
 mod format;
+#[cfg(test)]
+#[path = "../../hex-engine/examples/support/latency_fixture.rs"]
+mod latency_fixture;
 pub use bounce::{
     ForeignBounceRenderer, MAX_ARRANGEMENT_BOUNCE_TAIL_SECONDS, render_arrangement_bounce_new,
     render_arrangement_bounce_with_foreign, render_arrangement_bounce_with_pages,
@@ -63,8 +66,8 @@ mod publication;
 mod stale_temporary;
 mod stems;
 pub use controlled::{
-    ExportControl, ExportProgress, ExportSignal, render_prepared_controlled,
-    render_prepared_controlled_with_device_resources,
+    ExportControl, ExportProgress, ExportSignal, render_linear_main_with_foreign,
+    render_prepared_controlled, render_prepared_controlled_with_device_resources,
     render_prepared_with_device_resources_and_policy, render_prepared_with_pages_and_policy,
 };
 pub use controlled::{

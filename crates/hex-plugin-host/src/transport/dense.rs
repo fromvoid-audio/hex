@@ -168,20 +168,7 @@ impl DenseEffectCallback {
         origins: EffectSegmentOrigins<'_>,
         lane: Option<DenseParameterLane<'_>>,
     ) -> Result<SegmentReply, Fault> {
-        let Some(stage) = &self.callback.staged else {
-            output.fill([0.0; 2]);
-            return self.callback.fail(Fault::Protocol);
-        };
-        if let Err(fault) = self.staging.stage(
-            stage.state.position,
-            self.callback.quantum,
-            input.len(),
-            parameters,
-            lane,
-        ) {
-            output.fill([0.0; 2]);
-            return self.callback.fail(fault);
-        }
+        self.stage_lane(input.len(), parameters, lane, output)?;
         self.callback.stage_effect_segment(
             frame_offset,
             input,
@@ -191,6 +178,55 @@ impl DenseEffectCallback {
             timing,
             origins,
         )
+    }
+
+    /// Stage native PCM while leaving rich reply observation on control.
+    #[allow(clippy::too_many_arguments)] // Same borrowed windows as ordinary effect staging.
+    pub fn stage_effect_pcm_segment(
+        &mut self,
+        frame_offset: usize,
+        input: &[Frame],
+        events: &[MidiEvent],
+        parameters: &[ParameterPoint],
+        output: &mut [Frame],
+        timing: SegmentTiming<impl FnMut(usize) -> Option<ProcessTiming>>,
+        origins: EffectSegmentOrigins<'_>,
+        lane: Option<DenseParameterLane<'_>>,
+    ) -> Result<Option<(usize, usize)>, Fault> {
+        self.stage_lane(input.len(), parameters, lane, output)?;
+        self.callback.stage_effect_pcm_segment(
+            frame_offset,
+            input,
+            events,
+            parameters,
+            output,
+            timing,
+            origins,
+        )
+    }
+
+    fn stage_lane(
+        &mut self,
+        frames: usize,
+        parameters: &[ParameterPoint],
+        lane: Option<DenseParameterLane<'_>>,
+        output: &mut [Frame],
+    ) -> Result<(), Fault> {
+        let Some(stage) = &self.callback.staged else {
+            output.fill([0.0; 2]);
+            return self.callback.fail(Fault::Protocol);
+        };
+        if let Err(fault) = self.staging.stage(
+            stage.state.position,
+            self.callback.quantum,
+            frames,
+            parameters,
+            lane,
+        ) {
+            output.fill([0.0; 2]);
+            return self.callback.fail(fault);
+        }
+        Ok(())
     }
 
     pub fn finish(&mut self, host_accepted: bool) -> Result<(), Fault> {
@@ -218,8 +254,8 @@ impl DenseEffectCallback {
         self.callback.has_complete_staged_callback()
     }
 
-    pub fn end_staging_at_pause(&mut self, frame: usize) {
-        self.callback.end_staging_at_pause(frame);
+    pub fn end_staging_at_rendered_prefix(&mut self, frame: usize) {
+        self.callback.end_staging_at_rendered_prefix(frame);
     }
 
     pub fn take_accepted_editor_quantum(&mut self) -> Option<AcceptedEditorQuantum> {

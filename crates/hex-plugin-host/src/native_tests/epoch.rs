@@ -1073,3 +1073,41 @@ fn actual_overflow_with_unrelated_sdk_error_is_still_terminal_when_stopped() {
     let result = stopped.capture_state_retained_on_control();
     epoch_refusal(result, Some(6), &probe);
 }
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn export_cancellation_is_checked_while_original_resume_waits_for_sdk() {
+    let case = Case::new();
+    let instance = Prepared::prepare(
+        &build(),
+        source(),
+        options(),
+        PreparationCancellation::new_on_control().unwrap(),
+        case.setup(67),
+    )
+    .unwrap();
+    let stopped = instance.quiesce_retained_on_control().unwrap();
+    let binding = stopped.configuration().binding;
+    let mut checks = 0;
+    let result = stopped.resume_with_plan_while_on_control(
+        Binding {
+            epoch: binding.epoch + 1,
+            ..binding
+        },
+        protocol::PresentationPlan::Known(options().presentation),
+        || {
+            checks += 1;
+            case.observation().is_some_and(|observed| observed[0] == 22)
+        },
+    );
+    assert!(result.err().unwrap().to_string().contains("cancel"));
+    assert!(
+        checks > 1,
+        "cancellation must be polled during the held SDK operation"
+    );
+    assert_eq!(
+        case.observation().unwrap()[8],
+        1,
+        "refused resume must not restart DSP"
+    );
+}

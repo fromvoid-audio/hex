@@ -23,6 +23,9 @@ pub struct StreamConfig {
     pub max_reader_scratch_bytes: usize,
     pub source_scratch_frames: usize,
     pub max_ready_pages_per_pump: usize,
+    /// Notify the constructing thread on ready pages or failures. Only use for
+    /// a synchronous, offline owner that waits with `thread::park_timeout`.
+    pub wake_offline_consumer: bool,
 }
 
 impl StreamConfig {
@@ -40,6 +43,7 @@ impl StreamConfig {
             max_reader_scratch_bytes: 32 * 1024 * 1024,
             source_scratch_frames: 131_072,
             max_ready_pages_per_pump: 128,
+            wake_offline_consumer: false,
         }
     }
 
@@ -62,6 +66,7 @@ impl StreamConfig {
             } else {
                 128
             },
+            wake_offline_consumer: false,
         }
     }
 
@@ -270,6 +275,9 @@ pub struct PageKey {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CatalogFootprint {
+    /// Dedicated granular worker, metadata and original-pool loan DATA. Opaque
+    /// native/thread costs and earlier source preparation are excluded.
+    pub granular_data_bytes: usize,
     pub sources: usize,
     pub catalog_path_bytes: usize,
     pub manifest_bytes: usize,

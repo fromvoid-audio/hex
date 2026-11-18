@@ -1369,7 +1369,7 @@ impl super::EditorView {
         })
     }
 
-    fn painted_arrangement_timeline_at(&self, x: f32, y: f32) -> Option<LaneBounds> {
+    pub(super) fn painted_arrangement_timeline(&self) -> Option<LaneBounds> {
         let body = self
             .arrangement_bounds
             .filter(|_| self.arrangement_bounds_epoch == self.drag_layout_generation)?;
@@ -1379,7 +1379,12 @@ impl super::EditorView {
             top: body.top,
             height: body.height,
         };
-        lane_contains_pointer(x, y, timeline).then_some(timeline)
+        (timeline.width > 0.0 && timeline.height > 0.0).then_some(timeline)
+    }
+
+    fn painted_arrangement_timeline_at(&self, x: f32, y: f32) -> Option<LaneBounds> {
+        self.painted_arrangement_timeline()
+            .filter(|&lane| lane_contains_pointer(x, y, lane))
     }
 
     // Use the last painted full row, including attached automation lanes.
@@ -1396,9 +1401,24 @@ impl super::EditorView {
     }
 
     pub(super) fn painted_arrangement_tail(&self, x: f32, y: f32) -> Option<LaneBounds> {
-        let timeline = self.painted_arrangement_timeline_at(x, y)?;
-        self.painted_arrangement_tail_boundary(y)?;
-        Some(timeline)
+        self.painted_arrangement_tail_bounds()
+            .filter(|&lane| lane_contains_pointer(x, y, lane))
+    }
+
+    pub(super) fn painted_arrangement_tail_bounds(&self) -> Option<LaneBounds> {
+        let timeline = self.painted_arrangement_timeline()?;
+        let bottom = timeline.top + timeline.height;
+        let top = if self.arrangement_track_indices().is_empty() {
+            timeline.top
+        } else {
+            self.painted_arrangement_tail_boundary(bottom)?
+                .max(timeline.top)
+        };
+        (top < bottom).then_some(LaneBounds {
+            top,
+            height: bottom - top,
+            ..timeline
+        })
     }
 
     pub(super) fn painted_track_insertion_target(

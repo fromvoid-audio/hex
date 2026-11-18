@@ -36,11 +36,21 @@ impl EditorView {
         if self.time_selection_gesture.is_none() && self.time_range_move_gesture.is_none() {
             return false;
         }
+        let pending_tail = self
+            .time_selection_gesture
+            .is_some_and(|gesture| gesture.tail_press.is_some() && !gesture.moved);
         let Some(horizon) = self.state.as_ref().map(|state| state.timeline_frames) else {
             return false;
         };
         if !self.time_gesture_is_current() {
-            self.cancel_time_selection_gesture();
+            if pending_tail {
+                self.time_selection_gesture = None;
+            } else {
+                self.cancel_time_selection_gesture();
+            }
+            return false;
+        }
+        if pending_tail {
             return false;
         }
         let Some((x, y, last_tick)) = self
@@ -102,9 +112,18 @@ impl EditorView {
         true
     }
 
-    /// Captured project-scope gestures keep the Main row's horizontal projection,
-    /// even when the pointer leaves that row or regular lanes have different widths.
+    /// A project-scope gesture keeps the projection of the surface it began in,
+    /// even when the pointer leaves it or regular lanes have different widths.
     pub(super) fn time_gesture_lane_near_y(&self, y: f32) -> Option<(Option<TrackId>, LaneBounds)> {
+        if let Some(gesture) = self
+            .time_selection_gesture
+            .filter(|g| g.tail_press.is_some())
+        {
+            return Some((
+                gesture.selection.end_track,
+                self.painted_arrangement_timeline()?,
+            ));
+        }
         if !self.time_selection_project_scope {
             return self
                 .visible_lane_near_y(y)
