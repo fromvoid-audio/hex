@@ -24,14 +24,21 @@ impl Callback {
     }
     pub(crate) fn revoke_native_effects(&mut self) {
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-        if self.native_sources.has_endpoints() {
-            self.native_sources.reject_rendering();
+        {
+            if self.native_sources.has_endpoints() {
+                self.native_sources.reject_rendering();
+            }
+            if self.paused_native_sources.has_endpoints() {
+                self.paused_native_sources.reject_rendering();
+            }
         }
     }
     pub(crate) fn begin_native_effect_callback(&mut self, frames: usize) -> Result<(), Invalid> {
         self.foreign_parameter_delivery.prepare();
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         {
+            self.paused_monitor_host_frames =
+                self.paused_native_sources.has_endpoints().then_some(frames);
             if self.native_effects_revoked() && !self.status.playing.load(Relaxed) {
                 return Ok(());
             }
@@ -112,7 +119,8 @@ impl Callback {
     ) -> OutputTransportDelivery {
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         {
-            if !self.native_sources.has_endpoints() {
+            self.paused_monitor_host_frames = None;
+            if !self.has_native_source_endpoints() {
                 return OutputTransportDelivery::Accepted;
             }
             // Priority Stop/close may arrive after conversion. Never dispatch
@@ -125,6 +133,25 @@ impl Callback {
             }
             if self.native_effects_revoked() && !self.status.playing.load(Relaxed) {
                 return OutputTransportDelivery::Cancelled;
+            }
+            if self.paused_native_sources.rendering_active() {
+                // The monitor rendered the entire physical block. Close the
+                // unvisited ordinary cycle before accepting any monitor work.
+                if self.native_sources.finish_rendering(true).is_err() {
+                    self.revoke_native_effects();
+                    return OutputTransportDelivery::Refused;
+                }
+                if self
+                    .paused_native_sources
+                    .finish_rendering(accepted)
+                    .is_err()
+                    || !self.paused_native_sources.transports_are_live()
+                {
+                    self.input_monitor
+                        .reject(input_monitor::MonitorStatus::OutputFault);
+                    return OutputTransportDelivery::Cancelled;
+                }
+                return OutputTransportDelivery::Accepted;
             }
             if self.native_sources.finish_rendering(accepted).is_ok() {
                 OutputTransportDelivery::Accepted
