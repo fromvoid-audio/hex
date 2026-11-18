@@ -36,13 +36,18 @@ impl PausedTrackMonitor {
         revision: &PreparedRevision,
         resources: Option<&PreparedDeviceResources>,
     ) -> Result<usize, SessionPlaybackError> {
-        let Some(track) = Self::resident_source_track(revision) else {
+        if Self::resident_source_track(revision).is_none()
+            || !Self::accepts_effect_graph(revision, resources, &[])
+        {
             return Ok(0);
-        };
-        match Self::runtime_allowance(revision, track, resources, &[]) {
-            Err(SessionPlaybackError::InvalidCommand) => Ok(0),
-            result => result,
         }
+        SessionPlayback::runtime_allowance_for(
+            revision,
+            super::RenderConstruction::BorrowedPauseSources,
+        )?
+        .checked_add(size_of::<Self>())
+        .filter(|bytes| *bytes <= MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES)
+        .ok_or(SessionPlaybackError::Allocation)
     }
 
     fn resident_source_track(revision: &PreparedRevision) -> Option<TrackId> {
@@ -66,7 +71,15 @@ impl PausedTrackMonitor {
     ) -> Result<Self, SessionPlaybackError> {
         let track =
             Self::resident_source_track(&revision).ok_or(SessionPlaybackError::UnknownTrack)?;
-        Self::construct(revision, resources, track, &[], allowance)
+        let playback = SessionPlayback::new_with_render_policy_and_source_effects(
+            revision,
+            super::RenderConstruction::BorrowedPauseSources,
+            resources,
+            None,
+            None,
+            &[],
+        )?;
+        Self::from_runtime(playback, track, allowance)
     }
 
     pub(super) fn runtime_storage_bytes(&self) -> Option<usize> {
@@ -124,6 +137,12 @@ fn swap_pause_sources(private: &mut SessionPlayback, arrangement: &mut SessionPl
         &mut arrangement.live_expression,
     );
     swap(&mut private.releases, &mut arrangement.releases);
+    // The source pair, occurrence ledger, and resource lease travel as one
+    // owner. Pausing cuts gates on that owner, even when it renders elsewhere.
+    swap(
+        &mut private.mutable_instruments,
+        &mut arrangement.mutable_instruments,
+    );
     swap(
         &mut private.release_scratch,
         &mut arrangement.release_scratch,
@@ -423,21 +442,13 @@ impl PausedTrackMonitor {
         resources: Option<&PreparedDeviceResources>,
         bindings: &[PausedMonitorForeignBinding],
     ) -> Result<usize, SessionPlaybackError> {
-        let arrangement = revision.arrangement();
-        let tracks = arrangement.tracks();
+        let tracks = revision.arrangement().tracks();
         if !tracks
             .iter()
             .any(|row| row.canonical_track_id() == Some(track))
-            || revision.resource_scope.is_some()
-            || revision.device_resource_scope != resources.map(PreparedDeviceResources::id)
             || revision.session().has_mutable_instruments()
-            || revision.scalar_automation.is_some()
-            || !revision.foreign_automation.is_empty()
-            || !arrangement.source_effects.is_empty()
-            || tracks
-                .iter()
-                .any(|row| row.has_mutable_instrument() || row.foreign_instrument.is_some())
-            || !Self::validate_foreign_bindings(revision, bindings)
+            || tracks.iter().any(crate::Track::has_mutable_instrument)
+            || !Self::accepts_effect_graph(revision, resources, bindings)
         {
             return Err(SessionPlaybackError::InvalidCommand);
         }
@@ -445,6 +456,24 @@ impl PausedTrackMonitor {
             .and_then(|bytes| bytes.checked_add(size_of::<Self>()))
             .filter(|bytes| *bytes <= MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES)
             .ok_or(SessionPlaybackError::Allocation)
+    }
+
+    fn accepts_effect_graph(
+        revision: &PreparedRevision,
+        resources: Option<&PreparedDeviceResources>,
+        bindings: &[PausedMonitorForeignBinding],
+    ) -> bool {
+        let arrangement = revision.arrangement();
+        revision.resource_scope.is_none()
+            && revision.device_resource_scope == resources.map(PreparedDeviceResources::id)
+            && revision.scalar_automation.is_none()
+            && revision.foreign_automation.is_empty()
+            && arrangement.source_effects.is_empty()
+            && arrangement
+                .tracks()
+                .iter()
+                .all(|row| row.foreign_instrument.is_none())
+            && Self::validate_foreign_bindings(revision, bindings)
     }
 
     fn prepare(
@@ -483,6 +512,14 @@ impl PausedTrackMonitor {
                 bindings,
             )?,
         };
+        Self::from_runtime(playback, track, limit)
+    }
+
+    fn from_runtime(
+        playback: SessionPlayback,
+        track: TrackId,
+        limit: usize,
+    ) -> Result<Self, SessionPlaybackError> {
         if playback
             .accounted_runtime_storage_bytes()
             .and_then(|bytes| bytes.checked_add(size_of::<Self>()))

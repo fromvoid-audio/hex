@@ -1567,6 +1567,21 @@ fn section_seek_publication_uses_actual_loop_metadata_allowance() {
 fn resident_keyboard_publication_admits_and_replaces_the_paused_route() {
     use hex_engine::computer_keyboard::ComputerKeyboardInput;
     use hex_engine::playback::PlaybackCommand;
+    use hex_lattice_contract::{DeviceTypeId, ParameterId, ParameterValue};
+
+    let class = hex_engine::NativeDeviceClass::Instrument;
+    let state = hex_engine::default_native_device_state_for_class(
+        class,
+        DeviceTypeId::from_static("hex.instrument.operator"),
+    )
+    .unwrap();
+    let state = hex_engine::patch_native_device_parameter_for_class(
+        class,
+        &state,
+        ParameterId::from_static(20_001),
+        ParameterValue::Bool(true),
+    )
+    .unwrap();
 
     let capacity = 3 * hex_engine::MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES;
     let mut session = Session::new(48_000, 8, 1024)
@@ -1587,7 +1602,7 @@ fn resident_keyboard_publication_admits_and_replaces_the_paused_route() {
             name: "keys".into(),
             before_track: None,
             slot: hex_project::TrackDeviceSlot::Instrument,
-            state: hex_project::default_instrument_state().unwrap(),
+            state,
         })
         .unwrap()
     else {
@@ -1625,6 +1640,7 @@ fn resident_keyboard_publication_admits_and_replaces_the_paused_route() {
         Some(&current.resources),
     )
     .unwrap();
+    assert!(current.prepared.has_arrangement_mutable_instruments());
     assert!(quote > 0);
     let original = sink
         .pending

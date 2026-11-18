@@ -763,7 +763,13 @@ impl RuntimeStorage<'_> {
 pub(super) fn arrangement_runtime_storage_preflight_bytes(
     revision: &PreparedRevision,
 ) -> Option<usize> {
-    runtime_storage_preflight_bytes(revision, SESSION_RELEASE_CAPACITY)
+    runtime_storage_preflight_bytes(revision, SESSION_RELEASE_CAPACITY, true)
+}
+
+pub(super) fn paused_source_runtime_storage_preflight_bytes(
+    revision: &PreparedRevision,
+) -> Option<usize> {
+    runtime_storage_preflight_bytes(revision, SESSION_RELEASE_CAPACITY, false)
 }
 
 pub(super) fn linear_export_runtime_storage_preflight_bytes(
@@ -772,12 +778,14 @@ pub(super) fn linear_export_runtime_storage_preflight_bytes(
     runtime_storage_preflight_bytes(
         revision,
         SessionPlayback::release_capacity_for(revision, true),
+        true,
     )
 }
 
 fn runtime_storage_preflight_bytes(
     revision: &PreparedRevision,
     release_capacity: usize,
+    owns_mutable_sources: bool,
 ) -> Option<usize> {
     let arrangement = revision.arrangement();
     let track_count = arrangement.tracks().len();
@@ -881,7 +889,14 @@ fn runtime_storage_preflight_bytes(
         std::mem::size_of::<Option<MutableInstrumentTrackRuntime>>(),
     )?;
     let source_routing = revision.source_routing();
-    for (index, track) in arrangement.tracks().iter().enumerate() {
+    // The private pause route keeps the full slot vector and event scratch.
+    // Actual instruments and resource leases are charged to the resident.
+    for (index, track) in arrangement
+        .tracks()
+        .iter()
+        .enumerate()
+        .filter(|_| owns_mutable_sources)
+    {
         let id = track.canonical_track_id()?;
         if let Some(factory) = revision.session().mutable_instrument_factory(id) {
             checked_add(

@@ -8,6 +8,130 @@ use hex_project::{BeatTime, Command, Created, Editor};
 use std::{collections::BTreeMap, sync::Arc};
 
 #[test]
+fn paused_native_sampler_keeps_its_resident_source_lease() {
+    use crate::computer_keyboard::ComputerKeyboardInput;
+    use crate::playback::{Playback, PlaybackCommand};
+    use hex_lattice_contract::DeviceTypeId;
+
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+    let Created::Asset(asset) = editor
+        .execute(Command::ImportDeviceAsset {
+            path: "monitor-source.wav".into(),
+            sample_rate: 48_000,
+            frames: 512,
+        })
+        .unwrap()
+    else {
+        panic!("asset")
+    };
+    let Created::Track(track) = editor
+        .execute(Command::InsertTrackWithDevice {
+            name: "sampler".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: crate::native_device_resources::current_sampler_fixture::one_shot_state(
+                512, asset,
+            )
+            .unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("sampler track")
+    };
+    editor
+        .execute(Command::InsertDevice {
+            track,
+            before: None,
+            state: crate::default_native_device_state_for_class(
+                crate::NativeDeviceClass::Effect,
+                DeviceTypeId::from_static("hex.limiter"),
+            )
+            .unwrap(),
+        })
+        .unwrap();
+    let cancel = AtomicBool::new(false);
+    let mut store = ResidentDeviceAssets::default();
+    store
+        .insert_on_control(
+            (
+                asset,
+                crate::OwnedAudioSource::try_resident(48_000, vec![[0.25, -0.125]; 512])
+                    .ok()
+                    .unwrap(),
+            ),
+            0,
+            AudioStorageLedgerReservation {
+                data_rows: 256,
+                handle_rows: 64,
+                root_rows: 32,
+                max_retained_bytes: 20_000_000,
+                max_construction_peak_bytes: 20_000_000,
+            },
+            512,
+            &cancel,
+            || Ok::<_, ResourcePreparationError>(()),
+        )
+        .unwrap();
+    let resources =
+        PreparedDeviceResources::prepare_on_control(&store, editor.project(), 20_000_000, &cancel)
+            .unwrap();
+    let revision = Arc::new(
+        PreparedRevision::prepare_with_device_resources(
+            editor.project(),
+            &BTreeMap::new(),
+            Arc::new(SineTable::new()),
+            None,
+            &crate::audio_transform::AudioTransformPreparation::default(),
+            &resources,
+            4096,
+            &cancel,
+        )
+        .unwrap(),
+    );
+    let latency = revision.arrangement().main_latency_frames() as usize;
+    assert!(latency > 0);
+    assert!(
+        Playback::paused_source_monitor_allowance_on_control(&revision, Some(&resources)).unwrap()
+            > 0
+    );
+    let mut playback =
+        Playback::try_from_prepared_with_device_resources(revision, &resources).unwrap();
+    let lease_id = {
+        let mut leases = playback.device_resource_leases();
+        let id = leases.next().unwrap().id;
+        assert!(leases.next().is_none());
+        id
+    };
+    let keys = Arc::new(ComputerKeyboardInput::default());
+    playback
+        .prepare_computer_keyboard(editor.project(), track, Arc::clone(&keys))
+        .unwrap();
+    playback
+        .prepare_resident_paused_source_monitor(Some(&resources))
+        .unwrap();
+    playback.apply(PlaybackCommand::Play);
+    playback.render(&mut [[0.0; 2]; 4]).unwrap();
+    playback.apply(PlaybackCommand::Pause);
+    keys.set_key(0, Some((60, 100, 1))).unwrap();
+    let mut output = vec![[0.0; 2]; latency + 64];
+    playback.render(&mut output).unwrap();
+    assert!(output[..latency].iter().all(|frame| *frame == [0.0; 2]));
+    assert!(
+        output[latency..]
+            .iter()
+            .any(|frame| frame[0] > 0.0 && frame[1] < 0.0)
+    );
+    assert_eq!(playback.position(), 4);
+    playback.apply(PlaybackCommand::Stop);
+    assert!(
+        playback
+            .device_resource_leases()
+            .map(|lease| lease.id)
+            .eq([lease_id])
+    );
+}
+
+#[test]
 fn registered_sampler_mixes_original_pcm_with_vector_and_same_asset_project_rate_audio() {
     // Match the existing bounded production seek-worker stack, including debug-build temporaries.
     let run = registered_sampler_mixes_original_pcm_with_vector_and_same_asset_project_rate_audio_on_control;

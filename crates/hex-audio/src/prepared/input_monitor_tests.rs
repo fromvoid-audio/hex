@@ -70,6 +70,31 @@ fn render_paused_fixture_block(callback: &mut Callback) -> [Frame; 64] {
 
 #[test]
 fn paused_source_render_preserves_callback_allocation_budget() {
+    check_paused_source_allocation(hex_project::default_instrument_state().unwrap());
+}
+
+#[test]
+fn paused_mutable_source_render_preserves_callback_allocation_budget() {
+    use hex_engine::NativeDeviceClass;
+    use hex_lattice_contract::{DeviceTypeId, ParameterId, ParameterValue};
+
+    let class = NativeDeviceClass::Instrument;
+    let state = hex_engine::default_native_device_state_for_class(
+        class,
+        DeviceTypeId::from_static("hex.instrument.operator"),
+    )
+    .unwrap();
+    let state = hex_engine::patch_native_device_parameter_for_class(
+        class,
+        &state,
+        ParameterId::from_static(20_001),
+        ParameterValue::Bool(true),
+    )
+    .unwrap();
+    check_paused_source_allocation(state);
+}
+
+fn check_paused_source_allocation(state: hex_lattice_contract::NativeDeviceState) {
     use hex_engine::NativeDeviceClass;
     use hex_engine::computer_keyboard::ComputerKeyboardInput;
     use hex_lattice_contract::DeviceTypeId;
@@ -85,10 +110,7 @@ fn paused_source_render_preserves_callback_allocation_budget() {
         panic!("track")
     };
     editor
-        .execute(Command::InsertInstrument {
-            track,
-            state: hex_project::default_instrument_state().unwrap(),
-        })
+        .execute(Command::InsertInstrument { track, state })
         .unwrap();
     editor
         .execute(Command::InsertDevice {

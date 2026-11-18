@@ -285,6 +285,33 @@ fn paused_keyboard_monitor_checks_admission_and_exact_revision() {
 
 #[test]
 fn authored_pause_release_keeps_queued_arrangement_pcm() {
+    check_authored_pause_release(hex_project::default_instrument_state().unwrap(), false);
+}
+
+#[test]
+fn mutable_pause_release_keeps_queued_arrangement_pcm() {
+    use hex_lattice_contract::{DeviceTypeId, ParameterId, ParameterValue};
+
+    let class = crate::NativeDeviceClass::Instrument;
+    let operator = crate::default_native_device_state_for_class(
+        class,
+        DeviceTypeId::from_static("hex.instrument.operator"),
+    )
+    .unwrap();
+    let filtered = crate::patch_native_device_parameter_for_class(
+        class,
+        &operator,
+        ParameterId::from_static(20_001),
+        ParameterValue::Bool(true),
+    )
+    .unwrap();
+    check_authored_pause_release(filtered, true);
+}
+
+fn check_authored_pause_release(
+    instrument: hex_lattice_contract::NativeDeviceState,
+    mutable: bool,
+) {
     use crate::computer_keyboard::ComputerKeyboardInput;
     use crate::playback::{Playback, PlaybackCommand};
     use hex_project::{Command, Created};
@@ -300,7 +327,7 @@ fn authored_pause_release_keeps_queued_arrangement_pcm() {
         f.editor
             .execute(Command::InsertInstrument {
                 track,
-                state: hex_project::default_instrument_state().unwrap(),
+                state: instrument.clone(),
             })
             .unwrap();
         let Created::Clip(clip) = f
@@ -325,6 +352,8 @@ fn authored_pause_release_keeps_queued_arrangement_pcm() {
             })
             .unwrap();
         let revision = prepare(&f).unwrap();
+        assert_eq!(revision.has_arrangement_mutable_instruments(), mutable);
+        let mut authored_only = [[0.0; 2]; 257];
         for (partition, keyboard) in [(1, false), (257, false), (1, true), (257, true)] {
             let mut playback = Playback::from_prepared(Arc::clone(&revision));
             let mut oracle = Playback::from_prepared(Arc::clone(&revision));
@@ -351,6 +380,13 @@ fn authored_pause_release_keeps_queued_arrangement_pcm() {
                 playback.render(block).unwrap();
             }
             assert!(paused[32..].iter().any(|frame| *frame != [0.0; 2]));
+            if keyboard {
+                assert_ne!(paused[32..], authored_only[32..]);
+            } else if partition == 1 {
+                authored_only = paused;
+            } else {
+                assert_eq!(paused, authored_only);
+            }
             assert_eq!(playback.position(), oracle.position());
             for player in [&mut playback, &mut oracle] {
                 player.apply(PlaybackCommand::Play);

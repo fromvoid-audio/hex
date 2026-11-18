@@ -700,6 +700,11 @@ impl SessionPlayback {
                 && self.current_sampler_keyboards.is_empty()
                 && self.foreign_arrangement.is_empty()
                 && !self.source_effects.has_monitor_tail()
+                && self
+                    .mutable_instruments
+                    .iter()
+                    .flatten()
+                    .all(MutableInstrumentTrackRuntime::is_source_owner)
                 && !self.midi_capture_active()
                 && self.tail_groups.iter().all(Option::is_none)
                 && self.tail_mutable_instruments.iter().all(Option::is_none)
