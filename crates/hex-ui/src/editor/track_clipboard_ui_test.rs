@@ -803,6 +803,58 @@ fn track_clipboard_copy_and_duplicate_from_header(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn duplicate_and_undo_keep_row_measurements_and_scroll_anchor(cx: &mut TestAppContext) {
+    use gpui::{ListOffset, point, px};
+
+    let (mut visual, editor, ids) = live_tracks(cx, 100, false);
+    let [anchor, source, following] = [ids[1], ids[2], ids[3]];
+    editor.update(&mut visual, |view, cx| {
+        view.track_scroll.list.scroll_to(ListOffset {
+            item_ix: 1,
+            offset_in_item: px(5.0),
+        });
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let original_height = bounds(&mut visual, following).size.height;
+    let resize = visual
+        .debug_bounds(Box::leak(
+            format!("track-height-resize-{}", following.value()).into_boxed_str(),
+        ))
+        .unwrap()
+        .center();
+    let released = point(resize.x, resize.y + px(20.0));
+    visual.simulate_mouse_down(resize, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(released, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(released, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    let anchor_before = bounds(&mut visual, anchor);
+    let following_before = bounds(&mut visual, following);
+    assert_eq!(following_before.size.height, original_height + px(20.0));
+    select(&mut visual, source, false);
+
+    for (shortcut, count, following_index) in [("cmd-d", 101, 4), ("cmd-z", 100, 3)] {
+        editor.update(&mut visual, |view, _| view.track_row_builds = 0);
+        visual.simulate_keystrokes(shortcut);
+        receive(&mut visual, &editor);
+        editor.read_with(&visual, |view, _| {
+            let project = &view.state.as_ref().unwrap().project;
+            assert_eq!(project.tracks().len(), count);
+            assert_eq!(project.tracks()[2].id(), source);
+            assert_eq!(project.tracks()[following_index].id(), following);
+            assert!(
+                view.track_row_builds < ids.len(),
+                "{shortcut} rebuilt {} track rows",
+                view.track_row_builds
+            );
+        });
+        assert_eq!(bounds(&mut visual, anchor), anchor_before);
+        assert_eq!(bounds(&mut visual, following).size, following_before.size);
+    }
+    assert_eq!(bounds(&mut visual, following), following_before);
+}
+
+#[gpui::test]
 fn track_clipboard_cut_paste_and_setup_only_menu(cx: &mut TestAppContext) {
     let (mut v, e, ids) = live_tracks_with_notes(cx, 3, 1);
     select(&mut v, ids[0], false);
