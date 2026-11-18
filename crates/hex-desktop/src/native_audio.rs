@@ -1835,6 +1835,17 @@ impl WorkerAudioSink for NativeAudioSink {
     ) -> [hex_engine::native_device_resources::DeviceResourceAdmission<'_>; 3] {
         self.resident_inventory()
     }
+    fn prepare_paused_input_monitor(
+        &mut self,
+        request: hex_session::service::PausedInputMonitorRequest,
+        revision: &Arc<hex_engine::PreparedRevision>,
+        resources: &hex_engine::native_device_resources::PreparedDeviceResources,
+        admit: &mut dyn FnMut(
+            &[hex_engine::native_device_resources::DeviceResourceAdmission<'_>],
+        ) -> Result<(), String>,
+    ) -> Result<hex_engine::PausedTrackMonitor, String> {
+        self.prepare_resident_paused_monitor(request, revision, resources, admit)
+    }
     #[allow(clippy::result_large_err)] // Preserve the exact graph owner on refusal.
     fn publish_resident(
         &mut self,
@@ -2186,7 +2197,7 @@ impl WorkerAudioSink for NativeAudioSink {
         hold
     }
     fn poll(&mut self) {
-        self.resident.reap_observations();
+        self.resident.reap_control_owners();
         self.poll_edit_timeout();
         self.poll_section_edit();
         self.poll_open();

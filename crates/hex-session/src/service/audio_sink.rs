@@ -540,6 +540,14 @@ pub struct ResidentGraphSubmission {
     pub audio_revision: u64,
     pub context: hex_engine::AudioSourceContext,
 }
+/// Bind a control preparation to the client's observed resident graph and
+/// stopped transport. The output callback checks these facts again at activation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PausedInputMonitorRequest {
+    pub source: ResidentGraphSubmission,
+    pub transport_epoch: u64,
+    pub track: hex_project::TrackId,
+}
 impl ResidentGraphSubmission {
     /// Compare with the callback's correlated publication observation. A pending
     /// successor is not a stable source for a stopped edit. The caller must still
@@ -927,6 +935,19 @@ pub trait WorkerAudioSink: Send {
         &self,
     ) -> [hex_engine::native_device_resources::DeviceResourceAdmission<'_>; 3] {
         [hex_engine::native_device_resources::DeviceResourceAdmission::default(); 3]
+    }
+    /// Prepare one control-owned monitor under the existing resident union.
+    /// The sink retains its corresponding storage hold until retirement.
+    fn prepare_paused_input_monitor(
+        &mut self,
+        _request: PausedInputMonitorRequest,
+        _revision: &Arc<PreparedRevision>,
+        _resources: &hex_engine::native_device_resources::PreparedDeviceResources,
+        _admit: &mut dyn FnMut(
+            &[hex_engine::native_device_resources::DeviceResourceAdmission<'_>],
+        ) -> Result<(), String>,
+    ) -> Result<hex_engine::PausedTrackMonitor, String> {
+        Err("paused input monitor output is unavailable".into())
     }
     /// Final fallible prepared-transition operation. An active output must refuse queue/resource
     /// pressure unchanged; explicit unavailable/opening state may accept one admitted latest owner

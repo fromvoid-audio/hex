@@ -2043,6 +2043,49 @@ impl Session {
         )?;
         Ok((hint, selected, accepted))
     }
+    pub(super) fn prepare_resident_paused_input_monitor(
+        &self,
+        request: PausedInputMonitorRequest,
+        snapshot: &Snapshot,
+        sink: &mut dyn WorkerAudioSink,
+        admission: sampler_export::Admission<'_>,
+    ) -> Result<hex_engine::PausedTrackMonitor, String> {
+        if snapshot.submission != Some(request.source)
+            || !request
+                .source
+                .matches_applied(sink.resident_publication_readiness())
+            || self
+                .project()
+                .track(request.track)
+                .is_none_or(|track| track.is_group())
+        {
+            return Err("paused input monitor source changed".into());
+        }
+        if snapshot.file_sources.is_some() {
+            return Err("paused input monitor requires an in-memory graph".into());
+        }
+        let inputs = self
+            .resident_seek_inputs(admission, None, None)
+            .map_err(|error| error.to_string())?;
+        let native_runtime = sink.native_sampler_hold().construction_bytes;
+        sink.prepare_paused_input_monitor(
+            request,
+            &snapshot.prepared,
+            &snapshot.resources,
+            &mut |native| {
+                inputs
+                    .admit(
+                        &snapshot.resources,
+                        Some(&snapshot.prepared),
+                        native,
+                        native_runtime,
+                        0,
+                    )
+                    .map_err(|error| error.to_string())
+            },
+        )
+    }
+
     fn resident_seek_inputs<'a>(
         &'a self,
         admission: sampler_export::Admission<'a>,

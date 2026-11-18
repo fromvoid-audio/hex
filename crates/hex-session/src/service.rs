@@ -92,15 +92,15 @@ mod sampler_parameter;
 use audio_sink::WorkerEvents;
 pub use audio_sink::{
     ArrangementEditPosition, NativeSamplerInput, NativeSamplerReservationHold,
-    NativeSamplerRetryFacts, OfflineBounceSource, PluginEditorRecordingInput,
-    PluginParameterCapture, PluginParameterDelivery, PluginParameterGestureError,
-    PluginParameterGestureInput, PluginParameterGestureResult, PluginParameterObservation,
-    PluginParameterOverride, ResidentEffectPreparation, ResidentFileInput, ResidentFileMetadata,
-    ResidentFilePitch, ResidentFilePublication, ResidentFileSeekPreparer, ResidentFileSeekRequest,
-    ResidentFileSet, ResidentFreshRuntimeFence, ResidentGraphSubmission,
-    ResidentPublicationAcceptance, ResidentPublicationFailure, ResidentPublicationMetadata,
-    ResidentPublicationPolicy, ResidentPublicationReadiness, ResidentPublicationRefusal,
-    ResidentRuntimeLoop, ResidentSourceOrigin, WorkerAudioSink,
+    NativeSamplerRetryFacts, OfflineBounceSource, PausedInputMonitorRequest,
+    PluginEditorRecordingInput, PluginParameterCapture, PluginParameterDelivery,
+    PluginParameterGestureError, PluginParameterGestureInput, PluginParameterGestureResult,
+    PluginParameterObservation, PluginParameterOverride, ResidentEffectPreparation,
+    ResidentFileInput, ResidentFileMetadata, ResidentFilePitch, ResidentFilePublication,
+    ResidentFileSeekPreparer, ResidentFileSeekRequest, ResidentFileSet, ResidentFreshRuntimeFence,
+    ResidentGraphSubmission, ResidentPublicationAcceptance, ResidentPublicationFailure,
+    ResidentPublicationMetadata, ResidentPublicationPolicy, ResidentPublicationReadiness,
+    ResidentPublicationRefusal, ResidentRuntimeLoop, ResidentSourceOrigin, WorkerAudioSink,
 };
 pub use comparison_audio::ComparisonAudioBinding;
 use export_lane::ExportLane;
@@ -964,6 +964,12 @@ pub enum Request {
         revision: u64,
         track: hex_project::TrackId,
     },
+    /// Prepare a stopped monitor for the exact observed graph, with one
+    /// nonblocking reply. The caller supplies an empty one-slot reply channel.
+    PreparePausedInputMonitor {
+        request: PausedInputMonitorRequest,
+        reply: SyncSender<Result<hex_engine::PausedTrackMonitor, String>>,
+    },
     /// Check all stamps before preparation or history, including requests delayed in either queue.
     GainLane {
         project_generation: u64,
@@ -1244,6 +1250,7 @@ impl Request {
                 | Self::QueryFailedPluginAutomation { .. }
                 | Self::InspectSealedAutomationRecovery { .. }
                 | Self::QueryDeviceAutomationCloseSafety { .. }
+                | Self::PreparePausedInputMonitor { .. }
         )
     }
     /// The canonical `ExportRange` parts of an export request; `Export` is its
@@ -5442,6 +5449,9 @@ fn run_worker(
                     result: Err(reason.clone().into()),
                 });
             }
+            if let Request::PreparePausedInputMonitor { reply, .. } = &request {
+                let _ = reply.try_send(Err(reason.clone()));
+            }
             error = Some(reason);
         } else {
             match request {
@@ -8269,6 +8279,41 @@ fn run_worker(
                             ))
                         }
                     }
+                }
+                Request::PreparePausedInputMonitor { request, reply } => {
+                    let result = (|| {
+                        if request.source.context
+                            != (hex_engine::AudioSourceContext {
+                                project_generation,
+                                editor_revision: revision,
+                            })
+                            || session.audio_mode() != DocumentAudioMode::Resident
+                        {
+                            return Err("paused input monitor source changed".into());
+                        }
+                        let sink = events
+                            .resident_audio()
+                            .ok_or("paused input monitor output is unavailable")?;
+                        let snapshot = resident_snapshot
+                            .as_ref()
+                            .ok_or("paused input monitor graph is unavailable")?;
+                        session.prepare_resident_paused_input_monitor(
+                            request,
+                            snapshot,
+                            sink,
+                            export_lane.admission_with_resident_owners(
+                                compiled.as_ref().map(|(_, p)| {
+                                    hex_engine::native_device_resources::ControlSamplerSelection {
+                                        sources: current_sources.as_ref(),
+                                        prepared: Some(p),
+                                    }
+                                }),
+                                resident_seek.as_ref(),
+                                resident_preview.as_ref(),
+                            ),
+                        )
+                    })();
+                    let _ = reply.try_send(result);
                 }
                 Request::ArmGainRecording {
                     project_generation: expected_generation,

@@ -2024,6 +2024,16 @@ impl WorkerAudioSink for ResidentSink {
     fn resident_admission(&self) -> [DeviceResourceAdmission<'_>; 3] {
         self.inner.resident_admission()
     }
+    fn prepare_paused_input_monitor(
+        &mut self,
+        request: hex_session::service::PausedInputMonitorRequest,
+        revision: &Arc<hex_engine::PreparedRevision>,
+        resources: &PreparedDeviceResources,
+        admit: &mut dyn FnMut(&[DeviceResourceAdmission<'_>]) -> Result<(), String>,
+    ) -> Result<hex_engine::PausedTrackMonitor, String> {
+        self.inner
+            .prepare_paused_input_monitor(request, revision, resources, admit)
+    }
     #[allow(clippy::too_many_arguments, clippy::result_large_err)] // Mirror the exact production ownership boundary.
     fn publish_resident(
         &mut self,
@@ -2892,6 +2902,152 @@ fn default_audio_policy_admits_the_actual_stream_workspace_on_startup() {
     assert!(h.next().error.is_none());
     let (revision, _) = h.applied(0);
     assert!(revision > 0);
+}
+
+#[test]
+fn session_prepares_one_monitor_for_the_actual_paused_source_until_retired() {
+    use hex_audio::{input_capture::MonitorStream, prepared::input_monitor::MonitorStatus};
+    use hex_project::{Command, Created};
+    use hex_session::service::{PausedInputMonitorRequest, ResidentGraphSubmission};
+
+    let _native = native_fixture();
+    let mut h = ResidentHarness::new();
+    assert!(h.next().error.is_none());
+    let (initial, _) = h.applied(0);
+    let added = h.run(Request::Edit(Command::AddTrack {
+        name: "input".into(),
+    }));
+    let Some(Created::Track(track)) = added.created else {
+        panic!("track")
+    };
+    let (applied, _) = h.applied(initial);
+    let request = |h: &ResidentHarness| {
+        let (source, transport_epoch) = h
+            .audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .paused_input_source()
+            .unwrap();
+        PausedInputMonitorRequest {
+            source: ResidentGraphSubmission {
+                output_identity: source.output_identity,
+                audio_revision: source.audio_revision,
+                context: source.context,
+            },
+            track,
+            transport_epoch,
+        }
+    };
+    let prepare = |h: &mut ResidentHarness, request| {
+        let (reply, result) = mpsc::sync_channel(1);
+        let event = h.run(Request::PreparePausedInputMonitor { request, reply });
+        assert!(event.error.is_none(), "{:?}", event.error);
+        result.recv_timeout(Duration::from_millis(250)).unwrap()
+    };
+    let first = request(&h);
+    let mut stale = first;
+    stale.transport_epoch -= 1;
+    assert_eq!(
+        prepare(&mut h, stale).err().as_deref(),
+        Some("paused input monitor transport changed")
+    );
+    let monitor = prepare(&mut h, first).unwrap();
+    assert_eq!(
+        prepare(&mut h, first).err().as_deref(),
+        Some("paused input monitor is still retained")
+    );
+
+    let (input, feed, observer) = hex_audio::worker_fixture::monitored_input().unwrap();
+    let stream = Box::new(MonitorStream::new_on_control(feed, 48_000).ok().unwrap());
+    assert!(input.start_on_control());
+    let deadline = Instant::now() + Duration::from_millis(250);
+    while !observer.started() {
+        assert!(Instant::now() < deadline, "synthetic capture did not start");
+        std::thread::yield_now();
+    }
+    let source = h
+        .audio
+        .as_ref()
+        .unwrap()
+        .status()
+        .unwrap()
+        .recording_source()
+        .unwrap();
+    assert!(
+        h.audio
+            .as_mut()
+            .unwrap()
+            .control
+            .input_monitor()
+            .unwrap()
+            .publish_paused(stream, monitor, source, first.transport_epoch)
+            .is_ok()
+    );
+    let mut audible = false;
+    while !audible {
+        audible = h
+            .render()
+            .iter()
+            .any(|frame| frame[0] > 0.0 && frame[1] > 0.0);
+        assert!(Instant::now() < deadline, "synthetic monitor did not prime");
+        std::thread::yield_now();
+    }
+    assert_eq!(
+        h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .position
+            .load(Acquire),
+        0
+    );
+    assert!(
+        h.run(Request::Edit(Command::RenameTrack {
+            track,
+            name: "edited".into()
+        }))
+        .error
+        .is_none()
+    );
+    h.applied(applied);
+    assert_eq!(h.render(), [[0.0; 2]; 64]);
+    let next = request(&h);
+    assert_eq!(
+        prepare(&mut h, first).err().as_deref(),
+        Some("paused input monitor source changed")
+    );
+    assert_eq!(
+        prepare(&mut h, next).err().as_deref(),
+        Some("paused input monitor is still retained")
+    );
+    let control = h.audio.as_mut().unwrap().control.input_monitor().unwrap();
+    assert_eq!(control.status(), MonitorStatus::SourceChanged);
+    assert!(control.reclaim().is_some());
+    assert!(prepare(&mut h, next).is_ok());
+
+    let audio = h.audio.as_mut().unwrap();
+    audio
+        .control
+        .command(hex_engine::playback::PlaybackCommand::Play)
+        .unwrap();
+    assert!(audio.status().unwrap().paused_input_source().is_none());
+    h.render();
+    assert!(
+        h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .playing
+            .load(Acquire)
+    );
+    assert_eq!(
+        prepare(&mut h, next).err().as_deref(),
+        Some("paused input monitor transport changed")
+    );
 }
 
 #[test]

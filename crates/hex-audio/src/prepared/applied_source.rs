@@ -90,6 +90,24 @@ impl Status {
         let source = self.recording_source.read()?;
         (self.applied_revision.load(Acquire) == source.audio_revision).then_some(source)
     }
+    /// Control-side request witness for a stopped ordinary input monitor.
+    /// The callback still revalidates the exact source, epoch, and runtime.
+    pub fn paused_input_source(&self) -> Option<(AppliedAudioSource, u64)> {
+        let epoch = self.transport_epoch.load(Acquire);
+        let command = self.admitted_ticket.load(Acquire);
+        let source = self.recording_source()?;
+        (!self.playing.load(Acquire)
+            && !self.closing.load(Acquire)
+            && !self.device_fault.load(Acquire)
+            && !self.render_fault.load(Acquire)
+            && !self.publication_in_flight()
+            && self.pending_stop_marker.load(Acquire) == 0
+            && self.consumed_command.load(Acquire) == command
+            && self.transport_epoch.load(Acquire) == epoch
+            && self.admitted_ticket.load(Acquire) == command
+            && self.recording_source() == Some(source))
+        .then_some((source, epoch))
+    }
     /// Actual active constructor source, independent of delivery of Submitted
     /// events. None includes bounded-reader contention or a legacy install.
     /// This correlation observation grants neither custody nor readiness.
