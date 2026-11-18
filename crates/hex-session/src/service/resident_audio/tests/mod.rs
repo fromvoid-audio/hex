@@ -1620,10 +1620,9 @@ fn resident_keyboard_publication_admits_and_replaces_the_paused_route() {
             None,
         )
         .unwrap();
-    let quote = Playback::paused_keyboard_allowance_on_control(
+    let quote = Playback::paused_source_monitor_allowance_on_control(
         &current.prepared,
         Some(&current.resources),
-        track,
     )
     .unwrap();
     assert!(quote > 0);
@@ -1634,6 +1633,20 @@ fn resident_keyboard_publication_admits_and_replaces_the_paused_route() {
         .0
         .accounted_session_runtime_bytes_on_control()
         .unwrap();
+    assert!(current.inputs.keyboard.is_none());
+    let ordinary_graph = Playback::try_from_prepared_with_device_resources(
+        Arc::clone(&current.prepared),
+        &current.resources,
+    )
+    .unwrap();
+    let added = original
+        - ordinary_graph
+            .accounted_session_runtime_bytes_on_control()
+            .unwrap();
+    assert!(
+        (1..=quote).contains(&added),
+        "the initial publication charges its private route"
+    );
     let latency = current.prepared.arrangement().main_latency_frames() as usize;
     assert!(latency > 0);
 

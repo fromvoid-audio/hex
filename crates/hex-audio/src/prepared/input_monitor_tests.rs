@@ -69,10 +69,11 @@ fn render_paused_fixture_block(callback: &mut Callback) -> [Frame; 64] {
 }
 
 #[test]
-fn paused_keyboard_render_preserves_callback_allocation_budget() {
+fn paused_source_render_preserves_callback_allocation_budget() {
     use hex_engine::NativeDeviceClass;
     use hex_engine::computer_keyboard::ComputerKeyboardInput;
     use hex_lattice_contract::DeviceTypeId;
+    use hex_project::BeatTime;
 
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
     let Created::Track(track) = editor
@@ -100,6 +101,26 @@ fn paused_keyboard_render_preserves_callback_allocation_budget() {
             .unwrap(),
         })
         .unwrap();
+    let Created::Clip(clip) = editor
+        .execute(Command::PlaceMidiClip {
+            track,
+            start: BeatTime::from_ratio(1, 64).unwrap(),
+            length: BeatTime::ONE,
+        })
+        .unwrap()
+    else {
+        panic!("MIDI clip");
+    };
+    editor
+        .execute(Command::AddMidiNote {
+            clip,
+            start: BeatTime::ZERO,
+            duration: BeatTime::ONE,
+            pitch: 55,
+            channel: 0,
+            velocity: 100,
+        })
+        .unwrap();
     let revision = Arc::new(
         hex_engine::PreparedRevision::prepare(
             editor.project(),
@@ -114,15 +135,14 @@ fn paused_keyboard_render_preserves_callback_allocation_budget() {
     let input = Arc::new(ComputerKeyboardInput::default());
     let mut playback = Playback::try_from_prepared_with_session(revision).unwrap();
     playback
-        .prepare_resident_computer_keyboard(editor.project(), None, track, Arc::clone(&input))
+        .prepare_resident_paused_source_monitor(None)
         .unwrap();
-    playback.apply(hex_engine::PlaybackCommand::Play);
-    playback.render(&mut [[0.0; 2]; 4]).unwrap();
-    playback.apply(hex_engine::PlaybackCommand::Pause);
-    let frozen = playback.position();
 
-    let mut render = |output: &mut [Frame]| {
+    let render = |playback: &mut Playback, output: &mut [Frame], stop| {
         let mut render = || {
+            if stop {
+                playback.apply(hex_engine::PlaybackCommand::Stop);
+            }
             for block in output.chunks_mut(257) {
                 playback.render(block).unwrap();
             }
@@ -143,14 +163,32 @@ fn paused_keyboard_render_preserves_callback_allocation_budget() {
         #[cfg(not(feature = "allocation-probe"))]
         render();
     };
+    playback.apply(hex_engine::PlaybackCommand::Play);
+    playback.render(&mut [[0.0; 2]; 1024]).unwrap();
+    playback.apply(hex_engine::PlaybackCommand::Pause);
+    let mut authored = vec![[0.0; 2]; latency + 257];
+    render(&mut playback, &mut authored, false);
+    assert!(authored[..latency].iter().all(|frame| *frame == [0.0; 2]));
+    assert!(authored[latency..].iter().any(|frame| *frame != [0.0; 2]));
+    assert_eq!(playback.position(), 1024);
+    render(&mut playback, &mut authored, true);
+    assert!(authored.iter().all(|frame| *frame == [0.0; 2]));
+
+    playback
+        .prepare_computer_keyboard(editor.project(), track, Arc::clone(&input))
+        .unwrap();
+    playback.apply(hex_engine::PlaybackCommand::Play);
+    playback.render(&mut [[0.0; 2]; 4]).unwrap();
+    playback.apply(hex_engine::PlaybackCommand::Pause);
+    let frozen = playback.position();
     let mut pressed = vec![[0.0; 2]; latency + 257];
     input.set_key(0, Some((60, 100, 1))).unwrap();
-    render(&mut pressed);
+    render(&mut playback, &mut pressed, false);
     assert!(pressed[..latency].iter().all(|frame| *frame == [0.0; 2]));
     assert!(pressed[latency..].iter().any(|frame| *frame != [0.0; 2]));
     let mut released = vec![[0.0; 2]; latency + 257];
     input.set_key(0, None).unwrap();
-    render(&mut released);
+    render(&mut playback, &mut released, false);
     assert!(released[latency..].iter().any(|frame| *frame != [0.0; 2]));
     assert_eq!(playback.position(), frozen);
 }

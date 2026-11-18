@@ -70,10 +70,8 @@ impl SessionPlayback {
     ) -> Result<(), SessionPlaybackError> {
         match command {
             SessionPlaybackCommand::Play => {
-                if !self.playing
-                    && let Some(monitor) = &mut self.paused_keyboard_monitor
-                {
-                    monitor.end_resident_interval();
+                if !self.playing {
+                    self.end_paused_source_interval();
                 }
                 if !self.playing
                     && let Some(keyboard) = &mut self.computer_keyboard
@@ -128,6 +126,7 @@ impl SessionPlayback {
                 self.browser_audition.voices = Default::default();
             }
             SessionPlaybackCommand::Stop => {
+                self.end_paused_source_interval();
                 self.clear_gain_recording_override();
                 self.invalidate_native_parameter_input();
                 if self.stop_transport() {
@@ -182,6 +181,12 @@ impl SessionPlayback {
         }
         self.monitor_source_releases = true;
         Ok(())
+    }
+
+    fn end_paused_source_interval(&mut self) {
+        if let Some(monitor) = &mut self.paused_source_monitor {
+            monitor.end_resident_interval();
+        }
     }
 
     pub(super) fn stop_transport(&mut self) -> bool {
@@ -330,6 +335,7 @@ impl SessionPlayback {
     }
 
     pub(super) fn install_seek(&mut self, frame: u64, beat: BeatTime) {
+        self.end_paused_source_interval();
         self.browser_audition.voices = Default::default();
         self.monitor_source_releases = false;
         let mut changed = self.performance_frame != frame;

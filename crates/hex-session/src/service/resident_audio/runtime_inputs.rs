@@ -42,26 +42,21 @@ impl RuntimeInputs {
         Ok(bytes)
     }
     pub(in crate::service) fn allowance(&self, snapshot: &Snapshot) -> Result<usize, SessionError> {
-        let keyboard = if let Some((track, input)) = &self.keyboard {
-            input
-                .runtime_storage_limit_on_control()
-                .checked_add(Playback::paused_keyboard_allowance_on_control(
-                    &snapshot.prepared,
-                    Some(&snapshot.resources),
-                    *track,
-                )?)
-                .ok_or(SessionError::Invalid(
-                    "resident keyboard allowance overflow",
-                ))?
-        } else {
-            0
-        };
+        let keyboard = self
+            .keyboard
+            .as_ref()
+            .map_or(0, |(_, input)| input.runtime_storage_limit_on_control());
+        let monitor = Playback::paused_source_monitor_allowance_on_control(
+            &snapshot.prepared,
+            Some(&snapshot.resources),
+        )?;
         keyboard
             .checked_add(if self.audition.is_some() {
                 hex_engine::tuning_audition::MAX_TUNING_AUDITION_STORAGE_BYTES
             } else {
                 0
             })
+            .and_then(|bytes| bytes.checked_add(monitor))
             .and_then(|bytes| bytes.checked_add(std::mem::size_of::<Self>()))
             .and_then(|bytes| {
                 bytes.checked_add(self.expression.as_ref().map_or(0, |_| {
@@ -184,12 +179,7 @@ impl RuntimeInputs {
                     .and_then(hex_project::Track::instrument)
                     .is_some_and(|device| !device.bypassed());
             if valid {
-                playback.prepare_resident_computer_keyboard(
-                    project,
-                    Some(resources),
-                    *track,
-                    Arc::clone(input),
-                )?;
+                playback.prepare_computer_keyboard(project, *track, Arc::clone(input))?;
             } else {
                 self.keyboard = None;
             }
@@ -214,6 +204,7 @@ impl RuntimeInputs {
                 playback.prepare_tuning_audition(project, Arc::clone(input))?;
             }
         }
+        playback.prepare_resident_paused_source_monitor(Some(resources))?;
         Ok(())
     }
     pub(in crate::service) fn cancel_retired_from(&self, old: &Self) {
