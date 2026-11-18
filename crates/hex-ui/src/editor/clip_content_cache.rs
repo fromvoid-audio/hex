@@ -150,7 +150,6 @@ impl EditorView {
             && self.context_menu.is_none()
             && self.active_clip_drag.is_none()
             && self.active_browser_audio_drag.is_none()
-            && self.active_native_device_drag.is_none()
             && self.active_fade_drag.is_none()
             && !self.clip_gain.held()
             && self.audio_clip_controls.gain_preview(self).is_none()
@@ -162,6 +161,7 @@ impl EditorView {
             && self.pending_time_range_move.is_none()
             // Panning changes the viewport/lane keys on each actual move. A
             // held pointer alone does not invalidate an otherwise current scene.
+            // Device drags paint receiver feedback outside this clip scene.
             && self.loop_rail_gesture.is_none()
             && !self.theme_settings.open
     }
