@@ -7,8 +7,8 @@ use hex_engine::{AudioSourceContext, PlaybackHandoffRejection};
 use std::sync::{
     Arc,
     atomic::{
-        AtomicU32,
-        Ordering::{AcqRel, Acquire},
+        AtomicU32, AtomicU64,
+        Ordering::{AcqRel, Acquire, Release},
     },
 };
 use std::time::Instant;
@@ -61,6 +61,9 @@ struct Decision {
     context: Option<AudioSourceContext>,
     revision: u64,
     device_insert: Option<DeviceInsertBasis>,
+    // The callback may advance the original route witness through already
+    // admitted render actions; no command is accepted under the new stamp.
+    retained_route_generation: AtomicU64,
     phase: AtomicU32,
 }
 
@@ -70,12 +73,14 @@ impl CancellablePublicationReceipt {
         context: Option<AudioSourceContext>,
         revision: u64,
         device_insert: Option<DeviceInsertBasis>,
+        route_generation: u64,
     ) -> Self {
         Self(Arc::new(Decision {
             output_identity,
             context,
             revision,
             device_insert,
+            retained_route_generation: AtomicU64::new(route_generation),
             phase: AtomicU32::new(PENDING),
         }))
     }
@@ -98,6 +103,10 @@ impl CancellablePublicationReceipt {
 
     pub fn revision(&self) -> u64 {
         self.0.revision
+    }
+
+    pub(super) fn retained_route_generation(&self) -> u64 {
+        self.0.retained_route_generation.load(Acquire)
     }
 
     pub fn state(&self) -> PublicationReceiptState {
@@ -165,6 +174,19 @@ impl CancellablePublicationReceipt {
 pub(super) struct PublicationReceiptOwner(pub(super) CancellablePublicationReceipt);
 
 impl PublicationReceiptOwner {
+    pub(super) fn device_insert_deadline(&self) -> Option<Instant> {
+        self.0
+            .device_insert_basis()
+            .map(|basis| basis.install_deadline)
+    }
+
+    pub(super) fn record_retained_route_generation(&self, generation: u64) {
+        self.0
+            .0
+            .retained_route_generation
+            .store(generation, Release);
+    }
+
     pub(super) fn fenced_before_admission(&self) -> bool {
         self.0.expire_if_due();
         matches!(

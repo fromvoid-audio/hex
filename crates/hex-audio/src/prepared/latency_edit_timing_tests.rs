@@ -91,6 +91,21 @@ pub(super) fn begin_insert_with_pending_track(
     AppliedAudioSource,
     CancellablePublicationReceipt,
 ) {
+    begin_quantized_insert(old, next, track, position, LaunchQuantization::ThirtySecond)
+}
+
+fn begin_quantized_insert(
+    old: Arc<hex_engine::PreparedRevision>,
+    next: Arc<hex_engine::PreparedRevision>,
+    track: Option<hex_project::TrackId>,
+    position: usize,
+    quantization: LaunchQuantization,
+) -> (
+    Control,
+    Callback,
+    AppliedAudioSource,
+    CancellablePublicationReceipt,
+) {
     let initial = hex_engine::AudioSourceContext {
         project_generation: 5,
         editor_revision: 7,
@@ -113,7 +128,7 @@ pub(super) fn begin_insert_with_pending_track(
         let ticket = control
             .action_with_ticket(PlaybackAction::Session(SessionPlaybackCommand::StopTrack {
                 track,
-                quantization: LaunchQuantization::ThirtySecond,
+                quantization,
             }))
             .unwrap();
         callback.begin_block();
@@ -150,11 +165,19 @@ fn incompatible_latency_insert_preserves_the_admitted_action_and_pcm() {
                 position,
             );
             let mut actual = [[0.0; 2]; BLOCK];
+            let original_generation = receipt.retained_route_generation();
             let mut render = || {
+                callback.begin_block();
+                assert_eq!(receipt.state(), PublicationReceiptState::Pending);
+                assert_eq!(
+                    callback.deferred.as_ref().unwrap().scheduled_cut_frame,
+                    Some((position + audible_prefix + 1) as u64),
+                );
                 for block in actual.chunks_mut(partition) {
                     callback.begin_block();
                     callback.render(block).unwrap();
                 }
+                callback.begin_block();
             };
             #[cfg(feature = "allocation-probe")]
             {
@@ -178,6 +201,15 @@ fn incompatible_latency_insert_preserves_the_admitted_action_and_pcm() {
                 )
             );
             assert_eq!(control.status.recording_source(), Some(predecessor));
+            let routes = control
+                .status
+                .session_routes(&mut [SessionRouteEntry::default(); 1])
+                .unwrap();
+            assert_ne!(routes.route_state_generation, original_generation);
+            assert_eq!(
+                receipt.retained_route_generation(),
+                routes.route_state_generation
+            );
             assert!(
                 actual[..audible_prefix]
                     .iter()
@@ -188,6 +220,83 @@ fn incompatible_latency_insert_preserves_the_admitted_action_and_pcm() {
                     .iter()
                     .all(|frame| *frame == [0.0; 2])
             );
+        }
+    }
+}
+
+#[test]
+fn device_insert_keeps_a_non_imminent_action_when_no_bounded_cut_is_available() {
+    let (revisions, track) = revisions();
+    for (old, next) in [(0, 1), (1, 0)] {
+        for partition in [1, BLOCK] {
+            let (control, mut callback, predecessor, receipt) = begin_quantized_insert(
+                Arc::clone(&revisions[old]),
+                Arc::clone(&revisions[next]),
+                Some(track),
+                512,
+                LaunchQuantization::Quarter,
+            );
+            let generation = receipt.retained_route_generation();
+            callback.begin_block();
+            assert_eq!(
+                receipt.state(),
+                PublicationReceiptState::Refused(
+                    PlaybackHandoffRejection::DeviceInsertNeedsConfirmation,
+                )
+            );
+            assert!(callback.deferred.is_none());
+            let mut pcm = [[0.0; 2]; BLOCK];
+            for output in pcm.chunks_mut(partition) {
+                callback.begin_block();
+                callback.render(output).unwrap();
+            }
+            assert_eq!(pcm, [SIGNAL; BLOCK]);
+            let mut routes = [SessionRouteEntry::default(); 1];
+            let snapshot = control.status.session_routes(&mut routes).unwrap();
+            assert_eq!(snapshot.route_state_generation, generation);
+            assert_eq!(routes[0].pending.unwrap().performance_frame, 24_000);
+            assert_eq!(control.status.recording_source(), Some(predecessor));
+        }
+    }
+}
+
+#[test]
+fn cancel_stop_and_a_new_command_win_while_an_insert_waits_for_the_audible_cut() {
+    let (revisions, track) = revisions();
+    for action in 0..3 {
+        let (mut control, mut callback, predecessor, receipt) = begin_insert(
+            Arc::clone(&revisions[0]),
+            Arc::clone(&revisions[1]),
+            track,
+            2990,
+        );
+        callback.begin_block();
+        assert_eq!(receipt.state(), PublicationReceiptState::Pending);
+        match action {
+            0 => assert_eq!(receipt.cancel(), FreshRuntimeCancellationResult::Cancelled),
+            1 => control.stop(),
+            _ => {
+                control.command(PlaybackCommand::Play).unwrap();
+            }
+        }
+        callback.begin_block();
+        let mut pcm = [[0.0; 2]; BLOCK];
+        callback.render(&mut pcm).unwrap();
+        assert_eq!(control.status.recording_source(), Some(predecessor));
+        assert_eq!(
+            receipt.state(),
+            if action == 0 {
+                PublicationReceiptState::Cancelled
+            } else {
+                PublicationReceiptState::Refused(PlaybackHandoffRejection::RuntimeFenceChanged)
+            }
+        );
+        if action == 1 {
+            assert_eq!(pcm, [[0.0; 2]; BLOCK]);
+            assert_eq!(control.status.position.load(Acquire), 0);
+        } else {
+            assert_eq!(pcm[..10], [SIGNAL; 10]);
+            assert_eq!(pcm[10..], [[0.0; 2]; BLOCK - 10]);
         }
     }
 }
@@ -593,12 +702,10 @@ fn rejecting_an_expired_cut_keeps_the_original_audio_and_action() {
 
 #[test]
 fn device_insert_expires_at_callback_without_control_polling() {
-    let ([old, next], track) = insert_revisions(
-        hex_devices::utility::UTILITY_DEFINITION
-            .default_state()
-            .unwrap(),
-    );
+    let ([old, next], track) = revisions();
     let (control, mut callback, predecessor, receipt) = begin_insert(old, next, track, 2990);
+    callback.begin_block();
+    assert_eq!(receipt.state(), PublicationReceiptState::Pending);
     // Withhold both owners. The next callback must enforce the install
     // deadline independently of a worker which might be occupied by Save.
     std::thread::sleep(std::time::Duration::from_millis(280));

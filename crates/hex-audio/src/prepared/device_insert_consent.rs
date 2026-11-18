@@ -113,7 +113,7 @@ impl PublicationControl {
         let mut routes = [SessionRouteEntry::default(); MAX_TRACKS];
         let snapshot = self.status.session_routes(&mut routes)?;
         if snapshot.audio_revision != basis.fence.expected_active_revision
-            || snapshot.route_state_generation != basis.fence.route_state_generation
+            || snapshot.route_state_generation != receipt.retained_route_generation()
             || routes[..snapshot.count]
                 .iter()
                 .any(|route| route.pending.is_some())
@@ -180,7 +180,10 @@ impl PublicationControl {
             predecessor: basis.predecessor,
             candidate: receipt.context()?,
             refused_revision: receipt.revision(),
-            fence: basis.fence,
+            fence: FreshRuntimeFence {
+                route_state_generation: receipt.retained_route_generation(),
+                ..basis.fence
+            },
             transport_epoch: basis.transport_epoch,
             expires_at: basis
                 .offer_deadline
@@ -504,28 +507,20 @@ mod tests {
     }
 
     #[test]
-    fn confirmed_insert_yields_to_priority_stop_admitted_routes_and_output_loss() {
+    fn confirmed_insert_yields_to_priority_stop_and_output_loss() {
         enum Interrupt {
             StopBeforeFade,
             StopAtCut,
-            PendingRoute,
             OutputFault,
         }
         for interrupt in [
             Interrupt::StopBeforeFade,
             Interrupt::StopAtCut,
-            Interrupt::PendingRoute,
             Interrupt::OutputFault,
         ] {
-            let ([old, next], track) = revisions();
-            let pending_track = matches!(interrupt, Interrupt::PendingRoute).then_some(track);
+            let ([old, next], _) = revisions();
             let (mut control, mut callback, predecessor, original) =
-                begin_insert_with_pending_track(
-                    old,
-                    Arc::clone(&next),
-                    pending_track,
-                    if pending_track.is_some() { 2990 } else { 512 },
-                );
+                begin_insert_with_pending_track(old, Arc::clone(&next), None, 512);
             callback.begin_block();
             let consent = control.offer_device_insert_consent(&original).unwrap();
             control.reclaim();
@@ -566,9 +561,7 @@ mod tests {
                 assert_eq!(control.status.recording_source(), Some(predecessor));
                 continue;
             }
-            if pending_track.is_none() {
-                control.stop();
-            }
+            control.stop();
             callback.begin_block();
             callback.render(&mut pcm).unwrap();
             assert_eq!(
@@ -576,22 +569,17 @@ mod tests {
                 PublicationReceiptState::Refused(PlaybackHandoffRejection::RuntimeFenceChanged)
             );
             assert_eq!(control.status.recording_source(), Some(predecessor));
-            if pending_track.is_none() {
-                assert_eq!(control.status.position.load(Acquire), 0);
-                assert!(!control.status.playing.load(Acquire));
-                assert!(pcm.iter().all(|frame| *frame == [0.0; 2]));
-            } else {
-                assert_eq!(pcm[..10], [[0.25; 2]; 10]);
-                assert!(pcm[10..].iter().all(|frame| *frame == [0.0; 2]));
-                assert!(control.status.playing.load(Acquire));
-            }
+            assert_eq!(control.status.position.load(Acquire), 0);
+            assert!(!control.status.playing.load(Acquire));
+            assert!(pcm.iter().all(|frame| *frame == [0.0; 2]));
         }
     }
 
     #[test]
     fn offer_tracks_one_refusal_and_expires_even_when_requested_again() {
-        let ([old, next], track) = revisions();
-        let (control, mut callback, predecessor, receipt) = begin_insert(old, next, track, 512);
+        let ([old, next], _) = revisions();
+        let (control, mut callback, predecessor, receipt) =
+            begin_insert_with_pending_track(old, next, None, 512);
         assert!(control.offer_device_insert_consent(&receipt).is_none());
         callback.begin_block();
         assert_eq!(
@@ -629,9 +617,9 @@ mod tests {
     #[test]
     fn new_command_or_priority_stop_revokes_before_callback_processing() {
         for stop in [false, true] {
-            let ([old, next], track) = revisions();
+            let ([old, next], _) = revisions();
             let (mut control, mut callback, predecessor, receipt) =
-                begin_insert(old, next, track, 512);
+                begin_insert_with_pending_track(old, next, None, 512);
             callback.begin_block();
             let offer = control.offer_device_insert_consent(&receipt).unwrap();
             assert!(control.device_insert_consent_is_current(&offer));
@@ -648,35 +636,44 @@ mod tests {
     }
 
     #[test]
-    fn offer_cannot_outlive_an_admitted_action_or_output_fault() {
-        for fault in [false, true] {
-            let ([old, next], track) = revisions();
-            let (control, mut callback, predecessor, receipt) =
-                begin_insert(old, next, track, 2990);
-            callback.begin_block();
-            let offer = control.offer_device_insert_consent(&receipt).unwrap();
-            assert!(control.device_insert_consent_is_current(&offer));
-            if fault {
-                callback.report_render_fault(None, 2990);
-            } else {
-                // The already-admitted Stop Track changes the route after the
-                // offer, without any new command ticket reaching control.
-                callback.render(&mut [[0.0; 2]; 64]).unwrap();
-                assert_eq!(
-                    control.status.admitted_ticket.load(Acquire),
-                    offer.fence.admitted_command_ticket
-                );
-            }
-            assert!(!control.device_insert_consent_is_current(&offer));
-            assert!(control.offer_device_insert_consent(&receipt).is_none());
-            assert_eq!(control.status.recording_source(), Some(predecessor));
-        }
+    fn offer_uses_the_route_after_the_admitted_action_and_a_fault_revokes_it() {
+        let ([old, next], track) = revisions();
+        let (control, mut callback, predecessor, receipt) = begin_insert(old, next, track, 2990);
+        let initial_route = receipt.retained_route_generation();
+        callback.begin_block();
+        assert!(
+            control
+                .offer_resident_device_insert_consent(&receipt)
+                .is_none()
+        );
+        let mut pcm = [[0.0; 2]; 64];
+        callback.render(&mut pcm).unwrap();
+        assert_eq!(pcm[..10], [[0.25; 2]; 10]);
+        assert_eq!(pcm[10..], [[0.0; 2]; 54]);
+        callback.begin_block();
+        let offer = control
+            .offer_resident_device_insert_consent(&receipt)
+            .unwrap();
+        assert_ne!(offer.fence.route_state_generation, initial_route);
+        assert_eq!(
+            offer.fence.route_state_generation,
+            receipt.retained_route_generation()
+        );
+        assert!(control.device_insert_consent_is_current(&offer));
+        callback.report_render_fault(None, 3054);
+        assert!(!control.device_insert_consent_is_current(&offer));
+        assert!(
+            control
+                .offer_resident_device_insert_consent(&receipt)
+                .is_none()
+        );
+        assert_eq!(control.status.recording_source(), Some(predecessor));
     }
     #[test]
     fn newer_publication_revokes_old_consent_before_installing() {
-        let ([old, next], track) = revisions();
+        let ([old, next], _) = revisions();
         let (mut control, mut callback, predecessor, receipt) =
-            begin_insert(Arc::clone(&old), next, track, 512);
+            begin_insert_with_pending_track(Arc::clone(&old), next, None, 512);
         callback.begin_block();
         let offer = control.offer_device_insert_consent(&receipt).unwrap();
         control.reclaim();

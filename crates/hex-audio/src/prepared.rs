@@ -74,6 +74,7 @@ pub use action_outcomes::{
     Reader as ActionOutcomeReader, Receipt as ActionOutcomeReceipt,
 };
 mod admission;
+mod device_insert_cut;
 mod eligible_publication;
 #[cfg(target_os = "macos")]
 mod output_presentation;
@@ -365,7 +366,9 @@ pub(crate) struct Publication {
     source_context: Option<hex_engine::AudioSourceContext>,
     policy: PublicationPolicy,
     fresh_runtime_cancellation: Option<PublicationReceiptOwner>,
-    quantized_seek_frame: Option<u64>,
+    // Callback-owned performance boundary for a pending quantized seek or
+    // an insert waiting for the predecessor's admitted route action.
+    scheduled_cut_frame: Option<u64>,
     streams: Option<Box<crate::candidate_custody::OrdinaryStreams>>,
     playback: Box<Playback>,
     // Drop the source observation on control before releasing the native
@@ -2468,7 +2471,7 @@ impl PublicationControl {
         } else {
             None
         };
-        let cancellation = policy.fresh_fence().is_some().then(|| {
+        let cancellation = policy.fresh_fence().map(|fence| {
             let device_insert = match policy {
                 PublicationPolicy::DeviceInsert { predecessor, fence } => Some(
                     DeviceInsertBasis::new(predecessor, fence, &self.status, approved),
@@ -2480,6 +2483,7 @@ impl PublicationControl {
                 source_context,
                 revision,
                 device_insert,
+                fence.route_state_generation,
             )
         });
         let publication = Publication {
@@ -2491,7 +2495,7 @@ impl PublicationControl {
             source_context,
             policy,
             fresh_runtime_cancellation: cancellation.clone().map(PublicationReceiptOwner),
-            quantized_seek_frame: None,
+            scheduled_cut_frame: None,
             streams,
             playback: Box::new(playback),
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -3848,19 +3852,25 @@ impl Callback {
                 self.status.publication_pending.store(false, Release);
                 return;
             }
-            if let Some(basis) = next.approved_device_insert() {
-                match self.advance_confirmed_device_insert(&next, basis) {
-                    Ok(true) => {}
-                    Ok(false) => {
-                        self.deferred = Some(next);
-                        return;
+            let ready = if let Some(basis) = next.approved_device_insert() {
+                self.advance_confirmed_device_insert(&next, basis)
+            } else {
+                self.device_insert_cut_ready(&mut next)
+            };
+            match ready {
+                Ok(true) => {}
+                Ok(false) => {
+                    self.deferred = Some(next);
+                    return;
+                }
+                Err(reason) => {
+                    if let Some(streams) = next.streams.as_mut() {
+                        streams.cancel_install(&mut self.domain_pages);
                     }
-                    Err(reason) => {
-                        self.reject_publication(next.revision, reason);
-                        self.return_graph(next);
-                        self.status.publication_pending.store(false, Release);
-                        return;
-                    }
+                    self.reject_publication(next.revision, reason);
+                    self.return_graph(next);
+                    self.status.publication_pending.store(false, Release);
+                    return;
                 }
             }
             // Do not overtake an accepted transport command or cancel a
@@ -3895,6 +3905,11 @@ impl Callback {
                 | PublicationPolicy::InstallQuantizedSeekWhenReady { fence, .. }
                 | PublicationPolicy::DeviceInsert { fence, .. } => {
                     let active = self.active.as_ref().and_then(ActivePublication::legacy);
+                    let fence = if matches!(next.policy, PublicationPolicy::DeviceInsert { .. }) {
+                        next.retained_insert_fence(fence)
+                    } else {
+                        fence
+                    };
                     let source_changed =
                         if let PublicationPolicy::DeviceInsert { predecessor, .. } = next.policy {
                             self.recording_source() != Some(predecessor)
@@ -4448,6 +4463,7 @@ impl Callback {
                         barrier.wait();
                     }
                     let active = self.active.as_ref().and_then(ActivePublication::legacy);
+                    let fence = next.retained_insert_fence(fence);
                     (Self::runtime_fence_changed(&self.status, active, fence)
                         || self.status.consumed_command.load(Acquire)
                             != fence.admitted_command_ticket
@@ -10292,7 +10308,7 @@ mod tests {
                 source_context: None,
                 policy: PublicationPolicy::InstallFreshRuntime,
                 fresh_runtime_cancellation: None,
-                quantized_seek_frame: None,
+                scheduled_cut_frame: None,
                 streams: None,
                 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
                 native_references: None,
@@ -11784,7 +11800,7 @@ mod tests {
                     source_context: None,
                     policy: PublicationPolicy::InstallFreshRuntime,
                     fresh_runtime_cancellation: None,
-                    quantized_seek_frame: None,
+                    scheduled_cut_frame: None,
                     streams: None,
                     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
                     native_references: None,
@@ -13540,7 +13556,7 @@ mod tests {
             source_context: None,
             policy: PublicationPolicy::InheritRuntime,
             fresh_runtime_cancellation: None,
-            quantized_seek_frame: None,
+            scheduled_cut_frame: None,
             streams: None,
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             native_references: None,
@@ -13663,7 +13679,7 @@ mod tests {
                         source_context: None,
                         policy: PublicationPolicy::InheritRuntime,
                         fresh_runtime_cancellation: None,
-                        quantized_seek_frame: None,
+                        scheduled_cut_frame: None,
                         streams: None,
                         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
                         native_references: None,
@@ -13746,7 +13762,7 @@ mod tests {
                         source_context: None,
                         policy: PublicationPolicy::InheritRuntime,
                         fresh_runtime_cancellation: None,
-                        quantized_seek_frame: None,
+                        scheduled_cut_frame: None,
                         streams: None,
                         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
                         native_references: None,
@@ -13768,7 +13784,7 @@ mod tests {
             source_context: None,
             policy: PublicationPolicy::InheritRuntime,
             fresh_runtime_cancellation: None,
-            quantized_seek_frame: None,
+            scheduled_cut_frame: None,
             streams: None,
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             native_references: None,
@@ -13937,7 +13953,7 @@ mod tests {
                     source_context: None,
                     policy: PublicationPolicy::InheritRuntime,
                     fresh_runtime_cancellation: None,
-                    quantized_seek_frame: None,
+                    scheduled_cut_frame: None,
                     streams: None,
                     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
                     native_references: None,
