@@ -217,6 +217,94 @@ fn zero_latency_insert_installs_with_the_admitted_action_intact() {
 }
 
 #[test]
+fn seamless_device_insert_keeps_the_pcm_of_an_independently_rendered_held_note() {
+    use hex_project::BeatTime;
+
+    let mut editor = Editor::new(Project::new(RATE).unwrap(), 8).unwrap();
+    let Created::Track(track) = editor
+        .execute(Command::AddTrack {
+            name: "held note".into(),
+        })
+        .unwrap()
+    else {
+        panic!("track");
+    };
+    editor
+        .execute(Command::InsertInstrument {
+            track,
+            state: hex_project::default_instrument_state().unwrap(),
+        })
+        .unwrap();
+    let Created::Clip(clip) = editor
+        .execute(Command::PlaceMidiClip {
+            track,
+            start: BeatTime::ZERO,
+            length: BeatTime::ONE,
+        })
+        .unwrap()
+    else {
+        panic!("midi clip");
+    };
+    editor
+        .execute(Command::AddMidiNote {
+            clip,
+            start: BeatTime::ZERO,
+            duration: BeatTime::ONE,
+            pitch: 60,
+            channel: 0,
+            velocity: 100,
+        })
+        .unwrap();
+    let table = Arc::new(hex_engine::SineTable::new());
+    let prepare = |project: &Project| {
+        Arc::new(
+            hex_engine::PreparedRevision::prepare(
+                project,
+                &BTreeMap::new(),
+                Arc::clone(&table),
+                None,
+            )
+            .unwrap(),
+        )
+    };
+    let old = prepare(editor.project());
+    editor
+        .execute(Command::InsertDevice {
+            track,
+            before: None,
+            state: hex_devices::utility::UTILITY_DEFINITION
+                .default_state()
+                .unwrap(),
+        })
+        .unwrap();
+    let next = prepare(editor.project());
+    let cut = 512;
+    let mut reference = [[0.0; 2]; BLOCK];
+    at_cut(&old, cut).render(&mut reference).unwrap();
+    assert!(reference.iter().any(|frame| frame[0].abs() > 0.01));
+
+    for partition in [1, BLOCK] {
+        let (control, mut callback, predecessor, receipt) =
+            begin_insert_with_pending_track(Arc::clone(&old), Arc::clone(&next), None, cut);
+        let mut actual = [[0.0; 2]; BLOCK];
+        for output in actual.chunks_mut(partition) {
+            callback.begin_block();
+            callback.render(output).unwrap();
+        }
+        assert_eq!(receipt.state(), PublicationReceiptState::Installed);
+        assert_eq!(
+            control.status.recording_source(),
+            Some(AppliedAudioSource {
+                context: receipt.context().unwrap(),
+                audio_revision: receipt.revision(),
+                ..predecessor
+            }),
+        );
+        assert_eq!(actual, reference);
+    }
+}
+
+#[test]
 fn ordinary_workspace_uses_the_same_insert_continuity_law_during_preflight() {
     use super::candidate_tests::{anchored, finish, serial};
     use hex_engine::AudioStorageLedgerReservation;

@@ -189,7 +189,7 @@ fn resident_insert_consent(
     {
         return None;
     }
-    control.offer_arrangement_device_insert_consent(&receipt)
+    control.offer_resident_device_insert_consent(&receipt)
 }
 
 impl NativeAudioSink {

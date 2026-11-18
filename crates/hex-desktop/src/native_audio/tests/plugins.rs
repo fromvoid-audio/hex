@@ -2060,3 +2060,155 @@ fn staged_vst3_cancel_and_install_compete_while_the_session_worker_is_parked() {
         assert_eq!(event.state.can_undo, !cancel_first);
     }
 }
+
+#[test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
+fn confirmed_vst3_insert_keeps_the_prepared_worker_and_output() {
+    use hex_session::service::DeviceInsertOutcome;
+
+    fn status(h: &ResidentHarness) -> &hex_audio::prepared::Status {
+        h.audio.as_ref().unwrap().status().unwrap()
+    }
+
+    let _native = native_fixture();
+    let files = Files::new();
+    let mut h = ResidentHarness::with_plugins(
+        host(),
+        Some(EffectPresentation {
+            input_frames: 0,
+            output_frames: 512,
+        }),
+    );
+    assert!(h.next().error.is_none());
+    let (applied, _) = h.applied(0);
+    assert!(
+        h.run(Request::Import(files.wav(48_000, 8192)))
+            .error
+            .is_none()
+    );
+    let (applied, _) = h.applied(applied);
+    let original = h
+        .run(Request::Edit(Command::SetLoopRegion {
+            start: 0,
+            end: 8192,
+            enabled: true,
+        }))
+        .state;
+    h.applied(applied);
+    let predecessor = status(&h).recording_source().unwrap();
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    assert_eq!(h.render(), [[0.25; 2]; 64]);
+
+    let (submitted, resume) = h.probe_next_submitted_device_insert();
+    let input = request(&original, PluginEffectDestination::Main);
+    h.run(Request::InsertPluginEffect(input.clone()));
+    let mut first = None;
+    wait(|| {
+        first = submitted.try_recv().ok();
+        if first.is_some() {
+            return true;
+        }
+        if let Ok(event) = h.service.try_event() {
+            panic!(
+                "hosted insert completed before graph admission: {:?}",
+                event.error
+            );
+        }
+        h.pump();
+        h.render();
+        false
+    });
+    let first = first.unwrap();
+    let binding = h.plugin_progress.lock().unwrap().binding.unwrap();
+    h.render();
+    resume.send(()).unwrap();
+    let offer = loop {
+        let offered = h.next();
+        assert!(offered.error.is_none(), "{:?}", offered.error);
+        assert_eq!(offered.state.project, original.project);
+        assert!(offered.device_insert_complete.is_none());
+        if let Some(offer) = offered.device_insert_confirmation {
+            break offer;
+        }
+    };
+    assert_eq!(offer.submission(), first);
+    assert_eq!(status(&h).recording_source(), Some(predecessor));
+    // Measure away from the source's own loop-edge fade, after a full pass
+    // so the Arrangement and performance clocks are demonstrably different.
+    let away_from_loop_edge = |h: &ResidentHarness| {
+        status(h).performance_frame.load(Acquire) >= 8192
+            && (512..7168).contains(&status(h).position.load(Acquire))
+    };
+    for _ in 0..256 {
+        if away_from_loop_edge(&h) {
+            break;
+        }
+        h.render();
+    }
+    assert!(away_from_loop_edge(&h));
+    assert_eq!(h.render(), [[0.25; 2]; 64]);
+
+    let (submitted, resume) = h.probe_next_submitted_device_insert();
+    assert!(offer.proceed());
+    let confirmed = submitted.recv_timeout(Duration::from_secs(2)).unwrap();
+    assert_eq!(confirmed.context, first.context);
+    assert_eq!(confirmed.output_identity, predecessor.output_identity);
+    assert_ne!(confirmed.audio_revision, first.audio_revision);
+    resume.send(()).unwrap();
+    let position = status(&h).position.load(Acquire);
+    let performance = status(&h).performance_frame.load(Acquire);
+    let faded = h.render_plugin_block();
+    assert_eq!(faded[0], [0.25 * 127.0 / 128.0; 2]);
+    assert!(faded[127..].iter().all(|frame| *frame == [0.0; 2]));
+    assert_eq!(status(&h).recording_source(), Some(predecessor));
+    assert_eq!(
+        status(&h).performance_frame.load(Acquire),
+        performance + 128
+    );
+    assert_eq!(status(&h).position.load(Acquire), (position + 128) % 8192);
+
+    let first_block = h.render_plugin_block();
+    let installed = h.next();
+    assert!(installed.error.is_none(), "{:?}", installed.error);
+    assert_eq!(
+        installed.device_insert_complete.unwrap().submission,
+        confirmed
+    );
+    assert_eq!(
+        installed.device_insert_complete.unwrap().outcome,
+        DeviceInsertOutcome::Installed
+    );
+    assert!(installed.plugin_effect_complete[0].accepted);
+    assert!(Arc::ptr_eq(
+        &installed.plugin_effect_complete[0].control,
+        &input.control
+    ));
+    assert_eq!(installed.state.revision, original.revision + 1);
+    let device = installed.state.project.main_devices()[0].id().value();
+    assert_eq!(status(&h).position.load(Acquire), (position + 384) % 8192);
+    assert_eq!(
+        status(&h).performance_frame.load(Acquire),
+        performance + 384
+    );
+    assert!(status(&h).playing.load(Acquire));
+    wait(|| {
+        h.plugin_progress
+            .lock()
+            .unwrap()
+            .source_bindings
+            .iter()
+            .flatten()
+            .any(|&(id, active, _)| id == device && active == binding)
+    });
+    assert_eq!(h.plugin_records.load(Acquire), 1);
+    assert_eq!(first_block, [[0.0; 2]; 256]);
+    wait(|| h.plugin_completed.load(Acquire) >= 1);
+    assert_eq!(h.render_plugin_block(), [[0.0; 2]; 256]);
+    wait(|| h.plugin_completed.load(Acquire) >= 2);
+    assert_eq!(h.render_plugin_block(), [[0.125; 2]; 256]);
+}

@@ -2478,6 +2478,7 @@ impl Playback {
             }
             _ => false,
         };
+        let confirmed_insert_cut = previous.transport_fade.device_insert_held();
         match (&mut self.session_runtime, &mut previous.session_runtime) {
             (Some(next), Some(old)) => (if fenced_restart {
                 next.try_inherit_state_fenced_restart_from(old)
@@ -2495,6 +2496,8 @@ impl Playback {
                 result
             } else if let Some(anchor) = tempo_anchor {
                 next.try_inherit_state_with_tempo_anchor(old, anchor)
+            } else if confirmed_insert_cut {
+                next.try_inherit_state_at_device_insert_cut(old)
             } else {
                 next.try_inherit_state_live_from(old)
             })

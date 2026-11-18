@@ -100,9 +100,9 @@ impl DeviceInsertConsent {
 }
 
 impl PublicationControl {
-    /// Offer only when the observed source can use the resident Arrangement
-    /// cut. The callback still rechecks the exact routes before fading.
-    pub fn offer_arrangement_device_insert_consent(
+    /// Offer only when the observed source can use the resident cut.
+    /// The callback still rechecks the exact routes before fading.
+    pub fn offer_resident_device_insert_consent(
         &self,
         receipt: &CancellablePublicationReceipt,
     ) -> Option<DeviceInsertConsent> {
@@ -114,9 +114,9 @@ impl PublicationControl {
         let snapshot = self.status.session_routes(&mut routes)?;
         if snapshot.audio_revision != basis.fence.expected_active_revision
             || snapshot.route_state_generation != basis.fence.route_state_generation
-            || routes[..snapshot.count].iter().any(|route| {
-                route.pending.is_some() || matches!(route.owner, SessionRouteOwner::Session { .. })
-            })
+            || routes[..snapshot.count]
+                .iter()
+                .any(|route| route.pending.is_some())
         {
             return None;
         }
@@ -266,20 +266,13 @@ impl Callback {
         if !source_free(active) || !source_free(next) {
             return Err(PlaybackHandoffRejection::StreamedPagesNotReady);
         }
-        // Changing the latency layout can rebuild Session origins and discard
-        // pending actions during paused inheritance. Their admitted timing
-        // takes precedence over the confirmed edit.
+        // A scheduled launch has already been admitted at an exact cut.
+        // Its timing takes precedence over the confirmed edit.
         if (0..active.playback.session_route_count()).any(|index| {
             active
                 .playback
                 .session_route_status(index)
-                .is_some_and(|route| {
-                    route.pending.is_some()
-                        || matches!(
-                            route.owner,
-                            hex_engine::SessionPlaybackOwner::Session { .. }
-                        )
-                })
+                .is_some_and(|route| route.pending.is_some())
         }) {
             return Err(stale);
         }
@@ -324,6 +317,191 @@ mod tests {
     use crate::prepared::latency_edit_timing_tests::{
         begin_insert, begin_insert_with_pending_track, revisions,
     };
+
+    #[test]
+    fn confirmed_insert_preserves_a_launched_session_clips_exact_source_position() {
+        use hex_engine::{LaunchQuantization, SessionPlaybackCommand};
+        use hex_project::{Command, Created, Editor, Project};
+
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let Created::Imported { track, asset, .. } = editor
+            .execute(Command::ImportAudioTrack {
+                name: "source".into(),
+                path: "source.wav".into(),
+                sample_rate: 48_000,
+                frames: 8192,
+            })
+            .unwrap()
+        else {
+            panic!("import");
+        };
+        let Created::Scene(scene) = editor
+            .execute(Command::AddScene {
+                name: "scene".into(),
+            })
+            .unwrap()
+        else {
+            panic!("scene");
+        };
+        let Created::SessionClip(clip) = editor
+            .execute(Command::CreateSessionAudioClip {
+                track,
+                scene,
+                name: "ramp".into(),
+                asset,
+                source_start: 32,
+                source_end: 8192,
+            })
+            .unwrap()
+        else {
+            panic!("session audio clip");
+        };
+        editor
+            .execute(Command::SetLoopRegion {
+                start: 0,
+                end: 1024,
+                enabled: true,
+            })
+            .unwrap();
+        let sample = |frame: u64| [0.125 + frame as f32 / 65_536.0; 2];
+        let media = std::collections::BTreeMap::from([(
+            asset,
+            hex_engine::Audio::new(48_000, (0..8192).map(sample).collect()).unwrap(),
+        )]);
+        let table = Arc::new(hex_engine::SineTable::new());
+        let prepare = |project: &Project| {
+            Arc::new(
+                hex_engine::PreparedRevision::prepare(project, &media, Arc::clone(&table), None)
+                    .unwrap(),
+            )
+        };
+        let limiter = hex_engine::default_native_device_state_for_class(
+            hex_engine::NativeDeviceClass::Effect,
+            hex_engine::DeviceTypeId::from_static("hex.limiter"),
+        )
+        .unwrap();
+        editor
+            .execute(Command::InsertDevice {
+                track,
+                before: None,
+                state: limiter.clone(),
+            })
+            .unwrap();
+        let old = prepare(editor.project());
+        let old_latency = old.arrangement().main_latency_frames();
+        assert!(old_latency > 0);
+        editor
+            .execute(Command::InsertDevice {
+                track,
+                before: None,
+                state: limiter,
+            })
+            .unwrap();
+        let next = prepare(editor.project());
+        let latency = next.arrangement().main_latency_frames();
+        assert!(latency > old_latency);
+
+        let (mut control, mut callback) = channel(48_000).unwrap();
+        let initial = hex_engine::AudioSourceContext {
+            project_generation: 5,
+            editor_revision: 7,
+        };
+        let candidate = hex_engine::AudioSourceContext {
+            editor_revision: 8,
+            ..initial
+        };
+        control
+            .publish_unaccounted_pcm_obligation(
+                Playback::try_from_prepared_with_session(old).unwrap(),
+                PublicationPolicy::InstallFreshRuntime,
+                initial.project_generation,
+                true,
+                false,
+                Some(initial),
+            )
+            .unwrap();
+        control.command(PlaybackCommand::Play).unwrap();
+        callback.begin_block();
+        callback.render(&mut [[0.0; 2]; 192]).unwrap();
+        control
+            .session_command_with_ticket(SessionPlaybackCommand::LaunchClip {
+                clip,
+                quantization: LaunchQuantization::Immediate,
+            })
+            .unwrap();
+        callback.begin_block();
+        callback.render(&mut [[0.0; 2]; 2048]).unwrap();
+        let mut routes = [SessionRouteEntry::default(); 1];
+        control.status.session_routes(&mut routes).unwrap();
+        let launch = routes[0].audio_launch_frame.unwrap();
+        assert!(launch > 0);
+        let predecessor = control.status.recording_source().unwrap();
+        let fence = control.capture_fresh_runtime_fence().unwrap();
+        let policy = PublicationPolicy::DeviceInsert { predecessor, fence };
+        let publish = |control: &mut Control, approval: Option<DeviceInsertConsent>| {
+            let mut bind_receipt = |_: &CancellablePublicationReceipt| {};
+            control
+                .publish_unaccounted_with_native_continuation(
+                    Playback::try_from_prepared_with_session(Arc::clone(&next)).unwrap(),
+                    policy,
+                    initial.project_generation,
+                    true,
+                    false,
+                    Some(candidate),
+                    approval.map(|approved| DeviceInsertAdmission {
+                        bind: &mut bind_receipt,
+                        approved: Some(approved),
+                    }),
+                    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                    None,
+                )
+                .unwrap()
+        };
+
+        let revision = publish(&mut control, None);
+        let refused = control.fresh_runtime_receipt(revision).unwrap();
+        callback.begin_block();
+        let consent = control
+            .offer_resident_device_insert_consent(&refused)
+            .unwrap();
+        control.reclaim();
+        let revision = publish(&mut control, Some(consent));
+        let receipt = control.fresh_runtime_receipt(revision).unwrap();
+        let cut = 192 + 2048 + 128;
+        let mut pcm = [[0.0; 2]; 512];
+        let mut render = || {
+            callback.begin_block();
+            callback.render(&mut [[0.0; 2]; 256]).unwrap();
+            assert_eq!(control.status.performance_frame.load(Acquire), cut);
+            assert_eq!(control.status.position.load(Acquire), cut % 1024);
+            callback.begin_block();
+            callback.render(&mut pcm).unwrap();
+        };
+        #[cfg(feature = "allocation-probe")]
+        {
+            let counts = allocation_counter::measure(&mut render);
+            assert_eq!(
+                (
+                    counts.count_total,
+                    counts.bytes_total,
+                    counts.count_current,
+                    counts.bytes_current
+                ),
+                (0, 0, 0, 0),
+            );
+        }
+        #[cfg(not(feature = "allocation-probe"))]
+        render();
+        assert_eq!(receipt.state(), PublicationReceiptState::Installed);
+        assert_eq!(control.status.performance_frame.load(Acquire), cut + 512);
+        assert_eq!(control.status.position.load(Acquire), (cut + 512) % 1024);
+        control.status.session_routes(&mut routes).unwrap();
+        assert_eq!(routes[0].audio_launch_frame, Some(launch));
+        assert_eq!(
+            pcm[511],
+            sample(32 + cut - launch + 511 - u64::from(latency))
+        );
+    }
 
     #[test]
     fn confirmed_insert_yields_to_priority_stop_admitted_routes_and_output_loss() {

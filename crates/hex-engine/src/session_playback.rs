@@ -2661,6 +2661,23 @@ impl SessionPlayback {
         &mut self,
         previous: &mut Self,
     ) -> Result<SessionHandoffReport, SessionPlaybackError> {
+        self.try_inherit_live_from(previous, false)
+    }
+
+    /// Rebuild at an output-owned silent cut without reanchoring either
+    /// transport clock or already-playing Session clip origins.
+    pub(crate) fn try_inherit_state_at_device_insert_cut(
+        &mut self,
+        previous: &mut Self,
+    ) -> Result<SessionHandoffReport, SessionPlaybackError> {
+        self.try_inherit_live_from(previous, true)
+    }
+
+    fn try_inherit_live_from(
+        &mut self,
+        previous: &mut Self,
+        confirmed_insert: bool,
+    ) -> Result<SessionHandoffReport, SessionPlaybackError> {
         if self.midi_capture_active()
             || previous.midi_capture_active()
             || self.linear_arrangement_export
@@ -2671,7 +2688,11 @@ impl SessionPlayback {
             return Err(SessionPlaybackError::InvalidCommand);
         }
         self.require_fresh_candidate()?;
-        self.inherit_state_live(previous, None)
+        if confirmed_insert {
+            self.inherit_state_at_device_insert_cut(previous)
+        } else {
+            self.inherit_state_live(previous, None)
+        }
     }
 
     /// The caller must authenticate and retain the source and state identities.
