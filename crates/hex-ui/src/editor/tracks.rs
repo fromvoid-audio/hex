@@ -545,7 +545,7 @@ fn clip_grid_layer_impl(
 
 pub(super) struct ClipViewTimeline<'a> {
     pub(super) viewport: Viewport,
-    pub(super) grid: &'a [super::musical_time::GridLine],
+    pub(super) grid: &'a std::rc::Rc<Vec<super::musical_time::GridLine>>,
     pub(super) scale_factor: f32,
 }
 

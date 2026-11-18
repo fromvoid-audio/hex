@@ -11,7 +11,7 @@ use gpui::{
     AnyElement, AnyView, Context, Entity, IntoElement, Render, WeakEntity, Window, div, prelude::*,
 };
 use hex_project::{ClipId, Track, TrackId};
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, rc::Rc, sync::Arc};
 
 #[derive(Clone, PartialEq)]
 struct ContentKey {
@@ -20,7 +20,7 @@ struct ContentKey {
     track: TrackId,
     track_index: usize,
     viewport: Viewport,
-    grid: Vec<GridLine>,
+    grid: Rc<Vec<GridLine>>,
     snap: SnapGrid,
     scale: u32,
     palette: hex_preferences::ThemePreferences,
@@ -196,7 +196,7 @@ impl EditorView {
             track: track.id(),
             track_index,
             viewport: timeline.viewport,
-            grid: timeline.grid.to_vec(),
+            grid: Rc::clone(timeline.grid),
             snap: self.snap_grid,
             scale: timeline.scale_factor.to_bits(),
             palette: theme::preferences(),
