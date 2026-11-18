@@ -94,6 +94,11 @@ mod native_sources;
 pub use hex_lattice::ProcessorInstanceIdentity as NativeProcessorIdentity;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub use native_sources::NativeParameterContinuationRequest;
+mod publication_receipt;
+use publication_receipt::PublicationReceiptOwner;
+pub use publication_receipt::{
+    CancellablePublicationReceipt, FreshRuntimeCancellationResult, PublicationReceiptState,
+};
 mod resident_forwarding;
 pub use endpoints::{Client, WorkerControl};
 pub(crate) use endpoints::{ClientEndpoints, EndpointTerminals};
@@ -356,7 +361,7 @@ pub(crate) struct Publication {
     explicit_control_context: bool,
     source_context: Option<hex_engine::AudioSourceContext>,
     policy: PublicationPolicy,
-    fresh_runtime_cancellation: Option<Arc<FreshRuntimeCancellation>>,
+    fresh_runtime_cancellation: Option<PublicationReceiptOwner>,
     quantized_seek_frame: Option<u64>,
     streams: Option<Box<crate::candidate_custody::OrdinaryStreams>>,
     playback: Box<Playback>,
@@ -494,86 +499,6 @@ impl PublicationPolicy {
             | Self::InstallQuantizedSeekWhenReady { fence, .. } => Some(fence),
             _ => None,
         }
-    }
-}
-
-const FRESH_PUBLICATION_PENDING: u32 = 0;
-const FRESH_PUBLICATION_APPLYING: u32 = 1;
-const FRESH_PUBLICATION_CANCELLED: u32 = 2;
-const FRESH_PUBLICATION_COMPLETE: u32 = 3;
-
-/// Control-side result of cancelling a conditionally published fresh runtime.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FreshRuntimeCancellationResult {
-    /// Cancellation won before the callback began installing the candidate.
-    Cancelled,
-    /// The callback had already crossed its final installation decision.
-    Applying,
-    /// The callback has already returned or installed this candidate.
-    Complete,
-    /// The nonblocking Client view is contended; retain and retry the request.
-    Busy,
-    /// There is no currently retained cancellation decision for this revision.
-    UnknownRevision,
-}
-
-/// A per-publication decision cell binds a full revision to its own atomic
-/// state. The immutable key and CAS live in the same allocation, so there is
-/// no split key/state ABA window and no truncated-revision encoding.
-struct FreshRuntimeCancellation {
-    revision: u64,
-    decision: AtomicU32,
-}
-
-impl FreshRuntimeCancellation {
-    fn request_cancel(&self) -> FreshRuntimeCancellationResult {
-        loop {
-            match self.decision.load(Acquire) {
-                FRESH_PUBLICATION_PENDING => {
-                    if self
-                        .decision
-                        .compare_exchange(
-                            FRESH_PUBLICATION_PENDING,
-                            FRESH_PUBLICATION_CANCELLED,
-                            AcqRel,
-                            Acquire,
-                        )
-                        .is_ok()
-                    {
-                        return FreshRuntimeCancellationResult::Cancelled;
-                    }
-                }
-                FRESH_PUBLICATION_APPLYING => {
-                    return FreshRuntimeCancellationResult::Applying;
-                }
-                FRESH_PUBLICATION_CANCELLED => {
-                    return FreshRuntimeCancellationResult::Cancelled;
-                }
-                FRESH_PUBLICATION_COMPLETE => {
-                    return FreshRuntimeCancellationResult::Complete;
-                }
-                _ => return FreshRuntimeCancellationResult::Complete,
-            }
-        }
-    }
-
-    fn finish(&self) {
-        self.decision.store(FRESH_PUBLICATION_COMPLETE, Release);
-    }
-
-    fn finish_for_shutdown(&self) -> bool {
-        self.decision.swap(FRESH_PUBLICATION_COMPLETE, AcqRel) == FRESH_PUBLICATION_CANCELLED
-    }
-
-    fn begin_apply(&self) -> bool {
-        self.decision
-            .compare_exchange(
-                FRESH_PUBLICATION_PENDING,
-                FRESH_PUBLICATION_APPLYING,
-                AcqRel,
-                Acquire,
-            )
-            .is_ok()
     }
 }
 
@@ -1348,7 +1273,7 @@ pub struct PublicationControl {
     resident_forwarding: Option<Arc<resident_forwarding::ResidentForwarding>>,
     #[cfg(all(test, feature = "allocation-probe"))]
     endpoint_probe: Option<crate::native_callback_owner::DropProbe>,
-    latest_fresh_runtime_cancellation: Option<Arc<FreshRuntimeCancellation>>,
+    latest_fresh_runtime_cancellation: Option<CancellablePublicationReceipt>,
 }
 impl PublicationControl {
     /// Publish one private note monitor for the exact settled pause. The
@@ -2402,10 +2327,11 @@ impl PublicationControl {
         }
         let revision = self.revision + 1;
         let cancellation = policy.fresh_fence().is_some().then(|| {
-            Arc::new(FreshRuntimeCancellation {
+            CancellablePublicationReceipt::new(
+                self.candidate_root.root_id(),
+                source_context,
                 revision,
-                decision: AtomicU32::new(FRESH_PUBLICATION_PENDING),
-            })
+            )
         });
         let mut playback = playback;
         playback.set_device_metering(true);
@@ -2479,7 +2405,7 @@ impl PublicationControl {
             explicit_control_context,
             source_context,
             policy,
-            fresh_runtime_cancellation: cancellation.as_ref().map(Arc::clone),
+            fresh_runtime_cancellation: cancellation.clone().map(PublicationReceiptOwner),
             quantized_seek_frame: None,
             streams,
             playback: Box::new(playback),
@@ -2505,22 +2431,29 @@ impl PublicationControl {
         Ok(revision)
     }
 
+    /// Get the latest cancellable submission's exact receipt. Retain it
+    /// before another publication can replace this control-side lookup.
+    pub fn fresh_runtime_receipt(&self, revision: u64) -> Option<CancellablePublicationReceipt> {
+        self.latest_fresh_runtime_cancellation
+            .as_ref()
+            .filter(|receipt| receipt.revision() == revision)
+            .cloned()
+    }
+
     /// Cancel a conditional fresh-runtime publication until the callback's
-    /// final Pending-to-Applying CAS. A successful result means the candidate
-    /// will be returned through the normal retirement queue without becoming
-    /// active. Once Applying wins, callers must wait for its exact terminal
-    /// revision and publish any successor from the resulting canonical state.
+    /// final Pending-to-Applying CAS. Once Applying wins, wait for the
+    /// exact callback terminal before publishing a successor.
     pub fn cancel_fresh_runtime_publication(
         &self,
         revision: u64,
     ) -> FreshRuntimeCancellationResult {
-        let Some(cancellation) = self.latest_fresh_runtime_cancellation.as_ref() else {
-            return FreshRuntimeCancellationResult::UnknownRevision;
-        };
-        if cancellation.revision != revision {
-            return FreshRuntimeCancellationResult::UnknownRevision;
-        }
-        cancellation.request_cancel()
+        self.latest_fresh_runtime_cancellation
+            .as_ref()
+            .filter(|receipt| receipt.revision() == revision)
+            .map_or(
+                FreshRuntimeCancellationResult::UnknownRevision,
+                CancellablePublicationReceipt::cancel,
+            )
     }
     /// Bounded reclamation on the control thread, including final PCM drops.
     pub fn reclaim(&mut self) -> usize {
@@ -3363,6 +3296,25 @@ impl Callback {
     }
 
     fn return_graph(&mut self, publication: Publication) {
+        if let Some(receipt) = publication.fresh_runtime_cancellation.as_ref() {
+            // The callback is the sole writer of these refusal fields. A
+            // refused graph is returned in the same callback branch that
+            // publishes the exact revision's reason.
+            let refusal = self
+                .status
+                .rejected_revision()
+                .filter(|(revision, _)| *revision == publication.revision)
+                .map(|(_, reason)| reason);
+            let closing = self.status.closing.load(Acquire);
+            let disposition = refusal
+                .or_else(|| (!closing).then_some(PlaybackHandoffRejection::RuntimeFenceChanged));
+            if receipt.returned(disposition) && closing && refusal.is_none() {
+                self.reject_publication(
+                    publication.revision,
+                    PlaybackHandoffRejection::FreshRuntimeCancelled,
+                );
+            }
+        }
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         self.restore_parameter_predecessor_prewarm(&publication);
         self.return_publication(ReturnedPublication::Legacy(publication));
@@ -3469,14 +3421,6 @@ impl Callback {
             if !self.retired.is_full()
                 && let Some(publication) = self.deferred.take()
             {
-                if let Some(cancellation) = publication.fresh_runtime_cancellation.as_ref()
-                    && cancellation.finish_for_shutdown()
-                {
-                    self.reject_publication(
-                        publication.revision,
-                        PlaybackHandoffRejection::FreshRuntimeCancelled,
-                    );
-                }
                 self.return_graph(publication);
                 self.status.publication_pending.store(false, Release);
             }
@@ -3524,14 +3468,6 @@ impl Callback {
                         return;
                     }
                 };
-                if let Some(cancellation) = publication.fresh_runtime_cancellation.as_ref()
-                    && cancellation.finish_for_shutdown()
-                {
-                    self.reject_publication(
-                        publication.revision,
-                        PlaybackHandoffRejection::FreshRuntimeCancelled,
-                    );
-                }
                 self.return_graph(publication);
                 self.status.publication_pending.store(false, Release);
             }
@@ -3781,13 +3717,10 @@ impl Callback {
             if next
                 .fresh_runtime_cancellation
                 .as_ref()
-                .is_some_and(|c| c.decision.load(Acquire) == FRESH_PUBLICATION_CANCELLED)
+                .is_some_and(PublicationReceiptOwner::cancel_requested)
             {
                 if let Some(streams) = next.streams.as_mut() {
                     streams.cancel_install(&mut self.domain_pages);
-                }
-                if let Some(cancellation) = next.fresh_runtime_cancellation.as_ref() {
-                    cancellation.finish();
                 }
                 self.reject_publication(
                     next.revision,
@@ -4106,9 +4039,6 @@ impl Callback {
                         if let Some(streams) = next.streams.as_mut() {
                             streams.cancel_install(&mut self.domain_pages);
                         }
-                        if let Some(cancellation) = next.fresh_runtime_cancellation.as_ref() {
-                            cancellation.finish();
-                        }
                         self.reject_publication(next.revision, reason);
                         self.return_graph(next);
                         self.status.publication_pending.store(false, Release);
@@ -4310,9 +4240,6 @@ impl Callback {
                         if let Some(streams) = next.streams.as_mut() {
                             streams.cancel_install(&mut self.domain_pages);
                         }
-                        if let Some(cancellation) = next.fresh_runtime_cancellation.as_ref() {
-                            cancellation.finish();
-                        }
                         self.reject_publication(
                             next.revision,
                             if source_changed {
@@ -4457,9 +4384,6 @@ impl Callback {
                     if let Some(streams) = next.streams.as_mut() {
                         streams.cancel_install(&mut self.domain_pages);
                     }
-                    if let Some(cancellation) = next.fresh_runtime_cancellation.as_ref() {
-                        cancellation.finish();
-                    }
                     if let Some(reason) = error.rejection() {
                         self.reject_publication(next.revision, reason);
                     }
@@ -4485,9 +4409,6 @@ impl Callback {
                         let _promotions = promotions;
                         if let Some(streams) = next.streams.as_mut() {
                             streams.cancel_install(&mut self.domain_pages);
-                        }
-                        if let Some(cancellation) = next.fresh_runtime_cancellation.as_ref() {
-                            cancellation.finish();
                         }
                         self.reject_publication(
                             next.revision,
@@ -4647,14 +4568,6 @@ impl Callback {
                         self.return_graph(previous);
                     }
                     self.finish_pending_stream_play();
-                    if let Some(cancellation) = self
-                        .active
-                        .as_ref()
-                        .and_then(ActivePublication::legacy)
-                        .and_then(|active| active.fresh_runtime_cancellation.as_ref())
-                    {
-                        cancellation.finish();
-                    }
                     self.publish_active_routes(true);
                     self.recovery_seek_pending = None;
                     if self.recovery_position_frozen && !self.status.device_fault.load(Acquire) {
@@ -4667,6 +4580,14 @@ impl Callback {
                     self.status.stream_read_failed.store(false, Release);
                     self.status.applied_source.publish(None);
                     self.status.applied_revision.store(revision, Release);
+                    if let Some(receipt) = self
+                        .active
+                        .as_ref()
+                        .and_then(ActivePublication::legacy)
+                        .and_then(|active| active.fresh_runtime_cancellation.as_ref())
+                    {
+                        receipt.installed();
+                    }
                     self.status.publication_pending.store(false, Release);
                     self.trace_audio(
                         AudioDiagnosticKind::PublicationApplied,
@@ -9954,6 +9875,7 @@ mod tests {
                 PublicationPolicy::InstallFreshRuntimeIfUnchanged(fence),
             )
             .unwrap();
+        let cancelled = control.fresh_runtime_receipt(cancelled_revision).unwrap();
         let before_apply = Arc::new(Barrier::new(2));
         callback.test_before_fresh_runtime_apply = Some(Arc::clone(&before_apply));
         std::thread::scope(|scope| {
@@ -9963,6 +9885,7 @@ mod tests {
                 control.cancel_fresh_runtime_publication(cancelled_revision),
                 FreshRuntimeCancellationResult::Cancelled
             );
+            assert_eq!(cancelled.state(), PublicationReceiptState::Cancelled);
             control.stop();
             before_apply.wait();
             callback_thread.join().unwrap();
@@ -9991,6 +9914,7 @@ mod tests {
                 PublicationPolicy::InstallFreshRuntimeIfUnchanged(fence),
             )
             .unwrap();
+        let installing = control.fresh_runtime_receipt(applying_revision).unwrap();
         let after_apply_decision = Arc::new(Barrier::new(2));
         callback.test_after_fresh_runtime_apply_decision = Some(Arc::clone(&after_apply_decision));
         std::thread::scope(|scope| {
@@ -10000,6 +9924,7 @@ mod tests {
                 control.cancel_fresh_runtime_publication(applying_revision),
                 FreshRuntimeCancellationResult::Applying
             );
+            assert_eq!(installing.state(), PublicationReceiptState::Applying);
             control.stop();
             after_apply_decision.wait();
             callback_thread.join().unwrap();
@@ -10017,10 +9942,113 @@ mod tests {
             control.cancel_fresh_runtime_publication(applying_revision),
             FreshRuntimeCancellationResult::Complete
         );
+        assert_eq!(installing.state(), PublicationReceiptState::Installed);
+        assert_eq!(cancelled.state(), PublicationReceiptState::Cancelled);
         assert_eq!(control.reclaim(), 1);
         control.request_shutdown();
         callback.begin_block();
         control.reclaim();
+    }
+
+    #[test]
+    fn publication_receipts_keep_exact_terminals_after_replacement_and_shutdown() {
+        let (mut control, mut callback) = channel(48_000).unwrap();
+        control.publish(graph().0).unwrap();
+        callback.begin_block();
+        let output = control.output_identity().unwrap();
+        let context = hex_engine::AudioSourceContext {
+            project_generation: 4,
+            editor_revision: 6,
+        };
+        let submit = |control: &mut Control, fence| {
+            let revision = control
+                .publish_unaccounted_pcm_obligation(
+                    graph().0,
+                    PublicationPolicy::InstallFreshRuntimeIfUnchanged(fence),
+                    context.project_generation,
+                    true,
+                    false,
+                    Some(context),
+                )
+                .unwrap();
+            let receipt = control.fresh_runtime_receipt(revision).unwrap();
+            assert_eq!(receipt.output_identity(), output);
+            assert_eq!(receipt.context(), Some(context));
+            assert_eq!(receipt.revision(), revision);
+            assert_eq!(receipt.state(), PublicationReceiptState::Pending);
+            receipt
+        };
+        let begin = |callback: &mut Callback| {
+            #[cfg(feature = "allocation-probe")]
+            {
+                let counts = allocation_counter::measure(|| callback.begin_block());
+                assert_eq!(
+                    (
+                        counts.count_total,
+                        counts.bytes_total,
+                        counts.count_current,
+                        counts.bytes_current
+                    ),
+                    (0, 0, 0, 0),
+                );
+            }
+            #[cfg(not(feature = "allocation-probe"))]
+            callback.begin_block();
+        };
+
+        let old_fence = control.capture_fresh_runtime_fence().unwrap();
+        let installed = submit(&mut control, old_fence);
+        begin(&mut callback);
+        control.reclaim();
+        // Both later candidates have the same context. Their revisions and
+        // terminals must stay distinct from the installed receipt.
+        let refused = submit(&mut control, old_fence);
+        begin(&mut callback);
+        control.reclaim();
+        assert_eq!(
+            refused.state(),
+            PublicationReceiptState::Refused(PlaybackHandoffRejection::RuntimeFenceChanged)
+        );
+        let current_fence = control.capture_fresh_runtime_fence().unwrap();
+        let cancelled = submit(&mut control, current_fence);
+        assert_eq!(
+            cancelled.cancel(),
+            FreshRuntimeCancellationResult::Cancelled
+        );
+        begin(&mut callback);
+        control.reclaim();
+        assert_eq!(
+            control.status.rejected_revision().unwrap().0,
+            cancelled.revision()
+        );
+        let pending = submit(&mut control, current_fence);
+        control.request_shutdown();
+        begin(&mut callback);
+        control.reclaim();
+        assert_eq!(pending.state(), PublicationReceiptState::OutputClosed);
+        assert_eq!(installed.state(), PublicationReceiptState::Installed);
+        assert_eq!(
+            refused.state(),
+            PublicationReceiptState::Refused(PlaybackHandoffRejection::RuntimeFenceChanged)
+        );
+        assert_eq!(cancelled.state(), PublicationReceiptState::Cancelled);
+    }
+
+    #[test]
+    fn destroying_output_without_another_callback_closes_its_pending_receipt() {
+        let (mut control, callback) = channel(48_000).unwrap();
+        let fence = control.capture_fresh_runtime_fence().unwrap();
+        let revision = control
+            .publish_with_policy(
+                graph().0,
+                PublicationPolicy::InstallFreshRuntimeIfUnchanged(fence),
+            )
+            .unwrap();
+        let receipt = control.fresh_runtime_receipt(revision).unwrap();
+        assert_eq!(receipt.state(), PublicationReceiptState::Pending);
+        drop(control);
+        drop(callback);
+        assert_eq!(receipt.state(), PublicationReceiptState::OutputClosed);
     }
 
     #[test]
