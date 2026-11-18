@@ -227,9 +227,9 @@ impl StreamPlayback<'_> {
             .map(|(window, _)| window)
     }
 
-    /// Enumerate the ordinary successor's first running chunk at a confirmed
-    /// insert cut without changing either committed runtime.
-    pub fn preview_ordinary_device_insert(
+    /// Enumerate the successor's first running chunk at a confirmed cut
+    /// without changing either committed runtime or its owner.
+    pub fn preview_device_insert(
         &mut self,
         previous: &mut StreamPlayback<'_>,
         fade_remaining: u32,
@@ -238,7 +238,15 @@ impl StreamPlayback<'_> {
     ) -> Result<StreamChunkWindow, PlaybackHandoffError> {
         match (&mut self.runtime, &mut previous.runtime) {
             (Runtime::Ordinary(next, _), Runtime::Ordinary(old, _)) => {
-                next.preview_stream_device_insert(old, fade_remaining, maximum_frames, visit)
+                next.preview_stream_device_insert(old, fade_remaining, maximum_frames, true, visit)
+            }
+            (Runtime::Constructor(next), Runtime::Constructor(old))
+                if next.identity() != old.identity() =>
+            {
+                let stale = PlaybackHandoffError::RuntimeFenceChanged;
+                let next = next.device_insert_runtime().ok_or(stale)?;
+                let old = old.device_insert_runtime().ok_or(stale)?;
+                next.preview_stream_device_insert(old, fade_remaining, maximum_frames, false, visit)
             }
             _ => Err(PlaybackHandoffError::RuntimeFenceChanged),
         }

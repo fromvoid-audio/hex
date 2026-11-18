@@ -1972,6 +1972,7 @@ impl Playback {
         previous: &mut Self,
         fade_remaining: u32,
         maximum_frames: usize,
+        ordinary: bool,
         visit: &mut impl FnMut(crate::StreamResourceExtent) -> Result<(), Invalid>,
     ) -> Result<crate::StreamChunkWindow, PlaybackHandoffError> {
         let unavailable = PlaybackHandoffError::RuntimeFenceChanged;
@@ -1980,7 +1981,7 @@ impl Playback {
         }
         let next = self.session_runtime.as_mut().ok_or(unavailable)?;
         let previous = previous.session_runtime.as_mut().ok_or(unavailable)?;
-        next.preview_stream_device_insert(previous, fade_remaining, maximum_frames, visit)
+        next.preview_stream_device_insert(previous, fade_remaining, maximum_frames, ordinary, visit)
             .map_err(PlaybackHandoffError::Session)
     }
 
@@ -2301,7 +2302,13 @@ impl Playback {
         &mut self,
         previous: &mut Self,
         groups: crate::audio_candidate::groups::Transfer<'_>,
+        confirmed_insert: bool,
     ) -> Result<(), PlaybackHandoffError> {
+        if confirmed_insert && !previous.device_insert_held()
+            || !confirmed_insert && previous.device_insert_cut_pending()
+        {
+            return Err(PlaybackHandoffError::RuntimeFenceChanged);
+        }
         let next = self
             .session_runtime
             .as_mut()
@@ -2310,9 +2317,13 @@ impl Playback {
             .session_runtime
             .as_mut()
             .ok_or(PlaybackHandoffError::ActiveSessionStateCannotBeDropped)?;
-        next.inherit_candidate_groups(old, groups)
+        next.inherit_candidate_groups(old, groups, confirmed_insert)
             .map_err(PlaybackHandoffError::Session)?;
         self.inherit_metronome(previous);
+        if confirmed_insert {
+            *self.transport_fade = std::mem::take(&mut *previous.transport_fade);
+            self.release_device_insert_cut();
+        }
         Ok(())
     }
 

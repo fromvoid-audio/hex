@@ -2689,7 +2689,7 @@ impl SessionPlayback {
         }
         self.require_fresh_candidate()?;
         if confirmed_insert {
-            self.inherit_state_at_device_insert_cut(previous, None)
+            self.inherit_state_at_device_insert_cut(previous, None, None)
         } else {
             self.inherit_state_live(previous, None)
         }
@@ -2751,6 +2751,7 @@ impl SessionPlayback {
         &mut self,
         previous: &mut Self,
         groups: crate::audio_candidate::groups::Transfer<'_>,
+        confirmed_insert: bool,
     ) -> Result<SessionHandoffReport, SessionPlaybackError> {
         if self.midi_capture_active()
             || previous.midi_capture_active()
@@ -2762,7 +2763,11 @@ impl SessionPlayback {
             return Err(SessionPlaybackError::InvalidCommand);
         }
         self.require_fresh_candidate()?;
-        self.inherit_state_live(previous, Some(groups))
+        if confirmed_insert {
+            self.inherit_state_at_device_insert_cut(previous, Some(groups), None)
+        } else {
+            self.inherit_state_live(previous, Some(groups))
+        }
     }
 
     pub(super) fn require_fresh_candidate(&self) -> Result<(), SessionPlaybackError> {

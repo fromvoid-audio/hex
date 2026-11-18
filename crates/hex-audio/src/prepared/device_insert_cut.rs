@@ -22,24 +22,46 @@ impl Callback {
         let PublicationPolicy::DeviceInsert { predecessor, fence } = next.policy else {
             return Ok(true);
         };
+        self.retain_device_insert_cut(
+            predecessor,
+            fence,
+            next.playback.main_output_latency_frames(),
+            &mut next.scheduled_cut_frame,
+            next.fresh_runtime_cancellation.as_ref(),
+        )
+    }
+
+    pub(super) fn retain_device_insert_cut(
+        &self,
+        predecessor: AppliedAudioSource,
+        fence: FreshRuntimeFence,
+        successor_latency: u32,
+        scheduled_cut: &mut Option<u64>,
+        receipt: Option<&PublicationReceiptOwner>,
+    ) -> Result<bool, PlaybackHandoffRejection> {
         let stale = PlaybackHandoffRejection::RuntimeFenceChanged;
-        let active = self.active.as_ref().and_then(ActivePublication::legacy);
-        let evidence = next.retained_insert_fence(fence);
-        let active = active.ok_or(stale)?;
+        let active = self
+            .active
+            .as_ref()
+            .and_then(ActivePublication::current)
+            .ok_or(stale)?;
+        let retained_routes = receipt.map_or(fence.route_state_generation, |receipt| {
+            receipt.0.retained_route_generation()
+        });
         let actual = active.playback.session_route_state_generation();
         // With no intervening consumed command, only rendering an admitted
         // route action can change the installed graph's generation. Permit
         // that change only after this callback owner has retained its cut.
         let expected = FreshRuntimeFence {
-            route_state_generation: if next.scheduled_cut_frame.is_some() {
+            route_state_generation: if scheduled_cut.is_some() {
                 actual
             } else {
-                evidence.route_state_generation
+                retained_routes
             },
-            ..evidence
+            ..fence
         };
         if self.recording_source() != Some(predecessor)
-            || Self::runtime_fence_changed(&self.status, Some(active), expected)
+            || Self::runtime_frontier_changed(&self.status, active.revision, actual, expected)
             || self.status.consumed_command.load(Acquire) != fence.admitted_command_ticket
             || self.status.closing.load(Acquire)
             || self.transport_fade.is_some()
@@ -48,34 +70,32 @@ impl Callback {
         {
             return Err(stale);
         }
-        if !active.playback.playing()
-            || active.playback.main_output_latency_frames()
-                == next.playback.main_output_latency_frames()
-        {
+        let output_latency = active.playback.main_output_latency_frames().ok_or(stale)?;
+        if !active.playback.playing() || output_latency == successor_latency {
             return Ok(true);
         }
         let current = active.playback.performance_frame();
-        if next.scheduled_cut_frame.is_some_and(|cut| current < cut) {
+        if scheduled_cut.is_some_and(|cut| current < cut) {
             return Ok(false);
         }
         let pending = (0..active.playback.session_route_count())
             .filter_map(|index| active.playback.session_route_status(index)?.pending)
             .map(|pending| pending.performance_frame)
             .max();
-        let receipt = next.fresh_runtime_cancellation.as_ref().ok_or(stale)?;
-        if next.scheduled_cut_frame.is_some() {
+        let receipt = receipt.ok_or(stale)?;
+        if scheduled_cut.is_some() {
             // The end is exclusive: the old renderer has emitted the sample
             // at the last admitted cut, including its output delay.
-            if pending.is_some() || actual == evidence.route_state_generation {
+            if pending.is_some() || actual == retained_routes {
                 return Err(stale);
             }
             receipt.record_retained_route_generation(actual);
-            next.scheduled_cut_frame = None;
+            *scheduled_cut = None;
             return Ok(true);
         }
         if let Some(last) = pending
             && let Some(cut) = last
-                .checked_add(u64::from(active.playback.main_output_latency_frames()))
+                .checked_add(u64::from(output_latency))
                 .and_then(|frame| frame.checked_add(1))
             && cut > current
             && let Some(deadline) = receipt.device_insert_deadline()
@@ -84,7 +104,7 @@ impl Callback {
             let available =
                 remaining.as_nanos() * u128::from(active.playback.sample_rate()) / 1_000_000_000;
             if u128::from(cut - current) <= available {
-                next.scheduled_cut_frame = Some(cut);
+                *scheduled_cut = Some(cut);
                 return Ok(false);
             }
         }

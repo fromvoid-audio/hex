@@ -3779,9 +3779,23 @@ impl Callback {
         active: Option<&Publication>,
         fence: FreshRuntimeFence,
     ) -> bool {
-        active.map_or(0, |active| active.revision) != fence.expected_active_revision
-            || active.map_or(0, |active| active.playback.session_route_state_generation())
-                != fence.route_state_generation
+        let (revision, routes) = active.map_or((0, 0), |active| {
+            (
+                active.revision,
+                active.playback.session_route_state_generation(),
+            )
+        });
+        Self::runtime_frontier_changed(status, revision, routes, fence)
+    }
+
+    fn runtime_frontier_changed(
+        status: &Status,
+        revision: u64,
+        routes: u64,
+        fence: FreshRuntimeFence,
+    ) -> bool {
+        revision != fence.expected_active_revision
+            || routes != fence.route_state_generation
             || status.admitted_ticket.load(Acquire) != fence.admitted_command_ticket
             || status.last_output_fault_epoch.load(Acquire) != fence.output_fault_epoch
             || status.consumed_stop_generation.load(Acquire) != fence.consumed_stop_generation

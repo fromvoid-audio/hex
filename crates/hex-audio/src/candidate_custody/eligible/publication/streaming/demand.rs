@@ -216,12 +216,7 @@ impl StateView<'_> {
                     .as_mut()
                     .ok_or(hex_engine::Invalid("stream predecessor unavailable"))?;
                 let preview = if let Some(fade_remaining) = request.confirmed_fade {
-                    runtime.preview_ordinary_device_insert(
-                        previous,
-                        fade_remaining,
-                        frames,
-                        &mut visit,
-                    )
+                    runtime.preview_device_insert(previous, fade_remaining, frames, &mut visit)
                 } else if request.fenced_restart {
                     runtime.preview_ordinary_fenced_restart(
                         previous,

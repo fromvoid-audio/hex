@@ -29,6 +29,7 @@ impl SessionPlayback {
         previous: &mut Self,
         fade_remaining: u32,
         maximum_frames: usize,
+        ordinary: bool,
         visit: &mut impl FnMut(StreamResourceExtent) -> Result<(), Invalid>,
     ) -> Result<StreamChunkWindow, SessionPlaybackError> {
         if self.linear_arrangement_export
@@ -37,6 +38,9 @@ impl SessionPlayback {
             || previous.current_sampler_console
             || self.midi_capture_active()
             || previous.midi_capture_active()
+            || (!ordinary
+                && (!self.supports_closed_stream_demand()
+                    || !previous.supports_closed_stream_demand()))
             || previous.playing != (fade_remaining != 0)
             || previous.routes.iter().any(|route| route.pending.is_some())
         {
@@ -65,13 +69,13 @@ impl SessionPlayback {
             previous.playing,
         ) = (performance, arrangement, pass, false);
         let mut demand = HandoffDemand {
-            ordinary: true,
+            ordinary,
             maximum_frames,
             playing: Some(true),
             visit,
             window: None,
         };
-        let plan = self.inherit_state_at_device_insert_cut(previous, Some(&mut demand));
+        let plan = self.inherit_state_at_device_insert_cut(previous, None, Some(&mut demand));
         (
             previous.performance_frame,
             previous.arrangement_frame,
