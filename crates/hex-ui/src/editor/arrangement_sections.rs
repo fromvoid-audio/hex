@@ -7400,10 +7400,10 @@ pub(super) mod tests {
             assert_eq!(view.state.as_ref().unwrap().revision, original_revision);
             cx.notify();
         });
+        // Apply the copied graph before the editor consumes its publication.
         loop {
             fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
-            let applied = editor.update(&mut visual, |view, cx| {
-                view.tick(cx);
+            let applied = editor.read_with(&visual, |view, _| {
                 view.audio_status()
                     .unwrap()
                     .recording_source()
@@ -7413,6 +7413,25 @@ pub(super) mod tests {
                 break;
             }
             assert!(Instant::now() < deadline, "applied copied section source");
+            std::thread::yield_now();
+        }
+        editor.read_with(&visual, |view, _| {
+            assert!(
+                view.section_copy_play_source().is_none(),
+                "callback application alone must leave play fenced"
+            );
+        });
+        loop {
+            fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+            let ready = editor.update(&mut visual, |view, cx| {
+                view.tick(cx);
+                view.section_copy_play_source()
+                    .is_some_and(|source| source.context.editor_revision == original_revision + 1)
+            });
+            if ready {
+                break;
+            }
+            assert!(Instant::now() < deadline, "copied section ready for play");
             std::thread::yield_now();
         }
         editor.update(&mut visual, |view, cx| {
