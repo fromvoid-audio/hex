@@ -97,10 +97,14 @@ impl SessionPlayback {
                     self.foreign_arrangement.cut();
                     // A removed receiver may already own a detached release.
                     // Only explicit discontinuities reset admitted monitoring.
-                    self.monitor_source_releases |=
-                        self.revision.arrangement().tracks().iter().any(|track| {
+                    if !self.monitor_source_releases
+                        && self.revision.arrangement().tracks().iter().any(|track| {
                             track.source_id().is_some() && track.receives_source_audio()
-                        });
+                        })
+                        && !self.can_freeze_idle_latency_history()
+                    {
+                        self.monitor_source_releases = true;
+                    }
                     for runtime in self
                         .mutable_instruments
                         .iter_mut()
