@@ -62,24 +62,43 @@ impl Bars {
                 }
             }
         }
-        let mut columns = columns.into_iter().peekable();
-        while let Some((start, ink)) = columns.next() {
-            let mut end = start + 1;
-            while columns
-                .next_if(|(column, next)| *column == end && next.color == ink.color)
-                .is_some()
-            {
-                end += 1;
+        if columns.is_empty() {
+            return;
+        }
+        let paint = |window: &mut Window| {
+            let mut columns = columns.into_iter().peekable();
+            while let Some((start, ink)) = columns.next() {
+                let mut end = start + 1;
+                while columns
+                    .next_if(|(column, next)| *column == end && next.color == ink.color)
+                    .is_some()
+                {
+                    end += 1;
+                }
+                let bar = Bounds::new(
+                    point(px((f64::from(start) / scale) as f32), bounds.top()),
+                    size(
+                        px((f64::from(end - start) / scale) as f32),
+                        bounds.size.height,
+                    ),
+                )
+                .intersect(&visible);
+                window.paint_quad(fill(bar, rgb(ink.color)));
             }
-            let bar = Bounds::new(
-                point(px((f64::from(start) / scale) as f32), bounds.top()),
-                size(
-                    px((f64::from(end - start) / scale) as f32),
-                    bounds.size.height,
-                ),
-            )
-            .intersect(&visible);
-            window.paint_quad(fill(bar, rgb(ink.color)));
+        };
+        // At these backing scales the aligned integer endpoints stay exact
+        // after projection and clipping. The color runs have no common area.
+        let visible_left = f64::from(visible.left()) * scale;
+        let visible_right = f64::from(visible.right()) * scale;
+        if matches!(scale, 1.0 | 2.0)
+            && first >= 0
+            && last <= (1 << 23)
+            && visible_left.fract() == 0.0
+            && visible_right.fract() == 0.0
+        {
+            window.paint_layer(visible, paint);
+        } else {
+            paint(window);
         }
     }
 }
