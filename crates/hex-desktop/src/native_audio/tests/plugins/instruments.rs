@@ -4676,6 +4676,12 @@ fn installed_instrument_and_effect_export_with_streamed_audio() {
             "live mix did not differ from the controlled effect alone"
         );
         if full_playthrough {
+            let callback_period = std::env::var("HEX_TEST_FULL_MIXED_CALLBACK_PERIOD_US")
+                .ok()
+                .map(|value| Duration::from_micros(value.parse().expect("callback period in us")))
+                .unwrap_or_default();
+            let status = h.audio.as_ref().unwrap().status().unwrap();
+            let initial_starvation = status.stream_starved_callbacks.load(Acquire);
             let started = Instant::now();
             let mut quiet_markers = [0usize; 2];
             let mut phrase_peaks = [[0.0_f32; 4]; 3];
@@ -4683,15 +4689,15 @@ fn installed_instrument_and_effect_export_with_streamed_audio() {
             let mut buffering_blocks = 0usize;
             let mut consecutive_holds = 0usize;
             let mut longest_hold = 0usize;
-            let mut previous = h
-                .audio
-                .as_ref()
-                .unwrap()
-                .status()
-                .unwrap()
-                .position
-                .load(Acquire);
+            let mut hold_started = None;
+            let mut total_hold = Duration::ZERO;
+            let mut longest_hold_time = Duration::ZERO;
+            let mut held_positions = 0usize;
+            let mut page_boundaries = 0usize;
+            let mut readiness_refusals = 0usize;
+            let mut previous = status.position.load(Acquire);
             while previous < u64::from(source_frames) {
+                let callback_started = Instant::now();
                 let block = h.render_plugin_block();
                 // This phase has no edit/retirement acknowledgement in flight.
                 // Wait for every native DSP prefix, while allowing the existing
@@ -4709,7 +4715,6 @@ fn installed_instrument_and_effect_export_with_streamed_audio() {
                     assert!(Instant::now() < deadline);
                     std::thread::yield_now();
                 }
-                let status = h.audio.as_ref().unwrap().status().unwrap();
                 assert!(status.playing.load(Acquire), "mixed playback stopped early");
                 assert!(
                     status.render_fault_snapshot().is_none(),
@@ -4724,11 +4729,24 @@ fn installed_instrument_and_effect_export_with_streamed_audio() {
                 assert!(block.iter().flatten().all(|sample| sample.is_finite()));
                 if status.stream_buffering.load(Acquire) {
                     buffering_blocks += 1;
+                    if hold_started.is_none() {
+                        hold_started = Some(callback_started);
+                        held_positions += 1;
+                        page_boundaries +=
+                            usize::from(position % hex_engine::STREAM_PAGE_FRAMES as u64 == 0);
+                    }
+                    readiness_refusals +=
+                        usize::from(status.stream_readiness_refused.load(Acquire));
                     consecutive_holds += 1;
                     longest_hold = longest_hold.max(consecutive_holds);
                     assert_eq!(position, previous, "buffering advanced the cursor");
                     assert_eq!(block, [[0.0; 2]; 256]);
                 } else if position > previous {
+                    if let Some(hold) = hold_started.take() {
+                        let elapsed = callback_started.duration_since(hold);
+                        total_hold += elapsed;
+                        longest_hold_time = longest_hold_time.max(elapsed);
+                    }
                     consecutive_holds = 0;
                     assert_eq!(position - previous, 256, "full-song cursor skipped frames");
                     let peak = block
@@ -4776,6 +4794,10 @@ fn installed_instrument_and_effect_export_with_streamed_audio() {
                     started.elapsed() < Duration::from_secs(25),
                     "full-song test exceeded the issue boundary budget"
                 );
+                let remaining = callback_period.saturating_sub(callback_started.elapsed());
+                if !remaining.is_zero() {
+                    std::thread::sleep(remaining);
+                }
             }
             assert!(quiet_markers.into_iter().all(|blocks| blocks >= 8));
             assert!(audible_blocks > (source_frames as usize / 256) * 9 / 10);
@@ -4785,6 +4807,13 @@ fn installed_instrument_and_effect_export_with_streamed_audio() {
             println!(
                 "full_live frames={source_frames} elapsed_ms={} audible_blocks={audible_blocks} buffering_blocks={buffering_blocks} longest_hold={longest_hold} quiet_markers={quiet_markers:?} phrase_peaks={phrase_peaks:?}",
                 started.elapsed().as_millis()
+            );
+            println!(
+                "full_live_readiness callback_period_us={} held_positions={held_positions} page_boundaries={page_boundaries} readiness_refusals={readiness_refusals} starved_callbacks={} hold_wall_us={} longest_hold_wall_us={}",
+                callback_period.as_micros(),
+                status.stream_starved_callbacks.load(Acquire) - initial_starvation,
+                total_hold.as_micros(),
+                longest_hold_time.as_micros(),
             );
         }
         h.audio
