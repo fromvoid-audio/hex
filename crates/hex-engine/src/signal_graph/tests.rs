@@ -1621,7 +1621,7 @@ fn delayed_origin_clock_reports_source_performance_and_transport_without_guesses
         meter: None,
         cycle_beats_raw: None,
     };
-    let clock = OriginClock(Some(source));
+    let clock = OriginClock(Some(&source));
     assert_eq!(clock.tempo_micro_bpm_at_offset(0), Some(123_000_000));
     assert_eq!(clock.tempo_micro_bpm_at_offset(1), None);
     assert_eq!(unknown.tempo_micro_bpm_at_offset(0), None);
@@ -1632,14 +1632,14 @@ fn delayed_origin_clock_reports_source_performance_and_transport_without_guesses
     assert_eq!(clock.arrangement_beat_at_offset(0), Some(1 << 32));
     assert_eq!(clock.transport_is_running(), Some(true));
     assert_eq!(clock.performance_frame_at_offset(1), None);
-    let unavailable_beat = OriginClock(Some(TransportStamp {
+    let unavailable_beat = OriginClock(Some(&TransportStamp {
         arrangement_beat_raw: None,
         ..source
     }));
     assert_eq!(unavailable_beat.arrangement_beat_at_offset(0), None);
     assert_eq!(unavailable_beat.arrangement_frame_at_offset(0), Some(12));
     assert_eq!(unavailable_beat.beat_at_offset(0), Some(5 << 32));
-    let stopped = OriginClock(Some(TransportStamp {
+    let stopped = OriginClock(Some(&TransportStamp {
         transport_is_running: false,
         ..source
     }));

@@ -2421,8 +2421,14 @@ impl SignalRuntime {
             None
         };
         let planned = &self.graph.plan.nodes()[node];
-        let clock = OriginClock(self.delays.stamp_at_delay(planned.input_arrival_frames));
-        let output_stamp = self.delays.stamp_at_delay(planned.output_arrival_frames);
+        let input_stamp = self.delays.stamp_at_delay_ref(planned.input_arrival_frames);
+        let clock = OriginClock(input_stamp);
+        let output_stamp = if planned.input_arrival_frames == planned.output_arrival_frames {
+            input_stamp
+        } else {
+            self.delays
+                .stamp_at_delay_ref(planned.output_arrival_frames)
+        };
         let output_clock = OriginClock(output_stamp);
         crate::native_parameter_input::process_range_with_key(
             input,
@@ -2446,8 +2452,9 @@ impl SignalRuntime {
     }
 }
 
-pub(crate) struct OriginClock(pub(crate) Option<TransportStamp>);
-impl hex_lattice::NativeInstrumentClock for OriginClock {
+/// A frame-local clock borrowed from the current compensation transaction.
+pub(crate) struct OriginClock<'a>(pub(crate) Option<&'a TransportStamp>);
+impl hex_lattice::NativeInstrumentClock for OriginClock<'_> {
     fn arrangement_meter_at_offset(&self, offset: usize) -> Option<(u8, u8)> {
         if offset != 0 {
             return None;

@@ -308,6 +308,10 @@ impl CompensationRuntime {
         self.stamps.at_delay(delay_frames as usize).flatten()
     }
 
+    pub(crate) fn stamp_at_delay_ref(&self, delay_frames: u32) -> Option<&TransportStamp> {
+        self.stamps.at_delay_ref(delay_frames as usize)?.as_ref()
+    }
+
     /// Preview an upcoming stage's Arrangement frame before its stamp is pushed.
     /// The supplied incoming projection belongs to the same planned clock as
     /// the caller's eventual render. Historical stamps are read verbatim from
