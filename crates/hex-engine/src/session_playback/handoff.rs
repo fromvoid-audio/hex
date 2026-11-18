@@ -940,6 +940,11 @@ impl SessionPlayback {
         continuation: Option<&hex_lattice::ForeignConfigurationContinuation<'_>>,
         anchor: Option<&PreparedTempoAnchor>,
     ) -> Result<SessionHandoffReport, SessionPlaybackError> {
+        if self.stopped_input.map(|scope| scope.track)
+            != previous.stopped_input.map(|scope| scope.track)
+        {
+            return Err(SessionPlaybackError::InvalidCommand);
+        }
         if previous.pending_shared_chase.is_some() || previous.pending_shared_live.is_some() {
             return Err(SessionPlaybackError::MutableInstrumentChase);
         }
@@ -1603,6 +1608,7 @@ impl SessionPlayback {
         }
         if (self.compensation.is_some() || previous.compensation.is_some() || force_restart)
             && (!previous.playing || running_restart || running_relocate)
+            && !previous.stopped_input_has_history()
             && (paused_cursor.is_some()
                 || running_restart
                 || running_relocate
@@ -5701,6 +5707,9 @@ impl SessionPlayback {
         // before this donor has ever monitored. Preserve that admission as
         // well as existing release intent when a later edit removes the input.
         self.monitor_source_releases |= previous.monitor_source_releases;
+        if previous.stopped_input_has_history() {
+            self.stopped_input = previous.stopped_input;
+        }
         self.capture_epoch = capture_epoch;
         previous.capture_epoch = previous_capture_epoch;
         self.anchor = candidate_anchor;

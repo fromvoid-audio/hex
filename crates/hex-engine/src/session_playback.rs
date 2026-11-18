@@ -612,6 +612,9 @@ pub struct SessionPlayback {
     // until Play or live activation. False therefore permits Main-tail-only
     // draining without ticking a fresh replacement processor's input clock.
     monitor_source_releases: bool,
+    // Present only for the independently prepared PCM monitor. A validated
+    // rendered block keeps its private processor and delay history live.
+    stopped_input: Option<StoppedInputHistory>,
     linear_arrangement_export: bool,
     current_sampler_console: bool,
     route_state_generation: u64,
@@ -1034,6 +1037,7 @@ impl SessionPlayback {
             arrangement_loop_pass: _,
             playing: _,
             monitor_source_releases: _,
+            stopped_input: _,
             linear_arrangement_export: _,
             current_sampler_console: _,
             route_state_generation: _,
@@ -2318,6 +2322,7 @@ impl SessionPlayback {
             arrangement_loop_pass: 0,
             playing: false,
             monitor_source_releases: false,
+            stopped_input: None,
             linear_arrangement_export,
             current_sampler_console: false,
             route_state_generation: 0,
@@ -2832,6 +2837,7 @@ mod handoff;
 pub use handoff::PreparedTempoAnchor;
 mod harmonic_import;
 mod paused_track_monitor;
+use paused_track_monitor::StoppedInputHistory;
 pub use paused_track_monitor::{
     PausedKeyboardMonitor, PausedMonitorAdmissionError, PausedMonitorForeignBinding,
     PausedMonitorStorageHold, PausedSourceMonitor, PausedTrackMonitor,
