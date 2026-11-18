@@ -1,4 +1,4 @@
-//! One exact-source, single-track live input monitor for resident playback.
+//! Bounded exact-source monitors for resident playback.
 //!
 //! Control publishes at most one owner; a callback reads at most 256 frames
 //! and returns the owner through a one-slot queue. A full or abandoned return
@@ -9,7 +9,8 @@
 //! to a transport epoch as well as an exact resident source. A release stops
 //! reading input and renders retained PCM through that private history. A
 //! priority Stop or invalid binding also revokes the release. Input and output
-//! rates must match; independent device-clock drift is not corrected.
+//! rates must match; independent device-clock drift is not corrected. The
+//! worker's separate note-monitor slot carries an engine graph without input.
 use super::AppliedAudioSource;
 use crate::input_capture::{InputMonitorEnd, MonitorBlock, MonitorStream, MonitorStreamError};
 use hex_engine::{Frame, OutputCaptureId, PausedTrackMonitor, playback::Playback};
@@ -187,11 +188,10 @@ impl Control {
         .map_err(|(stream, monitor)| PausedRefusal { stream, monitor })
     }
 
-    /// Publish one private note monitor for the exact settled pause. Control
-    /// retains its engine storage hold and owns matching endpoint publication.
-    /// This shares the physical input monitor's single private ownership slot.
+    /// Insert into the worker's one-slot note monitor channel after the
+    /// publication owner has validated the scope.
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    pub fn publish_paused_source(
+    pub(super) fn publish_paused_source(
         &mut self,
         monitor: hex_engine::PausedSourceMonitor,
         source: AppliedAudioSource,
@@ -333,15 +333,19 @@ impl Callback {
         }
     }
     pub(super) fn has_paused_binding(&self) -> bool {
-        self.active
-            .as_ref()
-            .is_some_and(|binding| matches!(binding.mode, Mode::Paused { .. }))
+        !self.stop_requested()
+            && self
+                .active
+                .as_ref()
+                .is_some_and(|binding| matches!(binding.mode, Mode::Paused { .. }))
     }
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     pub(super) fn has_paused_source_binding(&self) -> bool {
-        self.active
-            .as_ref()
-            .is_some_and(|binding| matches!(binding.mode, Mode::PausedSource { .. }))
+        !self.stop_requested()
+            && self
+                .active
+                .as_ref()
+                .is_some_and(|binding| matches!(binding.mode, Mode::PausedSource { .. }))
     }
     fn source_matches(&mut self, source: Option<AppliedAudioSource>) -> bool {
         if self.stop_requested() {
