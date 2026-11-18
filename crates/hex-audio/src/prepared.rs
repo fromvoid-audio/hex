@@ -1449,6 +1449,10 @@ pub struct Callback {
     action_writer: Option<action_outcomes::Writer>,
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     native_sources: crate::candidate_custody::NativeEndpointBank,
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    paused_native_sources: crate::candidate_custody::NativeEndpointBank,
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    paused_monitor_host_frames: Option<usize>,
     plugin_callback_quantum: Option<u16>,
     output_transport: Option<Box<hex_plugin_host::transport::Callback>>,
     output_transport_cancelled: bool,
@@ -1519,7 +1523,7 @@ pub struct Callback {
 pub(crate) fn native_endpoint_bank_storage_quote() -> Option<usize> {
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     {
-        crate::candidate_custody::NativeEndpointBank::data_quote()
+        crate::candidate_custody::NativeEndpointBank::data_quote()?.checked_mul(2)
     }
     #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
     {
@@ -1625,6 +1629,11 @@ pub(crate) fn channel_with_interface(
             action_writer: None,
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             native_sources: crate::candidate_custody::NativeEndpointBank::new().map_err(Invalid)?,
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            paused_native_sources: crate::candidate_custody::NativeEndpointBank::new()
+                .map_err(Invalid)?,
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            paused_monitor_host_frames: None,
             plugin_callback_quantum: None,
             output_transport: None,
             output_transport_cancelled: false,
@@ -3051,7 +3060,9 @@ impl Callback {
     pub(crate) fn native_endpoint_bank_data_bytes(&self) -> Option<usize> {
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         {
-            self.native_sources.data_bytes()
+            self.native_sources
+                .data_bytes()?
+                .checked_add(self.paused_native_sources.data_bytes()?)
         }
         #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
         {
@@ -3343,6 +3354,10 @@ impl Callback {
     }
     fn begin_block_inner(&mut self) {
         self.transport_setup_open = false;
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        {
+            self.paused_monitor_host_frames = None;
+        }
         self.device_fault_fenced_in_block = false;
         self.input_monitor.begin_block(
             self.status.closing.load(Acquire),
@@ -3508,10 +3523,7 @@ impl Callback {
                 }
                 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
                 QueuedPublication::Native(endpoint) => {
-                    if let Err(endpoint) = self
-                        .native_sources
-                        .install(self.candidate_root.root_id(), endpoint)
-                    {
+                    if let Err(endpoint) = self.install_native_source_endpoint(endpoint) {
                         self.return_publication(ReturnedPublication::Native(endpoint));
                     }
                     self.consume_commands();
@@ -5399,6 +5411,9 @@ impl Callback {
                 self.status.transport_epoch.load(Acquire),
                 paused_playback,
                 output,
+                #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                self.paused_monitor_host_frames
+                    .map(|frames| (&mut self.paused_native_sources, frames)),
             ) {
                 self.publish_transport();
                 self.publish_active_routes(false);

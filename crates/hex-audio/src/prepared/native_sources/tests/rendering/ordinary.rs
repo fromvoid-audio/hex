@@ -15,6 +15,7 @@ mod manual_preroll;
 mod parameter_extension;
 mod parameter_pressure;
 mod parameter_publication;
+mod paused_monitor;
 mod pressure;
 #[cfg(not(debug_assertions))]
 mod profile;

@@ -66,6 +66,8 @@ enum Mode {
     Paused {
         monitor: PausedTrackMonitor,
         transport_epoch: u64,
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        foreign: bool,
     },
 }
 #[repr(u8)]
@@ -159,7 +161,11 @@ impl Control {
         source: AppliedAudioSource,
         transport_epoch: u64,
     ) -> Result<(), PausedRefusal> {
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        let foreign = monitor.foreign_effect_bindings().next().is_some();
         self.publish_binding(stream, source, monitor, |monitor| Mode::Paused {
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            foreign,
             monitor,
             transport_epoch,
         })
@@ -349,6 +355,10 @@ impl Callback {
         epoch: u64,
         playback: Option<&Playback>,
         output: &mut [Frame],
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))] native: Option<(
+            &mut crate::candidate_custody::NativeEndpointBank,
+            usize,
+        )>,
     ) -> bool {
         let Some(Mode::Paused {
             transport_epoch, ..
@@ -384,18 +394,43 @@ impl Callback {
         if self.stop_requested() {
             return false;
         }
-        let Some(Mode::Paused { monitor, .. }) =
-            self.active.as_mut().map(|binding| &mut binding.mode)
+        let Some(Binding {
+            mode:
+                Mode::Paused {
+                    monitor,
+                    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                    foreign,
+                    ..
+                },
+            ..
+        }) = self.active.as_deref_mut()
         else {
             return false;
         };
-        let rendered = if releasing {
-            playback.drain_paused_track_monitor(monitor, output)
-        } else {
-            playback
-                .render_with_paused_track_monitor(monitor, input, output)
-                .map(|()| true)
+        let render_builtin = |monitor: &mut PausedTrackMonitor, output: &mut [Frame]| {
+            if releasing {
+                playback.drain_paused_track_monitor(monitor, output)
+            } else {
+                playback
+                    .render_with_paused_track_monitor(monitor, input, output)
+                    .map(|()| true)
+            }
         };
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        let rendered = if *foreign {
+            Self::render_foreign_paused(
+                playback,
+                monitor,
+                source.map(|source| (source, epoch)),
+                (!releasing).then_some(&*input),
+                output,
+                native,
+            )
+        } else {
+            render_builtin(monitor, output)
+        };
+        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+        let rendered = render_builtin(monitor, output);
         match rendered {
             Ok(true) => self.state.store(MonitorStatus::Running as u8, Release),
             Ok(false) => self.reject(MonitorStatus::Stopped),
@@ -405,6 +440,46 @@ impl Callback {
             }
         }
         true
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn render_foreign_paused(
+        playback: &Playback,
+        monitor: &mut PausedTrackMonitor,
+        source: Option<(AppliedAudioSource, u64)>,
+        input: Option<&[Frame]>,
+        output: &mut [Frame],
+        native: Option<(&mut crate::candidate_custody::NativeEndpointBank, usize)>,
+    ) -> Result<bool, hex_engine::Invalid> {
+        let Some((bank, frames)) = native.filter(|(_, frames)| *frames == output.len()) else {
+            return Err(hex_engine::Invalid(
+                "paused native monitor requires a physical callback",
+            ));
+        };
+        if source.is_none_or(|source| {
+            !bank.matches_paused_monitor(source, monitor.foreign_effect_bindings())
+        }) {
+            return Err(hex_engine::Invalid(
+                "paused native monitor endpoints differ",
+            ));
+        }
+        bank.begin_rendering(frames)
+            .map_err(|_| hex_engine::Invalid("paused native monitor callback refused"))?;
+        let result = if let Some(input) = input {
+            playback
+                .render_paused_track_monitor_with_foreign(monitor, input, output, bank)
+                .map(|()| true)
+        } else {
+            playback.drain_paused_track_monitor_with_foreign(monitor, output, bank)
+        };
+        if result.is_err() || !bank.transports_are_live() {
+            bank.reject_rendering();
+            output.fill([0.0; 2]);
+            return Err(hex_engine::Invalid(
+                "paused native monitor processing failed",
+            ));
+        }
+        result
     }
 
     fn read_stream(&mut self, output: &mut [Frame]) -> bool {

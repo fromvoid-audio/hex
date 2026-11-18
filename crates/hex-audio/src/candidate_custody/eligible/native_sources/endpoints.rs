@@ -10,8 +10,18 @@ struct Endpoint {
     binding: Binding,
     callback: Option<NativeEffectEntry>,
     signal: Arc<EndpointSignal>,
+    paused_source: Option<(crate::prepared::AppliedAudioSource, u64)>,
 }
 impl NativeEndpointEnvelope {
+    pub(crate) fn bind_paused_monitor(
+        &mut self,
+        source: (crate::prepared::AppliedAudioSource, u64),
+    ) {
+        self.0.paused_source = Some(source);
+    }
+    pub(crate) fn paused_source(&self) -> Option<(crate::prepared::AppliedAudioSource, u64)> {
+        self.0.paused_source
+    }
     pub(super) fn loan_data_bytes() -> Option<usize> {
         std::mem::size_of::<Endpoint>().checked_add(std::mem::size_of::<EndpointSignal>())
     }
@@ -38,6 +48,46 @@ pub(crate) struct NativeEndpointBank {
     ordinary_requirements: bool,
 }
 impl NativeEndpointBank {
+    pub(crate) fn matches_paused_monitor(
+        &self,
+        source: (crate::prepared::AppliedAudioSource, u64),
+        bindings: impl Iterator<Item = Binding>,
+    ) -> bool {
+        let mut count = 0;
+        for binding in bindings {
+            let Ok(position) = self.routing[..self.routing_len]
+                .binary_search_by_key(&Some(binding), |slot| {
+                    self.entries[*slot].as_ref().map(|entry| entry.0.binding)
+                })
+            else {
+                return false;
+            };
+            if self.entries[self.routing[position]]
+                .as_ref()
+                .is_none_or(|entry| {
+                    entry.paused_source() != Some(source) || entry.return_requested()
+                })
+            {
+                return false;
+            }
+            count += 1;
+        }
+        count != 0 && count == self.routing_len && self.transports_are_live()
+    }
+
+    pub(crate) fn transports_are_live(&self) -> bool {
+        !self.cycle.revoked()
+            && self.routing[..self.routing_len].iter().all(|&slot| {
+                self.entries[slot]
+                    .as_ref()
+                    .and_then(|entry| entry.0.callback.as_ref())
+                    .is_some_and(NativeEffectEntry::transport_is_live)
+            })
+    }
+
+    pub(crate) fn rendering_active(&self) -> bool {
+        self.cycle.active()
+    }
     /// Borrow only the currently installed exact pair. An observed return
     /// request, stale input, revocation or contention refuses. A return request
     /// may race this observation; it does not authorize a commit.
@@ -242,6 +292,7 @@ impl NativeEndpointBank {
             binding,
             callback: Some(NativeEffectEntry::new(callback)),
             signal: Arc::new(EndpointSignal::new()),
+            paused_source: None,
         }));
         assert!(self.install(binding.root, endpoint).is_ok());
     }
@@ -335,13 +386,11 @@ impl NativeEndpointBank {
         root: u64,
         destination: &mut [Option<NativeEndpointEnvelope>; MAX_SOURCES],
     ) -> bool {
-        if destination.iter().any(Option::is_some)
-            || self.entries.iter().enumerate().any(|(index, entry)| {
-                entry
-                    .as_ref()
-                    .is_some_and(|e| e.index_for(root) != Some(index))
-            })
-        {
+        if self.entries.iter().enumerate().any(|(index, entry)| {
+            entry
+                .as_ref()
+                .is_some_and(|e| destination[index].is_some() || e.index_for(root) != Some(index))
+        }) {
             return false;
         }
         // Terminal extraction occurs only after callback/backend quiescence.
@@ -353,7 +402,9 @@ impl NativeEndpointBank {
             if let Some(endpoint) = source.as_ref() {
                 endpoint.0.signal.installed.store(false, Ordering::Release);
             }
-            *target = source.take();
+            if source.is_some() {
+                *target = source.take();
+            }
         }
         self.routing_len = 0;
         true
@@ -420,6 +471,7 @@ impl Custody {
             binding,
             callback: None,
             signal: Arc::clone(&signal),
+            paused_source: None,
         }));
         let outcome = catch_unwind(AssertUnwindSafe(|| match cell.owner.take() {
             Some(Owner::Effect(effect)) => match effect.loan_on_control() {

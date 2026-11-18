@@ -399,9 +399,10 @@ impl PausedTrackMonitor {
             }
         };
         let frames = remaining.min(output.len() as u64) as usize;
-        let (tail, rest) = output.split_at_mut(frames);
-        self.render_input(cursor, &[[0.0; 2]; 256][..frames], tail, foreign)?;
-        rest.fill([0.0; 2]);
+        // Finish the physical extent even at the horizon so copied foreign
+        // transports can accept a complete block. Mute PCM past the bound.
+        self.render_input(cursor, &[[0.0; 2]; 256][..output.len()], output, foreign)?;
+        output[frames..].fill([0.0; 2]);
         let remaining = remaining - frames as u64;
         let active = remaining != 0 && !self.is_quiescent();
         self.release_remaining = Some(if active { remaining } else { 0 });
@@ -510,4 +511,36 @@ pub(super) fn build_monitor_chain(
         instances.push(entry);
     }
     NativeRuntimeChain::new_prepared(instances).map_err(|_| SessionPlaybackError::DeviceRuntime)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::signal_graph::tests::{fixture, prepare};
+
+    #[test]
+    fn paused_monitor_horizon_keeps_full_callback_extent_and_mutes_the_suffix() {
+        let fixture = fixture(&[&[7]], 512);
+        let revision = prepare(&fixture).unwrap();
+        let playback = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+        let mut monitor = PausedTrackMonitor::prepare_on_control(
+            revision,
+            fixture.tracks[0],
+            MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES,
+        )
+        .unwrap();
+        let mut output = [[0.0; 2]; 8];
+        monitor
+            .render(&playback, &[[0.5; 2]; 8], &mut output)
+            .unwrap();
+        monitor.release_remaining = Some(2);
+        assert!(!monitor.drain(&playback, &mut output).unwrap());
+        assert_eq!(output[..2], [[0.5; 2]; 2]);
+        assert_eq!(output[2..], [[0.0; 2]; 6]);
+        assert!(
+            monitor.is_quiescent(),
+            "the unexposed suffix still advances the full physical callback"
+        );
+        assert_eq!(playback.arrangement_frame(), 0);
+    }
 }
