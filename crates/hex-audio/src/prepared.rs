@@ -110,6 +110,8 @@ pub mod input_monitor;
 mod input_monitor_tests;
 #[cfg(all(test, feature = "allocation-probe"))]
 mod keyboard_activation_tests;
+#[cfg(test)]
+mod latency_edit_timing_tests;
 #[cfg(all(test, feature = "allocation-probe"))]
 mod loop_audio_tests;
 #[cfg(test)]
