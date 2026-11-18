@@ -204,7 +204,9 @@ public:
     int32 PLUGIN_API getParameterCount() override {
         if (!host_testing) return 0;
         if (!pthread_main_np() || !initialized) { ++observation.violations; return -1; }
-        return metadata_fault==5?129:2;
+        // Exceed the host's 2624-parameter inventory, rather than the former
+        // 128-parameter limit. No descriptors may be requested in this case.
+        return metadata_fault==5?2625:2;
     }
     tresult PLUGIN_API getParameterInfo(int32 index,ParameterInfo& info) override {
         if (!host_testing || !pthread_main_np() || !initialized || index<0 || index>1) return kInvalidArgument;

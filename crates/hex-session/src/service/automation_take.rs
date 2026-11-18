@@ -12,7 +12,9 @@ pub use hex_storage::automation_draft::{
 };
 
 mod adoption;
-pub use adoption::prepare_device_take_adoption_on_control;
+pub use adoption::{
+    prepare_device_take_adoption_on_control, prepare_group_take_adoption_on_control,
+};
 
 #[cfg(test)]
 use hex_project::{LoopRegion, Project};

@@ -13,8 +13,10 @@
 #include "macos_state_stream.hpp"
 #include "pluginterfaces/vst/ivstmessage.h"
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstring>
+#include <limits>
 #include <new>
 #include <optional>
 #include <thread>
@@ -83,13 +85,13 @@ public:
     // the caller must also retain its module rather than unload live objects.
     ~Instance() = default;
 
-    bool open(IPluginFactory* admitted_factory, const TUID class_id,bool trace_messages=false) {
+    bool open(IPluginFactory* admitted_factory,const TUID class_id,bool trace_messages=false,bool editor_groups=false) {
         if (![NSThread isMainThread] || used || !admitted_factory || quarantined.load())
             return false;
         used = true;
         factory = admitted_factory;
         factory->addRef();
-        host = new(std::nothrow) Host(trace_messages);
+        host = new(std::nothrow) Host(trace_messages,editor_groups);
         if (!host) return false;
         if (factory->createInstance(class_id, INLINE_UID_OF(IComponent),
                                     reinterpret_cast<void**>(&component)) != kResultOk || !component)
@@ -432,7 +434,7 @@ public:
         processing.store(true);
         return true;
     }
-    bool process(ProcessData& data) {
+    bool process(ProcessData& data,uint64_t* sdk_process_ns=nullptr) {
         if (!processing.load() || processing_thread != std::this_thread::get_id() ||
             quarantined.load() || processing_fault.load() || !processing_data(configuration_,data)) return false;
         auto sdk=data;
@@ -441,7 +443,15 @@ public:
         clear_disjoint_outputs(configuration_,sdk);
         // Foreign DSP is not rollbackable. A failed call invalidates this owner;
         // only stop/close remain, never another process or restart as a retry.
-        if (processor->process(sdk)!=kResultOk || !shape.unchanged(sdk) || !inactive_outputs_.unchanged()) {
+        const auto start=sdk_process_ns?std::chrono::steady_clock::now():std::chrono::steady_clock::time_point{};
+        const auto result=processor->process(sdk);
+        if(sdk_process_ns) {
+            const auto elapsed=std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now()-start).count();
+            const auto ns=elapsed>0?static_cast<uint64_t>(elapsed):0;
+            *sdk_process_ns=ns>std::numeric_limits<uint64_t>::max()-*sdk_process_ns?
+                std::numeric_limits<uint64_t>::max():*sdk_process_ns+ns;
+        }
+        if (result!=kResultOk || !shape.unchanged(sdk) || !inactive_outputs_.unchanged()) {
             processing_fault.store(true); return false;
         }
         if (data.numOutputs) data.outputs[0].silenceFlags=sdk.outputs[0].silenceFlags;
@@ -520,11 +530,25 @@ public:
     bool synchronize_parameter_feedback_on_control() {
         return opened && host && !quarantined.load() && host->synchronize_parameter_feedback(controller);
     }
-    bool peek_parameter_edit(EditEvent& result) const { return host && host->peek_edit(result); }
+    bool peek_parameter_edit(EditEvent& result,size_t offset=0) const { return host && host->peek_edit(result,offset); }
     void consume_parameter_edit() { if(host) host->consume_edit(); }
     uint32 ready_parameter_edits() const { return host?host->ready_parameter_edits():0; }
     uint32 pending_parameter_edits() const { return host?host->pending_parameter_edits():0; }
+    bool seal_editor_edits_on_control() {
+        return opened && host && !quarantined.load() && host->seal_editor_edits_on_control();
+    }
+    EditorDetachAdmission begin_editor_detach_on_control() {
+        if(!opened || !host || quarantined.load()) return EditorDetachAdmission::Refused;
+        return host->begin_editor_detach_on_control();
+    }
+    void end_editor_detach_on_control() {
+        if(host) host->end_editor_detach_on_control();
+    }
+    bool editor_edits_sealed_on_control() const {
+        return host && host->editor_edits_sealed_on_control();
+    }
     uint64 host_callback_revision_on_control() const { return host?host->callback_revision_on_control():0; }
+    uint64 editor_frontier_on_worker() const { return host?host->editor_frontier_on_worker():0; }
     void complete_parameter_edit() { if(host) host->complete_parameter_edit(); }
     uint32 host_refusals() const { return host?host->refusal_flags():0; }
     void observe_latency_restarts() { if(host) host->observe_latency_restarts(); }
@@ -545,8 +569,8 @@ public:
     // RetainedHost means all component/controller teardown and stream disposal
     // succeeded. The isolated worker may then retire by process exit while
     // keeping the stopped Host and module alive.
-    CloseResult close_for_retirement() {
-        if (!close_objects()) return CloseResult::Refused;
+    CloseResult close_for_retirement(bool clean_stop=false) {
+        if (!close_objects(clean_stop)) return CloseResult::Refused;
         if (host) {
             if (host->reference_count()!=1) return CloseResult::RetainedHost;
             host->release(); host=nullptr;
@@ -555,7 +579,7 @@ public:
     }
 
 private:
-    bool close_objects() {
+    bool close_objects(bool clean_stop) {
         if (![NSThread isMainThread] || processing.load() || quarantined.load()) return false;
         if (host) host->stop_accepting();
         // Stop/join is the caller's prerequisite. Never release/unload past a
@@ -564,17 +588,26 @@ private:
             if (component->setActive(false) != kResultOk) return refuse_cleanup();
             active = false;
         }
-        if (input_active) {
-            if (component->activateBus(kAudio, kInput, 0, false) != kResultOk) return refuse_cleanup();
+        // After a clean STOP, the joined worker and inactive component need no
+        // further bus reconfiguration before checked termination. Partial or
+        // failed setup retains the existing conservative cleanup path.
+        if (clean_stop) {
             input_active = false;
-        }
-        if (event_input_channels_) {
-            if (component->activateBus(kEvent,kInput,0,false)!=kResultOk) return refuse_cleanup();
-            event_input_channels_=0;
-        }
-        if (output_active) {
-            if (component->activateBus(kAudio, kOutput, 0, false) != kResultOk) return refuse_cleanup();
+            event_input_channels_ = 0;
             output_active = false;
+        } else {
+            if (input_active) {
+                if (component->activateBus(kAudio, kInput, 0, false) != kResultOk) return refuse_cleanup();
+                input_active = false;
+            }
+            if (event_input_channels_) {
+                if (component->activateBus(kEvent,kInput,0,false)!=kResultOk) return refuse_cleanup();
+                event_input_channels_=0;
+            }
+            if (output_active) {
+                if (component->activateBus(kAudio, kOutput, 0, false) != kResultOk) return refuse_cleanup();
+                output_active = false;
+            }
         }
         if (connected_controller) {
             if (controller_connection->disconnect(component_connection) != kResultOk) return refuse_cleanup();

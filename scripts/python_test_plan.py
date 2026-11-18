@@ -9,7 +9,7 @@ import os
 from pathlib import Path
 
 REVIEWED_MODULES = frozenset({
-    "test_changelog", "test_ci_plan", "test_device_catalog", "test_device_layout",
+    "test_cargo_slot", "test_changelog", "test_ci_plan", "test_device_catalog", "test_device_layout",
     "test_eq8_response_compare", "test_gpui_patch", "test_dependency_patches",
     "test_hex_test_build",
     "test_launch", "test_launch_restart", "test_launch_restart_compile",
@@ -38,15 +38,6 @@ REVIEWED_MODULES = frozenset({
     "test_vst3_macos_bootstrap",
     "test_vst3_instance_worker",
 })
-# Explicit native acceptance must never disappear behind app-only selection.
-# Keep partial opt-ins comprehensive too; each owning suite validates its inputs.
-NATIVE_ACCEPTANCE_ENV = (
-    "HEX_VST3_MACOS_RECEIPT", "HEX_VST3_DISCOVERY_RECEIPT",
-    "HEX_VST3_PACKAGE_SCANNER", "HEX_VST3_PACKAGE_FIXTURES", "HEX_TEST_SIGNING_IDENTITY",
-    "HEX_VST3_INSTANCE_RECEIPT", "HEX_VST3_INSTANCE_TEST_APP",
-)
-
-
 SHARED_TESTS = (
     "test_ci_plan.ScopeTests.test_current_review_native_build_environment_variants_are_semantic",
     "test_ci_plan.ScopeTests.test_review_target_directory_is_ownership_not_semantic_config",

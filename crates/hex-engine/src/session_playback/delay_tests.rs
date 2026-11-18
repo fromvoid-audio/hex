@@ -25,6 +25,8 @@ fn delayed(on_return: bool, bypassed: bool) -> Project {
     let id = s.next_id;
     s.next_id += 2;
     let device = DeviceSnapshot {
+        modulation: Default::default(),
+        parent: None,
         automation: Vec::new(),
         comparison: None,
         id,

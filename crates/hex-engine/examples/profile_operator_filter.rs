@@ -2,18 +2,21 @@
 #[allow(dead_code)]
 #[path = "support/operator_feedback_fixture.rs"]
 mod fixture;
+use hex_devices::operator_state::OPERATOR_METADATA;
 use hex_engine::{PreparedRevision, SessionPlayback, SessionPlaybackCommand, SineTable};
 use hex_lattice::NativeInstrumentDefinition;
 use hex_lattice_contract::{NativeDeviceMetadata, ParameterId, ParameterValue};
 use hex_project::{Command, Editor};
 use std::{collections::BTreeMap, error::Error, hint::black_box, sync::Arc, time::Instant};
 fn main() -> Result<(), Box<dyn Error>> {
+    let initial =
+        fixture::state_with_operators(OPERATOR_METADATA.default_state()?, 0.4, 0.5, true)?;
     for filtered in [false, true] {
-        let f = fixture::project_with_operators(8, 16, 0.4, 0.5, true)?;
+        let f = fixture::project(8, 16, &initial)?;
         let mut editor = Editor::new(f.project, 16)?;
         if filtered {
             for device in f.instrument_ids {
-                let mut state = fixture::state_with_operators(0.4, 0.5, true)?;
+                let mut state = initial.clone();
                 for (id, value) in [
                     (20001, ParameterValue::Bool(true)),
                     (20002, ParameterValue::Choice(4)),

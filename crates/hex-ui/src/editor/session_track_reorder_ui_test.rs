@@ -71,6 +71,27 @@ fn nested_session_headers_show_ordered_ancestor_bands(cx: &mut TestAppContext) {
     let outer_band = band(&mut visual, ids[0], outer).expect("outer band");
     let inner_band = band(&mut visual, ids[0], inner).expect("inner band");
     let h = header(&mut visual, ids[0]);
+    for track in [ids[0], inner, outer] {
+        let selector = Box::leak(format!("session-track-{}", track.value()).into_boxed_str());
+        let expected = editor.read_with(&visual, |view, _| {
+            super::theme::element_colors(
+                view.state
+                    .as_ref()
+                    .unwrap()
+                    .project
+                    .track(track)
+                    .unwrap()
+                    .color(),
+            )
+            .accent
+        });
+        assert_eq!(header(&mut visual, track).size.height, px(27.0));
+        assert_eq!(
+            visual.rendered_background(selector),
+            Some(gpui::Background::from(gpui::rgb(expected)))
+        );
+    }
+
     assert!(f32::from(outer_band.size.width) >= f32::from(h.size.width) - 2.0);
     assert_eq!(f32::from(outer_band.size.height), 1.0);
     assert_eq!(
@@ -148,6 +169,19 @@ fn deepest_session_group_keeps_label_below_colour_bands(cx: &mut TestAppContext)
     let label = visual.debug_bounds(label).unwrap();
     assert!(label.origin.y >= strip.origin.y + strip.size.height);
     assert!(f32::from(label.size.height) >= 12.0);
+    for width in [640.0, 1280.0] {
+        visual.simulate_resize(size(px(width), px(800.0)));
+        visual.run_until_parked();
+        let h = header(&mut visual, ids[0]);
+        let label = visual
+            .debug_bounds(Box::leak(
+                format!("session-track-label-{}", ids[0].value()).into_boxed_str(),
+            ))
+            .unwrap();
+        assert_eq!(h.size.height, px(27.0));
+        assert!(label.top() >= h.top() && label.bottom() <= h.bottom());
+        assert!(label.size.height >= px(12.0));
+    }
 }
 
 #[gpui::test]
@@ -230,6 +264,24 @@ fn console_group_drop_keeps_target_until_ack_and_undo(cx: &mut TestAppContext) {
     editor.read_with(&visual, |v, _| {
         assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before)
     });
+    // Restore the original three-column viewport after checking the pending
+    // receipt at1100px, before the independent second drag after Undo.
+    visual.simulate_resize(size(px(1280.0), px(800.0)));
+    visual.run_until_parked();
+    assert!(
+        visual
+            .debug_bounds(Box::leak(
+                format!("session-track-{}", ids[2].value()).into_boxed_str()
+            ))
+            .is_some(),
+        "undo must expose the restored ungrouped track: {:?}",
+        editor.read_with(&visual, |view, _| (
+            view.session_track_start,
+            view.session_visible_columns,
+            view.arrangement_focus.projection.console_indices.clone(),
+            view.mode
+        ))
+    );
     let from = header(&mut visual, ids[2]).center();
     let target = header(&mut visual, group);
     let to = point(target.origin.x + px(2.0), target.center().y);

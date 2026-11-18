@@ -1,6 +1,8 @@
 use super::*;
 use hex_lattice::{NativeInstrumentClock, NativeProcessorAudition};
 
+mod automation;
+
 const CADENCE: u64 = 64;
 #[derive(Clone, Copy)]
 struct CompiledLane {
@@ -16,12 +18,14 @@ struct Configuration {
     points: Vec<AutomationPoint>,
     mode: u8,
     gain: f64,
+    parameters: Vec<automation::Grant>,
 }
 impl Configuration {
     fn heap_bytes(&self) -> usize {
         self.nodes.capacity() * std::mem::size_of::<Node>()
             + self.lanes.capacity() * std::mem::size_of::<CompiledLane>()
             + self.points.capacity() * std::mem::size_of::<AutomationPoint>()
+            + self.parameters.capacity() * std::mem::size_of::<automation::Grant>()
     }
     fn node_at(&self, index: usize, beat: Option<u64>) -> Node {
         let mut node = self.nodes[index];
@@ -81,15 +85,36 @@ pub(super) struct PreparedEq {
     stages: Vec<BandStages>,
 }
 impl PreparedEq {
+    pub(super) fn source_factory_bytes_bound() -> usize {
+        // Source effects grant no host parameter slots. The retained historical
+        // lanes and their point and node arrays have canonical state bounds.
+        crate::source_effect_arc_bytes::<Self>()
+            + crate::source_effect_arc_bytes::<Configuration>()
+            + MAX_NODES * (std::mem::size_of::<Node>() + std::mem::size_of::<BandStages>())
+            + MAX_LANES * std::mem::size_of::<CompiledLane>()
+            + MAX_POINTS * std::mem::size_of::<AutomationPoint>()
+    }
     pub(super) fn new(settings: EqState, sample_rate: u32) -> Result<Self, DeviceContractError> {
+        Self::prepare(settings, sample_rate, &[])
+    }
+    fn prepare(
+        settings: EqState,
+        sample_rate: u32,
+        parameters: &[ParameterId],
+    ) -> Result<Self, DeviceContractError> {
         settings.validate()?;
+        let parameters = automation::Grant::prepare(&settings, parameters)?;
         if !(MIN_SAMPLE_RATE..=MAX_SAMPLE_RATE).contains(&sample_rate) {
             return Err(DeviceContractError::InvalidParameterValue);
         }
         let mut stages = Vec::with_capacity(settings.nodes.len());
         for node in &settings.nodes {
             let coefficients = design(*node, sample_rate);
+            let enabled_parameter = node.id.parameter(NodeParameter::Enabled)?;
             if (node.enabled
+                || parameters
+                    .iter()
+                    .any(|grant| grant.descriptor.id == enabled_parameter)
                 || settings
                     .lanes
                     .iter()
@@ -131,17 +156,38 @@ impl PreparedEq {
                 points,
                 mode: settings.mode,
                 gain: f64::from(settings.output_gain),
+                parameters,
             }),
             stages,
         })
     }
 }
 impl PreparedNativeProcessor for PreparedEq {
+    fn supports_parameter_automation(&self, id: ParameterId) -> bool {
+        self.configuration
+            .parameters
+            .binary_search_by_key(&id, |grant| grant.descriptor.id)
+            .is_ok()
+    }
+    fn parameter_modulation_semantics(
+        &self,
+        id: ParameterId,
+    ) -> Option<hex_lattice_contract::ParameterSemantics> {
+        (id == OUTPUT_GAIN && self.supports_parameter_automation(id))
+            .then_some(OUTPUT_GAIN_SEMANTICS)
+    }
+    fn parameter_automation_descriptor(&self, id: ParameterId) -> Option<ParameterDescriptor> {
+        self.configuration
+            .parameters
+            .iter()
+            .find(|grant| grant.descriptor.id == id)
+            .map(|grant| grant.descriptor)
+    }
     fn supports_smoothed_bypass(&self) -> bool {
         true
     }
     fn runtime_version(&self) -> u32 {
-        1
+        4
     }
     fn declared_runtime_bytes(&self) -> usize {
         EQ_RUNTIME_BYTES
@@ -172,6 +218,14 @@ impl PreparedNativeProcessor for PreparedEq {
             audition_mix: 0.0,
             audition_history: [[[0.0; 2]; 4]; 2],
             gain: self.configuration.gain,
+            mode: self.configuration.mode,
+            effective_enabled: std::array::from_fn(|i| {
+                self.configuration
+                    .nodes
+                    .get(i)
+                    .is_some_and(|node| node.enabled)
+            }),
+            pristine: true,
             effective_banks: std::array::from_fn(|i| {
                 self.configuration.nodes.get(i).map_or(0, |n| n.bank)
             }),
@@ -281,6 +335,32 @@ struct OutgoingAudition {
     bank: u8,
     mix: f64,
 }
+/// Borrowed effective routing only; capture copies into the existing outgoing
+/// owner and retains no borrow or resource custody.
+struct Routing<'a> {
+    mode: u8,
+    nodes: &'a [Node],
+    bands: &'a [RuntimeBand],
+    banks: &'a [u8; MAX_NODES],
+    audition: Option<ProcessorAuditionSelection>,
+    audition_mix: f64,
+    audition_history: &'a [[[f64; 2]; 4]; 2],
+    gain: f64,
+}
+impl<'a> From<&'a EqRuntime> for Routing<'a> {
+    fn from(source: &'a EqRuntime) -> Self {
+        Self {
+            mode: source.mode,
+            nodes: &source.configuration.nodes,
+            bands: &source.bands,
+            banks: &source.effective_banks,
+            audition: source.audition,
+            audition_mix: source.audition_mix,
+            audition_history: &source.audition_history,
+            gain: source.gain,
+        }
+    }
+}
 /// The outgoing routing after a stereo/left-right/mid-side switch (Pulse
 /// #4122, the same law as EQ8's #4106). Band histories cannot be reinterpreted
 /// under a new routing, so the previous routing keeps filtering with its
@@ -298,7 +378,8 @@ struct OutgoingAudition {
 /// still fading is refused as transiently busy (`transition_busy_from`), so
 /// the host defers it for at most one fade (256 frames at 48 kHz, 16/3 ms)
 /// instead of dropping the older routing. A transport discontinuity or reset
-/// ends the crossfade.
+/// ends the crossfade. Shared mode readings instead coalesce to the latest
+/// target at the first frame after this branch finishes.
 struct ModeFade {
     bands: Box<[OutgoingBand]>,
     len: usize,
@@ -333,14 +414,14 @@ impl ModeFade {
         self.total = 0;
     }
     /// Starts a crossfade out of `previous`'s routing.
-    fn capture(&mut self, previous: &EqRuntime, sample_rate: u32) {
+    fn capture(&mut self, previous: Routing<'_>, sample_rate: u32) {
         self.clear();
-        let mode = previous.configuration.mode;
+        let mode = previous.mode;
         let active = |bank_id: u8| bank_id == bank(mode, 0) || bank_id == bank(mode, 1);
         let outgoing = previous
             .bands
             .iter()
-            .zip(&previous.effective_banks)
+            .zip(previous.banks)
             .filter(|(_, bank_id)| active(**bank_id));
         // `previous.bands` holds at most `MAX_NODES` bands, so every outgoing
         // band has a slot.
@@ -357,7 +438,6 @@ impl ModeFade {
             .filter(|_| previous.audition_mix > 0.0)
             .and_then(|selection| {
                 previous
-                    .configuration
                     .nodes
                     .iter()
                     .position(|node| node.id.value() == selection.index)
@@ -365,8 +445,8 @@ impl ModeFade {
             .and_then(|index| {
                 Some(OutgoingAudition {
                     stages: previous.bands.get(index)?.current,
-                    history: previous.audition_history,
-                    bank: *previous.effective_banks.get(index)?,
+                    history: *previous.audition_history,
+                    bank: *previous.banks.get(index)?,
                     mix: previous.audition_mix,
                 })
             });
@@ -390,7 +470,12 @@ impl ModeFade {
         self.remaining = other.remaining;
         self.total = other.total;
     }
-    fn blend(&mut self, input: StereoFrame, current: [f64; 2]) -> [f64; 2] {
+    fn blend(
+        &mut self,
+        input: StereoFrame,
+        current: [f64; 2],
+        mapped_gain: Option<f64>,
+    ) -> [f64; 2] {
         if !self.is_active() {
             return current;
         }
@@ -432,8 +517,9 @@ impl ModeFade {
             return current;
         }
         let weight = f64::from(self.remaining) / f64::from(self.total);
+        let gain = mapped_gain.unwrap_or(self.gain);
         std::array::from_fn(|channel| {
-            current[channel] + (working[channel] * self.gain - current[channel]) * weight
+            current[channel] + (working[channel] * gain - current[channel]) * weight
         })
     }
 }
@@ -450,18 +536,90 @@ struct EqRuntime {
     audition_mix: f64,
     audition_history: [[[f64; 2]; 4]; 2],
     gain: f64,
+    mode: u8,
+    effective_enabled: [bool; MAX_NODES],
+    pristine: bool,
     effective_banks: [u8; MAX_NODES],
     mode_fade: ModeFade,
 }
 impl EqRuntime {
+    fn mode_is_automated(&self) -> bool {
+        self.configuration
+            .parameters
+            .first()
+            .is_some_and(|grant| grant.descriptor.id == MODE)
+    }
+    fn select_routing(&mut self, target: u8, discontinuity: bool) {
+        if discontinuity || (self.pristine && self.mode_is_automated()) {
+            if self.mode != target {
+                self.cancel_immediately();
+                self.refresh_target = true;
+            }
+            self.mode = target;
+            if self.pristine && self.mode_is_automated() {
+                self.mode_fade.clear();
+            }
+            return;
+        }
+        // One frozen outgoing branch. New readings coalesce while occupied;
+        // the first frame after its fade samples the latest current target.
+        if self.mode == target || self.mode_fade.is_active() {
+            return;
+        }
+        self.mode_fade.capture(
+            Routing {
+                mode: self.mode,
+                nodes: &self.configuration.nodes,
+                bands: &self.bands,
+                banks: &self.effective_banks,
+                audition: self.audition,
+                audition_mix: self.audition_mix,
+                audition_history: &self.audition_history,
+                gain: self.gain,
+            },
+            self.sample_rate,
+        );
+        self.mode = target;
+        for band in &mut self.bands {
+            band.history = [[[0.0; 2]; 4]; 2];
+        }
+        self.cancel_immediately();
+        // Routing is independent of node coefficients. Keep their existing
+        // target cadence and in-flight trajectories through a mode switch.
+    }
     fn process(
         &mut self,
         frames: &mut [StereoFrame],
         clock: Option<&dyn NativeInstrumentClock>,
         bypassed: bool,
     ) {
-        let automated = !self.configuration.lanes.is_empty();
+        self.process_at(
+            frames,
+            clock,
+            bypassed,
+            0,
+            automation::Targets {
+                gain: self.configuration.gain,
+                mode: self.configuration.mode,
+                mapped_gain: false,
+            },
+            None,
+        );
+    }
+    // Callers pass either a whole block at offset zero or one frame at its
+    // original block offset; clock and legacy lane positions stay unchanged.
+    fn process_at(
+        &mut self,
+        frames: &mut [StereoFrame],
+        clock: Option<&dyn NativeInstrumentClock>,
+        bypassed: bool,
+        first_offset: usize,
+        targets: automation::Targets,
+        node_overrides: Option<&automation::Nodes>,
+    ) {
+        let automated = !self.configuration.lanes.is_empty() || node_overrides.is_some();
         for (offset, frame) in frames.iter_mut().enumerate() {
+            let offset = first_offset + offset;
             let running = clock.is_some_and(|c| c.transport_is_running() == Some(true));
             // A stopped monitoring clock may repeat its arrangement origin.
             // Only running content positions define a transport discontinuity.
@@ -475,6 +633,7 @@ impl EqRuntime {
                 self.last_frame
                     .is_none_or(|last| last.checked_add(1) != Some(position))
             });
+            self.select_routing(targets.mode, discontinuity);
             if discontinuity {
                 for band in &mut self.bands {
                     band.history = [[[0.0; 2]; 4]; 2];
@@ -490,9 +649,13 @@ impl EqRuntime {
                     None
                 };
                 for index in 0..self.configuration.nodes.len() {
-                    let node = self.configuration.node_at(index, beat);
+                    let mut node = self.configuration.node_at(index, beat);
+                    if let Some(overrides) = node_overrides {
+                        overrides.apply(index, &mut node);
+                    }
                     let bank_changed = self.effective_banks[index] != node.bank;
                     self.effective_banks[index] = node.bank;
+                    self.effective_enabled[index] = node.enabled;
                     let target = if node.enabled {
                         design(node, self.sample_rate)
                     } else {
@@ -503,7 +666,7 @@ impl EqRuntime {
                         band.history = [[[0.0; 2]; 4]; 2];
                         band.shape = node.kind as u8;
                     }
-                    if discontinuity {
+                    if discontinuity || (self.pristine && node_overrides.is_some()) {
                         band.target = target;
                         band.current = target;
                         band.remaining = 0;
@@ -521,7 +684,7 @@ impl EqRuntime {
             }
             let input = *frame;
             let mut working = [f64::from(frame[0]), f64::from(frame[1])];
-            if self.configuration.mode == 2 {
+            if self.mode == 2 {
                 working = [
                     (working[0] + working[1]) * 0.5,
                     (working[0] - working[1]) * 0.5,
@@ -549,7 +712,7 @@ impl EqRuntime {
                     }
                 }
                 for (channel, value) in working.iter_mut().enumerate() {
-                    if self.effective_banks[index] == bank(self.configuration.mode, channel) {
+                    if self.effective_banks[index] == bank(self.mode, channel) {
                         *value = band.filter_channel(channel, *value);
                     }
                 }
@@ -570,26 +733,31 @@ impl EqRuntime {
                     .position(|node| node.id.value() == selection.index)
             }) {
                 for channel in 0..2 {
-                    let isolated =
-                        if self.effective_banks[index] == bank(self.configuration.mode, channel) {
-                            filter(
-                                audition_input[channel],
-                                &self.bands[index].current,
-                                &mut self.audition_history[channel],
-                            )
-                        } else {
-                            0.0
-                        };
+                    let isolated = if self.effective_banks[index] == bank(self.mode, channel) {
+                        filter(
+                            audition_input[channel],
+                            &self.bands[index].current,
+                            &mut self.audition_history[channel],
+                        )
+                    } else {
+                        0.0
+                    };
                     working[channel] += (isolated - working[channel]) * self.audition_mix;
                 }
             }
-            self.gain += (self.configuration.gain - self.gain) * 0.015625;
-            if self.configuration.mode == 2 {
+            if targets.mapped_gain {
+                self.gain = targets.gain;
+            } else {
+                self.gain += (targets.gain - self.gain) * 0.015625;
+            }
+            if self.mode == 2 {
                 working = [working[0] + working[1], working[0] - working[1]];
             }
-            let output = self
-                .mode_fade
-                .blend(input, [working[0] * self.gain, working[1] * self.gain]);
+            let output = self.mode_fade.blend(
+                input,
+                [working[0] * self.gain, working[1] * self.gain],
+                targets.mapped_gain.then_some(self.gain),
+            );
             *frame = if bypassed {
                 input
             } else {
@@ -597,6 +765,7 @@ impl EqRuntime {
             };
             self.last_frame = origin;
             self.fallback_frame = self.fallback_frame.wrapping_add(1);
+            self.pristine = false;
         }
     }
 }
@@ -627,6 +796,30 @@ fn bank(mode: u8, channel: usize) -> u8 {
     }
 }
 impl NativeProcessorRuntime for EqRuntime {
+    fn supports_parameter_automation(&self, id: ParameterId) -> bool {
+        self.configuration
+            .parameters
+            .binary_search_by_key(&id, |grant| grant.descriptor.id)
+            .is_ok()
+    }
+    fn process_block_with_automation(
+        &mut self,
+        frames: &mut [StereoFrame],
+        clock: Option<&dyn NativeInstrumentClock>,
+        values: &dyn hex_lattice::NativeParameterAutomation,
+        _resources: &dyn hex_lattice::DeviceResources,
+    ) -> Result<(), DeviceContractError> {
+        self.process_automation(frames, clock, values, false)
+    }
+    fn process_bypassed_block_with_automation(
+        &mut self,
+        frames: &mut [StereoFrame],
+        clock: Option<&dyn NativeInstrumentClock>,
+        values: &dyn hex_lattice::NativeParameterAutomation,
+        _resources: &dyn hex_lattice::DeviceResources,
+    ) -> Result<(), DeviceContractError> {
+        self.process_automation(frames, clock, values, true)
+    }
     fn process_block(
         &mut self,
         frames: &mut [StereoFrame],
@@ -666,6 +859,20 @@ impl NativeProcessorRuntime for EqRuntime {
         }
         self.last_frame = None;
         self.fallback_frame = 0;
+        self.mode = self.configuration.mode;
+        self.effective_banks = std::array::from_fn(|index| {
+            self.configuration
+                .nodes
+                .get(index)
+                .map_or(0, |node| node.bank)
+        });
+        self.effective_enabled = std::array::from_fn(|index| {
+            self.configuration
+                .nodes
+                .get(index)
+                .is_some_and(|node| node.enabled)
+        });
+        self.pristine = true;
         self.audition = None;
         self.audition_request = None;
         self.audition_mix = 0.0;
@@ -709,20 +916,23 @@ impl NativeProcessorRuntime for EqRuntime {
         else {
             return;
         };
-        if old.configuration.mode != self.configuration.mode {
+        if !self.mode_is_automated() && old.mode != self.configuration.mode {
             // The new routing starts from empty history; the old one fades out.
             self.reset();
-            self.mode_fade.capture(old, self.sample_rate);
+            self.mode_fade.capture(Routing::from(old), self.sample_rate);
             self.last_frame = old.last_frame;
             self.fallback_frame = old.fallback_frame;
             self.refresh_target = true;
             self.gain = old.gain;
+            self.pristine = old.pristine;
             return;
         }
+        self.mode = old.mode;
         self.mode_fade.copy_from(&old.mode_fade);
         if Arc::ptr_eq(&self.configuration, &old.configuration) {
             self.bands.copy_from_slice(&old.bands);
             self.effective_banks = old.effective_banks;
+            self.effective_enabled = old.effective_enabled;
             self.last_frame = old.last_frame;
             self.fallback_frame = old.fallback_frame;
             self.refresh_target = old.refresh_target;
@@ -731,24 +941,17 @@ impl NativeProcessorRuntime for EqRuntime {
             self.audition_mix = old.audition_mix;
             self.audition_history = old.audition_history;
             self.gain = old.gain;
+            self.pristine = old.pristine;
             return;
         }
+        // Stable identity owns effective DSP history. Canonical kind/bank can
+        // differ behind an authored value; the first refresh compares effective
+        // shape/bank and owns any genuine discontinuity exactly once.
         for (index, node) in self.configuration.nodes.iter().enumerate() {
-            if let Some(prior) = old
-                .configuration
-                .nodes
-                .iter()
-                .position(|n| n.id == node.id && n.bank == node.bank)
-            {
-                if old.configuration.nodes[prior].kind == node.kind {
-                    self.bands[index] = old.bands[prior];
-                } else {
-                    self.bands[index].current = old.bands[prior].current;
-                    self.bands[index].remaining = coefficient_smooth_frames(self.sample_rate);
-                    self.bands[index].stages_used = self.bands[index]
-                        .stages_used
-                        .max(old.bands[prior].stages_used);
-                }
+            if let Some(prior) = old.configuration.nodes.iter().position(|n| n.id == node.id) {
+                self.bands[index] = old.bands[prior];
+                self.effective_banks[index] = old.effective_banks[prior];
+                self.effective_enabled[index] = old.effective_enabled[prior];
             }
         }
         if old
@@ -767,13 +970,15 @@ impl NativeProcessorRuntime for EqRuntime {
         self.fallback_frame = old.fallback_frame;
         self.refresh_target = true;
         self.gain = old.gain;
+        self.pristine = old.pristine;
     }
     /// The single `ModeFade` branch is full: a further channel-mode change
     /// waits until the previous switch has finished fading (Pulse #4122).
     fn transition_busy_from(&self, previous: &dyn NativeProcessorRuntime) -> bool {
         previous.as_any().downcast_ref::<Self>().is_some_and(|old| {
             old.sample_rate == self.sample_rate
-                && old.configuration.mode != self.configuration.mode
+                && !self.mode_is_automated()
+                && old.mode != self.configuration.mode
                 && old.mode_fade.is_active()
         })
     }
@@ -790,11 +995,16 @@ impl NativeProcessorRuntime for EqRuntime {
 impl NativeProcessorAudition for EqRuntime {
     fn can_select(&self, s: ProcessorAuditionSelection) -> bool {
         s.lane < 2
-            && self.configuration.nodes.iter().any(|node| {
-                node.id.value() == s.index
-                    && node.enabled
-                    && node.bank == bank(self.configuration.mode, usize::from(s.lane))
-            })
+            && self
+                .configuration
+                .nodes
+                .iter()
+                .enumerate()
+                .any(|(index, node)| {
+                    node.id.value() == s.index
+                        && self.effective_enabled[index]
+                        && self.effective_banks[index] == bank(self.mode, usize::from(s.lane))
+                })
     }
     fn requested_selection(&self) -> Option<ProcessorAuditionSelection> {
         self.audition_request

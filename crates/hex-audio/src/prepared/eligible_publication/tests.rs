@@ -3,10 +3,17 @@ use super::*;
 mod actions;
 #[cfg(feature = "allocation-probe")]
 mod current_sampler;
+#[cfg(all(
+    feature = "allocation-probe",
+    target_os = "macos",
+    target_arch = "aarch64"
+))]
+mod device_insert;
 #[cfg(feature = "allocation-probe")]
 mod domain_facts;
 #[cfg(feature = "allocation-probe")]
 mod fanout;
+mod granular;
 #[cfg(feature = "allocation-probe")]
 mod native_resources;
 #[cfg(feature = "allocation-probe")]
@@ -102,6 +109,356 @@ fn reservation(
         max_retained_data_bytes: ledger.max_retained_bytes,
         max_construction_peak_data_bytes: ledger.max_construction_peak_bytes,
     }
+}
+
+#[cfg(feature = "allocation-probe")]
+#[test]
+fn combined_reservation_preserves_verified_graph_and_refuses_ordinary_publication() {
+    let _serial = serial();
+    let Some(mut owner) = candidate() else { return };
+    let verified = reservation(&mut owner);
+    let ordinary = hex_engine::AudioStorageLedgerReservation {
+        data_rows: 512,
+        handle_rows: 256,
+        root_rows: 128,
+        max_retained_bytes: 20_000_000,
+        max_construction_peak_bytes: 20_000_000,
+    };
+    let total = hex_engine::AudioStorageLedgerReservation {
+        data_rows: verified.data_rows + ordinary.data_rows + 1024,
+        handle_rows: verified.handle_rows + ordinary.handle_rows,
+        root_rows: 1 + ordinary.root_rows,
+        max_retained_bytes: verified.max_retained_data_bytes
+            + ordinary.max_retained_bytes
+            + 1024 * 1024,
+        max_construction_peak_bytes: verified.max_construction_peak_data_bytes
+            + ordinary.max_construction_peak_bytes
+            + 1024 * 1024,
+    };
+    let identity = owner.identity();
+    let (control, callback) = channel(48_000).unwrap();
+    let root = control.native_candidate_root();
+    let (mut data, errors, terminals, mut client, mut publication) =
+        crate::native_callback_owner::reserve_native_worker(control, callback, None);
+    let mut retirement = crate::native_callback_owner::NativeRetirement::new(terminals, root);
+    let control = publication.control().unwrap();
+    control.enable_native_custody().unwrap();
+    let bridge = control.resident_forwarding.as_ref().unwrap();
+    bridge
+        .begin_combined_configuration(&control.status)
+        .unwrap();
+    assert!(
+        !client.activate(),
+        "configuration must defer client exposure"
+    );
+    assert!(!control.status.client_exposed.load(Acquire));
+    bridge.finish_combined_configuration();
+    control
+        .configure_combined_publication_on_control(verified, ordinary, 3, 4096, total)
+        .unwrap();
+    assert!(control.candidate_root.ordinary_streams_configured());
+    let ticket = control
+        .stage_eligible_audio_candidate(owner, vec![], PublicationPolicy::InheritRuntime, 1)
+        .ok()
+        .unwrap();
+    let counts = allocation_counter::measure(|| {
+        data.owner_mut()
+            .unwrap()
+            .run(|callback, _| callback.begin_block())
+    });
+    assert_eq!(
+        (
+            counts.count_total,
+            counts.bytes_total,
+            counts.count_current,
+            counts.bytes_current
+        ),
+        (0, 0, 0, 0)
+    );
+    assert_eq!(control.status.applied_revision.load(Acquire), 1);
+    assert!(client.activate());
+    assert!(!client.worker_owns_graph_publication());
+    client.command(PlaybackCommand::Play).unwrap();
+    let mut output = [[0.0; 2]; 4];
+    let counts = allocation_counter::measure(|| {
+        data.owner_mut().unwrap().run(|callback, _| {
+            callback.begin_block();
+            callback.render(&mut output).unwrap();
+        })
+    });
+    assert_eq!(
+        (
+            counts.count_total,
+            counts.bytes_total,
+            counts.count_current,
+            counts.bytes_current
+        ),
+        (0, 0, 0, 0)
+    );
+    assert_eq!(output, [[0.25; 2]; 4]);
+    let graph = Playback::new(hex_engine::Project::new(48_000, vec![]).unwrap());
+    let refused = control.publish(graph).unwrap_err();
+    assert_eq!(
+        refused.reason,
+        "constructor publication does not adopt legacy playback"
+    );
+    assert_eq!(control.status.applied_revision.load(Acquire), 1);
+    drop(refused);
+    drop(data);
+    drop(errors);
+    let mut backend = Some(());
+    let mut pending = false;
+    let mut disposed = false;
+    let _ = crate::lifecycle::test_dispose_backend(
+        &mut backend,
+        &mut pending,
+        &mut disposed,
+        &mut retirement,
+        |_| Ok(()),
+    )
+    .unwrap();
+    let deadline = std::time::Instant::now() + LIFECYCLE_BOUND;
+    let returned = loop {
+        control.reclaim();
+        if let Some(returned) = control.recover_audio_candidate(&ticket) {
+            break returned;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "candidate recovery did not finish"
+        );
+        std::thread::yield_now();
+    };
+    assert_eq!(returned.disposed.identity(), identity);
+    drop(returned);
+    client.close();
+    publication.close();
+    drop(client);
+    drop(publication);
+    finish(&mut retirement);
+}
+
+#[cfg(feature = "allocation-probe")]
+#[test]
+fn combined_reservation_rejects_budget_and_never_exposes_partial_construction() {
+    let _serial = serial();
+    let Some(mut owner) = candidate() else { return };
+    let verified = reservation(&mut owner);
+    let empty = hex_engine::AudioStorageLedgerReservation {
+        data_rows: 0,
+        handle_rows: 0,
+        root_rows: 0,
+        max_retained_bytes: 0,
+        max_construction_peak_bytes: 0,
+    };
+    let mut total = hex_engine::AudioStorageLedgerReservation {
+        data_rows: verified.data_rows + 1024,
+        handle_rows: verified.handle_rows,
+        root_rows: 1,
+        max_retained_bytes: verified.max_retained_data_bytes + 1024 * 1024,
+        max_construction_peak_bytes: verified.max_construction_peak_data_bytes + 1024 * 1024,
+    };
+    let (control, callback) = channel(48_000).unwrap();
+    let root = control.native_candidate_root();
+    let (data, errors, terminals, mut client, mut publication) =
+        crate::native_callback_owner::reserve_native_worker(control, callback, None);
+    let mut retirement = crate::native_callback_owner::NativeRetirement::new(terminals, root);
+    let control = publication.control().unwrap();
+    control.enable_native_custody().unwrap();
+    total.data_rows = verified.data_rows;
+    assert_eq!(
+        control.configure_combined_publication_on_control(verified, empty, 3, 4096, total),
+        Err("combined audio reservation exceeded")
+    );
+    assert!(!control.status.closing.load(Acquire));
+    assert!(!control.status.constructor_mode.load(Acquire));
+    let mut overflow = verified;
+    overflow.data_rows = usize::MAX;
+    let mut overflowing_total = total;
+    overflowing_total.data_rows = usize::MAX;
+    let mut extra = empty;
+    extra.data_rows = 1;
+    assert_eq!(
+        control.configure_combined_publication_on_control(
+            overflow,
+            extra,
+            3,
+            4096,
+            overflowing_total
+        ),
+        Err("combined audio reservation exceeded")
+    );
+    assert!(!control.status.constructor_mode.load(Acquire));
+    total.data_rows = verified.data_rows + 1024;
+    assert!(
+        control
+            .configure_combined_publication_on_control(verified, empty, 3, 4096, total)
+            .is_err()
+    );
+    assert!(control.status.closing.load(Acquire));
+    assert!(!client.activate());
+    drop(owner);
+    client.close();
+    publication.close();
+    drop(client);
+    drop(publication);
+    drop(data);
+    drop(errors);
+    let mut backend = Some(());
+    let mut pending = false;
+    let mut disposed = false;
+    let _ = crate::lifecycle::test_dispose_backend(
+        &mut backend,
+        &mut pending,
+        &mut disposed,
+        &mut retirement,
+        |_| Ok(()),
+    )
+    .unwrap();
+    finish(&mut retirement);
+}
+
+#[cfg(all(feature = "allocation-probe", feature = "stream-test-support"))]
+#[test]
+fn combined_reservation_keeps_one_verified_source_domain_through_playback() {
+    let _serial = serial();
+    let (project, _) = utility_fixture::project();
+    let mut snapshot = project.snapshot();
+    snapshot.tracks[0].devices.clear();
+    let project = hex_project::Project::from_snapshot(snapshot).unwrap();
+    let asset = project.assets().next().unwrap().id();
+    let wav = stream_fixture::Wav::new();
+    let definition = wav.definition(asset, 11);
+    let mut owner = stream_fixture::owner_with_context(
+        &project,
+        definition.metadata.clone(),
+        Some(hex_engine::AudioSourceContext {
+            project_generation: 3,
+            editor_revision: 1,
+        }),
+    );
+    let identity = owner.identity();
+    let verified = reservation(&mut owner);
+    let ordinary = hex_engine::AudioStorageLedgerReservation {
+        data_rows: 512,
+        handle_rows: 256,
+        root_rows: 128,
+        max_retained_bytes: 20_000_000,
+        max_construction_peak_bytes: 20_000_000,
+    };
+    let total = hex_engine::AudioStorageLedgerReservation {
+        data_rows: verified.data_rows + ordinary.data_rows + 1024,
+        handle_rows: verified.handle_rows + ordinary.handle_rows,
+        root_rows: 1 + ordinary.root_rows,
+        max_retained_bytes: verified.max_retained_data_bytes
+            + ordinary.max_retained_bytes
+            + 1024 * 1024,
+        max_construction_peak_bytes: verified.max_construction_peak_data_bytes
+            + ordinary.max_construction_peak_bytes
+            + 1024 * 1024,
+    };
+    let (control, callback) = channel(48_000).unwrap();
+    let root = control.native_candidate_root();
+    let (mut data, errors, terminals, mut client, mut publication) =
+        crate::native_callback_owner::reserve_native_worker(control, callback, None);
+    let mut retirement = crate::native_callback_owner::NativeRetirement::new(terminals, root);
+    let control = publication.control().unwrap();
+    control.enable_native_custody().unwrap();
+    control
+        .configure_combined_publication_on_control(verified, ordinary, 3, 4096, total)
+        .unwrap();
+    control.configure_audio_candidate_streaming(3).unwrap();
+    let domain = control
+        .register_audio_candidate_domain_with_readiness(
+            stream_fixture::pair(definition),
+            hex_stream::StreamReadinessReservation {
+                extents_per_role: 3,
+            },
+        )
+        .ok()
+        .unwrap();
+    data.owner_mut()
+        .unwrap()
+        .run(|callback, _| callback.begin_block());
+    let ticket = control
+        .stage_eligible_audio_candidate(owner, vec![domain], PublicationPolicy::InheritRuntime, 3)
+        .ok()
+        .unwrap();
+    assert!(client.activate());
+    client.command(PlaybackCommand::Play).unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    let mut output = [[0.0; 2]; 8];
+    loop {
+        let counts = allocation_counter::measure(|| {
+            data.owner_mut().unwrap().run(|callback, _| {
+                callback.begin_block();
+                callback.render(&mut output).unwrap();
+            })
+        });
+        assert_eq!(
+            (
+                counts.count_total,
+                counts.bytes_total,
+                counts.count_current,
+                counts.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        if output.iter().any(|frame| frame[0] != 0.0) {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "verified source did not play"
+        );
+        std::thread::yield_now();
+    }
+    let usage = loop {
+        if let Some(usage) = control.audio_candidate_domain_usage() {
+            break usage;
+        }
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::yield_now();
+    };
+    assert_eq!(usage.occupied_domains, 1);
+    drop(data);
+    drop(errors);
+    let mut backend = Some(());
+    let mut pending = false;
+    let mut disposed = false;
+    let _ = crate::lifecycle::test_dispose_backend(
+        &mut backend,
+        &mut pending,
+        &mut disposed,
+        &mut retirement,
+        |_| Ok(()),
+    )
+    .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    let returned = loop {
+        control.reclaim();
+        if let Some(returned) = control.recover_audio_candidate(&ticket) {
+            break returned;
+        }
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::yield_now();
+    };
+    assert_eq!(returned.disposed.identity(), identity);
+    drop(returned);
+    loop {
+        control.reclaim();
+        if let Some(report) = control.recover_audio_candidate_domain(domain) {
+            assert!(report.worker_joined && report.accounting_complete);
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+    client.close();
+    publication.close();
+    drop(client);
+    drop(publication);
+    finish(&mut retirement);
 }
 #[test]
 fn actual_queue_rejection_and_return_pressure_recover_original_owners_without_install_ack() {
@@ -538,6 +895,28 @@ fn real_utility_transfer_pressure_retry_restores_cancellation_without_changing_a
     render(&mut data);
     assert_eq!(control.status.applied_revision.load(Acquire), 1);
     assert_eq!(control.status.position.load(Acquire), 8);
+    let observation = control
+        .status
+        .transport_observation()
+        .expect("eligible observation");
+    assert_eq!(
+        observation
+            .loop_state
+            .map(|state| (state.pass, state.active_region)),
+        Some((0, None))
+    );
+    assert_eq!(
+        (observation.audio_revision, observation.control_generation),
+        (1, 8)
+    );
+    assert_eq!(
+        (
+            observation.arrangement_frame,
+            observation.performance_frame,
+            observation.playing
+        ),
+        (8, 8, true)
+    );
     let b_ticket = control
         .stage_eligible_audio_candidate(b, vec![], PublicationPolicy::InheritRuntime, 8)
         .ok()
@@ -554,6 +933,14 @@ fn real_utility_transfer_pressure_retry_restores_cancellation_without_changing_a
     render(&mut data);
     assert_eq!(control.status.applied_revision.load(Acquire), 1);
     assert_eq!(control.status.position.load(Acquire), 16);
+    assert_eq!(
+        control
+            .status
+            .transport_observation()
+            .unwrap()
+            .arrangement_frame,
+        16
+    );
     assert!(control.status.publication_pending.load(Acquire));
     assert_eq!(
         control.cancel_audio_candidate(&b_ticket),

@@ -25,9 +25,10 @@ pub(super) struct State {
     toggle_subscription: Option<Subscription>,
 }
 mod hidden_tracks;
+mod interval;
 #[path = "arrangement_focus/visibility.rs"]
 mod visibility;
-pub(super) use visibility::track_intersects_sections;
+pub(super) use interval::track_intersects_sections;
 
 impl State {
     pub(super) fn observe_active_track(&mut self, active: Option<TrackId>) {

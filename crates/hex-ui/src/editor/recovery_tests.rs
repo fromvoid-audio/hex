@@ -22,12 +22,79 @@ use std::sync::{
 use std::time::Instant;
 
 #[gpui::test]
-fn stop_renews_current_resident_vst3_playback_before_an_edit(cx: &mut gpui::TestAppContext) {
-    use super::super::audio_admission::StoppedPlaybackRestore;
+fn stop_during_fresh_vst3_recovery_cancels_play_without_revoking_sources(
+    cx: &mut gpui::TestAppContext,
+) {
+    use hex_audio::audio_diagnostics::{AudioDiagnosticKind, AudioDiagnosticsFlags};
+
     let _output_serial = hex_audio::worker_fixture::serial_output();
-    let (mut output, backend) =
+    let (mut output, mut backend) =
         hex_audio::worker_fixture::open_after_retirement(48_000, false).unwrap();
     let client = output.take_client().unwrap();
+    client.set_audio_diagnostics(AudioDiagnosticsFlags::TRANSPORT);
+    let mut project =
+        hex_project::Editor::new(hex_project::Project::new(48_000).unwrap(), 8).unwrap();
+    project
+        .execute(Command::InsertMainDevice {
+            before: None,
+            state: hex_lattice_contract::NativeDeviceState::new(
+                hex_lattice_contract::DeviceTypeId::from_static("hex.vst3"),
+                1,
+                vec![0],
+            )
+            .unwrap(),
+        })
+        .unwrap();
+    let (_, editor) = super::super::clip_drag_ui_test::editor_window(
+        cx,
+        project.project().clone(),
+        Arc::default(),
+    );
+    editor.update(cx, |view, _| {
+        view.audio = Some(EditorAudio {
+            control: client,
+            sample_rate: 48_000,
+            label: "fresh recovery fixture".into(),
+            spectrum_error: None,
+            mode: hex_session::DocumentAudioMode::Resident,
+        });
+        view.document_audio_mode = hex_session::DocumentAudioMode::Resident;
+        let generation = view.recovery.begin(120).unwrap();
+        assert!(view.recovery.opened(generation));
+        view.pending_recovery_generation = Some(generation);
+        view.defer_play_until_audio_recovers();
+        view.stop();
+        assert!(view.deferred_play.is_none());
+        assert_eq!(view.recovery.position(), Some(0));
+        assert_eq!(view.recovery.generation(), Some(generation));
+        backend.render(&mut [[0.0; 2]; 64]).unwrap();
+        let control = &mut view.audio.as_mut().unwrap().control;
+        assert!(
+            !std::iter::from_fn(|| control.take_audio_diagnostic())
+                .any(|event| matches!(event.kind, AudioDiagnosticKind::PriorityStop { .. })),
+            "stop must leave the fresh recovery output intact"
+        );
+    });
+    drop(backend);
+    output.publication.close();
+}
+
+#[gpui::test]
+fn stop_renews_current_resident_vst3_playback_before_an_edit(cx: &mut gpui::TestAppContext) {
+    use super::super::audio_admission::StoppedPlaybackRestore;
+    use hex_audio::audio_diagnostics::{AudioDiagnosticKind, AudioDiagnosticsFlags};
+
+    let _output_serial = hex_audio::worker_fixture::serial_output();
+    let (mut output, mut backend) =
+        hex_audio::worker_fixture::open_after_retirement(48_000, false).unwrap();
+    let client = output.take_client().unwrap();
+    client.set_audio_diagnostics(AudioDiagnosticsFlags::TRANSPORT);
+    let stop_count = |view: &mut EditorView| {
+        let control = &mut view.audio.as_mut().unwrap().control;
+        std::iter::from_fn(|| control.take_audio_diagnostic())
+            .filter(|event| matches!(event.kind, AudioDiagnosticKind::PriorityStop { .. }))
+            .count()
+    };
     let mut project =
         hex_project::Editor::new(hex_project::Project::new(48_000).unwrap(), 8).unwrap();
     let Created::Device(device) = project
@@ -62,6 +129,7 @@ fn stop_renews_current_resident_vst3_playback_before_an_edit(cx: &mut gpui::Test
         view.document_audio_mode = hex_session::DocumentAudioMode::Resident;
         view.applied_project_revision = Some(revision);
         view.audible_playback = Some(super::super::PlaybackCandidate {
+            clip_preview_identity: None,
             worker_requires_preroll: None,
             observation: None,
             audio_revision: 0,
@@ -72,12 +140,35 @@ fn stop_renews_current_resident_vst3_playback_before_an_edit(cx: &mut gpui::Test
             device_preview_identity: None,
             tuning_preview_identity: None,
         });
-        view.stop();
+        view.stop_from_escape();
+        let restore = Some(StoppedPlaybackRestore::Preparing);
+        assert_eq!(view.stopped_playback_restore, restore);
+        backend.render(&mut [[0.0; 2]; 64]).unwrap();
+        assert_eq!(stop_count(view), 1, "first stop reaches the callback");
+
+        view.stop_from_escape();
+        assert!(view.play_start_at_beginning);
+        assert_eq!(view.stopped_playback_restore, restore);
+        backend.render(&mut [[0.0; 2]; 64]).unwrap();
         assert_eq!(
-            view.stopped_playback_restore,
-            Some(StoppedPlaybackRestore::Preparing)
+            stop_count(view),
+            0,
+            "repeat stop leaves the pending restore alone"
         );
+
         view.degraded_plugins = crate::editor_backend::DegradedDevices::new(vec![device.value()]);
+        view.queue_audio_command(PlaybackCommand::PlayFrom(0));
+        assert!(view.deferred_play.is_some());
+        view.stop();
+        assert!(view.deferred_play.is_none());
+        assert_eq!(view.stopped_playback_restore, restore);
+        backend.render(&mut [[0.0; 2]; 64]).unwrap();
+        assert_eq!(
+            stop_count(view),
+            0,
+            "cancel deferred play without revoking the restore"
+        );
+
         view.queue_audio_command(PlaybackCommand::PlayFrom(0));
         assert!(view.deferred_play.is_some());
         assert_eq!(
@@ -94,17 +185,597 @@ fn stop_renews_current_resident_vst3_playback_before_an_edit(cx: &mut gpui::Test
     output.publication.close();
 }
 
+#[gpui::test]
+fn degraded_native_effect_waits_for_recovery_and_uses_the_original_track(
+    cx: &mut gpui::TestAppContext,
+) {
+    graph_edit_recovery(cx, EditFixture::Effect, EditRecovery::Ready);
+}
+
+#[gpui::test]
+fn degraded_native_effect_refuses_changed_project_and_failed_recovery(
+    cx: &mut gpui::TestAppContext,
+) {
+    graph_edit_recovery(
+        &mut cx.new_app(),
+        EditFixture::Effect,
+        EditRecovery::ProjectChanged,
+    );
+    graph_edit_recovery(&mut cx.new_app(), EditFixture::Effect, EditRecovery::Failed);
+}
+
+#[gpui::test]
+fn degraded_sample_drop_waits_for_recovery_and_keeps_the_captured_destination(
+    cx: &mut gpui::TestAppContext,
+) {
+    graph_edit_recovery(
+        &mut cx.new_app(),
+        EditFixture::ExistingTrackSample,
+        EditRecovery::Ready,
+    );
+    graph_edit_recovery(cx, EditFixture::NewTrackSample, EditRecovery::Ready);
+}
+
+#[gpui::test]
+fn degraded_sample_drop_releases_the_preview_on_failed_or_stale_recovery(
+    cx: &mut gpui::TestAppContext,
+) {
+    graph_edit_recovery(
+        &mut cx.new_app(),
+        EditFixture::NewTrackSample,
+        EditRecovery::ProjectChanged,
+    );
+    graph_edit_recovery(
+        &mut cx.new_app(),
+        EditFixture::ExistingTrackSample,
+        EditRecovery::ProjectEditPending,
+    );
+    graph_edit_recovery(cx, EditFixture::NewTrackSample, EditRecovery::Failed);
+}
+
+#[gpui::test]
+fn degraded_time_duplicate_waits_for_recovery_and_rejects_stale_or_failed_recovery(
+    cx: &mut gpui::TestAppContext,
+) {
+    graph_edit_recovery(
+        &mut cx.new_app(),
+        EditFixture::TimeDuplicate,
+        EditRecovery::Ready,
+    );
+    graph_edit_recovery(
+        &mut cx.new_app(),
+        EditFixture::TimeDuplicate,
+        EditRecovery::ProjectChanged,
+    );
+    graph_edit_recovery(
+        &mut cx.new_app(),
+        EditFixture::TimeDuplicate,
+        EditRecovery::ProjectEditPending,
+    );
+    graph_edit_recovery(cx, EditFixture::TimeDuplicate, EditRecovery::Failed);
+}
+
+#[gpui::test]
+fn in_flight_time_duplicate_recovers_only_its_refused_copy(cx: &mut gpui::TestAppContext) {
+    graph_edit_recovery(
+        &mut cx.new_app(),
+        EditFixture::InFlightTimeDuplicate,
+        EditRecovery::Ready,
+    );
+    graph_edit_recovery(
+        &mut cx.new_app(),
+        EditFixture::InFlightTimeDuplicate,
+        EditRecovery::ProjectChanged,
+    );
+    graph_edit_recovery(
+        &mut cx.new_app(),
+        EditFixture::InFlightTimeDuplicate,
+        EditRecovery::ProjectEditPending,
+    );
+    graph_edit_recovery(
+        &mut cx.new_app(),
+        EditFixture::InFlightTimeDuplicate,
+        EditRecovery::SelectionChanged,
+    );
+    graph_edit_recovery(
+        &mut cx.new_app(),
+        EditFixture::InFlightTimeDuplicate,
+        EditRecovery::UnrelatedTerminal,
+    );
+    graph_edit_recovery(
+        &mut cx.new_app(),
+        EditFixture::InFlightTimeDuplicate,
+        EditRecovery::RetryTerminal,
+    );
+    graph_edit_recovery(
+        &mut cx.new_app(),
+        EditFixture::InFlightTimeDuplicate,
+        EditRecovery::PendingTerminal,
+    );
+    graph_edit_recovery(cx, EditFixture::InFlightTimeDuplicate, EditRecovery::Failed);
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum EditFixture {
+    Effect,
+    ExistingTrackSample,
+    NewTrackSample,
+    TimeDuplicate,
+    InFlightTimeDuplicate,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum EditRecovery {
+    Ready,
+    ProjectChanged,
+    ProjectEditPending,
+    SelectionChanged,
+    UnrelatedTerminal,
+    RetryTerminal,
+    PendingTerminal,
+    Failed,
+}
+
+fn graph_edit_recovery(cx: &mut gpui::TestAppContext, edit: EditFixture, outcome: EditRecovery) {
+    use crate::editor::drag::BrowserDropDestination;
+    use hex_engine::{DeviceTypeId, NativeDeviceClass};
+    use hex_session::service::ArrangementDeviceDestination;
+
+    // Substitute only output creation. Restart and the eventual edit go
+    // through the real session FIFO, and a headless callback owns the cursor.
+    struct RestartObserver(SyncSender<(u64, u64)>);
+    impl WorkerAudioSink for RestartObserver {
+        fn initialize(&mut self, _: &AtomicBool) -> Result<u32, String> {
+            Ok(48_000)
+        }
+        fn canonical_changed(&mut self, _: Arc<CanonicalAudioSourceSnapshot>) {}
+        fn poll(&mut self) {}
+        fn close(&mut self) {}
+        fn restart_audio(&mut self, generation: u64, request: u64) -> Result<(), String> {
+            self.0
+                .try_send((generation, request))
+                .map_err(|e| e.to_string())
+        }
+    }
+
+    let (restarts, restarted) = sync_channel(1);
+    let service =
+        Service::with_audio_sink(16, 8_000_000, None, Box::new(RestartObserver(restarts))).unwrap();
+    let next = |service: &Service| {
+        let deadline = Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            match service.try_event() {
+                Ok(event) => {
+                    assert!(event.error.is_none(), "{:?}", event.error);
+                    break event;
+                }
+                Err(TryRecvError::Empty) => {
+                    assert!(Instant::now() < deadline, "session event");
+                    std::thread::yield_now();
+                }
+                Err(error) => panic!("{error}"),
+            }
+        }
+    };
+    next(&service);
+    let add_track = |name: &str| Request::Edit(Command::AddTrack { name: name.into() });
+    service
+        .submit(
+            if matches!(
+                edit,
+                EditFixture::TimeDuplicate | EditFixture::InFlightTimeDuplicate
+            ) {
+                Request::Edit(Command::AddMidiTrack {
+                    name: "target".into(),
+                })
+            } else {
+                add_track("target")
+            },
+        )
+        .unwrap();
+    let first = next(&service);
+    let target = first.state.project.tracks()[0].id();
+    service.submit(add_track("other")).unwrap();
+    let ready = next(&service).state;
+    let other = ready.project.tracks()[1].id();
+    let mut refusal_event = None;
+    let ready = if matches!(
+        edit,
+        EditFixture::TimeDuplicate | EditFixture::InFlightTimeDuplicate
+    ) {
+        service
+            .submit(Request::Edit(Command::PlaceMidiClip {
+                track: target,
+                start: BeatTime::ZERO,
+                length: BeatTime::from_raw(4 << 32),
+            }))
+            .unwrap();
+        let event = next(&service);
+        let state = Arc::clone(&event.state);
+        refusal_event = Some(event);
+        state
+    } else {
+        ready
+    };
+    let revision = ready.revision;
+    let sample = matches!(
+        edit,
+        EditFixture::ExistingTrackSample | EditFixture::NewTrackSample
+    )
+    .then(|| {
+        let files = crate::editor::external_audio_drop_ui_test::BatchFiles::new();
+        let path = files.wav("recovery.wav", 48_000, 512);
+        (files, path)
+    });
+    let (_, editor) = super::super::clip_drag_ui_test::editor_window(
+        cx,
+        ready.project.as_ref().clone(),
+        Arc::clone(&ready.midi_preview),
+    );
+    let _output_serial = hex_audio::worker_fixture::serial_output();
+    let open = || {
+        let (mut output, mut backend) =
+            hex_audio::worker_fixture::open_after_retirement(48_000, false).unwrap();
+        let playback = Playback::new(hex_engine::Project::new(48_000, Vec::new()).unwrap());
+        output
+            .publication
+            .control()
+            .unwrap()
+            .publish(playback)
+            .unwrap();
+        backend.render(&mut [[0.0; 2]; 64]).unwrap();
+        let audio = EditorAudio {
+            control: output.take_client().unwrap(),
+            sample_rate: 48_000,
+            label: "effect recovery fixture".into(),
+            spectrum_error: None,
+            mode: hex_session::DocumentAudioMode::Resident,
+        };
+        (output, backend, audio)
+    };
+    let (mut old_output, mut old_backend, mut old_audio) = open();
+    old_audio.control.command(PlaybackCommand::Play).unwrap();
+    old_backend.render(&mut [[0.0; 2]; 64]).unwrap();
+    let request = || Request::DropBrowserDeviceOnArrangement {
+        project_generation: 0,
+        revision,
+        class: NativeDeviceClass::Effect,
+        type_id: DeviceTypeId::from_static("hex.eq"),
+        destination: ArrangementDeviceDestination::ExistingTrack {
+            track: target,
+            instrument: None,
+        },
+        new_track_gain: None,
+    };
+    let recovery = editor.update(cx, |v, _| {
+        v.service = service;
+        v.state = Some(ready);
+        v.project_generation = 0;
+        v.audio = Some(old_audio);
+        if edit != EditFixture::InFlightTimeDuplicate {
+            v.degraded_plugins = crate::editor_backend::DegradedDevices::new(vec![2]);
+        }
+        if let Some((_, path)) = &sample {
+            let start = 24_000;
+            let (destination, import) = if edit == EditFixture::NewTrackSample {
+                let before_track = Some(other);
+                (
+                    BrowserDropDestination::NewTrack {
+                        before_track,
+                        start,
+                    },
+                    Request::ImportToNewTrack {
+                        path: path.clone(),
+                        before_track,
+                        start,
+                    },
+                )
+            } else {
+                (
+                    BrowserDropDestination::ExistingTrack {
+                        track: target,
+                        start,
+                    },
+                    Request::ImportToTrackWithOverwrite {
+                        path: path.clone(),
+                        track: target,
+                        start,
+                    },
+                )
+            };
+            v.track_defaults.set_test_state(0.25, false, true);
+            v.set_auto_warp_imports_for_test(edit == EditFixture::NewTrackSample);
+            let drag = v
+                .audio_file_drag_payload(
+                    path.clone(),
+                    "recovery".into(),
+                    None,
+                    Default::default(),
+                    Default::default(),
+                )
+                .unwrap();
+            assert!(
+                v.enqueue_sample_drop(import, &drag, destination),
+                "{:?}",
+                v.error
+            );
+            assert_eq!(v.sample_drop_target(), Some(destination));
+            v.set_auto_warp_imports_for_test(false);
+            v.track_defaults.set_test_state(0.5, false, true);
+        } else if matches!(
+            edit,
+            EditFixture::TimeDuplicate | EditFixture::InFlightTimeDuplicate
+        ) {
+            let range = hex_project::TimeRange::new(vec![target], 0, 96_000).unwrap();
+            v.time_selection = Some(super::super::time_selection::TimeSelection {
+                anchor_track: Some(target),
+                end_track: Some(target),
+                anchor_frame: 0,
+                end_frame: 96_000,
+            });
+            if edit == EditFixture::InFlightTimeDuplicate {
+                // The session boundary has separately proved that this typed
+                // terminal is emitted only for an uncommitted refused copy.
+                v.fixture_submitted_time_duplicate(range);
+                if outcome == EditRecovery::RetryTerminal {
+                    v.mark_time_duplicate_recovery_started();
+                }
+                if outcome == EditRecovery::PendingTerminal {
+                    assert!(v.enqueue(add_track("later edit")));
+                }
+                let mut refused = refusal_event.take().unwrap();
+                refused.error = Some("native graph source is unavailable".into());
+                refused.range_copy_source_unavailable = Some(AudioSourceContext {
+                    project_generation: 0,
+                    editor_revision: if outcome == EditRecovery::UnrelatedTerminal {
+                        revision + 1
+                    } else {
+                        revision
+                    },
+                });
+                v.receive(refused);
+                if matches!(
+                    outcome,
+                    EditRecovery::UnrelatedTerminal
+                        | EditRecovery::RetryTerminal
+                        | EditRecovery::PendingTerminal
+                ) {
+                    assert!(v.recovery.generation().is_none());
+                    assert!(v.pending_time_range_move.is_none());
+                    assert!(v.error.is_some());
+                    return None;
+                }
+                assert!(v.status.contains("restarting audio"));
+                assert!(v.error.is_none());
+            } else {
+                v.start_time_duplicate(range, 0);
+            }
+            assert!(v.pending_time_range_move.is_some());
+        } else {
+            assert!(v.enqueue_device_barrier(request()));
+        }
+        let generation = v
+            .recovery
+            .generation()
+            .expect("graph edit starts audio recovery");
+        assert_eq!(v.recovery.position(), Some(64));
+        assert!(v.deferred_play.is_some());
+        assert!(!v.enqueue_device_barrier(request()), "one deferred effect");
+        assert_eq!(v.worker_requests_pending, 1, "only restart is admitted");
+        v.selected_track = Some(other);
+        Some(generation)
+    });
+    let Some(recovery) = recovery else {
+        assert!(restarted.try_recv().is_err());
+        editor.update(cx, |v, _| {
+            if let Some(mut audio) = v.audio.take() {
+                audio.control.close();
+            }
+            v.service
+                .shutdown(std::time::Duration::from_secs(2))
+                .unwrap();
+        });
+        drop(old_backend);
+        old_output.publication.close();
+        return;
+    };
+    assert_eq!(
+        restarted
+            .recv_timeout(std::time::Duration::from_millis(500))
+            .unwrap(),
+        (0, 1)
+    );
+    drop(old_backend);
+    old_output.publication.close();
+    drop(old_output);
+
+    editor.update(cx, |v, _| {
+        let restart = next(&v.service);
+        assert_eq!(restart.state.revision, revision);
+        v.receive(restart);
+        assert!(v.service.try_event().is_err());
+        if outcome == EditRecovery::ProjectChanged {
+            assert!(v.enqueue(add_track("intervening edit")));
+            let changed = next(&v.service);
+            assert_eq!(changed.state.revision, revision + 1);
+            v.receive(changed);
+        }
+        if outcome == EditRecovery::SelectionChanged {
+            v.advance_selection_intent();
+        }
+        if outcome == EditRecovery::Failed {
+            v.fail_audio_recovery("fixture audio recovery failed");
+            assert!(v.recovery.deferred_edit.is_none());
+            assert!(v.pending_sample_drop.is_none());
+            assert!(v.pending_time_range_move.is_none());
+            assert!(v.service.try_event().is_err());
+            assert_eq!(v.state.as_ref().unwrap().revision, revision);
+        }
+    });
+    if outcome == EditRecovery::Failed {
+        return;
+    }
+
+    let (mut fresh_output, mut fresh_backend, fresh_audio) = open();
+    editor.update(cx, |v, _| {
+        v.audio = Some(fresh_audio);
+        // Opening a new output clears observations belonging to the old one.
+        v.degraded_plugins = Default::default();
+        v.applied_project_revision = v.state.as_ref().map(|s| s.revision);
+        assert!(v.recovery.opened(recovery));
+        assert!(
+            !v.finish_audio_recovery_tick(),
+            "an open output is not a restored graph"
+        );
+        assert!(v.service.try_event().is_err());
+        assert!(v.recovery.restored(recovery));
+        assert!(
+            !v.finish_audio_recovery_tick(),
+            "cursor seek must reach the callback"
+        );
+        if outcome == EditRecovery::ProjectEditPending {
+            assert!(v.enqueue(add_track("intervening edit")));
+        }
+    });
+    fresh_backend.render(&mut [[0.0; 2]; 64]).unwrap();
+    editor.update(cx, |v, _| {
+        assert!(v.finish_audio_recovery_tick());
+        assert!(v.recovery.deferred_edit.is_none());
+        assert!(!v.finish_audio_recovery_tick());
+        if outcome == EditRecovery::SelectionChanged {
+            assert!(v.pending_time_range_move.is_none());
+            assert!(v.service.try_event().is_err());
+            assert!(
+                v.error
+                    .as_deref()
+                    .unwrap()
+                    .contains("time selection changed")
+            );
+            return;
+        }
+        if outcome == EditRecovery::ProjectChanged {
+            assert!(v.service.try_event().is_err());
+            assert!(v.pending_sample_drop.is_none());
+            assert!(v.pending_time_range_move.is_none());
+            assert!(
+                v.error
+                    .as_deref()
+                    .unwrap()
+                    .contains("project changed during audio recovery")
+            );
+            return;
+        }
+        if outcome == EditRecovery::ProjectEditPending {
+            assert!(v.pending_sample_drop.is_none());
+            assert!(v.pending_time_range_move.is_none());
+            assert_eq!(v.worker_requests_pending, 1, "only the intervening edit");
+            assert!(v.error.as_deref().unwrap().contains("project work pending"));
+            let changed = next(&v.service);
+            assert_eq!(changed.state.revision, revision + 1);
+            assert!(
+                changed
+                    .state
+                    .project
+                    .track(target)
+                    .unwrap()
+                    .clips()
+                    .is_empty()
+            );
+            v.receive(changed);
+            assert!(v.service.try_event().is_err());
+            return;
+        }
+        assert_eq!(v.worker_requests_pending, 1, "{:?}", v.error);
+        let added = next(&v.service);
+        assert_eq!(added.state.revision, revision + 1);
+        let project = &added.state.project;
+        match edit {
+            EditFixture::TimeDuplicate | EditFixture::InFlightTimeDuplicate => {
+                assert_eq!(project.track(target).unwrap().midi_clips().len(), 2);
+            }
+            EditFixture::Effect => {
+                let devices = project.track(target).unwrap().devices();
+                assert_eq!(devices.len(), 1);
+                assert_eq!(
+                    devices[0].state().type_id(),
+                    DeviceTypeId::from_static("hex.eq")
+                );
+                assert!(project.track(other).unwrap().devices().is_empty());
+            }
+            EditFixture::ExistingTrackSample => {
+                assert_eq!(project.tracks().len(), 2);
+                let [clip] = project.track(target).unwrap().clips() else {
+                    panic!("one sample on the captured track");
+                };
+                assert_eq!(clip.start(), 24_000);
+                assert!(project.track(other).unwrap().clips().is_empty());
+            }
+            EditFixture::NewTrackSample => {
+                let [first, inserted, last] = project.tracks() else {
+                    panic!("one inserted track");
+                };
+                assert_eq!((first.id(), last.id()), (target, other));
+                assert_eq!(inserted.gain(), 0.25);
+                let [clip] = inserted.clips() else {
+                    panic!("one sample on the inserted track");
+                };
+                assert_eq!(clip.start(), 24_000);
+                assert!(
+                    clip.audio_edit().is_some(),
+                    "capture auto-warp before recovery"
+                );
+            }
+        }
+        if sample.is_some() {
+            assert!(
+                v.pending_sample_drop.is_some(),
+                "preview waits for its terminal"
+            );
+        }
+        v.receive(added);
+        assert!(v.pending_sample_drop.is_none());
+        assert!(v.service.try_event().is_err(), "no repeated insertion");
+        if matches!(
+            edit,
+            EditFixture::TimeDuplicate | EditFixture::InFlightTimeDuplicate
+        ) {
+            v.service.submit(Request::Undo).unwrap();
+            let undone = next(&v.service);
+            assert_eq!(undone.state.revision, revision + 2);
+            assert_eq!(
+                undone
+                    .state
+                    .project
+                    .track(target)
+                    .unwrap()
+                    .midi_clips()
+                    .len(),
+                1
+            );
+        }
+    });
+    editor.update(cx, |v, _| assert!(v.retire_audio_preserving_gain_take()));
+    drop(fresh_backend);
+    fresh_output.publication.close();
+}
+
 // An already-open actual worker endpoint, without a second lifecycle implementation. The native
 // desktop tests own reopen/teardown; this fixture exercises UI recovery through the real Service
 // seek worker, ordinary resource book, callback and protected scalar observation channel.
 struct Sink {
     output: hex_audio::WorkerPreparedOutput,
     events: SyncSender<EditorAudioEvent>,
+    audition_ready: bool,
     hold: Arc<AtomicBool>,
     held: Arc<Mutex<Option<EditorAudioEvent>>>,
+    consume_next_inherited_candidate: Option<Arc<AtomicBool>>,
     reject_next_fresh: Arc<AtomicBool>,
     cancel_next_fresh: Arc<AtomicBool>,
     cancellation_done: Arc<AtomicBool>,
+    section_fixture: bool,
+    section_fence: Option<(hex_audio::prepared::StoppedEditFence, Option<u64>)>,
+    paused_monitor_enabled: bool,
+    paused_monitor: Option<hex_engine::PausedMonitorStorageHold>,
 }
 
 /// Existing production-path test sink with neutral gates. Callers retain the
@@ -112,15 +783,25 @@ struct Sink {
 pub(in crate::editor) fn worker_fixture_sink(
     output: hex_audio::WorkerPreparedOutput,
     events: SyncSender<EditorAudioEvent>,
+    audition_ready: bool,
+    consume_next_inherited_candidate: Arc<AtomicBool>,
+    section_fixture: bool,
+    paused_monitor_enabled: bool,
 ) -> Box<dyn WorkerAudioSink> {
     Box::new(Sink {
         output,
         events,
+        audition_ready,
         hold: Arc::new(AtomicBool::new(false)),
         held: Arc::new(Mutex::new(None)),
+        consume_next_inherited_candidate: Some(consume_next_inherited_candidate),
         reject_next_fresh: Arc::new(AtomicBool::new(false)),
         cancel_next_fresh: Arc::new(AtomicBool::new(false)),
         cancellation_done: Arc::new(AtomicBool::new(false)),
+        section_fixture,
+        section_fence: None,
+        paused_monitor_enabled,
+        paused_monitor: None,
     })
 }
 
@@ -195,7 +876,7 @@ fn stop_restarts_audio_from_zero_when_a_vst3_worker_is_degraded(cx: &mut gpui::T
 }
 
 #[gpui::test]
-fn play_restarts_audio_if_stop_has_already_degraded_the_worker(cx: &mut gpui::TestAppContext) {
+fn play_recovers_a_faulted_output_with_a_degraded_worker(cx: &mut gpui::TestAppContext) {
     degraded_worker_recovers(cx, false, None);
 }
 
@@ -226,6 +907,7 @@ fn degraded_worker_recovers(
     if !stop_first {
         client.stop();
         backend.render(&mut [[0.0; 2]; 64]).unwrap();
+        client.status().unwrap().device_fault.store(true, Release);
     }
 
     let (_, editor) = super::super::clip_drag_ui_test::editor_window(
@@ -266,6 +948,98 @@ fn degraded_worker_recovers(
         assert_eq!(view.recovery.position(), Some(explicit_frame.unwrap_or(0)));
         view.stop();
         assert!(view.deferred_play.is_none());
+    });
+    drop(backend);
+    output.publication.close();
+}
+
+#[gpui::test]
+fn play_after_pause_keeps_the_applied_output_when_a_vst3_is_degraded(
+    cx: &mut gpui::TestAppContext,
+) {
+    play_on_degraded_output(cx, None);
+}
+
+#[gpui::test]
+fn explicit_play_from_keeps_the_requested_cursor_when_a_vst3_is_degraded(
+    cx: &mut gpui::TestAppContext,
+) {
+    play_on_degraded_output(cx, Some(18_000));
+}
+
+fn play_on_degraded_output(cx: &mut gpui::TestAppContext, explicit_frame: Option<u64>) {
+    let _output_serial = hex_audio::worker_fixture::serial_output();
+    let (mut output, mut backend) =
+        hex_audio::worker_fixture::open_after_retirement(48_000, false).unwrap();
+    let source = hex_engine::Audio::new(48_000, vec![[0.25; 2]; 20_000]).unwrap();
+    let clip = hex_engine::Clip::new(source, 0, 20_000, false).unwrap();
+    let track = hex_engine::Track::new(vec![clip], 1.0, false).unwrap();
+    let playback = Playback::new(hex_engine::Project::new(48_000, vec![track]).unwrap());
+    let revision = output
+        .publication
+        .control()
+        .unwrap()
+        .publish(playback)
+        .unwrap();
+    let mut client = output.take_client().unwrap();
+    let identity = client.output_identity().unwrap();
+    client.command(PlaybackCommand::Play).unwrap();
+    let mut frames = [[0.0; 2]; 64];
+    backend.render(&mut frames).unwrap();
+
+    let (_, editor) = super::super::clip_drag_ui_test::editor_window(
+        cx,
+        hex_project::Project::new(48_000).unwrap(),
+        Arc::default(),
+    );
+    editor.update(cx, |view, _| {
+        view.audio = Some(EditorAudio {
+            control: client,
+            sample_rate: 48_000,
+            label: "degraded vst3 fixture".into(),
+            spectrum_error: None,
+            mode: hex_session::DocumentAudioMode::Resident,
+        });
+        let state = Arc::clone(view.state.as_ref().unwrap());
+        view.applied_project_revision = Some(state.revision);
+        view.audible_playback = Some(super::super::PlaybackCandidate {
+            clip_preview_identity: None,
+            worker_requires_preroll: Some(false),
+            observation: None,
+            audio_revision: revision,
+            project_generation: view.project_generation,
+            state,
+            prepared_revision: None,
+            seek_request_id: None,
+            device_preview_identity: None,
+            tuning_preview_identity: None,
+        });
+        view.degraded_plugins = crate::editor_backend::DegradedDevices::new(vec![2]);
+        view.toggle_play();
+        backend.render(&mut frames).unwrap();
+        backend.render(&mut frames).unwrap();
+        assert!(!view.audio_status().unwrap().playing.load(Acquire));
+
+        if let Some(frame) = explicit_frame {
+            view.queue_audio_command(PlaybackCommand::PlayFrom(frame));
+        } else {
+            view.toggle_play();
+        }
+        assert!(view.pending_restart_request.is_none());
+        assert!(view.deferred_play.is_none());
+        assert_eq!(
+            view.audio.as_ref().unwrap().control.output_identity(),
+            Some(identity)
+        );
+        backend.render(&mut frames).unwrap();
+        let status = view.audio_status().unwrap();
+        assert!(status.playing.load(Acquire));
+        assert_eq!(status.applied_revision.load(Acquire), revision);
+        assert_eq!(
+            status.position.load(Acquire),
+            explicit_frame.unwrap_or(0) + 64
+        );
+        assert!(frames.iter().any(|frame| *frame != [0.0; 2]));
     });
     drop(backend);
     output.publication.close();
@@ -316,32 +1090,172 @@ fn a_changed_output_route_restarts_audio_once_its_guards_allow(cx: &mut gpui::Te
     output.publication.close();
 }
 impl WorkerAudioSink for Sink {
+    fn begin_section_edit(
+        &mut self,
+        context: hex_engine::AudioSourceContext,
+        _: bool,
+    ) -> Result<(), String> {
+        if !self.section_fixture || self.section_fence.is_some() {
+            return Err("fixture section fence unavailable".into());
+        }
+        let control = self
+            .output
+            .publication
+            .control()
+            .ok_or("fixture output closed")?;
+        let source = control
+            .status
+            .recording_source()
+            .filter(|source| source.context == context)
+            .ok_or("fixture source changed")?;
+        let fence = control
+            .request_live_arrangement_edit_fence(context.project_generation, source.audio_revision)
+            .map_err(str::to_owned)?;
+        self.section_fence = Some((fence, None));
+        Ok(())
+    }
+    fn section_edit_ready(
+        &mut self,
+    ) -> Option<Result<hex_session::service::ArrangementEditPosition, String>> {
+        let (fence, _) = self.section_fence?;
+        let control = self.output.publication.control()?;
+        match control.stopped_edit_fence_state(fence) {
+            hex_audio::prepared::StoppedEditFenceState::Pending => None,
+            hex_audio::prepared::StoppedEditFenceState::Refused => {
+                Some(Err("fixture section fence refused".into()))
+            }
+            hex_audio::prepared::StoppedEditFenceState::Ready => Some(
+                control
+                    .arrangement_edit_position(fence)
+                    .zip(control.arrangement_edit_playing(fence))
+                    .ok_or_else(|| "fixture position unavailable".to_string())
+                    .and_then(|(frame, playing)| {
+                        hex_session::service::ArrangementEditPosition::from_frames(
+                            frame,
+                            playing,
+                            control.arrangement_edit_section_loop(fence),
+                        )
+                    }),
+            ),
+        }
+    }
+    fn cancel_section_edit(&mut self) {
+        if self
+            .section_fence
+            .is_some_and(|(_, revision)| revision.is_some())
+        {
+            return;
+        }
+        if let Some((fence, None)) = self.section_fence.take()
+            && let Some(control) = self.output.publication.control()
+        {
+            control.release_stopped_edit_fence(fence);
+        }
+    }
+    fn resident_publication_readiness(
+        &mut self,
+    ) -> hex_session::service::ResidentPublicationReadiness {
+        use hex_session::service::ResidentPublicationReadiness;
+        if !self.audition_ready && !self.paused_monitor_enabled {
+            return ResidentPublicationReadiness::NoOutput;
+        }
+        let Some(control) = self.output.publication.control() else {
+            return ResidentPublicationReadiness::NoOutput;
+        };
+        let Some(output_identity) = control.output_identity() else {
+            return ResidentPublicationReadiness::NoOutput;
+        };
+        if self.paused_monitor_enabled
+            && let Some(source) = control.status.recording_source()
+        {
+            return ResidentPublicationReadiness::Applied {
+                submission: hex_session::service::ResidentRuntimeLoop {
+                    output_identity,
+                    audio_revision: source.audio_revision,
+                    source_context: Some(source.context),
+                    source_origin: hex_session::service::ResidentSourceOrigin::Unknown,
+                    section_loop: None,
+                },
+                publication_in_flight: control.status.publication_in_flight(),
+            };
+        }
+        ResidentPublicationReadiness::Idle {
+            output_identity,
+            applied_revision: control.status.applied_revision.load(Acquire),
+            publication_in_flight: control.status.publication_in_flight(),
+        }
+    }
     fn resident_publication_enabled(&self) -> bool {
         true
     }
     fn resident_admission(&self) -> [DeviceResourceAdmission<'_>; 3] {
+        let monitor_view = DeviceResourceAdmission::default();
         [
             self.output
                 .publication
                 .device_resource_admission_on_control()
                 .unwrap(),
-            DeviceResourceAdmission::default(),
+            self.paused_monitor
+                .as_ref()
+                .map_or(monitor_view, |hold| monitor_view.with_paused_monitor(hold)),
             DeviceResourceAdmission::default(),
         ]
+    }
+    fn prepare_paused_input_monitor(
+        &mut self,
+        request: hex_session::service::PausedInputMonitorRequest,
+        revision: &Arc<hex_engine::PreparedRevision>,
+        resources: &hex_engine::native_device_resources::PreparedDeviceResources,
+        admit: &mut dyn FnMut(&[DeviceResourceAdmission<'_>]) -> Result<(), String>,
+    ) -> Result<hex_engine::PausedTrackMonitor, String> {
+        if !self.paused_monitor_enabled || self.paused_monitor.is_some() {
+            return Err("fixture paused monitor unavailable".into());
+        }
+        let (monitor, hold) = hex_engine::PausedTrackMonitor::prepare_admitted_resident_on_control(
+            Arc::clone(revision),
+            resources,
+            request.track,
+            4096,
+            |view| {
+                let [current, retired, pending] = self.resident_admission();
+                admit(&[current, retired, pending, view])
+            },
+        )
+        .map_err(|error| format!("{error:?}"))?;
+        self.paused_monitor = Some(hold);
+        Ok(monitor)
     }
     fn initialize(&mut self, _: &AtomicBool) -> Result<u32, String> {
         Ok(48_000)
     }
     fn canonical_changed(&mut self, _: Arc<CanonicalAudioSourceSnapshot>) {}
     fn poll(&mut self) {
-        self.output.publication.control().unwrap().reclaim();
+        if self
+            .paused_monitor
+            .as_ref()
+            .is_some_and(|hold| hold.released_on_control())
+        {
+            self.paused_monitor = None;
+        }
+        let control = self.output.publication.control().unwrap();
+        control.reclaim();
+        if let Some((fence, Some(revision))) = self.section_fence
+            && (control.status.applied_revision.load(Acquire) == revision
+                || control
+                    .status
+                    .rejected_revision()
+                    .is_some_and(|(rejected, _)| rejected == revision))
+        {
+            control.release_stopped_edit_fence(fence);
+            self.section_fence = None;
+        }
     }
     fn close(&mut self) {
         self.output.publication.close();
     }
     fn publish_resident(
         &mut self,
-        playback: Playback,
+        mut playback: Playback,
         _: Option<&hex_engine::native_device_resources::PreparedDeviceResources>,
         observation: Arc<PreparedPlaybackObservation>,
         metadata: ResidentPublicationMetadata,
@@ -353,18 +1267,31 @@ impl WorkerAudioSink for Sink {
             && self.reject_next_fresh.swap(false, AcqRel)
         {
             return Err(ResidentPublicationRefusal {
+                kind: hex_session::service::ResidentPublicationFailure::Other,
                 playback,
                 error: "fixture refused stopped restoration".into(),
             });
         }
         let cancel_fresh = matches!(policy, ResidentPublicationPolicy::InstallFreshRuntime)
             && self.cancel_next_fresh.swap(false, AcqRel);
+        if matches!(policy, ResidentPublicationPolicy::InheritRuntime)
+            && self
+                .consume_next_inherited_candidate
+                .as_ref()
+                .is_some_and(|armed| armed.swap(false, AcqRel))
+        {
+            // A used candidate refuses ordinary inheritance on the actual
+            // callback. The worker still owns its committed prepared revision.
+            playback.apply(PlaybackCommand::Stop);
+        }
         let control = self.output.publication.control().unwrap();
         let output_identity = control.output_identity().unwrap();
         let policy = match policy {
             ResidentPublicationPolicy::InheritRuntime => PublicationPolicy::InheritRuntime,
-            ResidentPublicationPolicy::InheritRuntimeAt(_) => {
+            ResidentPublicationPolicy::InheritRuntimeAt(_)
+            | ResidentPublicationPolicy::DeviceInsert { .. } => {
                 return Err(ResidentPublicationRefusal {
+                    kind: hex_session::service::ResidentPublicationFailure::Other,
                     playback,
                     error: "fixture does not capture resident loop witnesses".into(),
                 });
@@ -380,12 +1307,13 @@ impl WorkerAudioSink for Sink {
             }
             ResidentPublicationPolicy::RestorePluginState => {
                 return Err(ResidentPublicationRefusal {
+                    kind: hex_session::service::ResidentPublicationFailure::Other,
                     playback,
                     error: "fixture has no fresh native plugin restoration".into(),
                 });
             }
             ResidentPublicationPolicy::FreshIfUnchanged(expected)
-            | ResidentPublicationPolicy::SectionWhenReady {
+            | ResidentPublicationPolicy::QuantizedSeekWhenReady {
                 fence: expected, ..
             } => {
                 let Some(actual) = control.capture_fresh_runtime_fence().filter(|actual| {
@@ -394,15 +1322,17 @@ impl WorkerAudioSink for Sink {
                         && actual.route_state_generation() == expected.route_generation
                         && actual.admitted_command_ticket() == expected.admitted_command_ticket
                         && actual.output_fault_epoch() == expected.output_fault_epoch
+                        && actual.consumed_stop_generation() == expected.consumed_stop_generation
                 }) else {
                     return Err(ResidentPublicationRefusal {
+                        kind: hex_session::service::ResidentPublicationFailure::Other,
                         playback,
                         error: "fixture fence changed".into(),
                     });
                 };
                 match policy {
-                    ResidentPublicationPolicy::SectionWhenReady { quantization, .. } => {
-                        PublicationPolicy::InstallSectionWhenReady {
+                    ResidentPublicationPolicy::QuantizedSeekWhenReady { quantization, .. } => {
+                        PublicationPolicy::InstallQuantizedSeekWhenReady {
                             fence: actual,
                             quantization,
                         }
@@ -411,20 +1341,42 @@ impl WorkerAudioSink for Sink {
                 }
             }
             ResidentPublicationPolicy::ArrangementEdit => {
-                return Err(ResidentPublicationRefusal {
-                    playback,
-                    error: "fixture does not publish stopped arrangement replacements".into(),
-                });
+                let Some((fence, None)) = self.section_fence else {
+                    return Err(ResidentPublicationRefusal {
+                        kind: hex_session::service::ResidentPublicationFailure::Other,
+                        playback,
+                        error: "fixture arrangement fence unavailable".into(),
+                    });
+                };
+                if control.arrangement_edit_playing(fence) == Some(true) {
+                    PublicationPolicy::InheritUnderArrangement(fence)
+                } else {
+                    PublicationPolicy::InstallUnderStoppedArrangement(fence)
+                }
             }
             ResidentPublicationPolicy::ReplaceDocument { .. } => {
                 return Err(ResidentPublicationRefusal {
+                    kind: hex_session::service::ResidentPublicationFailure::Other,
                     playback,
                     error: "fixture does not replace documents".into(),
                 });
             }
         };
-        let revision = control
-            .publish_with_admission_on_control(
+        let revision = if self.section_fixture {
+            control.publish_with_admission_and_source_on_control(
+                playback,
+                policy,
+                metadata.context,
+                |view| {
+                    admit(&[
+                        view,
+                        DeviceResourceAdmission::default(),
+                        DeviceResourceAdmission::default(),
+                    ])
+                },
+            )
+        } else {
+            control.publish_with_admission_on_control(
                 playback,
                 policy,
                 metadata.context.project_generation,
@@ -436,18 +1388,32 @@ impl WorkerAudioSink for Sink {
                     ])
                 },
             )
-            .map_err(|error| match error {
-                AdmittedPublishError::Admission { reason, playback } => {
-                    ResidentPublicationRefusal {
-                        playback,
-                        error: reason,
+        }
+        .map_err(|error| match error {
+            AdmittedPublishError::Admission { reason, playback } => ResidentPublicationRefusal {
+                kind: hex_session::service::ResidentPublicationFailure::Other,
+                playback,
+                error: reason,
+            },
+            AdmittedPublishError::Publication(error) => {
+                let kind = match error.kind {
+                    hex_audio::prepared::PublishErrorKind::NativeSourceUnavailable => {
+                        hex_session::service::ResidentPublicationFailure::NativeSourceUnavailable
                     }
-                }
-                AdmittedPublishError::Publication(error) => ResidentPublicationRefusal {
+                    hex_audio::prepared::PublishErrorKind::Other => {
+                        hex_session::service::ResidentPublicationFailure::Other
+                    }
+                };
+                ResidentPublicationRefusal {
+                    kind,
                     playback: error.playback,
                     error: error.reason.into(),
-                },
-            })?;
+                }
+            }
+        })?;
+        if let Some((_, submitted)) = self.section_fence.as_mut() {
+            *submitted = Some(revision);
+        }
         if cancel_fresh {
             assert_eq!(
                 control.cancel_fresh_runtime_publication(revision),
@@ -650,11 +1616,17 @@ fn second_limiter_while_playing_applies_without_stopping(cx: &mut gpui::TestAppC
         Box::new(Sink {
             output,
             events,
+            audition_ready: false,
             hold: Arc::clone(&hold),
             held: Arc::clone(&held),
+            consume_next_inherited_candidate: None,
             reject_next_fresh: Arc::clone(&reject_next_fresh),
             cancel_next_fresh: Arc::clone(&cancel_next_fresh),
             cancellation_done: Arc::clone(&cancellation_done),
+            section_fixture: false,
+            section_fence: None,
+            paused_monitor_enabled: false,
+            paused_monitor: None,
         }),
         reservation,
     )
@@ -866,11 +1838,17 @@ fn recovered_mutable_cursor_uses_stopped_preroll_and_exact_callback_ack(
         Box::new(Sink {
             output,
             events,
+            audition_ready: false,
             hold: hold.clone(),
             held: held.clone(),
+            consume_next_inherited_candidate: None,
             reject_next_fresh: Arc::new(AtomicBool::new(false)),
             cancel_next_fresh: Arc::new(AtomicBool::new(false)),
             cancellation_done: Arc::new(AtomicBool::new(false)),
+            section_fixture: false,
+            section_fence: None,
+            paused_monitor_enabled: false,
+            paused_monitor: None,
         }),
         reservation,
     )
@@ -935,7 +1913,9 @@ fn recovered_mutable_cursor_uses_stopped_preroll_and_exact_callback_ack(
             project_generation: 0,
             revision: event.state.revision,
             track,
-            empty_sampler: None,
+            slot: hex_session::service::SamplerLoadSlot::New(
+                hex_project::InstrumentLoadPlacement::First,
+            ),
             path: path.clone(),
             cancel: Arc::new(AtomicBool::new(false)),
         })

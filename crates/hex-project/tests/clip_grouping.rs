@@ -1238,6 +1238,43 @@ fn time_group_empty_stale_and_late_row_refusals_are_atomic() {
 }
 
 #[test]
+fn empty_time_range_creates_blank_midi_clips_on_both_lanes_in_one_edit() {
+    let (mut editor, first, _) = audio_fixture();
+    let Created::Track(second) = editor
+        .execute(Command::AddMidiTrack {
+            name: "notes".into(),
+        })
+        .unwrap()
+    else {
+        panic!("second track");
+    };
+    let before = editor.project().snapshot();
+    let range = hex_project::TimeRange::new(vec![first, second], 600, 700).unwrap();
+    editor
+        .execute(Command::GroupTimeRangeOrCreate(range))
+        .unwrap();
+    let project = editor.project();
+    for track in [first, second] {
+        let [clip] = project.track(track).unwrap().midi_clips() else {
+            panic!("one blank clip per lane");
+        };
+        let tempo = project.tempo_map();
+        assert!(clip.notes().is_empty());
+        assert_eq!(tempo.beat_to_frame(clip.start()).unwrap(), 600);
+        let end = BeatTime::from_raw(clip.start().raw() + clip.length().raw());
+        assert_eq!(tempo.beat_to_frame(end).unwrap(), 700);
+    }
+    assert_eq!(project.track(first).unwrap().clips().len(), 3);
+    let after = project.snapshot();
+    assert!(editor.undo());
+    let mut restored = editor.project().snapshot();
+    restored.next_id = before.next_id;
+    assert_eq!(restored, before);
+    assert!(editor.redo());
+    assert_eq!(editor.project().snapshot(), after);
+}
+
+#[test]
 fn time_group_includes_empty_audio_margins_for_single_and_multiple_clips() {
     for (start, end, expected) in [
         (150, 300, vec![(50, 150)]),

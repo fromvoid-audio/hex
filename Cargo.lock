@@ -2839,6 +2839,7 @@ dependencies = [
  "hex-media",
  "hex-project",
  "hex-storage",
+ "hex-warp",
  "rtrb",
  "sha2 0.11.0",
 ]
@@ -2866,6 +2867,7 @@ dependencies = [
  "hex-preferences",
  "hex-project",
  "hex-session",
+ "hex-storage",
  "hex-tuning",
  "hex-widgets",
  "image",

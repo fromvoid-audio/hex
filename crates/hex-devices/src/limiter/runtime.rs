@@ -325,12 +325,7 @@ impl Parameters {
             amplitude(settings.value(CEILING))
         };
         Self {
-            ceiling: output_ceiling
-                * if settings.choice(MODE) == 1 {
-                    1.15
-                } else {
-                    1.0
-                },
+            ceiling: output_ceiling,
             output_ceiling,
             gain: amplitude(
                 settings.value(if maximize { THRESHOLD } else { GAIN })
@@ -344,12 +339,24 @@ impl Parameters {
             release_coefficient: 1.0
                 - (-1000.0 / (f64::from(settings.value(RELEASE)) * f64::from(rate))).exp(),
             auto_release: settings.flag(AUTO_RELEASE),
-            link: f64::from(settings.value(if settings.choice(ROUTING) == 1 {
-                LINK_MID_SIDE
-            } else {
-                LINK
-            })),
+            link: 0.0,
         }
+        .for_layout(settings)
+    }
+    /// Project branch-local selectors onto rate/value coefficients already derived.
+    fn for_layout(mut self, settings: Settings) -> Self {
+        self.ceiling = self.output_ceiling
+            * if settings.choice(MODE) == 1 {
+                1.15
+            } else {
+                1.0
+            };
+        self.link = f64::from(settings.value(if settings.choice(ROUTING) == 1 {
+            LINK_MID_SIDE
+        } else {
+            LINK
+        }));
+        self
     }
 }
 /// Fixed program data, independent of rate, state and layout. Config preparation
@@ -425,7 +432,8 @@ impl Config {
         (self.delay * if self.mid_side { 2 } else { 1 }) as u32
     }
 }
-pub(super) struct Factory {
+/// Fixed-layout factory for the existing owned Limiter transaction.
+pub struct Factory {
     config: Config,
     admitted: [bool; automation::COUNT],
 }
@@ -465,6 +473,15 @@ impl PreparedOwnedProcessorRuntime for Factory {
     fn reserved_bypass_latency_frames(&self) -> Option<u32> {
         Some(self.config.latency())
     }
+    fn parameter_modulation_semantics(
+        &self,
+        id: hex_lattice_contract::ParameterId,
+    ) -> Option<hex_lattice_contract::ParameterSemantics> {
+        self.supports_parameter_automation(id)
+            .then(|| automation::modulation_semantics(id))
+            .flatten()
+    }
+
     fn runtime_version(&self) -> u32 {
         2
     }
@@ -589,7 +606,8 @@ impl History {
         self.first.bytes() + self.final_stage.as_ref().map_or(0, Stage::bytes)
     }
 }
-struct Runtime {
+/// Original fixed-layout runtime; fields and history custody remain private.
+pub struct Runtime {
     config: Config,
     primary: History,
     scratch: History,
@@ -597,6 +615,14 @@ struct Runtime {
     releasing: bool,
 }
 impl Runtime {
+    /// Borrow the exact inline owner and its committed/scratch heap storage.
+    /// This control-side observation transfers no runtime or buffer ownership.
+    pub fn control_storage(&self) -> Option<(usize, [usize; 2])> {
+        Some((
+            std::mem::size_of::<Self>(),
+            [self.primary.bytes(), self.scratch.bytes()],
+        ))
+    }
     fn same_history_layout(&self, previous: &Self) -> bool {
         self.config.delay == previous.config.delay
             && self.config.mid_side == previous.config.mid_side
@@ -807,9 +833,8 @@ impl Runtime {
 }
 impl OwnedProcessorRuntime for Runtime {
     fn fixed_storage_pair_bytes(&self) -> Option<usize> {
-        std::mem::size_of::<Self>()
-            .checked_add(self.primary.bytes())?
-            .checked_add(self.scratch.bytes())
+        let (inline, [committed, scratch]) = self.control_storage()?;
+        inline.checked_add(committed)?.checked_add(scratch)
     }
     fn begin_block(&mut self) {
         self.scratch.copy_from(&self.primary);

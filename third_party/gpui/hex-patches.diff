@@ -318,10 +318,7 @@ diff --git a/src/app.rs b/src/app.rs
 diff --git a/src/app/test_context.rs b/src/app/test_context.rs
 --- a/src/app/test_context.rs
 +++ b/src/app/test_context.rs
-@@ -120,6 +120,24 @@ impl AppContext for TestAppContext {
- }
-
- impl TestAppContext {
+@@ -122,0 +123,18 @@
 +    /// Verify private draw-order queries against an independent linear scan.
 +    /// Test support only; no native graphics or public scene API.
 +    pub fn verify_draw_order_queries(&self) -> std::result::Result<(), String> {
@@ -340,13 +337,9 @@ diff --git a/src/app/test_context.rs b/src/app/test_context.rs
 +        self.test_platform.cursor_style()
 +    }
 +
-     /// Creates a new `TestAppContext`. Usually you can rely on `#[gpui::test]` to do this for you.
-     pub fn build(dispatcher: TestDispatcher, fn_name: Option<&'static str>) -> Self {
-         let arc_dispatcher = Arc::new(dispatcher.clone());
-@@ -142,6 +160,24 @@ impl TestAppContext {
-         }
-     }
-
+@@ -142,0 +161,18 @@
++    }
++
 +    /// Opt into real macOS font registration and shaping for a disposable test.
 +    /// Call before opening any window. This retains the deterministic test
 +    /// platform and never creates an OS window or changes system font settings.
@@ -363,15 +356,7 @@ diff --git a/src/app/test_context.rs b/src/app/test_context.rs
 +        app.text_system = Arc::clone(&text_system);
 +        self.text_system = text_system;
 +        Ok(())
-+    }
-+
-     /// Create a single TestAppContext, for non-multi-client tests
-     pub fn single() -> Self {
-         let dispatcher = TestDispatcher::new(StdRng::seed_from_u64(0));
-@@ -305,6 +341,56 @@ impl TestAppContext {
-         self.test_platform.simulate_new_path_selection(select_path);
-     }
-
+@@ -307,0 +344,50 @@
 +    /// Whether the test platform has an outstanding Open picker request.
 +    pub fn did_prompt_for_paths(&self) -> bool {
 +        self.test_platform.did_prompt_for_paths()
@@ -422,13 +407,49 @@ diff --git a/src/app/test_context.rs b/src/app/test_context.rs
 +        crate::MacPlatform::picker_directory_url_for_test(directory)
 +    }
 +
-     /// Simulates clicking a button in an platform-level alert dialog.
-     #[track_caller]
-     pub fn simulate_prompt_answer(&self, button: &str) {
-@@ -675,6 +761,151 @@ pub struct VisualTestContext {
- }
-
- impl VisualTestContext {
+@@ -665,0 +752,11 @@
++/// One tessellated path triangle in a completed test scene, including its replay mask.
++/// This is geometry evidence, not antialiased framebuffer readback.
++pub struct RenderedPathTriangle {
++    /// Actual completed path fill.
++    pub color: crate::Background,
++    /// Content/replay mask in physical scene coordinates.
++    pub mask: crate::Bounds<crate::ScaledPixels>,
++    /// The three tessellated positions in physical scene coordinates.
++    pub vertices: [crate::Point<crate::ScaledPixels>; 3],
++}
++
+@@ -677,0 +775,175 @@
++    /// Read path meshes whose complete bounds match the selected element.
++    /// Reads the completed scene, including retained replay, without drawing a frame.
++    pub fn rendered_path_triangles(&mut self, selector: &'static str) -> Vec<RenderedPathTriangle> {
++        self.update(|window, _| {
++            let Some(bounds) = window.rendered_frame.debug_bounds.get(selector) else {
++                return Vec::new();
++            };
++            let bounds = bounds.scale(window.scale_factor());
++            window
++                .rendered_frame
++                .scene
++                .paths
++                .iter()
++                .filter(|path| path.bounds == bounds)
++                .flat_map(|path| {
++                    path.vertices
++                        .chunks_exact(3)
++                        .map(move |vertices| RenderedPathTriangle {
++                            color: path.color,
++                            mask: path.content_mask.bounds,
++                            vertices: [
++                                vertices[0].xy_position,
++                                vertices[1].xy_position,
++                                vertices[2].xy_position,
++                            ],
++                        })
++                })
++                .collect()
++        })
++    }
 +    /// Returns the cursor request selected by the current rendered hitbox.
 +    /// This checks GPUI hover routing; it does not claim native OS cursor delivery.
 +    pub fn rendered_cursor_style(&mut self) -> Option<crate::CursorStyle> {
@@ -574,16 +595,10 @@ diff --git a/src/app/test_context.rs b/src/app/test_context.rs
 +        })
 +    }
 +
-     /// Provides a `Window` and `App` for the duration of the closure.
-     pub fn update<R>(&mut self, f: impl FnOnce(&mut Window, &mut App) -> R) -> R {
-         self.cx
 diff --git a/src/bounds_tree.rs b/src/bounds_tree.rs
 --- a/src/bounds_tree.rs
 +++ b/src/bounds_tree.rs
-@@ -33,16 +33,31 @@
-     }
-
-     pub fn insert(&mut self, new_bounds: Bounds<U>) -> u32 {
+@@ -35,0 +36,15 @@
 +        self.insert_with_order(new_bounds, None)
 +    }
 +
@@ -599,50 +614,32 @@ diff --git a/src/bounds_tree.rs b/src/bounds_tree.rs
 +    }
 +
 +    fn insert_with_order(&mut self, new_bounds: Bounds<U>, reserved: Option<u32>) -> u32 {
-         // If the tree is empty, make the root the new leaf.
+@@ -37,2 +52,3 @@
 -        if self.root.is_none() {
 -            let new_node = self.push_leaf(new_bounds, 1);
 +        let Some(root) = self.root else {
 +            let order = reserved.unwrap_or(1);
 +            let new_node = self.push_leaf(new_bounds, order);
-             self.root = Some(new_node);
+@@ -40,2 +56,2 @@
 -            return 1;
 -        }
 +            return order;
 +        };
-
-         // Search for the best place to add the new leaf based on heuristics.
+@@ -44,2 +60 @@
 -        let mut max_intersecting_ordering = 0;
 -        let mut index = self.root.unwrap();
 +        let mut index = root;
-         while let Node::Internal {
-             left,
-             right,
-@@ -57,19 +72,14 @@
-
-             // Descend to the best-fit child, based on which one would increase
-             // the surface area the least. This attempts to keep the tree balanced
+@@ -60,2 +75 @@
 -            // in terms of surface area. If there is an intersection with the other child,
 -            // add its keys to the intersections vector.
 +            // in terms of surface area. Draw order is resolved after descent.
-             let left_cost = new_bounds.union(self.nodes[left].bounds()).half_perimeter();
-             let right_cost = new_bounds
-                 .union(self.nodes[right].bounds())
-                 .half_perimeter();
-             if left_cost < right_cost {
+@@ -67,2 +80,0 @@
 -                max_intersecting_ordering =
 -                    self.find_max_ordering(right, &new_bounds, max_intersecting_ordering);
-                 index = left;
-             } else {
+@@ -71,2 +82,0 @@
 -                max_intersecting_ordering =
 -                    self.find_max_ordering(left, &new_bounds, max_intersecting_ordering);
-                 index = right;
-             }
-         }
-@@ -78,20 +88,25 @@
-         // We'll insert a new parent node above the leaf and attach our new leaf to it.
-         let sibling = index;
-
+@@ -81,25 +91,40 @@
 -        // Check for collision with the located leaf node
 -        let Node::Leaf {
 -            bounds: sibling_bounds,
@@ -657,6 +654,17 @@ diff --git a/src/bounds_tree.rs b/src/bounds_tree.rs
 -        }
 -
 -        let ordering = max_intersecting_ordering + 1;
+-        let new_node = self.push_leaf(new_bounds, ordering);
+-        let new_parent = self.push_internal(sibling, new_node);
+-
+-        // If there was an old parent, we need to update its children indices.
+-        if let Some(old_parent) = self.stack.last().copied() {
+-            let Node::Internal { left, right, .. } = &mut self.nodes[old_parent] else {
+-                unreachable!();
+-            };
+-
+-            if *left == sibling {
+-                *left = new_parent;
 +        // Resolve the nearby leaf first, then the same sibling subtrees as the
 +        // original descent, from nearest to farthest. A useful high order can
 +        // prune older branches sooner. Do not test placement-path bounds: their
@@ -676,34 +684,50 @@ diff --git a/src/bounds_tree.rs b/src/bounds_tree.rs
 +        }
 +
 +        let ordering = reserved.unwrap_or_else(|| max_intersecting_ordering + 1);
-         let new_node = self.push_leaf(new_bounds, ordering);
-         let new_parent = self.push_internal(sibling, new_node);
-
-@@ -149,12 +164,18 @@
-                 if bounds.intersects(node_bounds) && max_ordering < *node_max_ordering {
-                     let left_max_ordering = self.nodes[*left].max_ordering();
-                     let right_max_ordering = self.nodes[*right].max_ordering();
++        // Equal rectangles intersect exactly the same future queries. Keep
++        // their maximum order in one leaf without removing any scene primitive.
++        if let Node::Leaf { bounds, order } = &mut self.nodes[sibling]
++            && *bounds == new_bounds
++        {
++            *order = (*order).max(ordering);
++        } else {
++            let new_node = self.push_leaf(new_bounds, ordering);
++            let new_parent = self.push_internal(sibling, new_node);
++
++            // If there was an old parent, we need to update its children indices.
++            if let Some(old_parent) = self.stack.last().copied() {
++                let Node::Internal { left, right, .. } = &mut self.nodes[old_parent] else {
++                    unreachable!();
++                };
++
++                if *left == sibling {
++                    *left = new_parent;
++                } else {
++                    *right = new_parent;
++                }
+@@ -107,5 +132,3 @@
+-                *right = new_parent;
+-            }
+-        } else {
+-            // If the old parent was the root, the new parent is the new root.
+-            self.root = Some(new_parent);
++                // If the old parent was the root, the new parent is the new root.
++                self.root = Some(new_parent);
++            }
+@@ -151,0 +175,2 @@
 +                    // The first result can satisfy the other child's already
 +                    // loaded upper bound, avoiding another recursive query.
-                     if left_max_ordering > right_max_ordering {
-                         max_ordering = self.find_max_ordering(*left, bounds, max_ordering);
+@@ -154 +179,3 @@
 -                        max_ordering = self.find_max_ordering(*right, bounds, max_ordering);
 +                        if max_ordering < right_max_ordering {
 +                            max_ordering = self.find_max_ordering(*right, bounds, max_ordering);
 +                        }
-                     } else {
-                         max_ordering = self.find_max_ordering(*right, bounds, max_ordering);
+@@ -157 +184,3 @@
 -                        max_ordering = self.find_max_ordering(*left, bounds, max_ordering);
 +                        if max_ordering < left_max_ordering {
 +                            max_ordering = self.find_max_ordering(*left, bounds, max_ordering);
 +                        }
-                     }
-                 }
-             }
-@@ -236,6 +257,150 @@
-     }
- }
-
+@@ -238,0 +268,166 @@
 +#[cfg(any(test, feature = "test-support"))]
 +pub(crate) fn verify_ordering() -> Result<(), String> {
 +    ordering_verification::verify()
@@ -813,6 +837,28 @@ diff --git a/src/bounds_tree.rs b/src/bounds_tree.rs
 +                }
 +            }
 +        }
++        let a = rect(0.25, 1.0, 4.0, 2.0);
++        let b = rect(3.25, 1.0, 4.0, 2.0);
++        let separate = rect(12.0, 1.0, 4.0, 2.0);
++        let mut repeated = BoundsTree::default();
++        require(repeated.insert(a) == 1, "first repeated bounds")?;
++        require(
++            repeated.insert(b) == 2,
++            "overlap precedes the repeated bounds",
++        )?;
++        for order in 3..=10 {
++            require(repeated.insert(a) == order, "repeated bounds lost ordering")?;
++        }
++        require(repeated.reserve(a, 3) == Some(11), "repeated reserve order")?;
++        require(
++            repeated.insert(b) == 15,
++            "later overlap lost reserved ceiling",
++        )?;
++        require(
++            repeated.insert(separate) == 1,
++            "disjoint geometry lost order reuse",
++        )?;
++
 +        // A union represented as origin + size may round its far edge inward.
 +        // Placement-path bounds must not introduce a new overlap-pruning test.
 +        let mut rounded = BoundsTree::default();
@@ -848,9 +894,6 @@ diff --git a/src/bounds_tree.rs b/src/bounds_tree.rs
 +    }
 +}
 +
- #[cfg(test)]
- mod tests {
-     use super::*;
 diff --git a/src/elements/div.rs b/src/elements/div.rs
 --- a/src/elements/div.rs
 +++ b/src/elements/div.rs
@@ -3764,44 +3807,97 @@ diff --git a/src/platform/windows/util.rs b/src/platform/windows/util.rs
 diff --git a/src/scene.rs b/src/scene.rs
 --- a/src/scene.rs
 +++ b/src/scene.rs
-@@ -11,8 +11,9 @@ use crate::{
- use std::{
-     fmt::Debug,
-     iter::Peekable,
+@@ -14 +14 @@
 -    ops::{Add, Range, Sub},
 +    ops::{Add, Deref, Range, Sub},
-     slice,
+@@ -15,0 +16 @@
 +    sync::Arc,
- };
-
- #[allow(non_camel_case_types, unused)]
-@@ -65,9 +66,9 @@ impl Scene {
-     }
-
-     pub fn insert_primitive(&mut self, primitive: impl Into<Primitive>) {
+@@ -25 +26,4 @@
+-    pub(crate) paint_operations: Vec<PaintOperation>,
++    paint_operations: Vec<PaintOperation>,
++    // Sorted paint indices immediately after an outermost start or end.
++    outer_layer_boundaries: Vec<usize>,
++    unmatched_layer_end: Option<usize>,
+@@ -39,0 +44,2 @@
++        self.outer_layer_boundaries.clear();
++        self.unmatched_layer_end = None;
+@@ -56,0 +63 @@
++        let outermost = self.layer_stack.is_empty();
+@@ -57,0 +65,12 @@
++        self.record_layer_start(bounds, outermost);
++    }
++
++    pub fn pop_layer(&mut self) {
++        let matched = self.layer_stack.pop().is_some();
++        self.record_layer_end(matched && self.layer_stack.is_empty());
++        if !matched && self.unmatched_layer_end.is_none() {
++            self.unmatched_layer_end = Some(self.len());
++        }
++    }
++
++    fn record_layer_start(&mut self, bounds: Bounds<ScaledPixels>, outermost: bool) {
+@@ -60,4 +79,6 @@
+-    }
+-
+-    pub fn pop_layer(&mut self) {
+-        self.layer_stack.pop();
++        if outermost {
++            self.outer_layer_boundaries.push(self.len());
++        }
++    }
++
++    fn record_layer_end(&mut self, outermost: bool) {
+@@ -64,0 +86,3 @@
++        if outermost {
++            self.outer_layer_boundaries.push(self.len());
++        }
+@@ -68 +92 @@
 -        let mut primitive = primitive.into();
 +        let primitive = primitive.into();
-         let clipped_bounds = primitive
+@@ -70 +94 @@
 -            .bounds()
 +            .painted_bounds()
-             .intersect(&primitive.content_mask().bounds);
-
-         if clipped_bounds.is_empty() {
-@@ -79,6 +80,10 @@ impl Scene {
-             .last()
-             .copied()
-             .unwrap_or_else(|| self.primitive_bounds.insert(clipped_bounds));
+@@ -81,0 +106,39 @@
 +        self.append_primitive(primitive, order);
 +    }
 +
++    pub(crate) fn insert_disjoint_path_pair(&mut self, paths: [Path<ScaledPixels>; 2]) {
++        let [first, second] = paths.each_ref().map(Path::clipped_bounds);
++        let gap = ScaledPixels::from(1.0);
++        let separated = first.bottom() + gap <= second.top() || second.bottom() + gap <= first.top();
++        let union = first.union(&second);
++        // Reconstructing right and bottom from a floating-point origin and
++        // size can round an outer edge inward. Keep the ordinary insertion
++        // whenever the reservation would not cover both clipped paths.
++        if first.is_empty()
++            || second.is_empty()
++            || !separated
++            || !finite_scene_bounds(&first)
++            || !finite_scene_bounds(&second)
++            || !finite_scene_bounds(&union)
++            || union.right() < first.right().max(second.right())
++            || union.bottom() < first.bottom().max(second.bottom())
++        {
++            for path in paths {
++                self.insert_primitive(path);
++            }
++            return;
++        }
++
++        // One conservative reservation orders both disjoint paths relative to
++        // surrounding primitives. Keep independent paint records and PathIds.
++        let order = self
++            .layer_stack
++            .last()
++            .copied()
++            .unwrap_or_else(|| self.primitive_bounds.insert(union));
++        for path in paths {
++            self.append_primitive(Primitive::Path(path), order);
++        }
++    }
++
 +    fn append_primitive(&mut self, mut primitive: Primitive, order: DrawOrder) {
-         match &mut primitive {
-             Primitive::Shadow(shadow) => {
-                 shadow.order = order;
-@@ -115,6 +120,129 @@ impl Scene {
-     }
-
-     pub fn replay(&mut self, range: Range<usize>, prev_scene: &Scene) {
+@@ -117,0 +181,117 @@
 +        if self.try_bulk_replay(range.clone(), prev_scene) {
 +            return;
 +        }
@@ -3819,27 +3915,17 @@ diff --git a/src/scene.rs b/src/scene.rs
 +        let Some(operations) = prev_scene.paint_operations.get(range.clone()) else {
 +            return false;
 +        };
-+        let mut depth = 0_usize;
-+        for operation in &prev_scene.paint_operations[..range.start] {
-+            match operation {
-+                PaintOperation::StartLayer(_) => {
-+                    let Some(next) = depth.checked_add(1) else {
-+                        return false;
-+                    };
-+                    depth = next;
-+                }
-+                PaintOperation::EndLayer => {
-+                    let Some(next) = depth.checked_sub(1) else {
-+                        return false;
-+                    };
-+                    depth = next;
-+                }
-+                PaintOperation::Primitive(_) => {}
-+            }
-+        }
-+        if depth != 0 {
++        let preceding_boundaries = prev_scene
++            .outer_layer_boundaries
++            .partition_point(|end| *end <= range.start);
++        if !preceding_boundaries.is_multiple_of(2)
++            || prev_scene
++                .unmatched_layer_end
++                .is_some_and(|end| end <= range.start)
++        {
 +            return false;
 +        }
++        let mut depth = 0_usize;
 +        let mut union = None::<Bounds<ScaledPixels>>;
 +        let mut min_order = u32::MAX;
 +        let mut max_order = 0_u32;
@@ -3847,13 +3933,13 @@ diff --git a/src/scene.rs b/src/scene.rs
 +        for operation in operations {
 +            let bounds = match operation {
 +                PaintOperation::Primitive(primitive) => {
-+                    if !finite_replay_bounds(primitive.bounds())
-+                        || !finite_replay_bounds(&primitive.content_mask().bounds)
++                    if !finite_scene_bounds(primitive.bounds())
++                        || !finite_scene_bounds(&primitive.content_mask().bounds)
 +                    {
 +                        return false;
 +                    }
 +                    let painted = primitive.painted_bounds();
-+                    if !finite_replay_bounds(&painted) {
++                    if !finite_scene_bounds(&painted) {
 +                        return false;
 +                    }
 +                    let clipped = painted.intersect(&primitive.content_mask().bounds);
@@ -3880,11 +3966,11 @@ diff --git a/src/scene.rs b/src/scene.rs
 +                    continue;
 +                }
 +            };
-+            if !finite_replay_bounds(&bounds) {
++            if !finite_scene_bounds(&bounds) {
 +                return false;
 +            }
 +            let combined = union.map_or(bounds, |union| union.union(&bounds));
-+            if !finite_replay_bounds(&combined) {
++            if !finite_scene_bounds(&combined) {
 +                return false;
 +            }
 +            union = Some(combined);
@@ -3915,24 +4001,22 @@ diff --git a/src/scene.rs b/src/scene.rs
 +                        );
 +                    }
 +                }
-+                PaintOperation::StartLayer(bounds) => self
-+                    .paint_operations
-+                    .push(PaintOperation::StartLayer(*bounds)),
-+                PaintOperation::EndLayer => self.paint_operations.push(PaintOperation::EndLayer),
++                PaintOperation::StartLayer(bounds) => {
++                    self.record_layer_start(*bounds, depth == 0);
++                    depth += 1;
++                }
++                PaintOperation::EndLayer => {
++                    depth -= 1;
++                    self.record_layer_end(depth == 0);
++                }
 +            }
 +        }
 +        true
 +    }
 +
 +    fn replay_legacy(&mut self, range: Range<usize>, prev_scene: &Scene) {
-         for operation in &prev_scene.paint_operations[range] {
-             match operation {
-                 PaintOperation::Primitive(primitive) => self.insert_primitive(primitive.clone()),
-@@ -170,6 +298,20 @@ impl Scene {
-     }
- }
-
-+fn finite_replay_bounds(bounds: &Bounds<ScaledPixels>) -> bool {
+@@ -172,0 +353,14 @@
++fn finite_scene_bounds(bounds: &Bounds<ScaledPixels>) -> bool {
 +    let values = [
 +        bounds.origin.x.0,
 +        bounds.origin.y.0,
@@ -3946,13 +4030,7 @@ diff --git a/src/scene.rs b/src/scene.rs
 +        && bounds.size.height.0 >= 0.0
 +}
 +
- #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Default)]
- #[cfg_attr(
-     all(
-@@ -207,6 +349,17 @@ pub(crate) enum Primitive {
- }
-
- impl Primitive {
+@@ -209,0 +404,11 @@
 +    fn order(&self) -> DrawOrder {
 +        match self {
 +            Primitive::Shadow(value) => value.order,
@@ -3964,27 +4042,15 @@ diff --git a/src/scene.rs b/src/scene.rs
 +            Primitive::Surface(value) => value.order,
 +        }
 +    }
-     pub fn bounds(&self) -> &Bounds<ScaledPixels> {
-         match self {
-             Primitive::Shadow(shadow) => &shadow.bounds,
-@@ -219,6 +372,13 @@ impl Primitive {
-         }
-     }
-
+@@ -219,0 +425,7 @@
++    }
++
 +    fn painted_bounds(&self) -> Bounds<ScaledPixels> {
 +        if let Self::MonochromeSprite(sprite) = self {
 +            return sprite.painted_bounds();
 +        }
 +        *self.bounds()
-+    }
-+
-     pub fn content_mask(&self) -> &ContentMask<ScaledPixels> {
-         match self {
-             Primitive::Shadow(shadow) => &shadow.content_mask,
-@@ -628,6 +788,34 @@ pub(crate) struct MonochromeSprite {
-     pub transformation: TransformationMatrix,
- }
-
+@@ -630,0 +843,28 @@
 +impl MonochromeSprite {
 +    pub(crate) fn painted_bounds(&self) -> Bounds<ScaledPixels> {
 +        if self.transformation == TransformationMatrix::unit() {
@@ -4013,13 +4079,7 @@ diff --git a/src/scene.rs b/src/scene.rs
 +    }
 +}
 +
- impl From<MonochromeSprite> for Primitive {
-     fn from(sprite: MonochromeSprite) -> Self {
-         Primitive::MonochromeSprite(sprite)
-@@ -671,6 +859,36 @@ impl From<PaintSurface> for Primitive {
- #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
- pub(crate) struct PathId(pub(crate) usize);
-
+@@ -673,0 +914,30 @@
 +/// Mutable construction keeps a directly owned Vec; only finished scaled meshes
 +/// pay for sharing. Metadata remains in Path, separate from immutable vertex bytes.
 +#[derive(Clone)]
@@ -4050,32 +4110,14 @@ diff --git a/src/scene.rs b/src/scene.rs
 +    }
 +}
 +
- /// A line made up of a series of vertices and control points.
- #[derive(Clone, Debug)]
- pub struct Path<P: Clone + Debug + Default + PartialEq> {
-@@ -678,7 +896,8 @@ pub struct Path<P: Clone + Debug + Default + PartialEq> {
-     pub(crate) order: DrawOrder,
-     pub(crate) bounds: Bounds<P>,
-     pub(crate) content_mask: ContentMask<P>,
+@@ -681 +951,2 @@
 -    pub(crate) vertices: Vec<PathVertex<P>>,
 +    // Scaled Scene clones share mesh bytes; mutable construction stays owned.
 +    pub(crate) vertices: PathVertices<P>,
-     pub(crate) color: Background,
-     start: Point<P>,
-     current: Point<P>,
-@@ -691,7 +910,7 @@ impl Path<Pixels> {
-         Self {
-             id: PathId(0),
-             order: DrawOrder::default(),
+@@ -694 +965 @@
 -            vertices: Vec::new(),
 +            vertices: PathVertices::Owned(Vec::new()),
-             start,
-             current: start,
-             bounds: Bounds {
-@@ -711,11 +930,8 @@ impl Path<Pixels> {
-             order: self.order,
-             bounds: self.bounds.scale(factor),
-             content_mask: self.content_mask.scale(factor),
+@@ -714,5 +985,2 @@
 -            vertices: self
 -                .vertices
 -                .iter()
@@ -4083,35 +4125,17 @@ diff --git a/src/scene.rs b/src/scene.rs
 -                .collect(),
 +            vertices: PathVertices::Shared(Arc::new(self.vertices.iter()
 +                .map(|vertex| vertex.scale(factor)).collect())),
-             start: self.start.map(|start| start.scale(factor)),
-             current: self.current.scale(factor),
-             contour_count: self.contour_count,
-@@ -780,17 +996,18 @@ impl Path<Pixels> {
-                 size: Default::default(),
-             });
-
+@@ -783 +1051,2 @@
 -        self.vertices.push(PathVertex {
 +        let vertices = self.vertices.make_mut();
 +        vertices.push(PathVertex {
-             xy_position: xy.0,
-             st_position: st.0,
-             content_mask: Default::default(),
-         });
+@@ -788 +1057 @@
 -        self.vertices.push(PathVertex {
 +        vertices.push(PathVertex {
-             xy_position: xy.1,
-             st_position: st.1,
-             content_mask: Default::default(),
-         });
+@@ -793 +1062 @@
 -        self.vertices.push(PathVertex {
 +        vertices.push(PathVertex {
-             xy_position: xy.2,
-             st_position: st.2,
-             content_mask: Default::default(),
-@@ -831,3 +1048,650 @@ impl PathVertex<Pixels> {
-         }
-     }
- }
+@@ -833,0 +1103,833 @@
 +
 +#[cfg(any(test, feature = "test-support"))]
 +pub(crate) fn verify_bulk_replay() -> Result<(), String> {
@@ -4534,8 +4558,142 @@ diff --git a/src/scene.rs b/src/scene.rs
 +        Ok(())
 +    }
 +
++    fn verify_disjoint_path_pair() -> Result<(), String> {
++        fn path(
++            id: u32,
++            bounds: Bounds<ScaledPixels>,
++            mask: Bounds<ScaledPixels>,
++        ) -> Result<Path<ScaledPixels>, String> {
++            let Primitive::Path(path) = primitive(2, id, bounds, mask) else {
++                return Err("path fixture did not produce a path".to_owned());
++            };
++            Ok(path)
++        }
++
++        fn operation_order(scene: &Scene, index: usize) -> Result<u32, String> {
++            match scene.paint_operations.get(index) {
++                Some(PaintOperation::Primitive(primitive)) => Ok(primitive.order()),
++                _ => Err("expected primitive paint operation".to_owned()),
++            }
++        }
++
++        let mask = bounds(-20.0, -20.0, 60.0, 80.0, 1.0);
++        let upper_bounds = bounds(0.0, 0.0, 12.0, 10.0, 1.0);
++        let lower_bounds = bounds(0.0, 12.0, 12.0, 10.0, 1.0);
++        let upper = path(20, upper_bounds, mask)?;
++        let lower = path(21, lower_bounds, mask)?;
++
++        // One conservative union order must respect neighbors overlapping
++        // either member while retaining two separate path operations/IDs.
++        let mut ordered = Scene::default();
++        ordered.insert_primitive(primitive(
++            1,
++            22,
++            bounds(1.0, 2.0, 4.0, 4.0, 1.0),
++            mask,
++        ));
++        ordered.insert_disjoint_path_pair([upper.clone(), lower.clone()]);
++        ordered.insert_primitive(primitive(
++            1,
++            23,
++            bounds(1.0, 14.0, 4.0, 4.0, 1.0),
++            mask,
++        ));
++        require(ordered.len() == 4, "pair did not preserve separate paint records")?;
++        let pair_order = operation_order(&ordered, 1)?;
++        require(
++            operation_order(&ordered, 0)? < pair_order && pair_order == operation_order(&ordered, 2)?,
++            "pair order did not follow the earlier overlapping neighbor",
++        )?;
++        require(
++            pair_order < operation_order(&ordered, 3)?,
++            "later primitive overlapping the pair was not ordered afterward",
++        )?;
++        require(
++            ordered.paths[0].id == PathId(0) && ordered.paths[1].id == PathId(1),
++            "pair paths did not receive separate contiguous IDs",
++        )?;
++
++        // Overlap and a clipped-away member must use ordinary insertion.
++        let mut overlapping = Scene::default();
++        overlapping.insert_disjoint_path_pair([
++            upper.clone(),
++            path(24, bounds(0.0, 9.5, 12.0, 10.0, 1.0), mask)?,
++        ]);
++        require(overlapping.len() == 2, "overlapping fallback dropped a path")?;
++        require(
++            operation_order(&overlapping, 0)? < operation_order(&overlapping, 1)?,
++            "overlapping pair incorrectly shared an order",
++        )?;
++        let mut subpixel_gap = Scene::default();
++        subpixel_gap.insert_primitive(primitive(1, 30, bounds(1.0, 2.0, 4.0, 4.0, 1.0), mask));
++        subpixel_gap.insert_disjoint_path_pair([
++            upper.clone(),
++            path(29, bounds(0.0, 10.5, 12.0, 10.0, 1.0), mask)?,
++        ]);
++        require(
++            operation_order(&subpixel_gap, 1)? > operation_order(&subpixel_gap, 2)?,
++            "subpixel gap incorrectly qualified for a shared order",
++        )?;
++
++        let wide_mask = bounds(-100_000_016.0, -20.0, 100_000_032.0, 80.0, 1.0);
++        let far_upper = bounds(-100_000_000.0, 0.0, 32.0, 10.0, 1.0);
++        let near_lower = bounds(0.0, 12.0, 1.0, 10.0, 1.0);
++        require(
++            far_upper.union(&near_lower).right() < near_lower.right(),
++            "inward-rounding fixture no longer loses the right edge",
++        )?;
++        let mut rounded_union = Scene::default();
++        rounded_union.insert_primitive(primitive(1, 31, far_upper, wide_mask));
++        rounded_union.insert_disjoint_path_pair([
++            path(32, far_upper, wide_mask)?,
++            path(33, near_lower, wide_mask)?,
++        ]);
++        require(
++            operation_order(&rounded_union, 1)? > operation_order(&rounded_union, 2)?,
++            "inward-rounded reservation incorrectly shared an order",
++        )?;
++
++        let narrow_mask = bounds(-1.0, -1.0, 14.0, 12.0, 1.0);
++        let mut clipped = Scene::default();
++        clipped.insert_disjoint_path_pair([
++            path(25, upper_bounds, narrow_mask)?,
++            path(26, lower_bounds, narrow_mask)?,
++        ]);
++        require(
++            clipped.len() == 1 && clipped.paths[0].id == PathId(0),
++            "clipped member was not omitted with normal single-path semantics",
++        )?;
++
++        // A containing layer supplies the shared order; pair insertion must
++        // not add nested layer records of its own.
++        let layer_bounds = bounds(-5.0, -5.0, 30.0, 35.0, 1.0);
++        let mut layered = Scene::default();
++        layered.push_layer(layer_bounds);
++        layered.insert_disjoint_path_pair([upper.clone(), lower.clone()]);
++        layered.pop_layer();
++        require(layered.len() == 4, "pair added layer records inside its owner layer")?;
++        require(
++            operation_order(&layered, 1)? == operation_order(&layered, 2)?,
++            "pair did not inherit the containing layer order",
++        )?;
++
++        // Cached replay of the adjacent independent operations must match the
++        // legacy path, including fresh PathIds and painted-cell order.
++        let mut fast = Scene::default();
++        let mut legacy = Scene::default();
++        require(
++            fast.try_bulk_replay(0..ordered.len(), &ordered),
++            "bulk replay refused a cached disjoint path pair",
++        )?;
++        legacy.replay_legacy(0..ordered.len(), &ordered);
++        equivalent(&mut fast, &mut legacy)?;
++        Ok(())
++    }
++
 +    pub(super) fn verify() -> Result<(), String> {
 +        verify_path_clone_value_semantics()?;
++        verify_disjoint_path_pair()?;
 +        for scale in [1.0, 2.0] {
 +            for seed in 1..=12 {
 +                let (previous, range) = source(scale, seed);
@@ -4650,10 +4808,30 @@ diff --git a/src/scene.rs b/src/scene.rs
 +        refused(&mut destination, 2..3, &previous)?; // End without start.
 +        refused(&mut destination, 4..5, &previous)?; // Invalid internal range.
 +        refused(&mut destination, 0..0, &previous)?; // Empty range safely falls back.
++        let mut nested = Scene::default();
++        nested.push_layer(area);
++        nested.push_layer(area);
++        nested.insert_primitive(primitive(1, 1, area, area));
++        nested.pop_layer();
++        nested.insert_primitive(primitive(1, 2, area, area));
++        nested.pop_layer();
++        nested.insert_primitive(primitive(1, 3, area, area));
++        refused(&mut destination, 2..3, &nested)?;
++        refused(&mut destination, 4..5, &nested)?;
++        let mut replayed = Scene::default();
++        require(
++            replayed.try_bulk_replay(0..7, &nested),
++            "balanced nested layer should replay",
++        )?;
++        refused(&mut destination, 2..3, &replayed)?;
++        refused(&mut destination, 4..5, &replayed)?;
++        require(
++            destination.try_bulk_replay(6..7, &replayed),
++            "range after outer layer should replay",
++        )?;
++        destination.clear();
 +        let mut malformed_prefix = Scene::default();
-+        malformed_prefix
-+            .paint_operations
-+            .push(PaintOperation::EndLayer);
++        malformed_prefix.pop_layer();
 +        malformed_prefix
 +            .paint_operations
 +            .push(PaintOperation::Primitive(primitive(1, 2, area, area)));
@@ -4686,15 +4864,11 @@ diff --git a/src/scene.rs b/src/scene.rs
 +        }
 +        let negative = bounds(0.0, 0.0, -1.0, 10.0, 1.0);
 +        let mut invalid_layer = Scene::default();
-+        invalid_layer
-+            .paint_operations
-+            .push(PaintOperation::StartLayer(negative));
++        invalid_layer.push_layer(negative);
 +        invalid_layer
 +            .paint_operations
 +            .push(PaintOperation::Primitive(primitive(1, 7, area, area)));
-+        invalid_layer
-+            .paint_operations
-+            .push(PaintOperation::EndLayer);
++        invalid_layer.pop_layer();
 +        refused(&mut destination, 0..3, &invalid_layer)?;
 +        for (extent, mask) in [
 +            (negative, area),
@@ -4759,6 +4933,42 @@ diff --git a/src/scene.rs b/src/scene.rs
 +        Ok(())
 +    }
 +}
++
++impl Path<Pixels> {
++    /// Translate in logical pixels, then scale the retained path into a scene path.
++    pub(crate) fn scale_with_offset(
++        &self,
++        factor: f32,
++        offset: Point<Pixels>,
++        content_mask: &ContentMask<Pixels>,
++    ) -> Path<ScaledPixels> {
++        Path {
++            id: self.id,
++            order: self.order,
++            bounds: Bounds {
++                origin: (self.bounds.origin + offset).scale(factor),
++                size: self.bounds.size.scale(factor),
++            },
++            content_mask: content_mask.scale(factor),
++            vertices: PathVertices::Shared(Arc::new(self.vertices.iter()
++                .map(|vertex| vertex.scale_with_offset(factor, offset)).collect())),
++            start: (self.start + offset).scale(factor),
++            current: (self.current + offset).scale(factor),
++            contour_count: self.contour_count,
++            color: self.color,
++        }
++    }
++}
++
++impl PathVertex<Pixels> {
++    fn scale_with_offset(&self, factor: f32, offset: Point<Pixels>) -> PathVertex<ScaledPixels> {
++        PathVertex {
++            xy_position: (self.xy_position + offset).scale(factor),
++            st_position: self.st_position,
++            content_mask: self.content_mask.scale(factor),
++        }
++    }
++}
 diff --git a/src/taffy.rs b/src/taffy.rs
 --- a/src/taffy.rs
 +++ b/src/taffy.rs
@@ -4796,6 +5006,7 @@ diff --git a/src/view.rs b/src/view.rs
 @@ -325,0 +341 @@
 +            cache_epoch: 0,
 diff --git a/src/window.rs b/src/window.rs
+index 6d74a0e..e659ceb 100644
 --- a/src/window.rs
 +++ b/src/window.rs
 @@ -53,6 +53,9 @@ use util::post_inc;
@@ -5716,6 +5927,52 @@ diff --git a/src/window.rs b/src/window.rs
          let mut mouse_listeners = mem::take(&mut self.rendered_frame.mouse_listeners);
  
          // Capture phase, events bubble from back to front. Handlers for this phase are used for
+@@ -5101,3 +5702,45 @@ pub fn outline(
+         border_style,
+     }
+ }
++
++impl Window {
++    /// Paint two retained paths at a logical-pixel offset. Visible paths at least
++    /// one device pixel apart vertically may share a scene order.
++    pub fn paint_disjoint_path_pair_with_offset(
++        &mut self,
++        paths: [&Path<Pixels>; 2],
++        offset: Point<Pixels>,
++        color: impl Into<Background>,
++    ) {
++        self.invalidator.debug_assert_paint();
++
++        let scale_factor = self.scale_factor();
++        let content_mask = self.content_mask();
++        let color = color.into().opacity(self.element_opacity());
++        let scene_paths = paths.map(|path| {
++            let mut scene_path = path.scale_with_offset(scale_factor, offset, &content_mask);
++            scene_path.color = color;
++            scene_path
++        });
++        self.next_frame.scene.insert_disjoint_path_pair(scene_paths);
++    }
++
++    /// Paint a retained path at a logical-pixel offset before device scaling.
++    ///
++    /// This method should only be called as part of the paint phase of element drawing.
++    pub fn paint_path_with_offset(
++        &mut self,
++        path: &Path<Pixels>,
++        offset: Point<Pixels>,
++        color: impl Into<Background>,
++    ) {
++        self.invalidator.debug_assert_paint();
++
++        let scale_factor = self.scale_factor();
++        let content_mask = self.content_mask();
++        let opacity = self.element_opacity();
++        let mut scene_path = path.scale_with_offset(scale_factor, offset, &content_mask);
++        scene_path.color = color.into().opacity(opacity);
++        self.next_frame.scene.insert_primitive(scene_path);
++    }
++}
 diff --git a/src/element.rs b/src/element.rs
 --- a/src/element.rs
 +++ b/src/element.rs

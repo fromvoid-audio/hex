@@ -4,9 +4,10 @@
 //! batch. Arrangement rows are therefore detached once, each selected member is
 //! edited in isolation, and complete restored rows undergo final validation. No
 //! partial history, intermediate cuts, source transplantation or DSP work occurs.
+use crate::audio_edit::{DEFAULT_WARP_MODE, initial_audio_warp};
 use crate::{
     BeatsPreserve, BeatsTail, ClipFlavor, ClipId, Command, Created, Invalid, MAX_CLIPS, NoteId,
-    Project, Tempo, TrackContent, WarpMode,
+    Project, Tempo, TrackContent, WarpMode, WarpSettings,
 };
 use std::collections::BTreeSet;
 
@@ -60,6 +61,28 @@ pub enum ClipEdit {
         name: String,
     },
     Delete,
+}
+
+impl Project {
+    /// Retain authored Warp markers. For a new neutral full-source long clip,
+    /// choose a pitch-preserving mode with bounded file-backed playback.
+    /// The edit and its worker still validate the resulting source and map.
+    pub fn audio_warp_settings_for_enable(&self, clip: ClipId) -> Result<WarpSettings, Invalid> {
+        let source = self
+            .clip(clip)
+            .ok_or(Invalid("selected audio clip no longer exists"))?;
+        if let Some(settings) = source
+            .audio_edit()
+            .and_then(|edit| edit.domain.warp.as_ref())
+        {
+            return Ok(settings.clone());
+        }
+        let asset_frames = self
+            .asset(source.asset())
+            .ok_or(Invalid("selected audio clip media is missing"))?
+            .playback_frames();
+        initial_audio_warp(source, self.tempo_map(), asset_frames)
+    }
 }
 
 /// Relative algorithm controls retain every member's other settings and markers.
@@ -206,30 +229,26 @@ impl ClipEdit {
                 clip,
                 settings: None,
             },
-            Self::WarpEnabled { enabled: true } | Self::WarpMode { .. } => {
+            Self::WarpEnabled { enabled: true } => Command::SetAudioClipWarp {
+                clip,
+                settings: Some(project.audio_warp_settings_for_enable(clip)?),
+            },
+            Self::WarpMode { mode } => {
                 let source = project
                     .clip(clip)
                     .ok_or(Invalid("selected audio clip no longer exists"))?;
+                mode.validate()?;
                 let mut settings = match source
                     .audio_edit()
                     .and_then(|edit| edit.domain.warp.as_ref())
                 {
                     Some(settings) => settings.clone(),
-                    None => crate::default_audio_warp(
-                        source,
-                        project.tempo_map(),
-                        WarpMode::Beats {
-                            preserve: BeatsPreserve::Transients,
-                            tail: BeatsTail::Forward,
-                            decay: 100,
-                        },
-                    )?,
-                };
-                if let Self::WarpMode { mode } = self {
-                    mode.validate()?;
-                    if std::mem::discriminant(mode) != std::mem::discriminant(&settings.mode) {
-                        settings.mode = *mode;
+                    None => {
+                        crate::default_audio_warp(source, project.tempo_map(), DEFAULT_WARP_MODE)?
                     }
+                };
+                if std::mem::discriminant(mode) != std::mem::discriminant(&settings.mode) {
+                    settings.mode = *mode;
                 }
                 Command::SetAudioClipWarp {
                     clip,
@@ -295,16 +314,13 @@ pub(crate) fn apply(
     let mut found = 0_usize;
     let mut audio = 0_usize;
     for track in project.tracks() {
-        audio += track
+        let audio_in_track = track
             .clips()
             .iter()
             .filter(|clip| selected.contains(&clip.id()))
             .count();
-        found += track
-            .clips()
-            .iter()
-            .filter(|clip| selected.contains(&clip.id()))
-            .count();
+        audio += audio_in_track;
+        found += audio_in_track;
         found += track
             .midi_clips()
             .iter()
@@ -316,6 +332,24 @@ pub(crate) fn apply(
     }
     if edit.audio_only() && audio == 0 {
         return Err(Invalid("clip property requires a selected audio clip"));
+    }
+
+    // The validated selection is complete. Activation is a placement flag,
+    // so it cannot change row geometry or shared source content.
+    if let ClipEdit::Active { active } = edit {
+        for track in &mut project.tracks {
+            for clip in &mut track.content.audio_clips {
+                if selected.contains(&clip.id()) {
+                    clip.active = active;
+                }
+            }
+            for clip in &mut track.content.midi_clips {
+                if selected.contains(&clip.id()) {
+                    clip.active = active;
+                }
+            }
+        }
+        return Ok(Created::None);
     }
 
     let mut candidate = project.clone();
@@ -522,6 +556,7 @@ impl Command {
             | Self::MoveClipsWithOverwrite { .. }
             | Self::GroupAudioEventRange { .. }
             | Self::GroupTimeRange(_)
+            | Self::GroupTimeRangeOrCreate(_)
             | Self::GroupClips(_)
             | Self::DuplicateClips(_)
             | Self::DuplicateAliasClips(_)
@@ -531,7 +566,12 @@ impl Command {
             | Self::ApplyClipSettingsToAliases(_)
             | Self::DuplicateSessionCell { .. }
             | Self::ReverseClips(_) => ClipCommandScope::Explicit,
-            Self::AddArrangementSection { .. }
+            Self::InitializeDevice(_)
+            | Self::AddArrangementLocator { .. }
+            | Self::MoveArrangementLocator { .. }
+            | Self::RenameArrangementLocator { .. }
+            | Self::RemoveArrangementLocator(_)
+            | Self::AddArrangementSection { .. }
             | Self::SetArrangementSectionRange { .. }
             | Self::MoveArrangementSectionMarker { .. }
             | Self::ResizeArrangementSectionMarker { .. }
@@ -546,6 +586,9 @@ impl Command {
             | Self::DeleteArrangementSection(_)
             | Self::DuplicateArrangementSection(_)
             | Self::DuplicateArrangementSectionAt { .. }
+            | Self::AppendArrangementSectionCopy { .. }
+            | Self::MoveArrangementSectionBeyondEnd { .. }
+            | Self::ReplaceArrangementSection { .. }
             | Self::SplitArrangementSection { .. }
             | Self::MergeArrangementSections(_)
             | Self::SetTuning(..)
@@ -570,11 +613,17 @@ impl Command {
             | Self::InsertDevice { .. }
             | Self::InsertInstrument { .. }
             | Self::LoadInstrument { .. }
+            | Self::ReplaceTrackInstrument { .. }
             | Self::RemoveInstrument { .. }
             | Self::RemoveDevice(..)
             | Self::MoveDevice { .. }
             | Self::MoveTrackDevice { .. }
+            | Self::MoveNativeSourceDevice { .. }
+            | Self::ReparentDevice { .. }
+            | Self::InsertNestedDevice { .. }
             | Self::SpliceDeviceAutomationTouch { .. }
+            | Self::SpliceVst3AutomationTouchGroup { .. }
+            | Self::ReplaceDeviceModulation { .. }
             | Self::ReplaceDeviceAutomationTarget { .. }
             | Self::ReplaceDeviceAutomation { .. }
             | Self::ManualDeviceEdit { .. }
@@ -608,6 +657,8 @@ impl Command {
             | Self::PasteTracks { .. }
             | Self::PasteDevices { .. }
             | Self::RemoveDevices { .. }
+            | Self::MoveTrackDevices { .. }
+            | Self::ReorderDevices { .. }
             | Self::ImportAudioTrack { .. }
             | Self::CommitArrangementBounce { .. }
             | Self::ImportPreparedAudioTrack { .. }
@@ -635,7 +686,7 @@ impl Command {
             | Self::ClearLoopRegion
             | Self::AddAsset { .. }
             | Self::ImportDeviceAsset { .. }
-            | Self::ImportDeviceAssetIntoEmptyInstrument { .. }
+            | Self::ImportDeviceAssetIntoNewInstrument { .. }
             | Self::ImportDeviceAssetReplacingInstrument { .. }
             | Self::RemoveAsset(..)
             | Self::RelinkAssets(..)

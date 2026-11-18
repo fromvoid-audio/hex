@@ -8,11 +8,12 @@ use super::{
 use hex_project::{AudioViewResizeOperation, Clip, ClipId, Command};
 #[path = "audio_clip_loop.rs"]
 mod audio;
-use hex_session::service::{Event, Request};
+use hex_session::service::{ArrangementPlayStartAudition, Event, Request};
 
 #[derive(Default)]
 pub(super) struct State {
     pending: Option<Pending>,
+    play_start_audition_held: bool,
     audio_gesture: Option<audio::Gesture>,
     audio_bounds: Option<gpui::Bounds<gpui::Pixels>>,
 }
@@ -33,6 +34,48 @@ enum AudioEdit {
     Toggle(bool),
 }
 impl EditorView {
+    /// Follow held input and transport changes without sending canonical edits.
+    pub(super) fn sync_held_play_start_audition(&mut self) {
+        let target = (self.mode == super::EditorMode::Arrangement
+            && self.document_audio_mode == hex_session::DocumentAudioMode::Resident
+            && self.clip_view_open
+            && !self.device_panel_active
+            && !self.edit_pending()
+            && self
+                .audio_status()
+                .is_some_and(|status| status.playing.load(std::sync::atomic::Ordering::Acquire)))
+        .then(|| {
+            self.held_audio_play_start_audition()
+                .or_else(|| self.held_midi_play_start_audition())
+        })
+        .flatten();
+        if target.is_some() || self.clip_loop.play_start_audition_held {
+            self.set_held_play_start_audition(target);
+        }
+    }
+
+    fn set_held_play_start_audition(&mut self, target: Option<ArrangementPlayStartAudition>) {
+        self.clip_loop.play_start_audition_held = target.is_some();
+        self.service.audition_arrangement_play_start(target);
+    }
+
+    pub(super) fn finish_held_play_start_audition(&mut self) {
+        if std::mem::take(&mut self.clip_loop.play_start_audition_held) {
+            self.service.finish_arrangement_play_start_audition();
+        }
+    }
+
+    pub(super) fn settle_released_play_start_audition(&self, clip: ClipId) {
+        if self
+            .clip_loop
+            .pending
+            .as_ref()
+            .is_none_or(|p| p.clip != clip)
+        {
+            self.service.retire_arrangement_play_start_audition();
+        }
+    }
+
     pub(super) fn clip_loop_held(&self) -> bool {
         self.clip_loop.audio_gesture.is_some()
     }
@@ -80,7 +123,7 @@ impl EditorView {
             if let Some((a, b)) = self.midi_time_selection_bounds().filter(|(a, b)| a != b) {
                 let (first, last) = (a.min(b), a.max(b));
                 if last > values.source_length {
-                    self.error = Some("clip loop selection exceeds its source".into());
+                    self.error = Some("clip scope selection exceeds its source".into());
                     return true;
                 }
                 values.looping = if (first, last) == (values.loop_start, values.loop_end) {
@@ -122,7 +165,7 @@ impl EditorView {
                 {
                     AudioEdit::Toggle(!active)
                 }
-                Some((start, end)) => AudioEdit::Resize(AudioViewResizeOperation::CycleRange {
+                Some((start, end)) => AudioEdit::Resize(AudioViewResizeOperation::ScopeRange {
                     start,
                     end,
                     looping: true,
@@ -315,7 +358,11 @@ impl EditorView {
         }
     }
     pub(super) fn retire_pending_clip_loop(&mut self) -> bool {
-        self.clip_loop.pending.take().is_some()
+        let retired = self.clip_loop.pending.take().is_some();
+        if retired {
+            self.service.retire_arrangement_play_start_audition();
+        }
+        retired
     }
     pub(super) fn clip_loop_request_complete(&mut self, event: &Event) {
         if event.project_replaced {
@@ -334,15 +381,18 @@ impl EditorView {
             });
         if disposition != Disposition::Waiting
             && let Some(pending) = self.clip_loop.pending.take()
-            && disposition == Disposition::Terminal
-            && let Some(camera) = pending.start_camera
         {
-            self.install_audio_play_start_camera(
-                pending.clip,
-                pending.generation,
-                camera,
-                &event.state.project,
-            );
+            self.service.retire_arrangement_play_start_audition();
+            if disposition == Disposition::Terminal
+                && let Some(camera) = pending.start_camera
+            {
+                self.install_audio_play_start_camera(
+                    pending.clip,
+                    pending.generation,
+                    camera,
+                    &event.state.project,
+                );
+            }
         }
     }
 }

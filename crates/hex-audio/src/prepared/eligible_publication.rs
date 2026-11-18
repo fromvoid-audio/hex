@@ -73,6 +73,29 @@ impl PublicationControl {
         self.candidate_root
             .begin_domain_preparation(config, definitions, readiness)
     }
+    /// Move an already admitted granular bank into the same N2 reservation,
+    /// pending constructor and readiness/publication handoff as raw sources.
+    /// The combined quote covers this bank while retained here; its earlier
+    /// control preparation and caller custody remain separate obligations.
+    pub fn begin_audio_candidate_granular_domain_preparation(
+        &mut self,
+        config: hex_stream::StreamConfig,
+        definitions: Vec<hex_stream::SourceDefinition>,
+        granular: hex_stream::GranularWorkerBank,
+        readiness: hex_stream::StreamReadinessReservation,
+    ) -> Result<crate::AudioCandidateDomainToken, crate::AudioCandidateDomainStartError> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err(crate::AudioCandidateDomainStartError::Busy(
+                "candidate native custody unavailable",
+            ));
+        }
+        self.candidate_root.begin_granular_domain_preparation(
+            config,
+            definitions,
+            granular,
+            readiness,
+        )
+    }
     /// Test-only source-worker hold through the same reserved domain custody.
     #[cfg(feature = "stream-test-support")]
     pub fn begin_audio_candidate_domain_preparation_with_gate(
@@ -291,7 +314,67 @@ impl PublicationControl {
         token: crate::AudioCandidatePreparationToken,
         context_generation: u64,
     ) -> Result<crate::AudioCandidateTicket, &'static str> {
-        self.stage_audio_candidate_preparation_inner(token, context_generation, None)
+        self.stage_audio_candidate_preparation_inner(token, context_generation, None, None)
+    }
+
+    /// Stage a device edit prepared from the exact canonical project revision
+    /// on this verified output. Installation is acknowledged after the real
+    /// constructor graph and its stream protection move on callback.
+    pub fn stage_verified_device_insert(
+        &mut self,
+        token: crate::AudioCandidatePreparationToken,
+        context: hex_engine::AudioSourceContext,
+        predecessor: AppliedAudioSource,
+        approval: Option<DeviceInsertConsent>,
+    ) -> Result<(crate::AudioCandidateTicket, CancellablePublicationReceipt), &'static str> {
+        let stale = "device insert requires the exact installed verified source";
+        if !self.status.verified_streaming_mode.load(Acquire)
+            || self.status.applied_audio_source() != Some(predecessor)
+            || self.status.recording_source() != Some(predecessor)
+            || predecessor.output_identity != self.candidate_root.root_id()
+            || context.project_generation != predecessor.context.project_generation
+            || context.editor_revision <= predecessor.context.editor_revision
+            || self.output_transport_reaper.is_some()
+        {
+            return Err(stale);
+        }
+        if approval.is_some_and(|offer| {
+            offer.predecessor() != predecessor
+                || offer.candidate_context() != context
+                || !self.device_insert_consent_is_current(&offer)
+        }) {
+            return Err("device insert confirmation is stale");
+        }
+        let fence = capture_runtime_fence(&self.status)
+            .filter(|fence| fence.expected_active_revision == predecessor.audio_revision)
+            .ok_or(stale)?;
+        if approval.is_some_and(|offer| !offer.matches_fence(fence)) {
+            return Err("device insert confirmation is stale");
+        }
+        let revision = self
+            .revision
+            .checked_add(1)
+            .ok_or("playback revision exhausted")?;
+        let receipt = CancellablePublicationReceipt::new(
+            predecessor.output_identity,
+            Some(context),
+            revision,
+            Some(DeviceInsertBasis::new(
+                predecessor,
+                fence,
+                &self.status,
+                approval,
+            )),
+            fence.route_state_generation,
+        );
+        let ticket = self.stage_audio_candidate_preparation_inner(
+            token,
+            context.project_generation,
+            None,
+            Some(&receipt),
+        )?;
+        self.latest_fresh_runtime_cancellation = Some(receipt.clone());
+        Ok((ticket, receipt))
     }
     /// Publish the successor of this exact native Stop gate. Root validates the
     /// prepared owner's unchanged canonical context under its original custody.
@@ -314,6 +397,7 @@ impl PublicationControl {
             token,
             context.project_generation,
             Some(context),
+            None,
         )
     }
     fn stage_audio_candidate_preparation_inner(
@@ -321,6 +405,7 @@ impl PublicationControl {
         token: crate::AudioCandidatePreparationToken,
         context_generation: u64,
         expected_context: Option<hex_engine::AudioSourceContext>,
+        insert: Option<&CancellablePublicationReceipt>,
     ) -> Result<crate::AudioCandidateTicket, &'static str> {
         if !self.native_custody || self.status.closing.load(Acquire) {
             return Err("candidate native custody unavailable");
@@ -355,8 +440,11 @@ impl PublicationControl {
             token,
             self.rate,
             header,
-            expected_context,
-            |queued| {
+            expected_context.or_else(|| insert.and_then(CancellablePublicationReceipt::context)),
+            |mut queued| {
+                if let Some(receipt) = insert {
+                    queued.bind_device_insert(PublicationReceiptOwner(receipt.clone()));
+                }
                 chunk.fill_from_iter(std::iter::once(QueuedPublication::Eligible(queued)));
             },
         ) {
@@ -493,22 +581,34 @@ impl Callback {
     }
 
     pub(super) fn advance_eligible_publication(&mut self, frames: Option<usize>) {
-        if frames.is_none()
-            && self
-                .deferred_eligible
-                .as_ref()
-                .is_some_and(|next| next.streaming_enabled())
-        {
+        let Some(next) = self.deferred_eligible.as_ref() else {
+            return;
+        };
+        let insert = next.device_insert().is_some();
+        let confirmed_insert = next
+            .device_insert()
+            .and_then(|receipt| receipt.0.device_insert_basis())
+            .is_some_and(|basis| basis.approved.is_some());
+        if next.streaming_enabled() && frames.is_none() != confirmed_insert {
             return;
         }
-        // A new actual candidate invalidates the old owner's discontinuity;
-        // its scalar token cannot be replayed on the successor.
-        self.cancel_active_stream_action();
-        if let Some(ActivePublication::Eligible(active)) = self.active.as_mut() {
-            active.publication_replaces_prewarm(&mut self.domain_pages);
+        if !insert {
+            // An ordinary replacement invalidates the old owner's discontinuity.
+            // An insert instead waits for its retained, admitted frontier.
+            self.cancel_active_stream_action();
+            if let Some(ActivePublication::Eligible(active)) = self.active.as_mut() {
+                active.publication_replaces_prewarm(&mut self.domain_pages);
+            }
         }
         use crate::candidate_custody::InstallDecision;
         if self.active.is_some() && self.retired.is_full() {
+            if confirmed_insert && let Some(next) = self.deferred_eligible.take() {
+                self.return_verified_insert(
+                    &next,
+                    Some(PlaybackHandoffRejection::RuntimeFenceChanged),
+                );
+                self.deferred_eligible = Some(next);
+            }
             return;
         }
         let Some(next) = self.deferred_eligible.as_ref() else {
@@ -516,17 +616,95 @@ impl Callback {
         };
         let revision = next.revision();
         let context = next.diagnostic_context();
+        let streaming_enabled = next.streaming_enabled();
+        let incompatible_active = self
+            .active
+            .as_ref()
+            .is_some_and(|active| !matches!(active, ActivePublication::Eligible(_)));
+        let preflight_refusal = next.preflight_refusal(&self.candidate_root);
         self.trace_audio(
             AudioDiagnosticKind::PublicationAttempt,
             revision,
             context,
             frames.unwrap_or(0),
         );
-        let mut decision = if self
-            .active
-            .as_ref()
-            .is_some_and(|active| !matches!(active, ActivePublication::Eligible(_)))
+        if streaming_enabled
+            && !incompatible_active
+            && let Some(reason) = preflight_refusal
         {
+            self.reject_pending_eligible_successor(reason);
+            return;
+        }
+        if insert && let Some(mut next) = self.deferred_eligible.take() {
+            let ready = self.verified_device_insert_ready(&mut next);
+            self.deferred_eligible = Some(next);
+            match ready {
+                Ok(true) => {}
+                Ok(false) => return,
+                Err(reason) => {
+                    self.reject_pending_eligible_successor(reason);
+                    return;
+                }
+            }
+        }
+        if let Some(frames) = frames
+            && streaming_enabled
+            && !incompatible_active
+        {
+            let mut reservation = self.reserve_current_stream_window(frames);
+            if matches!(
+                reservation,
+                Err(crate::candidate_custody::QuantumFailure::Capacity)
+            ) {
+                if let Some(next) = self.deferred_eligible.as_mut() {
+                    next.cancel_stream_readiness(&mut self.domain_pages);
+                }
+                reservation = self.reserve_current_stream_window(frames);
+            }
+            match reservation {
+                Ok(Some(pins)) => {
+                    let complete = pins.complete();
+                    self.current_quantum_pins = Some(pins);
+                    if !complete {
+                        if let Some(next) = self.deferred_eligible.as_mut() {
+                            next.cancel_stream_readiness(&mut self.domain_pages);
+                        }
+                        return;
+                    }
+                }
+                Ok(None) => {}
+                Err(crate::candidate_custody::QuantumFailure::PendingAction) => return,
+                Err(crate::candidate_custody::QuantumFailure::Capacity) => {
+                    if !self.retry_pending_eligible_capacity() {
+                        self.reject_pending_eligible_successor(
+                            PlaybackHandoffRejection::StreamedPageCapacity,
+                        );
+                    }
+                    return;
+                }
+                Err(crate::candidate_custody::QuantumFailure::Invalid) => {
+                    self.reject_pending_eligible_successor(
+                        PlaybackHandoffRejection::StreamedPagesNotReady,
+                    );
+                    return;
+                }
+            }
+        }
+        let frontier = if insert {
+            self.active
+                .as_ref()
+                .and_then(ActivePublication::current)
+                .map(|active| {
+                    (
+                        active.revision,
+                        active.playback.session_route_state_generation(),
+                    )
+                })
+        } else {
+            None
+        };
+        let status = &self.status;
+        let mut decision = if incompatible_active {
             InstallDecision::Refused(PlaybackHandoffRejection::ConstructorClaimsUnavailable)
         } else if let Some(next) = self.deferred_eligible.as_mut() {
             #[cfg(all(test, feature = "allocation-probe"))]
@@ -537,16 +715,42 @@ impl Callback {
                 Some(ActivePublication::Eligible(active)) => Some(active),
                 _ => None,
             };
-            let mut request = frames.map(|frames| crate::candidate_custody::StreamInstall {
-                domains: &mut self.domain_pages,
-                pending_play: self.stream_pending_play.is_some(),
-                command_prefix: self.stream_prefix,
-                frames,
+            let mut request = frames.or(confirmed_insert.then_some(256)).map(|frames| {
+                crate::candidate_custody::StreamInstall {
+                    domains: &mut self.domain_pages,
+                    pending_play: self.stream_pending_play.is_some(),
+                    command_prefix: self.stream_prefix,
+                    frames,
+                    fenced_restart: false,
+                    foreign_continuation: false,
+                    confirmed_fade: confirmed_insert.then_some(0),
+                }
             });
-            next.prepare_install(previous, &self.candidate_root, request.as_mut())
+            next.prepare_install(
+                previous,
+                &self.candidate_root,
+                request.as_mut(),
+                |receipt| {
+                    frontier.is_some_and(|(revision, routes)| {
+                        receipt.0.device_insert_basis().is_some_and(|basis| {
+                            basis.verified_cut_is_current(
+                                status,
+                                revision,
+                                routes,
+                                receipt.0.retained_route_generation(),
+                            )
+                        })
+                    })
+                },
+            )
         } else {
             return;
         };
+        if confirmed_insert && matches!(decision, InstallDecision::Retry(_)) {
+            // The old output is already at the held cut. Refuse on a miss so
+            // it can resume in this callback, with a bounded interruption.
+            decision = InstallDecision::Refused(PlaybackHandoffRejection::StreamedPagesNotReady);
+        }
         if let Some(handoff) = self
             .deferred_eligible
             .as_mut()
@@ -569,9 +773,9 @@ impl Callback {
             );
         }
         match decision {
-            InstallDecision::Retry => {
+            InstallDecision::Retry(reason) => {
                 self.trace_audio(
-                    AudioDiagnosticKind::PublicationWaiting,
+                    AudioDiagnosticKind::PublicationWaiting { reason },
                     revision,
                     context,
                     frames.unwrap_or(0),
@@ -586,11 +790,12 @@ impl Callback {
                 if let Some(mut value) = self.deferred_eligible.take() {
                     value.cancel_stream_readiness(&mut self.domain_pages);
                     self.reject_publication(value.revision(), reason);
+                    self.status.publication_pending.store(false, Release);
+                    self.return_verified_insert(&value, Some(reason));
                     self.return_publication(ReturnedPublication::Eligible(
                         value.reject_before_install(),
                     ));
-                    self.status.publication_pending.store(false, Release);
-                    if let Some(ticket) = self.stream_pending_play.take() {
+                    if !insert && let Some(ticket) = self.stream_pending_play.take() {
                         self.status.publish_rejected_action(
                             ticket,
                             PlaybackActionRejection::SessionNotPrepared,
@@ -618,9 +823,13 @@ impl Callback {
                 // remained in their persistent callback slots. Fixed moves only.
                 if let Some(next) = self.deferred_eligible.take() {
                     let revision = next.revision();
+                    if confirmed_insert {
+                        self.release_device_insert_fade_pins();
+                    }
                     let previous = self
                         .active
                         .replace(ActivePublication::Eligible(next.into_active()));
+                    self.release_current_quantum_pins();
                     if let Some(ActivePublication::Eligible(mut previous)) = previous {
                         if let Some(ActivePublication::Eligible(active)) = self.active.as_mut()
                             && let Some(ticket) = active.inherit_schedule_observation(&mut previous)
@@ -662,6 +871,9 @@ impl Callback {
                         frames.unwrap_or(0),
                     );
                     self.status.publication_pending.store(false, Release);
+                    if let Some(ActivePublication::Eligible(active)) = self.active.as_ref() {
+                        active.acknowledge_device_insert();
+                    }
                 }
             }
         }

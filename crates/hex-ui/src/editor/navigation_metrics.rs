@@ -1,11 +1,16 @@
-//! Optional CPU attribution for the ignored navigation probe. Compiled only in
-//! UI tests, disabled by default, and never a production scheduling/paint owner.
+//! Test-only waveform suppression and optional CPU attribution for navigation.
+//! Profiling APIs are compiled only with UI test support and never own production
+//! scheduling or paint.
+#[cfg(feature = "ui-test-support")]
 use gpui::{
     AnyElement, App, Bounds, Element, ElementId, GlobalElementId, InspectorElementId, IntoElement,
     LayoutId, Pixels, Window,
 };
-use std::{cell::Cell, time::Instant};
+use std::cell::Cell;
+#[cfg(feature = "ui-test-support")]
+use std::time::Instant;
 
+#[cfg(feature = "ui-test-support")]
 #[derive(Clone, Copy)]
 pub(super) enum Stage {
     Editor,
@@ -63,6 +68,10 @@ impl Drop for WaveformSuppression {
     }
 }
 
+/// Shared test-only cache identity scope used by the navigation profiler.
+#[cfg(feature = "ui-test-support")]
+pub(super) use super::waveform_geometry::use_reference_stereo;
+
 pub(super) fn reset(enabled: bool) {
     STATE.with(|state| {
         state.set(State {
@@ -75,15 +84,18 @@ pub(super) fn reset(enabled: bool) {
     });
 }
 
+#[cfg(feature = "ui-test-support")]
 pub(super) fn snapshot() -> Measurements {
     STATE.with(|state| state.get().measurements)
 }
 
+#[cfg(feature = "ui-test-support")]
 pub(super) struct Timer {
     stage: usize,
     started: Instant,
 }
 
+#[cfg(feature = "ui-test-support")]
 impl Timer {
     pub(super) fn start(stage: Stage) -> Option<Self> {
         STATE.with(|state| state.get().enabled).then(|| Self {
@@ -93,6 +105,7 @@ impl Timer {
     }
 }
 
+#[cfg(feature = "ui-test-support")]
 impl Drop for Timer {
     fn drop(&mut self) {
         let elapsed = self.started.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64;
@@ -109,20 +122,24 @@ impl Drop for Timer {
 
 /// Forward the same child layout node without an extra style/container node.
 /// This separates GPUI tree phases from view construction and waveform work.
+#[cfg(feature = "ui-test-support")]
 pub(super) struct PhaseProbe {
     child: AnyElement,
 }
+#[cfg(feature = "ui-test-support")]
 impl PhaseProbe {
     pub(super) fn new(child: AnyElement) -> Self {
         Self { child }
     }
 }
+#[cfg(feature = "ui-test-support")]
 impl IntoElement for PhaseProbe {
     type Element = Self;
     fn into_element(self) -> Self {
         self
     }
 }
+#[cfg(feature = "ui-test-support")]
 impl Element for PhaseProbe {
     type RequestLayoutState = ();
     type PrepaintState = ();
@@ -169,7 +186,7 @@ impl Element for PhaseProbe {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "ui-test-support")))]
 mod tests {
     use super::*;
 
@@ -180,6 +197,10 @@ mod tests {
             let _outer = suppress_waveforms(true);
             reset(true);
             assert!(waveforms_suppressed());
+            let reset_state = STATE.with(Cell::get);
+            assert!(reset_state.enabled);
+            assert_eq!(reset_state.measurements.ns, [0; STAGE_COUNT]);
+            assert_eq!(reset_state.measurements.calls, [0; STAGE_COUNT]);
             {
                 let _inner = suppress_waveforms(false);
                 assert!(!waveforms_suppressed());
@@ -188,5 +209,9 @@ mod tests {
         }
         assert!(!waveforms_suppressed());
         reset(false);
+        let reset_state = STATE.with(Cell::get);
+        assert!(!reset_state.enabled);
+        assert_eq!(reset_state.measurements.ns, [0; STAGE_COUNT]);
+        assert_eq!(reset_state.measurements.calls, [0; STAGE_COUNT]);
     }
 }

@@ -175,7 +175,7 @@ pub(super) fn exercise(
         }
         // Literal original8k/output16k at projectA880: base step1, pitch-12 step.5.
         let play = visual
-            .debug_bounds("play or pause · space")
+            .debug_bounds("play or pause · space · right-click for history playback")
             .unwrap()
             .center();
         visual.simulate_click(play, Modifiers::default());
@@ -246,7 +246,7 @@ pub(super) fn exercise(
             .matches_context(applied().unwrap().context)
     );
     let play = visual
-        .debug_bounds("play or pause · space")
+        .debug_bounds("play or pause · space · right-click for history playback")
         .unwrap()
         .center();
     visual.simulate_click(play, Modifiers::default());

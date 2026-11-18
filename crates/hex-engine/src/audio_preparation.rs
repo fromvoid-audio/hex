@@ -45,6 +45,19 @@ pub(crate) fn validate_constructor_project_with_effects(
     project: &hex_project::Project,
     effects: Option<&hex_lattice::NativeDeviceRegistry<'_>>,
 ) -> Result<(), AudioStorageError> {
+    crate::device_modulation::validate_source_owners(project)
+        .map_err(|_| AudioStorageError::UnsupportedGraph)?;
+    // Bound suffixes use the ordinary receiver publication, whose recipe owns
+    // the source program. The sealed root does not retain these recipes.
+    if project.native_sources().iter().any(|source| {
+        source.receiver().is_some()
+            && source
+                .post_instrument_effects()
+                .iter()
+                .any(|effect| !effect.modulation().is_empty())
+    }) {
+        return Err(AudioStorageError::UnsupportedGraph);
+    }
     let supported = |d: &hex_project::Device| {
         d.state().asset_references().is_empty()
             && (d.state().type_id() == hex_devices::utility::UTILITY_TYPE_ID
@@ -94,8 +107,9 @@ pub(crate) fn validate_constructor_project_with_effects(
     {
         return Err(AudioStorageError::UnsupportedGraph);
     }
-    if !project.audio_feeds().is_empty()
-        || !project.midi_routes().is_empty()
+    // Authored feeds use rooted graph custody. Stream demand independently
+    // checks its supported source and routing class.
+    if !project.midi_routes().is_empty()
         || project
             .tracks()
             .iter()
@@ -332,6 +346,7 @@ struct SourceSlot {
     phase: u64,
     gain: f32,
     looping: bool,
+    reversed: bool,
     fade: hex_project::ClipFade,
     owner: Option<OwnedAudioSource>,
     // Fresh constructor root stays here after its distinct graph alias moves.
@@ -1556,7 +1571,21 @@ impl AudioPreparationCustody {
                     .ok_or(AudioStorageError::Overflow)?;
             }
         }
-        let (derived_retained, derived_workspace) = transformed_audio_quote(project)?;
+        let (derived_retained, derived_workspace) = transformed::transformed_audio_quote_for(
+            project,
+            &|clip| {
+                let streamed_reverse = clip.audio_edit().is_some_and(|edit| edit.content_view.is_some())
+                    && inputs.sources.iter().find(|(asset, _)| *asset == clip.asset())
+                        .is_some_and(|(_, owner)| {
+                            matches!(&owner.kind, SourceKind::Streamed(raw)
+                                if transformed::streamed_reverse_region(project, clip, raw).is_some())
+                        });
+                streamed_reverse
+                    || transformed::pitched_source_index(project, inputs, clip).is_some()
+                    || transformed::repitch_source_index(project, inputs, clip).is_some()
+                    || transformed::granular_source_index(project, inputs, clip).is_some()
+            },
+        )?;
         capacity.declared_source_bytes = capacity
             .declared_source_bytes
             .checked_add(derived_retained)
@@ -1658,8 +1687,36 @@ impl AudioPreparationCustody {
                 {
                     return Err(AudioStorageError::SourceMismatch);
                 }
-                let transformed = clip.audio_edit().is_some();
-                transformed::validate_sources(project, inputs, clip)?;
+                let pitch_source = transformed::pitched_source_index(project, inputs, clip);
+                let repitch_source = transformed::repitch_source_index(project, inputs, clip);
+                let granular_source = transformed::granular_source_index(project, inputs, clip);
+                let derived_source = pitch_source.or(repitch_source).or(granular_source);
+                let reverse_view = match &owner.kind {
+                    SourceKind::Streamed(raw) => {
+                        transformed::streamed_reverse_region(project, clip, raw)
+                    }
+                    SourceKind::Resident(_) => None,
+                };
+                let transformed = transformed::requires_transformed_origin(clip)
+                    && derived_source.is_none()
+                    && reverse_view.is_none();
+                if derived_source.is_none() && reverse_view.is_none() {
+                    transformed::validate_sources(project, inputs, clip)?;
+                }
+                let source = derived_source.unwrap_or(source);
+                let stream_view = if repitch_source.is_some() || granular_source.is_some() {
+                    let edit = clip.audio_edit().ok_or(AudioStorageError::SourceMismatch)?;
+                    let (_, _, start, end) = edit
+                        .projected_domain(project.tempo_map())
+                        .map_err(|_| AudioStorageError::SourceMismatch)?;
+                    let derived_frames = inputs.sources[source].1.frames();
+                    if start >= end || end > derived_frames {
+                        return Err(AudioStorageError::SourceMismatch);
+                    }
+                    Some((start, end - start))
+                } else {
+                    reverse_view
+                };
                 let end = clip
                     .start()
                     .checked_add(clip.duration())
@@ -1689,20 +1746,34 @@ impl AudioPreparationCustody {
                     end,
                     source_offset: usize::try_from(if transformed {
                         0
+                    } else if let Some((start, _)) = stream_view {
+                        start
                     } else {
                         clip.source_offset()
                     })
                     .map_err(|_| AudioStorageError::Overflow)?,
                     source_length: usize::try_from(if transformed {
                         clip.duration()
+                    } else if let Some((_, length)) = stream_view {
+                        length
                     } else {
                         clip.source_length()
                     })
                     .map_err(|_| AudioStorageError::Overflow)?,
-                    phase: if transformed { 0 } else { clip.source_phase() },
+                    phase: if transformed || stream_view.is_some() {
+                        0
+                    } else {
+                        clip.source_phase()
+                    },
                     gain: clip.gain().linear(),
-                    looping: !transformed && clip.looping(),
-                    fade: if transformed {
+                    looping: !transformed && stream_view.is_none() && clip.looping(),
+                    reversed: reverse_view.is_some(),
+                    fade: if pitch_source.is_some() {
+                        clip.audio_edit()
+                            .ok_or(AudioStorageError::SourceMismatch)?
+                            .domain
+                            .fade
+                    } else if transformed || stream_view.is_some() {
                         hex_project::ClipFade::neutral(clip.duration())
                             .map_err(|_| AudioStorageError::SourceMismatch)?
                     } else {

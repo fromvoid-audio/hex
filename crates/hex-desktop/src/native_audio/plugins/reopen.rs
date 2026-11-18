@@ -250,7 +250,7 @@ impl Plugins {
             )
         })();
         let binding = selected.and_then(|selected| {
-            let authored = AuthoredSelection::from_targets(input.authored_plugin_targets(device))?;
+            let authored = edits::requested_selection(&input, device)?;
 
             self.host
                 .as_ref()
@@ -287,6 +287,8 @@ impl Plugins {
                     queued: false,
                     observes_latency: false,
                     editor_open: false,
+                    editor_transfer: false,
+                    editor_open_on_insert: false,
                     edit_backlog: false,
                     edit_recovery: None,
                     pending_touch: None,

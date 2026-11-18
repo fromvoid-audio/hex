@@ -1,17 +1,18 @@
+use super::device_automation::RangeEdit;
 use super::{
     AddMidiClip, AddMidiTrack, AddTrack, AdditiveSolo, CancelDragOrStop, CopyTimeSelection,
     CutTimeSelection, DeleteClip, DeleteSectionMarker, DuplicateClip, EditorView, ExportProject,
     FitTimeline, GroupSelection, ImportAudio, InsertTimeSelection, LoopSelection, MidiOctaveDown,
-    MidiOctaveUp, MoveLeft, MoveRight, NewProject, NewStreamingProject, NextTrack, OpenProject,
-    OpenRecentProject, OpenRelinkedProject, OpenStreamingProject, PanTimelineLeft,
-    PanTimelineRight, PasteTimeSelection, PreviousTrack, Quit, RecoverKeptSession,
-    RecoverPreviousSave, RecoverSavedProject, RecoverUntitledProject, Redo, RemoveTrack,
-    SaveAsProject, SaveProject, SelectAllMidiNotes, SplitClip, Stop, ToggleLoop,
+    MidiOctaveUp, MoveLeft, MoveRight, NewProject, NewStreamingProject, NextTrack,
+    OpenAutomationRecovery, OpenProject, OpenRecentProject, OpenRelinkedProject,
+    OpenStreamingProject, PanTimelineLeft, PanTimelineRight, PasteTimeSelection, PreviousTrack,
+    Quit, RecoverKeptSession, RecoverPreviousSave, RecoverSavedProject, RecoverUntitledProject,
+    Redo, RemoveTrack, SaveAsProject, SaveProject, SelectAllMidiNotes, SplitClip, Stop, ToggleLoop,
     ToggleMidiDrawMode, TogglePlay, ToggleSolo, TrimLeft, TrimRight, Undo, ZoomIn, ZoomOut,
 };
 use crate::diagnostics::ActionTraceContext as _;
 use crate::theme;
-use gpui::{Context, MouseButton, MouseUpEvent, Window, div, prelude::*, px, rgb};
+use gpui::{AnimationExt, Context, MouseButton, MouseUpEvent, Window, div, prelude::*, px, rgb};
 use hex_project::Command;
 use hex_session::service::Request as SessionRequest;
 use std::sync::atomic::Ordering::Relaxed;
@@ -48,6 +49,9 @@ impl EditorView {
             .iter()
             .any(|context| context.contains("hex_text_editing"))
         {
+            return;
+        }
+        if self.edit_automation_range(RangeEdit::Duplicate, window, cx) {
             return;
         }
         if self.track_clipboard_shortcut(window, super::track_clipboard::Shortcut::Duplicate) {
@@ -251,6 +255,46 @@ impl EditorView {
                     .child(theme::text(status)),
             );
         }
+        if let Some(control) = &self.bounce_control {
+            let phase = if control.is_cancelled() {
+                "cancelling bounce"
+            } else {
+                "bouncing audio · escape cancels"
+            };
+            bar = bar.child(
+                div()
+                    .id("bounce-status-progress")
+                    .debug_selector(|| "bounce-status-progress".into())
+                    .relative()
+                    .w(px(48.0))
+                    .h(px(4.0))
+                    .flex_shrink_0()
+                    .overflow_hidden()
+                    .bg(rgb(theme::color(theme::PaletteRole::Border)))
+                    .tooltip(move |_, cx| {
+                        cx.new(|_| super::transport::MiniTooltip {
+                            kind: crate::tooltips::Kind::Identification,
+                            description: theme::text(phase),
+                        })
+                        .into()
+                    })
+                    .child(
+                        div()
+                            .absolute()
+                            .h_full()
+                            .w(px(16.0))
+                            .bg(rgb(theme::color(theme::PaletteRole::Primary)))
+                            .with_animation(
+                                "bounce-status-sweep",
+                                gpui::Animation::new(std::time::Duration::from_millis(1200))
+                                    .repeat(),
+                                |fill, progress| {
+                                    fill.left(px(32.0 * (1.0 - (2.0 * progress - 1.0).abs())))
+                                },
+                            ),
+                    ),
+            );
+        }
         let offline = self
             .state
             .as_ref()
@@ -320,6 +364,26 @@ impl EditorView {
                         })),
                 );
             }
+        }
+        if let Some((label, actionable)) = self.automation_recovery_status() {
+            bar = bar.child(
+                div()
+                    .id("automation-take-recovery")
+                    .debug_selector(|| "automation-take-recovery".into())
+                    .px_1()
+                    .flex_shrink_0()
+                    .text_color(rgb(theme::color(if actionable {
+                        theme::PaletteRole::Primary
+                    } else {
+                        theme::PaletteRole::Muted
+                    })))
+                    .when(actionable, |item| {
+                        item.cursor_pointer().on_click(
+                            cx.listener(|view, _, _, cx| view.start_automation_recovery(cx)),
+                        )
+                    })
+                    .child(theme::text(label)),
+            );
         }
         bar = bar.child(self.controller_input_row(cx));
         if self.audio_batch.is_some() {
@@ -555,6 +619,7 @@ impl Render for EditorView {
         self.reconcile_format_upgrade_prompt(window, cx);
         self.reconcile_leftover_recovery(window, cx);
         self.reconcile_truncated_import_offer(window, cx);
+        self.reconcile_device_insert_confirmation(window, cx);
         self.reconcile_track_resize(window, cx);
         self.reconcile_track_reorder(window);
         super::browser_input::restyle(&self.browser.search, cx);
@@ -579,6 +644,7 @@ impl Render for EditorView {
         self.reconcile_track_name(window, cx);
         self.reconcile_fade_gesture();
         self.reconcile_clip_gain();
+        self.reconcile_gain_audition();
         if self.clip_view_open && self.gain_lane.track.is_some() && !self.automation_view.enabled {
             self.cancel_gain_draft(cx);
             self.gain_lane.track = None;
@@ -593,51 +659,53 @@ impl Render for EditorView {
             .reconcile(self.project_generation, self.state.as_ref(), cx);
         self.drag_layout_generation = self.drag_layout_generation.wrapping_add(1);
         let clip_view = self.clip_detail_view(window, cx);
-        self.reconcile_device_comparison_menu(window, cx);
-        let workspace_content = if self.mode == super::EditorMode::Session {
-            div()
-                .flex_1()
-                .min_h_0()
-                .flex()
-                .flex_col()
-                .child(self.project_spectrum_panel(window, cx))
-                .child(self.session_grid(window, cx))
-                .child(clip_view)
-                .child(self.mixer_strip(cx, true))
-                .child(self.routing_controls(cx))
-        } else {
-            div()
-                .flex_1()
-                .min_h_0()
-                .flex()
-                .flex_col()
-                .child(self.project_spectrum_panel(window, cx))
-                .child(self.arrangement(window, cx))
-                .child(clip_view)
-                .child(self.mixer_strip(cx, false))
-                .child(self.routing_controls(cx))
-        };
-        let workspace = div()
-            .flex_1()
-            .min_h_0()
-            .flex()
-            .child(
-                self.browser_view(window, cx)
-                    .debug_selector(|| "resize-browser-hit-region".to_owned())
-                    .capture_any_mouse_up(cx.listener(|view, event: &MouseUpEvent, window, cx| {
-                        if view.finish_trim_pointer_release(event, true, window, cx) {
-                            cx.stop_active_drag(window);
-                            cx.set_active_drag_cursor_style(gpui::CursorStyle::Arrow, window);
-                            cx.stop_propagation();
-                        }
-                    })),
-            )
-            .child(workspace_content.flex_1().min_w_0());
+        self.reconcile_device_action_menu(window, cx);
+        let workspace = self.render_workspace(window, cx, clip_view);
         self.restore_clip_control_focus(window, cx);
         let modifier_entity = cx.entity();
         let console_drag_entity = cx.entity();
         let trim_pointer_entity = cx.entity();
         let midi_trim_pointer_entity = cx.entity();
+        let key_context = if super::device_panel::source_naming(self) {
+            "hex_source_name hex_text_editing"
+        } else if super::device_panel::picker_is_open(self) {
+            "hex_device_picker_root"
+        } else if self.changelog.is_open() {
+            "hex_changelog"
+        } else if self.track_name.is_editing() {
+            "hex_track_name hex_text_editing"
+        } else if self.clip_name_edit.is_some() || self.sections.naming() || self.locators.naming()
+        {
+            "hex_clip_name hex_text_editing"
+        } else if self.tuning.open {
+            "hex_tuning"
+        } else if self.theme_settings.open {
+            "hex_theme_settings"
+        } else if self.controller_input_is_open() {
+            "hex_controller_input"
+        } else if self.context_menu.is_some() {
+            "hex_context_menu"
+        } else if self.project_tempo_editing(cx) {
+            "hex_project_tempo_editor hex_text_editing"
+        } else if self.gain_numeric_editing(cx) || self.clip_numeric_editing(cx) {
+            "hex_gain_numeric_editor"
+        } else if self.mode == super::EditorMode::Arrangement
+            && self.automation_view.enabled
+            && self.focus.is_focused(window)
+        {
+            "hex_editor hex_arrangement_automation"
+        } else if self.mode == super::EditorMode::Arrangement
+            && self.automation_view.enabled
+            && self.track_header_focused(window)
+        {
+            "hex_editor hex_automation_track_header"
+        } else {
+            self.browser_key_context(window, cx)
+        };
+        let mut key_context = gpui::KeyContext::parse(key_context).unwrap_or_default();
+        if self.has_arrangement_sections() {
+            key_context.add("hex_arrangement_sections");
+        }
         div()
             // Pointer presses leave the idle poll cadence before any handler runs.
             .capture_any_mouse_down(cx.listener(|view, _, _, _| view.wake_poll()))
@@ -672,39 +740,7 @@ impl Render for EditorView {
             .child(self.project_spectrum_pointer_events(cx))
             .child(self.clip_detail_pointer_events(cx))
             .track_focus(&self.focus)
-            .key_context(if super::device_panel::picker_is_open(self) {
-                "hex_device_picker_root"
-            } else if self.changelog.is_open() {
-                "hex_changelog"
-            } else if self.track_name.is_editing() {
-                "hex_track_name hex_text_editing"
-            } else if self.clip_name_edit.is_some() || self.sections.naming() {
-                "hex_clip_name hex_text_editing"
-            } else if self.tuning.open {
-                "hex_tuning"
-            } else if self.theme_settings.open {
-                "hex_theme_settings"
-            } else if self.controller_input_is_open() {
-                "hex_controller_input"
-            } else if self.context_menu.is_some() {
-                "hex_context_menu"
-            } else if self.project_tempo_editing(cx) {
-                "hex_project_tempo_editor hex_text_editing"
-            } else if self.gain_numeric_editing(cx) || self.clip_numeric_editing(cx) {
-                "hex_gain_numeric_editor"
-            } else if self.mode == super::EditorMode::Arrangement
-                && self.automation_view.enabled
-                && self.focus.is_focused(window)
-            {
-                "hex_editor hex_arrangement_automation"
-            } else if self.mode == super::EditorMode::Arrangement
-                && self.automation_view.enabled
-                && self.track_header_focused(window)
-            {
-                "hex_editor hex_automation_track_header"
-            } else {
-                self.browser_key_context(window, cx)
-            })
+            .key_context(key_context)
             // The canonical source handle may leave the viewport while its
             // resize preview remains active. Keep the same captured payload's
             // latest pointer on this stable root, not a virtualized child.
@@ -763,6 +799,8 @@ impl Render for EditorView {
             }))
             .on_modifiers_changed(move |event, window, cx| {
                 modifier_entity.update(cx, |view, cx| {
+                    // Section hover paint follows modifiers even without pointer motion.
+                    cx.notify();
                     view.tuning.shift = event.modifiers.shift;
                     if view.option_held != event.modifiers.alt {
                         view.option_held = event.modifiers.alt;
@@ -877,6 +915,10 @@ impl Render for EditorView {
                     cx.stop_propagation();
                     return;
                 }
+                if view.section_loop_key_down(event, window) {
+                    cx.stop_propagation();
+                    return;
+                }
                 if !view.time_selection_key_down(event, window, cx)
                     && !view.tuning_audition_down(event, window, cx)
                     && !view.clip_gain_key_down(event, cx)
@@ -886,6 +928,11 @@ impl Render for EditorView {
                 }
             }))
             .capture_key_up(cx.listener(|view, event: &gpui::KeyUpEvent, window, cx| {
+                if view.section_loop_key_up(event, window, cx) {
+                    cx.stop_propagation();
+                    cx.notify();
+                    return;
+                }
                 if view.drag_bounce_key_up(event) {
                     cx.notify();
                 }
@@ -932,7 +979,9 @@ impl Render for EditorView {
                     return;
                 }
                 if event.keystroke.key == "escape"
-                    && (view.cancel_trim_gesture(cx) | view.cancel_active_native_device_drag())
+                    && (view.cancel_trim_gesture(cx)
+                        | view.cancel_active_native_device_drag()
+                        | view.device_panel.mapping_source.take().is_some())
                 {
                     cx.stop_active_drag(window);
                     cx.set_active_drag_cursor_style(gpui::CursorStyle::Arrow, window);
@@ -969,17 +1018,24 @@ impl Render for EditorView {
                 view.finish_track_name(false, window, cx);
             }))
             .on_action(cx.trace(|view, _: &super::RenameClip, window, cx| {
-                if !view.section_name_begin(window, cx) && !view.track_header_focused(window) {
+                if !view.rename_selected_locator(window, cx)
+                    && !view.section_name_begin(window, cx)
+                    && !view.track_header_focused(window)
+                {
                     view.begin_clip_name(window, cx);
                 }
             }))
             .on_action(cx.trace(|view, _: &super::CommitClipName, window, cx| {
-                if !view.section_name_finish(true, window, cx) {
+                if !view.finish_locator_name(true, window, cx)
+                    && !view.section_name_finish(true, window, cx)
+                {
                     view.finish_clip_name(true, window, cx);
                 }
             }))
             .on_action(cx.trace(|view, _: &super::CancelClipName, window, cx| {
-                if !view.section_name_finish(false, window, cx) {
+                if !view.finish_locator_name(false, window, cx)
+                    && !view.section_name_finish(false, window, cx)
+                {
                     view.finish_clip_name(false, window, cx);
                 }
             }))
@@ -1092,7 +1148,7 @@ impl Render for EditorView {
                 view.toggle_play();
                 cx.notify();
             }))
-            .on_action(cx.trace(|view, _: &Stop, window, cx| {
+            .on_action(cx.trace(|view, stop: &Stop, window, cx| {
                 cx.stop_active_drag(window);
                 view.retire_active_clip_drag();
                 view.cancel_active_browser_audio_drag();
@@ -1100,10 +1156,20 @@ impl Render for EditorView {
                 view.cancel_arrangement_pan();
                 view.cancel_track_reorder();
                 view.device_panel.navigation.cancel();
-                view.stop();
+                view.cancel_modulation_target_drag();
+                if stop.return_to_beginning {
+                    view.stop_at_beginning();
+                } else {
+                    view.stop();
+                }
                 cx.notify();
             }))
             .on_action(cx.trace(|view, _: &CancelDragOrStop, window, cx| {
+                if view.cancel_modulation_target_drag() {
+                    cx.stop_propagation();
+                    cx.notify();
+                    return;
+                }
                 if view.pending_plugin_effect.is_some() {
                     view.cancel_plugin_effect();
                     cx.stop_propagation();
@@ -1124,6 +1190,7 @@ impl Render for EditorView {
                 if super::device_panel::cancel_sampler_boundary(view)
                     | view.cancel_audio_loop_gesture()
                     | view.cancel_loop_rail_gesture()
+                    | view.locators.cancel_drag()
                     | view.project_spectrum_splitter_event(
                         hex_widgets::SplitterEvent::Cancel(hex_widgets::SplitterCancel::Escape),
                         window,
@@ -1159,6 +1226,9 @@ impl Render for EditorView {
                 }
                 view.cancel_scrub();
                 let gain_canceled = view.cancel_gain_draft(cx);
+                if view.midi_focus.is_focused(window) {
+                    view.cancel_midi_audition();
+                }
                 let midi_canceled = view.cancel_midi_note_gesture();
                 let time_selection_canceled = view.cancel_time_selection_gesture()
                     | view.cancel_clip_paint()
@@ -1183,7 +1253,7 @@ impl Render for EditorView {
                     && !device_drag_stopped
                     && !pan_canceled
                 {
-                    view.stop();
+                    view.stop_from_escape();
                 }
                 cx.notify();
             }))
@@ -1236,6 +1306,9 @@ impl Render for EditorView {
                     window,
                     cx,
                 )
+            }))
+            .on_action(cx.trace(|view, _: &OpenAutomationRecovery, _, cx| {
+                view.open_automation_recovery_file(cx)
             }))
             .on_action(cx.trace(|view, _: &RecoverKeptSession, window, cx| {
                 view.project_recovery_dialog(super::project_recovery::OpenKind::Kept, window, cx)
@@ -1390,19 +1463,31 @@ impl Render for EditorView {
                 cx.notify();
             }))
             .on_action(cx.trace(|view, _: &CopyTimeSelection, window, cx| {
-                view.copy_time_selection(false, window);
+                if !view.edit_automation_range(RangeEdit::Copy, window, cx)
+                    && !view.copy_section(window)
+                {
+                    view.copy_time_selection(false, window);
+                }
                 cx.notify();
             }))
             .on_action(cx.trace(|view, _: &CutTimeSelection, window, cx| {
-                view.copy_time_selection(true, window);
+                if !view.edit_automation_range(RangeEdit::Cut, window, cx) {
+                    view.copy_time_selection(true, window);
+                }
                 cx.notify();
             }))
             .on_action(cx.trace(|view, _: &PasteTimeSelection, window, cx| {
-                view.paste_time_selection(window);
+                if !view.edit_automation_range(RangeEdit::Paste, window, cx)
+                    && !view.paste_section(window)
+                {
+                    view.paste_time_selection(window);
+                }
                 cx.notify();
             }))
             .on_action(cx.trace(|view, _: &InsertTimeSelection, window, cx| {
-                view.insert_time_selection(window);
+                if !view.edit_automation_range(RangeEdit::Insert, window, cx) {
+                    view.insert_time_selection(window);
+                }
                 cx.notify();
             }))
             .on_action(cx.trace(|view, _: &DeleteSectionMarker, window, cx| {
@@ -1429,8 +1514,7 @@ impl Render for EditorView {
                     Some(super::track_name::Target::Track(_))
                 ) && !view.computer_keyboard.accepts_key("g")
                 {
-                    if view.selected_track_ids().len() >= 2
-                        && let Some(tracks) = view.track_membership(None)
+                    if let Some(tracks) = view.track_group_membership(None)
                         && let Some(revision) = view.state.as_ref().map(|state| state.revision)
                     {
                         view.perform_track_group(
@@ -1455,6 +1539,10 @@ impl Render for EditorView {
             }))
             .on_action(cx.trace(|view, _: &DeleteClip, window, cx| {
                 if view.selection_delete_blocked() {
+                    return;
+                }
+                if view.delete_locator(window) {
+                    cx.notify();
                     return;
                 }
                 if view.delete_automation_point(window, cx) {
@@ -1538,6 +1626,18 @@ impl Render for EditorView {
             .on_action(cx.trace(|view, _: &super::DuplicateAliasClip, window, cx| {
                 view.duplicate_key(super::duplicate::DuplicateKind::Alias, window, cx);
             }))
+            .on_action(cx.trace(|view, _: &super::AddLocator, window, cx| {
+                view.add_locator(window);
+                cx.notify();
+            }))
+            .on_action(cx.trace(|view, _: &super::PreviousLocator, window, cx| {
+                view.navigate_locator(false, window);
+                cx.notify();
+            }))
+            .on_action(cx.trace(|view, _: &super::NextLocator, window, cx| {
+                view.navigate_locator(true, window);
+                cx.notify();
+            }))
             .on_action(cx.trace(|view, _: &super::MakeClipUnique, window, cx| {
                 if view.focus.is_focused(window)
                     && !view.track_header_focused(window)
@@ -1586,13 +1686,23 @@ impl Render for EditorView {
             }))
             .on_action(cx.trace(|view, _: &super::BounceToNewTracks, window, cx| {
                 if !view.arm_drag_bounce() {
-                    view.bounce_arrangement_selection(window, false);
+                    view.bounce_arrangement_selection(window, false, false);
                 }
                 cx.notify();
             }))
             .on_action(
                 cx.trace(|view, _: &super::BounceAndMuteSources, window, cx| {
-                    view.bounce_arrangement_selection(window, true);
+                    view.bounce_arrangement_selection(window, true, false);
+                    cx.notify();
+                }),
+            )
+            .on_action(cx.trace(|view, _: &super::BounceMixedRange, window, cx| {
+                view.bounce_arrangement_selection(window, false, true);
+                cx.notify();
+            }))
+            .on_action(
+                cx.trace(|view, _: &super::BounceMixedRangeAndMute, window, cx| {
+                    view.bounce_arrangement_selection(window, true, true);
                     cx.notify();
                 }),
             )
@@ -1759,6 +1869,7 @@ impl Render for EditorView {
             .children(self.changelog_overlay(cx))
             .children(self.missing_media_overlay(cx))
             .children(super::device_panel::picker_overlay(self, window, cx))
+            .children(super::device_panel::source_name_overlay(self, cx))
             .when(self.update_preparing(), |root| {
                 root.child(
                     div()

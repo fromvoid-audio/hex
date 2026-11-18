@@ -84,10 +84,13 @@ fn current_crossfade_roundtrip_and_historical_disjoint_migration_are_complete() 
         .unwrap();
     let after = editor.project().snapshot();
     let encoded = hex_storage::encode(editor.project()).unwrap();
-    let mut value: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
-    assert_eq!(value["version"], hex_storage::CURRENT_SCHEMA_VERSION);
+    let value: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
+    assert_eq!(value["version"], hex_storage::S_CURVE_FADE_SCHEMA_VERSION);
     assert_eq!(hex_storage::decode(&encoded).unwrap().snapshot(), after);
-    // Relabeling cannot smuggle the newly valid overlap into an old schema.
+    // The envelope's underlying overlap document cannot be relabeled as a
+    // pre51 document to bypass the old disjointness rule.
+    let mut value = value["base"].clone();
+    assert_eq!(value["version"], hex_storage::CURRENT_SCHEMA_VERSION);
     common::remove_empty_host_automation(&mut value);
     common::remove_empty_aliases(&mut value);
     value["version"] = 50.into();

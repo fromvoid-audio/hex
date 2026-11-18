@@ -41,6 +41,34 @@ impl Cell {
     }
 
     fn add(&mut self, offset: usize, frames: &[Frame]) -> Result<(), SessionPlaybackError> {
+        // Compensated routing contributes one frame at a time. Preserve the
+        // same ordered-span and discard rules without the general slice loop.
+        if let [frame] = frames {
+            if self.offset.is_some_and(|previous| offset < previous) {
+                self.offset = None;
+                self.peak = [0.0; 2];
+                self.discarded = true;
+            }
+            if self.discarded {
+                return Ok(());
+            }
+            if self.offset.is_some_and(|previous| offset > previous) {
+                self.finish();
+            }
+            if self.offset.is_none() {
+                self.frames[0] = *frame;
+                self.len = 1;
+                self.offset = Some(offset);
+            } else {
+                if self.len == 0 {
+                    self.frames[0] = [0.0; 2];
+                    self.len = 1;
+                }
+                self.frames[0][0] += frame[0];
+                self.frames[0][1] += frame[1];
+            }
+            return Ok(());
+        }
         if frames.len() > self.frames.len() {
             return Err(SessionPlaybackError::DeviceRuntime);
         }
@@ -249,5 +277,47 @@ impl CaptureSink for MeterCapture<'_, '_> {
         if let Some(sink) = self.downstream.as_mut() {
             sink.invalidate();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cell() -> Cell {
+        Cell {
+            key: (0, 1),
+            frames: [[0.0; 2]; 256],
+            peak: [0.0; 2],
+            offset: None,
+            len: 0,
+            discarded: false,
+        }
+    }
+
+    #[test]
+    fn single_frame_contributions_keep_span_order_and_sum_before_peak() {
+        let mut meter = cell();
+        meter.add(0, &[]).unwrap();
+        meter.add(0, &[[-0.5, 0.25]]).unwrap();
+        meter.add(0, &[[0.25, 0.5], [0.75, -0.125]]).unwrap();
+        meter.add(0, &[[0.125, -0.25]]).unwrap();
+        meter.add(2, &[[f32::NAN, -0.5]]).unwrap();
+        meter.add(3, &[[0.0, f32::INFINITY]]).unwrap();
+        meter.finish();
+        assert_eq!(meter.peak, [0.75, 0.5]);
+        assert!(!meter.discarded);
+    }
+
+    #[test]
+    fn single_frame_out_of_order_discards_prior_and_future_peaks() {
+        let mut meter = cell();
+        meter.add(2, &[[0.75, -0.5]]).unwrap();
+        meter.add(3, &[[0.25, 0.25]]).unwrap();
+        meter.add(1, &[[1.0, 1.0]]).unwrap();
+        meter.add(4, &[[1.0, 1.0]]).unwrap();
+        meter.finish();
+        assert!(meter.discarded);
+        assert_eq!(meter.peak, [0.0; 2]);
     }
 }

@@ -25,8 +25,8 @@ fn toolbar_roundtrip_fades_audio_and_midi_without_activation_selection_or_histor
     editor.update(&mut visual, |v, _| {
         let p = &v.state.as_ref().unwrap().project;
         v.time_selection = Some(crate::editor::time_selection::TimeSelection {
-            anchor_track: p.tracks()[0].id(),
-            end_track: p.tracks()[1].id(),
+            anchor_track: Some(p.tracks()[0].id()),
+            end_track: Some(p.tracks()[1].id()),
             anchor_frame: 12_000,
             end_frame: 36_000,
         });
@@ -299,7 +299,7 @@ fn automation_key_preserves_typing_midi_and_held_edits(cx: &mut TestAppContext) 
     editor.read_with(&visual, |v, _| assert!(!v.automation_view.enabled));
     visual
         .update(|window, cx| editor.read_with(cx, |v, _| v.browser.search.read(cx).focus(window)));
-    visual.simulate_keystrokes("a");
+    visual.simulate_keystrokes("a shift-a");
     visual.simulate_input("a");
     visual.run_until_parked();
     editor.read_with(&visual, |v, cx| {
@@ -307,15 +307,17 @@ fn automation_key_preserves_typing_midi_and_held_edits(cx: &mut TestAppContext) 
         assert!(v.browser.search.read(cx).text().contains('a'));
     });
     visual.update(|window, cx| editor.read_with(cx, |v, _| v.midi_focus.focus(window)));
-    visual.simulate_keystrokes("a");
+    visual.simulate_keystrokes("a shift-a");
     editor.read_with(&visual, |v, _| assert!(!v.automation_view.enabled));
     visual.update(|window, cx| editor.read_with(cx, |v, _| v.focus.focus(window)));
     editor.update(&mut visual, |v, _| v.computer_keyboard.enabled = true);
     visual.simulate_keystrokes("a");
     editor.read_with(&visual, |v, _| assert!(!v.automation_view.enabled));
+    visual.simulate_keystrokes("shift-a");
+    editor.read_with(&visual, |v, _| assert!(v.automation_view.enabled));
     editor.update(&mut visual, |v, _| v.computer_keyboard.enabled = false);
     let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
-    for enabled in [true, false] {
+    for enabled in [false, true, false] {
         visual.simulate_keystrokes("a");
         visual.run_until_parked();
         editor.read_with(&visual, |v, _| {

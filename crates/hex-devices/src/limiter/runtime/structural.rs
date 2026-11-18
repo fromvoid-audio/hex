@@ -1,6 +1,6 @@
-//! Owned lookahead/routing transitions at one immutable, control-declared latency.
+//! Owned lookahead/routing/mode transitions at one immutable, control-declared latency.
 //!
-//! Six configurations are prepared on control for fixed mode. Exact eligibility
+//! Eighteen configurations are prepared on control. Exact eligibility
 //! selects immutable capacity, latency, padding and final-stage reservation. Only
 //! two branches render: the current branch and a reset successor. The successor
 //! warms for the declared latency, then receives one 256-frame linear fade.
@@ -31,7 +31,7 @@ use hex_lattice_contract::{
     ParameterId, ParameterSemantics, ParameterSmoothing,
 };
 use std::{any::Any, mem::size_of};
-const COUNT: usize = 11;
+const COUNT: usize = 12;
 const FADE: u32 = 256;
 const BINDINGS: [Binding<Settings>; COUNT] = {
     let [
@@ -80,6 +80,22 @@ const BINDINGS: [Binding<Settings>; COUNT] = {
                     return Err(Error::InvalidParameterValue);
                 }
                 s.0[6] = v as f32;
+                Ok(())
+            },
+        ),
+        Binding::choice(
+            super::super::state::DESCRIPTORS[7],
+            ParameterSemantics {
+                smoothing: ParameterSmoothing::DeviceManaged,
+                change_impact: ParameterChangeImpact::Structural,
+                ..CHOICE_ENVELOPE
+            },
+            |s| s.choice(MODE),
+            |s, v| {
+                if v > 2 {
+                    return Err(Error::InvalidParameterValue);
+                }
+                s.0[7] = v as f32;
                 Ok(())
             },
         ),
@@ -139,30 +155,55 @@ impl Routing {
     }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Mode {
+    Standard,
+    SoftClip,
+    TruePeak,
+}
+impl Mode {
+    fn new(value: u32) -> Result<Self, Error> {
+        match value {
+            0 => Ok(Self::Standard),
+            1 => Ok(Self::SoftClip),
+            2 => Ok(Self::TruePeak),
+            _ => Err(Error::InvalidParameterValue),
+        }
+    }
+    fn index(self) -> usize {
+        match self {
+            Self::Standard => 0,
+            Self::SoftClip => 1,
+            Self::TruePeak => 2,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Layout {
     look: Look,
     routing: Routing,
+    mode: Mode,
 }
 impl Layout {
     fn from_settings(settings: Settings) -> Result<Self, Error> {
         Ok(Self {
             look: Look::new(settings.choice(LOOKAHEAD))?,
             routing: Routing::new(settings.choice(ROUTING))?,
+            mode: Mode::new(settings.choice(MODE))?,
         })
     }
     fn index(self) -> usize {
-        self.routing.index() * 3 + self.look.index()
+        self.mode.index() * 6 + self.routing.index() * 3 + self.look.index()
     }
 }
-/// Control-prepared lookahead/routing factory with exact structural eligibility.
+/// Control-prepared lookahead/routing/mode factory with exact structural eligibility.
 /// Each created owner retains its configurations and both histories, independent
 /// of factory life.
 /// This constructor alone grants no host metadata/publication capability.
 #[derive(Clone, Copy)]
 pub struct PreparedStructuralLimiter {
     settings: Settings,
-    configurations: [Config; 6],
-    padding: [usize; 6],
+    configurations: [Config; 18],
+    padding: [usize; 18],
     base: Layout,
     admitted: [bool; COUNT],
     capacity: usize,
@@ -190,19 +231,21 @@ impl PreparedStructuralLimiter {
         for &id in ids {
             admitted[slot(id).ok_or(Error::UnsupportedProcessingClass)?] = true;
         }
-        if !admitted[5] && !admitted[6] {
+        if !admitted[5] && !admitted[6] && !admitted[7] {
             return Err(Error::UnsupportedProcessingClass);
         }
         let base = Layout::from_settings(settings)?;
-        let configurations: [Config; 6] = std::array::from_fn(|index| {
+        let configurations: [Config; 18] = std::array::from_fn(|index| {
             let mut s = settings;
             s.0[5] = (index % 3) as f32;
-            s.0[6] = (index / 3) as f32;
+            s.0[6] = (index / 3 % 2) as f32;
+            s.0[7] = (index / 6) as f32;
             Config::new(s, rate)
         });
         let enabled = |config: &Config| {
             (admitted[5] || config.settings.choice(LOOKAHEAD) == settings.choice(LOOKAHEAD))
                 && (admitted[6] || config.settings.choice(ROUTING) == settings.choice(ROUTING))
+                && (admitted[7] || config.settings.choice(MODE) == settings.choice(MODE))
         };
         let latency = configurations
             .iter()
@@ -221,7 +264,7 @@ impl PreparedStructuralLimiter {
             .and_then(|n| n.checked_add(1))
             .ok_or(Error::RuntimeBudgetExceeded)?;
         let reserve_final_stage = configurations.iter().any(|c| enabled(c) && c.mid_side);
-        let mut padding = [0usize; 6];
+        let mut padding = [0usize; 18];
         for (pad, config) in padding.iter_mut().zip(configurations) {
             if enabled(&config) {
                 *pad = usize::try_from(
@@ -282,8 +325,17 @@ impl PreparedOwnedProcessorRuntime for PreparedStructuralLimiter {
             .filter(|&i| self.admitted[i])
             .map(|i| BINDINGS[i].descriptor)
     }
+    fn parameter_modulation_semantics(
+        &self,
+        id: ParameterId,
+    ) -> Option<hex_lattice_contract::ParameterSemantics> {
+        self.supports_parameter_automation(id)
+            .then(|| scalar::modulation_semantics(id))
+            .flatten()
+    }
+
     fn runtime_version(&self) -> u32 {
-        3
+        4
     }
     fn declared_pair_bytes(&self) -> usize {
         self.bytes
@@ -474,14 +526,12 @@ impl State {
             self.branches[self.active].history.parameters = parameters;
             if self.phase != Phase::Stable {
                 let next = 1 - self.active;
-                // Mode/rate are fixed: only link differs between these layouts.
-                let mut parameters = parameters;
-                parameters.link =
-                    f64::from(settings.value(if p.config(self.layouts[next]).mid_side {
-                        LINK_MID_SIDE
-                    } else {
-                        LINK
-                    }));
+                // Rate and value controls are shared; each branch projects its
+                // own mode ceiling and routing link without repeating exp/pow.
+                let mut branch_settings = settings;
+                branch_settings.0[5..8]
+                    .copy_from_slice(&p.config(self.layouts[next]).settings.0[5..8]);
+                let parameters = parameters.for_layout(branch_settings);
                 self.branches[next].history.parameters = parameters;
             }
         }
@@ -590,9 +640,10 @@ impl State {
     }
 }
 fn scalar_change(a: &Settings, b: &Settings) -> bool {
-    a.0[..5] != b.0[..5] || a.0[7..] != b.0[7..]
+    a.0[..5] != b.0[..5] || a.0[8..] != b.0[8..]
 }
-struct Runtime {
+/// Original structural Limiter runtime; history custody remains private.
+pub struct Runtime {
     prepared: PreparedStructuralLimiter,
     primary: State,
     scratch: State,
@@ -600,6 +651,14 @@ struct Runtime {
     releasing: bool,
 }
 impl Runtime {
+    /// Borrow exact inline and committed/scratch heap storage on control.
+    /// This observation transfers no runtime or buffer ownership.
+    pub fn control_storage(&self) -> Option<(usize, [usize; 2])> {
+        Some((
+            size_of::<Self>(),
+            [self.primary.bytes()?, self.scratch.bytes()?],
+        ))
+    }
     fn plain(&mut self, frames: &mut [StereoFrame], bypassed: bool) {
         if !self.open {
             return;
@@ -658,9 +717,8 @@ impl Runtime {
 
 impl OwnedProcessorRuntime for Runtime {
     fn fixed_storage_pair_bytes(&self) -> Option<usize> {
-        size_of::<Self>()
-            .checked_add(self.primary.bytes()?)?
-            .checked_add(self.scratch.bytes()?)
+        let (inline, [committed, scratch]) = self.control_storage()?;
+        inline.checked_add(committed)?.checked_add(scratch)
     }
     fn supports_parameter_automation(&self, id: ParameterId) -> bool {
         self.primary.controls.supports(&BINDINGS, id)
@@ -738,15 +796,16 @@ impl OwnedProcessorRuntime for Runtime {
                 && self.prepared.latency == old.prepared.latency
                 && self.prepared.capacity == old.prepared.capacity
                 && self.prepared.pad_capacity == old.prepared.pad_capacity
-                && self.prepared.settings.choice(MODE) == old.prepared.settings.choice(MODE)
                 && self.prepared.reserve_final_stage == old.prepared.reserve_final_stage
-                && self.prepared.admitted[5..7] == old.prepared.admitted[5..7]
+                && self.prepared.admitted[5..8] == old.prepared.admitted[5..8]
                 && (self.prepared.admitted[5]
                     || self.prepared.settings.choice(LOOKAHEAD)
                         == old.prepared.settings.choice(LOOKAHEAD))
                 && (self.prepared.admitted[6]
                     || self.prepared.settings.choice(ROUTING)
                         == old.prepared.settings.choice(ROUTING))
+                && (self.prepared.admitted[7]
+                    || self.prepared.settings.choice(MODE) == old.prepared.settings.choice(MODE))
                 && self.prepared.config(self.prepared.base).rate
                     == old.prepared.config(old.prepared.base).rate
         })

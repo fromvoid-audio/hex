@@ -11,6 +11,18 @@ use std::sync::atomic::{AtomicU64, Ordering};
 static NEXT_CONFIGURATION_ID: AtomicU64 = AtomicU64::new(1);
 const MAX_CONFIGURATION_ID: u64 = u64::MAX >> 1;
 
+fn next_configuration_id() -> Result<u64, Invalid> {
+    NEXT_CONFIGURATION_ID
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+            if current < MAX_CONFIGURATION_ID {
+                current.checked_add(1)
+            } else {
+                None
+            }
+        })
+        .map_err(|_| Invalid("operator configuration identity exhausted"))
+}
+
 /// Immutable rate-specific original Operator configuration, with no heap owners.
 /// The caller keeps it alive for every note prepared against it. Native host
 /// identity, ownership and retirement are separate Lattice responsibilities.
@@ -19,7 +31,7 @@ pub struct PreparedOperatorConfiguration {
     sample_rate: u32,
     configuration_id: u64,
     ratios: [f64; OPERATORS],
-    tuning: [OperatorTuning; OPERATORS],
+    tuning: super::keytrack::Prepared,
     fine_offsets_hz: [f32; OPERATORS],
     configuration: PreparedFmConfiguration,
     oscillator_levels: [f64; OPERATORS],
@@ -132,20 +144,12 @@ impl PreparedOperatorConfiguration {
         } else {
             None
         };
-        let configuration_id = NEXT_CONFIGURATION_ID
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
-                if current < MAX_CONFIGURATION_ID {
-                    current.checked_add(1)
-                } else {
-                    None
-                }
-            })
-            .map_err(|_| Invalid("operator configuration identity exhausted"))?;
+        let configuration_id = next_configuration_id()?;
         Ok(Self {
             sample_rate,
             configuration_id,
             ratios: oscillators.map(|oscillator| oscillator.ratio),
-            tuning,
+            tuning: super::keytrack::Prepared::legacy(tuning),
             fine_offsets_hz: [0.0; OPERATORS],
             configuration: PreparedFmConfiguration::new(oscillators, routing),
             oscillator_levels: oscillators.map(|oscillator| oscillator.level),
@@ -157,6 +161,29 @@ impl PreparedOperatorConfiguration {
             oscillator_velocity: [0.0; OPERATORS],
             oscillator_quantize: [false; OPERATORS],
         })
+    }
+
+    /// Prepare independent 0–100% note-pitch tracking. Every anchor must be a
+    /// validated `Fixed` tuning: 0% uses it exactly, 100% uses note Hz × ratio.
+    /// Fractional amounts interpolate base frequency and multiplier in log space;
+    /// velocity/quantization then modify the multiplier, followed by fine Hz.
+    /// A changed policy receives a new configuration identity before publication.
+    pub fn with_pitch_keytrack(
+        mut self,
+        amounts_percent: [f32; OPERATORS],
+        fixed_anchors: [OperatorTuning; OPERATORS],
+    ) -> Result<Self, Invalid> {
+        let prepared = super::keytrack::prepare(amounts_percent, fixed_anchors)?;
+        if self.tuning != prepared {
+            self.configuration_id = next_configuration_id()?;
+            self.tuning = prepared;
+        }
+        Ok(self)
+    }
+
+    /// Control/history identity for retuning held voices after a tracking edit.
+    pub(crate) fn pitch_keytrack_percent(&self) -> [f32; OPERATORS] {
+        self.tuning.percentages()
     }
 
     /// Add signed Hz after ratio/fixed multiplication during control-side note preparation.
@@ -221,12 +248,15 @@ impl PreparedOperatorConfiguration {
         velocity: u8,
         table: Option<&hex_lattice::TuningTable>,
     ) -> Result<super::tuning::NoteSteps, Invalid> {
-        if self.oscillator_velocity == [0.0; 4] && self.fine_offsets_hz == [0.0; 4] {
+        if self.oscillator_velocity == [0.0; 4]
+            && self.fine_offsets_hz == [0.0; 4]
+            && !self.tuning.fractional()
+        {
             return super::tuning::prepared_steps_with_table(
                 self.sample_rate,
                 pitch,
                 &self.ratios,
-                &self.tuning,
+                &self.tuning.legacy_modes(),
                 table,
             );
         }
@@ -247,13 +277,7 @@ impl PreparedOperatorConfiguration {
             } else {
                 2.0_f64.powf(4.0 * amount * f64::from(velocity) / 127.0)
             };
-            let (base, multiplier) = match self.tuning[i] {
-                OperatorTuning::Ratio => (note_hz, self.ratios[i]),
-                OperatorTuning::Fixed {
-                    frequency_hz,
-                    multiplier,
-                } => (frequency_hz, multiplier),
-            };
+            let (base, multiplier) = self.tuning.base_and_multiplier(i, note_hz, self.ratios[i]);
             let mut multiplier = multiplier * factor;
             if amount != 0.0 && self.oscillator_quantize[i] {
                 multiplier = multiplier.round().max(1.0);
@@ -460,9 +484,19 @@ impl PreparedOperatorConfiguration {
         self.envelopes.uniform_levels(age, gate)
     }
 
+    pub(crate) fn has_modulation(&self) -> bool {
+        self.configuration
+            .routing
+            .modulation
+            .iter()
+            .flatten()
+            .any(|amount| *amount != 0.0)
+    }
+
     /// Borrow a provider-owned waveform law while preserving original routing,
     /// envelope, velocity and phase arithmetic. No preparation occurs here.
-    // Specialize the render loop for its borrowed waveform sampler.
+    // Specialize the render loop for its borrowed waveform sampler. The caller
+    // computes `has_modulation` once from this immutable configuration.
     #[inline(always)]
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn sample_with_waveform_sampler(
@@ -474,6 +508,7 @@ impl PreparedOperatorConfiguration {
         levels: [f64; 4],
         carriers: [f64; 4],
         feedback: [f64; 4],
+        has_modulation: bool,
         filter: Option<(
             &mut [crate::operator_filter::Carrier; 4],
             crate::operator_filter::Frame,
@@ -489,13 +524,17 @@ impl PreparedOperatorConfiguration {
             if levels[target] == 0.0 {
                 continue;
             }
-            let mut modulation: f64 = signals
-                .iter()
-                .enumerate()
-                .map(|(source, signal)| {
-                    signal * self.configuration.routing.modulation[source][target]
-                })
-                .sum();
+            let mut modulation: f64 = if has_modulation {
+                signals
+                    .iter()
+                    .enumerate()
+                    .map(|(source, signal)| {
+                        signal * self.configuration.routing.modulation[source][target]
+                    })
+                    .sum()
+            } else {
+                0.0
+            };
             if feedback[target] != 0.0 {
                 modulation += feedback[target] * previous[target];
             }

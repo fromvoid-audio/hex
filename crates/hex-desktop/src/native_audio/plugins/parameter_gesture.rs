@@ -6,6 +6,7 @@ use hex_audio::{
     plugin_worker::{
         NativeParameterHold, NativeWorkerCapture, NativeWorkerCaptureProgress,
         NativeWorkerParameterChange, NativeWorkerParameterProgress,
+        NativeWorkerSequencedCaptureProgress, NativeWorkerStateAfterParameter,
     },
     prepared::{AppliedAudioSource, PublicationControl},
 };
@@ -50,6 +51,10 @@ pub(super) struct Gesture {
     pending: Option<PendingPoint>,
     live: Option<LiveOverride>,
     capture: Option<NativeWorkerCapture>,
+    capture_sequenced: bool,
+    last_input: Option<NativeWorkerParameterChange>,
+    last_input_idle: bool,
+    sequenced_capture: Option<NativeWorkerStateAfterParameter>,
     before: Option<NativeDeviceState>,
     pub(super) commit: Option<(AudioSourceContext, u64)>,
     pub(super) next_program: Option<std::num::NonZeroU64>,
@@ -58,6 +63,7 @@ pub(super) struct Gesture {
     deliveries: Vec<hex_session::service::PluginParameterObservation>,
     retired_delivery: Option<hex_audio::foreign_parameter_delivery::Retired>,
     recording: bool,
+    recording_base: Option<PluginParameterValue>,
     recorded_release: bool,
     recording_context: Option<delivery::Context>,
     recording_closed: bool,
@@ -73,14 +79,15 @@ fn lost() -> Error {
 
 /// Stopped unlaned instruments retain full-state capture. Running instruments
 /// need isolation even before their first lane, to preserve the original MIDI
-/// worker. Saved identity chooses the mode; SDK/Root still admit the target.
+/// worker. Explicitly recorded effects also isolate their live worker.
+/// Saved identity chooses the mode; SDK/Root still admit the target.
 fn isolation_class(
     input: &PluginParameterGestureInput<'_>,
     playing: bool,
 ) -> Result<Option<[u8; 16]>, Error> {
     if let Some(class) = input.isolated_class() {
         Ok(Some(class))
-    } else if input.is_instrument() && playing {
+    } else if (input.is_instrument() || input.records_touch()) && playing {
         Hosting::saved_identity_on_control(input.canonical_state())
             .map(|identity| Some(identity.class.bytes()))
             .map_err(refused)
@@ -104,12 +111,91 @@ fn admit<T>(
                 | "native controller query is already pending"
                 | "native source is busy",
             ) if Instant::now() < deadline => edits::poll_control(control),
+            Err(reason) if source_gone(reason) => return Err(lost()),
             result => return result.map_err(refused),
         }
     }
 }
 
 impl Plugins {
+    /// Borrow the pending gesture and the still-canonical predecessor for one
+    /// prospective publication. Neither borrowed state transfers source custody.
+    pub(in crate::native_audio) fn sequenced_publication_request<'a>(
+        &'a self,
+        control: Option<&PublicationControl>,
+        desired: Option<&'a CanonicalAudioSourceSnapshot>,
+        successor: AudioSourceContext,
+        playback: &hex_engine::playback::Playback,
+    ) -> Result<Option<hex_audio::prepared::NativeParameterContinuationRequest<'a>>, String> {
+        let Some(gesture) = self.parameter_gesture.as_ref() else {
+            return Ok(None);
+        };
+        let Some((predecessor, sequence)) = gesture.commit else {
+            return Ok(None);
+        };
+        let Some(fact) = gesture.sequenced_capture.as_ref() else {
+            return Ok(None);
+        };
+        if gesture.live.is_some()
+            || gesture.recording
+            || sequence != gesture.sequence
+            || successor.project_generation != predecessor.project_generation
+            || predecessor.editor_revision.checked_add(1) != Some(successor.editor_revision)
+        {
+            return Ok(None);
+        }
+        let Some(node) = playback.foreign_nodes_on_control().find(|node| {
+            node.device_id == gesture.origin.device.value()
+                && node.configuration.as_deref().is_some_and(|state| {
+                    state.shares_payload_storage_with(fact.state()) && *state == *fact.state()
+                })
+        }) else {
+            return Ok(None);
+        };
+        if !playback.has_foreign_binding_on_control(node.owner, node.device_id, gesture.binding) {
+            return Ok(None);
+        }
+        let desired = desired
+            .filter(|snapshot| snapshot.context() == predecessor)
+            .ok_or("vst3 continuation predecessor is unavailable")?;
+        let mut previous = None;
+        desired
+            .effect_preparation()
+            .visit_plugin_devices(|destination, device, state| {
+                if destination.owner() == node.owner && device == node.device_id {
+                    previous = Some(state);
+                }
+                Ok(())
+            })?;
+        let previous = previous.ok_or("vst3 continuation predecessor differs")?;
+        let control = control.ok_or("vst3 continuation output unavailable")?;
+        let playing = control.status.playing.load(Acquire);
+        let (source, transport_epoch) = control
+            .status
+            .native_parameter_source(playing)
+            .filter(|(source, _)| {
+                source.context == predecessor && source.output_identity == gesture.output
+            })
+            .ok_or("vst3 continuation source changed")?;
+        let identity =
+            hex_audio::prepared::NativeProcessorIdentity::new(node.owner, node.device_id)
+                .map_err(|_| "vst3 continuation identity differs")?;
+        Ok(Some(
+            hex_audio::prepared::NativeParameterContinuationRequest {
+                source,
+                transport_epoch,
+                playing,
+                successor,
+                identity,
+                binding: gesture.binding,
+                previous_state: previous,
+                capture: fact,
+                parameter: gesture.origin.parameter,
+                normalized: gesture.sdk_value(gesture.last),
+            },
+        ))
+    }
+
     pub(in crate::native_audio) fn parameter_requires_restore(
         &mut self,
         control: &mut PublicationControl,
@@ -229,7 +315,7 @@ impl Plugins {
                         && row.normalized == origin.initial.normalized()
                 })
                 .ok_or_else(|| refused("vst3 parameter metadata changed · refresh the list"))?;
-            let binding = self
+            let source = self
                 .sources
                 .iter()
                 .rev()
@@ -239,8 +325,16 @@ impl Plugins {
                         && source.project_generation == origin.context.project_generation
                         && source.device == origin.device.value()
                 })
-                .ok_or_else(lost)?
-                .binding;
+                .ok_or_else(lost)?;
+            if source
+                .authored
+                .as_ref()
+                .and_then(AuthoredSelection::dense_parameter)
+                == Some(origin.parameter)
+            {
+                return Err(refused("vst3 parameter is owned by its modulation lane"));
+            }
+            let binding = source.binding;
             if !edits::original_state(control, binding, cancellation)
                 .map_err(refused)?
                 .processing_eq(input.canonical_state())
@@ -283,7 +377,7 @@ impl Plugins {
                 });
             let playing = control.status.playing.load(Acquire);
             let isolated_class = isolation_class(&input, playing)?;
-            if input.is_instrument() && playing && !uses_hold {
+            if (input.is_instrument() || input.records_touch()) && playing && !uses_hold {
                 let class = isolated_class
                     .filter(|class| automation_class == Some(*class))
                     .ok_or_else(|| refused("create an automation lane for this parameter before editing during playback"))?;
@@ -344,6 +438,10 @@ impl Plugins {
                 pending: None,
                 live,
                 capture: None,
+                capture_sequenced: false,
+                last_input: None,
+                last_input_idle: false,
+                sequenced_capture: None,
                 before: None,
                 commit: None,
                 next_program: None,
@@ -352,6 +450,7 @@ impl Plugins {
                 deliveries: Vec::new(),
                 retired_delivery: None,
                 recording: input.records_touch(),
+                recording_base: None,
                 recorded_release: false,
                 recording_context: None,
                 recording_closed: false,
@@ -361,15 +460,23 @@ impl Plugins {
                 return Err(lost());
             }
             if gesture.recording {
-                if input.reading_class().is_none()
-                    || gesture
-                        .live
-                        .as_ref()
-                        .is_none_or(|live| !live.playing || !live.uses_hold)
-                {
-                    return Err(refused(
-                        "recording requires an eligible reading vst3 lane during playback",
-                    ));
+                let live = gesture
+                    .live
+                    .as_ref()
+                    .filter(|live| live.playing && live.uses_hold)
+                    .ok_or_else(|| refused("recording requires the eligible live vst3 target"))?;
+                if !live.reading {
+                    let metadata =
+                        edits::source_metadata(control, binding, cancellation).map_err(refused)?;
+                    if Some(metadata.selection().cid) != automation_class {
+                        return Err(lost());
+                    }
+                    let normalized = metadata
+                        .authored_base_values()
+                        .find_map(|(id, base)| (id == origin.parameter).then_some(base))
+                        .ok_or_else(|| refused("vst3 recording target has no verified base"))?;
+                    gesture.recording_base =
+                        Some(PluginParameterValue::new(normalized).map_err(refused)?);
                 }
                 let capture = delivery::Context::new(&gesture, control, input.context(), clock)?;
                 gesture.recording_context = Some(capture);
@@ -425,6 +532,11 @@ impl Plugins {
                 } else {
                     self.parameter_gesture = None;
                 }
+            } else if gesture.recording && gesture.recorded_release {
+                // An actual recorded restoration already ended the hold.
+                // Failed take publication must not retain a dead controller
+                // gesture or prevent the next Begin on this live source.
+                self.parameter_gesture = None;
             } else {
                 // A retained refusal still owns its acknowledged preview.
                 // Cancel/source loss releases it; rejected publication does not.
@@ -436,6 +548,75 @@ impl Plugins {
 }
 
 impl Gesture {
+    /// A capture fact only selects the existing source for this exact pending
+    /// canonical edit; the audio owner independently authenticates publication.
+    #[allow(clippy::too_many_arguments)] // Exact gesture, target, predecessor, source and cancellation.
+    pub(super) fn sequenced_candidate_source(
+        &self,
+        control: &mut PublicationControl,
+        successor: AudioSourceContext,
+        predecessor: Option<AudioSourceContext>,
+        binding: Binding,
+        device: u64,
+        state: &NativeDeviceState,
+        cancellation: Option<&RequestCancellation>,
+    ) -> Result<bool, String> {
+        let Some((committed, sequence)) = self.commit else {
+            return Ok(false);
+        };
+        if self.live.is_some()
+            || self.recording
+            || self.binding != binding
+            || self.origin.device.value() != device
+        {
+            return Ok(false);
+        }
+        let Some(fact) = self.sequenced_capture.as_ref() else {
+            // Idle points use the existing quiescent SDK flush, which has no
+            // processed-quantum capture fact. Keep its existing replacement path.
+            return if self.last_input.is_none() && !control.status.playing.load(Acquire) {
+                Ok(false)
+            } else {
+                Err("vst3 continuation capture is unavailable".into())
+            };
+        };
+        if self.sequence != sequence
+            || predecessor != Some(committed)
+            || successor.project_generation != committed.project_generation
+            || committed.editor_revision.checked_add(1) != Some(successor.editor_revision)
+            || fact.parameter() != self.origin.parameter
+            || fact.normalized_input().to_bits() != self.sdk_value(self.last).to_bits()
+            || !state.shares_payload_storage_with(fact.state())
+            || *state != *fact.state()
+        {
+            return Err("vst3 continuation capture or context changed".into());
+        }
+        let playing = control.status.playing.load(Acquire);
+        if control
+            .status
+            .native_parameter_source(playing)
+            .is_none_or(|(source, _)| {
+                source.context != committed || source.output_identity != self.output
+            })
+        {
+            return Err("vst3 continuation source changed".into());
+        }
+        let deadline = Instant::now() + Duration::from_millis(150);
+        loop {
+            edits::check_cancel(cancellation)?;
+            match control.native_sequenced_capture_is_current_on_control(binding, fact) {
+                Ok(true) => return Ok(true),
+                Ok(false) => return Err("vst3 continuation input changed".into()),
+                Err(
+                    "native preparation is busy"
+                    | "native source is busy"
+                    | "native capture mailbox is busy",
+                ) if Instant::now() < deadline => edits::poll_control(control),
+                Err(reason) => return Err(reason.to_owned()),
+            }
+        }
+    }
+
     fn current(
         &self,
         plugins: &Plugins,
@@ -532,7 +713,7 @@ impl Gesture {
                 .before
                 .clone()
                 .ok_or_else(|| refused("vst3 has no original capture"))?;
-            let after = self.capture(control)?;
+            let after = self.capture_after_input(control)?;
             self.commit = Some((context, snapshot.sequence));
             return Ok(Prepared::Captured(Box::new(PluginParameterCapture {
                 before,
@@ -681,8 +862,8 @@ impl Gesture {
         };
         match poll_input(control, self.binding, &pending.token) {
             Ok(
-                NativeWorkerParameterProgress::Processed(_)
-                | NativeWorkerParameterProgress::Flushed,
+                progress @ (NativeWorkerParameterProgress::Processed(_)
+                | NativeWorkerParameterProgress::Flushed),
             ) => {
                 if let Some(pending) = self.pending.take() {
                     self.last = pending.value;
@@ -691,6 +872,10 @@ impl Gesture {
                         && let Some(live) = self.live.as_mut()
                     {
                         live.hold = Some(pending.token);
+                    } else if self.live.is_none() {
+                        self.last_input_idle =
+                            matches!(progress, NativeWorkerParameterProgress::Flushed);
+                        self.last_input = Some(pending.token);
                     }
                 }
                 Ok(true)
@@ -740,10 +925,45 @@ impl Gesture {
     }
 
     fn capture(&mut self, control: &mut PublicationControl) -> Result<NativeDeviceState, Error> {
+        self.capture_inner(control, false)
+    }
+
+    fn capture_after_input(
+        &mut self,
+        control: &mut PublicationControl,
+    ) -> Result<NativeDeviceState, Error> {
+        self.capture_inner(control, true)
+    }
+
+    fn capture_inner(
+        &mut self,
+        control: &mut PublicationControl,
+        after_input: bool,
+    ) -> Result<NativeDeviceState, Error> {
         if self.capture.is_none() {
-            self.capture = Some(admit(control, |control| {
-                control.begin_native_source_state_capture_on_control(self.binding)
-            })?);
+            self.sequenced_capture = None;
+            self.capture_sequenced = after_input
+                && self.last_input.is_some()
+                && control
+                    .native_source_endpoint_status(self.binding)
+                    .is_some_and(|(_, live)| live);
+            self.capture = Some(if self.capture_sequenced {
+                let input = self.last_input.as_ref().ok_or_else(lost)?;
+                admit(control, |control| {
+                    if self.last_input_idle {
+                        control.begin_native_capture_after_idle_parameter_on_control(
+                            self.binding,
+                            input,
+                        )
+                    } else {
+                        control.begin_native_capture_after_parameter_on_control(self.binding, input)
+                    }
+                })?
+            } else {
+                admit(control, |control| {
+                    control.begin_native_source_state_capture_on_control(self.binding)
+                })?
+            });
         }
         let request = self
             .capture
@@ -751,20 +971,71 @@ impl Gesture {
             .ok_or_else(|| refused("vst3 capture unavailable"))?;
         let deadline = Instant::now() + Duration::from_secs(2);
         loop {
-            match control.poll_native_source_state_capture_on_control(self.binding, request) {
+            let result = if self.capture_sequenced {
+                control
+                    .poll_native_capture_after_parameter_on_control(self.binding, request)
+                    .map(|progress| match progress {
+                        NativeWorkerSequencedCaptureProgress::Pending => {
+                            NativeWorkerCaptureProgress::Pending
+                        }
+                        NativeWorkerSequencedCaptureProgress::Failed => {
+                            NativeWorkerCaptureProgress::Failed
+                        }
+                        NativeWorkerSequencedCaptureProgress::Refused(reason) => {
+                            NativeWorkerCaptureProgress::Refused(reason)
+                        }
+                        NativeWorkerSequencedCaptureProgress::Captured(fact) => {
+                            let state = fact.state().clone();
+                            self.sequenced_capture = Some(fact);
+                            NativeWorkerCaptureProgress::Captured(state)
+                        }
+                    })
+            } else {
+                control.poll_native_source_state_capture_on_control(self.binding, request)
+            };
+            match result {
                 Ok(NativeWorkerCaptureProgress::Captured(state)) => {
                     self.capture = None;
+                    self.capture_sequenced = false;
+                    if let Some(fact) = self.sequenced_capture.as_ref()
+                        && (fact.parameter() != self.origin.parameter
+                            || fact.normalized_input().to_bits()
+                                != self.sdk_value(self.last).to_bits()
+                            || !admit(control, |control| {
+                                control.native_sequenced_capture_is_current_on_control(
+                                    self.binding,
+                                    fact,
+                                )
+                            })?)
+                    {
+                        self.sequenced_capture = None;
+                        return Err(refused("vst3 input changed during capture"));
+                    }
+                    let state = if let Some(fact) = self.sequenced_capture.as_ref() {
+                        admit(control, |control| {
+                            control.approve_native_sequenced_capture_on_control(self.binding, fact)
+                        })?
+                    } else {
+                        state
+                    };
                     return Ok(state);
                 }
                 Ok(NativeWorkerCaptureProgress::Pending) | Err("native preparation is busy") => {}
                 Ok(NativeWorkerCaptureProgress::Refused(reason)) => {
                     self.capture = None;
+                    self.capture_sequenced = false;
                     return Err(refused(reason.to_string()));
                 }
                 Ok(NativeWorkerCaptureProgress::Failed)
                 | Err("native capture output is closing") => {
                     self.capture = None;
+                    self.capture_sequenced = false;
                     return Err(lost());
+                }
+                Err("native sequenced capture was superseded") => {
+                    self.capture = None;
+                    self.capture_sequenced = false;
+                    return Err(refused("vst3 input changed during capture"));
                 }
                 Err(reason) => return Err(refused(reason)),
             }

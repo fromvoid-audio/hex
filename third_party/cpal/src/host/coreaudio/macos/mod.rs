@@ -1,5 +1,5 @@
 #![allow(deprecated)]
-use super::{asbd_from_config, check_os_status, frames_to_duration, host_time_to_stream_instant};
+use super::{asbd_from_config, check_os_status, frames_to_duration, HostTimebase};
 
 use super::OSStatus;
 use crate::host::coreaudio::macos::loopback::LoopbackDevice;
@@ -21,7 +21,8 @@ mod device;
 pub mod enumerate;
 mod loopback;
 mod property_listener;
-pub use device::Device;
+use device::OutputTimingWatch;
+pub use device::{Device, OutputTiming, OutputTimingReceipt};
 
 /// Coreaudio host, the default host on macOS.
 #[derive(Debug)]
@@ -172,6 +173,7 @@ impl DisconnectManager {
 
 struct StreamInner {
     playing: bool,
+    timing_watch: Option<OutputTimingWatch>,
     audio_unit: AudioUnit,
     // Track the device with which the audio unit was spawned.
     //
@@ -184,9 +186,22 @@ struct StreamInner {
     _loopback_device: Option<LoopbackDevice>,
 }
 
+impl Drop for StreamInner {
+    fn drop(&mut self) {
+        self.clear_timing_watch();
+    }
+}
+
 impl StreamInner {
+    fn clear_timing_watch(&mut self) {
+        if let Some(watch) = self.timing_watch.take() {
+            watch.retire(&self.audio_unit);
+        }
+    }
+
     fn play(&mut self) -> Result<(), PlayStreamError> {
         if !self.playing {
+            self.clear_timing_watch();
             if let Err(e) = self.audio_unit.start() {
                 let description = format!("{e}");
                 let err = BackendSpecificError { description };
@@ -199,6 +214,7 @@ impl StreamInner {
 
     fn pause(&mut self) -> Result<(), PauseStreamError> {
         if self.playing {
+            self.clear_timing_watch();
             if let Err(e) = self.audio_unit.stop() {
                 let description = format!("{e}");
                 let err = BackendSpecificError { description };

@@ -6,17 +6,28 @@ use hex_lattice_contract::{ForeignProcessorBinding as Binding, NativeDeviceState
 use hex_plugin_state::{Identity, STATE_VERSION, TYPE_ID};
 use std::io::Cursor;
 mod capture;
+#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
+mod editor_pcm;
 mod edits;
 mod parameter_page;
+#[cfg(any(all(target_os = "macos", target_arch = "aarch64"), all(test, unix)))]
+pub(crate) use editor_pcm::pcm_packet_extent;
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub(crate) use editor_pcm::{
+    EDITOR_GROUP_TOUCH_BIT, EDITOR_PCM_BIT, EDITOR_TOUCH_BIT, SDK_TIMING_BIT,
+    editor_group_touch_pcm, editor_pcm, editor_touch_pcm, timed_pcm,
+};
 pub use edits::{
-    MAX_PARAMETER_EDITS, ParameterEdit, ParameterEditKind, ParameterEdits, RecoveryEdits,
-    edit_request, idle_editor_edit_request, parameter_edits, recovery_edit_request, recovery_edits,
+    EditorPcm, EditorPerform, EditorPerforms, EditorRestoration, EditorRestorations,
+    EditorTouchPlan, EditorTouchPlanSet, EditorTouchTarget, MAX_PARAMETER_EDITS, ParameterEdit,
+    ParameterEditKind, ParameterEdits, RecoveryEdits, edit_request, idle_editor_edit_request,
+    parameter_edits, recovery_edit_request, recovery_edits,
 };
 pub use parameter_page::{
-    ControllerParameter, ControllerRequest, MAX_CONTROLLER_PARAMETERS, PARAMETER_PAGE_SIZE,
-    ParameterConversion, ParameterConversionResult, ParameterConversionStatus, ParameterPage,
-    ParameterPageProgress, ParameterPageQuery, ParameterPlainValue, ParameterText,
-    PluginEditorState, parameter_page, parameter_page_request,
+    ControllerParameter, ControllerRequest, EditorSealState, MAX_CONTROLLER_PARAMETERS,
+    PARAMETER_PAGE_SIZE, ParameterConversion, ParameterConversionResult, ParameterConversionStatus,
+    ParameterPage, ParameterPageProgress, ParameterPageQuery, ParameterPlainValue, ParameterText,
+    PluginEditorPosition, PluginEditorState, parameter_page, parameter_page_request,
 };
 mod flush;
 pub use capture::{
@@ -200,6 +211,11 @@ pub struct PresentationLatency {
 pub enum PresentationPlan {
     RequireKnown,
     Known(PresentationLatency),
+    /// Known input contribution; output is explicitly unknown, including when
+    /// the known input is zero. Only the SDK boundary encodes unknown as zero.
+    KnownInput(u32),
+    /// Known output contribution; input is explicitly unknown.
+    KnownOutput(u32),
     AllowUnknown,
 }
 impl From<Option<PresentationLatency>> for PresentationPlan {
@@ -213,18 +229,39 @@ impl PresentationPlan {
             Self::RequireKnown => 0,
             Self::Known(_) => 1,
             Self::AllowUnknown => 2,
+            Self::KnownInput(_) => 3,
+            Self::KnownOutput(_) => 4,
         }
     }
-    fn known(self) -> Option<PresentationLatency> {
+    // Mixed modes reserve the unknown word as zero; the direction flag, not
+    // that reserved word, identifies known facts. SDK sentinel mapping is native.
+    fn wire_values(self) -> Option<PresentationLatency> {
         match self {
             Self::Known(value) => Some(value),
+            Self::KnownInput(input_frames) => Some(PresentationLatency {
+                input_frames,
+                output_frames: 0,
+            }),
+            Self::KnownOutput(output_frames) => Some(PresentationLatency {
+                input_frames: 0,
+                output_frames,
+            }),
             _ => None,
+        }
+    }
+    fn receipt_flag(self) -> u8 {
+        if self.wire_values().is_some() {
+            self.flag()
+        } else {
+            0
         }
     }
     pub(super) fn expected(self, available: bool) -> Result<Presentation> {
         match (self, available) {
             (_, false) => Ok(Presentation::Absent),
             (Self::Known(_), true) => Ok(Presentation::Applied),
+            (Self::KnownInput(_), true) => Ok(Presentation::InputKnown),
+            (Self::KnownOutput(_), true) => Ok(Presentation::OutputKnown),
             (Self::AllowUnknown, true) => Ok(Presentation::Unknown),
             (Self::RequireKnown, true) => Err(Error::Protocol(
                 "actual presentation contributions are unavailable",
@@ -237,7 +274,7 @@ pub fn presentation_request(
     plan: impl Into<PresentationPlan>,
 ) -> Result<Vec<u8>> {
     let plan = plan.into();
-    let value = plan.known();
+    let value = plan.wire_values();
     let mut out = control_prefix(*b"HXVIPR01", 35 + usize::from(value.is_some()) * 8)?;
     stamp(&mut out, binding);
     out.push(plan.flag());
@@ -299,6 +336,39 @@ pub enum Presentation {
     Absent,
     Applied,
     Unknown,
+    /// Input is known; output is explicitly unknown.
+    InputKnown,
+    /// Output is known; input is explicitly unknown.
+    OutputKnown,
+}
+
+fn presentation_ack(r: &mut Reader<'_>, expected: PresentationPlan) -> Result<Presentation> {
+    let presentation = match r.byte()? {
+        0 => Presentation::Absent,
+        1 => Presentation::Applied,
+        2 => Presentation::Unknown,
+        3 => Presentation::InputKnown,
+        4 => Presentation::OutputKnown,
+        _ => return Err(Error::Protocol("refused presentation cannot be ready")),
+    };
+    let flag = r.byte()?;
+    let supplied = match flag {
+        0 => None,
+        1 | 3 | 4 => Some(PresentationLatency {
+            input_frames: u32::from_le_bytes(r.array()?),
+            output_frames: u32::from_le_bytes(r.array()?),
+        }),
+        _ => return Err(Error::Protocol("invalid presentation acknowledgement")),
+    };
+    if flag != expected.receipt_flag()
+        || supplied != expected.wire_values()
+        || (presentation != Presentation::Absent && presentation != expected.expected(true)?)
+    {
+        return Err(Error::Protocol(
+            "presentation acknowledgement differs from the requested contributions",
+        ));
+    }
+    Ok(presentation)
 }
 #[derive(Clone, Debug)]
 pub struct Ready {
@@ -334,27 +404,7 @@ impl Ready {
         }
         let algorithmic_latency_frames = u32::from_le_bytes(r.array()?);
         let tail_frames = u32::from_le_bytes(r.array()?);
-        let presentation = match r.byte()? {
-            0 => Presentation::Absent,
-            1 => Presentation::Applied,
-            2 => Presentation::Unknown,
-            _ => return Err(Error::Protocol("refused presentation cannot be ready")),
-        };
-        let supplied = match r.byte()? {
-            0 => None,
-            1 => Some(PresentationLatency {
-                input_frames: u32::from_le_bytes(r.array()?),
-                output_frames: u32::from_le_bytes(r.array()?),
-            }),
-            _ => return Err(Error::Protocol("invalid presentation acknowledgement")),
-        };
-        if supplied != expected.known()
-            || (presentation != Presentation::Absent && presentation != expected.expected(true)?)
-        {
-            return Err(Error::Protocol(
-                "presentation acknowledgement differs from the requested contributions",
-            ));
-        }
+        let presentation = presentation_ack(&mut r, expected)?;
         let restored = match r.byte()? {
             0 => false,
             1 => true,
@@ -559,7 +609,7 @@ pub fn resume_request(
     plan: impl Into<PresentationPlan>,
 ) -> Result<Vec<u8>> {
     let plan = plan.into();
-    let presentation = plan.known();
+    let presentation = plan.wire_values();
     config.validate()?;
     validate_resume(config.binding, next)?;
     let mut header = stop(config.binding, next.graph, next.epoch);
@@ -644,28 +694,9 @@ pub fn resumed(
             "native facts changed before resumed acknowledgement",
         ));
     }
-    let result = match rest.byte()? {
-        0 => Presentation::Absent,
-        1 => Presentation::Applied,
-        2 => Presentation::Unknown,
-        _ => return Err(Error::Protocol("native presentation resume refused")),
-    };
-    let supplied = match rest.byte()? {
-        0 => None,
-        1 => Some(PresentationLatency {
-            input_frames: u32::from_le_bytes(rest.array()?),
-            output_frames: u32::from_le_bytes(rest.array()?),
-        }),
-        _ => {
-            return Err(Error::Protocol(
-                "invalid resumed presentation acknowledgement",
-            ));
-        }
-    };
+    let result = presentation_ack(&mut rest, presentation)?;
     rest.end()?;
-    if supplied != presentation.known()
-        || result != presentation.expected(facts.presentation_available)?
-    {
+    if result != presentation.expected(facts.presentation_available)? {
         return Err(Error::Protocol(
             "resumed presentation differs from actual plan",
         ));
@@ -673,12 +704,18 @@ pub fn resumed(
     Ok(result)
 }
 pub fn pcm(bytes: &[u8], config: &Configuration, sequence: u64) -> Result<Block> {
+    read_pcm(Cursor::new(bytes), config, sequence)
+}
+fn read_pcm(
+    mut reader: impl std::io::Read,
+    config: &Configuration,
+    sequence: u64,
+) -> Result<Block> {
     config.validate()?;
-    let mut cursor = Cursor::new(bytes);
-    let block = crate::transport::wire::read(&mut cursor)
+    let block = crate::transport::wire::read(&mut reader)
         .map_err(Error::Io)?
         .ok_or(Error::Protocol("missing instance PCM reply"))?;
-    if cursor.position() != bytes.len() as u64
+    if reader.read(&mut [0]).map_err(Error::Io)? != 0
         || block.binding != config.binding
         || block.sequence != sequence
         || block.frames != config.quantum

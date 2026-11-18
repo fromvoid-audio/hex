@@ -254,7 +254,7 @@ impl Clip {
         let root = self.audio_event_root();
         check_timeline(&root).ok()?;
         if root.domain.clock.length() > MAX_AUDIO_DOMAIN_FRAMES
-            && !root.accepts_projected_extent(root.domain.clock.length())
+            && !root.accepts_projected_extent(root.domain.clock.length(), self)
         {
             return None;
         }

@@ -19,7 +19,7 @@ pub struct StreamDomainConstructorSummary {
     pub construction_peak_data_bytes: usize,
     /// The fifteen physical factory fields, three real lease fields, one
     /// exact-pair disposal anchor, optional readiness lease's three handles,
-    /// and the actual worker kernel-plan handles.
+    /// and the actual worker reader-manifest/plan and granular queue/atomic handles.
     pub shared_handle_bound: usize,
     pub kernel_handle_bound: usize,
     pub worker_lifetimes: usize,
@@ -59,7 +59,7 @@ pub(super) struct PreparedDomainParts {
     lease: CatalogLease,
     readiness: Option<super::readiness::PreparedReadiness>,
     readiness_bytes: usize,
-    summary: StreamDomainConstructorSummary,
+    pub(super) summary: StreamDomainConstructorSummary,
 }
 impl ConstructorStreamDomain {
     pub fn try_new_on_control(
@@ -178,6 +178,14 @@ impl ConstructorStreamDomain {
         let shared_handle_bound = 19usize
             .checked_add(if readiness.is_some() { 3 } else { 0 })
             .and_then(|handles| handles.checked_add(data.worker.kernel_handles))
+            .and_then(|handles| handles.checked_add(data.worker.manifest_handles))
+            .and_then(|handles| {
+                handles.checked_add(
+                    data.worker
+                        .granular
+                        .map_or(Some(0), |g| g.worker.shared_handle_bound())?,
+                )
+            })
             .and_then(|handles| {
                 handles.checked_add(data.worker.scalar_source_handles.checked_mul(2)?)
             })
@@ -193,7 +201,7 @@ impl ConstructorStreamDomain {
             {
                 reservation
                     .extents_per_role
-                    .checked_mul(6)
+                    .checked_mul(7)
                     .and_then(|count| {
                         count.checked_mul(std::mem::size_of::<crate::StreamResourceExtent>())
                     })
@@ -283,8 +291,16 @@ impl ConstructorStreamDomain {
             retained_data_bytes,
             construction_peak_data_bytes,
             shared_handle_bound,
-            kernel_handle_bound: data.worker.kernel_handles,
-            worker_lifetimes: 1,
+            kernel_handle_bound: data
+                .worker
+                .kernel_handles
+                .checked_add(
+                    data.worker
+                        .granular
+                        .map_or(0, |g| g.worker.bank.kernel_handles),
+                )
+                .ok_or(AudioStreamStorageError::Overflow)?,
+            worker_lifetimes: 1 + usize::from(data.worker.granular.is_some()),
             catalog_channel_lifetimes: 1,
             source_reader_lifetimes: lease.footprint().sources,
         };
@@ -348,6 +364,12 @@ impl ConstructorStreamDomain {
                 .is_some_and(|(loan, lease)| loan.pages.matches_catalog(lease))
         {
             return Err(AudioStreamStorageError::PairMismatch);
+        }
+        if loan
+            .as_ref()
+            .is_some_and(|loan| loan.readiness.has_current_quantum())
+        {
+            return Err(AudioStreamStorageError::UnresolvedObligations);
         }
         // Every destination/association is validated before either owner moves.
         match (loan.take(), self.loaned_control.take()) {

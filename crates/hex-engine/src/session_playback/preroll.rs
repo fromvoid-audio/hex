@@ -88,11 +88,9 @@ impl SessionPlayback {
             .ok_or(SessionPlaybackError::Allocation)?;
         Ok(bytes)
     }
-    /// Prepare a graph-local section audition using the same interactive seek
-    /// law and exact device-resource scope as an ordinary interactive seek.
-    /// Install the loop before construction so admission, gate clipping and
-    /// periodic timing use the loop; device history starts empty at the loop
-    /// start. Saved state is untouched.
+    /// Prepare a section start using the interactive seek law and exact
+    /// device-resource scope. If the region is the Arrangement loop, the
+    /// candidate inherits that loop directly from its prepared revision.
     pub fn prepare_section_arrangement_preroll(
         revision: Arc<PreparedRevision>,
         resources: Option<&crate::native_device_resources::PreparedDeviceResources>,
@@ -437,7 +435,11 @@ impl SessionPlayback {
             matches!(policy, PrerollRuntimePolicy::LinearExport),
             resources,
             match policy {
-                PrerollRuntimePolicy::SectionLoop(region) => Some(region),
+                PrerollRuntimePolicy::SectionLoop(region)
+                    if revision.arrangement().loop_region() != Some(region) =>
+                {
+                    Some(region)
+                }
                 _ => None,
             },
         )?;
@@ -536,6 +538,7 @@ impl SessionPlayback {
             revision: &self.revision,
             midi_admission: self.midi_admission.as_ref(),
             analytic_import: &self.analytic_import,
+            source_effects: &self.source_effects,
             device_chains: &self.device_chains,
             return_chains: &self.return_chains,
             return_effect_tails: &self.return_effect_tails,
@@ -562,7 +565,13 @@ impl SessionPlayback {
             suppressions: self.suppressions.capacity(),
             suppression_scratch: self.suppression_scratch.capacity(),
         }
-        .bytes()
+        .bytes()?
+        .checked_add(self.browser_audition.retained_bytes()?)?
+        .checked_add(
+            self.paused_source_monitor
+                .as_deref()
+                .map_or(Some(0), PausedTrackMonitor::runtime_storage_bytes)?,
+        )
     }
 }
 
@@ -605,6 +614,7 @@ pub(super) struct RuntimeStorage<'a> {
     pub(super) revision: &'a PreparedRevision,
     pub(super) midi_admission: Option<&'a crate::session_inventory::PreparedSessionMidiAdmission>,
     pub(super) analytic_import: &'a analytic_import::ImportPlan,
+    pub(super) source_effects: &'a crate::source_effect_stage::SourceEffectStages,
     pub(super) device_chains: &'a Vec<hex_lattice::NativeRuntimeChain>,
     pub(super) return_chains: &'a Vec<hex_lattice::NativeRuntimeChain>,
     pub(super) return_effect_tails: &'a ReturnEffectTailBank,
@@ -684,6 +694,7 @@ impl RuntimeStorage<'_> {
         add_capacity::<TrackRoute>(&mut total, self.routes)?;
         add_capacity::<TrackRoute>(&mut total, self.route_scratch)?;
         add_capacity::<Option<CurrentPendingCut>>(&mut total, self.current_route_cut_scratch)?;
+        checked_add(&mut total, self.source_effects.accounted_runtime_bytes()?)?;
         add_capacity::<hex_lattice::NativeRuntimeChain>(&mut total, self.device_chains.capacity())?;
         for chain in self.device_chains {
             checked_add(&mut total, chain.accounted_storage_bytes()?)?;
@@ -752,7 +763,13 @@ impl RuntimeStorage<'_> {
 pub(super) fn arrangement_runtime_storage_preflight_bytes(
     revision: &PreparedRevision,
 ) -> Option<usize> {
-    runtime_storage_preflight_bytes(revision, SESSION_RELEASE_CAPACITY)
+    runtime_storage_preflight_bytes(revision, SESSION_RELEASE_CAPACITY, true)
+}
+
+pub(super) fn paused_source_runtime_storage_preflight_bytes(
+    revision: &PreparedRevision,
+) -> Option<usize> {
+    runtime_storage_preflight_bytes(revision, SESSION_RELEASE_CAPACITY, false)
 }
 
 pub(super) fn linear_export_runtime_storage_preflight_bytes(
@@ -761,12 +778,14 @@ pub(super) fn linear_export_runtime_storage_preflight_bytes(
     runtime_storage_preflight_bytes(
         revision,
         SessionPlayback::release_capacity_for(revision, true),
+        true,
     )
 }
 
 fn runtime_storage_preflight_bytes(
     revision: &PreparedRevision,
     release_capacity: usize,
+    owns_instrument_sources: bool,
 ) -> Option<usize> {
     let arrangement = revision.arrangement();
     let track_count = arrangement.tracks().len();
@@ -793,8 +812,17 @@ fn runtime_storage_preflight_bytes(
     checked_add(&mut total, main_bytes)?;
     checked_add(
         &mut total,
-        foreign_arrangement::ForeignArrangement::preflight_bytes(revision)?,
+        crate::source_effect_stage::SourceEffectStages::requested_runtime_bytes(
+            track_count,
+            &arrangement.source_effects,
+        )?,
     )?;
+    if owns_instrument_sources {
+        checked_add(
+            &mut total,
+            foreign_arrangement::ForeignArrangement::preflight_bytes(revision)?,
+        )?;
+    }
     if let Some(graph) = &arrangement.signal_graph {
         checked_add(
             &mut total,
@@ -863,7 +891,14 @@ fn runtime_storage_preflight_bytes(
         std::mem::size_of::<Option<MutableInstrumentTrackRuntime>>(),
     )?;
     let source_routing = revision.source_routing();
-    for (index, track) in arrangement.tracks().iter().enumerate() {
+    // The private pause route keeps the full slot vector and event scratch.
+    // Actual instruments and resource leases are charged to the resident.
+    for (index, track) in arrangement
+        .tracks()
+        .iter()
+        .enumerate()
+        .filter(|_| owns_instrument_sources)
+    {
         let id = track.canonical_track_id()?;
         if let Some(factory) = revision.session().mutable_instrument_factory(id) {
             checked_add(
@@ -877,6 +912,13 @@ fn runtime_storage_preflight_bytes(
                 &mut total,
                 std::mem::size_of::<MutableInstrumentTrackRuntime>(),
             )?;
+            if let Some(modulation) = revision.session().instrument_modulation(id) {
+                checked_add(
+                    &mut total,
+                    std::mem::size_of::<hex_lattice::ModulationRuntime>()
+                        .checked_add(modulation.quoted_runtime_heap_bytes()?)?,
+                )?;
+            }
             if !revision.requires_control_sampler_sources()
                 && source_routing.receiver_index(index) == Some(index)
             {

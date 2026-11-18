@@ -6,23 +6,59 @@ use hex_lattice::{PreparedProcessorFactory, PreparedRuntimeInstance};
 use hex_lattice_contract::ForeignProcessorBinding as Binding;
 use std::num::NonZeroU64;
 
-/// Actual original-worker pickup, never a queued graph key or final Main ACK.
-/// Empty is an observed absence, distinct from unavailable observation. It
-/// does not assert that the callback has no unfinished keyed quantum.
+/// Original-worker pickup state or a separately witnessed stopped source fence.
+/// Empty is an observed unprogrammed pickup or zero pickup prefix; it alone
+/// does not prove that the callback has no unfinished keyed quantum.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ForeignProgramFrontier {
     #[default]
     Unknown,
     Empty,
     Program(NonZeroU64),
+    /// The exact compatible predecessor remains installed under a held stopped
+    /// source fence. The caller must establish that `open_quantum` is the only
+    /// other program any callback can still need. `worker_empty` records an
+    /// actual empty worker receipt, not an inference from the stopped state.
+    Stopped {
+        open_quantum: Option<NonZeroU64>,
+        worker_empty: bool,
+    },
 }
 
 impl PreparedRevision {
+    /// Whether the Arrangement can advance a retained worker's program key.
+    pub fn has_arrangement_foreign_programs(&self) -> bool {
+        nodes(&self.arrangement).any(|node| node.automation.foreign().is_some())
+    }
+
+    /// Whether an unchanged original binding has exhausted its bounded
+    /// predecessor history. This is a control-side hint only: matching
+    /// installation, a stopped fence and the open quantum must be established
+    /// independently before pruning any program.
+    pub fn needs_foreign_history_pruning_from(&self, previous: &Self) -> bool {
+        nodes(&self.arrangement)
+            .filter_map(|node| node.automation.foreign())
+            .any(|program| {
+                let binding = program.borrow().binding;
+                nodes(&previous.arrangement)
+                    .filter_map(|old| old.automation.foreign())
+                    .any(|old| {
+                        old.borrow().binding == binding
+                            && old.storage_owners().count()
+                                > hex_lattice::MAX_RETAINED_FOREIGN_PROGRAMS
+                    })
+            })
+    }
+
     /// Preserve programs needed to finish the original worker's open quantum.
     /// Call before sharing/publication, using the actual preceding revision.
-    /// `received` must query that exact worker. Unknown/Empty conservatively
-    /// retain bounded history; only actual Empty can admit a matching first
-    /// programme. Failure consumes only this unpublished candidate.
+    /// Worker pickup values must come from that exact worker. Unknown/Empty
+    /// conservatively retain bounded history; only an actual empty receipt can
+    /// admit a matching first programme. Stopped requires the caller to hold
+    /// the exact source fence through publication and independently validate
+    /// the open quantum. This grants no source, worker, fence or publication
+    /// authority. Failure consumes
+    /// only this unpublished candidate.
     pub fn with_foreign_program_history_from(
         mut self,
         previous: &Self,
@@ -31,7 +67,7 @@ impl PreparedRevision {
         if !self.foreign_automation.is_empty() || !previous.foreign_automation.is_empty() {
             return Err(Invalid("legacy foreign program history is unsupported"));
         }
-        if nodes(&self.arrangement).any(|node| node.automation.foreign().is_some()) {
+        if self.has_arrangement_foreign_programs() {
             self.arrangement
                 .retain_foreign_programs(&previous.arrangement, &mut received)?;
         }
@@ -93,7 +129,14 @@ fn retain_node(
     }
     let frontier = received(binding);
     if old_node.automation.foreign().is_none() {
-        return if frontier == ForeignProgramFrontier::Empty {
+        return if matches!(
+            frontier,
+            ForeignProgramFrontier::Empty
+                | ForeignProgramFrontier::Stopped {
+                    open_quantum: None,
+                    worker_empty: true,
+                }
+        ) {
             Ok(())
         } else {
             Err(Invalid(
@@ -101,13 +144,20 @@ fn retain_node(
             ))
         };
     }
-    let key = match frontier {
-        ForeignProgramFrontier::Program(key) => Some(key),
-        ForeignProgramFrontier::Unknown | ForeignProgramFrontier::Empty => None,
+    let result = match frontier {
+        ForeignProgramFrontier::Stopped { open_quantum, .. } => {
+            let required = open_quantum.as_slice();
+            node.automation
+                .retain_selected_foreign_history_on_control(&old_node.automation, required)
+        }
+        ForeignProgramFrontier::Program(key) => node
+            .automation
+            .retain_foreign_history_on_control(&old_node.automation, Some(key)),
+        ForeignProgramFrontier::Unknown | ForeignProgramFrontier::Empty => node
+            .automation
+            .retain_foreign_history_on_control(&old_node.automation, None),
     };
-    node.automation
-        .retain_foreign_history_on_control(&old_node.automation, key)
-        .map_err(|_| Invalid("foreign program history or frontier exceeds its contract"))
+    result.map_err(|_| Invalid("foreign program history or frontier exceeds its contract"))
 }
 
 pub(crate) fn retain_project(

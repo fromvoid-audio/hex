@@ -454,6 +454,30 @@ impl NativeProcessorRuntime for UtilityFilterProcessor {
         self.automation.is_none()
     }
 
+    fn can_retarget_source_host_matrix_from(&self, previous: &dyn NativeProcessorRuntime) -> bool {
+        previous
+            .as_any()
+            .downcast_ref::<Self>()
+            .is_some_and(|previous| {
+                self.automation.is_none()
+                    && previous.automation.is_none()
+                    && self.prepared == previous.prepared
+            })
+    }
+
+    fn can_retarget_source_parameters_from(&self, previous: &dyn NativeProcessorRuntime) -> bool {
+        previous
+            .as_any()
+            .downcast_ref::<Self>()
+            .is_some_and(|previous| {
+                self.automation.is_none()
+                    && previous.automation.is_none()
+                    && self.prepared.output_muted != previous.prepared.output_muted
+                    && self.prepared.with_output_mute(false)
+                        == previous.prepared.with_output_mute(false)
+            })
+    }
+
     fn supports_parameter_automation(&self, parameter: hex_lattice_contract::ParameterId) -> bool {
         self.automation
             .is_some_and(|automation| automation.supports(parameter))
@@ -490,6 +514,15 @@ impl NativeProcessorRuntime for UtilityFilterProcessor {
 
     fn is_quiescent(&self) -> bool {
         UtilityFilterProcessor::is_quiescent(self)
+    }
+
+    fn permits_memoryless_modulation_handoff(&self) -> bool {
+        use crate::utility::parameter::{BASS_MONO, DC_REMOVE};
+        !self.prepared.dc_enabled
+            && !self.prepared.bass_enabled
+            && self.automation.is_some_and(|automation| {
+                !automation.supports(DC_REMOVE) && !automation.supports(BASS_MONO)
+            })
     }
 
     fn can_copy_history_from(&self, previous: &dyn NativeProcessorRuntime) -> bool {

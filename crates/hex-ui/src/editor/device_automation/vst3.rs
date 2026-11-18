@@ -37,7 +37,7 @@ impl Entry {
 
 impl EditorView {
     /// Keep the touched VST3 target as the main Arrangement preview. This is
-    /// transient view state; it never writes authored automation points.
+    /// transient view state; it never changes view mode or authored automation points.
     pub(in crate::editor) fn remember_touched_vst3(
         &mut self,
         owner: Owner,
@@ -57,7 +57,6 @@ impl EditorView {
                     || old.target.device != device
                     || !matches!(old.target.kind, DeviceAutomationTarget::Vst3 { parameter } if parameter == row.id)
             });
-            self.automation_view.enabled = true;
             if self.mode == crate::editor::EditorMode::Arrangement {
                 self.track_scroll.remeasure();
             }
@@ -68,17 +67,70 @@ impl EditorView {
         let lanes = &mut self.automation_view.devices;
         lanes.main.retain(|old| old.target.owner != owner);
         lanes.main.push(entry.clone());
+        for extra in lanes
+            .extra
+            .iter_mut()
+            .filter(|extra| extra.target == target)
+        {
+            *extra = entry.clone();
+        }
         if let Some(known) = lanes.known.iter_mut().find(|old| old.target == target) {
             *known = entry;
         } else {
             lanes.known.push(entry);
         }
-        self.automation_view.enabled = true;
         if self.mode == crate::editor::EditorMode::Arrangement {
             self.track_scroll.remeasure();
         }
         cx.notify();
         true
+    }
+
+    /// Install an accepted plugin commit into existing transient lane entries.
+    /// It never adds or changes authored automation points.
+    pub(in crate::editor) fn accept_touched_vst3_commit(
+        &mut self,
+        snapshot: hex_session::device_gesture::GestureSnapshot,
+    ) -> bool {
+        let hex_session::device_gesture::GestureTarget::PluginParameter { device, parameter } =
+            snapshot.target
+        else {
+            return false;
+        };
+        if snapshot.key.generation != self.project_generation {
+            return false;
+        }
+        let Some(value) = snapshot.plugin_value else {
+            return false;
+        };
+        let Ok(base) = AutomationValue::new(value.normalized() as f32) else {
+            return false;
+        };
+        let Some(project) = self.state.as_ref().map(|state| &state.project) else {
+            return false;
+        };
+        let mut updated = false;
+        for entry in self
+            .automation_view
+            .devices
+            .main
+            .iter_mut()
+            .chain(self.automation_view.devices.extra.iter_mut())
+            .chain(self.automation_view.devices.known.iter_mut())
+        {
+            if entry.target.generation == snapshot.key.generation
+                && entry.target.device == device
+                && entry.target.kind == (DeviceAutomationTarget::Vst3 { parameter })
+                && entry
+                    .target
+                    .identity_current(project, self.project_generation)
+                    .is_some()
+            {
+                entry.base = base.get();
+                updated = true;
+            }
+        }
+        updated
     }
 
     #[cfg(feature = "ui-test-support")]
@@ -96,7 +148,7 @@ impl EditorView {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "ui-test-support")))]
 mod tests {
     use super::*;
     use hex_lattice_contract::NativeDeviceState;
@@ -123,6 +175,7 @@ mod tests {
             automation_class: Some([2; 16]),
             page_first: 0,
             metadata_revision: 7,
+            editor_sequence: 0,
         };
         for instrument in [false, true] {
             let mut model = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();

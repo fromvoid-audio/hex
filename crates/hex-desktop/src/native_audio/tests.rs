@@ -3,6 +3,9 @@
 use super::*;
 mod bypass_latency;
 mod delay_bypass;
+mod discrete_automation;
+mod granular_playback;
+mod granular_source_projection;
 mod limiter;
 mod limiter_bypass;
 mod manual_host_gain;
@@ -14,6 +17,8 @@ mod resident_authoring;
 mod resident_bounce;
 mod resident_eq_creation;
 mod resident_export;
+mod resident_file_metadata;
+mod resident_granular;
 mod resident_grouping;
 mod resident_history_seek;
 mod resident_lifecycle;
@@ -35,6 +40,7 @@ mod transport_loop;
 #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
 mod unavailable_plugins;
 mod utility_width;
+mod verified_clip_move;
 mod verified_device_preview;
 pub(super) mod verified_gain;
 mod worker_idle;
@@ -90,6 +96,7 @@ pub(super) struct Observation {
         hex_engine::AudioCandidateIdentity,
     )>,
     received_verified_device: Option<Arc<hex_session::service::VerifiedDeviceParameterSource>>,
+    verified_clip_updates: Vec<(hex_session::service::ClipMovePreviewIdentity, &'static str)>,
     replay_verified_device: Option<Arc<hex_session::service::VerifiedDeviceParameterSource>>,
     pub(super) received_verified_gain: Option<Arc<hex_session::service::VerifiedTrackGainSource>>,
     pub(super) replay_verified_gain: Option<Arc<hex_session::service::VerifiedTrackGainSource>>,
@@ -265,6 +272,29 @@ impl ObservedSink {
     }
 }
 impl WorkerAudioSink for ObservedSink {
+    fn confirms_verified_device_inserts(&self) -> bool {
+        self.inner.confirms_verified_device_inserts()
+    }
+    fn begin_verified_device_insert(
+        &mut self,
+        attempt: hex_session::service::VerifiedDeviceInsertAttempt,
+    ) -> Result<(), String> {
+        self.inner.begin_verified_device_insert(attempt)
+    }
+    fn finish_verified_device_insert(
+        &mut self,
+        attempt: &hex_session::service::VerifiedDeviceInsertAttempt,
+        installed: bool,
+    ) {
+        self.inner.finish_verified_device_insert(attempt, installed);
+    }
+    fn offer_device_insert_consent(
+        &mut self,
+        submission: hex_session::service::ResidentGraphSubmission,
+    ) -> Option<Instant> {
+        self.inner.offer_device_insert_consent(submission)
+    }
+
     fn streamed_exporter(&self) -> Option<hex_session::service::StreamedExporter> {
         self.inner.streamed_exporter()
     }
@@ -405,6 +435,32 @@ impl WorkerAudioSink for ObservedSink {
             .verified_device_parameter_source(Arc::clone(&source));
         self.observation.lock().unwrap().received_verified_device = Some(source);
     }
+    fn verified_clip_move_update(
+        &mut self,
+        update: hex_session::service::VerifiedClipMoveUpdate,
+    ) -> bool {
+        use hex_session::service::VerifiedClipMoveUpdate;
+        let (identity, kind) = match &update {
+            VerifiedClipMoveUpdate::Preview(source) => (source.identity(), "preview"),
+            VerifiedClipMoveUpdate::Released { identity, .. } => (*identity, "released"),
+            VerifiedClipMoveUpdate::Cancelled { identity, .. } => (*identity, "cancelled"),
+        };
+        let accepted = self.inner.verified_clip_move_update(update);
+        if accepted {
+            self.observation
+                .lock()
+                .unwrap()
+                .verified_clip_updates
+                .push((identity, kind));
+        }
+        accepted
+    }
+    fn verified_arrangement_gain_update(
+        &mut self,
+        update: hex_session::service::VerifiedArrangementGainUpdate,
+    ) -> bool {
+        self.inner.verified_arrangement_gain_update(update)
+    }
     fn native_sampler_input(&mut self, input: hex_session::service::NativeSamplerInput<'_>) {
         self.inner.native_sampler_input(input);
         let mut observation = self.observation.lock().unwrap();
@@ -443,7 +499,7 @@ impl WorkerAudioSink for ObservedSink {
         context: AudioSourceContext,
         allow_playing: bool,
     ) -> Result<(), String> {
-        self.inner.begin_section_edit(context, allow_playing)
+        WorkerAudioSink::begin_section_edit(&mut self.inner, context, allow_playing)
     }
     fn section_edit_ready(
         &mut self,
@@ -695,6 +751,14 @@ impl Harness {
         }
     }
     pub(super) fn next(&mut self) -> Event {
+        self.next_event(false)
+    }
+
+    fn next_with_audio(&mut self) -> Event {
+        self.next_event(true)
+    }
+
+    fn next_event(&mut self, drive_audio: bool) -> Event {
         let deadline = Instant::now() + self.wait;
         loop {
             if let Ok(event) = self.service.as_ref().unwrap().try_event() {
@@ -725,6 +789,9 @@ impl Harness {
                 Instant::now() < deadline,
                 "canonical worker did not respond"
             );
+            if drive_audio {
+                self.render();
+            }
             std::thread::sleep(Duration::from_millis(1));
         }
     }
@@ -1435,6 +1502,104 @@ fn verified_adapter_seek_pause_and_priority_stop_preserve_applied_source_and_dom
 #[path = "controller_input_tests.rs"]
 mod controller_input_tests;
 #[test]
+fn verified_repitch_publishes_worker_audio_through_native_candidate() {
+    let _native = native_fixture();
+    let files = Files::new();
+    let path = files.wav(48_000, 9_600);
+    let mut h = Harness::with_rate(48_000);
+    h.next();
+    h.open();
+    h.run(Request::NewWithAudioMode {
+        mode: DocumentAudioMode::VerifiedStreaming,
+        reservation: Some(AudioPolicy::source_reservation()),
+    });
+    h.open();
+    h.applied(h.context.unwrap());
+    let imported = h.run(Request::Import(path));
+    h.applied(h.context.unwrap());
+    let clip = imported.state.project.tracks()[0].clips()[0].id();
+    let neutral = h.run(Request::Edit(hex_project::Command::SetClipFades {
+        clip,
+        fade_in: 0,
+        fade_out: 0,
+    }));
+    h.applied(h.context.unwrap());
+    let warp = hex_project::default_audio_warp(
+        neutral.state.project.clip(clip).unwrap(),
+        neutral.state.project.tempo_map(),
+        hex_project::WarpMode::RePitch,
+    )
+    .unwrap();
+    let edited = h.run(Request::Edit(hex_project::Command::SetAudioClipWarp {
+        clip,
+        settings: Some(warp),
+    }));
+    assert!(edited.playback.is_none());
+    h.applied(h.context.unwrap());
+    play_from_start_expecting(&mut h, 0.25);
+}
+
+#[test]
+fn verified_long_repitch_publishes_worker_audio_through_native_candidate() {
+    use std::io::Write;
+
+    let _native = native_fixture();
+    let files = Files::new();
+    let path = files.0.join("long-repitch.wav");
+    let mut file = fs::File::create(&path).unwrap();
+    let data_bytes = 40_000_000u32;
+    file.write_all(b"RIFF").unwrap();
+    file.write_all(&(36 + data_bytes).to_le_bytes()).unwrap();
+    file.write_all(b"WAVEfmt ").unwrap();
+    file.write_all(&16u32.to_le_bytes()).unwrap();
+    file.write_all(&1u16.to_le_bytes()).unwrap();
+    file.write_all(&1u16.to_le_bytes()).unwrap();
+    file.write_all(&48_000u32.to_le_bytes()).unwrap();
+    file.write_all(&96_000u32.to_le_bytes()).unwrap();
+    file.write_all(&2u16.to_le_bytes()).unwrap();
+    file.write_all(&16u16.to_le_bytes()).unwrap();
+    file.write_all(b"data").unwrap();
+    file.write_all(&data_bytes.to_le_bytes()).unwrap();
+    for _ in 0..8192 {
+        file.write_all(&8192i16.to_le_bytes()).unwrap();
+    }
+    file.set_len(44 + u64::from(data_bytes)).unwrap();
+    drop(file);
+
+    let mut h = Harness::with_rate(48_000);
+    h.next();
+    h.open();
+    h.run(Request::NewWithAudioMode {
+        mode: DocumentAudioMode::VerifiedStreaming,
+        reservation: Some(AudioPolicy::source_reservation()),
+    });
+    h.open();
+    h.applied(h.context.unwrap());
+    let imported = h.run(Request::Import(path));
+    h.applied(h.context.unwrap());
+    let clip = imported.state.project.tracks()[0].clips()[0].id();
+    let neutral = h.run(Request::Edit(hex_project::Command::SetClipFades {
+        clip,
+        fade_in: 0,
+        fade_out: 0,
+    }));
+    h.applied(h.context.unwrap());
+    let warp = hex_project::default_audio_warp(
+        neutral.state.project.clip(clip).unwrap(),
+        neutral.state.project.tempo_map(),
+        hex_project::WarpMode::RePitch,
+    )
+    .unwrap();
+    let edited = h.run(Request::Edit(hex_project::Command::SetAudioClipWarp {
+        clip,
+        settings: Some(warp),
+    }));
+    assert!(edited.playback.is_none());
+    h.applied(h.context.unwrap());
+    play_from_start_expecting(&mut h, 0.25);
+}
+
+#[test]
 fn native_verified_downsample_uses_source_window_and_applies_decoded_pcm() {
     let _native = native_fixture();
     let files = Files::new();
@@ -1955,6 +2120,8 @@ fn resident_same_context_submissions_keep_tags_and_refuse_before_enqueue_when_ev
             .unwrap()
     };
     let metadata = ResidentPublicationMetadata {
+        source_origin: hex_session::service::ResidentSourceOrigin::CanonicalCandidate,
+        clip_preview: None,
         context,
         device_preview: None,
         tuning_preview: None,
@@ -2009,7 +2176,11 @@ fn resident_same_context_submissions_keep_tags_and_refuse_before_enqueue_when_ev
         .control()
         .unwrap()
         .reclaim();
+    let first_applied = sink.current_runtime_loop(context).unwrap().unwrap();
+    assert_eq!(first_applied.audio_revision, first);
+    assert_eq!(first_applied.source_origin, metadata.source_origin);
     let second_metadata = ResidentPublicationMetadata {
+        source_origin: hex_session::service::ResidentSourceOrigin::ClipStretchPreview,
         computer_keyboard_request: None,
         stopped_restore: true,
         ..metadata
@@ -2033,6 +2204,7 @@ fn resident_same_context_submissions_keep_tags_and_refuse_before_enqueue_when_ev
         panic!("active publication")
     };
     assert_ne!(first, second);
+    assert!(sink.current_runtime_loop(context).is_err());
     sink.observe(context, "preparing", EditorPublicationState::Preparing);
     sink.observe(context, "busy", EditorPublicationState::Busy);
     let candidate = graph();
@@ -2111,6 +2283,9 @@ fn resident_same_context_submissions_keep_tags_and_refuse_before_enqueue_when_ev
             .unwrap()
             .reclaim();
     }
+    let second_applied = sink.current_runtime_loop(context).unwrap().unwrap();
+    assert_eq!(second_applied.audio_revision, second);
+    assert_eq!(second_applied.source_origin, second_metadata.source_origin);
     drop(refused);
     // Returned audio graphs do not retire a telemetry view still held by a UI consumer. Fill
     // the existing three observation rows, refuse intact, then release one actual external

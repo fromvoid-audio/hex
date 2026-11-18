@@ -7,7 +7,10 @@
 //! storage or tail duration grows with project duration. Repitch is a 10 ms
 //! one-pole (20 ms with high quality); Fade crossfades taps over 50 ms, Jump
 //! is immediate. Feedback, mix, filter enable/frequency/width ramp over 10 ms
-//! on compatible edits. Modulation scales time by 1 + depth * oscillator and
+//! on compatible authored edits. Mapped feedback and mix adopt their canonical
+//! values on the same sample without restarting another control's ramp. Mapped
+//! oscillator depth and free rate also adopt each sample's value. The internal
+//! oscillator scales time by 1 + depth * oscillator and
 //! filter center by 2^(4 * depth * oscillator); both are range-clamped. Filter
 //! coefficients update every 16 frames independent of block partitions.
 //! Ping-pong averages stereo input into the left line and crossfeeds outputs.
@@ -17,7 +20,7 @@
 use super::*;
 use super::{filter::BandPass, lfo::Lfo};
 pub(super) const MAX_SECONDS: usize = 16;
-pub(super) struct Factory {
+pub struct Factory {
     pub(super) settings: Settings,
     pub(super) rate: u32,
     pub(super) admitted: [bool; automation::COUNT],
@@ -33,6 +36,18 @@ impl PreparedOwnedProcessorRuntime for Factory {
         self.supports_parameter_automation(id)
             .then(|| automation::descriptor(id))
             .flatten()
+    }
+
+    fn parameter_modulation_semantics(
+        &self,
+        id: hex_lattice_contract::ParameterId,
+    ) -> Option<hex_lattice_contract::ParameterSemantics> {
+        self.supports_parameter_automation(id)
+            .then(|| automation::semantics(id))
+            .flatten()
+            .filter(|semantics| {
+                semantics.modulation == hex_lattice_contract::ParameterModulation::SampleRate
+            })
     }
 
     fn supports_smoothed_bypass(&self) -> bool {
@@ -191,7 +206,7 @@ fn lfo_increment(s: automation::LfoControls, rate: u32, tempo: u32) -> f64 {
     };
     hz / f64::from(rate)
 }
-pub(super) struct Runtime {
+pub struct Runtime {
     settings: Settings,
     rate: u32,
     committed: Vec<StereoFrame>,
@@ -277,6 +292,7 @@ impl Runtime {
         let flags = self.speculative.controls.effective_ref().flags;
         let hq = flags.high_quality;
         BlockSettings {
+            immediate: automation::ImmediateControls::default(),
             freeze: flags.freeze && !self.releasing,
             hq,
             alpha: time_alpha(self.rate, hq),
@@ -288,8 +304,10 @@ impl Runtime {
         let old_timing = self.speculative.timing;
         self.speculative.controls.reset();
         self.speculative.timing = automation::timing(&self.speculative.controls);
-        if old.other_targets_changed(self.speculative.controls.effective_ref())
-            || old_timing != self.speculative.timing
+        if old.other_targets_changed(
+            self.speculative.controls.effective_ref(),
+            automation::ImmediateControls::default(),
+        ) || old_timing != self.speculative.timing
         {
             self.speculative.ramp_left = self.rate.div_ceil(100);
         }
@@ -331,6 +349,12 @@ impl Runtime {
             .controls
             .resolve(&automation::BINDINGS, values)?;
         let mut block = self.block_settings();
+        block.immediate = automation::ImmediateControls {
+            feedback: values.has_sample_rate_modulation(FEEDBACK),
+            mix: values.has_sample_rate_modulation(DRY_WET),
+            lfo_delay: values.has_sample_rate_modulation(LFO_DELAY),
+            lfo_rate: values.has_sample_rate_modulation(LFO_RATE),
+        };
         let flags_admitted = [11, 12, 13, 14, 25, 26]
             .iter()
             .any(|&i| self.speculative.controls.admitted(i));
@@ -349,9 +373,10 @@ impl Runtime {
                 values,
                 offset,
             )? {
-                let changed = next
-                    .effective_ref()
-                    .other_targets_changed(self.speculative.controls.effective_ref());
+                let changed = next.effective_ref().other_targets_changed(
+                    self.speculative.controls.effective_ref(),
+                    block.immediate,
+                );
                 self.speculative.controls.install(next);
                 let mut retime = changed;
                 if refresh_timing {
@@ -398,6 +423,12 @@ impl Runtime {
             hq,
             alpha,
             fade_frames,
+            immediate:
+                automation::ImmediateControls {
+                    feedback: feedback_routed,
+                    mix: mix_routed,
+                    ..
+                },
         } = block;
         let s = &mut self.speculative;
         let targets = s.controls.effective_ref();
@@ -447,9 +478,14 @@ impl Runtime {
                 s.fade_left = 0;
             }
         }
+        let mut update_mix = s.ramp_left > 0;
         if s.ramp_left > 0 {
-            s.feedback += (f64::from(targets.feedback) - s.feedback) / f64::from(s.ramp_left);
-            s.mix += (f64::from(targets.mix) - s.mix) / f64::from(s.ramp_left);
+            if !feedback_routed {
+                s.feedback += (f64::from(targets.feedback) - s.feedback) / f64::from(s.ramp_left);
+            }
+            if !mix_routed {
+                s.mix += (f64::from(targets.mix) - s.mix) / f64::from(s.ramp_left);
+            }
             s.filter_mix +=
                 (f64::from(targets.flags.filter) - s.filter_mix) / f64::from(s.ramp_left);
             s.frequency += (f64::from(targets.frequency) - s.frequency) / f64::from(s.ramp_left);
@@ -462,6 +498,15 @@ impl Runtime {
                 s.frequency = f64::from(targets.frequency);
                 s.width = f64::from(targets.width);
             }
+        }
+        if feedback_routed {
+            s.feedback = f64::from(targets.feedback);
+        }
+        if mix_routed && s.mix != f64::from(targets.mix) {
+            s.mix = f64::from(targets.mix);
+            update_mix = true;
+        }
+        if update_mix {
             (s.dry_gain, s.wet_gain) = mix_gains(s.mix, targets.flags.equal_loudness);
         }
         let scalar = &*s;
@@ -535,11 +580,27 @@ impl Runtime {
 }
 #[derive(Clone, Copy)]
 struct BlockSettings {
+    immediate: automation::ImmediateControls,
     freeze: bool,
     hq: bool,
     alpha: f64,
     fade_frames: u32,
 }
+impl Runtime {
+    /// Actual exclusive box and both independently reserved ring capacities.
+    /// This read-only accounting view exposes no ring contents or custody.
+    pub fn control_storage(&self) -> Option<(usize, [usize; 2])> {
+        let bytes = |ring: &Vec<StereoFrame>| {
+            ring.capacity()
+                .checked_mul(std::mem::size_of::<StereoFrame>())
+        };
+        Some((
+            std::mem::size_of::<Self>(),
+            [bytes(&self.committed)?, bytes(&self.scratch)?],
+        ))
+    }
+}
+
 impl OwnedProcessorRuntime for Runtime {
     fn supports_parameter_automation(&self, id: hex_lattice_contract::ParameterId) -> bool {
         self.primary.controls.supports(&automation::BINDINGS, id)
@@ -564,12 +625,8 @@ impl OwnedProcessorRuntime for Runtime {
     }
 
     fn fixed_storage_pair_bytes(&self) -> Option<usize> {
-        std::mem::size_of::<Self>().checked_add(
-            self.committed
-                .capacity()
-                .checked_add(self.scratch.capacity())?
-                .checked_mul(std::mem::size_of::<StereoFrame>())?,
-        )
+        let (inline, [committed, scratch]) = self.control_storage()?;
+        inline.checked_add(committed)?.checked_add(scratch)
     }
     fn begin_block(&mut self) {
         if self.open {

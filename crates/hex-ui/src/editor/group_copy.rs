@@ -2,7 +2,8 @@
 //! its terminal.
 use super::{EditorMode, EditorView};
 use hex_project::{ClipGroupPosition, ClipId, Command, Project, TrackId};
-use hex_session::service::{Event, Request};
+use hex_session::service::{ArrangementEditViewObservation, Event, Request, ViewState};
+use std::sync::Arc;
 
 /// The request whose acknowledged copy births become the selection.
 enum Kind {
@@ -113,6 +114,7 @@ impl Pending {
         match self.kind {
             Kind::Move { count, .. } => count,
             Kind::NewTrack { .. } => 1,
+            Kind::Paste { .. } if first == last => 1,
             Kind::Paste { .. } => project
                 .tracks()
                 .iter()
@@ -205,6 +207,43 @@ impl Pending {
     }
 }
 impl EditorView {
+    /// The worker has committed these rows. Painting them does not acknowledge
+    /// the paste or give its selection receipt ownership of later input.
+    pub(super) fn observe_paste_view(
+        &mut self,
+        observation: ArrangementEditViewObservation,
+    ) -> bool {
+        let Some(installed) = self.state.as_ref().map(|state| state.revision) else {
+            return false;
+        };
+        let predecessor = self
+            .committed_paste_view
+            .as_ref()
+            .map_or(installed, |view| view.revision.max(installed));
+        if self.project_generation != observation.project_generation
+            || observation.first_previous_revision > observation.previous_revision
+            || predecessor < observation.first_previous_revision
+            || predecessor > observation.previous_revision
+        {
+            return false;
+        }
+        let Some(state) = observation.state.upgrade() else {
+            return false;
+        };
+        if observation.previous_revision.checked_add(1) != Some(state.revision) {
+            return false;
+        }
+        self.committed_paste_view = Some(state);
+        self.arrangement_paste_view().is_some()
+    }
+
+    pub(super) fn arrangement_paste_view(&self) -> Option<&Arc<ViewState>> {
+        if self.mode != EditorMode::Arrangement || self.opening_project || self.close_prompt_open {
+            return None;
+        }
+        self.committed_paste_view.as_ref()
+    }
+
     pub(super) fn retire_abandoned_group_copy(&mut self) -> bool {
         let abandoned = self.pending_group_copy.as_ref().is_some_and(|p| {
             p.generation != self.project_generation
@@ -250,3 +289,6 @@ impl EditorView {
         None
     }
 }
+
+#[cfg(all(test, feature = "ui-test-support"))]
+mod tests;

@@ -1,6 +1,6 @@
 //! Shared typed targets reuse EQ8's existing designer, smoother and routing.
 //! A fixed Copy model retains every bank. Derived coefficient targets are staged
-//! before controls install; immutable canonical coefficient Arcs never change.
+//! before controls install; the fixed canonical coefficients never change.
 use super::*;
 use crate::parameter_binding::{BOOLEAN_ENVELOPE, Binding, CHOICE_ENVELOPE, SCALAR_ENVELOPE};
 pub(super) mod routing;
@@ -25,6 +25,7 @@ impl ControlValues {
 const SEMANTICS: hex_lattice_contract::ParameterSemantics =
     hex_lattice_contract::ParameterSemantics {
         smoothing: hex_lattice_contract::ParameterSmoothing::DeviceManaged,
+        modulation: hex_lattice_contract::ParameterModulation::SampleRate,
         ..SCALAR_ENVELOPE
     };
 const LOG: hex_lattice_contract::ParameterSemantics = hex_lattice_contract::ParameterSemantics {
@@ -33,11 +34,13 @@ const LOG: hex_lattice_contract::ParameterSemantics = hex_lattice_contract::Para
 };
 const CHOICE: hex_lattice_contract::ParameterSemantics = hex_lattice_contract::ParameterSemantics {
     smoothing: hex_lattice_contract::ParameterSmoothing::DeviceManaged,
+    modulation: hex_lattice_contract::ParameterModulation::SampleRate,
     ..CHOICE_ENVELOPE
 };
 const BOOLEAN: hex_lattice_contract::ParameterSemantics =
     hex_lattice_contract::ParameterSemantics {
         smoothing: hex_lattice_contract::ParameterSmoothing::DeviceManaged,
+        modulation: hex_lattice_contract::ParameterModulation::SampleRate,
         ..BOOLEAN_ENVELOPE
     };
 macro_rules! band_bindings {
@@ -75,7 +78,12 @@ macro_rules! band_bindings {
             Binding::choice(DESCRIPTORS[200], CHOICE,
                 |s| match s.mode { ChannelMode::Stereo => 0, ChannelMode::LeftRight => 1, ChannelMode::MidSide => 2 },
                 |s, v| { s.mode = match v { 0 => ChannelMode::Stereo, 1 => ChannelMode::LeftRight, 2 => ChannelMode::MidSide, _ => return Err(DeviceContractError::InvalidParameterValue) }; Ok(()) }),
-            Binding::float(DESCRIPTORS[201], SEMANTICS, |s| s.gain, |s, v| s.gain = v),
+            Binding::float(
+                DESCRIPTORS[201],
+                SEMANTICS,
+                |s| s.gain,
+                |s, v| s.gain = v,
+            ),
         ];
     };
 }
@@ -146,7 +154,7 @@ pub(super) fn prepare(
     }
     Ok(prepared)
 }
-fn selected(mode: ChannelMode) -> [usize; 2] {
+pub(super) fn selected(mode: ChannelMode) -> [usize; 2] {
     match mode {
         ChannelMode::Stereo => [0, 0],
         ChannelMode::LeftRight => [1, 2],
@@ -172,11 +180,43 @@ fn design(
     let right = if a == b { left } else { bank(b)? };
     Ok([left, right])
 }
+
+/// The current coefficient targets describe the old effective controls. Keep
+/// untouched bands exact and only run the designer for changed active bands.
+fn redesign_changed(
+    current: [&CoefficientBank; 2],
+    old: &ControlValues,
+    next: &ControlValues,
+    banks: [usize; 2],
+    rate: u32,
+) -> Result<CoefficientTarget, DeviceContractError> {
+    let bank = |lane: usize| -> Result<CoefficientBank, DeviceContractError> {
+        let index = banks[lane];
+        let mut target = *current[lane];
+        for ((slot, old), next) in target
+            .iter_mut()
+            .zip(&old.banks[index])
+            .zip(&next.banks[index])
+        {
+            if old != next {
+                *slot = if next.enabled {
+                    design_band(*next, rate)?
+                } else {
+                    [Coefficients::IDENTITY; 4]
+                };
+            }
+        }
+        Ok(target)
+    };
+    let left = bank(0)?;
+    let right = if banks[0] == banks[1] { left } else { bank(1)? };
+    Ok([left, right])
+}
+
 impl Eq8Runtime {
-    pub(super) fn current_target(&self) -> &[[[Coefficients; 4]; BAND_COUNT]; 2] {
-        self.automated_target
-            .as_ref()
-            .unwrap_or(self.target.as_ref())
+    pub(super) fn current_target(&self) -> [&CoefficientBank; 2] {
+        self.routing
+            .effective_target(self.automated_target.as_ref(), self.canonical_mode)
     }
     fn enable_admitted(&self, bank: usize, band: usize) -> bool {
         slot(parameter::enabled(bank, band)).is_some_and(|i| self.controls.admitted(i))
@@ -215,7 +255,10 @@ impl Eq8Runtime {
         }
     }
     pub(super) fn set_automation_target(&mut self, target: Option<[[BandStages; BAND_COUNT]; 2]>) {
-        let changed = target.as_ref().unwrap_or(self.target.as_ref()) != self.current_target();
+        let changed = self
+            .routing
+            .effective_target(target.as_ref(), self.canonical_mode)
+            != self.current_target();
         let replaced = target.is_some() || self.automated_target.is_some();
         self.automated_target = target;
         if changed {
@@ -228,10 +271,11 @@ impl Eq8Runtime {
     pub(super) fn restore_canonical_controls(&mut self) {
         self.controls.reset();
         let base = self.controls.base();
-        let target = self
-            .routing
-            .as_mut()
-            .and_then(|route| route.restore_canonical(base, self.mode));
+        let target = if self.controls.admitted(MODE_SLOT) {
+            self.routing.restore_canonical(base, self.mode)
+        } else {
+            None
+        };
         self.install_enabled_bands(&base.banks);
         self.set_automation_target(target);
         self.band_targets_pending = self.band_automation_admitted;
@@ -261,20 +305,27 @@ impl Eq8Runtime {
                 let changed = banks
                     .into_iter()
                     .any(|bank| old.banks[bank] != next_values.banks[bank]);
-                let target = if self.band_targets_pending || changed {
+                let target = if self.band_targets_pending {
                     Some(design(&next_values.banks, self.mode, self.sample_rate)?)
+                } else if changed {
+                    Some(redesign_changed(
+                        self.current_target(),
+                        &old,
+                        &next_values,
+                        banks,
+                        self.sample_rate,
+                    )?)
                 } else {
                     None
                 };
-                let pending = self
-                    .routing
-                    .as_ref()
-                    .map(|route| route.stage(next_values, self.mode, self.sample_rate))
-                    .transpose()?;
-                self.controls.install(next);
-                if let Some(route) = self.routing.as_mut() {
-                    route.install(pending.flatten());
+                if self.controls.admitted(MODE_SLOT) {
+                    let previous = (!self.band_targets_pending).then_some(&old);
+                    let pending =
+                        self.routing
+                            .stage(next_values, previous, self.mode, self.sample_rate)?;
+                    self.routing.install(pending);
                 }
+                self.controls.install(next);
                 self.install_enabled_bands(&next_values.banks);
                 if let Some(target) = target {
                     self.set_automation_target(Some(target));
@@ -704,7 +755,7 @@ mod tests {
                 }
                 assert_eq!(output, expected);
                 // A held authored value equal to the former base still overrides a
-                // changed canonical field in the incoming factory's coefficient Arc.
+                // changed canonical field in the incoming factory's canonical coefficients.
                 let id = parameter::frequency(selected(actual.mode)[0], 0);
                 let old = EQ8_DEFINITION.read_parameter(&base, id).unwrap();
                 let held = Values {

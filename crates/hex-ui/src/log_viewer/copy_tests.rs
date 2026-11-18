@@ -1,36 +1,6 @@
 use super::*;
-
-#[test]
-fn relative_window_is_fixed_inclusive_and_does_not_follow_page_timestamps() {
-    let now = 40_000_000_000;
-    let request = ViewerFilter::new("audio", "keep".into(), ("last 30 s", Some(30)), now);
-    let filter = request.borrowed();
-    for (time, expected) in [
-        (9_999_999_999, false),
-        (10_000_000_000, true),
-        (now, true),
-        (now + 1, false),
-    ] {
-        let line = hex_diagnostics::reader::LogLine {
-            text: "KEEP original".into(),
-            event: Some(hex_diagnostics::reader::LogEvent {
-                unix_nanos: time,
-                elapsed_nanos: 1,
-                sequence: 1,
-                level: "info".into(),
-                category: "audio".into(),
-            }),
-        };
-        assert_eq!(filter.matches(&line), expected, "{time}");
-        assert!(
-            ViewerFilter::new("all", "".into(), WINDOWS[0], now)
-                .borrowed()
-                .matches(&line)
-        );
-    }
-    let early = ViewerFilter::new("all", "".into(), ("last 30 s", Some(30)), 1);
-    assert_eq!((early.since, early.until), (Some(0), Some(1)));
-}
+#[cfg(feature = "ui-test-support")]
+use std::time::Duration;
 
 #[test]
 fn filtered_excerpt_reports_empty_limits_and_failed_clipboard_confirmation() {

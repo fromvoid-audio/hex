@@ -24,9 +24,12 @@ fn actual_effect_data_limit_precedes_allocations_and_retains_original_disposal()
         let fits = allowance == diagnostic;
         let instance = original_instance_for_binding(binding);
         let configuration = NativeEffect::configuration_on_control(identity, &instance).unwrap();
-        let quoted =
-            NativeEffect::preconstruction_data_bytes_on_control(&instance, configuration.prepared)
-                .unwrap();
+        let quoted = NativeEffect::preconstruction_data_bytes_on_control(
+            &instance,
+            configuration.prepared,
+            false,
+        )
+        .unwrap();
         drop(configuration);
         let limit = quoted + allowance;
         let mut outcome = None;
@@ -323,6 +326,7 @@ fn changed_state_matching_requires_the_original_private_processing_approval() {
         let chain = |program| {
             hex_lattice::NativeRuntimeChain::new_prepared(vec![
                 hex_lattice::PreparedRuntimeInstance {
+                    modulation: None,
                     owner: identity.owner(),
                     device_id: identity.device_id(),
                     device_type: hex_plugin_state::TYPE_ID,
@@ -366,6 +370,15 @@ fn fixture_with_authored_parameter(
     location: usize,
     bypassed: bool,
     parameter: Option<u32>,
+) -> Fixture {
+    fixture_with_parameter_transport(location, bypassed, parameter, false)
+}
+
+fn fixture_with_parameter_transport(
+    location: usize,
+    bypassed: bool,
+    parameter: Option<u32>,
+    dense: bool,
 ) -> Fixture {
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 32).unwrap();
     let Created::Imported { track, asset, .. } = editor
@@ -414,12 +427,23 @@ fn fixture_with_authored_parameter(
     });
     let selected = parameter.map(|id| [id]);
     let class = source.configuration().identity.class;
-    let effect = NativeEffect::prepare_retained_with_authored_selection_on_control(
-        identity,
-        source,
-        usize::MAX,
-        selected.as_ref().map(|ids| (class, ids.as_slice())),
-    )
+    let effect = if dense {
+        let ids = selected.as_ref().unwrap();
+        NativeEffect::prepare_retained_with_dense_parameter_on_control(
+            identity,
+            source,
+            usize::MAX,
+            (class, ids),
+            ids[0],
+        )
+    } else {
+        NativeEffect::prepare_retained_with_authored_selection_on_control(
+            identity,
+            source,
+            usize::MAX,
+            selected.as_ref().map(|ids| (class, ids.as_slice())),
+        )
+    }
     .unwrap();
     let state = effect.configuration().clone();
     let command = match location {
@@ -1256,6 +1280,53 @@ fn sampler_with_native_effect_on_control() {
     assert!(stopped.retire_on_control().unwrap().status.success());
 }
 
+#[cfg(feature = "allocation-probe")]
+fn prepare_closed(f: &Fixture) -> hex_engine::AudioCandidateOwner {
+    let definition = NativeEffectDefinition::new(std::slice::from_ref(&f.effect)).unwrap();
+    let definitions: [&dyn NativeDeviceDefinition; 1] = [&definition];
+    let registry = NativeDeviceRegistry::new(&definitions).unwrap();
+    let sources = f
+        .media
+        .iter()
+        .map(|(id, audio)| {
+            (
+                *id,
+                hex_engine::OwnedAudioSource::try_resident(
+                    audio.sample_rate(),
+                    audio.frames().to_vec(),
+                )
+                .ok()
+                .unwrap(),
+            )
+        })
+        .collect();
+    let bank = hex_engine::OwnedAudioInputs::try_new(
+        sources,
+        hex_engine::AudioStorageReservation {
+            allocation_items: 64,
+            handle_obligations: 256,
+            max_prepared_data_bytes: usize::MAX,
+            max_construction_data_bytes: usize::MAX,
+            caller_retained_bytes: 0,
+            caller_construction_bytes: 0,
+        },
+    )
+    .ok()
+    .unwrap();
+    let mut custody = hex_engine::AudioPreparationCustody::try_new_on_control().unwrap();
+    let token = custody
+        .begin_input_on_control(
+            hex_engine::AudioArrangementInput::new(f.editor.project(), 11, bank)
+                .with_audio_prepared_revision()
+                .with_effect_registry(&registry),
+        )
+        .ok()
+        .unwrap();
+    hex_engine::AudioCandidateOwner::try_new_on_control(custody, token)
+        .ok()
+        .expect("closed actual SDK graph")
+}
+
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 #[cfg(feature = "allocation-probe")]
@@ -1263,53 +1334,7 @@ fn actual_sdk_closed_claimed_renderer_track_return_main_has_exact_pcm_and_dispos
     for location in 0..3 {
         for bypassed in [false, true] {
             let f = fixture(location, bypassed);
-            let mut owner = {
-                let definition =
-                    NativeEffectDefinition::new(std::slice::from_ref(&f.effect)).unwrap();
-                let definitions: [&dyn NativeDeviceDefinition; 1] = [&definition];
-                let registry = NativeDeviceRegistry::new(&definitions).unwrap();
-                let sources = f
-                    .media
-                    .iter()
-                    .map(|(id, audio)| {
-                        (
-                            *id,
-                            hex_engine::OwnedAudioSource::try_resident(
-                                audio.sample_rate(),
-                                audio.frames().to_vec(),
-                            )
-                            .ok()
-                            .unwrap(),
-                        )
-                    })
-                    .collect();
-                let bank = hex_engine::OwnedAudioInputs::try_new(
-                    sources,
-                    hex_engine::AudioStorageReservation {
-                        allocation_items: 64,
-                        handle_obligations: 256,
-                        max_prepared_data_bytes: usize::MAX,
-                        max_construction_data_bytes: usize::MAX,
-                        caller_retained_bytes: 0,
-                        caller_construction_bytes: 0,
-                    },
-                )
-                .ok()
-                .unwrap();
-                let mut custody =
-                    hex_engine::AudioPreparationCustody::try_new_on_control().unwrap();
-                let token = custody
-                    .begin_input_on_control(
-                        hex_engine::AudioArrangementInput::new(f.editor.project(), 11, bank)
-                            .with_audio_prepared_revision()
-                            .with_effect_registry(&registry),
-                    )
-                    .ok()
-                    .unwrap();
-                hex_engine::AudioCandidateOwner::try_new_on_control(custody, token)
-                    .ok()
-                    .expect("closed actual SDK graph")
-            };
+            let mut owner = prepare_closed(&f);
             let summary = owner
                 .seal_constructor_on_control(hex_engine::AudioStorageLedgerReservation {
                     data_rows: 4096,
@@ -1467,6 +1492,28 @@ fn actual_tail_drain_waits_for_final_acceptance_and_preserves_last_bridge_sample
             }
         }
         if !refuse_at_horizon {
+            let mut silence = [[0.0; 2]; 8];
+            callback.begin_host_callback(8).unwrap();
+            callback
+                .process_segment(node, 0, &mut silence[..3], None)
+                .unwrap();
+            assert!(!callback.committed_tail_is_drained(node));
+            callback
+                .process_segment(node, 3, &mut silence[3..], None)
+                .unwrap();
+            assert!(callback.committed_tail_is_drained(node));
+            let wrong_node = ForeignProcessorNode {
+                device_id: node.device_id + 1,
+                ..node
+            };
+            assert!(!callback.committed_tail_is_drained(wrong_node));
+            callback.finish_host_callback(true).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(3);
+            while worker.published_blocks_on_control() < 4 {
+                assert!(Instant::now() < deadline);
+                std::thread::yield_now();
+            }
+
             let mut renewed = [[0.5; 2]; 8];
             let measured = allocation_counter::measure(|| {
                 callback.begin_host_callback(8).unwrap();
@@ -1493,7 +1540,7 @@ fn actual_tail_drain_waits_for_final_acceptance_and_preserves_last_bridge_sample
         let stopped = worker.quiesce_on_control().unwrap();
         assert_eq!(
             stopped.completed_blocks(),
-            if refuse_at_horizon { 2 } else { 3 }
+            if refuse_at_horizon { 2 } else { 4 }
         );
         drop(callback);
         drop(worker);
@@ -2167,4 +2214,146 @@ fn program_revision_reservation_never_wraps_or_changes_processing_state() {
         std::num::NonZeroU64::MAX
     );
     assert_eq!(callback.configuration.state, state);
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+#[cfg(feature = "allocation-probe")]
+fn saved_dense_vst3_route_renders_through_ordinary_and_closed_graphs() {
+    use hex_project::{
+        DeviceModulation, DeviceModulationRoute, ModulationAmount, ModulationDestination,
+        ModulationOutputId, ModulationRange, ModulationRouteId, ModulationSourceId, Modulator,
+    };
+
+    if super::dense_tests::fixture_child("80") {
+        return;
+    }
+    for closed in [false, true] {
+        let mut fixture = fixture_with_parameter_transport(0, false, Some(0), true);
+        let capability = fixture.effect.callback.configuration.authored.parameters()[0];
+        let base = f64::from_bits(capability.normalized_base_bits);
+        let class = fixture
+            .effect
+            .callback
+            .configuration
+            .authored
+            .class()
+            .unwrap()
+            .bytes();
+        let first = fixture.editor.project().next_identity();
+        let source = ModulationSourceId::new(first).unwrap();
+        fixture
+            .editor
+            .execute(Command::ReplaceDeviceModulation {
+                device: fixture.device,
+                modulation: DeviceModulation::new(
+                    vec![Modulator {
+                        id: source,
+                        color: Default::default(),
+                        enabled: true,
+                        state: hex_devices::modulation::lfo::Settings {
+                            rate: hex_devices::modulation::lfo::Rate::Hertz(12_000.0),
+                            ..Default::default()
+                        }
+                        .encode()
+                        .unwrap(),
+                    }],
+                    vec![DeviceModulationRoute {
+                        id: ModulationRouteId::new(first + 1).unwrap(),
+                        source,
+                        output: ModulationOutputId::MAIN,
+                        destination: ModulationDestination::Device {
+                            device_type: hex_plugin_state::TYPE_ID,
+                            target: hex_lattice_contract::DeviceAutomationTarget::Vst3 {
+                                parameter: 0,
+                            },
+                            vst3_class: Some(class),
+                        },
+                        amount: ModulationAmount::new(0.25).unwrap(),
+                        range: ModulationRange::default(),
+                        enabled: true,
+                    }],
+                )
+                .unwrap(),
+            })
+            .unwrap();
+        fixture.samples.fill([0.25, -0.125]);
+        *fixture.media.values_mut().next().unwrap() =
+            hex_engine::Audio::new(48_000, fixture.samples.clone()).unwrap();
+
+        let mut ordinary = (!closed).then(|| {
+            let mut playback =
+                hex_engine::playback::Playback::try_from_prepared_with_session(prepare(&fixture))
+                    .unwrap();
+            playback.apply(hex_engine::PlaybackCommand::Play);
+            playback
+        });
+        let mut claimed = closed.then(|| {
+            let mut owner = prepare_closed(&fixture);
+            let summary = owner
+                .seal_constructor_on_control(hex_engine::AudioStorageLedgerReservation {
+                    data_rows: 4096,
+                    handle_rows: 2048,
+                    root_rows: 8,
+                    max_retained_bytes: usize::MAX,
+                    max_construction_peak_bytes: usize::MAX,
+                })
+                .unwrap();
+            assert_eq!(summary.data.unknown_storage, 0);
+            let (mut runtime, anchor) = owner.split_constructor_on_control().ok().unwrap();
+            runtime
+                .apply_action(hex_engine::PlaybackAction::Transport(
+                    hex_engine::PlaybackCommand::Play,
+                ))
+                .unwrap();
+            (runtime, anchor)
+        });
+        let (mut workers, mut callbacks) =
+            NativeEffectCallbacks::from_effects_on_control(vec![fixture.effect]).unwrap();
+        let mut output = [[0.0; 2]; 56];
+        for chunk in output.chunks_mut(7) {
+            let measured = allocation_counter::measure(|| {
+                callbacks.begin_host_callback(chunk.len()).unwrap();
+                if let Some(playback) = &mut ordinary {
+                    playback
+                        .render_with_foreign_processors(chunk, None, None, None, &mut callbacks)
+                        .unwrap();
+                } else if let Some((runtime, _)) = &mut claimed {
+                    runtime
+                        .render_with_foreign_processors(chunk, None, None, None, &mut callbacks)
+                        .unwrap();
+                }
+                callbacks.finish_host_callback(true).unwrap();
+            });
+            assert_eq!((measured.count_total, measured.bytes_total), (0, 0));
+            assert_eq!((measured.count_current, measured.bytes_current), (0, 0));
+            callbacks
+                .wait_offline_on_control(&workers, || false)
+                .unwrap();
+        }
+        assert_eq!(output[..16], [[0.0; 2]; 16]);
+        for (i, (sample, &pcm)) in fixture.samples.iter().zip(&output[16..48]).enumerate() {
+            let normalized = (base + [0.0, 0.25, 0.0, -0.25][i % 4]).clamp(0.0, 1.0);
+            // The original SDK fixture applies its deterministic wet scale
+            // per received eight-frame quantum in addition to the input value.
+            let gain = (2.0 + 0.5 * (i / 8) as f64) * normalized;
+            assert_eq!(
+                pcm,
+                sample.map(|value| value * gain as f32),
+                "closed={closed}, sample={i}"
+            );
+        }
+        assert_eq!(output[48..], [[0.0; 2]; 8]);
+        if let Some((mut runtime, anchor)) = claimed {
+            let proof = runtime.dispose_on_control().unwrap();
+            let mut anchors = [Some(anchor)];
+            proof.record_anchor_cells_on_control(&mut anchors).unwrap();
+            anchors[0]
+                .as_mut()
+                .unwrap()
+                .finish_disposal_on_control()
+                .unwrap();
+        }
+        assert!(workers[0].retire_on_control().unwrap().failure.is_none());
+    }
 }

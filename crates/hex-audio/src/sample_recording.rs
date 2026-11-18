@@ -4,6 +4,7 @@
 //! capture endpoint to control. Stop uses a take-local atomic, independent of
 //! both command and PCM queue pressure. The reader belongs to a non-audio
 //! consumer and must recycle packets or the take ends with its confirmed prefix.
+//! Source-bound input recording retains timing and clock evidence without PCM.
 
 use hex_engine::{Frame, Invalid, ProjectSignal};
 use rtrb::{Consumer, Producer, PushError, RingBuffer};
@@ -18,8 +19,10 @@ use std::sync::{
 pub use hex_engine::OutputCaptureId;
 use hex_engine::OutputCaptureId::{Return, Track};
 
-mod takes;
+mod output_clock_index;
+pub(crate) mod takes;
 mod timing;
+pub use output_clock_index::{OutputClockIndex, OutputClockIndexError, OutputClockPacket};
 pub use takes::{Take, Takes, write_takes};
 pub use timing::TimingSpan;
 
@@ -41,6 +44,7 @@ pub enum End {
     InvalidBlock,
     UnsupportedOutput,
     StorageFailed,
+    TransportChanged,
 }
 
 /// Scalar acknowledgement for the control surface. Preparing lasts until the
@@ -61,11 +65,13 @@ pub enum Source {
 
 pub(crate) struct Layout {
     pub(crate) generation: u64,
+    pub(crate) expected_source: Option<crate::prepared::AppliedAudioSource>,
     pub(crate) tracks: Box<[u64]>,
     // Kept as typed OutputCaptureIds on the control API; separated here for
     // the engine's borrowed Return tap.
     pub(crate) returns: Box<[hex_engine::ReturnId]>,
     main: bool,
+    pub(crate) timing_only: bool,
 }
 
 impl Layout {
@@ -78,6 +84,27 @@ struct Packet {
     frames: usize,
     pcm: Box<[Frame]>,
     timing: Vec<TimingSpan>,
+    output_clock: Option<OutputClock>,
+}
+
+/// Original CPAL output playback instant for the native callback, plus this
+/// packet's frame offset in that callback. This is not a calibrated hardware
+/// time or proof that another stream shares the same clock origin.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OutputClock {
+    pub playback: cpal::StreamInstant,
+    pub offset_frames: u32,
+    /// Applied graph's declared Main delay, captured on the rendering callback.
+    /// This excludes physical device and acoustic latency.
+    pub graph_latency_frames: Option<u32>,
+    pub(crate) origin: OutputClockOrigin,
+}
+
+/// The origin is stamped inside the native output owner, not supplied by UI.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum OutputClockOrigin {
+    CoreAudioHostTime,
+    Unknown,
 }
 
 pub struct Control {
@@ -93,6 +120,8 @@ pub struct Reader {
     state: Arc<AtomicU8>,
     sources: Box<[Source]>,
     rate: u32,
+    expected_source: Option<crate::prepared::AppliedAudioSource>,
+    drain_count: u64,
 }
 
 pub(crate) struct Callback {
@@ -146,11 +175,37 @@ impl Control {
         outputs: &[OutputCaptureId],
         main: bool,
     ) -> Result<Reader, Invalid> {
+        self.start_inner(generation, outputs, main, None, false)
+    }
+
+    pub(crate) fn start_bound(
+        &mut self,
+        source: crate::prepared::AppliedAudioSource,
+    ) -> Result<Reader, Invalid> {
+        self.start_inner(
+            source.context.project_generation,
+            &[],
+            false,
+            Some(source),
+            true,
+        )
+    }
+
+    fn start_inner(
+        &mut self,
+        generation: u64,
+        outputs: &[OutputCaptureId],
+        main: bool,
+        expected_source: Option<crate::prepared::AppliedAudioSource>,
+        timing_only: bool,
+    ) -> Result<Reader, Invalid> {
         self.reclaim();
         if self.active.is_some() || self.incoming.is_abandoned() {
             return Err(Invalid("sample recording output is busy or unavailable"));
         }
-        if outputs.len() > hex_engine::MAX_OUTPUT_CAPTURES || (outputs.is_empty() && !main) {
+        if outputs.len() > hex_engine::MAX_OUTPUT_CAPTURES
+            || (outputs.is_empty() && !main && !timing_only)
+        {
             return Err(Invalid(
                 "select one or more sample sources within the capture limit",
             ));
@@ -183,9 +238,11 @@ impl Control {
             .collect();
         let layout = Layout {
             generation,
+            expected_source,
             tracks: tracks.into(),
             returns: returns.into(),
             main,
+            timing_only,
         };
         let (mut recycle, free) = RingBuffer::new(PACKETS);
         let (full, captured) = RingBuffer::new(PACKETS);
@@ -203,6 +260,7 @@ impl Control {
                     frames: 0,
                     pcm: pcm.into_boxed_slice(),
                     timing,
+                    output_clock: None,
                 })
                 .map_err(|_| Invalid("sample recording reserve is full"))?;
         }
@@ -227,6 +285,8 @@ impl Control {
             state,
             sources,
             rate: self.rate,
+            expected_source,
+            drain_count: 0,
         })
     }
 
@@ -260,6 +320,10 @@ impl Control {
 }
 
 impl Reader {
+    /// Requested source binding, enforced by the callback on every captured block.
+    pub fn source_binding(&self) -> Option<crate::prepared::AppliedAudioSource> {
+        self.expected_source
+    }
     pub fn sources(&self) -> &[Source] {
         &self.sources
     }
@@ -289,12 +353,31 @@ impl Reader {
         &mut self,
         mut block: impl FnMut(usize, &[Source], &[Frame], &[TimingSpan]),
     ) -> Option<End> {
+        self.drain_with_output_clock(|frames, sources, pcm, timing, _| {
+            block(frames, sources, pcm, timing)
+        })
+    }
+
+    /// Drain confirmed blocks with the render timing spans and original native
+    /// output timestamp, if one was supplied for that block. The timestamp's
+    /// stream origin and physical latency are not inferred here.
+    pub fn drain_with_output_clock(
+        &mut self,
+        mut block: impl FnMut(usize, &[Source], &[Frame], &[TimingSpan], Option<OutputClock>),
+    ) -> Option<End> {
+        self.drain_count = self.drain_count.saturating_add(1);
         // Read the terminal before observing the queue. A terminal release
         // publishes the tail of the producer's confirmed prefix.
         let state = self.state.load(Acquire);
         for _ in 0..PACKETS {
             let Ok(packet) = self.full.pop() else { break };
-            block(packet.frames, &self.sources, &packet.pcm, &packet.timing);
+            block(
+                packet.frames,
+                &self.sources,
+                &packet.pcm,
+                &packet.timing,
+                packet.output_clock,
+            );
             let _ = self.recycle.push(packet);
         }
         let disconnected = self.full.is_abandoned() && self.full.is_empty();
@@ -310,6 +393,7 @@ impl Reader {
             x if x == End::Backpressure as u8 => Some(End::Backpressure),
             x if x == End::InvalidBlock as u8 => Some(End::InvalidBlock),
             x if x == End::UnsupportedOutput as u8 => Some(End::UnsupportedOutput),
+            x if x == End::TransportChanged as u8 => Some(End::TransportChanged),
             _ if disconnected => Some(End::OutputFailed),
             _ => None,
         }
@@ -341,6 +425,20 @@ impl Drop for Reader {
 }
 
 impl Callback {
+    /// A transport discontinuity invalidates bound recording even when a seek
+    /// lands at the next expected frame. Ordinary sample capture remains unbound.
+    pub(crate) fn end_bound_for_transport_change(&mut self) {
+        if self.active.is_none() {
+            self.active = self.incoming.pop().ok();
+        }
+        if self
+            .active
+            .as_ref()
+            .is_some_and(|capture| capture.layout.expected_source.is_some())
+        {
+            self.end(End::TransportChanged);
+        }
+    }
     pub(crate) fn begin(&mut self, frames: usize) {
         if self.active.is_none() {
             self.active = self.incoming.pop().ok();
@@ -363,6 +461,7 @@ impl Callback {
             };
             packet.frames = frames;
             packet.timing.clear();
+            packet.output_clock = None;
             for layer in packet.pcm.chunks_exact_mut(FRAMES) {
                 layer[..frames].fill([0.0; 2]);
             }
@@ -384,6 +483,16 @@ impl Callback {
         Some((&active.layout, &mut active.stage))
     }
 
+    pub(crate) fn set_output_clock(&mut self, clock: Option<OutputClock>) {
+        if let Some(packet) = self
+            .active
+            .as_mut()
+            .and_then(|active| active.stage.packet.as_mut())
+        {
+            packet.output_clock = clock;
+        }
+    }
+
     pub(crate) fn finish(&mut self, valid_output: bool) {
         let Some(active) = &mut self.active else {
             return;
@@ -394,9 +503,10 @@ impl Callback {
         }
         if let Some(packet) = active.stage.packet.as_ref()
             && (!active.stage.valid
-                || !active.stage.seen_main[..packet.frames]
-                    .iter()
-                    .all(|seen| *seen)
+                || (!active.layout.timing_only
+                    && !active.stage.seen_main[..packet.frames]
+                        .iter()
+                        .all(|seen| *seen))
                 || packet.pcm.chunks_exact(FRAMES).any(|layer| {
                     layer[..packet.frames]
                         .iter()
@@ -517,7 +627,7 @@ impl Stage {
                     return;
                 }
                 self.seen_main[offset..end].fill(true);
-                layout.main.then_some(layout.layers() - 1)
+                layout.main.then(|| layout.layers() - 1)
             }
             ProjectSignal::Unavailable => {
                 self.valid = false;

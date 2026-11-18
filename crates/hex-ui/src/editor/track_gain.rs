@@ -256,6 +256,25 @@ fn dispatch_track_gain(
     device_panel::dispatch_bound_numeric_gesture(view, target, lease, phase, value)
 }
 
+fn gain_recovery_blocker(view: &mut EditorView) -> Option<&'static str> {
+    if view.has_degraded_vst3_output() {
+        return Some("a plug-in failed · restart audio before changing volume");
+    }
+    if view.device_gesture.is_recovery_pending()
+        && view
+            .device_gesture
+            .snapshot()
+            .is_some_and(|active| active.target.is_mixer_gain())
+    {
+        if !view.device_gesture.has_pending_terminal() {
+            let _ = view.cancel_device_gesture();
+            view.wake_poll();
+        }
+        return Some("previous volume edit is canceling · drag again when it finishes");
+    }
+    None
+}
+
 impl EditorView {
     pub(super) fn track_volume(&mut self, track: &Track, cx: &mut Context<Self>) -> Div {
         retire_stale(self, cx);
@@ -322,6 +341,8 @@ impl EditorView {
                             .is_none_or(automated)
                         {
                             Some("automation owns gain · edit or clear the gain lane")
+                        } else if let Some(reason) = gain_recovery_blocker(view) {
+                            Some(reason)
                         } else if view.edit_pending() {
                             Some("wait for the current project edit before changing volume")
                         } else {
@@ -481,6 +502,18 @@ impl EditorView {
                         atomic_admitted.set(false);
                     }
                     let explicit_gain = key.supports_atomic_gain() && event.gesture.is_none();
+                    if event.phase == NumericEventPhase::Begin
+                        && key.supports_atomic_gain()
+                        && view.document_audio_mode == hex_session::DocumentAudioMode::Resident
+                        && !view.gain_recorder.blocks_edits()
+                        && !view.midi_recorder.blocks_edits()
+                        && let Some(reason) = gain_recovery_blocker(view)
+                    {
+                        view.error = Some(reason.into());
+                        control.update(cx, |control, cx| control.cancel(cx));
+                        cx.notify();
+                        return;
+                    }
                     if event.phase == NumericEventPhase::Begin
                         && ((view.document_audio_mode != hex_session::DocumentAudioMode::Resident
                             && !explicit_gain)

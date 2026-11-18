@@ -74,7 +74,7 @@ pub(super) fn replacement_spans(
     super::super::tracks::group_overlap_spans(endpoints)
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "ui-test-support")))]
 mod tests {
     use super::*;
     use hex_project::AudioEvent;

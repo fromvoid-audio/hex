@@ -296,15 +296,23 @@ impl Gesture {
             .as_ref()
             .and_then(|live| live.hold.as_ref())
             .ok_or_else(lost)?;
+        let command = match self.recording_base {
+            Some(base) => NativeParameterHold::RestoreAndRelease {
+                hold,
+                normalized: self.sdk_value(base),
+            },
+            None => NativeParameterHold::Release { hold },
+        };
         let (token, target) = admit(control, |control| {
             control.native_source_parameter_hold_with_delivery_on_control(
                 capture.applied,
                 self.binding,
-                NativeParameterHold::Release { hold },
+                command,
             )
         })?;
         self.pending = Some(PendingPoint {
             token,
+            // A release is a terminal, not a new requested gesture value.
             value: self.last,
             sequence: self.sequence,
             opening_hold: false,
@@ -326,7 +334,8 @@ impl Gesture {
             Err(lost())
         }
     }
-    /// Output closure is a terminal without an invented application clock.
+    /// Output closure or invalidation of the original source/epoch is a
+    /// terminal without an invented application clock.
     /// Preserve the original pending point first; a point interruption already
     /// terminates the take. The queue holds at most that point plus this end.
     pub(in crate::native_audio::plugins) fn recording_output_closed(&mut self) {
@@ -427,6 +436,8 @@ impl Plugins {
     }
     pub(in crate::native_audio) fn take_parameter_observation(&mut self) -> Option<Observation> {
         self.collect_parameter_observations();
-        self.confirmed_parameters.pop_front()
+        self.confirmed_parameters
+            .pop_front()
+            .or_else(|| self.take_editor_recording_observation())
     }
 }
