@@ -48,6 +48,46 @@ impl SessionPlayback {
             && !self.foreign_arrangement.has_keyboard()
     }
 
+    /// At Pause, an idle owned graph can leave its latency buffers for the
+    /// next Play. Fixed buffering can hold upcoming Arrangement PCM even
+    /// where the processor declares no residual tail. Keep the existing
+    /// monitor path for live input, releases, residual tails and foreign
+    /// sources. The stopped origin retains its existing handoff policy.
+    pub(super) fn can_freeze_idle_latency_history(&self) -> bool {
+        (self.performance_frame != 0 || self.arrangement_frame != 0)
+            && self.revision.arrangement().main_latency_frames() != 0
+            && self.computer_keyboard.is_none()
+            && self.current_sampler_keyboards.is_empty()
+            && self.foreign_arrangement.is_empty()
+            && !self.has_analytic_release_output()
+            && !self.source_effects.has_monitor_tail()
+            && self
+                .mutable_instruments
+                .iter()
+                .flatten()
+                .all(|runtime| runtime.committed_is_quiescent())
+            && self.tail_groups.iter().all(Option::is_none)
+            && self.tail_mutable_instruments.iter().all(Option::is_none)
+            && self
+                .return_effect_tails
+                .slots()
+                .iter()
+                .flatten()
+                .all(|tail| !tail.output_active)
+            && self
+                .device_chains
+                .iter()
+                .chain(&self.return_chains)
+                .chain(std::iter::once(&self.main_chain))
+                .all(|chain| {
+                    let range = 0..chain.len();
+                    chain.foreign_bindings().next().is_none()
+                        && (chain.output_tail_for_range(range.clone())
+                            == Some(hex_lattice::OutputTail::Finite { max_tail_frames: 0 })
+                            || chain.committed_range_is_quiescent(range))
+                })
+    }
+
     /// Render a complete block transactionally. A refusal after any chunk
     /// silences the requested block and leaves committed route/clock state as-is.
     pub fn render(&mut self, output: &mut [Frame]) -> Result<(), SessionPlaybackError> {

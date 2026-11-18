@@ -4,6 +4,112 @@ use crate::signal_graph::tests::{fixture, prepare};
 use crate::{Audio, SineTable};
 
 #[test]
+fn idle_pause_freezes_queued_arrangement_pcm() {
+    use crate::playback::{Playback, PlaybackCommand};
+    use hex_project::Command;
+
+    for instrument_track in [0, 1] {
+        // Muting the instrument track leaves the other track's impulse in
+        // either the graph's compensation ring or its own latency-only device.
+        let mut f = fixture(&[&[7], &[]], 1024);
+        let track = f.tracks[instrument_track];
+        f.editor
+            .execute(Command::InsertInstrument {
+                track,
+                state: hex_project::default_instrument_state().unwrap(),
+            })
+            .unwrap();
+        f.editor
+            .execute(Command::Gain { track, gain: 0.0 })
+            .unwrap();
+        let revision = prepare(&f).unwrap();
+        assert_eq!(revision.arrangement().main_latency_frames(), 7);
+        for partition in [1, 257] {
+            let mut paused = Playback::from_prepared(Arc::clone(&revision));
+            let mut uninterrupted = Playback::from_prepared(Arc::clone(&revision));
+            for playback in [&mut paused, &mut uninterrupted] {
+                playback.apply(PlaybackCommand::Play);
+                let mut prefix = [[0.0; 2]; 4];
+                playback.render(&mut prefix).unwrap();
+                assert_eq!(prefix, [[0.0; 2]; 4]);
+            }
+            paused.apply(PlaybackCommand::Pause);
+            let mut idle = [[0.0; 2]; 257];
+            for chunk in idle.chunks_mut(partition) {
+                paused.render(chunk).unwrap();
+            }
+            assert_eq!(paused.position(), uninterrupted.position());
+            paused.apply(PlaybackCommand::Play);
+            let mut resumed = [[0.0; 2]; 32];
+            let mut expected = resumed;
+            paused.render(&mut resumed).unwrap();
+            uninterrupted.render(&mut expected).unwrap();
+            assert!(expected.iter().any(|frame| *frame != [0.0; 2]));
+            let leaked = idle.iter().any(|frame| *frame != [0.0; 2]);
+            let resume_differs = resumed != expected;
+            assert!(
+                !leaked && !resume_differs,
+                "instrument track {instrument_track}, partition {partition}, paused leak {leaked}, resume differs {resume_differs}"
+            );
+        }
+    }
+}
+
+#[test]
+fn compensated_pause_still_renders_a_held_note_release() {
+    use crate::playback::{Playback, PlaybackCommand};
+    use hex_project::{Command, Created};
+
+    let mut f = fixture(&[&[7], &[]], 1024);
+    for audio in f.media.values_mut() {
+        *audio = Audio::new(48_000, vec![[0.0; 2]; 1024]).unwrap();
+    }
+    let track = f.tracks[1];
+    f.editor
+        .execute(Command::InsertInstrument {
+            track,
+            state: hex_project::default_instrument_state().unwrap(),
+        })
+        .unwrap();
+    let Created::Clip(clip) = f
+        .editor
+        .execute(Command::PlaceMidiClip {
+            track,
+            start: BeatTime::ZERO,
+            length: BeatTime::ONE,
+        })
+        .unwrap()
+    else {
+        panic!("expected MIDI clip");
+    };
+    f.editor
+        .execute(Command::AddMidiNote {
+            clip,
+            start: BeatTime::ZERO,
+            duration: BeatTime::ONE,
+            pitch: 60,
+            channel: 0,
+            velocity: 100,
+        })
+        .unwrap();
+    let revision = prepare(&f).unwrap();
+    assert_eq!(revision.arrangement().main_latency_frames(), 7);
+    let mut playback = Playback::from_prepared(revision);
+    playback.apply(PlaybackCommand::Play);
+    let mut output = [[0.0; 2]; 257];
+    playback.render(&mut output).unwrap();
+    assert!(output[32..].iter().any(|frame| *frame != [0.0; 2]));
+    playback.apply(PlaybackCommand::Pause);
+    let position = playback.position();
+    playback.render(&mut output).unwrap();
+    assert!(
+        output[32..].iter().any(|frame| *frame != [0.0; 2]),
+        "the release must remain audible beyond the queued latency"
+    );
+    assert_eq!(playback.position(), position);
+}
+
+#[test]
 fn adding_an_empty_track_keeps_compensated_pcm_continuous() {
     use hex_project::Command;
     for partition in [1, 257] {
