@@ -315,6 +315,36 @@ private:
 @end
 
 namespace hex_instance {
+// A file picker can suspend the worker's outer main loop. This source may
+// deliver a read-only editor observation on that same lane while AppKit waits
+// for the dialog. Its handler must outlive it and must not enter the SDK.
+class ModalEditorObservation {
+    CFRunLoopSourceRef source;
+public:
+    template<class Observe>
+    explicit ModalEditorObservation(Observe& observe) {
+        CFRunLoopSourceContext context{};
+        context.info=&observe;
+        context.perform=[](void* info) { (*static_cast<Observe*>(info))(); };
+        source=CFRunLoopSourceCreate(kCFAllocatorDefault,0,&context);
+        if(source)
+            CFRunLoopAddSource(CFRunLoopGetMain(),source,(CFStringRef)NSModalPanelRunLoopMode);
+    }
+    ModalEditorObservation(const ModalEditorObservation&)=delete;
+    ModalEditorObservation& operator=(const ModalEditorObservation&)=delete;
+    ~ModalEditorObservation() {
+        if(source) {
+            CFRunLoopSourceInvalidate(source);
+            CFRelease(source);
+        }
+    }
+    explicit operator bool() const { return source!=nullptr; }
+    void notify() const {
+        CFRunLoopSourceSignal(source);
+        CFRunLoopWakeUp(CFRunLoopGetMain());
+    }
+};
+
 // AppKit's default deactivate rule follows only the helper. Treat Hex and
 // its editor helpers as one foreground group without transferring the view.
 class EditorPanelVisibility {
