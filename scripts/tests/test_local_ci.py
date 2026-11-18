@@ -495,6 +495,7 @@ class ReportStepAdmissionTests(unittest.TestCase):
                 step = next(step for step in runner.steps if step.step_id == "runner-tests")
                 self.assertEqual(step.argv, argv)
                 self.assertTrue(step.uses_cargo_target and step.requires_tests)
+                self.assertIs(runner.summary["sharded_full_python"], runner is ordinary)
                 self.assertIsNone(runner._step_sequence_error())
                 evidence = {**runner.summary, "steps": [
                     {"step_id": s.step_id, "argv": list(s.argv), "test_results": {"python_executions": [1]}}
@@ -502,7 +503,7 @@ class ReportStepAdmissionTests(unittest.TestCase):
                 ]}
                 local_ci.validate_report_steps(evidence)
         ordinary.env["HEX_TEST_SIGNING_IDENTITY"] = "fixture"
-        self.assertIn("differ from", ordinary._step_sequence_error())
+        self.assertIn("without native opt-in", ordinary._step_sequence_error())
 
     def evidence(self):
         plan = {"scope": "full", "python_tests": {"mode": "comprehensive",
@@ -3590,7 +3591,8 @@ runpy.run_path(sys.argv[1], run_name='__main__')
             'if [ "$1" = test ]; then echo "test result: ok. 1 passed; 0 failed; 0 ignored;"; fi\n'
             'echo "completed $tool $*"',
         ))
-        steps = local_ci.qualification_steps("full", None, native_acceptance_opt_in=False)
+        steps = local_ci.qualification_steps("full", None, native_acceptance_opt_in=False,
+                                             sharded_full_python=True)
         runner = self.runner("python-cargo", env={**self.env, "EXPECTED_OWNER": str(owner)}, steps=steps)
         self.assertEqual(runner.run(), 0)
         summary = self.summary("python-cargo")

@@ -505,6 +505,7 @@ if os.environ.get("HEX_FIXTURE_CHANGE_DELIVERY") == "1":
         evidence = {"schema_version": 2, "mode": "full", "status": "passed", "stale": False,
                     "exit_code": 0, "commit": tree["commit"], "dirty": False,
                     "start_tree": tree, "end_tree": tree, "native_acceptance_opt_in": False,
+                    "sharded_full_python": True,
                     "steps": [{"step_id": s.step_id, "argv": list(s.argv), "status": "passed",
                                "test_results": {"python_executions": [1]}} for s in runner.steps]}
         report = self.root / "sharded-ci.json"
@@ -513,6 +514,9 @@ if os.environ.get("HEX_FIXTURE_CHANGE_DELIVERY") == "1":
             delivery.write_json(report, evidence)
             self.assertEqual(delivery.validate_ci(report, runner, tree["commit"]), evidence)
             delivery.write_json(report, {**evidence, "native_acceptance_opt_in": True})
+            with self.assertRaisesRegex(delivery.DeliveryError, "without native opt-in"):
+                delivery.validate_ci(report, runner, tree["commit"])
+            delivery.write_json(report, {**evidence, "sharded_full_python": False})
             with self.assertRaisesRegex(delivery.DeliveryError, "full exact-source"):
                 delivery.validate_ci(report, runner, tree["commit"])
             tooling["argv"] = ["python3", "scripts/python_shards.py", "--", "test_local_ci"]

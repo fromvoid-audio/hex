@@ -1286,6 +1286,20 @@ class ScopeTests(unittest.TestCase):
                     self.assertEqual(report.read_bytes(), native_report)
                 self.assertEqual(json.dumps(resolved, sort_keys=True), original_plan)
 
+    def test_sharded_full_report_supports_prose_continuation(self):
+        with self.runtime_certificate_fixture() as (root, resolved, report, evidence, _, _):
+            tooling = next(row for row in evidence["steps"] if row["step_id"] == "runner-tests")
+            tooling["argv"] = list(ci.ci_plan.python_tests.SHARDED_DISCOVERY_ARGV)
+            evidence["sharded_full_python"] = True
+            report.write_text(json.dumps(evidence))
+            reused = ci.reusable_plan(root, resolved, report)
+            self.assertEqual(reused["reuse"]["source"], evidence["commit"])
+            for marker in (False, 1):
+                with self.subTest(marker=marker):
+                    report.write_text(json.dumps({**evidence, "sharded_full_python": marker}))
+                    with self.assertRaises(ValueError):
+                        ci.reusable_plan(root, resolved, report)
+
     def test_runtime_reuse_refuses_invalid_certificates_and_executable_changes(self):
         with self.runtime_certificate_fixture() as (root, resolved, report, evidence, scoped, metadata):
             original_report = report.read_bytes()

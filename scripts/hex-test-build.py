@@ -1012,13 +1012,17 @@ def validate_ci(report: Path, runner, candidate: str, *, allow_dev_profile: bool
         raise DeliveryError("cannot identify current source")
     current = runner.summary["start_tree"]
     plan = evidence.get("plan")
-    required = ci.qualification_steps(
-        "full", None, native_acceptance_opt_in=evidence.get("native_acceptance_opt_in"),
-    )
+    if plan is not None and not isinstance(plan, dict):
+        raise DeliveryError("invalid scoped verification plan")
+    try:
+        required = ci.qualification_steps(
+            evidence.get("mode"), plan, native_acceptance_opt_in=evidence.get("native_acceptance_opt_in"),
+            sharded_full_python=evidence.get("sharded_full_python", False),
+        )
+    except (KeyError, TypeError, ValueError) as error:
+        raise DeliveryError(f"invalid verification configuration: {error}") from error
     allowed_mode = evidence.get("mode") == "full"
     if plan is not None:
-        if not isinstance(plan, dict):
-            raise DeliveryError("invalid scoped verification plan")
         if not allow_dev_profile and (plan.get("scope") != "full" or plan.get("reuse")):
             raise DeliveryError("beta/stable/native qualified delivery requires the full audit, not scoped dev checks")
         if (plan.get("profile") not in {"merge", "full", "release"}
@@ -1040,7 +1044,6 @@ def validate_ci(report: Path, runner, candidate: str, *, allow_dev_profile: bool
         _require_delivery_sources(runner)
         if resolved != plan:
             raise DeliveryError("recorded scope differs from the current source/dependency plan")
-        required = ci.planned_steps(plan)
         # Full Rust scope can use reduced Python coverage for ordinary merges.
         # Qualified delivery still requires the complete freshly resolved audit.
         if not allow_dev_profile and required != ci.planned_steps({"scope": "full"}):
