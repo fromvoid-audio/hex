@@ -12,6 +12,8 @@ use hex_session::service::{
     ResidentPublicationAcceptance, ResidentPublicationMetadata, ResidentPublicationPolicy,
     ResidentPublicationReadiness, ResidentPublicationRefusal, ResidentRuntimeLoop,
 };
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+use std::time::Instant;
 
 pub(super) struct Pending {
     playback: Playback,
@@ -29,7 +31,17 @@ pub(super) struct Resident {
     pub(super) applied_loop: Option<ResidentRuntimeLoop>,
     pub(super) retired: Option<DeviceResourcePublication>,
     pub(super) paused_monitor: Option<hex_engine::PausedMonitorStorageHold>,
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub(super) pending_paused_notes: Option<PendingPausedNotes>,
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    last_paused_notes: Option<(hex_audio::prepared::AppliedAudioSource, u64)>,
     observations: [Option<Arc<hex_engine::PreparedPlaybackObservation>>; RUNTIME_CELLS],
+}
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub(super) struct PendingPausedNotes {
+    scope: (hex_audio::prepared::AppliedAudioSource, u64),
+    deadline: Instant,
+    pub(super) effects: Option<plugins::PausedEffects>,
 }
 impl Resident {
     pub(super) fn has_pending_document(&self, context: AudioSourceContext) -> bool {
@@ -398,6 +410,10 @@ impl NativeAudioSink {
             return Err("paused input monitor is still retained".into());
         }
         self.check_paused_input_source(request)?;
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        {
+            self.resident.pending_paused_notes = None;
+        }
         let metadata = self
             .policy
             .as_ref()
@@ -463,6 +479,133 @@ impl NativeAudioSink {
         self.check_paused_input_source(request)?;
         self.resident.paused_monitor = Some(hold);
         Ok(monitor)
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub(super) fn poll_resident_paused_notes(
+        &mut self,
+        graph: Option<hex_session::service::PausedNoteGraph<'_>>,
+        admit: &mut dyn FnMut(&[DeviceResourceAdmission<'_>]) -> Result<(), String>,
+    ) -> bool {
+        let previous = self.resident.pending_paused_notes.take();
+        let Some(graph) = graph.filter(|graph| !graph.cancellation.is_cancelled()) else {
+            return false;
+        };
+        let Some((source, epoch)) = self
+            .output
+            .as_mut()
+            .and_then(|output| output.publication.control())
+            .and_then(|control| control.status.paused_note_source())
+        else {
+            return false;
+        };
+        if source.context != graph.source.context
+            || source.audio_revision != graph.source.audio_revision
+            || source.output_identity != graph.source.output_identity
+            || self.resident.last_paused_notes == Some((source, epoch))
+            || self.resident.paused_monitor.is_some()
+            || !graph
+                .source
+                .matches_applied(self.resident_publication_readiness())
+            || self
+                .resident
+                .applied_loop
+                .is_some_and(|applied| applied.section_loop.is_some())
+        {
+            return false;
+        }
+        let scope = (source, epoch);
+        let mut pending = match previous.filter(|previous| previous.scope == scope) {
+            Some(pending) => pending,
+            None if hex_engine::PausedSourceMonitor::supports_revision_on_control(
+                graph.revision,
+            ) =>
+            {
+                PendingPausedNotes {
+                    scope,
+                    deadline: Instant::now() + plugins::PREPARATION_TIMEOUT,
+                    effects: None,
+                }
+            }
+            None => {
+                self.resident.last_paused_notes = Some(scope);
+                return false;
+            }
+        };
+        match self.advance_resident_paused_notes(&mut pending, graph, admit) {
+            Ok(Some(hold)) => self.resident.paused_monitor = Some(hold),
+            Ok(None) => {
+                self.resident.pending_paused_notes = Some(pending);
+                return true;
+            }
+            Err(error) if plugins::paused_monitor_busy(&error) => {
+                self.resident.pending_paused_notes = Some(pending);
+                return true;
+            }
+            Err(error) => self.plugins.report_paused_note_refusal(scope, error),
+        }
+        self.resident.last_paused_notes = Some(scope);
+        false
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn advance_resident_paused_notes(
+        &mut self,
+        pending: &mut PendingPausedNotes,
+        graph: hex_session::service::PausedNoteGraph<'_>,
+        admit: &mut dyn FnMut(&[DeviceResourceAdmission<'_>]) -> Result<(), String>,
+    ) -> Result<Option<hex_engine::PausedMonitorStorageHold>, String> {
+        if Instant::now() >= pending.deadline {
+            return Err("paused vst3 monitor preparation timed out".into());
+        }
+        let output_unavailable = "paused note monitor output is unavailable";
+        let control = self
+            .output
+            .as_mut()
+            .and_then(|output| output.publication.control())
+            .ok_or(output_unavailable)?;
+        if pending.effects.is_none() {
+            pending.effects = Some(self.plugins.begin_paused_effects(control, graph.revision)?);
+        }
+        let effects = pending
+            .effects
+            .as_mut()
+            .ok_or("paused note effects unavailable")?;
+        if !effects.poll(&mut self.plugins, control, graph.revision, pending.scope)? {
+            return Ok(None);
+        }
+        let metadata = self
+            .policy
+            .as_ref()
+            .map_err(Clone::clone)?
+            .ordinary_graph_metadata_bytes;
+        let (monitor, hold) = hex_engine::PausedSourceMonitor::prepare_admitted_on_control(
+            Arc::clone(graph.revision),
+            Some(graph.resources),
+            effects.bindings(),
+            metadata,
+            |candidate| {
+                let [current, retired, pending] = self.resident_inventory();
+                admit(&[current, retired, pending, candidate])
+            },
+        )
+        .map_err(|error| match error {
+            hex_engine::PausedMonitorAdmissionError::Admission(reason) => reason,
+            hex_engine::PausedMonitorAdmissionError::Preparation(reason) => reason.to_string(),
+        })?;
+        if graph.cancellation.is_cancelled() {
+            return Err("paused note graph changed".into());
+        }
+        let control = self
+            .output
+            .as_mut()
+            .and_then(|output| output.publication.control())
+            .ok_or(output_unavailable)?;
+        let (source, epoch) = pending.scope;
+        control
+            .publish_paused_note_monitor(monitor, source, epoch)
+            .map_err(|_| "paused vst3 note monitor publication refused".to_owned())?;
+        Ok(Some(hold))
     }
 
     fn check_paused_input_source(
@@ -707,6 +850,15 @@ impl NativeAudioSink {
             });
         }
         let section_loop = playback.section_loop();
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        if section_loop.is_none()
+            && file_sources.is_none()
+            && metadata.device_preview.is_none()
+            && metadata.tuning_preview.is_none()
+            && metadata.clip_preview.is_none()
+        {
+            playback.defer_hosted_paused_source_monitor_on_control();
+        }
         if let ResidentPublicationPolicy::InheritRuntimeAt(expected) = policy {
             match self.current_runtime_loop(metadata.context) {
                 Ok(Some(actual)) if actual == expected && section_loop == actual.section_loop => {}

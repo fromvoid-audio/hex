@@ -186,7 +186,7 @@ impl PausedSourceMonitor {
 
     /// Check the static shape before an output opts into isolated pause
     /// rendering. Actual replacement bindings are validated at admission.
-    pub(crate) fn can_defer_on_control(revision: &PreparedRevision) -> bool {
+    pub fn supports_revision_on_control(revision: &PreparedRevision) -> bool {
         if revision.resource_scope.is_some()
             || revision.scalar_automation.is_some()
             || !revision.foreign_automation.is_empty()
