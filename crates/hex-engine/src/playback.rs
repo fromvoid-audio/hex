@@ -2762,6 +2762,9 @@ impl Playback {
         if result.is_err() {
             foreign.reject_callback();
             output.fill([0.0; 2]);
+        } else {
+            self.reset_metronome();
+            self.mix_tuning_audition(output);
         }
         result
     }

@@ -721,6 +721,9 @@ impl SessionPlayback {
             // fade. Never spend original graph history while the host waits
             // for private effects or after their activation is refused.
             output.fill([0.0; 2]);
+            if let Some(capture) = capture {
+                capture.commit(output.len());
+            }
             return Ok(());
         }
         if !output.is_empty()
