@@ -1124,14 +1124,24 @@ public:
     }
 };
 
-class ProcessingFactory final : public IPluginFactory {
+class ProcessingFactory final : public IPluginFactory2 {
     std::atomic<uint32> refs{0};
 public:
     uint32 count() const { return refs.load(); }
     tresult PLUGIN_API queryInterface(const TUID iid,void** out) override {
         if (!out) return kInvalidArgument;*out=nullptr;
-        if (!same(iid,INLINE_UID_OF(FUnknown)) && !same(iid,INLINE_UID_OF(IPluginFactory))) return kNoInterface;
-        *out=static_cast<IPluginFactory*>(this);addRef();return kResultOk;
+        if (same(iid, INLINE_UID_OF(IPluginFactory2))) {
+            // Discovery starts with a clean environment; the controlled
+            // fault and instrument variants keep their factory surface.
+            if (next_fault != 0) return kNoInterface;
+            *out = static_cast<IPluginFactory2*>(this);
+        } else {
+            if (!same(iid, INLINE_UID_OF(FUnknown))
+                && !same(iid, INLINE_UID_OF(IPluginFactory))) return kNoInterface;
+            *out = static_cast<IPluginFactory*>(this);
+        }
+        addRef();
+        return kResultOk;
     }
     uint32 PLUGIN_API addRef() override { return ++refs; }
     uint32 PLUGIN_API release() override { return --refs; }
@@ -1151,7 +1161,19 @@ public:
             return kResultOk;
         }
         if(index==1) {*out=PClassInfo(restore_controller_id,PClassInfo::kManyInstances,"Component Controller Class","hex original restore controller");return kResultOk;}
-        *out=PClassInfo(processing_id,PClassInfo::kManyInstances,"Audio Module Class","hex original processing fixture");return kResultOk;
+        const char* name = HEX_FIXTURE_RESIDUAL_ECHO ? "hex original tail fixture"
+            : HEX_FIXTURE_INFINITE_TAIL ? "hex original infinite tail fixture"
+            : "hex original processing fixture";
+        *out = PClassInfo(processing_id, PClassInfo::kManyInstances, "Audio Module Class", name);
+        return kResultOk;
+    }
+    tresult PLUGIN_API getClassInfo2(int32 index, PClassInfo2* out) override {
+        PClassInfo basic{};
+        if (!out || next_fault != 0 || getClassInfo(index, &basic) != kResultOk)
+            return kInvalidArgument;
+        *out = PClassInfo2(basic.cid, basic.cardinality, basic.category, basic.name,
+            0, "Fx", "hex original fixtures", "1", "VST 3.8");
+        return kResultOk;
     }
     tresult PLUGIN_API createInstance(FIDString cid,FIDString iid,void** out) override {
         if (!out) return kInvalidArgument;*out=nullptr;
