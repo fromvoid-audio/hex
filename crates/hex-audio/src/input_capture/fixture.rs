@@ -31,8 +31,6 @@ pub fn monitored_input() -> Result<(InputCapture, InputMonitor, InputObserver), 
         channels: 1,
     };
     let (output, input) = RingBuffer::new(PACKETS);
-    let (monitor_output, monitor_input) = RingBuffer::new(PACKETS);
-    let overrun = Arc::new(AtomicBool::new(false));
     let shared = Arc::new(Shared {
         phase: AtomicU8::new(READY),
         stop: AtomicBool::new(false),
@@ -44,20 +42,19 @@ pub fn monitored_input() -> Result<(InputCapture, InputMonitor, InputObserver), 
     let capture_frame = Arc::new(std::sync::atomic::AtomicU32::new(0));
     let worker_capture_frame = Arc::clone(&capture_frame);
     let worker_state = Arc::clone(&shared);
-    let monitor_overrun = Arc::clone(&overrun);
+    let (monitor_writer, monitor) = InputMonitor::channel(id.clone(), config, &shared, false);
     let worker = thread::Builder::new()
         .name("hex-fixture-input".into())
         .spawn(move || {
             let mut writer = Writer {
-                output,
+                output: WriterOutput::Recording {
+                    output,
+                    monitor: Some(monitor_writer),
+                },
                 shared: Arc::clone(&worker_state),
                 channels: 1,
                 sequence: 0,
                 previous: None,
-                monitor: Some(MonitorWriter {
-                    output: monitor_output,
-                    overrun: monitor_overrun,
-                }),
             };
             while worker_state.phase.load(Acquire) != STARTING && !worker_state.stop.load(Acquire) {
                 thread::park();
@@ -85,23 +82,19 @@ pub fn monitored_input() -> Result<(InputCapture, InputMonitor, InputObserver), 
     let (_, error) = mpsc::sync_channel(1);
     Ok((
         InputCapture {
-            id: id.clone(),
+            worker: CaptureWorker {
+                shared: Arc::clone(&shared),
+                handle: worker,
+                error,
+            },
+            id,
             config,
             input,
-            shared: Arc::clone(&shared),
-            worker,
-            error,
             prefetched: None,
             preroll_frames: 0,
             recording_ready: None,
         },
-        InputMonitor {
-            input: monitor_input,
-            overrun,
-            shared,
-            id,
-            config,
-        },
+        monitor,
         InputObserver {
             started,
             capture_frame,
