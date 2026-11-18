@@ -7158,6 +7158,7 @@ fn run_worker(
                                 compiled.as_ref().map(|(_, prepared)| prepared.as_ref()),
                                 sink,
                                 request_document_intent,
+                                device_gesture.snapshot().as_ref(),
                             )
                         });
                     match result {
