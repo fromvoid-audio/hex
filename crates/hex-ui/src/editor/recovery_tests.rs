@@ -617,7 +617,7 @@ fn graph_edit_recovery(cx: &mut gpui::TestAppContext, edit: EditFixture, outcome
                 v.recovery.generation().is_some(),
                 "loop must wait for fresh audio"
             );
-            assert_eq!(v.worker_requests_pending, 0, "only restart is permitted");
+            assert_eq!(v.worker_requests_pending, 1, "only restart is queued");
             assert!(
                 v.deferred_play.is_some(),
                 "playing intent must survive recovery"
@@ -632,6 +632,7 @@ fn graph_edit_recovery(cx: &mut gpui::TestAppContext, edit: EditFixture, outcome
                 Some(region),
                 "repeats preserve the original loop"
             );
+            assert_eq!(v.worker_requests_pending, 1, "repeats do not queue edits");
         } else {
             assert!(v.enqueue_device_barrier(request()));
         }
