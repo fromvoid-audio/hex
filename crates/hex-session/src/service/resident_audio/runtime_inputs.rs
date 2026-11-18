@@ -41,11 +41,21 @@ impl RuntimeInputs {
         }
         Ok(bytes)
     }
-    pub(in crate::service) fn allowance(&self) -> Result<usize, SessionError> {
-        let keyboard = self
-            .keyboard
-            .as_ref()
-            .map_or(0, |(_, input)| input.runtime_storage_limit_on_control());
+    pub(in crate::service) fn allowance(&self, snapshot: &Snapshot) -> Result<usize, SessionError> {
+        let keyboard = if let Some((track, input)) = &self.keyboard {
+            input
+                .runtime_storage_limit_on_control()
+                .checked_add(Playback::paused_keyboard_allowance_on_control(
+                    &snapshot.prepared,
+                    Some(&snapshot.resources),
+                    *track,
+                )?)
+                .ok_or(SessionError::Invalid(
+                    "resident keyboard allowance overflow",
+                ))?
+        } else {
+            0
+        };
         keyboard
             .checked_add(if self.audition.is_some() {
                 hex_engine::tuning_audition::MAX_TUNING_AUDITION_STORAGE_BYTES
@@ -165,6 +175,7 @@ impl RuntimeInputs {
         &mut self,
         project: &Project,
         playback: &mut Playback,
+        resources: &hex_engine::native_device_resources::PreparedDeviceResources,
     ) -> Result<(), SessionError> {
         if let Some((track, input)) = &self.keyboard {
             let valid = !input.is_cancelled()
@@ -173,7 +184,12 @@ impl RuntimeInputs {
                     .and_then(hex_project::Track::instrument)
                     .is_some_and(|device| !device.bypassed());
             if valid {
-                playback.prepare_computer_keyboard(project, *track, Arc::clone(input))?;
+                playback.prepare_resident_computer_keyboard(
+                    project,
+                    Some(resources),
+                    *track,
+                    Arc::clone(input),
+                )?;
             } else {
                 self.keyboard = None;
             }

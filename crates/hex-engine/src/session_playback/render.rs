@@ -653,6 +653,25 @@ impl SessionPlayback {
         result
     }
 
+    /// Render the loaned resident keyboard on its private, endpoint-free
+    /// route. It shares the caller's capture and meter transaction.
+    pub(super) fn render_resident_keyboard_block(
+        &mut self,
+        output: &mut [Frame],
+        observer: Option<&mut crate::NodeSignalObserver<'_>>,
+        capture: Option<&mut dyn CaptureSink>,
+    ) -> Result<(), SessionPlaybackError> {
+        self.render_internal_borrowed::<dyn MediaPages>(
+            output,
+            None,
+            observer,
+            capture,
+            None,
+            &mut hex_lattice::RefuseForeign,
+            None,
+        )
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn render_internal_borrowed<P: MediaPages + ?Sized>(
         &mut self,
@@ -664,6 +683,31 @@ impl SessionPlayback {
         foreign: &mut dyn hex_lattice::ForeignProcessors,
         live_audio: Option<LiveTrackAudio<'_>>,
     ) -> Result<(), SessionPlaybackError> {
+        if !output.is_empty()
+            && let Some(mut monitor) = self.paused_keyboard_monitor.take()
+        {
+            let isolated = !self.playing
+                && (self.performance_frame != 0 || self.arrangement_frame != 0)
+                && live_audio.is_none()
+                && self.anchor.is_none()
+                && self.transient_loop.is_none()
+                && self.computer_keyboard.is_some()
+                && self.current_sampler_keyboards.is_empty()
+                && self.foreign_arrangement.is_empty()
+                && !self.has_analytic_release_output()
+                && !self.source_effects.has_monitor_tail()
+                && !self.midi_capture_active()
+                && self.tail_groups.iter().all(Option::is_none)
+                && self.tail_mutable_instruments.iter().all(Option::is_none)
+                && !self.stopped_edit_tails();
+            if isolated {
+                let result = monitor.render_resident(self, output, observer, capture);
+                self.paused_keyboard_monitor = Some(monitor);
+                return result;
+            }
+            monitor.end_resident_interval();
+            self.paused_keyboard_monitor = Some(monitor);
+        }
         if let Some(state) = self.native_parameter_state.as_deref_mut() {
             state.application = None;
             state.processing = state.input.filter(|_| self.playing).map(|input| {

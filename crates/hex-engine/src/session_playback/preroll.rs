@@ -566,7 +566,12 @@ impl SessionPlayback {
             suppression_scratch: self.suppression_scratch.capacity(),
         }
         .bytes()?
-        .checked_add(self.browser_audition.retained_bytes()?)
+        .checked_add(self.browser_audition.retained_bytes()?)?
+        .checked_add(
+            self.paused_keyboard_monitor
+                .as_deref()
+                .map_or(Some(0), PausedKeyboardMonitor::runtime_storage_bytes)?,
+        )
     }
 }
 

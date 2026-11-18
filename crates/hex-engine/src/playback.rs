@@ -818,6 +818,62 @@ impl Playback {
     ) -> Result<(), Invalid> {
         self.prepare_computer_keyboard_impl(project, track, input, None)
     }
+
+    /// Extra resident DATA for an independent paused keyboard route. The
+    /// ordinary candidate owns these bytes through callback return. Zero
+    /// means the compiled track uses the existing keyboard path.
+    pub fn paused_keyboard_allowance_on_control(
+        revision: &PreparedRevision,
+        resources: Option<&crate::native_device_resources::PreparedDeviceResources>,
+        track: hex_project::TrackId,
+    ) -> Result<usize, Invalid> {
+        crate::PausedKeyboardMonitor::resident_allowance(revision, resources, track)
+            .map_err(|error| Invalid(error.diagnostic_message()))
+    }
+
+    /// Prepare the ordinary resident ingress and an optional private route
+    /// under the candidate's existing, pre-admitted runtime reservation.
+    /// Both modes retain the same keyboard owner and physical input prefix.
+    pub fn prepare_resident_computer_keyboard(
+        &mut self,
+        project: &hex_project::Project,
+        resources: Option<&crate::native_device_resources::PreparedDeviceResources>,
+        track: hex_project::TrackId,
+        input: Arc<crate::computer_keyboard::ComputerKeyboardInput>,
+    ) -> Result<(), Invalid> {
+        let revision = self
+            .prepared_revision
+            .as_ref()
+            .ok_or(Invalid("resident keyboard requires a prepared revision"))?;
+        let allowance = Self::paused_keyboard_allowance_on_control(revision, resources, track)?;
+        let monitor = if allowance == 0 {
+            None
+        } else {
+            let extra = allowance
+                .checked_add(input.runtime_storage_limit_on_control())
+                .ok_or(Invalid("resident keyboard storage allowance overflow"))?;
+            self.validate_candidate_runtime_storage(extra)
+                .map_err(|_| Invalid("resident keyboard exceeds graph storage budget"))?;
+            Some(Box::new(
+                crate::PausedKeyboardMonitor::prepare_resident_graph(
+                    Arc::clone(revision),
+                    resources,
+                    track,
+                    allowance,
+                )
+                .map_err(|error| Invalid(error.diagnostic_message()))?,
+            ))
+        };
+        self.prepare_computer_keyboard(project, track, input)?;
+        let runtime = self
+            .session_runtime
+            .as_mut()
+            .ok_or(Invalid("resident keyboard requires a session runtime"))?;
+        runtime.paused_keyboard_monitor = monitor;
+        runtime
+            .validate_candidate_runtime_storage(0)
+            .map_err(|_| Invalid("resident keyboard exceeds graph storage budget"))
+    }
     /// Reuse a checked tuning-only family and its exact physical lease. The
     /// caller prepares that family through PreparedRevision::prepare_tuning_from.
     pub fn prepare_computer_keyboard_for_tuning(
@@ -900,7 +956,9 @@ impl Playback {
                     "vst3 computer keyboard tuning hints are unsupported",
                 ));
             }
-            return runtime.prepare_foreign_keyboard(track, input);
+            runtime.prepare_foreign_keyboard(track, input)?;
+            runtime.paused_keyboard_monitor = None;
+            return Ok(());
         }
         let family = self
             .prepared_revision
@@ -999,6 +1057,7 @@ impl Playback {
         {
             runtime.release_source_input_on_control(input);
         }
+        runtime.paused_keyboard_monitor = None;
         Ok(())
     }
 
