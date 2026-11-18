@@ -114,6 +114,12 @@ and propagate the maximum along the usual ancestor path. Every primitive
 keeps its own assigned order and every future overlap has the same maximum.
 The locked verifier covers repeated overlap, reservation and disjoint reuse.
 
+Mac display requests still service dirty frames and explicit presentation.
+The optional recent-input replay of an unchanged scene skips drawable
+acquisition during a GPUI pointer drag. Release or cancellation restores the
+usual warm presentation cadence. The TestPlatform verifies that decision
+after dispatching real pan and clip drag inputs.
+
 11 October compiler compatibility: explicitly type the grid repeat helper's
 zero minimum and one-fraction literals as f32. Pinned Taffy 0.9.0's `length`
 and `fr` helpers accept `Into<f32>`; this preserves the same values/layout and
