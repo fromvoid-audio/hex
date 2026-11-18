@@ -6662,9 +6662,9 @@ fn fresh_added_audio_track(
     if next_retained.is_some() { None } else { added }
 }
 
-/// The initial selective case is resident, Arrangement-owned audio only.
-/// Exactly one already-muted track gains one local native latency processor;
-/// graph preflight independently proves isolation, equal maximum latency and
+/// Exactly one already-muted resident audio track gains a native latency processor.
+/// Unchanged native Arrangement instruments use the ordinary voice handoff.
+/// Graph preflight independently proves isolation, equal maximum latency and
 /// silent discarded rings before any runtime state is moved.
 fn muted_isolated_latency_addition(
     candidate: &SessionPlayback,
@@ -6717,6 +6717,24 @@ fn muted_isolated_latency_addition(
     // Bound state comparisons on the callback even for many native devices.
     const MAX_STATE_COMPARE_BYTES: usize = 4096;
     let mut compared_bytes = 0_usize;
+    let mut same_state =
+        |a: Option<&hex_lattice_contract::NativeDeviceState>,
+         b: Option<&hex_lattice_contract::NativeDeviceState>| {
+            match (a, b) {
+                (Some(a), Some(b)) => {
+                    if !a.asset_references().is_empty() || !b.asset_references().is_empty() {
+                        return false;
+                    }
+                    if !a.shares_payload_storage_with(b) {
+                        compared_bytes =
+                            compared_bytes.saturating_add(a.payload().len().max(b.payload().len()));
+                    }
+                    compared_bytes <= MAX_STATE_COMPARE_BYTES && a == b
+                }
+                (None, None) => true,
+                _ => false,
+            }
+        };
     let mut changed = None;
     for (before, after) in old.iter().zip(new) {
         let id = before.canonical_track_id()?;
@@ -6725,10 +6743,21 @@ fn muted_isolated_latency_addition(
             || before.source_mix != after.source_mix
             || before.gain_envelope.is_some()
             || after.gain_envelope.is_some()
+            || before.instrument_id != after.instrument_id
+            || before.instrument_position != after.instrument_position
+            || before.source_id != after.source_id
+            || before.source_receiver_index != after.source_receiver_index
+            || before.source_input_enabled != after.source_input_enabled
+            || before.source_audio_receiver != after.source_audio_receiver
+            || before.midi_source_index != after.midi_source_index
+            || before.instrument_bypassed != after.instrument_bypassed
+            || before.tuning_identity != after.tuning_identity
+            || !same_state(
+                before.instrument_state.as_ref(),
+                after.instrument_state.as_ref(),
+            )
             || [before, after].iter().any(|track| {
-                track.instrument_id.is_some()
-                    || track.source_id.is_some()
-                    || track.midi_source_index.is_some()
+                track.foreign_instrument.is_some()
                     || track.device_chain.iter().any(|device| {
                         matches!(
                             device.definition,
@@ -6749,27 +6778,7 @@ fn muted_isolated_latency_addition(
                         && a.device_type == b.device_type
                         && a.bypassed == b.bypassed
                         && a.matrix == b.matrix
-                        && match (&a.configuration, &b.configuration) {
-                            (Some(a), Some(b)) => {
-                                if !a.asset_references().is_empty()
-                                    || !b.asset_references().is_empty()
-                                {
-                                    return false;
-                                }
-                                let bytes = if a.shares_payload_storage_with(b) {
-                                    0
-                                } else {
-                                    a.payload().len().max(b.payload().len())
-                                };
-                                let Some(next) = compared_bytes.checked_add(bytes) else {
-                                    return false;
-                                };
-                                compared_bytes = next;
-                                compared_bytes <= MAX_STATE_COMPARE_BYTES && a == b
-                            }
-                            (None, None) => true,
-                            _ => false,
-                        }
+                        && same_state(a.configuration.as_deref(), b.configuration.as_deref())
                         && a.automation.is_empty()
                         && b.automation.is_empty()
                         && a.modulation.is_none()
@@ -6783,6 +6792,9 @@ fn muted_isolated_latency_addition(
         };
         if changed.is_some()
             || !before.device_chain.is_empty()
+            || before.instrument_id.is_some()
+            || before.source_id.is_some()
+            || before.midi_source_index.is_some()
             || !before.mix.muted()
             || !after.mix.muted()
             || device.bypassed
