@@ -20,6 +20,70 @@ pub(super) enum ScalarOriginHistory<'a> {
 }
 
 impl SessionPlayback {
+    /// Plan the first running chunk after a confirmed insert. A nonzero
+    /// offset speculates at the end of the fade, with no scheduled route
+    /// changes allowed. The callback must repeat this at the actual held cut
+    /// because DSP history can evolve during the fade.
+    pub(crate) fn preview_stream_device_insert(
+        &mut self,
+        previous: &mut Self,
+        fade_remaining: u32,
+        maximum_frames: usize,
+        visit: &mut impl FnMut(StreamResourceExtent) -> Result<(), Invalid>,
+    ) -> Result<StreamChunkWindow, SessionPlaybackError> {
+        if self.linear_arrangement_export
+            || previous.linear_arrangement_export
+            || self.current_sampler_console
+            || previous.current_sampler_console
+            || self.midi_capture_active()
+            || previous.midi_capture_active()
+            || previous.playing != (fade_remaining != 0)
+            || previous.routes.iter().any(|route| route.pending.is_some())
+        {
+            return Err(SessionPlaybackError::InvalidCommand);
+        }
+        self.require_fresh_candidate()?;
+        let performance = previous
+            .performance_frame
+            .checked_add(u64::from(fade_remaining))
+            .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
+        let (arrangement, pass) = previous
+            .project_stream_arrangement(performance)
+            .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
+        // Only scalar coordinates are projected. The shared planner's demand
+        // branch may use scratch but commits no render history or route.
+        let checkpoint = (
+            previous.performance_frame,
+            previous.arrangement_frame,
+            previous.arrangement_loop_pass,
+            previous.playing,
+        );
+        (
+            previous.performance_frame,
+            previous.arrangement_frame,
+            previous.arrangement_loop_pass,
+            previous.playing,
+        ) = (performance, arrangement, pass, false);
+        let mut demand = HandoffDemand {
+            ordinary: true,
+            maximum_frames,
+            playing: Some(true),
+            visit,
+            window: None,
+        };
+        let plan = self.inherit_state_at_device_insert_cut(previous, Some(&mut demand));
+        (
+            previous.performance_frame,
+            previous.arrangement_frame,
+            previous.arrangement_loop_pass,
+            previous.playing,
+        ) = checkpoint;
+        plan?;
+        demand
+            .window
+            .ok_or(SessionPlaybackError::ArithmeticOverflow)
+    }
+
     /// This is derived from the retained runtime graph, not a caller-declared
     /// readiness mode. Serial Main-only latency reads the ordinary source
     /// frontier for Arrangement and Session audio. Flat audio-only tracks and

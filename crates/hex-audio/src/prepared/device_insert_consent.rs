@@ -226,6 +226,7 @@ impl Publication {
 
 impl Callback {
     pub(super) fn abort_blocked_device_insert(&mut self) {
+        self.release_device_insert_fade_pins();
         if let Some(next) = self.deferred.as_ref()
             && let Some(basis) = next.approved_device_insert()
             && self.recording_source() == Some(basis.predecessor)
@@ -239,17 +240,77 @@ impl Callback {
         }
     }
 
-    /// Start and commit only at physical callback boundaries. Source-free
-    /// ordinary stream workspaces have no page roles to promote at this cut.
+    pub(super) fn release_device_insert_fade_pins(&mut self) {
+        if let Some(pins) = self.device_insert_fade_pins.take() {
+            pins.release(&mut self.domain_pages);
+        }
+    }
+
+    pub(super) fn device_insert_uses_streams(&self, next: &Publication) -> bool {
+        next.playback.contains_streamed_sources()
+            || self
+                .active
+                .as_ref()
+                .and_then(ActivePublication::legacy)
+                .is_some_and(|active| active.playback.contains_streamed_sources())
+    }
+
+    fn protect_device_insert_resume_window(
+        &mut self,
+        next: &mut Publication,
+        fade_remaining: u32,
+    ) -> Result<bool, PlaybackHandoffRejection> {
+        let unavailable = PlaybackHandoffRejection::StreamedPagesNotReady;
+        let old = self
+            .active
+            .as_mut()
+            .and_then(ActivePublication::legacy_mut)
+            .ok_or(unavailable)?;
+        let context = old.source_context.ok_or(unavailable)?;
+        let streams = next.streams.as_mut().ok_or(unavailable)?;
+        let window = streams.prepare_install(
+            &mut next.playback,
+            Some((&mut old.playback, context, old.revision)),
+            &mut self.domain_pages,
+            false,
+            self.stream_prefix,
+            256,
+            false,
+            false,
+            Some(fade_remaining),
+        );
+        match window {
+            Ok(Some(_)) => Ok(true),
+            Ok(None) => Ok(false),
+            Err(_) if streams.take_source_changed() => {
+                Err(PlaybackHandoffRejection::StreamSourceChanged)
+            }
+            Err(_) if streams.capacity_conflict() => {
+                Err(PlaybackHandoffRejection::StreamedPageCapacity)
+            }
+            Err(_) => Err(streams
+                .take_handoff_diagnostic()
+                .map_or(unavailable, PlaybackHandoffRejection::from_error)),
+        }
+    }
+
+    /// Start and commit only at physical callback boundaries. A streamed
+    /// cut protects both the old fade and the projected successor before
+    /// attenuation, and proves the exact successor window again at the hold.
     pub(super) fn advance_confirmed_device_insert(
         &mut self,
-        next: &Publication,
-        basis: &DeviceInsertBasis,
+        next: &mut Publication,
     ) -> Result<bool, PlaybackHandoffRejection> {
         let stale = PlaybackHandoffRejection::RuntimeFenceChanged;
+        let consent = next
+            .approved_device_insert()
+            .and_then(|basis| basis.approved)
+            .ok_or(stale)?;
         let active = self.active.as_ref().and_then(ActivePublication::legacy);
-        if !basis.cut_is_current(&self.status, active)
-            || self.recording_source() != Some(basis.predecessor)
+        if next
+            .approved_device_insert()
+            .is_none_or(|basis| !basis.cut_is_current(&self.status, active))
+            || self.recording_source() != Some(consent.predecessor)
             || self.transport_fade.is_some()
             || self.stream_pending_play.is_some()
             || self.stream_action_pending()
@@ -259,6 +320,7 @@ impl Callback {
             return Err(stale);
         }
         let active = active.ok_or(stale)?;
+        let streamed = self.device_insert_uses_streams(next);
         let source_free = |graph: &Publication| {
             !graph.playback.contains_streamed_sources()
                 && graph
@@ -266,7 +328,7 @@ impl Callback {
                     .as_ref()
                     .is_none_or(|streams| streams.permits_paused_monitor())
         };
-        if !source_free(active) || !source_free(next) {
+        if !streamed && (!source_free(active) || !source_free(next)) {
             return Err(PlaybackHandoffRejection::StreamedPagesNotReady);
         }
         // A scheduled launch has already been admitted at an exact cut.
@@ -280,7 +342,50 @@ impl Callback {
             return Err(stale);
         }
         if active.playback.device_insert_cut_pending() {
-            return Ok(active.playback.device_insert_held());
+            let held = active.playback.device_insert_held();
+            if streamed && held {
+                if !self.protect_device_insert_resume_window(next, 0)? {
+                    return Err(PlaybackHandoffRejection::StreamedPagesNotReady);
+                }
+            } else if streamed
+                && (self.status.stream_buffering.load(Acquire)
+                    || self.status.stream_source_changed.load(Acquire)
+                    || self.status.stream_read_failed.load(Acquire))
+            {
+                return Err(PlaybackHandoffRejection::StreamedPagesNotReady);
+            }
+            return Ok(held);
+        }
+        if streamed {
+            let fade = active.playback.device_insert_fade_frames();
+            let pins = self
+                .active
+                .as_mut()
+                .and_then(ActivePublication::stream_view)
+                .ok_or(PlaybackHandoffRejection::StreamedPagesNotReady)?
+                .reserve_current_quantum(&mut self.domain_pages, fade as usize, false)
+                .map_err(|error| match error {
+                    crate::candidate_custody::QuantumFailure::Capacity => {
+                        PlaybackHandoffRejection::StreamedPageCapacity
+                    }
+                    _ => PlaybackHandoffRejection::StreamedPagesNotReady,
+                })?;
+            self.device_insert_fade_pins = Some(pins);
+            if !self
+                .device_insert_fade_pins
+                .as_ref()
+                .is_some_and(|pins| pins.complete())
+            {
+                self.release_device_insert_fade_pins();
+                if let Some(streams) = next.streams.as_mut() {
+                    streams.cancel_install(&mut self.domain_pages);
+                }
+                return Ok(false);
+            }
+            if !self.protect_device_insert_resume_window(next, fade)? {
+                self.release_device_insert_fade_pins();
+                return Ok(false);
+            }
         }
         if !next
             .fresh_runtime_cancellation
@@ -289,7 +394,11 @@ impl Callback {
         {
             return Err(PlaybackHandoffRejection::FreshRuntimeCancelled);
         }
-        if !basis.cut_is_current(&self.status, Some(active)) {
+        let active = self.active.as_ref().and_then(ActivePublication::legacy);
+        if next
+            .approved_device_insert()
+            .is_none_or(|basis| !basis.cut_is_current(&self.status, active))
+        {
             return Err(stale);
         }
         let active = self

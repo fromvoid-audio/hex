@@ -118,7 +118,7 @@ impl Pending {
         &mut self,
         sink: &mut dyn WorkerAudioSink,
     ) -> Option<DeviceInsertConfirmation> {
-        if self.snapshot.prepared.contains_streamed_sources() || self.confirmation.is_some() {
+        if self.confirmation.is_some() {
             return None;
         }
         let deadline = sink.offer_device_insert_consent(self.submission())?;

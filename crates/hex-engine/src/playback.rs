@@ -1962,6 +1962,28 @@ impl Playback {
             && self.transport_fade.begin_device_insert_cut()
     }
 
+    /// Frames to the cut if a fresh insert fade starts on this callback.
+    pub fn device_insert_fade_frames(&self) -> u32 {
+        transport_fade::fade_frames(self.sample_rate())
+    }
+
+    pub(crate) fn preview_stream_device_insert(
+        &mut self,
+        previous: &mut Self,
+        fade_remaining: u32,
+        maximum_frames: usize,
+        visit: &mut impl FnMut(crate::StreamResourceExtent) -> Result<(), Invalid>,
+    ) -> Result<crate::StreamChunkWindow, PlaybackHandoffError> {
+        let unavailable = PlaybackHandoffError::RuntimeFenceChanged;
+        if previous.device_insert_held() != (fade_remaining == 0) {
+            return Err(unavailable);
+        }
+        let next = self.session_runtime.as_mut().ok_or(unavailable)?;
+        let previous = previous.session_runtime.as_mut().ok_or(unavailable)?;
+        next.preview_stream_device_insert(previous, fade_remaining, maximum_frames, visit)
+            .map_err(PlaybackHandoffError::Session)
+    }
+
     /// The output is silent and the Session clock is frozen at the fade end.
     pub fn device_insert_held(&self) -> bool {
         self.transport_fade.device_insert_held()

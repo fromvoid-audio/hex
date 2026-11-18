@@ -1467,6 +1467,7 @@ pub struct Callback {
     transport_fade: Option<transport_fade::PendingFade>,
     yield_stream_successor_once: bool,
     current_quantum_pins: Option<crate::candidate_custody::QuantumPins>,
+    device_insert_fade_pins: Option<crate::candidate_custody::QuantumPins>,
     stream_prefix: u64,
     // Defensive retention if a push unexpectedly fails; never drop graph ownership.
     held_retirement: Option<ReturnedPublication>,
@@ -1652,6 +1653,7 @@ pub(crate) fn channel_with_interface(
             transport_fade: None,
             yield_stream_successor_once: false,
             current_quantum_pins: None,
+            device_insert_fade_pins: None,
             stream_prefix: 0,
             held_retirement: None,
             terminal_disposal_pending: false,
@@ -3387,7 +3389,13 @@ impl Callback {
         self.held_retirement.is_none() && self.publications.is_empty()
     }
 
-    fn return_graph(&mut self, publication: Publication) {
+    fn return_graph(&mut self, mut publication: Publication) {
+        if publication.approved_device_insert().is_some() {
+            self.release_device_insert_fade_pins();
+            if let Some(streams) = publication.streams.as_mut() {
+                streams.cancel_install(&mut self.domain_pages);
+            }
+        }
         self.release_refused_device_insert_cut(&publication);
         if let Some(receipt) = publication.fresh_runtime_cancellation.as_ref() {
             // The callback is the sole writer of these refusal fields. A
@@ -3852,8 +3860,8 @@ impl Callback {
                 self.status.publication_pending.store(false, Release);
                 return;
             }
-            let ready = if let Some(basis) = next.approved_device_insert() {
-                self.advance_confirmed_device_insert(&next, basis)
+            let ready = if confirmed_insert {
+                self.advance_confirmed_device_insert(&mut next)
             } else {
                 self.device_insert_cut_ready(&mut next)
             };
@@ -4040,7 +4048,24 @@ impl Callback {
                 next.playback.require_continuous_device_insert();
             }
             let mut promotions = None;
-            if !forced_refusal
+            if confirmed_insert && stale_fence.is_none() && self.device_insert_uses_streams(&next) {
+                let prepared = next
+                    .streams
+                    .as_mut()
+                    .map(|streams| streams.prepare_commit(&mut self.domain_pages));
+                match prepared {
+                    Some(Ok(prepared)) => promotions = Some(prepared),
+                    _ => {
+                        self.reject_publication(
+                            next.revision,
+                            PlaybackHandoffRejection::StreamedPagesNotReady,
+                        );
+                        self.return_graph(next);
+                        self.status.publication_pending.store(false, Release);
+                        return;
+                    }
+                }
+            } else if !forced_refusal
                 && !confirmed_insert
                 && stale_fence.is_none()
                 && next.streams.is_some()
@@ -4254,6 +4279,7 @@ impl Callback {
                                 frames.unwrap_or(0),
                                 fenced_restart,
                                 foreign_continuation,
+                                None,
                             )
                         });
                         (prepared, false)
@@ -4771,6 +4797,7 @@ impl Callback {
                     }
                     if confirmed_insert {
                         next.playback.release_device_insert_cut();
+                        self.release_device_insert_fade_pins();
                     }
                     let previous = self.active.replace(ActivePublication::Legacy(next));
                     if reset_audible {
@@ -5271,6 +5298,7 @@ impl Callback {
     }
     /// Stop immediately after a render fault; does not dispose graph ownership.
     pub fn stop_after_fault(&mut self) {
+        self.release_device_insert_fade_pins();
         if let Some(next) = self.deferred.as_ref()
             && next.approved_device_insert().is_some()
             && let Some(receipt) = next.fresh_runtime_cancellation.as_ref()

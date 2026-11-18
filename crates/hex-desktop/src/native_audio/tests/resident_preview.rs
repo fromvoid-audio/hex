@@ -4440,6 +4440,17 @@ fn staged_native_insert_is_refused_on_real_output_fault_without_a_late_commit() 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 #[test]
 fn confirmed_limiter_keeps_the_same_output_and_commits_only_after_its_fade() {
+    confirmed_limiter_keeps_the_same_output(262_144, false);
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[test]
+fn confirmed_limiter_resumes_file_backed_audio_on_the_same_output() {
+    confirmed_limiter_keeps_the_same_output(8_192, true);
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn confirmed_limiter_keeps_the_same_output(frame_limit: u64, streamed: bool) {
     use hex_session::service::DeviceInsertOutcome;
 
     fn status(h: &ResidentHarness) -> &hex_audio::prepared::Status {
@@ -4448,10 +4459,23 @@ fn confirmed_limiter_keeps_the_same_output_and_commits_only_after_its_fade() {
 
     let _native = native_fixture();
     let files = Files::new();
-    let mut h = ResidentHarness::with_frame_limit(262_144);
+    let mut h = ResidentHarness::with_frame_limit(frame_limit);
     assert!(h.next().error.is_none());
     let (applied, _) = h.applied(0);
     let imported = h.run(Request::Import(files.wav(48_000, 96_000)));
+    assert_eq!(
+        imported
+            .state
+            .canonical_audio_source
+            .as_ref()
+            .unwrap()
+            .required_sources()
+            .any(|(_, binding)| matches!(
+                binding,
+                hex_session::AudioSourceBinding::VerifiedFile(_)
+            )),
+        streamed
+    );
     let (applied, _) = h.applied(applied);
     let predecessor = status(&h).recording_source().unwrap();
     assert_eq!(predecessor.audio_revision, applied);
@@ -4461,7 +4485,11 @@ fn confirmed_limiter_keeps_the_same_output_and_commits_only_after_its_fade() {
         .control
         .command(PlaybackCommand::Play)
         .unwrap();
-    assert_eq!(h.render(), [[0.25; 2]; 64]);
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while h.render() != [[0.25; 2]; 64] {
+        assert!(streamed && Instant::now() < deadline, "source never played");
+        std::thread::yield_now();
+    }
     h.enable_confirmed_device_inserts();
     for proceed in [false, true] {
         let state = hex_engine::default_native_device_state_for_class(
@@ -4506,8 +4534,17 @@ fn confirmed_limiter_keeps_the_same_output_and_commits_only_after_its_fade() {
             assert_eq!(confirmed.output_identity, predecessor.output_identity);
             assert_eq!(confirmed.context, offer.submission().context);
             assert_ne!(confirmed.audio_revision, offer.submission().audio_revision);
-            let position = status(&h).position.load(Acquire);
-            assert_eq!(h.render()[0], [0.25 * 127.0 / 128.0; 2]);
+            let deadline = Instant::now() + Duration::from_secs(2);
+            let position = loop {
+                let position = status(&h).position.load(Acquire);
+                let pcm = h.render();
+                if pcm[0] == [0.25 * 127.0 / 128.0; 2] {
+                    break position;
+                }
+                assert_eq!(pcm, [[0.25; 2]; 64]);
+                assert!(streamed && Instant::now() < deadline, "fade never started");
+                std::thread::yield_now();
+            };
             assert_eq!(h.render()[63], [0.0; 2]);
             assert_eq!(status(&h).recording_source(), Some(predecessor));
             assert_eq!(status(&h).position.load(Acquire), position + 128);

@@ -689,8 +689,11 @@ impl SessionPlayback {
     pub(super) fn inherit_state_at_device_insert_cut(
         &mut self,
         previous: &mut Self,
+        demand: Option<&mut super::stream_demand::HandoffDemand<'_>>,
     ) -> Result<SessionHandoffReport, SessionPlaybackError> {
-        self.inherit_state_planned_with_anchor(previous, None, None, true, false, None, None, true)
+        self.inherit_state_planned_with_anchor(
+            previous, None, demand, true, false, None, None, true,
+        )
     }
     /// With `live`, a transition the strict planner cannot prove (an unproven
     /// mutable chase, a changed MIDI source layout, compensated timing or tails,

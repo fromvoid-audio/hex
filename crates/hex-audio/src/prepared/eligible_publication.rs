@@ -619,6 +619,7 @@ impl Callback {
                 frames,
                 fenced_restart: false,
                 foreign_continuation: false,
+                confirmed_fade: None,
             });
             next.prepare_install(previous, &self.candidate_root, request.as_mut())
         } else {

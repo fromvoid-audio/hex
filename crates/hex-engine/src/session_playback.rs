@@ -2689,7 +2689,7 @@ impl SessionPlayback {
         }
         self.require_fresh_candidate()?;
         if confirmed_insert {
-            self.inherit_state_at_device_insert_cut(previous)
+            self.inherit_state_at_device_insert_cut(previous, None)
         } else {
             self.inherit_state_live(previous, None)
         }
