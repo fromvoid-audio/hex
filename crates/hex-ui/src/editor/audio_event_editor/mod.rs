@@ -180,6 +180,7 @@ enum Kind {
     Select,
     PlayStart {
         position: u64,
+        recovery_attempted: bool,
     },
     RangeMove {
         start: u64,
@@ -222,7 +223,7 @@ impl EditorView {
     ) -> Option<hex_session::service::ArrangementPlayStartAudition> {
         use hex_session::service::{ArrangementPlayStartAudition, PlayStartEdit};
         let gesture = self.audio_event_editor.gesture.as_ref()?;
-        let Kind::PlayStart { position } = gesture.kind else {
+        let Kind::PlayStart { position, .. } = gesture.kind else {
             return None;
         };
         if position == gesture.anchor {
@@ -242,6 +243,19 @@ impl EditorView {
             },
             edit: PlayStartEdit::Audio { clip, position },
         })
+    }
+
+    pub(super) fn claim_audio_play_start_recovery(&mut self) -> bool {
+        let Some(Gesture {
+            kind: Kind::PlayStart {
+                recovery_attempted, ..
+            },
+            ..
+        }) = self.audio_event_editor.gesture.as_mut()
+        else {
+            return false;
+        };
+        !std::mem::replace(recovery_attempted, true)
     }
 
     fn event_context_current(&self) -> bool {
@@ -600,7 +614,7 @@ impl EditorView {
     fn event_release_pointer(&mut self, x: f32, platform: bool) {
         self.event_update_pointer(x, platform);
         if let Some(gesture) = self.audio_event_editor.gesture.take() {
-            if let Kind::PlayStart { position } = gesture.kind {
+            if let Kind::PlayStart { position, .. } = gesture.kind {
                 if position != gesture.anchor
                     && let Some((clip, _, _)) = self.event_context()
                 {
@@ -715,7 +729,15 @@ impl EditorView {
             self.event_update_fade_pointer(x, fade.last_y, platform);
             return;
         }
-        if !self.event_context_current() || self.edit_pending() {
+        let recovering_play_start = self
+            .audio_event_editor
+            .gesture
+            .as_ref()
+            .is_some_and(|g| matches!(g.kind, Kind::PlayStart { .. }))
+            && self
+                .detail_clip_id()
+                .is_some_and(|clip| self.recovering_clip_play_start(clip));
+        if !self.event_context_current() || (self.edit_pending() && !recovering_play_start) {
             self.audio_event_editor.gesture = None;
             self.sync_held_play_start_audition();
             return;
@@ -742,12 +764,17 @@ impl EditorView {
         };
         let position = self.event_pointer_position(x, platform).unwrap_or(raw);
         match gesture.kind {
-            Kind::PlayStart { .. } => {
+            Kind::PlayStart {
+                recovery_attempted, ..
+            } => {
                 let Some(position) = self.audio_play_start_at_pointer(&root, &gesture, x, platform)
                 else {
                     return;
                 };
-                gesture.kind = Kind::PlayStart { position };
+                gesture.kind = Kind::PlayStart {
+                    position,
+                    recovery_attempted,
+                };
             }
             Kind::Select => {
                 self.audio_event_editor.range =

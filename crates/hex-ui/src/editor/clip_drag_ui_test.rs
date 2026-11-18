@@ -1314,6 +1314,17 @@ pub(super) fn upper_rail_owned_fixture(
     gpui::AnyWindowHandle,
     gpui::Entity<EditorView>,
 ) {
+    upper_rail_fixture_with_service(cx, Service::new(48_000, 32, 8_000_000).unwrap())
+}
+
+pub(super) fn upper_rail_fixture_with_service(
+    cx: &mut TestAppContext,
+    service: Service,
+) -> (
+    Arc<super::test_environment::Environment>,
+    gpui::AnyWindowHandle,
+    gpui::Entity<EditorView>,
+) {
     use hex_session::service::Request;
     cx.update(super::bind_editor_keys);
     let files = super::test_environment::Environment::new().unwrap();
@@ -1341,7 +1352,6 @@ pub(super) fn upper_rail_owned_fixture(
     }
     std::fs::write(&wav, bytes).unwrap();
     std::fs::create_dir(files.root().join("samples")).unwrap();
-    let service = Service::new(48_000, 32, 8_000_000).unwrap();
     upper_rail_next(&service);
     service.submit(Request::Import(wav.clone())).unwrap();
     let imported = upper_rail_next(&service);

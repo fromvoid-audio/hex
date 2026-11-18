@@ -248,6 +248,7 @@ impl EditorView {
             &mut self.pending_sample_drop,
             &mut self.pending_time_range_move,
             &mut self.pending_loop,
+            &mut self.clip_loop,
         );
         self.pending_playback = None;
         self.pending_resident_publication = None;
@@ -1984,6 +1985,7 @@ impl EditorView {
                 &mut self.pending_sample_drop,
                 &mut self.pending_time_range_move,
                 &mut self.pending_loop,
+                &mut self.clip_loop,
             );
             self.pending_recovery_generation = None;
             visible_change |= replace_error(
@@ -2588,6 +2590,7 @@ impl EditorView {
                 &mut self.pending_sample_drop,
                 &mut self.pending_time_range_move,
                 &mut self.pending_loop,
+                &mut self.clip_loop,
             );
             self.pending_playback = None;
             self.pending_resident_publication = None;
@@ -4021,6 +4024,14 @@ impl EditorView {
         // picker path may still be awaiting the next render's Open reconciliation.
         if !request.is_project_open() && !recovery_restore {
             self.pending_open_path = None;
+        }
+        // A released play-start marker can join its in-progress recovery.
+        // It hasn't edited the project yet and must leave the recovered seek alive.
+        if self.recovering_clip_play_start_request(&request) {
+            return self.recover_before_graph_edit(
+                super::recovery_state::DeferredEditKind::ClipPlayStart,
+                request,
+            );
         }
         if matches!(
             &request,
