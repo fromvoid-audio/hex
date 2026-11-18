@@ -4501,7 +4501,8 @@ fn installed_instrument_and_effect_export_with_streamed_audio() {
     let probe = std::env::var_os("HEX_TEST_EXPORT_PROBE").is_some();
     let complete = std::env::var_os("HEX_TEST_EXPORT_COMPLETE").is_some();
     let full_playthrough = std::env::var_os("HEX_TEST_FULL_MIXED_PLAYTHROUGH").is_some();
-    let live_playback = std::env::var_os("HEX_TEST_EXPORT_LIVE_PLAYBACK").is_some();
+    let live_playback =
+        full_playthrough || std::env::var_os("HEX_TEST_EXPORT_LIVE_PLAYBACK").is_some();
     let verify_live_state =
         full_playthrough || std::env::var_os("HEX_TEST_EXPORT_LIVE_STATE").is_some();
     let live_edit = full_playthrough || std::env::var_os("HEX_TEST_EXPORT_LIVE_EDIT").is_some();
@@ -4513,7 +4514,6 @@ fn installed_instrument_and_effect_export_with_streamed_audio() {
         !full_playthrough || (complete && !probe),
         "full playthrough requires a complete export"
     );
-    assert!(!full_playthrough || live_playback);
     // The fixture uses the project default of 120 BPM at 48 kHz.
     const FRAMES_PER_QUARTER: usize = 24_000;
     const PHRASE_QUARTERS: usize = 8;
@@ -5033,10 +5033,19 @@ fn installed_instrument_and_effect_export_with_streamed_audio() {
         (applied, _) = h.applied(applied);
         if full_playthrough {
             let undone = h.run(Request::Undo);
-            assert_eq!(undone.state.project, before_insert);
+            let mut expected = before_insert.snapshot();
+            // Undo retires the inserted device without reusing its identity.
+            expected.next_id = inserted.state.project.next_identity();
+            assert!(
+                undone.state.project.snapshot() == expected,
+                "undo changed more than the installed Utility"
+            );
             (applied, _) = h.applied(applied);
             let redone = h.run(Request::Redo);
-            assert_eq!(redone.state.project, inserted.state.project);
+            assert!(
+                redone.state.project == inserted.state.project,
+                "redo did not restore the installed Utility project"
+            );
             (applied, _) = h.applied(applied);
             expected_revision = redone.state.revision;
             expected_can_undo = redone.state.can_undo;
