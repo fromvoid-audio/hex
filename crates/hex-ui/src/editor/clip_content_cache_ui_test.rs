@@ -29,6 +29,8 @@ fn held_pan_reuses_current_scene_and_release_keeps_first_clip_drag(cx: &mut Test
     });
     visual.run_until_parked();
     let lane = editor.read_with(&visual, |view, _| view.drag_lanes[&source]);
+    assert!(visual.should_present_drawn_scene(false, true));
+    assert!(!visual.should_present_drawn_scene(false, false));
     let start = point(gpui::px(lane.left + 40.0), gpui::px(lane.top + 25.0));
     visual.simulate_mouse_down(start, MouseButton::Middle, Modifiers::default());
     let end = point(start.x - gpui::px(20.0), start.y);
@@ -43,6 +45,12 @@ fn held_pan_reuses_current_scene_and_release_keeps_first_clip_drag(cx: &mut Test
         );
         view.clip_content_cache.entries[&source].clone()
     });
+    assert_eq!(
+        visual.should_present_drawn_scene(false, true),
+        !cfg!(target_os = "macos"),
+        "only macOS skips optional retained scenes during held motion"
+    );
+    assert!(visual.should_present_drawn_scene(true, false));
     let builds = content.read_with(&visual, |content, _| content.builds);
     for _ in 0..2 {
         visual.update(|window, cx| {
@@ -56,6 +64,7 @@ fn held_pan_reuses_current_scene_and_release_keeps_first_clip_drag(cx: &mut Test
     );
     visual.simulate_mouse_up(end, MouseButton::Middle, Modifiers::default());
     visual.run_until_parked();
+    assert!(visual.should_present_drawn_scene(false, true));
     let surface = Box::leak(format!("clip-drag-surface-{}", clip.value()).into_boxed_str());
     let down = visual
         .debug_bounds(surface)
@@ -71,7 +80,14 @@ fn held_pan_reuses_current_scene_and_release_keeps_first_clip_drag(cx: &mut Test
         cx.update(|app| app.has_active_drag()),
         "first motion after pan release"
     );
+    assert_eq!(
+        visual.should_present_drawn_scene(false, true),
+        !cfg!(target_os = "macos"),
+        "typed clip drags use the same retained-scene policy"
+    );
+    assert!(visual.should_present_drawn_scene(true, true));
     visual.simulate_keystrokes("escape");
+    assert!(visual.should_present_drawn_scene(false, true));
     visual.simulate_mouse_up(down, MouseButton::Left, Modifiers::default());
     editor.read_with(&visual, |view, _| {
         assert_eq!(view.state.as_ref().unwrap().project.as_ref(), &before)
