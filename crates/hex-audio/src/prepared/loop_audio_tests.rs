@@ -1505,42 +1505,6 @@ fn removing_utility_from_shared_chain_waits_for_stop_without_callback_allocation
 }
 
 #[test]
-fn stopped_live_input_history_mark_and_render_do_not_allocate() {
-    let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
-    editor
-        .execute(Command::AddTrack {
-            name: "input".into(),
-        })
-        .unwrap();
-    let revision = Arc::new(
-        PreparedRevision::prepare(
-            editor.project(),
-            &BTreeMap::new(),
-            Arc::new(SineTable::new()),
-            None,
-        )
-        .unwrap(),
-    );
-    let mut playback = hex_engine::SessionPlayback::new(revision).unwrap();
-    let mut output = [[0.0; 2]; 256];
-    let mut result = Ok(());
-    let counts = allocation_counter::measure(|| {
-        playback.note_stopped_live_input();
-        result = playback.render(&mut output);
-    });
-    result.unwrap();
-    assert_eq!(
-        (
-            counts.count_total,
-            counts.bytes_total,
-            counts.count_current,
-            counts.bytes_current
-        ),
-        (0, 0, 0, 0)
-    );
-}
-
-#[test]
 fn live_track_audio_engine_render_has_no_allocations_or_frees() {
     for compensated in [false, true] {
         let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();

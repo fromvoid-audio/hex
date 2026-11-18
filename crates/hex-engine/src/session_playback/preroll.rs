@@ -516,7 +516,6 @@ impl SessionPlayback {
             // an admitted live input releases the primed clip gates.
             candidate.playing = false;
             candidate.monitor_source_releases = false;
-            candidate.stopped_live_input_history = false;
         }
         if !Arc::ptr_eq(&candidate.revision, &revision) {
             return Err(ArrangementPrerollError::CandidatePositionMismatch);

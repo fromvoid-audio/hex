@@ -748,9 +748,7 @@ impl SessionPlayback {
                     .plan_continuation(
                         &previous.source_effects,
                         live,
-                        live && !previous.playing
-                            && !previous.monitor_source_releases
-                            && !previous.stopped_live_input_history,
+                        live && !previous.playing && !previous.monitor_source_releases,
                         |source| {
                             prepared_source_generator_matches(
                                 &previous.revision,
@@ -1530,7 +1528,6 @@ impl SessionPlayback {
         }
         if (self.compensation.is_some() || previous.compensation.is_some() || force_restart)
             && (!previous.playing || running_restart || running_relocate)
-            && !previous.stopped_live_input_history
             && (paused_cursor.is_some()
                 || running_restart
                 || running_relocate
@@ -1690,8 +1687,6 @@ impl SessionPlayback {
             self.candidate_admission_open = false;
             self.main_chain
                 .transfer_history_from(&mut previous.main_chain);
-            let stopped_live_history =
-                self.stopped_live_input_history || previous.stopped_live_input_history;
             if let Some((frame, beat)) = cursor {
                 // Admitted paused monitoring keeps rendering at the cursor.
                 let monitoring = self.monitor_source_releases || previous.monitor_source_releases;
@@ -1714,7 +1709,6 @@ impl SessionPlayback {
                 self.playing = true;
                 self.route_state_generation = previous.route_state_generation.wrapping_add(1);
             }
-            self.stopped_live_input_history |= stopped_live_history;
             self.foreign_arrangement.inherit_handoff(
                 &mut previous.foreign_arrangement,
                 foreign_handoff,
@@ -5632,7 +5626,6 @@ impl SessionPlayback {
         // before this donor has ever monitored. Preserve that admission as
         // well as existing release intent when a later edit removes the input.
         self.monitor_source_releases |= previous.monitor_source_releases;
-        self.stopped_live_input_history |= previous.stopped_live_input_history;
         self.capture_epoch = capture_epoch;
         previous.capture_epoch = previous_capture_epoch;
         self.anchor = candidate_anchor;
