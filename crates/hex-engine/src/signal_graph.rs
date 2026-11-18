@@ -1256,6 +1256,26 @@ impl SignalGraph {
             *self.typed.get(edge.to_index)?,
         ))
     }
+    /// A retained compressor's key and program inputs must keep their typed
+    /// endpoints. Stages are ordered by typed destination, while their local
+    /// node, source-track and edge indices can shift in a cold-track edit.
+    fn same_sidechain_routes(&self, other: &Self) -> bool {
+        let mut previous = other.key_stages.iter().flatten();
+        self.key_stages.iter().flatten().all(|stage| {
+            let Some(old) = previous.next() else {
+                return false;
+            };
+            [
+                (stage.key_edge, old.key_edge),
+                (stage.main_edge, old.main_edge),
+            ]
+            .into_iter()
+            .all(|(edge, old)| {
+                self.pre_main_endpoints(edge)
+                    .is_some_and(|ends| other.pre_main_endpoints(old) == Some(ends))
+            })
+        }) && previous.next().is_none()
+    }
     /// Visit the pre-Main edges of `self` and `other` that join the same typed
     /// endpoints, as `(self plan edge, other plan edge)`. Both lists are sorted
     /// by typed endpoints (stable keys follow `NodeId` order), so this is one
@@ -1455,7 +1475,13 @@ impl SignalGraph {
                 })
                 .then_some(key)
         };
-        if self.key_stages != other.key_stages
+        let track_indices_can_shift = matches!(fresh, Some(FreshHistory::ColdTrack(_)));
+        let same_keys = if track_indices_can_shift {
+            self.same_sidechain_routes(other)
+        } else {
+            self.key_stages == other.key_stages
+        };
+        if !same_keys
             || match fresh {
                 Some(
                     FreshHistory::Track(_)
@@ -1518,7 +1544,6 @@ impl SignalGraph {
             self.pre_main_endpoints(a)
                 .is_some_and(|ends| other.pre_main_endpoints(b) == Some(ends))
         };
-        let track_indices_can_shift = matches!(fresh, Some(FreshHistory::ColdTrack(_)));
         let return_indices_can_shift = matches!(fresh, Some(FreshHistory::Return(_)));
         let same_sends = |a: &[Send], b: &[Send], indices_can_shift| {
             a.len() == b.len()
