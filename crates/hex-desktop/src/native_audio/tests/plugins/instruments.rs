@@ -5139,7 +5139,13 @@ fn installed_instrument_and_effect_export_with_streamed_audio() {
             "mixed export timed out: {:?}",
             control.progress()
         );
-        std::thread::yield_now();
+        if complete {
+            // The full export owns its offline workers. Poll completion at
+            // control cadence instead of competing with them for a CPU.
+            std::thread::sleep(Duration::from_millis(1));
+        } else {
+            std::thread::yield_now();
+        }
     };
     let report = result.expect("mixed VST export");
     let wav = fs::read(path).unwrap();
