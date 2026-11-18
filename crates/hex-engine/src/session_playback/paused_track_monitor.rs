@@ -1,7 +1,8 @@
 //! Control-prepared input routing with its own effects and compensation state.
 use super::{
-    Frame, MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES, PreparedRevision, SessionPlayback,
-    SessionPlaybackError, TrackId, preroll::arrangement_runtime_storage_preflight_bytes,
+    Frame, MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES, MAX_FINITE_EFFECT_TAIL_SECONDS, PreparedRevision,
+    SessionPlayback, SessionPlaybackError, TrackId,
+    preroll::arrangement_runtime_storage_preflight_bytes,
 };
 use crate::native_device_resources::{DeviceResourceAdmission, PreparedDeviceResources};
 use std::sync::Arc;
@@ -14,6 +15,7 @@ pub struct PausedTrackMonitor {
     playback: Box<SessionPlayback>,
     track: TrackId,
     cursor: Option<Cursor>,
+    release_remaining: Option<u64>,
     // Drop after the private playback releases its prepared revision and buffers.
     _admission_lifetime: Option<Arc<()>>,
 }
@@ -186,6 +188,7 @@ impl PausedTrackMonitor {
             playback: Box::new(playback),
             track,
             cursor: None,
+            release_remaining: None,
             _admission_lifetime: None,
         })
     }
@@ -202,6 +205,80 @@ impl PausedTrackMonitor {
         input: &[Frame],
         output: &mut [Frame],
     ) -> Result<(), SessionPlaybackError> {
+        let cursor = self.validate_cursor(arrangement, output)?;
+        if self.release_remaining.is_some()
+            || input.len() != output.len()
+            || input.iter().flatten().any(|value| !value.is_finite())
+        {
+            output.fill([0.0; 2]);
+            return Err(SessionPlaybackError::InvalidCommand);
+        }
+        self.render_input(cursor, input, output)
+    }
+
+    /// Feed silence through the same paused route. The rendered block is valid
+    /// even when `false` reports that no further drain is needed. Only this
+    /// private runtime advances. The existing bounded effect horizon also
+    /// retires processors with indefinite or conservatively reported tails.
+    pub(crate) fn drain(
+        &mut self,
+        arrangement: &SessionPlayback,
+        output: &mut [Frame],
+    ) -> Result<bool, SessionPlaybackError> {
+        let cursor = self.validate_cursor(arrangement, output)?;
+        if self.cursor.is_none()
+            || self.release_remaining == Some(0)
+            || (self.release_remaining.is_none() && self.is_quiescent())
+        {
+            self.release_remaining = Some(0);
+            output.fill([0.0; 2]);
+            return Ok(false);
+        }
+        let remaining = match self.release_remaining {
+            Some(remaining) => remaining,
+            None => {
+                for chain in self
+                    .playback
+                    .device_chains
+                    .iter_mut()
+                    .chain(&mut self.playback.return_chains)
+                    .chain(std::iter::once(&mut self.playback.main_chain))
+                {
+                    chain.begin_output_tail();
+                }
+                u64::from(self.playback.revision.arrangement().sample_rate())
+                    * MAX_FINITE_EFFECT_TAIL_SECONDS
+            }
+        };
+        let frames = remaining.min(output.len() as u64) as usize;
+        let (tail, rest) = output.split_at_mut(frames);
+        self.render_input(cursor, &[[0.0; 2]; 256][..frames], tail)?;
+        rest.fill([0.0; 2]);
+        let remaining = remaining - frames as u64;
+        let active = remaining != 0 && !self.is_quiescent();
+        self.release_remaining = Some(if active { remaining } else { 0 });
+        Ok(active)
+    }
+
+    fn is_quiescent(&self) -> bool {
+        self.playback
+            .compensation
+            .as_ref()
+            .is_none_or(|runtime| runtime.delays.pcm_history_is_silent())
+            && self
+                .playback
+                .device_chains
+                .iter()
+                .chain(&self.playback.return_chains)
+                .chain(std::iter::once(&self.playback.main_chain))
+                .all(|chain| chain.committed_range_is_quiescent(0..chain.len()))
+    }
+
+    fn validate_cursor(
+        &self,
+        arrangement: &SessionPlayback,
+        output: &mut [Frame],
+    ) -> Result<Cursor, SessionPlaybackError> {
         let cursor = Cursor {
             performance: arrangement.performance_frame,
             arrangement: arrangement.arrangement_frame,
@@ -215,13 +292,20 @@ impl PausedTrackMonitor {
             || arrangement.anchor.is_some()
             || arrangement.transient_loop.is_some()
             || self.cursor.is_some_and(|bound| bound != cursor)
-            || input.len() != output.len()
-            || input.len() > 256
-            || input.iter().flatten().any(|value| !value.is_finite())
+            || output.len() > 256
         {
             output.fill([0.0; 2]);
             return Err(SessionPlaybackError::InvalidCommand);
         }
+        Ok(cursor)
+    }
+
+    fn render_input(
+        &mut self,
+        cursor: Cursor,
+        input: &[Frame],
+        output: &mut [Frame],
+    ) -> Result<(), SessionPlaybackError> {
         if !input.is_empty() {
             self.playback.performance_frame = cursor.performance;
             self.playback.arrangement_frame = cursor.arrangement;

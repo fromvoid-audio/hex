@@ -64,9 +64,12 @@ fn paused_input_uses_private_track_return_and_main_history() {
         arrangement
             .render_with_paused_track_monitor(&mut monitor, &[[0.8, -0.4]], &mut monitored[..1])
             .unwrap();
-        arrangement
-            .render_with_paused_track_monitor(&mut monitor, &[[0.0; 2]; 31], &mut monitored[1..])
-            .unwrap();
+        for (index, chunk) in monitored[1..].chunks_mut(4).enumerate() {
+            let more = arrangement
+                .drain_paused_track_monitor(&mut monitor, chunk)
+                .unwrap();
+            assert_eq!(more, (index + 1) * 4 < latency as usize);
+        }
         for (frame, sample) in monitored.iter().enumerate() {
             let expected: Frame = if frame == latency as usize {
                 [0.6, -0.3]
@@ -89,6 +92,75 @@ fn paused_input_uses_private_track_return_and_main_history() {
             assert!(expected.iter().any(|sample| *sample != [0.0; 2]));
         }
     }
+}
+
+#[test]
+fn paused_input_release_renders_a_wet_return_tail() {
+    use hex_devices::reverb::{REVERB_DEFINITION, parameter};
+    use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
+
+    let mut f = fixture(&[&[]], 512);
+    let track = f.tracks[0];
+    let Created::ReturnTrack(bus) = f
+        .editor
+        .execute(Command::AddReturnTrack {
+            name: "room".into(),
+        })
+        .unwrap()
+    else {
+        panic!("return");
+    };
+    f.editor
+        .execute(Command::SetReturnSend {
+            track,
+            return_track: bus,
+            gain: 1.0,
+        })
+        .unwrap();
+    let state = REVERB_DEFINITION
+        .patch_parameter(
+            &REVERB_DEFINITION.default_state().unwrap(),
+            parameter::DRY_WET,
+            ParameterValue::Float(100.0),
+        )
+        .unwrap();
+    f.editor
+        .execute(Command::InsertReturnDevice {
+            return_track: bus,
+            before: None,
+            state,
+        })
+        .unwrap();
+    let revision = Arc::new(
+        PreparedRevision::prepare(
+            f.editor.project(),
+            &f.media,
+            Arc::new(hex_devices::SineTable::new()),
+            None,
+        )
+        .unwrap(),
+    );
+    let playback = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+    let mut monitor = PausedTrackMonitor::prepare_on_control(
+        revision,
+        track,
+        MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES,
+    )
+    .unwrap();
+    let mut output = [[0.0; 2]; 256];
+    monitor
+        .render(&playback, &[[0.5, -0.25]; 256], &mut output)
+        .unwrap();
+    let mut found_tail = false;
+    for _ in 0..48 {
+        assert!(monitor.drain(&playback, &mut output).unwrap());
+        found_tail |= output.iter().flatten().any(|sample| sample.abs() > 1e-6);
+    }
+    assert!(
+        found_tail,
+        "the wet return must ring after the dry input ends"
+    );
+    assert_eq!(playback.arrangement_frame(), 0);
 }
 
 #[test]
@@ -132,16 +204,11 @@ fn paused_input_refuses_wrong_revision_cursor_bounds_and_reservation() {
     );
     assert_eq!(refused, [[0.0; 2]; 257]);
     let mut drain = [[0.0; 2]; 8];
-    monitor
-        .render(&arrangement, &[[0.0; 2]; 8], &mut drain)
-        .unwrap();
+    assert!(monitor.drain(&same_content, &mut drain).is_err());
+    assert!(!monitor.drain(&arrangement, &mut drain).unwrap());
     assert_eq!(drain[6], [1.0, 1.0]);
     arrangement.apply(SessionPlaybackCommand::Seek(10)).unwrap();
-    assert!(
-        monitor
-            .render(&arrangement, &[[0.0; 2]], &mut first)
-            .is_err()
-    );
+    assert!(monitor.drain(&arrangement, &mut first).is_err());
     assert_eq!(first, [[0.0; 2]; 1]);
     assert_eq!(arrangement.arrangement_frame(), 10);
 }
