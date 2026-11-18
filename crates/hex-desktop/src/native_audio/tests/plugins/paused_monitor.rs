@@ -80,7 +80,7 @@ fn session_rearms_stopped_vst3_monitor_with_fresh_private_workers() {
         assert_eq!(completed, Some(0));
         previous = Some(private);
 
-        let (mut input, feed, ready) = hex_audio::worker_fixture::monitor_only_input().unwrap();
+        let (input, feed, ready) = hex_audio::worker_fixture::monitor_only_input().unwrap();
         let stream = Box::new(MonitorStream::new_on_control(feed, 48_000).ok().unwrap());
         assert!(input.start_on_control());
         wait(|| ready.started());
