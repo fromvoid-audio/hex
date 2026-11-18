@@ -190,8 +190,11 @@ fn prepare_instruments_with_media(
         instrument_profile,
         epoch,
     };
-    let definitions: [&dyn NativeDeviceDefinition; 2] =
-        [&definition, &hex_devices::delay::DelayDefinition];
+    let definitions: [&dyn NativeDeviceDefinition; 3] = [
+        &definition,
+        &hex_devices::delay::DelayDefinition,
+        &hex_devices::limiter::LimiterDefinition,
+    ];
     let registry = NativeDeviceRegistry::new(&definitions).unwrap();
     PreparedRevision::prepare_with_effect_registry(
         editor.project(),
@@ -1504,6 +1507,64 @@ fn compatible_gain_edit_keeps_the_accepted_instrument_note_until_release() {
         endpoint.notes,
         [(
             frames_until_release,
+            hex_lattice::ForeignNote {
+                on: false,
+                velocity: 0,
+                ..onset
+            }
+        )]
+    );
+}
+
+#[test]
+fn confirmed_main_limiter_keeps_the_foreign_gate_on_the_original_worker() {
+    let (mut editor, identity) = fixture_with_duration(BeatTime::from_ratio(1, 32).unwrap());
+    let original = prepare(&editor, identity, true).unwrap();
+    let mut deadline = None;
+    original.arrangement().tracks()[0]
+        .for_each_mutable_midi_span(0, 1, |span| deadline = Some(span.gate_end))
+        .unwrap();
+    let mut playing = SessionPlayback::new(original).unwrap();
+    let mut endpoint = NoteEndpoint::default();
+    playing.apply(SessionPlaybackCommand::Play).unwrap();
+    endpoint.render(&mut playing, &mut [[0.0; 2]; 256]).unwrap();
+    let [(0, onset)] = endpoint.notes.as_slice() else {
+        panic!("one original note-on");
+    };
+    assert!(onset.on);
+    let onset = *onset;
+
+    editor
+        .execute(Command::InsertMainDevice {
+            before: None,
+            state: hex_devices::limiter::LimiterDefinition
+                .default_state()
+                .unwrap(),
+        })
+        .unwrap();
+    playing.set_playing_at_device_insert_cut(false);
+    let mut replacement =
+        SessionPlayback::new(prepare_epoch(&editor, identity, true, 2).unwrap()).unwrap();
+    assert!(matches!(
+        replacement.try_inherit_state_at_device_insert_cut(&mut playing),
+        Err(super::super::foreign_arrangement::INCOMPATIBLE_HANDOFF)
+    ));
+
+    let mut edited = SessionPlayback::new(prepare(&editor, identity, true).unwrap()).unwrap();
+    edited
+        .try_inherit_state_at_device_insert_cut(&mut playing)
+        .unwrap();
+    assert_eq!(edited.performance_frame(), 256);
+    assert_eq!(edited.arrangement_frame(), 256);
+    edited.set_playing_at_device_insert_cut(true);
+    let release = usize::try_from(deadline.unwrap() - 256).unwrap();
+    endpoint
+        .render(&mut edited, &mut vec![[0.0; 2]; release + 1])
+        .unwrap();
+    assert_eq!(
+        endpoint.notes,
+        [(
+            release,
             hex_lattice::ForeignNote {
                 on: false,
                 velocity: 0,

@@ -1591,27 +1591,55 @@ impl SessionPlayback {
         let running_restart =
             relocate && previous.playing && mapped_main_clock && same_periodic_timing;
         let preserve_restart_clock = running_restart || (relocate && confirmed_insert);
-        // Appending a hosted effect or removing an already bypassed suffix
-        // can require fresh delay rings. The same-clock restart keeps the
-        // Arrangement cursor, worker binding and accepted gate deadlines
-        // while the local PCM history refills. An active removed effect still
-        // needs the tail planner.
-        let keep_foreign_gates = foreign_handoff.requires_clock_continuity
-            && running_restart
-            && !force_restart
-            && source_transfer.is_none()
+        // A confirmed native Main append can rebuild local delay history
+        // without altering any instrument's input clock. The foreign plan
+        // has already matched the exact workers and checked their held gates
+        // at the cut. Preserve their ledgers while the new delay fills.
+        let confirmed_native_main_append = confirmed_insert
+            && self.revision.arrangement().main_latency_frames()
+                > previous.revision.arrangement().main_latency_frames()
             && self
                 .revision
                 .arrangement()
-                .tracks()
-                .iter()
-                .zip(previous.revision.arrangement().tracks())
-                .any(|(new, old)| {
-                    new.canonical_track_id() == old.canonical_track_id()
-                        && (appended_foreign_effect(&new.device_chain, &old.device_chain).is_some()
-                            || appended_foreign_effect(&old.device_chain, &new.device_chain)
-                                .is_some_and(|removed| removed.bypassed))
+                .main_device_chain
+                .split_last()
+                .is_some_and(|(appended, prefix)| {
+                    let old = &previous.revision.arrangement().main_device_chain;
+                    matches!(
+                        appended.definition,
+                        Some(
+                            hex_lattice::PreparedProcessorFactory::Legacy(_)
+                                | hex_lattice::PreparedProcessorFactory::Owned(_)
+                        )
+                    ) && prefix.len() == old.len()
+                        && prefix
+                            .iter()
+                            .zip(old.iter())
+                            .all(|(next, old)| next.device_id == old.device_id)
                 });
+        // The existing running hosted-suffix restart also preserves the
+        // worker clock. An active removed effect still needs the tail planner.
+        let keep_foreign_gates = foreign_handoff.requires_clock_continuity
+            && !force_restart
+            && source_transfer.is_none()
+            && (confirmed_native_main_append
+                || running_restart
+                    && self
+                        .revision
+                        .arrangement()
+                        .tracks()
+                        .iter()
+                        .zip(previous.revision.arrangement().tracks())
+                        .any(|(new, old)| {
+                            new.canonical_track_id() == old.canonical_track_id()
+                                && (appended_foreign_effect(&new.device_chain, &old.device_chain)
+                                    .is_some()
+                                    || appended_foreign_effect(
+                                        &old.device_chain,
+                                        &new.device_chain,
+                                    )
+                                    .is_some_and(|removed| removed.bypassed))
+                        }));
         if foreign_handoff.requires_clock_continuity
             && (force_restart
                 || (relocate && !keep_foreign_gates)
