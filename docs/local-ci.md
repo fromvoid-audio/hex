@@ -268,14 +268,16 @@ Python tooling follows the same rule. A changed `scripts/NAME.py` (or
 `scripts/NAME`) runs its own `test_NAME` module, and a changed
 `scripts/tests/test_X.py` runs itself. Both add the shared planner invariants.
 Scripts without their own test module, config files and unknown inputs keep
-comprehensive discovery. Merge checks without explicit native acceptance inputs
+comprehensive discovery. Ordinary unscoped full audits and comprehensive merge
+checks without explicit native acceptance inputs
 run that inventory through `scripts/python_shards.py --discover` with up to
 eight workers and batches of up to eight ordinary cases from the same
 module or package. When Git on the
 original PATH is Apple's `/usr/bin/git` launcher, sharded runs resolve the
 selected Git once with `xcrun` and put only that executable ahead of the
-original PATH for its child processes. Comprehensive full, release and health runs
-remain serial. Owner selections run through `scripts/python_shards.py`:
+original PATH for its child processes. Full audits with explicit native
+acceptance inputs, scoped full plans, and the release and health profiles
+retain serial comprehensive discovery. Owner selections run through `scripts/python_shards.py`:
 ordinary cases from the same module are batched up to eight per process in a
 shared work queue with a default cap of 12 workers.
 Subprocess-heavy test methods explicitly marked `__hex_shard_bounded__ = True`

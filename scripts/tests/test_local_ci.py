@@ -484,6 +484,26 @@ class ManualFixtureCleanupTests(unittest.TestCase):
 
 
 class ReportStepAdmissionTests(unittest.TestCase):
+    def test_unscoped_full_audit_shards_only_without_native_opt_in(self):
+        ordinary = local_ci.LocalCiRunner(env={})
+        native = local_ci.LocalCiRunner(env={"HEX_VST3_INSTANCE_RECEIPT": "fixture"})
+        release = local_ci.LocalCiRunner(mode="release", env={})
+        for runner, argv in ((ordinary, local_ci.ci_plan.python_tests.SHARDED_DISCOVERY_ARGV),
+                             (native, local_ci.ci_plan.python_tests.COMPREHENSIVE_ARGV),
+                             (release, local_ci.ci_plan.python_tests.COMPREHENSIVE_ARGV)):
+            with self.subTest(mode=runner.mode, native=runner.summary["native_acceptance_opt_in"]):
+                step = next(step for step in runner.steps if step.step_id == "runner-tests")
+                self.assertEqual(step.argv, argv)
+                self.assertTrue(step.uses_cargo_target and step.requires_tests)
+                self.assertIsNone(runner._step_sequence_error())
+                evidence = {**runner.summary, "steps": [
+                    {"step_id": s.step_id, "argv": list(s.argv), "test_results": {"python_executions": [1]}}
+                    for s in runner.steps
+                ]}
+                local_ci.validate_report_steps(evidence)
+        ordinary.env["HEX_TEST_SIGNING_IDENTITY"] = "fixture"
+        self.assertIn("differ from", ordinary._step_sequence_error())
+
     def evidence(self):
         plan = {"scope": "full", "python_tests": {"mode": "comprehensive",
                 "test_selectors": ["test_local_ci"], "sharded_discovery": True}}
@@ -3560,6 +3580,7 @@ runpy.run_path(sys.argv[1], run_name='__main__')
             '  /bin/mkdir -p "$CARGO_TARGET_DIR/debug"\n'
             '  echo fixture > "$CARGO_TARGET_DIR/debug/fixture.rlib"\n'
             'fi\n'
+            'if [ "$1" = scripts/python_shards.py ]; then echo "Ran 1 test in 0.001s"; fi\n'
             'if [ "$1" = scripts/test_shards.py ]; then echo "test result: ok. 1 passed; 0 failed; 0 ignored;"; fi\n'
             'echo "completed $tool $*"',
         ))
@@ -3569,12 +3590,12 @@ runpy.run_path(sys.argv[1], run_name='__main__')
             'if [ "$1" = test ]; then echo "test result: ok. 1 passed; 0 failed; 0 ignored;"; fi\n'
             'echo "completed $tool $*"',
         ))
-        runner = self.runner("python-cargo", env={**self.env, "EXPECTED_OWNER": str(owner)},
-                             steps=local_ci.FULL_STEPS)
+        steps = local_ci.qualification_steps("full", None, native_acceptance_opt_in=False)
+        runner = self.runner("python-cargo", env={**self.env, "EXPECTED_OWNER": str(owner)}, steps=steps)
         self.assertEqual(runner.run(), 0)
         summary = self.summary("python-cargo")
         self.assertEqual([(s["step_id"], s["argv"], s["status"]) for s in summary["steps"]],
-                         [(s.step_id, list(s.argv), "passed") for s in local_ci.FULL_STEPS])
+                         [(s.step_id, list(s.argv), "passed") for s in steps])
         self.assertEqual(summary["target_cache"]["action"], "claim-empty")
         self.assertTrue((target / "debug/fixture.rlib").is_file())
         self.assertNotIn("cargo clean", self.call_log.read_text())

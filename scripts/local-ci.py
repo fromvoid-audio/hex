@@ -654,6 +654,16 @@ def planned_steps(plan: dict) -> tuple[Step, ...]:
                       or s.step_id == "runner-tests") for s in steps)
 
 
+def qualification_steps(mode: str | None, plan: dict | None, *,
+                        native_acceptance_opt_in: bool | None) -> tuple[Step, ...]:
+    """Bind the complete audit schedule to the recorded mode and native opt-in."""
+    if plan is None:
+        plan = {"scope": "full"}
+        if mode == "full" and native_acceptance_opt_in is False:
+            plan["python_tests"] = {"mode": "comprehensive", "sharded_discovery": True}
+    return planned_steps(plan)
+
+
 def module_scoped(argv: tuple[str, ...]) -> bool:
     """A test command restricted to changed modules by a libtest filter.
 
@@ -676,7 +686,8 @@ def validate_report_steps(evidence: dict, *, allow_carried: bool = False) -> Non
     if old_plan is not None and not isinstance(old_plan, dict):
         raise ValueError("historical report plan must be an object")
     try:
-        expected = planned_steps(old_plan or {"scope": "full"})
+        expected = qualification_steps(evidence.get("mode"), old_plan,
+                                       native_acceptance_opt_in=evidence.get("native_acceptance_opt_in"))
     except (AttributeError, KeyError, TypeError, ValueError) as error:
         raise ValueError(f"historical report selection is malformed: {error}") from error
     rows = evidence.get("steps", [])
@@ -1274,7 +1285,10 @@ class LocalCiRunner:
         if self.plan is not None and any(key in self.plan for key in ("edit", "health")):
             return "qualifying plan cannot contain partial edit or health selections"
         try:
-            expected = planned_steps(self.plan if self.plan is not None else {"scope": "full"})
+            expected = qualification_steps(
+                self.mode, self.plan,
+                native_acceptance_opt_in=bool(ci_plan.python_tests.native_acceptance_inputs(self.env)),
+            )
         except (KeyError, TypeError, ValueError) as error:
             return f"cannot select qualifying steps: {error}"
         if self.steps != expected:
@@ -1322,8 +1336,11 @@ class LocalCiRunner:
         self.target_state_dir = target_state_dir
         self.run_id = run_id or f"{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}-{uuid.uuid4().hex[:8]}"
         self.env = dict(os.environ if env is None else env)
-        self.steps = steps if steps is not None else (planned_steps(plan) if plan else QUICK_STEPS if mode == "quick"
-                                                      else planned_steps({"scope": "full"}))
+        native_acceptance_opt_in = bool(ci_plan.python_tests.native_acceptance_inputs(self.env))
+        self.steps = steps if steps is not None else (
+            QUICK_STEPS if mode == "quick" and plan is None else
+            qualification_steps(mode, plan, native_acceptance_opt_in=native_acceptance_opt_in)
+        )
         self.output_dir = self.root / "artifacts" / "local-ci" / self.run_id
         self.summary_path = self.output_dir / "summary.json"
         self.started_monotonic = time.monotonic()
@@ -1334,7 +1351,7 @@ class LocalCiRunner:
             "platform": sys.platform,
             # Paths alone cannot bind mutable external native fixtures/receipts
             # or Keychain state. Historical absence is unknown for reuse.
-            "native_acceptance_opt_in": bool(ci_plan.python_tests.native_acceptance_inputs(self.env)),
+            "native_acceptance_opt_in": native_acceptance_opt_in,
             "python_version": sys.version,
             "status": "incomplete",
             "repo_root": str(self.root),
