@@ -171,24 +171,30 @@ fn stopped_live_monitor_keeps_busy_transition_until_it_drains() {
         .render(&arrangement, &[[0.5; 2]; 1], &mut heard)
         .unwrap();
     assert_ne!(heard, [[0.0; 2]; 1]);
-    let previous = monitor.pcm_runtime_for_test();
     let mut successor = new_monitor();
     let candidate = successor.pcm_runtime_for_test();
     candidate.device_chains[0] = fixture_chain(device, 1 - mode, &probe);
-    assert!(candidate.device_transition_busy(previous));
+    assert!(monitor.blocks_graph_replacement(candidate));
     assert_eq!(
-        candidate.try_inherit_state_live_from(previous),
+        candidate.try_inherit_state_live_from(monitor.pcm_runtime_for_test()),
         Err(SessionPlaybackError::DeviceTransitionBusy)
     );
-    assert!(candidate.device_transition_busy(previous));
+    assert!(monitor.blocks_graph_replacement(candidate));
     assert_eq!(probe.dropped_transitions(), 0);
     let mut silent = [[0.0; 2]; TRANSITION_FRAMES as usize - 1];
-    for block in silent.chunks_mut(13) {
-        previous.render(block).unwrap();
+    let silence = [[0.0; 2]; 13];
+    for block in silent.chunks_mut(silence.len()) {
+        assert!(monitor.blocks_graph_replacement(candidate));
+        monitor
+            .render(&arrangement, &silence[..block.len()], block)
+            .unwrap();
         assert!(block.iter().all(|frame| *frame == [0.0; 2]));
     }
-    assert_eq!(previous.performance_frame(), 0);
-    candidate.try_inherit_state_live_from(previous).unwrap();
+    assert!(!monitor.blocks_graph_replacement(candidate));
+    assert_eq!(monitor.pcm_runtime_for_test().performance_frame(), 0);
+    candidate
+        .try_inherit_state_live_from(monitor.pcm_runtime_for_test())
+        .unwrap();
     assert_eq!(probe.dropped_transitions(), 0);
     candidate.apply(SessionPlaybackCommand::Pause).unwrap();
     assert!(!candidate.renders_no_device_chains());

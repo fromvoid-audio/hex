@@ -3709,6 +3709,31 @@ impl Callback {
             })
     }
 
+    fn paused_input_graph_handoff(
+        &self,
+        next: &Publication,
+    ) -> Option<(AppliedAudioSource, AppliedAudioSource, u64)> {
+        let previous = self.active.as_ref()?.legacy()?;
+        if !next.policy.inherits_runtime()
+            || previous.playback.playing()
+            || next.playback.sample_rate() != self.rate
+            || self.status.pending_stop_marker.load(Acquire) != 0
+        {
+            return None;
+        }
+        let source = self.recording_source()?;
+        let context = next.source_context?;
+        if context.project_generation != source.context.project_generation {
+            return None;
+        }
+        let successor = AppliedAudioSource {
+            context,
+            audio_revision: next.revision,
+            output_identity: source.output_identity,
+        };
+        Some((source, successor, self.status.transport_epoch.load(Acquire)))
+    }
+
     fn advance_legacy_publication(&mut self, frames: Option<usize>) {
         if frames.is_none()
             && self
@@ -3897,6 +3922,21 @@ impl Callback {
                 }
                 PublicationPolicy::InheritRuntime | PublicationPolicy::InstallFreshRuntime => None,
             };
+            let monitor_handoff = stale_fence
+                .is_none()
+                .then(|| self.paused_input_graph_handoff(&next))
+                .flatten();
+            if let Some((previous, _, epoch)) = monitor_handoff
+                && self
+                    .input_monitor
+                    .blocks_graph_replacement(previous, epoch, &next.playback)
+            {
+                // The live branch must render its committed transition
+                // before publication can try again. The pending candidate
+                // stays in the existing publication slot.
+                self.deferred = Some(next);
+                return;
+            }
             #[cfg(test)]
             if stale_fence.is_none()
                 && matches!(
@@ -4582,6 +4622,10 @@ impl Callback {
                         next.policy,
                         PublicationPolicy::InstallQuantizedSeekWhenReady { .. }
                     );
+                    if let Some((previous, successor, epoch)) = monitor_handoff {
+                        self.input_monitor
+                            .preserve_graph_release(previous, successor, epoch);
+                    }
                     let previous = self.active.replace(ActivePublication::Legacy(next));
                     if reset_audible {
                         self.audible_clock.clear();

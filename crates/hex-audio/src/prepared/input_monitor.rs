@@ -8,7 +8,8 @@
 //! renderer. The paused mode carries separate processor history and is bound
 //! to a transport epoch as well as an exact resident source. A release stops
 //! reading input and renders retained PCM through that private history. A
-//! priority Stop or invalid binding also revokes the release. Input and output
+//! an inheriting edit may carry the release across one installed source at a
+//! time. Priority Stop or an invalid binding revokes it. Input and output
 //! rates must match; independent device-clock drift is not corrected. The
 //! worker's separate note-monitor slot carries an engine graph without input.
 use super::AppliedAudioSource;
@@ -38,6 +39,8 @@ pub enum MonitorStatus {
     Overrun = 9,
     Discontinuity = 10,
     OutputFault = 11,
+    /// The original private graph is rendering release only after an edit.
+    DrainingGraph = 12,
 }
 impl MonitorStatus {
     fn decode(value: u8) -> Self {
@@ -53,6 +56,7 @@ impl MonitorStatus {
             9 => Self::Overrun,
             10 => Self::Discontinuity,
             11 => Self::OutputFault,
+            12 => Self::DrainingGraph,
             _ => Self::Idle,
         }
     }
@@ -70,6 +74,7 @@ enum Mode {
         stream: Box<MonitorStream>,
         monitor: PausedTrackMonitor,
         transport_epoch: u64,
+        release_source: Option<AppliedAudioSource>,
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         foreign: bool,
     },
@@ -180,6 +185,7 @@ impl Control {
             Mode::Paused {
                 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
                 foreign,
+                release_source: None,
                 stream,
                 monitor,
                 transport_epoch,
@@ -291,7 +297,10 @@ impl Callback {
         if closing || fault || self.stop_requested() {
             if matches!(
                 MonitorStatus::decode(self.state.load(Acquire)),
-                MonitorStatus::Pending | MonitorStatus::Priming | MonitorStatus::Running
+                MonitorStatus::Pending
+                    | MonitorStatus::Priming
+                    | MonitorStatus::Running
+                    | MonitorStatus::DrainingGraph
             ) {
                 self.state.store(
                     if fault {
@@ -339,6 +348,55 @@ impl Callback {
                 .as_ref()
                 .is_some_and(|binding| matches!(binding.mode, Mode::Paused { .. }))
     }
+    fn paused_at(
+        &mut self,
+        source: AppliedAudioSource,
+        epoch: u64,
+    ) -> Option<(&mut PausedTrackMonitor, &mut Option<AppliedAudioSource>)> {
+        if self.stop_requested() {
+            return None;
+        }
+        let binding = self.active.as_mut()?;
+        match &mut binding.mode {
+            Mode::Paused {
+                monitor,
+                transport_epoch,
+                release_source,
+                ..
+            } if *transport_epoch == epoch
+                && release_source.unwrap_or(binding.source) == source =>
+            {
+                Some((monitor, release_source))
+            }
+            _ => None,
+        }
+    }
+
+    pub(super) fn blocks_graph_replacement(
+        &mut self,
+        source: AppliedAudioSource,
+        epoch: u64,
+        candidate: &Playback,
+    ) -> bool {
+        self.paused_at(source, epoch)
+            .is_some_and(|(monitor, _)| candidate.paused_track_monitor_blocks_replacement(monitor))
+    }
+
+    pub(super) fn preserve_graph_release(
+        &mut self,
+        previous: AppliedAudioSource,
+        next: AppliedAudioSource,
+        epoch: u64,
+    ) {
+        if let Some((monitor, release_source)) = self.paused_at(previous, epoch)
+            && monitor.seal_for_graph_replacement()
+        {
+            *release_source = Some(next);
+            self.state
+                .store(MonitorStatus::DrainingGraph as u8, Release);
+        }
+    }
+
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     pub(super) fn has_paused_source_binding(&self) -> bool {
         !self.stop_requested()
@@ -445,17 +503,26 @@ impl Callback {
             usize,
         )>,
     ) -> bool {
-        let Some(Mode::Paused {
-            transport_epoch, ..
-        }) = self.active.as_ref().map(|binding| &binding.mode)
+        let Some(Binding {
+            source: original_source,
+            mode:
+                Mode::Paused {
+                    transport_epoch,
+                    release_source,
+                    ..
+                },
+        }) = self.active.as_deref()
         else {
             return false;
         };
-        let bound_epoch = *transport_epoch;
-        if !self.source_matches(source) {
+        if self.stop_requested() {
             return false;
         }
-        if bound_epoch != epoch || playback.is_some_and(Playback::playing) {
+        if source != Some(release_source.unwrap_or(*original_source)) {
+            self.reject(MonitorStatus::SourceChanged);
+            return false;
+        }
+        if *transport_epoch != epoch || playback.is_some_and(Playback::playing) {
             self.reject(MonitorStatus::Stopped);
             return false;
         }
@@ -468,7 +535,10 @@ impl Callback {
         }
         let mut input = [[0.0; 2]; 256];
         let input = &mut input[..output.len()];
-        let mut releasing = self.release_requested();
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        let native_source = *original_source;
+        let graph_release = release_source.is_some();
+        let mut releasing = graph_release || self.release_requested();
         if !releasing {
             let ready = self.read_stream(input);
             releasing = self.release_requested();
@@ -506,7 +576,7 @@ impl Callback {
             Self::render_foreign_paused(
                 playback,
                 monitor,
-                source.map(|source| (source, epoch)),
+                (native_source, epoch),
                 (!releasing).then_some(&*input),
                 output,
                 native,
@@ -517,7 +587,14 @@ impl Callback {
         #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
         let rendered = render_builtin(monitor, output);
         match rendered {
-            Ok(true) => self.state.store(MonitorStatus::Running as u8, Release),
+            Ok(true) => self.state.store(
+                if graph_release {
+                    MonitorStatus::DrainingGraph
+                } else {
+                    MonitorStatus::Running
+                } as u8,
+                Release,
+            ),
             Ok(false) => self.reject(MonitorStatus::Stopped),
             Err(_) => {
                 self.reject(MonitorStatus::Unsupported);
@@ -531,7 +608,7 @@ impl Callback {
     fn render_foreign_paused(
         playback: &Playback,
         monitor: &mut PausedTrackMonitor,
-        source: Option<(AppliedAudioSource, u64)>,
+        source: (AppliedAudioSource, u64),
         input: Option<&[Frame]>,
         output: &mut [Frame],
         native: Option<(&mut crate::candidate_custody::NativeEndpointBank, usize)>,
@@ -541,9 +618,7 @@ impl Callback {
                 "paused native monitor requires a physical callback",
             ));
         };
-        if source.is_none_or(|source| {
-            !bank.matches_paused_monitor(source, monitor.foreign_effect_bindings())
-        }) {
+        if !bank.matches_paused_monitor(source, monitor.foreign_effect_bindings()) {
             return Err(hex_engine::Invalid(
                 "paused native monitor endpoints differ",
             ));

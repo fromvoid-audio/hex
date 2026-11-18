@@ -123,6 +123,21 @@ fn open_input(target: &Target) -> Result<Receiver<Result<PreparedInput, String>>
 }
 
 impl EditorView {
+    fn paused_input_configuration_matches(&self, target: &Target) -> bool {
+        let recorder = &self.audio_recorder;
+        recorder.software_monitor
+            && !recorder.blocks_edits()
+            && recorder.armed_track == Some((self.project_generation, target.request.track))
+            && self.project_generation == target.source().context.project_generation
+            && recorder.input.as_ref().map(|(id, _)| id) == target.input.as_ref()
+            && self.mode == EditorMode::Arrangement
+            && self.document_audio_mode == hex_session::DocumentAudioMode::Resident
+            && self.audio.as_ref().is_some_and(|audio| {
+                audio.sample_rate == target.rate
+                    && audio.control.output_identity() == Some(target.output())
+            })
+    }
+
     fn paused_input_target(&self) -> Option<Target> {
         let recorder = &self.audio_recorder;
         if !cfg!(all(target_os = "macos", target_arch = "aarch64"))
@@ -302,15 +317,49 @@ impl EditorView {
                 mut started,
                 mut audible,
             } => {
+                let interval = self
+                    .audio
+                    .as_ref()
+                    .and_then(|audio| audio.control.status())
+                    .and_then(|status| status.paused_input_interval());
+                let status = self
+                    .audio
+                    .as_mut()
+                    .and_then(|audio| audio.control.input_monitor())
+                    .map(|control| control.status());
                 if desired != Some(&target) {
+                    if self.paused_input_configuration_matches(&target) {
+                        let draining = status == Some(MonitorStatus::DrainingGraph);
+                        if draining {
+                            capture.stop_on_control();
+                        }
+                        if draining
+                            || (interval == Some((target.source(), target.request.transport_epoch))
+                                && matches!(
+                                    status,
+                                    Some(
+                                        MonitorStatus::Pending
+                                            | MonitorStatus::Priming
+                                            | MonitorStatus::Running
+                                    )
+                                ))
+                        {
+                            // The callback still owns this interval and
+                            // decides when to stop feeding the old graph.
+                            return (
+                                Phase::Installed {
+                                    target,
+                                    capture,
+                                    started,
+                                    audible,
+                                },
+                                false,
+                            );
+                        }
+                    }
                     let release = (!self.audio_recorder.software_monitor
                         || self.audio_recorder.armed_track.is_none())
-                        && self
-                            .audio
-                            .as_ref()
-                            .and_then(|audio| audio.control.status())
-                            .and_then(|status| status.paused_input_source())
-                            == Some((target.source(), target.request.transport_epoch));
+                        && interval == Some((target.source(), target.request.transport_epoch));
                     self.retire_input_monitor(target.output(), release);
                     capture.stop_on_control();
                     return (
@@ -321,11 +370,6 @@ impl EditorView {
                         false,
                     );
                 }
-                let status = self
-                    .audio
-                    .as_mut()
-                    .and_then(|audio| audio.control.input_monitor())
-                    .map(|control| control.status());
                 let action = monitor_action(
                     if started {
                         Monitoring::Active
@@ -549,6 +593,68 @@ mod tests {
             assert!(Instant::now() < deadline, "monitor tail did not retire");
             std::thread::yield_now();
         }
+    }
+
+    #[gpui::test]
+    fn stopped_monitor_keeps_its_tail_during_an_inheriting_edit(cx: &mut TestAppContext) {
+        let mut fixture = arm_monitor_fixture(cx, true);
+        let before = fixture.editor.update(cx, |view, _| {
+            let before = view
+                .audio
+                .as_ref()
+                .unwrap()
+                .status()
+                .unwrap()
+                .recording_source()
+                .unwrap()
+                .audio_revision;
+            assert!(view.enqueue(Request::Edit(hex_project::Command::AddTrack {
+                name: "second track".into(),
+            })));
+            assert!(view.edit_pending());
+            view.tick_audio_recording();
+            assert!(matches!(
+                view.audio_recorder.paused_input.phase,
+                Phase::Installed { .. }
+            ));
+            before
+        });
+        let deadline = Instant::now() + Duration::from_millis(500);
+        loop {
+            let pending = fixture.editor.update(cx, |view, cx| {
+                view.tick(cx);
+                view.audio
+                    .as_ref()
+                    .unwrap()
+                    .status()
+                    .unwrap()
+                    .publication_in_flight()
+            });
+            if pending {
+                break;
+            }
+            assert!(Instant::now() < deadline, "edit was not prepared");
+            std::thread::yield_now();
+        }
+        let mut block = [[0.0; 2]; 64];
+        fixture.backend.render(&mut block).unwrap();
+        assert!(block.iter().any(|frame| frame[0] > 0.0));
+        fixture.editor.update(cx, |view, cx| {
+            view.tick(cx);
+            let audio = view.audio.as_mut().unwrap();
+            let status = audio.status().unwrap();
+            assert!(status.recording_source().unwrap().audio_revision > before);
+            assert_eq!(status.position.load(Acquire), 0);
+            assert_eq!(
+                audio.control.input_monitor().unwrap().status(),
+                MonitorStatus::DrainingGraph
+            );
+            assert!(matches!(
+                view.audio_recorder.paused_input.phase,
+                Phase::Installed { .. }
+            ));
+            view.toggle_software_monitor();
+        });
     }
 
     #[gpui::test]

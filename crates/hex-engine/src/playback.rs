@@ -2722,6 +2722,17 @@ impl Playback {
             .map_err(|error| Invalid(error.diagnostic_message()))
     }
 
+    /// Whether installing this candidate must wait for the audible private
+    /// PCM predecessor's bounded device transition to finish.
+    pub fn paused_track_monitor_blocks_replacement(
+        &self,
+        monitor: &crate::PausedTrackMonitor,
+    ) -> bool {
+        self.session_runtime
+            .as_ref()
+            .is_some_and(|runtime| monitor.blocks_graph_replacement(runtime))
+    }
+
     /// Render the paused graph through its separately admitted foreign effect
     /// endpoints. The supplied callback view must belong to the monitor and
     /// preserve the host's ordinary final-format acceptance frontier.

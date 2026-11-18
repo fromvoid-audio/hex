@@ -30,6 +30,7 @@ pub struct PausedTrackMonitor {
     track: TrackId,
     cursor: Option<Cursor>,
     release_remaining: Option<u64>,
+    handoff_release: bool,
     // Drop after the private playback releases its prepared revision and buffers.
     _admission_lifetime: Option<Arc<()>>,
 }
@@ -663,6 +664,7 @@ impl PausedTrackMonitor {
             track,
             cursor: None,
             release_remaining: None,
+            handoff_release: false,
             _admission_lifetime: None,
         })
     }
@@ -730,7 +732,8 @@ impl PausedTrackMonitor {
         foreign: &mut dyn ForeignProcessors,
     ) -> Result<(), SessionPlaybackError> {
         let cursor = self.validate_cursor(arrangement, output)?;
-        if self.release_remaining.is_some()
+        if self.handoff_release
+            || self.release_remaining.is_some()
             || output.len() > 256
             || input.len() != output.len()
             || input.iter().flatten().any(|value| !value.is_finite())
@@ -759,7 +762,22 @@ impl PausedTrackMonitor {
         output: &mut [Frame],
         foreign: &mut dyn ForeignProcessors,
     ) -> Result<bool, SessionPlaybackError> {
-        let cursor = self.validate_cursor(arrangement, output)?;
+        let cursor = if self.handoff_release {
+            // This branch holds the predecessor's timing and must never
+            // borrow positions or input from the successor.
+            match self
+                .cursor
+                .filter(|_| arrangement.renders_no_device_chains())
+            {
+                Some(cursor) => cursor,
+                None => {
+                    output.fill([0.0; 2]);
+                    return Err(SessionPlaybackError::InvalidCommand);
+                }
+            }
+        } else {
+            self.validate_cursor(arrangement, output)?
+        };
         if output.len() > 256 {
             output.fill([0.0; 2]);
             return Err(SessionPlaybackError::InvalidCommand);
@@ -797,6 +815,25 @@ impl PausedTrackMonitor {
         let active = remaining != 0 && !self.is_quiescent();
         self.release_remaining = Some(if active { remaining } else { 0 });
         Ok(active)
+    }
+
+    /// Inspect the private audible predecessor before attempting to install
+    /// the candidate. Never settle either graph from this query.
+    pub(crate) fn blocks_graph_replacement(&self, candidate: &SessionPlayback) -> bool {
+        self.playback.stopped_input_has_history()
+            && self.release_remaining != Some(0)
+            && candidate.device_transition_busy(&self.playback)
+    }
+
+    /// Seal the admitted live history for zero-input release after an
+    /// inheriting graph edit. The output owner must still reject on source
+    /// or transport discontinuities and return this owner to control.
+    pub fn seal_for_graph_replacement(&mut self) -> bool {
+        if self.cursor.is_none() || self.release_remaining == Some(0) || self.is_quiescent() {
+            return false;
+        }
+        self.handoff_release = true;
+        true
     }
 
     fn is_quiescent(&self) -> bool {
