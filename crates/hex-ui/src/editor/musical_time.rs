@@ -440,6 +440,8 @@ fn ruler_candidates(
     target_count: usize,
     target_grid: LandmarkDensity<'_>,
 ) -> RulerCandidates {
+    // The grid and snap paths only consume landmark positions and flags.
+    let ruler = matches!(target_grid, LandmarkDensity::Ruler(_));
     let tempo = project.tempo_map();
     let meters = project.meter_map();
     let points = meters.points();
@@ -492,19 +494,24 @@ fn ruler_candidates(
             && (viewport.start..viewport_end).contains(&frame)
             && let Ok(position) = meters.position(point.beat())
         {
-            let truncated_prior_bar = point
-                .beat()
-                .raw()
-                .checked_sub(1)
-                .map(BeatTime::from_raw)
-                .and_then(|before| meters.position(before).ok())
-                .is_some_and(|before| {
-                    before.fragmentary() && before.bar_end() == Some(point.beat())
-                });
+            let truncated_prior_bar = ruler
+                && point
+                    .beat()
+                    .raw()
+                    .checked_sub(1)
+                    .map(BeatTime::from_raw)
+                    .and_then(|before| meters.position(before).ok())
+                    .is_some_and(|before| {
+                        before.fragmentary() && before.bar_end() == Some(point.beat())
+                    });
             ticks.push(RulerTick {
                 beat: point.beat(),
                 frame,
-                label: meter_label(position),
+                label: if ruler {
+                    meter_label(position)
+                } else {
+                    String::new()
+                },
                 meter_marker: true,
                 fragmentary_bar: truncated_prior_bar,
                 bar_start: position.beat() == 1 && position.beat_fraction().raw() == 0,
@@ -519,7 +526,7 @@ fn ruler_candidates(
     // deterministic order as adaptive coarsening. Over-budget section sampling
     // below retains its existing evenly spaced section identities.
     let demand = |index: usize| {
-        let count = if matches!(target_grid, LandmarkDensity::Ruler(_)) {
+        let count = if ruler {
             sections[index].regular_demand
         } else {
             sections[index].landmark_count
@@ -556,8 +563,7 @@ fn ruler_candidates(
                 target_count / sampled_sections
                     + usize::from(sampled_index < target_count % sampled_sections)
             };
-            let regular = matches!(target_grid, LandmarkDensity::Ruler(_));
-            let quota = if regular {
+            let quota = if ruler {
                 quota as u64
             } else {
                 (quota as u64).min(section.landmark_count)
@@ -582,7 +588,7 @@ fn ruler_candidates(
                 .filter(|first| *first <= last)
                 .unwrap_or(section.first_landmark);
             for sample in 0..quota {
-                let landmark_index = if regular {
+                let landmark_index = if ruler {
                     let Some(index) = sample
                         .checked_mul(stride)
                         .and_then(|offset| first.checked_add(offset))
@@ -627,7 +633,11 @@ fn ruler_candidates(
                     ticks.push(RulerTick {
                         beat,
                         frame,
-                        label: meter_label(position),
+                        label: if ruler {
+                            meter_label(position)
+                        } else {
+                            String::new()
+                        },
                         meter_marker: false,
                         fragmentary_bar: position.fragmentary(),
                         bar_start: position.beat() == 1 && position.beat_fraction().raw() == 0,
