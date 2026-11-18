@@ -82,6 +82,24 @@ impl Status {
     }
 }
 impl Callback {
+    pub(super) fn end_native_staging_at_stream_hold(
+        &mut self,
+        offset: usize,
+        frames: usize,
+        outcome: &crate::candidate_custody::StreamOutcome,
+    ) {
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        if outcome.fault.is_none()
+            && let crate::candidate_custody::StreamProgress::Buffering { committed_frames } =
+                outcome.progress
+        {
+            self.native_sources
+                .end_staging_at_stream_hold(offset, frames, committed_frames);
+        }
+        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+        let _ = (offset, frames, outcome);
+    }
+
     /// Held only during one render invocation, after candidate validation and
     /// until either the actual graph swap or completion of the old output.
     pub(super) fn reserve_current_stream_window(

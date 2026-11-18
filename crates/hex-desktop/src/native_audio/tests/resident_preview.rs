@@ -2709,9 +2709,26 @@ impl ResidentHarness {
         let mut host = [0.0; 512];
         let mut slot = self.callback.lock().unwrap();
         let callback = slot.as_mut().unwrap();
+        let mut rendered = Ok(());
         let counts = allocation_counter::measure(|| {
-            callback.render_native_direct(&mut pcm, &mut host).unwrap()
+            rendered = callback.render_native_direct(&mut pcm, &mut host);
         });
+        assert!(
+            rendered.is_ok(),
+            "native render: {rendered:?}, fault={:?}, stream={:?}, worker={:?}",
+            self.audio
+                .as_ref()
+                .and_then(EditorAudio::status)
+                .and_then(|status| status.render_fault_snapshot()),
+            self.audio
+                .as_ref()
+                .and_then(EditorAudio::status)
+                .map(|status| (
+                    status.stream_buffering.load(Acquire),
+                    status.stream_committed_frames.load(Acquire),
+                )),
+            callback.native_worker_phase_for_test(),
+        );
         assert_eq!(
             (
                 counts.count_total,

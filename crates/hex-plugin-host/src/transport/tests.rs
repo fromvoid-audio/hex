@@ -1170,7 +1170,7 @@ fn pause_accepts_only_the_exact_staged_prefix_and_keeps_partial_input() {
         callback
             .stage_segment(0, &[[0.25; 2]; 4], &[], &mut [[0.0; 2]; 4])
             .unwrap();
-        callback.end_staging_at_pause(pause_cut);
+        callback.end_staging_at_rendered_prefix(pause_cut);
         if pause_cut != 4 {
             assert_eq!(callback.finish(true), Err(Fault::Protocol));
             assert!(control.is_revoked());

@@ -682,8 +682,8 @@ impl NativeEffectCallback {
     pub fn take_accepted_manual_parameter(&mut self) -> Option<AcceptedManualParameter> {
         self.transport.take_accepted_manual_parameter()
     }
-    pub(crate) fn end_staging_at_pause(&mut self, frame: usize) {
-        self.transport.end_staging_at_pause(frame);
+    pub(crate) fn end_staging_at_rendered_prefix(&mut self, frame: usize) {
+        self.transport.end_staging_at_rendered_prefix(frame);
     }
     /// This original live epoch has accepted enough consecutive zero input to
     /// drain its source-reported tail and fixed processor/bridge latency. New
