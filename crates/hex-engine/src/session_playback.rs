@@ -2418,6 +2418,12 @@ impl SessionPlayback {
         self.playing
     }
 
+    /// Freeze or restore the clock at a silent publication boundary. Preserve
+    /// route, voice and processor history for handoff or resumption.
+    pub(crate) fn set_playing_at_device_insert_cut(&mut self, playing: bool) {
+        self.playing = playing;
+    }
+
     /// Scalar translation used by the effective performance clock. Observers
     /// must correlate it with this runtime's applied revision and route snapshot.
     pub fn clock_anchor(&self) -> Option<SessionClockAnchor> {

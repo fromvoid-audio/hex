@@ -1904,6 +1904,7 @@ impl Playback {
 
     /// Apply immediately. A pending declicked Pause/Stop completes first.
     pub fn try_apply_action(&mut self, action: PlaybackAction) -> Result<(), PlaybackActionError> {
+        self.release_device_insert_cut();
         self.complete_transport_fade();
         self.apply_now(action)
     }
@@ -1918,6 +1919,7 @@ impl Playback {
         &mut self,
         action: PlaybackAction,
     ) -> Result<(), PlaybackActionError> {
+        self.release_device_insert_cut();
         self.complete_transport_fade();
         if (transport_fade::fades_out(action) || transport_fade::seeks(action)) && self.playing() {
             self.admit_declicked_stop(action)?;
@@ -1948,6 +1950,33 @@ impl Playback {
     /// The Pause/Stop whose fade is in progress, if any.
     pub fn pending_transport_fade(&self) -> Option<PlaybackAction> {
         self.transport_fade.pending()
+    }
+
+    /// Begin an output fade for a confirmed graph insert on a playing Session
+    /// runtime. The callback owns the decision and must install or release the
+    /// cut. Ordinary transport actions and priority Stop supersede it.
+    pub fn begin_device_insert_cut(&mut self) -> bool {
+        self.session_runtime
+            .as_deref()
+            .is_some_and(crate::SessionPlayback::playing)
+            && self.transport_fade.begin_device_insert_cut()
+    }
+
+    /// The output is silent and the Session clock is frozen at the fade end.
+    pub fn device_insert_held(&self) -> bool {
+        self.transport_fade.device_insert_held()
+    }
+
+    /// Restore the predecessor after a refusal, or resume the successor after
+    /// it has inherited the silent cut. The full output ramps up from the
+    /// current gain, without issuing a transport command or resetting history.
+    pub fn release_device_insert_cut(&mut self) {
+        let frames = transport_fade::fade_frames(self.sample_rate());
+        if self.transport_fade.release_device_insert_cut(frames)
+            && let Some(runtime) = self.session_runtime.as_deref_mut()
+        {
+            runtime.set_playing_at_device_insert_cut(true);
+        }
     }
 
     /// One deferred Pause/Stop refusal recorded at its fade end.
@@ -3389,6 +3418,10 @@ impl Playback {
         let frames = transport_fade::fade_frames(self.sample_rate());
         let mut offset = 0;
         loop {
+            if self.transport_fade.device_insert_held() {
+                output[offset..].fill([0.0; 2]);
+                return Ok(());
+            }
             let start = self.position();
             let playing = self.playing();
             let part_len = self.transport_fade.part_len(output.len() - offset, frames);
@@ -3405,6 +3438,11 @@ impl Playback {
             self.mix_tuning_audition(chunk);
             if completed {
                 self.complete_transport_fade();
+            }
+            if self.transport_fade.apply_device_insert_cut(chunk, frames)
+                && let Some(runtime) = self.session_runtime.as_deref_mut()
+            {
+                runtime.set_playing_at_device_insert_cut(false);
             }
             offset = end;
             if offset >= output.len() {
