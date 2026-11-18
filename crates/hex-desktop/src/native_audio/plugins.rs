@@ -26,6 +26,8 @@ use restore::Restore;
 mod edits;
 mod offline_bounce;
 mod parameter_touches;
+mod paused_monitor;
+pub(super) use paused_monitor::PausedMonitorPreparation;
 mod reopen;
 mod save;
 use reopen::Reopen;
@@ -156,6 +158,7 @@ pub(super) struct Plugins {
     configured: bool,
     pub(super) pool_held: bool,
     sources: Vec<Source>,
+    paused_monitor_sources: Vec<Binding>,
     pending: Option<Pending>,
     editor: Option<editor::EditorOperation>,
     queued_editor_toggle: Option<(Binding, u64)>,
@@ -275,6 +278,8 @@ impl Plugins {
         self.degraded_changed.take()
     }
     pub fn output_closed(&mut self) {
+        // The relinquished output's Root retains every outstanding loan.
+        self.paused_monitor_sources.clear();
         self.close_editor_recording();
         if let Some(parameters) = &mut self.parameters {
             parameters.output_closed();
@@ -352,10 +357,24 @@ impl Plugins {
         if self.sources.capacity() != policy.capacity {
             return Err("vst3 source record capacity differs".into());
         }
+        self.paused_monitor_sources
+            .try_reserve_exact(policy.capacity)
+            .map_err(|_| "vst3 monitor source records unavailable")?;
+        if self.paused_monitor_sources.capacity() != policy.capacity {
+            return Err("vst3 monitor source record capacity differs".into());
+        }
+        let monitor_bytes = policy
+            .capacity
+            .checked_mul(
+                std::mem::size_of::<Binding>()
+                    + std::mem::size_of::<hex_engine::PausedMonitorForeignBinding>(),
+            )
+            .ok_or("vst3 monitor control data overflow")?;
         let control_bytes = self
             .sources
             .capacity()
             .checked_mul(std::mem::size_of::<Source>())
+            .and_then(|n| n.checked_add(monitor_bytes))
             .and_then(|n| n.checked_add(std::mem::size_of::<Self>()))
             .and_then(|n| n.checked_add(self.host.as_ref()?.control_data_bytes()?))
             .and_then(|n| {

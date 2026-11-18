@@ -225,6 +225,22 @@ impl<'a> NativeEffectDefinition<'a> {
         Err(DeviceContractError::ForeignProcessingUnavailable)
     }
 
+    /// Copy the processing declaration from a real source that matches this
+    /// exact authored state and rate. This does not loan or publish an endpoint.
+    pub fn prepared_processor_on_control(
+        &self,
+        node: &hex_lattice::PreparedRuntimeInstance,
+    ) -> Result<Option<hex_lattice::PreparedForeignProcessor>, DeviceContractError> {
+        let identity = ProcessorInstanceIdentity::new(node.owner, node.device_id)?;
+        let state = node
+            .configuration
+            .as_deref()
+            .ok_or(DeviceContractError::ForeignProcessingUnavailable)?;
+        Ok(self
+            .exact_configuration(identity, state, node.sample_rate)?
+            .map(|effect| effect.prepared))
+    }
+
     pub(super) fn from_selected(
         effects: impl IntoIterator<Item = (&'a Configuration, bool)>,
     ) -> Result<Self, DeviceContractError> {

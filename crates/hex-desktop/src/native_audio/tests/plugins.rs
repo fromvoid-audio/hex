@@ -8,6 +8,7 @@ mod instruments;
 mod latency_restart;
 mod live_stream;
 mod offline_bounce;
+mod paused_monitor;
 mod performance_profile;
 mod state;
 mod ui;
