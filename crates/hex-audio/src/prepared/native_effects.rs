@@ -241,16 +241,18 @@ impl Callback {
                 || self.status.pending_stop_marker.load(Acquire) != 0
             {
                 self.revoke_native_effects();
+                self.paused_notes
+                    .reject_paused(input_monitor::MonitorStatus::Stopped);
                 return OutputTransportDelivery::Cancelled;
             }
             if self.native_effects_revoked() && !self.status.playing.load(Relaxed) {
                 return OutputTransportDelivery::Cancelled;
             }
             if self.paused_native_sources.rendering_active() {
-                let paused_notes = self.input_monitor.has_paused_source_binding();
+                let paused_notes = self.paused_notes.has_paused_source_binding();
                 if paused_notes && !accepted {
                     self.revoke_native_effects();
-                    self.input_monitor
+                    self.paused_notes
                         .reject(input_monitor::MonitorStatus::OutputFault);
                     return OutputTransportDelivery::Cancelled;
                 }
@@ -268,9 +270,12 @@ impl Callback {
                 {
                     if paused_notes {
                         self.native_sources.reject_rendering();
+                        self.paused_notes
+                            .reject(input_monitor::MonitorStatus::OutputFault);
+                    } else {
+                        self.input_monitor
+                            .reject(input_monitor::MonitorStatus::OutputFault);
                     }
-                    self.input_monitor
-                        .reject(input_monitor::MonitorStatus::OutputFault);
                     return OutputTransportDelivery::Cancelled;
                 }
                 return OutputTransportDelivery::Accepted;

@@ -108,6 +108,16 @@ impl Status {
             && self.recording_source() == Some(source))
         .then_some((source, epoch))
     }
+    /// A settled paused cursor with retained history eligible for note-monitor
+    /// preparation. The publication worker still validates the exact revision,
+    /// installed endpoints and runtime scope before rendering.
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub fn paused_note_source(&self) -> Option<(AppliedAudioSource, u64)> {
+        let scope = self.paused_input_source()?;
+        ((self.position.load(Relaxed) != 0 || self.performance_frame.load(Relaxed) != 0)
+            && self.paused_input_source() == Some(scope))
+        .then_some(scope)
+    }
     /// Actual active constructor source, independent of delivery of Submitted
     /// events. None includes bounded-reader contention or a legacy install.
     /// This correlation observation grants neither custody nor readiness.

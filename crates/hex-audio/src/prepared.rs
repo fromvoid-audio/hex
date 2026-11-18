@@ -1325,6 +1325,8 @@ pub struct Control {
 }
 /// The unique worker-side publication/return endpoint; never a UI command client.
 pub struct PublicationControl {
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    paused_notes: input_monitor::Control,
     foreign_parameter_delivery: Option<crate::foreign_parameter_delivery::Control>,
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     foreign_editor_delivery: Option<crate::foreign_parameter_delivery::editor::Control>,
@@ -1347,6 +1349,31 @@ pub struct PublicationControl {
     latest_fresh_runtime_cancellation: Option<Arc<FreshRuntimeCancellation>>,
 }
 impl PublicationControl {
+    /// Publish one private note monitor for the exact settled pause. The
+    /// caller retains its storage hold and the corresponding native sources
+    /// until this worker reclaims the monitor. Refusal returns the same owner.
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub fn publish_paused_note_monitor(
+        &mut self,
+        monitor: hex_engine::PausedSourceMonitor,
+        source: AppliedAudioSource,
+        transport_epoch: u64,
+    ) -> Result<(), hex_engine::PausedSourceMonitor> {
+        if !self.native_custody
+            || self.status.paused_note_source() != Some((source, transport_epoch))
+        {
+            return Err(monitor);
+        }
+        self.paused_notes
+            .publish_paused_source(monitor, source, transport_epoch)
+    }
+
+    /// Observe the worker's last note monitor activation or termination.
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub fn paused_note_monitor_status(&self) -> input_monitor::MonitorStatus {
+        self.paused_notes.status()
+    }
+
     /// Configure optional tracing on control. Default is off; old records may
     /// still be drained after disabling. The music/fault queues are independent.
     pub fn set_audio_diagnostics(&self, flags: AudioDiagnosticsFlags) {
@@ -1460,6 +1487,8 @@ pub struct Callback {
     sample_preview: crate::sample_preview::Callback,
     sample_recording: crate::sample_recording::Callback,
     input_monitor: input_monitor::Callback,
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    paused_notes: input_monitor::Callback,
     publications: Consumer<QueuedPublication>,
     retired: Producer<ReturnedPublication>,
     candidate_root: crate::candidate_custody::CandidateRoot,
@@ -1555,6 +1584,8 @@ pub(crate) fn channel_with_interface(
         return Err(Invalid("unsupported playback sample rate"));
     }
     let (input_monitor, callback_input_monitor) = input_monitor::channel(rate);
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    let (paused_notes, callback_paused_notes) = input_monitor::channel(rate);
     let (mut sample_preview, callback_preview) = crate::sample_preview::channel(rate);
     let (sample_recording, callback_recording) = crate::sample_recording::channel(rate);
     let (publications, incoming) = RingBuffer::new(1);
@@ -1602,6 +1633,8 @@ pub(crate) fn channel_with_interface(
             midi_recording,
             command_ticket: 0,
             publication: PublicationControl {
+                #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                paused_notes,
                 foreign_parameter_delivery: Some(foreign_parameter_delivery),
                 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
                 foreign_editor_delivery: Some(foreign_editor_delivery),
@@ -1641,6 +1674,8 @@ pub(crate) fn channel_with_interface(
             sample_preview: callback_preview,
             sample_recording: callback_recording,
             input_monitor: callback_input_monitor,
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            paused_notes: callback_paused_notes,
             candidate_root,
             publications: incoming,
             retired: returning,
@@ -2487,6 +2522,8 @@ impl PublicationControl {
     }
     /// Bounded reclamation on the control thread, including final PCM drops.
     pub fn reclaim(&mut self) -> usize {
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        self.paused_notes.reclaim();
         self.status.retire_stopped_edit_on_control();
         let mut count = 0;
         for _ in 0..RETIRED {
@@ -2838,6 +2875,11 @@ impl PublicationControl {
 }
 
 impl Callback {
+    fn reject_paused_monitors(&mut self, reason: input_monitor::MonitorStatus) {
+        self.input_monitor.reject_paused(reason);
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        self.paused_notes.reject_paused(reason);
+    }
     /// Construct an original whole-output transport profile before callback
     /// exposure. This does not admit a device, graph node or native worker.
     /// Native resource admission remains unavailable until device insertion
@@ -3032,7 +3074,9 @@ impl Callback {
                 shared_handles: 0,
             })?;
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-        let storage = storage.plus(self.foreign_editor_delivery.constructor_channel_storage()?)?;
+        let storage = storage
+            .plus(self.foreign_editor_delivery.constructor_channel_storage()?)?
+            .plus(self.paused_notes.constructor_channel_storage()?)?;
         Some(storage)
     }
 
@@ -3359,10 +3403,11 @@ impl Callback {
             self.paused_monitor_host_frames = None;
         }
         self.device_fault_fenced_in_block = false;
-        self.input_monitor.begin_block(
-            self.status.closing.load(Acquire),
-            self.status.device_fault.load(Acquire),
-        );
+        let closing = self.status.closing.load(Acquire);
+        let device_fault = self.status.device_fault.load(Acquire);
+        self.input_monitor.begin_block(closing, device_fault);
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        self.paused_notes.begin_block(closing, device_fault);
         if self.status.device_fault.load(Acquire) && !self.status.closing.load(Acquire) {
             self.fence_device_fault();
             return;
@@ -5249,8 +5294,7 @@ impl Callback {
         // Take and live-input quanta still run so a racing take or gesture
         // receives its `OutputFailed` terminal instead of waiting on silence.
         if self.status.render_fault.load(Acquire) {
-            self.input_monitor
-                .reject_paused(input_monitor::MonitorStatus::OutputFault);
+            self.reject_paused_monitors(input_monitor::MonitorStatus::OutputFault);
             self.sample_recording
                 .end(crate::sample_recording::End::OutputFailed);
             if !output.is_empty() {
@@ -5264,8 +5308,7 @@ impl Callback {
             });
         }
         if self.output_transport.is_some() {
-            self.input_monitor
-                .reject_paused(input_monitor::MonitorStatus::Unsupported);
+            self.reject_paused_monitors(input_monitor::MonitorStatus::Unsupported);
             self.sample_recording
                 .end(crate::sample_recording::End::UnsupportedOutput);
         } else {
@@ -5307,8 +5350,7 @@ impl Callback {
         capture_offset: usize,
     ) -> Result<(), Invalid> {
         if self.native_effects_revoked() {
-            self.input_monitor
-                .reject_paused(input_monitor::MonitorStatus::OutputFault);
+            self.reject_paused_monitors(input_monitor::MonitorStatus::OutputFault);
             output.fill([0.0; 2]);
             return if self.status.playing.load(Relaxed) {
                 Err(Invalid("native effect callback is revoked"))
@@ -5319,6 +5361,9 @@ impl Callback {
         self.read_sampler_keyboard();
         if let Some(ActivePublication::Candidate(active)) = self.active.as_mut() {
             self.input_monitor
+                .reject_paused(input_monitor::MonitorStatus::Unsupported);
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            self.paused_notes
                 .reject_paused(input_monitor::MonitorStatus::Unsupported);
             if self.status.closing.load(Acquire) {
                 output.fill([0.0; 2]);
@@ -5383,7 +5428,12 @@ impl Callback {
                 .end(crate::sample_recording::End::SourceChanged);
         }
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-        if self.input_monitor.has_paused_source_binding() {
+        if self.input_monitor.has_paused_binding() {
+            self.paused_notes
+                .reject_paused(input_monitor::MonitorStatus::Unsupported);
+        }
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        if self.paused_notes.has_paused_source_binding() {
             let playback = self
                 .active
                 .as_mut()
@@ -5407,7 +5457,7 @@ impl Callback {
             };
             let observer: Option<&mut hex_engine::NodeSignalObserver<'_>> =
                 node_observed.then_some(&mut observe);
-            if self.input_monitor.render_paused_source(
+            if self.paused_notes.render_paused_source(
                 recording_source,
                 self.status.transport_epoch.load(Acquire),
                 playback,
@@ -6020,8 +6070,7 @@ impl Callback {
                 .store(prior_epoch.unwrap_or_else(|epoch| epoch), Release);
         }
         if prior_epoch.is_err() {
-            self.input_monitor
-                .reject_paused(input_monitor::MonitorStatus::Stopped);
+            self.reject_paused_monitors(input_monitor::MonitorStatus::Stopped);
             self.status.gain_recording_fault.store(true, Release);
         }
     }
@@ -6387,12 +6436,17 @@ pub(crate) fn worker_boundary_storage_quote() -> Option<usize> {
     let editor_bytes = crate::foreign_parameter_delivery::editor::constructor_storage_quote()?;
     #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
     let editor_bytes = 0;
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    let paused_note_bytes = input_monitor::constructor_storage_quote()?;
+    #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+    let paused_note_bytes = 0;
     std::mem::size_of::<Status>()
         .checked_add(action_outcomes::storage_bytes())?
         .checked_add(SESSION_ROUTE_CAPACITY.checked_mul(std::mem::size_of::<AtomicRouteSlot>())?)?
         .checked_add(crate::sample_preview::constructor_storage_quote()?)?
         .checked_add(crate::sample_recording::storage_quote()?)?
         .checked_add(input_monitor::constructor_storage_quote()?)?
+        .checked_add(paused_note_bytes)?
         .checked_add(crate::gain_recording::constructor_storage_quote()?)?
         .checked_add(crate::native_parameter_input::constructor_storage_quote()?)?
         .checked_add(crate::foreign_parameter_delivery::constructor_storage_quote()?)?
