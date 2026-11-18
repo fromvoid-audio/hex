@@ -2795,6 +2795,8 @@ mod current_sampler_routes;
 mod handoff;
 pub use handoff::PreparedTempoAnchor;
 mod harmonic_import;
+mod paused_track_monitor;
+pub use paused_track_monitor::PausedTrackMonitor;
 mod preroll;
 mod render;
 mod stream_actions;

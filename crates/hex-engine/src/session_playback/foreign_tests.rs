@@ -187,6 +187,24 @@ impl ForeignProcessors for Borrowed {
     }
 }
 
+#[test]
+fn paused_input_monitor_refuses_foreign_track_return_and_main_effects() {
+    for location in 0..3 {
+        let (revision, _, _) = prepared(location, false);
+        let track = revision.arrangement().tracks()[0]
+            .canonical_track_id()
+            .unwrap();
+        assert!(matches!(
+            PausedTrackMonitor::prepare_on_control(
+                revision,
+                track,
+                MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES
+            ),
+            Err(SessionPlaybackError::InvalidCommand)
+        ));
+    }
+}
+
 fn prepared(location: usize, bypassed: bool) -> (Arc<PreparedRevision>, Borrowed, Vec<Frame>) {
     prepared_with_latency(location, bypassed, 3, None)
 }
