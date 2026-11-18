@@ -95,7 +95,7 @@ fn paused_keyboard_render_preserves_callback_allocation_budget() {
             before: None,
             state: hex_engine::default_native_device_state_for_class(
                 NativeDeviceClass::Effect,
-                DeviceTypeId::from_static("hex.effect.limiter"),
+                DeviceTypeId::from_static("hex.limiter"),
             )
             .unwrap(),
         })
