@@ -714,6 +714,14 @@ diff --git a/src/bounds_tree.rs b/src/bounds_tree.rs
 +                // If the old parent was the root, the new parent is the new root.
 +                self.root = Some(new_parent);
 +            }
+@@ -138,2 +161,2 @@
+-                if bounds.intersects(node_bounds) {
+-                    max_ordering = cmp::max(*ordering, max_ordering);
++                if max_ordering < *ordering && bounds.intersects(node_bounds) {
++                    max_ordering = *ordering;
+@@ -149 +172 @@
+-                if bounds.intersects(node_bounds) && max_ordering < *node_max_ordering {
++                if max_ordering < *node_max_ordering && bounds.intersects(node_bounds) {
 @@ -151,0 +175,2 @@
 +                    // The first result can satisfy the other child's already
 +                    // loaded upper bound, avoiding another recursive query.

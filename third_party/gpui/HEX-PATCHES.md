@@ -110,6 +110,10 @@ and propagate the maximum along the usual ancestor path. Every primitive
 keeps its own assigned order and every future overlap has the same maximum.
 The locked verifier covers repeated overlap, reservation and disjoint reuse.
 
+Order lookup tests the stored maximum before rectangle overlap. A dominated
+node cannot increase the result, so it skips geometric work. Placement and
+the order returned by the overlap query stay identical.
+
 11 October compiler compatibility: explicitly type the grid repeat helper's
 zero minimum and one-fraction literals as f32. Pinned Taffy 0.9.0's `length`
 and `fr` helpers accept `Into<f32>`; this preserves the same values/layout and

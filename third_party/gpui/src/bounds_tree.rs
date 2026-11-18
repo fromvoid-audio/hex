@@ -158,8 +158,8 @@ where
                 order: ordering,
                 ..
             } => {
-                if bounds.intersects(node_bounds) {
-                    max_ordering = cmp::max(*ordering, max_ordering);
+                if max_ordering < *ordering && bounds.intersects(node_bounds) {
+                    max_ordering = *ordering;
                 }
             }
             Node::Internal {
@@ -169,7 +169,7 @@ where
                 max_order: node_max_ordering,
                 ..
             } => {
-                if bounds.intersects(node_bounds) && max_ordering < *node_max_ordering {
+                if max_ordering < *node_max_ordering && bounds.intersects(node_bounds) {
                     let left_max_ordering = self.nodes[*left].max_ordering();
                     let right_max_ordering = self.nodes[*right].max_ordering();
                     // The first result can satisfy the other child's already
