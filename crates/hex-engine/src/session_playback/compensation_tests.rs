@@ -2554,6 +2554,7 @@ fn paused_source_monitor_preserves_buffered_arrangement_audio() {
                 .prepare_computer_keyboard(f.editor.project(), keyboard_track, Arc::clone(&keys))
                 .unwrap();
         }
+        actual.prepare_resident_paused_source_monitor(None).unwrap();
         for playback in [&mut actual, &mut oracle] {
             playback.apply(PlaybackCommand::Play);
             playback.render(&mut [[0.0; 2]; 4]).unwrap();
@@ -2614,6 +2615,9 @@ fn paused_keyboard_preserves_same_track_device_history() {
     monitored
         .prepare_computer_keyboard(f.editor.project(), f.tracks[0], keys)
         .unwrap();
+    monitored
+        .prepare_resident_paused_source_monitor(None)
+        .unwrap();
     for playback in [&mut monitored, &mut oracle] {
         playback.apply(PlaybackCommand::Play);
         playback.render(&mut [[0.0; 2]; 4]).unwrap();
@@ -2661,6 +2665,9 @@ fn paused_keyboard_sounds_without_consuming_same_track_clip_history() {
     for playback in [&mut actual, &mut live_only] {
         playback
             .prepare_computer_keyboard(f.editor.project(), f.tracks[0], Arc::clone(&keys))
+            .unwrap();
+        playback
+            .prepare_resident_paused_source_monitor(None)
             .unwrap();
     }
     for playback in [&mut actual, &mut live_only, &mut oracle] {
