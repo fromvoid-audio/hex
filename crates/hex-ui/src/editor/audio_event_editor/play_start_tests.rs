@@ -94,6 +94,208 @@ fn audio_start_drag_submits_held_marker_and_escape_cancels(cx: &mut TestAppConte
 }
 
 #[gpui::test]
+fn degraded_audio_start_drag_recovers_held_or_released_marker(cx: &mut TestAppContext) {
+    for (released, failed) in [(false, false), (true, false), (true, true)] {
+        audio_start_recovery(&mut cx.new_app(), released, failed);
+    }
+}
+
+fn audio_start_recovery(cx: &mut TestAppContext, released: bool, failed: bool) {
+    use crate::editor::clip_drag_ui_test::upper_rail_fixture_with_service;
+    use crate::editor::device_panel::tests::eq_ui_tests::graph_layout_tests::{
+        headless_status_output, status_fixture_guard,
+    };
+    use hex_engine::playback::{Playback, PlaybackCommand};
+    use hex_session::service::{
+        CanonicalAudioSourceSnapshot, PlayStartEdit, Service, WorkerAudioSink,
+    };
+    use std::sync::atomic::{AtomicBool, Ordering::Release};
+
+    struct RestartSink;
+    impl WorkerAudioSink for RestartSink {
+        fn initialize(&mut self, _: &AtomicBool) -> Result<u32, String> {
+            Ok(48_000)
+        }
+        fn canonical_changed(&mut self, _: Arc<CanonicalAudioSourceSnapshot>) {}
+        fn poll(&mut self) {}
+        fn close(&mut self) {}
+        fn restart_audio(&mut self, _: u64, _: u64) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    let _serial = status_fixture_guard();
+    let service = Service::with_audio_sink(32, 8_000_000, None, Box::new(RestartSink)).unwrap();
+    let fixture = upper_rail_fixture_with_service(cx, service);
+    let (_files, mut visual, editor, clip) = super::super::workflow_tests::open_fixture(cx, fixture);
+    let (mut old, old_backend) = headless_status_output();
+    let control = old.take_client().unwrap();
+    control.status().unwrap().playing.store(true, Release);
+    let (revision, span) = editor.update(&mut visual, |v, cx| {
+        v.audio = Some(crate::EditorAudio {
+            control,
+            sample_rate: 48_000,
+            label: "degraded fixture".into(),
+            spectrum_error: None,
+            mode: hex_session::DocumentAudioMode::Resident,
+        });
+        v.degraded_plugins = crate::editor_backend::DegradedDevices::new(vec![99]);
+        v.audio_event_editor.grid = SnapGrid::Off;
+        let state = v.state.as_ref().unwrap();
+        let source = state.project.clip(clip).unwrap();
+        cx.notify();
+        (state.revision, (source.start(), source.duration()))
+    });
+    visual.run_until_parked();
+    let width = visual
+        .debug_bounds("audio-events-waveform")
+        .unwrap()
+        .size
+        .width;
+    let down = visual
+        .debug_bounds("audio-play-start-handle")
+        .unwrap()
+        .center();
+    let mods = Modifiers::default();
+    let moved = point(down.x + width * 0.25, down.y);
+    let end = point(down.x + width * 0.375, down.y);
+    visual.simulate_mouse_down(down, MouseButton::Left, mods);
+    visual.simulate_mouse_move(moved, MouseButton::Left, mods);
+    let (recovery, earlier) = editor.read_with(&visual, |v, _| {
+        assert!(
+            v.recovering_clip_play_start(clip),
+            "recover on the first changed marker"
+        );
+        assert!(v.deferred_play.is_some());
+        assert!(
+            v.service
+                .held_arrangement_play_start_audition_for_test()
+                .is_none()
+        );
+        assert_eq!(
+            v.worker_requests_pending, 1,
+            "only the restart was submitted"
+        );
+        (
+            v.recovery.generation().unwrap(),
+            v.held_audio_play_start_position().unwrap(),
+        )
+    });
+    visual.simulate_mouse_move(end, MouseButton::Left, mods);
+    let position = editor.read_with(&visual, |v, _| v.held_audio_play_start_position().unwrap());
+    assert!(
+        position > earlier,
+        "pointer movement remains live while audio opens"
+    );
+    if released {
+        visual.simulate_mouse_up(end, MouseButton::Left, mods);
+    }
+    visual.run_until_parked();
+    let shown = marker_fraction(&mut visual);
+    assert!((shown - 0.375).abs() < 0.003);
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.recovery.holds_clip_play_start(), released);
+        assert_eq!(
+            v.worker_requests_pending, 1,
+            "release must not submit against the old source"
+        );
+        assert_eq!(v.state.as_ref().unwrap().revision, revision);
+    });
+
+    drop(old_backend);
+    old.publication.close();
+    drop(old);
+    let restart = terminal(&mut visual, &editor);
+    assert!(restart.error.is_none(), "{:?}", restart.error);
+    editor.update(&mut visual, |v, cx| {
+        v.receive(restart);
+        if failed {
+            v.fail_audio_recovery("fixture output refused");
+        }
+        cx.notify();
+    });
+    if failed {
+        visual.run_until_parked();
+        assert!(marker_fraction(&mut visual).abs() < 0.002);
+        editor.read_with(&visual, |v, _| {
+            assert!(v.pending_clip_loop_audio(clip).is_none());
+            assert_eq!(v.state.as_ref().unwrap().revision, revision);
+        });
+        return;
+    }
+
+    let (mut fresh, mut callback) = headless_status_output();
+    fresh
+        .publication
+        .control()
+        .unwrap()
+        .publish(Playback::new(
+            hex_engine::Project::new(48_000, Vec::new()).unwrap(),
+        ))
+        .unwrap();
+    callback.render(&mut [[0.0; 2]; 64]).unwrap();
+    let control = fresh.take_client().unwrap();
+    editor.update(&mut visual, |v, _| {
+        v.audio = Some(crate::EditorAudio {
+            control,
+            sample_rate: 48_000,
+            label: "fresh fixture".into(),
+            spectrum_error: None,
+            mode: hex_session::DocumentAudioMode::Resident,
+        });
+        v.degraded_plugins = Default::default();
+        v.applied_project_revision = Some(revision);
+        assert!(v.recovery.opened(recovery));
+        assert!(v.recovery.restored(recovery));
+        assert!(!v.finish_audio_recovery_tick());
+    });
+    callback.render(&mut [[0.0; 2]; 64]).unwrap();
+    editor.update(&mut visual, |v, _| {
+        assert!(v.finish_audio_recovery_tick());
+        assert!(!v.finish_audio_recovery_tick());
+        assert_eq!(v.worker_requests_pending, usize::from(released));
+        if !released {
+            v.audio
+                .as_mut()
+                .unwrap()
+                .control
+                .command(PlaybackCommand::Play)
+                .unwrap();
+        }
+    });
+    if !released {
+        callback.render(&mut [[0.0; 2]; 64]).unwrap();
+        editor.update(&mut visual, |v, _| {
+            v.sync_held_play_start_audition();
+            assert_eq!(
+                v.service
+                    .held_arrangement_play_start_audition_for_test()
+                    .unwrap()
+                    .edit,
+                PlayStartEdit::Audio { clip, position }
+            );
+        });
+        visual.simulate_mouse_up(end, MouseButton::Left, mods);
+    }
+    visual.run_until_parked();
+    assert!((marker_fraction(&mut visual) - shown).abs() < 0.003);
+    let edit = terminal(&mut visual, &editor);
+    assert!(edit.error.is_none(), "{:?}", edit.error);
+    editor.update(&mut visual, |v, cx| {
+        v.receive(edit);
+        assert!(v.pending_clip_loop_audio(clip).is_none());
+        assert_eq!(v.state.as_ref().unwrap().revision, revision + 1);
+        assert_eq!(v.audio_play_start_position(), Some(position));
+        assert_region_fixed(span, v.state.as_ref().unwrap().project.clip(clip).unwrap());
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert!((marker_fraction(&mut visual) - shown).abs() < 0.003);
+    drop(callback);
+    fresh.publication.close();
+}
+
+#[gpui::test]
 fn audio_saved_start_hover_drag_delayed_ack_history_and_reopen(cx: &mut TestAppContext) {
     for scenario in ["plain", "crop", "frozen"] {
         let cx = &mut cx.new_app();
