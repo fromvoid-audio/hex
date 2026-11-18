@@ -254,8 +254,8 @@ impl DenseEffectCallback {
         self.callback.has_complete_staged_callback()
     }
 
-    pub fn end_staging_at_pause(&mut self, frame: usize) {
-        self.callback.end_staging_at_pause(frame);
+    pub fn end_staging_at_rendered_prefix(&mut self, frame: usize) {
+        self.callback.end_staging_at_rendered_prefix(frame);
     }
 
     pub fn take_accepted_editor_quantum(&mut self) -> Option<AcceptedEditorQuantum> {

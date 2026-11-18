@@ -1112,11 +1112,11 @@ impl Callback {
             .as_ref()
             .is_some_and(|stage| stage.staged_frames == stage.expected_frames)
     }
-    /// An audible Pause can end inside the physical callback. The caller
-    /// proves the exact end of playback; a contiguous staged prefix ending
-    /// there may omit the unvisited, paused suffix. A fully staged monitoring
-    /// path keeps its original extent. Final host acceptance is still required.
-    pub fn end_staging_at_pause(&mut self, frame: usize) {
+    /// End at a proven transport hold, such as an audible Pause or a stream
+    /// waiting for pages. A contiguous stage ending exactly there may omit the
+    /// unvisited suffix. A fully staged monitoring path keeps its extent.
+    /// Final host acceptance is still required.
+    pub fn end_staging_at_rendered_prefix(&mut self, frame: usize) {
         if let Some(stage) = self.staged.as_mut()
             && frame != 0
             && stage.staged_frames == frame

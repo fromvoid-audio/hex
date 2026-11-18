@@ -5122,7 +5122,7 @@ impl Callback {
                 && let Ok(frame) = usize::try_from(after.saturating_sub(before))
                 && frame < output.len()
             {
-                self.native_sources.end_staging_at_pause(frame);
+                self.native_sources.end_staging_at_rendered_prefix(frame);
             }
             self.settle_transport_fade();
         }
@@ -5523,6 +5523,7 @@ impl Callback {
             if capacity_conflict && self.yield_pending_stream_successor() {
                 outcome.readiness_refused = false;
             }
+            self.end_native_staging_at_stream_hold(capture_offset, output.len(), &outcome);
             let streaming::RecordedStreamOutcome {
                 applied_play,
                 applied_action,
@@ -5624,6 +5625,7 @@ impl Callback {
             if capacity_conflict && self.yield_pending_stream_successor() {
                 outcome.readiness_refused = false;
             }
+            self.end_native_staging_at_stream_hold(capture_offset, output.len(), &outcome);
             let streaming::RecordedStreamOutcome {
                 applied_play,
                 applied_action,

@@ -4756,6 +4756,16 @@ fn installed_instrument_and_effect_export_with_streamed_audio() {
             "mixed playback did not resume after the streamed marker"
         );
         if live_edit {
+            applied = exercise_mixed_streamed_loop(&mut h, applied, markers[0]);
+            let cleared = super::automation::edit_with_running_callback(&mut h, Request::Undo);
+            assert!(
+                cleared.error.is_none(),
+                "mixed loop undo: {:?}",
+                cleared.error
+            );
+            assert_eq!(cleared.state.project, inserted.state.project);
+            (applied, _) = h.applied(applied);
+
             let position_before = h
                 .audio
                 .as_ref()
@@ -5137,4 +5147,99 @@ fn installed_instrument_and_effect_export_with_streamed_audio() {
         }
     }
     assert_eq!(fs::read(source).unwrap(), source_bytes);
+}
+
+fn exercise_mixed_streamed_loop(
+    h: &mut ResidentHarness,
+    applied: u64,
+    (marker, marker_length): (usize, usize),
+) -> u64 {
+    let marker = marker as u64;
+    let marker_end = marker + marker_length as u64;
+    let start = marker - 4096;
+    // Playhead movement during edit admission is in 64-frame steps. Force
+    // the loop end to split a physical block at any of those alignments.
+    let end = marker_end + 4096 + 17;
+    let edited = super::automation::edit_with_running_callback(
+        h,
+        Request::Edit(Command::SetLoopRegion {
+            start,
+            end,
+            enabled: true,
+        }),
+    );
+    assert!(edited.error.is_none(), "mixed loop: {:?}", edited.error);
+    let (revision, metadata) = h.applied(applied);
+    assert_eq!(metadata.context.editor_revision, edited.state.revision);
+    let status = h.audio.as_ref().unwrap().status().unwrap();
+    let mut previous = status.position.load(Acquire);
+    assert!((start..end).contains(&previous), "loop cursor {previous}");
+    let mut complete_passes = 0;
+    let mut started_pass = false;
+    let mut quiet_peak = 0.0_f32;
+    let mut resumed_peak = 0.0_f32;
+    let mut quiet_blocks = 0;
+    let mut partial_holds = 0;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while complete_passes < 2 {
+        let block = render_completed_block(h);
+        assert!(status.playing.load(Acquire), "mixed loop stopped playing");
+        assert!(
+            status.render_fault_snapshot().is_none(),
+            "mixed loop render fault"
+        );
+        assert!(
+            status.rejected_action().is_none(),
+            "mixed loop action refused"
+        );
+        let position = status.position.load(Acquire);
+        let advanced = if status.stream_buffering.load(Acquire) {
+            let committed = usize::try_from(status.stream_committed_frames.load(Acquire)).unwrap();
+            assert!(committed < block.len());
+            assert!(block[committed..].iter().all(|frame| *frame == [0.0; 2]));
+            partial_holds += usize::from(committed != 0);
+            committed
+        } else {
+            block.len()
+        };
+        assert_eq!(
+            position,
+            start + (previous - start + advanced as u64) % (end - start),
+            "loop cursor must advance only by rendered frames"
+        );
+        if position < previous {
+            if started_pass {
+                assert!(quiet_blocks >= 8, "loop skipped the streamed marker");
+                assert!(
+                    resumed_peak > 0.01 && quiet_peak < resumed_peak * 0.05,
+                    "stream marker did not repeat: quiet={quiet_peak}, resumed={resumed_peak}"
+                );
+                complete_passes += 1;
+            }
+            started_pass = true;
+            quiet_peak = 0.0;
+            resumed_peak = 0.0;
+            quiet_blocks = 0;
+        } else if started_pass && advanced == block.len() {
+            assert!(block.iter().flatten().all(|sample| sample.is_finite()));
+            let peak = block
+                .iter()
+                .flatten()
+                .fold(0.0f32, |peak, sample| peak.max(sample.abs()));
+            if (marker + 2048..marker_end - 2048).contains(&position) {
+                quiet_blocks += 1;
+                quiet_peak = quiet_peak.max(peak);
+            } else if position >= marker_end + 2048 {
+                assert!(peak > 0.01, "stream did not resume at {position}: {peak}");
+                resumed_peak = resumed_peak.max(peak);
+            }
+        }
+        previous = position;
+        assert!(
+            Instant::now() < deadline,
+            "mixed loop did not complete two passes"
+        );
+    }
+    println!("mixed loop {start}..{end} passes={complete_passes} partial_holds={partial_holds}");
+    revision
 }

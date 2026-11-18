@@ -116,10 +116,10 @@ impl EffectTransport {
         }
     }
 
-    pub(super) fn end_staging_at_pause(&mut self, frame: usize) {
+    pub(super) fn end_staging_at_rendered_prefix(&mut self, frame: usize) {
         match self {
-            Self::Ordinary(callback) => callback.end_staging_at_pause(frame),
-            Self::Dense(callback) => callback.end_staging_at_pause(frame),
+            Self::Ordinary(callback) => callback.end_staging_at_rendered_prefix(frame),
+            Self::Dense(callback) => callback.end_staging_at_rendered_prefix(frame),
         }
     }
 
