@@ -2054,6 +2054,12 @@ impl WorkerAudioSink for ResidentSink {
     ) -> Option<Box<dyn hex_session::service::DeviceInsertAudioReceipt>> {
         self.inner.device_insert_receipt(submission)
     }
+    fn offer_device_insert_consent(
+        &mut self,
+        submission: hex_session::service::ResidentGraphSubmission,
+    ) -> Option<Instant> {
+        self.inner.offer_device_insert_consent(submission)
+    }
     fn resident_publication_enabled(&self) -> bool {
         self.inner.resident_publication_enabled()
     }
@@ -4429,4 +4435,216 @@ fn staged_native_insert_is_refused_on_real_output_fault_without_a_late_commit() 
     assert_eq!(receipt.submission.output_identity, fresh.output_identity);
     assert_eq!(installed.state.project.main_devices().len(), 1);
     assert!(installed.state.can_undo);
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[test]
+fn confirmed_limiter_keeps_the_same_output_and_commits_only_after_its_fade() {
+    confirmed_limiter_keeps_the_same_output(262_144, false);
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[test]
+fn confirmed_limiter_resumes_file_backed_audio_on_the_same_output() {
+    confirmed_limiter_keeps_the_same_output(8_192, true);
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn confirmed_limiter_keeps_the_same_output(frame_limit: u64, streamed: bool) {
+    use hex_session::service::DeviceInsertOutcome;
+
+    fn status(h: &ResidentHarness) -> &hex_audio::prepared::Status {
+        h.audio.as_ref().unwrap().status().unwrap()
+    }
+
+    let _native = native_fixture();
+    let files = Files::new();
+    let mut h = ResidentHarness::with_frame_limit(frame_limit);
+    assert!(h.next().error.is_none());
+    let (applied, _) = h.applied(0);
+    let imported = h.run(Request::Import(files.wav(48_000, 96_000)));
+    assert_eq!(
+        imported
+            .state
+            .canonical_audio_source
+            .as_ref()
+            .unwrap()
+            .required_sources()
+            .any(|(_, binding)| matches!(
+                binding,
+                hex_session::AudioSourceBinding::VerifiedFile(_)
+            )),
+        streamed
+    );
+    let (applied, _) = h.applied(applied);
+    let predecessor = status(&h).recording_source().unwrap();
+    assert_eq!(predecessor.audio_revision, applied);
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while h.render() != [[0.25; 2]; 64] {
+        assert!(streamed && Instant::now() < deadline, "source never played");
+        std::thread::yield_now();
+    }
+    h.enable_confirmed_device_inserts();
+    for proceed in [false, true] {
+        let state = hex_engine::default_native_device_state_for_class(
+            hex_engine::NativeDeviceClass::Effect,
+            hex_engine::DeviceTypeId::from_static("hex.limiter"),
+        )
+        .unwrap();
+        h.service
+            .submit(Request::Edit(hex_project::Command::InsertMainDevice {
+                before: None,
+                state,
+            }))
+            .unwrap();
+        let staged = h.next();
+        assert!(staged.error.is_none(), "{:?}", staged.error);
+        assert!(!staged.request_complete);
+        assert_eq!(staged.state.project, imported.state.project);
+        assert_eq!(h.render(), [[0.25; 2]; 64]);
+        let offered = h.next();
+        assert!(offered.error.is_none(), "{:?}", offered.error);
+        let offer = offered.device_insert_confirmation.unwrap();
+        assert_eq!(
+            offer.submission().output_identity,
+            predecessor.output_identity
+        );
+        assert_eq!(status(&h).recording_source(), Some(predecessor));
+        if !proceed {
+            assert!(offer.cancel());
+            let terminal = h.next();
+            assert_eq!(
+                terminal.device_insert_complete.unwrap().outcome,
+                DeviceInsertOutcome::Cancelled
+            );
+            assert_eq!(terminal.state.project, imported.state.project);
+            assert_eq!(terminal.state.revision, imported.state.revision);
+            assert_eq!(h.render(), [[0.25; 2]; 64]);
+        } else {
+            let (submitted, resume) = h.probe_next_submitted_device_insert();
+            assert!(offer.proceed());
+            let confirmed = submitted.recv_timeout(Duration::from_secs(2)).unwrap();
+            resume.send(()).unwrap();
+            assert_eq!(confirmed.output_identity, predecessor.output_identity);
+            assert_eq!(confirmed.context, offer.submission().context);
+            assert_ne!(confirmed.audio_revision, offer.submission().audio_revision);
+            let deadline = Instant::now() + Duration::from_secs(2);
+            let position = loop {
+                let position = status(&h).position.load(Acquire);
+                let pcm = h.render();
+                if pcm[0] == [0.25 * 127.0 / 128.0; 2] {
+                    break position;
+                }
+                assert_eq!(pcm, [[0.25; 2]; 64]);
+                assert!(streamed && Instant::now() < deadline, "fade never started");
+                std::thread::yield_now();
+            };
+            assert_eq!(h.render()[63], [0.0; 2]);
+            assert_eq!(status(&h).recording_source(), Some(predecessor));
+            assert_eq!(status(&h).position.load(Acquire), position + 128);
+            h.render();
+            let terminal = h.next();
+            let receipt = terminal.device_insert_complete.unwrap();
+            assert_eq!(receipt.submission, confirmed);
+            assert_eq!(receipt.outcome, DeviceInsertOutcome::Installed);
+            assert_eq!(terminal.state.project.main_devices().len(), 1);
+            assert_eq!(terminal.state.revision, imported.state.revision + 1);
+            assert_eq!(status(&h).position.load(Acquire), position + 192);
+            assert!(status(&h).playing.load(Acquire));
+        }
+    }
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[gpui::test]
+fn device_insert_dialog_waits_for_a_real_button_decision(cx: &mut gpui::TestAppContext) {
+    let _native = native_fixture();
+    let files = Files::new();
+    let mut h = ResidentHarness::with_frame_limit(262_144);
+    assert!(h.next().error.is_none());
+    let (applied, _) = h.applied(0);
+    let imported = h.run(Request::Import(files.wav(48_000, 96_000)));
+    h.applied(applied);
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    assert_eq!(h.render(), [[0.25; 2]; 64]);
+    h.enable_confirmed_device_inserts();
+    let state = hex_engine::default_native_device_state_for_class(
+        hex_engine::NativeDeviceClass::Effect,
+        hex_engine::DeviceTypeId::from_static("hex.limiter"),
+    )
+    .unwrap();
+    h.service
+        .submit(Request::Edit(hex_project::Command::InsertMainDevice {
+            before: None,
+            state,
+        }))
+        .unwrap();
+    let callback = Arc::clone(&h.callback);
+    let backend = h.into_plugin_ui_backend();
+    let window =
+        hex_ui::open_sampler_load_test_backend(cx, backend, files.0.clone(), files.0.clone())
+            .unwrap();
+    let visual = gpui::VisualTestContext::from_window(window, cx);
+    let step = |cx: &mut gpui::TestAppContext| {
+        let mut pcm = [[0.0; 2]; 64];
+        callback
+            .lock()
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .render(&mut pcm)
+            .unwrap();
+        cx.background_executor
+            .advance_clock(Duration::from_millis(16));
+        visual.run_until_parked();
+        std::thread::yield_now();
+        pcm
+    };
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !cx.has_pending_prompt() {
+        assert_eq!(step(cx), [[0.25; 2]; 64]);
+        assert!(Instant::now() < deadline, "confirmed insert did not prompt");
+    }
+    let (title, detail) = cx.pending_prompt().unwrap();
+    assert_eq!(title, "interrupt playback to insert this device?");
+    assert_eq!(
+        detail,
+        "playback will fade out briefly and resume from the same position. \
+         held notes and effect tails may reset."
+    );
+    let read = |cx: &mut gpui::TestAppContext| {
+        cx.update(|app| hex_ui::plugin_effect_test_view(window, app))
+            .unwrap()
+    };
+    assert_eq!(read(cx).state.unwrap().project, imported.state.project);
+    assert_eq!(step(cx), [[0.25; 2]; 64]);
+    cx.simulate_prompt_answer("proceed");
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        step(cx);
+        let view = read(cx);
+        assert!(view.error.is_none(), "{:?}", view.error);
+        if let Some(state) = view.state
+            && state.revision != imported.state.revision
+        {
+            assert_eq!(state.project.main_devices().len(), 1);
+            assert!(!cx.has_pending_prompt());
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "proceed did not install the device"
+        );
+    }
 }

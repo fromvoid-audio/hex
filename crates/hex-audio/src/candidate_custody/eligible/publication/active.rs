@@ -32,6 +32,47 @@ impl Drop for Claims {
     }
 }
 impl Queued {
+    pub(crate) fn bind_device_insert(&mut self, receipt: crate::prepared::PublicationReceiptOwner) {
+        self.state.device_insert = Some(receipt);
+    }
+    pub(crate) fn device_insert(&self) -> Option<&crate::prepared::PublicationReceiptOwner> {
+        self.state.device_insert.as_ref()
+    }
+    pub(crate) fn insert_latency(&self) -> Option<u32> {
+        self.state
+            .runtime
+            .as_ref()?
+            .status()
+            .map(|status| status.main_output_latency_frames)
+    }
+    pub(crate) fn protect_device_insert_window(
+        &mut self,
+        previous: &mut Active,
+        request: &mut StreamInstall<'_>,
+    ) -> Result<bool, hex_engine::PlaybackHandoffRejection> {
+        use hex_engine::PlaybackHandoffRejection as Rejection;
+        match self.state.prepare_stream_window(
+            Some(&mut previous.state),
+            request,
+            hex_stream::ProtectionRole::Candidate,
+        ) {
+            Ok(window) => Ok(window.is_some()),
+            Err(_) => {
+                let Some(workspace) = self.state.streaming.as_mut() else {
+                    return Err(Rejection::StreamedPagesNotReady);
+                };
+                Err(if std::mem::take(&mut workspace.source_changed) {
+                    Rejection::StreamSourceChanged
+                } else if workspace.capacity_conflict {
+                    Rejection::StreamedPageCapacity
+                } else {
+                    workspace
+                        .take_handoff_diagnostic()
+                        .map_or(Rejection::StreamedPagesNotReady, Rejection::from_error)
+                })
+            }
+        }
+    }
     #[cfg(all(test, feature = "allocation-probe"))]
     pub(crate) fn test_set_transfer_allowance(&mut self, bytes: usize) -> Option<usize> {
         self.state
@@ -76,20 +117,36 @@ impl Queued {
         mut previous: Option<&mut Active>,
         root: &CandidateRoot,
         mut stream: Option<&mut StreamInstall<'_>>,
+        insert_is_current: impl FnOnce(&crate::prepared::PublicationReceiptOwner) -> bool,
     ) -> InstallDecision {
         if let Some(reason) = self.preflight_refusal(root) {
             return InstallDecision::Refused(reason);
         }
         let next = &mut self.state;
+        let confirmed_insert = stream
+            .as_ref()
+            .is_some_and(|request| request.confirmed_fade == Some(0));
+        if next.device_insert.is_some()
+            && (previous.is_none()
+                || !confirmed_insert
+                    && !next.runtime.as_mut().is_some_and(
+                        ClaimedAudioCandidateRuntime::require_continuous_device_insert,
+                    ))
+        {
+            return InstallDecision::Refused(
+                hex_engine::PlaybackHandoffRejection::RuntimeFenceChanged,
+            );
+        }
         let streamed = next.streaming.is_some()
             || next
                 .runtime
                 .as_ref()
                 .is_none_or(|runtime| runtime.contains_streamed_sources());
         if streamed {
-            if previous
-                .as_mut()
-                .is_some_and(|old| old.stream_view().has_pending_render_window())
+            if !confirmed_insert
+                && previous
+                    .as_mut()
+                    .is_some_and(|old| old.stream_view().has_pending_render_window())
             {
                 // The candidate's claims and cancellation were checked first.
                 // Let the predecessor complete its exact pending window.
@@ -253,13 +310,34 @@ impl Queued {
                 hex_engine::PlaybackHandoffRejection::FreshRuntimeCancelled,
             );
         }
-        let result = next.runtime.as_mut().map(|runtime| {
-            runtime.try_inherit_and_retire_in_place(
-                &mut old.runtime,
-                &mut next.retired_runtime,
-                &mut next.manifest,
-            )
-        });
+        let insert = next.device_insert.as_ref();
+        let result = if insert.is_some_and(|receipt| !insert_is_current(receipt)) {
+            Some(Err(hex_engine::PlaybackHandoffError::RuntimeFenceChanged))
+        } else if insert.is_some_and(|receipt| {
+            if confirmed_insert {
+                !receipt.begin_confirmed_apply()
+            } else {
+                !receipt.begin_apply()
+            }
+        }) {
+            None
+        } else {
+            next.runtime.as_mut().map(|runtime| {
+                if confirmed_insert {
+                    runtime.try_inherit_and_retire_at_device_insert_cut(
+                        &mut old.runtime,
+                        &mut next.retired_runtime,
+                        &mut next.manifest,
+                    )
+                } else {
+                    runtime.try_inherit_and_retire_in_place(
+                        &mut old.runtime,
+                        &mut next.retired_runtime,
+                        &mut next.manifest,
+                    )
+                }
+            })
+        };
         // The engine preflights every fallible branch before actual ownership
         // swaps. Its successful origin commit leaves only fixed Option moves.
         if !matches!(result, Some(Ok(()))) {
@@ -270,6 +348,7 @@ impl Queued {
                 .store(0, Ordering::Release);
             return if let Some(Err(error)) = result
                 && error.is_transient()
+                && !confirmed_insert
             {
                 // No owner/history/origin move occurred. Restore cancellable
                 // deferred custody; a racing cancellation can now win Pending.
@@ -279,7 +358,15 @@ impl Queued {
                     Ordering::AcqRel,
                     Ordering::Acquire,
                 );
+                if let Some(receipt) = insert {
+                    receipt.defer_apply();
+                }
                 InstallDecision::Retry(PublicationWaitReason::RuntimeHandoff(error))
+            } else if insert.is_some() {
+                InstallDecision::Refused(match result {
+                    Some(Err(error)) => hex_engine::PlaybackHandoffRejection::from_error(error),
+                    _ => hex_engine::PlaybackHandoffRejection::FreshRuntimeCancelled,
+                })
             } else {
                 InstallDecision::Refused(
                     hex_engine::PlaybackHandoffRejection::ConstructorClaimsUnavailable,
@@ -323,6 +410,11 @@ impl Queued {
     }
 }
 impl Active {
+    pub(crate) fn acknowledge_device_insert(&self) {
+        if let Some(receipt) = self.state.device_insert.as_ref() {
+            receipt.installed();
+        }
+    }
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     pub(crate) fn matches_native_epoch_target(
         &self,

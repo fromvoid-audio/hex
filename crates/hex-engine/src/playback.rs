@@ -1904,6 +1904,7 @@ impl Playback {
 
     /// Apply immediately. A pending declicked Pause/Stop completes first.
     pub fn try_apply_action(&mut self, action: PlaybackAction) -> Result<(), PlaybackActionError> {
+        self.release_device_insert_cut();
         self.complete_transport_fade();
         self.apply_now(action)
     }
@@ -1918,6 +1919,7 @@ impl Playback {
         &mut self,
         action: PlaybackAction,
     ) -> Result<(), PlaybackActionError> {
+        self.release_device_insert_cut();
         self.complete_transport_fade();
         if (transport_fade::fades_out(action) || transport_fade::seeks(action)) && self.playing() {
             self.admit_declicked_stop(action)?;
@@ -1948,6 +1950,61 @@ impl Playback {
     /// The Pause/Stop whose fade is in progress, if any.
     pub fn pending_transport_fade(&self) -> Option<PlaybackAction> {
         self.transport_fade.pending()
+    }
+
+    /// Begin an output fade for a confirmed graph insert on a playing Session
+    /// runtime. The callback owns the decision and must install or release the
+    /// cut. Ordinary transport actions and priority Stop supersede it.
+    pub fn begin_device_insert_cut(&mut self) -> bool {
+        self.session_runtime
+            .as_deref()
+            .is_some_and(crate::SessionPlayback::playing)
+            && self.transport_fade.begin_device_insert_cut()
+    }
+
+    /// Frames to the cut if a fresh insert fade starts on this callback.
+    pub fn device_insert_fade_frames(&self) -> u32 {
+        transport_fade::fade_frames(self.sample_rate())
+    }
+
+    pub(crate) fn preview_stream_device_insert(
+        &mut self,
+        previous: &mut Self,
+        fade_remaining: u32,
+        maximum_frames: usize,
+        ordinary: bool,
+        visit: &mut impl FnMut(crate::StreamResourceExtent) -> Result<(), Invalid>,
+    ) -> Result<crate::StreamChunkWindow, PlaybackHandoffError> {
+        let unavailable = PlaybackHandoffError::RuntimeFenceChanged;
+        if previous.device_insert_held() != (fade_remaining == 0) {
+            return Err(unavailable);
+        }
+        let next = self.session_runtime.as_mut().ok_or(unavailable)?;
+        let previous = previous.session_runtime.as_mut().ok_or(unavailable)?;
+        next.preview_stream_device_insert(previous, fade_remaining, maximum_frames, ordinary, visit)
+            .map_err(PlaybackHandoffError::Session)
+    }
+
+    /// The output is silent and the Session clock is frozen at the fade end.
+    pub fn device_insert_held(&self) -> bool {
+        self.transport_fade.device_insert_held()
+    }
+
+    /// The callback still owns a fade out or a silent cut for this insert.
+    pub fn device_insert_cut_pending(&self) -> bool {
+        self.transport_fade.device_insert_cut_pending()
+    }
+
+    /// Restore the predecessor after a refusal, or resume the successor after
+    /// it has inherited the silent cut. The full output ramps up from the
+    /// current gain, without issuing a transport command or resetting history.
+    pub fn release_device_insert_cut(&mut self) {
+        let frames = transport_fade::fade_frames(self.sample_rate());
+        if self.transport_fade.release_device_insert_cut(frames)
+            && let Some(runtime) = self.session_runtime.as_deref_mut()
+        {
+            runtime.set_playing_at_device_insert_cut(true);
+        }
     }
 
     /// One deferred Pause/Stop refusal recorded at its fade end.
@@ -2245,7 +2302,13 @@ impl Playback {
         &mut self,
         previous: &mut Self,
         groups: crate::audio_candidate::groups::Transfer<'_>,
+        confirmed_insert: bool,
     ) -> Result<(), PlaybackHandoffError> {
+        if confirmed_insert && !previous.device_insert_held()
+            || !confirmed_insert && previous.device_insert_cut_pending()
+        {
+            return Err(PlaybackHandoffError::RuntimeFenceChanged);
+        }
         let next = self
             .session_runtime
             .as_mut()
@@ -2254,9 +2317,13 @@ impl Playback {
             .session_runtime
             .as_mut()
             .ok_or(PlaybackHandoffError::ActiveSessionStateCannotBeDropped)?;
-        next.inherit_candidate_groups(old, groups)
+        next.inherit_candidate_groups(old, groups, confirmed_insert)
             .map_err(PlaybackHandoffError::Session)?;
         self.inherit_metronome(previous);
+        if confirmed_insert {
+            *self.transport_fade = std::mem::take(&mut *previous.transport_fade);
+            self.release_device_insert_cut();
+        }
         Ok(())
     }
 
@@ -2444,6 +2511,7 @@ impl Playback {
             }
             _ => false,
         };
+        let confirmed_insert_cut = previous.transport_fade.device_insert_held();
         match (&mut self.session_runtime, &mut previous.session_runtime) {
             (Some(next), Some(old)) => (if fenced_restart {
                 next.try_inherit_state_fenced_restart_from(old)
@@ -2461,6 +2529,8 @@ impl Playback {
                 result
             } else if let Some(anchor) = tempo_anchor {
                 next.try_inherit_state_with_tempo_anchor(old, anchor)
+            } else if confirmed_insert_cut {
+                next.try_inherit_state_at_device_insert_cut(old)
             } else {
                 next.try_inherit_state_live_from(old)
             })
@@ -3389,6 +3459,10 @@ impl Playback {
         let frames = transport_fade::fade_frames(self.sample_rate());
         let mut offset = 0;
         loop {
+            if self.transport_fade.device_insert_held() {
+                output[offset..].fill([0.0; 2]);
+                return Ok(());
+            }
             let start = self.position();
             let playing = self.playing();
             let part_len = self.transport_fade.part_len(output.len() - offset, frames);
@@ -3405,6 +3479,11 @@ impl Playback {
             self.mix_tuning_audition(chunk);
             if completed {
                 self.complete_transport_fade();
+            }
+            if self.transport_fade.apply_device_insert_cut(chunk, frames)
+                && let Some(runtime) = self.session_runtime.as_deref_mut()
+            {
+                runtime.set_playing_at_device_insert_cut(false);
             }
             offset = end;
             if offset >= output.len() {

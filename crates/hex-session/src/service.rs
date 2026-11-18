@@ -346,6 +346,8 @@ pub struct Event {
     pub sampler_edit_complete: Option<u64>,
     /// At most two exact terminals: a refused new request and an invalidated pending one.
     pub plugin_effect_complete: Vec<PluginEffectCompletion>,
+    /// The staged insert is waiting for a one-shot decision from the editor.
+    pub device_insert_confirmation: Option<DeviceInsertConfirmation>,
     /// Terminal for the exact audio-confirmed native or hosted device edit.
     pub device_insert_complete: Option<DeviceInsertCompletion>,
     /// This response consumed a read-only parameter or failed-take query.
@@ -591,6 +593,8 @@ pub struct DeviceInsertCompletion {
     pub submission: ResidentGraphSubmission,
     pub outcome: DeviceInsertOutcome,
 }
+
+pub use resident_audio::device_insert::{DeviceInsertConfirmation, VerifiedDeviceInsertAttempt};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DeviceInsertOutcome {
@@ -2958,6 +2962,7 @@ fn run_worker(
                 sampler_load_complete: None,
                 sampler_edit_complete: None,
                 plugin_effect_complete: Vec::new(),
+                device_insert_confirmation: None,
                 device_insert_complete: None,
                 plugin_parameter_observation: false,
                 plugin_parameters: None,
@@ -3004,6 +3009,7 @@ fn run_worker(
             sampler_load_complete: None,
             sampler_edit_complete: None,
             plugin_effect_complete: Vec::new(),
+            device_insert_confirmation: None,
             device_insert_complete: None,
             plugin_parameter_observation: false,
             plugin_parameters: None,
@@ -3121,7 +3127,7 @@ fn run_worker(
         ($outcome:expr) => {
             events.send_pending_with_control_poll($outcome, |mut audio| {
                 if let Some(pending) = pending_device_insert.as_ref() {
-                    pending.terminal(
+                    pending.poll(
                         session.shutdown.load(Ordering::Acquire)
                             || pending.document_intent != document_intent.load(Ordering::Acquire),
                     );
@@ -3221,7 +3227,7 @@ fn run_worker(
             }
         };
     }
-    while let Some(queued) = events.next_request_with_control_poll(
+    'requests: while let Some(queued) = events.next_request_with_control_poll(
         &requests,
         &document_intent,
         &mut recording_barrier,
@@ -3615,6 +3621,7 @@ fn run_worker(
                 | Request::ContinueStoppedPlaybackRestore
         );
         let mut plugin_effect_complete = Vec::new();
+        let mut device_insert_confirmation = None;
         let mut device_insert_complete = None;
         let plugin_parameter_observation = request.is_read_only_observation();
         let mut plugin_parameters = None;
@@ -6135,14 +6142,89 @@ fn run_worker(
                         result.value = Err("vst3 parameter target changed".into());
                     }
                 }
-                Request::ContinueDeviceInsert => {
+                Request::ContinueDeviceInsert => 'device_insert: {
                     if let Some(mut pending) = pending_device_insert.take() {
-                        let Some(terminal) = pending.terminal(false) else {
+                        use resident_audio::device_insert::Progress;
+                        let cancel = session.shutdown.load(Ordering::Acquire)
+                            || pending.document_intent != document_intent.load(Ordering::Acquire);
+                        let Some(progress) = pending.poll(cancel) else {
                             // An ordinary request cannot force a pending transaction.
                             pending_device_insert = Some(pending);
-                            continue;
+                            continue 'requests;
                         };
-                        let submission = pending.submission();
+                        let terminal = match progress {
+                            Progress::PreparationFailed => {
+                                error = pending.preparation_error();
+                                if let Some(attempt) = pending.verified_attempt()
+                                    && let Some(sink) = events.resident_audio()
+                                {
+                                    sink.finish_verified_device_insert(attempt, false);
+                                }
+                                request_complete = true;
+                                break 'device_insert;
+                            }
+                            Progress::Proceed => {
+                                let admission = export_lane.admission_with_resident_owners(
+                                    compiled.as_ref().map(|(_, prepared)| {
+                                        hex_engine::native_device_resources::ControlSamplerSelection {
+                                            sources: current_sources.as_ref(),
+                                            prepared: Some(prepared),
+                                        }
+                                    }),
+                                    resident_seek.as_ref(),
+                                    resident_preview.as_ref(),
+                                );
+                                match events
+                                    .resident_audio()
+                                    .ok_or(SessionError::Invalid("native worker unavailable"))
+                                    .and_then(|sink| {
+                                        pending.proceed(
+                                            &mut session,
+                                            sink,
+                                            admission,
+                                            resident_snapshot.as_ref(),
+                                        )
+                                    }) {
+                                    Ok(()) => {
+                                        pending_device_insert = Some(pending);
+                                        continue 'requests;
+                                    }
+                                    Err(reason) => {
+                                        error = Some(reason.to_string());
+                                        DeviceInsertAudioState::Refused(
+                                            hex_engine::PlaybackHandoffRejection::RuntimeFenceChanged,
+                                        )
+                                    }
+                                }
+                            }
+                            Progress::Terminal(DeviceInsertAudioState::Refused(
+                                hex_engine::PlaybackHandoffRejection::DeviceInsertNeedsConfirmation,
+                            )) if cancel => DeviceInsertAudioState::Cancelled,
+                            Progress::Terminal(terminal) => terminal,
+                        };
+                        if !cancel
+                            && terminal == DeviceInsertAudioState::Refused(
+                                hex_engine::PlaybackHandoffRejection::DeviceInsertNeedsConfirmation,
+                            )
+                            && let Some(offer) =
+                                events.resident_audio().and_then(|sink| pending.offer(sink))
+                        {
+                            device_insert_confirmation = Some(offer);
+                            pending_device_insert = Some(pending);
+                            break 'device_insert;
+                        }
+                        let Some(submission) = pending.submission() else {
+                            if let Some(attempt) = pending.verified_attempt()
+                                && let Some(sink) = events.resident_audio()
+                            {
+                                sink.finish_verified_device_insert(attempt, false);
+                            }
+                            status = Some("device insertion cancelled".into());
+                            request_complete = true;
+                            break 'device_insert;
+                        };
+                        let verified = pending.verified_attempt().cloned();
+                        let was_offered = pending.awaiting_confirmation();
                         let plugin = pending.plugin.take();
                         let publish_created = plugin.as_ref().is_none_or(|plugin| {
                             !matches!(
@@ -6154,13 +6236,15 @@ fn run_worker(
                         let outcome = match terminal {
                             DeviceInsertAudioState::Installed => {
                                 match pending.commit(&mut session, resident_snapshot.as_ref()) {
-                                    Ok((new, snapshot)) => {
+                                    Ok((new, prepared, snapshot)) => {
                                         if publish_created {
                                             created = Some(new);
                                         }
                                         unsaved = true;
-                                        replacement_revision = Some(Arc::clone(&snapshot.prepared));
-                                        resident_snapshot = Some(snapshot);
+                                        replacement_revision = Some(prepared);
+                                        if let Some(snapshot) = snapshot {
+                                            resident_snapshot = Some(snapshot);
+                                        }
                                         status = Some("device inserted".into());
                                         DeviceInsertOutcome::Installed
                                     }
@@ -6171,10 +6255,13 @@ fn run_worker(
                                 }
                             }
                             DeviceInsertAudioState::Refused(reason) => {
-                                error = Some(reason.message().into());
                                 if reason == hex_engine::PlaybackHandoffRejection::DeviceInsertNeedsConfirmation {
+                                    error = Some("stop playback to insert this device".into());
                                     DeviceInsertOutcome::ConfirmationRequired
                                 } else {
+                                    if error.is_none() {
+                                        error = Some(reason.message().into());
+                                    }
                                     DeviceInsertOutcome::Refused(reason)
                                 }
                             }
@@ -6184,8 +6271,13 @@ fn run_worker(
                                 DeviceInsertOutcome::OutputClosed
                             }
                             DeviceInsertAudioState::Cancelled => {
-                                error =
-                                    Some("device insertion cancelled before installation".into());
+                                if was_offered {
+                                    status = Some("device insertion cancelled".into());
+                                } else {
+                                    error = Some(
+                                        "device insertion cancelled before installation".into(),
+                                    );
+                                }
                                 DeviceInsertOutcome::Cancelled
                             }
                             DeviceInsertAudioState::Expired => {
@@ -6196,7 +6288,7 @@ fn run_worker(
                             DeviceInsertAudioState::Pending | DeviceInsertAudioState::Applying => {
                                 pending.plugin = plugin;
                                 pending_device_insert = Some(pending);
-                                continue;
+                                continue 'requests;
                             }
                         };
                         device_insert_complete = Some(DeviceInsertCompletion {
@@ -6205,7 +6297,11 @@ fn run_worker(
                         });
                         let accepted = outcome == DeviceInsertOutcome::Installed;
                         if let Some(sink) = events.resident_audio() {
-                            sink.finish_resident_effect_edit(submission.context, accepted);
+                            if let Some(attempt) = verified.as_ref() {
+                                sink.finish_verified_device_insert(attempt, accepted);
+                            } else {
+                                sink.finish_resident_effect_edit(submission.context, accepted);
+                            }
                         }
                         if let Some(plugin) = plugin {
                             plugin_effect_complete
@@ -7028,6 +7124,34 @@ fn run_worker(
                             || session.audio_mode() != DocumentAudioMode::Resident) =>
                 {
                     error = Some("vst3 recovery lost its resident publication path".into());
+                }
+                Request::Edit(command)
+                    if session.audio_mode() == DocumentAudioMode::VerifiedStreaming
+                        && resident_audio::device_insert::is_insert(&command)
+                        && events
+                            .resident_audio()
+                            .is_some_and(|sink| sink.confirms_verified_device_inserts()) =>
+                {
+                    let result = events
+                        .resident_audio()
+                        .ok_or(SessionError::Invalid("native worker unavailable"))
+                        .and_then(|sink| {
+                            session.stage_verified_device_insert(
+                                command,
+                                &state,
+                                compiled.as_ref().map(|(_, prepared)| prepared.as_ref()),
+                                sink,
+                                request_document_intent,
+                            )
+                        });
+                    match result {
+                        Ok(staged) => {
+                            pending_device_insert = Some(staged);
+                            request_complete = false;
+                            status = Some("device insert pending · waiting for audio".into());
+                        }
+                        Err(reason) => error = Some(reason.to_string()),
+                    }
                 }
                 Request::Edit(command)
                     if events.resident_publication_enabled()
@@ -10802,6 +10926,7 @@ fn run_worker(
             sampler_load_complete,
             sampler_edit_complete,
             plugin_effect_complete,
+            device_insert_confirmation,
             device_insert_complete,
             plugin_parameter_observation,
             plugin_parameters,

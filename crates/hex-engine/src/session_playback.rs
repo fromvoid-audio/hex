@@ -2418,6 +2418,12 @@ impl SessionPlayback {
         self.playing
     }
 
+    /// Freeze or restore the clock at a silent publication boundary. Preserve
+    /// route, voice and processor history for handoff or resumption.
+    pub(crate) fn set_playing_at_device_insert_cut(&mut self, playing: bool) {
+        self.playing = playing;
+    }
+
     /// Scalar translation used by the effective performance clock. Observers
     /// must correlate it with this runtime's applied revision and route snapshot.
     pub fn clock_anchor(&self) -> Option<SessionClockAnchor> {
@@ -2655,6 +2661,23 @@ impl SessionPlayback {
         &mut self,
         previous: &mut Self,
     ) -> Result<SessionHandoffReport, SessionPlaybackError> {
+        self.try_inherit_live_from(previous, false)
+    }
+
+    /// Rebuild at an output-owned silent cut without reanchoring either
+    /// transport clock or already-playing Session clip origins.
+    pub(crate) fn try_inherit_state_at_device_insert_cut(
+        &mut self,
+        previous: &mut Self,
+    ) -> Result<SessionHandoffReport, SessionPlaybackError> {
+        self.try_inherit_live_from(previous, true)
+    }
+
+    fn try_inherit_live_from(
+        &mut self,
+        previous: &mut Self,
+        confirmed_insert: bool,
+    ) -> Result<SessionHandoffReport, SessionPlaybackError> {
         if self.midi_capture_active()
             || previous.midi_capture_active()
             || self.linear_arrangement_export
@@ -2665,7 +2688,11 @@ impl SessionPlayback {
             return Err(SessionPlaybackError::InvalidCommand);
         }
         self.require_fresh_candidate()?;
-        self.inherit_state_live(previous, None)
+        if confirmed_insert {
+            self.inherit_state_at_device_insert_cut(previous, None, None)
+        } else {
+            self.inherit_state_live(previous, None)
+        }
     }
 
     /// The caller must authenticate and retain the source and state identities.
@@ -2724,6 +2751,7 @@ impl SessionPlayback {
         &mut self,
         previous: &mut Self,
         groups: crate::audio_candidate::groups::Transfer<'_>,
+        confirmed_insert: bool,
     ) -> Result<SessionHandoffReport, SessionPlaybackError> {
         if self.midi_capture_active()
             || previous.midi_capture_active()
@@ -2735,7 +2763,11 @@ impl SessionPlayback {
             return Err(SessionPlaybackError::InvalidCommand);
         }
         self.require_fresh_candidate()?;
-        self.inherit_state_live(previous, Some(groups))
+        if confirmed_insert {
+            self.inherit_state_at_device_insert_cut(previous, Some(groups), None)
+        } else {
+            self.inherit_state_live(previous, Some(groups))
+        }
     }
 
     pub(super) fn require_fresh_candidate(&self) -> Result<(), SessionPlaybackError> {

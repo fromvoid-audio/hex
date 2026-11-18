@@ -506,6 +506,8 @@ pub enum ResidentPublicationPolicy {
     DeviceInsert {
         predecessor: ResidentRuntimeLoop,
         hosted: bool,
+        /// Exact seamless refusal whose interruption the user approved.
+        confirmation: Option<ResidentGraphSubmission>,
     },
     /// The sink owns the shared arrangement gate through exact callback installation.
     /// A playing witness inherits the actual boundary runtime; a stopped witness
@@ -625,11 +627,39 @@ pub trait WorkerAudioSink: Send {
         false
     }
 
+    fn confirms_verified_device_inserts(&self) -> bool {
+        false
+    }
+
+    /// Prepare the immutable source of an uncommitted editor transaction.
+    fn begin_verified_device_insert(
+        &mut self,
+        _attempt: super::VerifiedDeviceInsertAttempt,
+    ) -> Result<(), String> {
+        Err("verified device inserts are unavailable on this output".into())
+    }
+
+    fn finish_verified_device_insert(
+        &mut self,
+        _attempt: &super::VerifiedDeviceInsertAttempt,
+        _installed: bool,
+    ) {
+    }
+
     /// Borrow the exact receipt immediately after submitting a DeviceInsert.
     fn device_insert_receipt(
         &mut self,
         _submission: ResidentGraphSubmission,
     ) -> Option<Box<dyn DeviceInsertAudioReceipt>> {
+        None
+    }
+
+    /// Obtain the fixed deadline of the exact refused insert's consent window.
+    /// An unavailable or changed output grants no offer.
+    fn offer_device_insert_consent(
+        &mut self,
+        _submission: ResidentGraphSubmission,
+    ) -> Option<std::time::Instant> {
         None
     }
 
@@ -1771,15 +1801,18 @@ impl WorkerEvents {
     ) -> Option<QueuedRequest> {
         if let Some(pending) = device_insert {
             loop {
-                self.poll();
                 let cancel = self.shutdown.load(Ordering::Acquire)
                     || pending.document_intent != document_intent.load(Ordering::Acquire);
-                if pending.terminal(cancel).is_some() {
+                if self.device_insert_deferred.is_some() {
+                    pending.cancel_confirmation();
+                }
+                if pending.poll(cancel).is_some() {
                     return Some(QueuedRequest::continuation(
                         Request::ContinueDeviceInsert,
                         document_intent,
                     ));
                 }
+                self.poll();
                 if cancel || self.device_insert_deferred.is_some() {
                     thread::sleep(BUSY_POLL_INTERVAL);
                     continue;
@@ -1796,7 +1829,12 @@ impl WorkerEvents {
                     {
                         return Some(queued);
                     }
-                    Ok(queued) => self.device_insert_deferred = Some(queued),
+                    Ok(queued) => {
+                        if pending.awaiting_confirmation() {
+                            pending.cancel_confirmation();
+                        }
+                        self.device_insert_deferred = Some(queued);
+                    }
                     Err(mpsc::RecvTimeoutError::Timeout) => (),
                     Err(mpsc::RecvTimeoutError::Disconnected) => return None,
                 }

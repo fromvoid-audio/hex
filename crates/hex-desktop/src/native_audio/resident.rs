@@ -15,9 +15,20 @@ use hex_session::service::{
 };
 
 #[derive(Debug)]
-struct InsertReceipt {
+pub(super) struct InsertReceipt {
     submission: ResidentGraphSubmission,
     receipt: hex_audio::prepared::CancellablePublicationReceipt,
+}
+impl InsertReceipt {
+    pub(super) fn new(
+        submission: ResidentGraphSubmission,
+        receipt: hex_audio::prepared::CancellablePublicationReceipt,
+    ) -> Self {
+        Self {
+            submission,
+            receipt,
+        }
+    }
 }
 
 impl DeviceInsertAudioReceipt for InsertReceipt {
@@ -179,7 +190,28 @@ pub(super) fn classify_publication(
     }
 }
 
+pub(super) fn resident_insert_consent(
+    control: &hex_audio::prepared::PublicationControl,
+    submission: ResidentGraphSubmission,
+) -> Option<hex_audio::prepared::DeviceInsertConsent> {
+    let receipt = control.fresh_runtime_receipt(submission.audio_revision)?;
+    if receipt.output_identity() != submission.output_identity
+        || receipt.context() != Some(submission.context)
+    {
+        return None;
+    }
+    control.offer_resident_device_insert_consent(&receipt)
+}
+
 impl NativeAudioSink {
+    pub(super) fn offer_resident_device_insert_consent(
+        &mut self,
+        submission: ResidentGraphSubmission,
+    ) -> Option<std::time::Instant> {
+        let control = self.output.as_mut()?.publication.control()?;
+        resident_insert_consent(control, submission).map(|consent| consent.expires_at())
+    }
+
     pub(super) fn retain_device_insert_receipt(
         &mut self,
         submission: ResidentGraphSubmission,
@@ -1033,6 +1065,24 @@ impl NativeAudioSink {
                         rebind.fence,
                     )
                 });
+            let approved_insert = if let ResidentPublicationPolicy::DeviceInsert {
+                confirmation: Some(refused),
+                ..
+            } = policy
+            {
+                let Some(consent) = resident_insert_consent(control, refused)
+                    .filter(|consent| consent.candidate_context() == metadata.context)
+                else {
+                    return Err(ResidentPublicationRefusal {
+                        kind: hex_session::service::ResidentPublicationFailure::Other,
+                        playback,
+                        error: "device insert confirmation is no longer current".into(),
+                    });
+                };
+                Some(consent)
+            } else {
+                None
+            };
             let policy = match policy {
                 ResidentPublicationPolicy::DeviceInsert {
                     predecessor: expected,
@@ -1190,26 +1240,41 @@ impl NativeAudioSink {
                         error: cancellation_error.into(),
                     });
                 }
+                let bind_insert_receipt =
+                    |receipt: &hex_audio::prepared::CancellablePublicationReceipt| {
+                        if let Some(operation) = hosted_insert.as_ref() {
+                            operation.bind_device_insert_receipt(Box::new(InsertReceipt {
+                                submission: ResidentGraphSubmission {
+                                    output_identity: receipt.output_identity(),
+                                    audio_revision: receipt.revision(),
+                                    context: metadata.context,
+                                },
+                                receipt: receipt.clone(),
+                            }));
+                        }
+                    };
                 let published = match policy {
-                    hex_audio::prepared::PublicationPolicy::DeviceInsert { .. } => control
-                        .publish_device_insert_with_receipt_on_control(
-                            retained_playback,
-                            policy,
-                            metadata.context,
-                            |receipt| {
-                                if let Some(operation) = hosted_insert.as_ref() {
-                                    operation.bind_device_insert_receipt(Box::new(InsertReceipt {
-                                        submission: ResidentGraphSubmission {
-                                            output_identity: receipt.output_identity(),
-                                            audio_revision: receipt.revision(),
-                                            context: metadata.context,
-                                        },
-                                        receipt: receipt.clone(),
-                                    }));
-                                }
-                            },
-                            |prospective| admit(&[prospective, retired, pending]),
-                        ),
+                    hex_audio::prepared::PublicationPolicy::DeviceInsert { .. } => {
+                        let admit_resources = |prospective: DeviceResourceAdmission<'_>| {
+                            admit(&[prospective, retired, pending])
+                        };
+                        if let Some(consent) = approved_insert {
+                            control.publish_confirmed_device_insert_with_receipt_on_control(
+                                retained_playback,
+                                consent,
+                                bind_insert_receipt,
+                                admit_resources,
+                            )
+                        } else {
+                            control.publish_device_insert_with_receipt_on_control(
+                                retained_playback,
+                                policy,
+                                metadata.context,
+                                bind_insert_receipt,
+                                admit_resources,
+                            )
+                        }
+                    }
                     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
                     _ if retained_playback.has_foreign_continuation_states() => {
                         match self.plugins.sequenced_publication_request(

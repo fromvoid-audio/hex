@@ -51,6 +51,7 @@ impl DeviceInsertAudioReceipt for Arc<FixtureReceipt> {
 struct Fixture {
     active: Option<ResidentRuntimeLoop>,
     candidate: Option<Arc<FixtureReceipt>>,
+    offer_deadline: Option<Instant>,
     revision: u64,
 }
 
@@ -92,6 +93,19 @@ impl WorkerAudioSink for Arc<Mutex<Fixture>> {
         (receipt.submission == submission).then(|| Box::new(Arc::clone(receipt)) as Box<_>)
     }
 
+    fn offer_device_insert_consent(
+        &mut self,
+        submission: ResidentGraphSubmission,
+    ) -> Option<Instant> {
+        let fixture = self.lock().unwrap();
+        let receipt = fixture.candidate.as_ref()?;
+        let deadline = fixture.offer_deadline?;
+        (receipt.submission == submission
+            && receipt.state.load(Ordering::Acquire) == REFUSED
+            && Instant::now() < deadline)
+            .then_some(deadline)
+    }
+
     fn resident_runtime_loop(
         &mut self,
         _: hex_engine::AudioSourceContext,
@@ -125,6 +139,18 @@ impl WorkerAudioSink for Arc<Mutex<Fixture>> {
                 kind: ResidentPublicationFailure::Other,
                 playback,
                 error,
+            });
+        }
+        if let ResidentPublicationPolicy::DeviceInsert {
+            confirmation: Some(refused),
+            ..
+        } = policy
+            && self.offer_device_insert_consent(refused).is_none()
+        {
+            return Err(ResidentPublicationRefusal {
+                kind: ResidentPublicationFailure::Other,
+                playback,
+                error: "device insert confirmation is no longer current".into(),
             });
         }
         let mut fixture = self.lock().unwrap();
@@ -207,6 +233,24 @@ fn insert_utility(service: &Service) -> Event {
     assert!(pending.state.project.main_devices().is_empty());
     assert!(!pending.state.can_undo);
     pending
+}
+
+fn offer_insert(service: &Service, fixture: &Mutex<Fixture>) -> DeviceInsertConfirmation {
+    insert_utility(service);
+    let refused = {
+        let mut fixture = fixture.lock().unwrap();
+        fixture.offer_deadline = Some(Instant::now() + Duration::from_secs(30));
+        fixture.candidate.clone().unwrap()
+    };
+    refused.state.store(REFUSED, Ordering::Release);
+    let offered = receive(service);
+    assert!(!offered.request_complete);
+    assert!(offered.device_insert_complete.is_none());
+    assert!(offered.state.project.main_devices().is_empty());
+    assert!(!offered.state.can_undo);
+    let offer = offered.device_insert_confirmation.unwrap();
+    assert_eq!(offer.submission(), refused.submission);
+    offer
 }
 
 struct SavedFile(PathBuf);
@@ -331,5 +375,102 @@ fn refusal_and_expiry_keep_the_predecessor_and_leave_no_undo() {
                 Err(EXPIRED),
             );
         }
+    }
+}
+
+#[test]
+fn confirmed_device_insert_commits_only_the_second_exact_receipt() {
+    let (service, fixture, initial) = service();
+    let offer = offer_insert(&service, &fixture);
+    let files = SavedFile::new();
+    let path = files.0.join("session.hex");
+    service.submit(Request::SaveNew(path.clone())).unwrap();
+    let saved = receive(&service);
+    assert!(saved.save_complete && !saved.state.can_undo);
+    assert!(hex_storage::load(&path).unwrap().main_devices().is_empty());
+    assert!(offer.proceed());
+    assert!(!offer.cancel());
+
+    let deadline = Instant::now() + crate::test_wait::HANG_BOUND;
+    let submission = loop {
+        let mut fixture = fixture.lock().unwrap();
+        let candidate = fixture.candidate.as_ref().unwrap();
+        if candidate.submission != offer.submission() {
+            let submission = candidate.submission;
+            assert_eq!(submission.context, offer.submission().context);
+            assert_eq!(
+                submission.output_identity,
+                offer.submission().output_identity
+            );
+            assert_eq!(
+                candidate.state.compare_exchange(
+                    PENDING,
+                    INSTALLED,
+                    Ordering::AcqRel,
+                    Ordering::Acquire
+                ),
+                Ok(PENDING)
+            );
+            fixture.active = Some(ResidentRuntimeLoop {
+                output_identity: submission.output_identity,
+                audio_revision: submission.audio_revision,
+                source_context: Some(submission.context),
+                source_origin: ResidentSourceOrigin::CanonicalCandidate,
+                section_loop: None,
+            });
+            break submission;
+        }
+        drop(fixture);
+        assert!(
+            Instant::now() < deadline,
+            "confirmed candidate was not submitted"
+        );
+        thread::sleep(Duration::from_millis(1));
+    };
+    let committed = receive(&service);
+    assert_eq!(
+        committed.device_insert_complete,
+        Some(DeviceInsertCompletion {
+            submission,
+            outcome: DeviceInsertOutcome::Installed
+        }),
+    );
+    assert_eq!(committed.state.revision, initial.state.revision + 1);
+    assert!(committed.request_complete && committed.state.can_undo);
+    assert_eq!(committed.state.project.main_devices().len(), 1);
+    service.submit(Request::Undo).unwrap();
+    assert!(receive(&service).state.project.main_devices().is_empty());
+}
+
+#[test]
+fn cancelled_or_stale_consent_leaves_audio_and_history_at_the_predecessor() {
+    let (service, fixture, initial) = service();
+    for stale in [false, true] {
+        let offer = offer_insert(&service, &fixture);
+        let predecessor = fixture.lock().unwrap().active;
+        let outcome = if stale {
+            fixture.lock().unwrap().offer_deadline = None;
+            assert!(offer.proceed());
+            DeviceInsertOutcome::Refused(hex_engine::PlaybackHandoffRejection::RuntimeFenceChanged)
+        } else {
+            assert!(offer.cancel());
+            assert!(!offer.proceed());
+            DeviceInsertOutcome::Cancelled
+        };
+        let terminal = service
+            .events
+            .recv_timeout(crate::test_wait::HANG_BOUND)
+            .unwrap();
+        assert_eq!(
+            terminal.device_insert_complete,
+            Some(DeviceInsertCompletion {
+                submission: offer.submission(),
+                outcome,
+            })
+        );
+        assert!(terminal.request_complete && !terminal.state.can_undo);
+        assert_eq!(terminal.state.revision, initial.state.revision);
+        assert_eq!(terminal.state.project, initial.state.project);
+        assert_eq!(fixture.lock().unwrap().active, predecessor);
     }
 }

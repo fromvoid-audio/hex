@@ -929,6 +929,8 @@ fn ready_candidate_group_retry_case(cross_page: bool) {
     };
     let a_def = a_wav.definition(a_asset, 11);
     let b_def = b_wav.definition(b_asset, 11);
+    #[cfg(feature = "stream-test-support")]
+    let b_key = b_def.metadata.key();
     let context = Some(hex_engine::AudioSourceContext {
         project_generation: 0,
         editor_revision: 20,
@@ -1017,29 +1019,67 @@ fn ready_candidate_group_retry_case(cross_page: bool) {
     );
     assert!(observed.into_iter().flatten().all(|seen| seen));
     if cross_page {
-        control.command(PlaybackCommand::Seek(3840)).unwrap();
+        // Render on each predecessor page before staging the successor. The
+        // fixture exercises contention between already-resident current demand
+        // and the candidate at the boundary, so worker delivery of the second
+        // current page must finish before the measured handoff.
+        let boundary = u64::try_from(hex_engine::STREAM_PAGE_FRAMES).unwrap();
+        let half_window = output.len() / 2;
+        let half_window_frames = u64::try_from(half_window).unwrap();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-        while control.status.position.load(Acquire) != 3968 {
-            let measured = allocation_counter::measure(|| {
+        for start in [boundary, boundary - 2 * half_window_frames] {
+            control.command(PlaybackCommand::Seek(start)).unwrap();
+            while control.status.position.load(Acquire) != start + half_window_frames {
+                let measured = allocation_counter::measure(|| {
+                    data.owner_mut().unwrap().run(|c, _| {
+                        c.begin_block();
+                        c.render(&mut output[..half_window]).unwrap();
+                    })
+                });
+                assert_eq!(
+                    (
+                        measured.count_total,
+                        measured.bytes_total,
+                        measured.count_current,
+                        measured.bytes_current
+                    ),
+                    (0, 0, 0, 0)
+                );
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "render the predecessor page at {start}"
+                );
+                std::thread::yield_now();
+            }
+        }
+
+        #[cfg(feature = "stream-test-support")]
+        {
+            // The first full quantum needs both resident predecessor pages.
+            // The worker can finish B1 in the turnover buffer while both are
+            // resident. The real callback decides when it can admit that page.
+            let key = hex_stream::ResourcePageKey {
+                source: b_key.into(),
+                page_index: 1,
+            };
+            loop {
+                let mut ready = false;
                 data.owner_mut().unwrap().run(|c, _| {
-                    c.begin_block();
-                    c.render(&mut output[..128]).unwrap();
-                })
-            });
-            assert_eq!(
-                (
-                    measured.count_total,
-                    measured.bytes_total,
-                    measured.count_current,
-                    measured.bytes_current
-                ),
-                (0, 0, 0, 0)
-            );
-            assert!(
-                std::time::Instant::now() < deadline,
-                "seek to candidate boundary"
-            );
-            std::thread::yield_now();
+                    let loan = c
+                        .domain_pages
+                        .iter_mut()
+                        .flatten()
+                        .find_map(|pages| pages.test_page_loan(domain))
+                        .unwrap();
+                    loan.test_prefetch_audio_page(b_key, key.page_index);
+                    ready = loan.test_ready_page(key);
+                });
+                if ready {
+                    break;
+                }
+                assert!(std::time::Instant::now() < deadline, "successor page ready");
+                std::thread::yield_now();
+            }
         }
     }
     let b_ticket = control
@@ -1048,7 +1088,9 @@ fn ready_candidate_group_retry_case(cross_page: bool) {
         .unwrap();
     if cross_page {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        let mut previous_position = 0;
         while control.status.applied_revision.load(Acquire) != 2 {
+            previous_position = control.status.position.load(Acquire);
             let measured = allocation_counter::measure(|| {
                 data.owner_mut().unwrap().run(|c, _| {
                     c.begin_block();
@@ -1072,11 +1114,14 @@ fn ready_candidate_group_retry_case(cross_page: bool) {
             );
             std::thread::yield_now();
         }
-        assert!(
-            output
-                .iter()
-                .all(|frame| frame[0].is_finite() && frame[0] > 0.0 && frame[0] == frame[1])
-        );
+        for (offset, frame) in output.iter().enumerate() {
+            assert!(
+                frame[0].is_finite() && frame[0] > 0.0 && frame[0] == frame[1],
+                "invalid frame {offset}: {frame:?}, callback started at {previous_position}, now at {}, committed {}",
+                control.status.position.load(Acquire),
+                control.status.stream_committed_frames.load(Acquire)
+            );
+        }
         // The predecessor's retained Utility tail overlaps the louder successor.
         // Require audible successor contribution without discarding that tail.
         assert!(output.iter().any(|frame| frame[0] > 0.30));

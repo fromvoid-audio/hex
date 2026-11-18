@@ -466,6 +466,7 @@ enum Restart {
     None,
     Ordinary,
     Baked,
+    ConfirmedInsert { force: bool },
 }
 
 impl SessionPlayback {
@@ -510,6 +511,7 @@ impl SessionPlayback {
             false,
             None,
             Some(anchor),
+            false,
         )
     }
     #[allow(clippy::too_many_arguments)] // Explicit old/candidate timing, identity and disjoint span-buffer borrows.
@@ -683,6 +685,17 @@ impl SessionPlayback {
     ) -> Result<SessionHandoffReport, SessionPlaybackError> {
         self.inherit_state_planned(previous, None, None, true, true, None)
     }
+
+    pub(super) fn inherit_state_at_device_insert_cut(
+        &mut self,
+        previous: &mut Self,
+        groups: Option<crate::audio_candidate::groups::Transfer<'_>>,
+        demand: Option<&mut super::stream_demand::HandoffDemand<'_>>,
+    ) -> Result<SessionHandoffReport, SessionPlaybackError> {
+        self.inherit_state_planned_with_anchor(
+            previous, groups, demand, true, false, None, None, true,
+        )
+    }
     /// With `live`, a transition the strict planner cannot prove (an unproven
     /// mutable chase, a changed MIDI source layout, compensated timing or tails,
     /// unavailable source history...) does not refuse: the planner rejects it
@@ -711,6 +724,7 @@ impl SessionPlayback {
             fenced_restart,
             continuation,
             None,
+            false,
         )
     }
 
@@ -724,6 +738,7 @@ impl SessionPlayback {
         fenced_restart: bool,
         continuation: Option<&hex_lattice::ForeignConfigurationContinuation<'_>>,
         anchor: Option<&PreparedTempoAnchor>,
+        confirmed_insert: bool,
     ) -> Result<SessionHandoffReport, SessionPlaybackError> {
         if continuation.is_some() && (fenced_restart || self.live_restart || anchor.is_some()) {
             return Err(SessionPlaybackError::DeviceRuntime);
@@ -807,7 +822,11 @@ impl SessionPlayback {
             previous,
             groups,
             demand.as_deref_mut(),
-            Restart::None,
+            if confirmed_insert {
+                Restart::ConfirmedInsert { force: false }
+            } else {
+                Restart::None
+            },
             source_transfer.as_ref(),
             continuation,
             None,
@@ -837,7 +856,11 @@ impl SessionPlayback {
                     previous,
                     None,
                     demand,
-                    Restart::Ordinary,
+                    if confirmed_insert {
+                        Restart::ConfirmedInsert { force: true }
+                    } else {
+                        Restart::Ordinary
+                    },
                     None,
                     None,
                     None,
@@ -981,7 +1004,11 @@ impl SessionPlayback {
                 return Err(SessionPlaybackError::InvalidCommand);
             }
         }
-        let force_restart = restart != Restart::None;
+        let confirmed_insert = matches!(restart, Restart::ConfirmedInsert { .. });
+        let force_restart = matches!(
+            restart,
+            Restart::Ordinary | Restart::Baked | Restart::ConfirmedInsert { force: true }
+        );
         let continuous_insert = self.require_continuous_insert && previous.playing;
         if self.revision.arrangement().sample_rate()
             != previous.revision.arrangement().sample_rate()
@@ -1132,6 +1159,14 @@ impl SessionPlayback {
             .timing()
             .same_map(previous.revision.session().timing());
         let mapped_main_clock = same_base_timing && new_loop_region == old_loop_region;
+        if confirmed_insert
+            && (previous.playing
+                || !mapped_main_clock
+                || previous.periodic_tempo() != self.periodic_tempo_at(previous.arrangement_frame)
+                || previous.routes.iter().any(|route| route.pending.is_some()))
+        {
+            return Err(SessionPlaybackError::InvalidCommand);
+        }
         if continuous_insert
             && (force_restart
                 || !mapped_main_clock
@@ -1555,6 +1590,7 @@ impl SessionPlayback {
         // when the timing map and loop are unchanged.
         let running_restart =
             relocate && previous.playing && mapped_main_clock && same_periodic_timing;
+        let preserve_restart_clock = running_restart || (relocate && confirmed_insert);
         // Appending a hosted effect or removing an already bypassed suffix
         // can require fresh delay rings. The same-clock restart keeps the
         // Arrangement cursor, worker binding and accepted gate deadlines
@@ -1586,7 +1622,7 @@ impl SessionPlayback {
         }
         // A paused cursor keeps its Arrangement beat across an edited base
         // tempo map, like the running handoff below (Pulse #4118).
-        let paused_cursor = if relocate && !previous.playing {
+        let paused_cursor = if relocate && !previous.playing && !confirmed_insert {
             Some(
                 if self
                     .revision
@@ -1622,7 +1658,7 @@ impl SessionPlayback {
             && (!previous.playing || running_restart || running_relocate)
             && !previous.stopped_input_has_history()
             && (paused_cursor.is_some()
-                || running_restart
+                || preserve_restart_clock
                 || running_relocate
                 || (!previous.monitor_source_releases
                     && previous.performance_frame == 0
@@ -1665,12 +1701,19 @@ impl SessionPlayback {
                         {
                             RouteOwner::SessionAudio {
                                 clip,
-                                launch_frame: if running_restart { launch_frame } else { 0 },
+                                launch_frame: if preserve_restart_clock {
+                                    launch_frame
+                                } else {
+                                    0
+                                },
                             }
                         }
                         RouteOwner::Silence => RouteOwner::Silence,
                         _ => RouteOwner::Arrangement,
                     };
+                    if confirmed_insert && route.owner != old.owner {
+                        return Err(SessionPlaybackError::InvalidCommand);
+                    }
                 }
             }
             // Queued launches cannot be proven against the restarted graph;
@@ -1742,7 +1785,7 @@ impl SessionPlayback {
                 // epoch, DSP history or one-shot admission is changed.
                 let (frame, arrangement_frame, loop_pass) = match cursor {
                     Some((frame, _)) => (frame, frame, 0),
-                    None if running_restart => (
+                    None if preserve_restart_clock => (
                         previous.performance_frame,
                         previous.arrangement_frame,
                         previous.arrangement_loop_pass,
@@ -1789,7 +1832,7 @@ impl SessionPlayback {
                 // (or on the next block when relocating while playing).
                 self.interactive_start_frame = Some(frame);
                 self.playing = running_relocate;
-            } else if running_restart {
+            } else if preserve_restart_clock {
                 self.performance_frame = previous.performance_frame;
                 self.arrangement_frame = previous.arrangement_frame;
                 self.arrangement_loop_pass = previous.arrangement_loop_pass;
@@ -1799,7 +1842,7 @@ impl SessionPlayback {
                 self.monitor_source_releases |= previous.monitor_source_releases;
                 self.restart_audio_history();
                 self.interactive_start_frame = Some(self.performance_frame);
-                self.playing = true;
+                self.playing = previous.playing;
                 self.route_state_generation = previous.route_state_generation.wrapping_add(1);
             }
             self.foreign_arrangement.inherit_handoff(
@@ -3258,6 +3301,9 @@ impl SessionPlayback {
                         next.track == old_route.id && next.source_matches(old)
                     })
             });
+            if confirmed_insert && route.owner != old_route.owner {
+                return Err(SessionPlaybackError::InvalidCommand);
+            }
             if let Some(mut pending) = route.pending {
                 let valid = match pending.target {
                     RouteTarget::Arrangement | RouteTarget::Silence => true,

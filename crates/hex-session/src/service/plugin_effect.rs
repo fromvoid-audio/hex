@@ -172,6 +172,28 @@ impl PluginEffectControl {
         }
     }
 
+    /// Free the exact refused receipt so the confirmed successor can bind.
+    /// Until then the same prepared SDK operation remains live and cancellable.
+    pub(super) fn release_refused_insert_receipt(&self, refused: ResidentGraphSubmission) -> bool {
+        let mut bound = self
+            .install_receipt
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if self.phase.load(Ordering::Acquire) != 0
+            || !bound.as_ref().is_some_and(|receipt| {
+                receipt.submission() == refused
+                    && receipt.state()
+                        == DeviceInsertAudioState::Refused(
+                            hex_engine::PlaybackHandoffRejection::DeviceInsertNeedsConfirmation,
+                        )
+            })
+        {
+            return false;
+        }
+        *bound = None;
+        true
+    }
+
     pub fn is_cancelled(&self) -> bool {
         matches!(self.phase.load(Ordering::Acquire), 1 | 4)
     }

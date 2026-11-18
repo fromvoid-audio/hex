@@ -524,6 +524,28 @@ impl ClaimedAudioCandidateRuntime {
         retired: &mut Option<Self>,
         manifest: &mut Option<AudioCandidateTransfer>,
     ) -> Result<(), crate::PlaybackHandoffError> {
+        self.inherit_and_retire(previous, retired, manifest, false)
+    }
+
+    /// Install an explicitly approved successor at the predecessor's held
+    /// fade. The ordinary claims, transfer journal and retirement still own
+    /// every resource that moves between these two graphs.
+    pub fn try_inherit_and_retire_at_device_insert_cut(
+        &mut self,
+        previous: &mut Option<Self>,
+        retired: &mut Option<Self>,
+        manifest: &mut Option<AudioCandidateTransfer>,
+    ) -> Result<(), crate::PlaybackHandoffError> {
+        self.inherit_and_retire(previous, retired, manifest, true)
+    }
+
+    fn inherit_and_retire(
+        &mut self,
+        previous: &mut Option<Self>,
+        retired: &mut Option<Self>,
+        manifest: &mut Option<AudioCandidateTransfer>,
+        confirmed_insert: bool,
+    ) -> Result<(), crate::PlaybackHandoffError> {
         let invalid =
             || crate::PlaybackHandoffError::Session(crate::SessionPlaybackError::InvalidCommand);
         if self.inner.phase != ClaimedPhase::Current || retired.is_some() || manifest.is_some() {
@@ -547,9 +569,11 @@ impl ClaimedAudioCandidateRuntime {
                 .as_mut()
                 .ok_or_else(invalid)?,
         );
-        next_runtime
-            .playback
-            .inherit_candidate_groups(&mut old_runtime.playback, transfer)?;
+        next_runtime.playback.inherit_candidate_groups(
+            &mut old_runtime.playback,
+            transfer,
+            confirmed_insert,
+        )?;
         *manifest = Some(AudioCandidateTransfer {
             predecessor: old.identity(),
             successor: self.identity(),

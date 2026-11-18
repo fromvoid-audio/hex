@@ -12,7 +12,7 @@ const DELAY: usize = 72;
 const BLOCK: usize = 257;
 const SIGNAL: Frame = [0.25; 2];
 
-fn revisions() -> ([Arc<hex_engine::PreparedRevision>; 2], hex_project::TrackId) {
+pub(super) fn revisions() -> ([Arc<hex_engine::PreparedRevision>; 2], hex_project::TrackId) {
     let limiter = &hex_devices::limiter::DEFINITION;
     let state = limiter
         .patch_parameter(
@@ -66,10 +66,24 @@ fn insert_revisions(
     ([dry, delayed], track)
 }
 
-fn begin_insert(
+pub(super) fn begin_insert(
     old: Arc<hex_engine::PreparedRevision>,
     next: Arc<hex_engine::PreparedRevision>,
     track: hex_project::TrackId,
+    position: usize,
+) -> (
+    Control,
+    Callback,
+    AppliedAudioSource,
+    CancellablePublicationReceipt,
+) {
+    begin_insert_with_pending_track(old, next, Some(track), position)
+}
+
+pub(super) fn begin_insert_with_pending_track(
+    old: Arc<hex_engine::PreparedRevision>,
+    next: Arc<hex_engine::PreparedRevision>,
+    track: Option<hex_project::TrackId>,
     position: usize,
 ) -> (
     Control,
@@ -83,7 +97,7 @@ fn begin_insert(
 fn begin_quantized_insert(
     old: Arc<hex_engine::PreparedRevision>,
     next: Arc<hex_engine::PreparedRevision>,
-    track: hex_project::TrackId,
+    track: Option<hex_project::TrackId>,
     position: usize,
     quantization: LaunchQuantization,
 ) -> (
@@ -110,14 +124,16 @@ fn begin_quantized_insert(
     control.command(PlaybackCommand::Play).unwrap();
     callback.begin_block();
     callback.render(&mut vec![[0.0; 2]; position]).unwrap();
-    let ticket = control
-        .action_with_ticket(PlaybackAction::Session(SessionPlaybackCommand::StopTrack {
-            track,
-            quantization,
-        }))
-        .unwrap();
-    callback.begin_block();
-    assert_eq!(control.status.consumed_command.load(Acquire), ticket);
+    if let Some(track) = track {
+        let ticket = control
+            .action_with_ticket(PlaybackAction::Session(SessionPlaybackCommand::StopTrack {
+                track,
+                quantization,
+            }))
+            .unwrap();
+        callback.begin_block();
+        assert_eq!(control.status.consumed_command.load(Acquire), ticket);
+    }
     let predecessor = control.status.recording_source().unwrap();
     let fence = control.capture_fresh_runtime_fence().unwrap();
     let revision = control
@@ -216,7 +232,7 @@ fn device_insert_keeps_a_non_imminent_action_when_no_bounded_cut_is_available() 
             let (control, mut callback, predecessor, receipt) = begin_quantized_insert(
                 Arc::clone(&revisions[old]),
                 Arc::clone(&revisions[next]),
-                track,
+                Some(track),
                 512,
                 LaunchQuantization::Quarter,
             );
@@ -310,6 +326,94 @@ fn zero_latency_insert_installs_with_the_admitted_action_intact() {
 }
 
 #[test]
+fn seamless_device_insert_keeps_the_pcm_of_an_independently_rendered_held_note() {
+    use hex_project::BeatTime;
+
+    let mut editor = Editor::new(Project::new(RATE).unwrap(), 8).unwrap();
+    let Created::Track(track) = editor
+        .execute(Command::AddTrack {
+            name: "held note".into(),
+        })
+        .unwrap()
+    else {
+        panic!("track");
+    };
+    editor
+        .execute(Command::InsertInstrument {
+            track,
+            state: hex_project::default_instrument_state().unwrap(),
+        })
+        .unwrap();
+    let Created::Clip(clip) = editor
+        .execute(Command::PlaceMidiClip {
+            track,
+            start: BeatTime::ZERO,
+            length: BeatTime::ONE,
+        })
+        .unwrap()
+    else {
+        panic!("midi clip");
+    };
+    editor
+        .execute(Command::AddMidiNote {
+            clip,
+            start: BeatTime::ZERO,
+            duration: BeatTime::ONE,
+            pitch: 60,
+            channel: 0,
+            velocity: 100,
+        })
+        .unwrap();
+    let table = Arc::new(hex_engine::SineTable::new());
+    let prepare = |project: &Project| {
+        Arc::new(
+            hex_engine::PreparedRevision::prepare(
+                project,
+                &BTreeMap::new(),
+                Arc::clone(&table),
+                None,
+            )
+            .unwrap(),
+        )
+    };
+    let old = prepare(editor.project());
+    editor
+        .execute(Command::InsertDevice {
+            track,
+            before: None,
+            state: hex_devices::utility::UTILITY_DEFINITION
+                .default_state()
+                .unwrap(),
+        })
+        .unwrap();
+    let next = prepare(editor.project());
+    let cut = 512;
+    let mut reference = [[0.0; 2]; BLOCK];
+    at_cut(&old, cut).render(&mut reference).unwrap();
+    assert!(reference.iter().any(|frame| frame[0].abs() > 0.01));
+
+    for partition in [1, BLOCK] {
+        let (control, mut callback, predecessor, receipt) =
+            begin_insert_with_pending_track(Arc::clone(&old), Arc::clone(&next), None, cut);
+        let mut actual = [[0.0; 2]; BLOCK];
+        for output in actual.chunks_mut(partition) {
+            callback.begin_block();
+            callback.render(output).unwrap();
+        }
+        assert_eq!(receipt.state(), PublicationReceiptState::Installed);
+        assert_eq!(
+            control.status.recording_source(),
+            Some(AppliedAudioSource {
+                context: receipt.context().unwrap(),
+                audio_revision: receipt.revision(),
+                ..predecessor
+            }),
+        );
+        assert_eq!(actual, reference);
+    }
+}
+
+#[test]
 fn ordinary_workspace_uses_the_same_insert_continuity_law_during_preflight() {
     use super::candidate_tests::{anchored, finish, serial};
     use hex_engine::AudioStorageLedgerReservation;
@@ -362,7 +466,7 @@ fn ordinary_workspace_uses_the_same_insert_continuity_law_during_preflight() {
     let fence = control.capture_fresh_runtime_fence().unwrap();
     let revision = control
         .publish_with_admission_and_source_on_control(
-            Playback::try_from_prepared_with_session(next).unwrap(),
+            Playback::try_from_prepared_with_session(Arc::clone(&next)).unwrap(),
             PublicationPolicy::DeviceInsert { predecessor, fence },
             hex_engine::AudioSourceContext {
                 editor_revision: 4,
@@ -378,6 +482,61 @@ fn ordinary_workspace_uses_the_same_insert_continuity_law_during_preflight() {
         PublicationReceiptState::Refused(PlaybackHandoffRejection::DeviceInsertNeedsConfirmation)
     );
     assert_eq!(control.status.recording_source(), Some(predecessor));
+
+    let consent = control.offer_device_insert_consent(&receipt).unwrap();
+    let position = control.status.position.load(Acquire);
+    control.reclaim();
+    let mut approved_receipt = None;
+    let approved = control
+        .publish_confirmed_device_insert_with_receipt_on_control(
+            Playback::try_from_prepared_with_session(next).unwrap(),
+            consent,
+            |receipt| approved_receipt = Some(receipt.clone()),
+            |_| Ok::<_, ()>(()),
+        )
+        .unwrap();
+    let approved_receipt = approved_receipt.unwrap();
+    assert_eq!(approved_receipt.revision(), approved);
+    let check_fade = || {
+        let first = render();
+        assert_eq!(first[0], [SIGNAL[0] * 127.0 / 128.0; 2]);
+        assert_eq!(first[63], [SIGNAL[0] / 2.0; 2]);
+        assert_eq!(approved_receipt.state(), PublicationReceiptState::Applying);
+        let second = render();
+        assert_eq!(second[63], [0.0; 2]);
+        assert_eq!(control.status.position.load(Acquire), position + 128);
+        assert_eq!(control.status.recording_source(), Some(predecessor));
+        render();
+        assert_eq!(approved_receipt.state(), PublicationReceiptState::Installed);
+        assert_eq!(control.status.position.load(Acquire), position + 192);
+        assert_eq!(
+            control.status.recording_source(),
+            Some(AppliedAudioSource {
+                context: consent.candidate_context(),
+                audio_revision: approved,
+                ..predecessor
+            }),
+        );
+        assert!(control.status.playing.load(Acquire));
+    };
+    #[cfg(feature = "allocation-probe")]
+    {
+        let counts = allocation_counter::measure(check_fade);
+        assert_eq!(
+            (
+                counts.count_total,
+                counts.bytes_total,
+                counts.count_current,
+                counts.bytes_current,
+            ),
+            (0, 0, 0, 0),
+        );
+    }
+    #[cfg(not(feature = "allocation-probe"))]
+    {
+        let mut check_fade = check_fade;
+        check_fade();
+    }
     control.request_shutdown();
     render();
     control.reclaim();
