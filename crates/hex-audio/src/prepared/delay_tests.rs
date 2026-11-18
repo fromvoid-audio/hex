@@ -649,6 +649,23 @@ fn changing_a_silent_routed_track_preserves_compensated_callback_audio() {
                     gain: 0.25,
                 })
                 .unwrap();
+            let Created::Device(compressor) = editor
+                .execute(Command::InsertMainDevice {
+                    before: None,
+                    state: hex_devices::compressor::COMPRESSOR_DEFINITION
+                        .default_state()
+                        .unwrap(),
+                })
+                .unwrap()
+            else {
+                panic!("compressor");
+            };
+            editor
+                .execute(Command::SetSidechain {
+                    device: compressor,
+                    source: Some(track),
+                })
+                .unwrap();
             group
         });
         let (mut control, mut callback) = channel(48_000).unwrap();
