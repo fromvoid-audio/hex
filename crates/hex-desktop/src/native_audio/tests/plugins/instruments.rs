@@ -4680,6 +4680,7 @@ fn installed_instrument_and_effect_export_with_streamed_audio() {
     let mut expected_revision = inserted.state.revision;
     let mut expected_can_undo = inserted.state.can_undo;
     let mut expected_can_redo = inserted.state.can_redo;
+    let mut before_limiter = None;
     if live_playback {
         assert!(
             complete,
@@ -4723,7 +4724,8 @@ fn installed_instrument_and_effect_export_with_streamed_audio() {
         );
         if full_playthrough {
             inserted = exercise_mixed_native_insert(&mut h, &inserted.state);
-            (applied, _) = h.applied(applied);
+            before_limiter = Some(Arc::clone(&inserted.state.project));
+            (inserted, applied) = exercise_mixed_limiter_consent(&mut h, &inserted.state);
             expected_revision = inserted.state.revision;
             expected_can_undo = inserted.state.can_undo;
             expected_can_redo = inserted.state.can_redo;
@@ -5031,25 +5033,31 @@ fn installed_instrument_and_effect_export_with_streamed_audio() {
         );
         assert_eq!(restored.state.project, inserted.state.project);
         (applied, _) = h.applied(applied);
-        if full_playthrough {
-            let undone = h.run(Request::Undo);
-            let mut expected = before_insert.snapshot();
-            // Undo retires the inserted device without reusing its identity.
-            expected.next_id = inserted.state.project.next_identity();
-            assert!(
-                undone.state.project.snapshot() == expected,
-                "undo changed more than the installed Utility"
-            );
-            (applied, _) = h.applied(applied);
-            let redone = h.run(Request::Redo);
-            assert!(
-                redone.state.project == inserted.state.project,
-                "redo did not restore the installed Utility project"
-            );
-            (applied, _) = h.applied(applied);
-            expected_revision = redone.state.revision;
-            expected_can_undo = redone.state.can_undo;
-            expected_can_redo = redone.state.can_redo;
+        if let Some(before_limiter) = before_limiter {
+            for project in [&before_limiter, &before_insert] {
+                let undone = h.run(Request::Undo);
+                let mut expected = project.snapshot();
+                // Undo retires devices without reusing their identities.
+                expected.next_id = inserted.state.project.next_identity();
+                assert!(
+                    undone.error.is_none() && undone.state.project.snapshot() == expected,
+                    "undo changed more than the last installed device"
+                );
+                (applied, _) = h.applied(applied);
+            }
+            for project in [&before_limiter, &inserted.state.project] {
+                let redone = h.run(Request::Redo);
+                let mut expected = project.snapshot();
+                expected.next_id = inserted.state.project.next_identity();
+                assert!(
+                    redone.error.is_none() && redone.state.project.snapshot() == expected,
+                    "redo did not restore the installed device"
+                );
+                (applied, _) = h.applied(applied);
+                expected_revision = redone.state.revision;
+                expected_can_undo = redone.state.can_undo;
+                expected_can_redo = redone.state.can_redo;
+            }
         }
     }
     let before = Arc::clone(&inserted.state.project);
@@ -5060,7 +5068,9 @@ fn installed_instrument_and_effect_export_with_streamed_audio() {
         assert!(saved.save_complete);
         assert_eq!(saved.state.project, before);
         assert_eq!(saved.state.revision, expected_revision);
-        Some(hex_storage::load(&saved_path).unwrap())
+        let captured = hex_storage::load(&saved_path).unwrap();
+        assert_eq!(captured.main_devices(), before.main_devices());
+        Some(captured)
     } else {
         None
     };
@@ -5129,7 +5139,13 @@ fn installed_instrument_and_effect_export_with_streamed_audio() {
             "mixed export timed out: {:?}",
             control.progress()
         );
-        std::thread::yield_now();
+        if complete {
+            // The full export owns its offline workers. Poll completion at
+            // control cadence instead of competing with them for a CPU.
+            std::thread::sleep(Duration::from_millis(1));
+        } else {
+            std::thread::yield_now();
+        }
     };
     let report = result.expect("mixed VST export");
     let wav = fs::read(path).unwrap();
@@ -5476,6 +5492,157 @@ fn exercise_mixed_native_insert(
         }
         assert_eq!(event.state.project, before.project);
     }
+}
+
+fn exercise_mixed_limiter_consent(
+    h: &mut ResidentHarness,
+    before: &hex_session::service::ViewState,
+) -> (Event, u64) {
+    use hex_session::service::{DeviceInsertOutcome, GraphEditOperation};
+
+    fn status(h: &ResidentHarness) -> &hex_audio::prepared::Status {
+        h.audio.as_ref().unwrap().status().unwrap()
+    }
+
+    let predecessor = status(h).recording_source().unwrap();
+    let limiter = hex_engine::DeviceTypeId::from_static("hex.limiter");
+    let play_uninterrupted = |h: &ResidentHarness| {
+        let start = status(h).audible_position.load(Acquire);
+        let position = status(h).position.load(Acquire);
+        assert_mixed_insert_pcm(&render_completed_block(h), start);
+        assert_eq!(status(h).position.load(Acquire), position + 256);
+        assert_eq!(status(h).recording_source(), Some(predecessor));
+    };
+    let offer = |h: &mut ResidentHarness| {
+        let state = hex_engine::default_native_device_state(limiter).unwrap();
+        h.service
+            .submit(Request::Edit(Command::InsertMainDevice {
+                before: None,
+                state,
+            }))
+            .unwrap();
+        let staged = h.next();
+        assert!(staged.error.is_none(), "mixed Limiter: {:?}", staged.error);
+        assert!(!staged.request_complete);
+        assert!(staged.state.project == before.project);
+        play_uninterrupted(h);
+        let offered = h.next();
+        assert!(
+            offered.error.is_none(),
+            "mixed Limiter: {:?}",
+            offered.error
+        );
+        assert!(offered.state.project == before.project);
+        let offer = offered.device_insert_confirmation.unwrap();
+        assert_eq!(offer.operation(), GraphEditOperation::InsertDevice);
+        assert_eq!(
+            offer.submission().output_identity,
+            predecessor.output_identity
+        );
+        offer
+    };
+    let cancelled = offer(h);
+    play_uninterrupted(h);
+    assert!(cancelled.cancel());
+    let terminal = h.next();
+    let receipt = terminal.device_insert_complete.unwrap();
+    assert_eq!(receipt.submission, cancelled.submission());
+    assert_eq!(receipt.outcome, DeviceInsertOutcome::Cancelled);
+    assert_eq!(terminal.state.revision, before.revision);
+    assert!(terminal.state.project == before.project);
+    play_uninterrupted(h);
+
+    let approved = offer(h);
+    play_uninterrupted(h);
+    let (submitted, resume) = h.probe_next_submitted_device_insert();
+    assert!(approved.proceed());
+    let confirmed = submitted.recv_timeout(Duration::from_secs(2)).unwrap();
+    assert_eq!(confirmed.context, approved.submission().context);
+    assert_eq!(confirmed.output_identity, predecessor.output_identity);
+    assert_ne!(
+        confirmed.audio_revision,
+        approved.submission().audio_revision
+    );
+
+    resume.send(()).unwrap();
+    // A verified file-backed graph may need another callback to pin both
+    // sides of the cut. It must keep playing the predecessor in the meantime.
+    let (position, faded) = loop {
+        let position = status(h).position.load(Acquire);
+        let start = status(h).audible_position.load(Acquire);
+        let output = render_completed_block(h);
+        if let Ok(event) = h.service.try_event() {
+            panic!(
+                "mixed Limiter finished before the fade: error={:?}, receipt={:?}",
+                event.error, event.device_insert_complete
+            );
+        }
+        if let Some((_, reason)) = status(h)
+            .rejected_revision()
+            .filter(|(revision, _)| *revision == confirmed.audio_revision)
+        {
+            panic!("mixed Limiter callback refused before the fade: {reason:?}");
+        }
+        assert_eq!(status(h).recording_source(), Some(predecessor));
+        if status(h).position.load(Acquire) == position + 128 {
+            break (position, output);
+        }
+        assert_eq!(status(h).position.load(Acquire), position + 256);
+        assert!(
+            start + 256 <= u64::from(MIXED_WITNESS_FRAMES),
+            "mixed Limiter fade missed the witness: position={position}, recording source={predecessor:?}"
+        );
+        assert_mixed_insert_pcm(&output, start);
+    };
+    assert!(
+        faded[..127]
+            .iter()
+            .flatten()
+            .any(|sample| sample.abs() > 0.001)
+    );
+    assert!(faded[127..].iter().all(|frame| *frame == [0.0; 2]));
+    assert!(h.service.try_event().is_err());
+
+    let resumed = render_completed_block(h);
+    let installed = h.next();
+    assert!(
+        installed.error.is_none(),
+        "mixed Limiter: {:?}",
+        installed.error
+    );
+    let receipt = installed.device_insert_complete.unwrap();
+    assert_eq!(receipt.submission, confirmed);
+    assert_eq!(receipt.outcome, DeviceInsertOutcome::Installed);
+    assert_eq!(installed.state.revision, before.revision + 1);
+    assert_eq!(installed.state.project.main_devices().len(), 2);
+    assert_eq!(
+        installed.state.project.main_devices()[1].state().type_id(),
+        limiter
+    );
+    let current = status(h).recording_source().unwrap();
+    assert_eq!(current.context, confirmed.context);
+    assert_eq!(current.audio_revision, confirmed.audio_revision);
+    assert_eq!(current.output_identity, predecessor.output_identity);
+    assert_eq!(status(h).position.load(Acquire), position + 128 + 256);
+    assert!(status(h).playing.load(Acquire));
+    assert!(status(h).render_fault_snapshot().is_none());
+    assert!(resumed.iter().flatten().any(|sample| sample.abs() > 0.001));
+    // The new Limiter's local lookahead refills after the cut. A steady
+    // effect quantum cannot imitate the held instrument's adjacent motion.
+    render_completed_block(h);
+    let held = render_completed_block(h);
+    assert!(
+        held.chunks_exact(2)
+            .filter(|pair| (pair[1][1] - pair[0][1]).abs() > 0.0002)
+            .count()
+            > 16,
+        "held Diva note did not continue through the Limiter"
+    );
+    println!(
+        "confirmed_limiter output={} predecessor_revision={} installed_revision={} fade_start={position}",
+        current.output_identity, predecessor.audio_revision, current.audio_revision
+    );
+    (installed, current.audio_revision)
 }
 
 fn exercise_mixed_streamed_loop(
