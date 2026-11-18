@@ -4616,6 +4616,13 @@ fn device_insert_dialog_waits_for_a_real_button_decision(cx: &mut gpui::TestAppC
         assert_eq!(step(cx), [[0.25; 2]; 64]);
         assert!(Instant::now() < deadline, "confirmed insert did not prompt");
     }
+    let (title, detail) = cx.pending_prompt().unwrap();
+    assert_eq!(title, "interrupt playback to insert this device?");
+    assert_eq!(
+        detail,
+        "playback will fade out briefly and resume from the same position. \
+         held notes and effect tails may reset."
+    );
     let read = |cx: &mut gpui::TestAppContext| {
         cx.update(|app| hex_ui::plugin_effect_test_view(window, app))
             .unwrap()

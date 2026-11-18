@@ -116,7 +116,8 @@ impl EditorView {
                 gpui::PromptLevel::Warning,
                 &theme::text("interrupt playback to insert this device?"),
                 Some(&theme::text(
-                    "playback will fade out briefly and resume from the same position. +                     held notes and effect tails may reset.",
+                    "playback will fade out briefly and resume from the same position. \
+                     held notes and effect tails may reset.",
                 )),
                 &[
                     gpui::PromptButton::cancel(theme::text("cancel")),
