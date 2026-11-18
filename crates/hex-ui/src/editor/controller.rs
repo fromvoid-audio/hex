@@ -247,6 +247,7 @@ impl EditorView {
             &mut self.recovery,
             &mut self.pending_sample_drop,
             &mut self.pending_time_range_move,
+            &mut self.pending_loop,
         );
         self.pending_playback = None;
         self.pending_resident_publication = None;
@@ -1982,6 +1983,7 @@ impl EditorView {
                 &mut self.recovery,
                 &mut self.pending_sample_drop,
                 &mut self.pending_time_range_move,
+                &mut self.pending_loop,
             );
             self.pending_recovery_generation = None;
             visible_change |= replace_error(
@@ -2585,6 +2587,7 @@ impl EditorView {
                 &mut self.recovery,
                 &mut self.pending_sample_drop,
                 &mut self.pending_time_range_move,
+                &mut self.pending_loop,
             );
             self.pending_playback = None;
             self.pending_resident_publication = None;
@@ -4850,6 +4853,7 @@ impl EditorView {
     pub(super) fn tick_deferred_play(&mut self) -> bool {
         if self.stopped_playback_restore.is_some()
             || self.recovery.generation().is_some()
+            || self.pending_loop_region().is_some()
             || self.stopped_plugin_parameter_terminal_pending()
         {
             return false;

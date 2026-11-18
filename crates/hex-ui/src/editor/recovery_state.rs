@@ -7,6 +7,7 @@ pub(super) enum DeferredEditKind {
     NativeEffect,
     SampleDrop,
     TimeDuplicate,
+    LoopRegion,
 }
 
 pub(super) struct DeferredGraphEdit {
@@ -33,6 +34,12 @@ struct Attempt {
 }
 
 impl RecoveryState {
+    pub(super) fn holds_loop_region(&self) -> bool {
+        self.deferred_edit
+            .as_ref()
+            .is_some_and(|edit| edit.kind == DeferredEditKind::LoopRegion)
+    }
+
     pub(super) fn begin(&mut self, position: u64) -> Result<u64, &'static str> {
         if self.active.is_some() {
             return Err("audio recovery is already pending");
