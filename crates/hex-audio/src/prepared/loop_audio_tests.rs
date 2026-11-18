@@ -1506,7 +1506,7 @@ fn removing_utility_from_shared_chain_waits_for_stop_without_callback_allocation
 
 #[test]
 fn live_track_audio_engine_render_has_no_allocations_or_frees() {
-    for (compensated, playing) in [(false, false), (false, true), (true, false), (true, true)] {
+    for compensated in [false, true] {
         let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
         let Created::Track(track) = editor
             .execute(Command::AddTrack {
@@ -1540,11 +1540,9 @@ fn live_track_audio_engine_render_has_no_allocations_or_frees() {
             .unwrap(),
         );
         let mut playback = hex_engine::SessionPlayback::new(revision).unwrap();
-        if playing {
-            playback
-                .apply(hex_engine::SessionPlaybackCommand::Play)
-                .unwrap();
-        }
+        playback
+            .apply(hex_engine::SessionPlaybackCommand::Play)
+            .unwrap();
         let mut output = [[0.0; 2]; 256];
         let input = [[0.25, -0.5]; 256];
         let mut result = Ok(());
@@ -1568,61 +1566,57 @@ fn live_track_audio_engine_render_has_no_allocations_or_frees() {
                 counts.bytes_current
             ),
             (0, 0, 0, 0),
-            "compensated: {compensated}, playing: {playing}"
+            "compensated: {compensated}"
         );
     }
 }
 
 #[test]
 fn live_track_audio_playback_wrapper_has_no_allocations_or_frees() {
-    for playing in [false, true] {
-        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
-        let Created::Track(track) = editor
-            .execute(Command::AddTrack {
-                name: "input".into(),
-            })
-            .unwrap()
-        else {
-            panic!("track")
-        };
-        let revision = Arc::new(
-            PreparedRevision::prepare(
-                editor.project(),
-                &BTreeMap::new(),
-                Arc::new(SineTable::new()),
-                None,
-            )
-            .unwrap(),
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+    let Created::Track(track) = editor
+        .execute(Command::AddTrack {
+            name: "input".into(),
+        })
+        .unwrap()
+    else {
+        panic!("track")
+    };
+    let revision = Arc::new(
+        PreparedRevision::prepare(
+            editor.project(),
+            &BTreeMap::new(),
+            Arc::new(SineTable::new()),
+            None,
+        )
+        .unwrap(),
+    );
+    let mut playback =
+        hex_engine::playback::Playback::try_from_prepared_with_session(revision).unwrap();
+    playback.apply(hex_engine::PlaybackCommand::Play);
+    let input = [[0.25, -0.5]; 512];
+    let mut output = [[0.0; 2]; 512];
+    let mut result = Ok(());
+    let counts = allocation_counter::measure(|| {
+        result = playback.render_with_live_track_audio(
+            &mut output,
+            track,
+            &input,
+            None,
+            None,
+            None,
+            &mut hex_lattice::RefuseForeign,
         );
-        let mut playback =
-            hex_engine::playback::Playback::try_from_prepared_with_session(revision).unwrap();
-        if playing {
-            playback.apply(hex_engine::PlaybackCommand::Play);
-        }
-        let input = [[0.25, -0.5]; 512];
-        let mut output = [[0.0; 2]; 512];
-        let mut result = Ok(());
-        let counts = allocation_counter::measure(|| {
-            result = playback.render_with_live_track_audio(
-                &mut output,
-                track,
-                &input,
-                None,
-                None,
-                None,
-                &mut hex_lattice::RefuseForeign,
-            );
-        });
-        result.unwrap();
-        assert_eq!(
-            (
-                counts.count_total,
-                counts.bytes_total,
-                counts.count_current,
-                counts.bytes_current
-            ),
-            (0, 0, 0, 0)
-        );
-        assert!(output.iter().any(|frame| *frame != [0.0; 2]));
-    }
+    });
+    result.unwrap();
+    assert_eq!(
+        (
+            counts.count_total,
+            counts.bytes_total,
+            counts.count_current,
+            counts.bytes_current
+        ),
+        (0, 0, 0, 0)
+    );
+    assert!(output.iter().any(|frame| *frame != [0.0; 2]));
 }

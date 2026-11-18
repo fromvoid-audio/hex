@@ -2719,9 +2719,6 @@ impl Playback {
             foreign.reject_callback();
             return Err(Invalid("invalid live track audio request"));
         }
-        // An input block admitted while already stopped is a monitor block.
-        // Keep the existing behavior for a playing block that pauses midway.
-        let monitor_stopped = !self.playing();
         self.render_declicked(output, |playback, output, offset| {
             let mut shifted = ShiftedForeign {
                 inner: &mut *foreign,
@@ -2736,7 +2733,7 @@ impl Playback {
                 .and_then(|runtime| {
                     with_part_offset(project.as_deref_mut(), offset, |project| {
                         with_shifted_observer(observer.as_deref_mut(), offset, |observer| {
-                            if runtime.playing() || monitor_stopped {
+                            if runtime.playing() {
                                 runtime.render_live_audio(
                                     output,
                                     track,

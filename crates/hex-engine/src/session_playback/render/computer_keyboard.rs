@@ -115,7 +115,6 @@ impl SessionPlayback {
         capture: &mut Option<&mut dyn CaptureSink>,
         sources: Option<crate::native_device_resources::SamplerSourcesRef<'_>>,
         foreign: &mut dyn hex_lattice::ForeignProcessors,
-        live_audio: Option<LiveTrackAudio<'_>>,
     ) -> Result<(), SessionPlaybackError> {
         for runtime in self.mutable_instruments.iter_mut().flatten() {
             runtime.begin_block();
@@ -189,7 +188,7 @@ impl SessionPlayback {
                     foreign,
                     None,
                     None,
-                    live_audio,
+                    None,
                 )?;
                 if drain_edit_tails {
                     self.return_effect_tails
@@ -362,14 +361,6 @@ impl SessionPlayback {
                         .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
                 }
                 track.apply_instrument_output_gain(frames);
-                if let Some(input) =
-                    live_audio.filter(|input| input.track == self.route_scratch[index].id)
-                {
-                    for (frame, source) in frames.iter_mut().zip(&input.frames[offset..end]) {
-                        frame[0] += source[0];
-                        frame[1] += source[1];
-                    }
-                }
                 let chain = &mut self.device_chains[index];
                 if chain.is_empty() {
                     track.apply_ordered_suffix(frames);

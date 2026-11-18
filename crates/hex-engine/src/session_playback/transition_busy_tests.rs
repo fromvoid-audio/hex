@@ -140,43 +140,6 @@ fn same_mode_revision_and_reset_predecessor_are_never_busy() {
 }
 
 #[test]
-fn stopped_live_monitor_does_not_settle_a_busy_audible_transition() {
-    let table = Arc::new(hex_devices::SineTable::new());
-    let (project, device) = project_with_device_slot();
-    let probe = Arc::new(Probe::default());
-    let mut previous = playback(&project, &table);
-    let mut mode = 0;
-    let mut chain = fixture_chain(device, mode, &probe);
-    for _ in 0..CAPACITY {
-        mode = 1 - mode;
-        let mut next = fixture_chain(device, mode, &probe);
-        next.inherit_from(&chain);
-        chain = next;
-    }
-    previous.device_chains[0] = chain;
-    let track = previous.routes[0].id;
-    previous
-        .render_with_live_track_audio(
-            &mut [[0.0; 2]; 1],
-            track,
-            &[[0.5; 2]; 1],
-            None,
-            None,
-            None,
-            &mut hex_lattice::RefuseForeign,
-        )
-        .unwrap();
-    let mut candidate = playback(&project, &table);
-    candidate.device_chains[0] = fixture_chain(device, 1 - mode, &probe);
-    assert!(candidate.device_transition_busy(&previous));
-    assert_eq!(
-        candidate.try_inherit_state_live_from(&mut previous),
-        Err(SessionPlaybackError::DeviceTransitionBusy)
-    );
-    assert_eq!(probe.dropped_transitions(), 0);
-}
-
-#[test]
 fn idle_busy_transition_with_return_tail_refuses_without_settling_donor() {
     let table = Arc::new(hex_devices::SineTable::new());
     let (project, device) = project_with_device_slot();

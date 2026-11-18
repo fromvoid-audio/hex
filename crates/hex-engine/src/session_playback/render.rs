@@ -83,7 +83,7 @@ impl SessionPlayback {
     }
 
     /// Mix borrowed live input into one track before its device chain while
-    /// playing or stopped. The input and output lengths must match and may not exceed
+    /// playing. The input and output lengths must match and may not exceed
     /// `MAX_OUTPUT_CAPTURE_FRAMES`. PCM project taps are refused; a timing-only
     /// tap is admitted. This public entry has no sampler resource scope.
     #[allow(clippy::too_many_arguments)]
@@ -154,7 +154,8 @@ impl SessionPlayback {
         has_project_tap: bool,
         sources: Option<crate::native_device_resources::SamplerSourcesRef<'_>>,
     ) -> Result<(), SessionPlaybackError> {
-        if has_project_tap
+        if !self.playing
+            || has_project_tap
             || output_len != input.len()
             || input.len() > MAX_OUTPUT_CAPTURE_FRAMES
             || !self.routes.iter().any(|route| route.id == track)
@@ -621,9 +622,8 @@ impl SessionPlayback {
         output.fill([0.0; 2]);
         let stopped_edit_tails = self.stopped_edit_tails();
         if output.is_empty()
-            || (self.renders_no_device_chains() && live_audio.is_none())
+            || self.renders_no_device_chains()
             || (!self.playing
-                && live_audio.is_none()
                 && !self.foreign_arrangement.has_started()
                 && !self.foreign_arrangement.has_keyboard()
                 && self.computer_keyboard.is_none()
@@ -725,7 +725,6 @@ impl SessionPlayback {
         }
         self.foreign_arrangement.begin();
         let main_tails_only = !self.playing
-            && live_audio.is_none()
             && !self.foreign_arrangement.has_started()
             && !self.foreign_arrangement.has_keyboard()
             && stopped_edit_tails
@@ -761,14 +760,7 @@ impl SessionPlayback {
             // plugin's DSP clock by feeding it invented monitoring callbacks.
             self.render_stopped_main_tails(output, foreign)
         } else {
-            self.render_keyboard_monitor(
-                output,
-                &mut observer,
-                &mut capture,
-                sources,
-                foreign,
-                live_audio,
-            )
+            self.render_keyboard_monitor(output, &mut observer, &mut capture, sources, foreign)
         };
         if result.is_err() {
             self.browser_audition.voices = audition_before;
