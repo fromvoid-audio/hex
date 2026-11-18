@@ -35,17 +35,22 @@ impl SessionPlayback {
 
     /// Whether `render` skips every device chain: the transport is not
     /// playing and no source monitoring, keyboard, sampler console or
-    /// stopped-edit tail feeds them. The output is then silent and committed
-    /// chain state stays frozen, so live device transitions cannot drain by
-    /// rendering (Pulse #4558).
+    /// stopped-edit tail or private PCM input history feeds them. The output
+    /// is then silent and committed chain state stays frozen, so live device
+    /// transitions cannot drain by rendering (Pulse #4558).
     pub(super) fn renders_no_device_chains(&self) -> bool {
         !self.playing
             && !self.monitor_source_releases
+            && !self.stopped_input_has_history()
             && self.computer_keyboard.is_none()
             && self.current_sampler_keyboards.is_empty()
             && !self.stopped_edit_tails()
             && !self.foreign_arrangement.has_started()
             && !self.foreign_arrangement.has_keyboard()
+    }
+
+    pub(super) fn stopped_input_has_history(&self) -> bool {
+        self.stopped_input.is_some_and(|input| input.rendered)
     }
 
     /// At Pause, an idle owned graph can leave its latency buffers for the
@@ -55,6 +60,7 @@ impl SessionPlayback {
     /// sources. The stopped origin retains its existing handoff policy.
     pub(super) fn can_freeze_idle_latency_history(&self) -> bool {
         (self.performance_frame != 0 || self.arrangement_frame != 0)
+            && !self.stopped_input_has_history()
             && self.revision.arrangement().main_latency_frames() != 0
             && self.computer_keyboard.is_none()
             && self.current_sampler_keyboards.is_empty()
@@ -218,6 +224,10 @@ impl SessionPlayback {
         output: &mut [Frame],
         foreign: &mut dyn hex_lattice::ForeignProcessors,
     ) -> Result<(), SessionPlaybackError> {
+        if self.playing || self.stopped_input.is_none_or(|scope| scope.track != track) {
+            output.fill([0.0; 2]);
+            return Err(SessionPlaybackError::InvalidCommand);
+        }
         self.render_internal_with_live_audio::<dyn MediaPages>(
             output,
             None,
@@ -229,7 +239,13 @@ impl SessionPlayback {
                 track,
                 frames: input,
             }),
-        )
+        )?;
+        if !input.is_empty()
+            && let Some(scope) = &mut self.stopped_input
+        {
+            scope.rendered = true;
+        }
+        Ok(())
     }
 
     /// Render using borrowed, already admitted foreign endpoints. This stages
@@ -775,6 +791,13 @@ impl SessionPlayback {
         }
         output.fill([0.0; 2]);
         let stopped_edit_tails = self.stopped_edit_tails();
+        let pending_monitor_pcm = pending_monitor_pcm
+            || (live_audio.is_none()
+                && self.stopped_input_has_history()
+                && self
+                    .compensation
+                    .as_ref()
+                    .is_some_and(|runtime| !runtime.delays.pcm_history_is_silent()));
         if output.is_empty()
             || (live_audio.is_none() && self.renders_no_device_chains())
             || (!self.playing
@@ -897,6 +920,7 @@ impl SessionPlayback {
             && !self.foreign_arrangement.has_keyboard()
             && stopped_edit_tails
             && !self.monitor_source_releases
+            && !self.stopped_input_has_history()
             && self.computer_keyboard.is_none()
             && self.current_sampler_keyboards.is_empty()
             && !self

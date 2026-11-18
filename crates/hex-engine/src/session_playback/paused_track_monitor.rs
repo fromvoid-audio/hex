@@ -13,6 +13,14 @@ use hex_lattice::{
 use hex_lattice_contract::ForeignProcessorBinding;
 use std::sync::Arc;
 
+/// The exact selected input in a fresh, independent PCM monitor. Authored
+/// Arrangement runtimes never acquire this witness or inherit its history.
+#[derive(Clone, Copy)]
+pub(super) struct StoppedInputHistory {
+    pub(super) track: TrackId,
+    pub(super) rendered: bool,
+}
+
 /// A separate, owned monitor for one prepared revision and one track. The
 /// host retains it for one paused activation, returns it to control on a
 /// transport or source change, and destroys it on control. Zero-input blocks
@@ -542,8 +550,8 @@ impl PausedTrackMonitor {
         let hold = PausedMonitorStorageHold::new(&revision, runtime, prepared_metadata_bytes)
             .map_err(Preparation)?;
         admit(DeviceResourceAdmission::default().with_paused_monitor(&hold)).map_err(Admission)?;
-        let mut monitor =
-            Self::construct(revision, resources, track, bindings, runtime).map_err(Preparation)?;
+        let mut monitor = Self::construct_pcm(revision, resources, track, bindings, runtime)
+            .map_err(Preparation)?;
         monitor._admission_lifetime = Some(Arc::clone(&hold.lifetime));
         Ok((monitor, hold))
     }
@@ -596,7 +604,22 @@ impl PausedTrackMonitor {
         if allowance > limit {
             return Err(SessionPlaybackError::Allocation);
         }
-        Self::construct(revision, resources, track, bindings, limit)
+        Self::construct_pcm(revision, resources, track, bindings, limit)
+    }
+
+    fn construct_pcm(
+        revision: Arc<PreparedRevision>,
+        resources: Option<&PreparedDeviceResources>,
+        track: TrackId,
+        bindings: &[PausedMonitorForeignBinding],
+        limit: usize,
+    ) -> Result<Self, SessionPlaybackError> {
+        let mut monitor = Self::construct(revision, resources, track, bindings, limit)?;
+        monitor.playback.stopped_input = Some(StoppedInputHistory {
+            track,
+            rendered: false,
+        });
+        Ok(monitor)
     }
 
     fn construct(
@@ -842,6 +865,11 @@ impl PausedTrackMonitor {
             .flat_map(NativeRuntimeChain::foreign_bindings)
             .flatten()
     }
+
+    #[cfg(test)]
+    pub(super) fn pcm_runtime_for_test(&mut self) -> &mut SessionPlayback {
+        &mut self.playback
+    }
 }
 
 fn replacement_binding(
@@ -881,6 +909,56 @@ pub(super) fn build_monitor_chain(
 mod tests {
     use super::*;
     use crate::signal_graph::tests::{fixture, prepare};
+
+    #[test]
+    fn paused_input_handoff_drains_private_compensation_after_input_removal() {
+        let fixture = fixture(&[&[7], &[]], 512);
+        let revision = prepare(&fixture).unwrap();
+        let arrangement = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+        let new_monitor = |track| {
+            PausedTrackMonitor::prepare_on_control(
+                Arc::clone(&revision),
+                track,
+                MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES,
+            )
+            .unwrap()
+        };
+        let monitored_track = fixture.tracks[1];
+        let mut previous = new_monitor(monitored_track);
+        let mut oracle = new_monitor(monitored_track);
+        let marker = [0.4, -0.2];
+        for monitor in [&mut previous, &mut oracle] {
+            let mut prefix = [[9.0; 2]; 1];
+            monitor
+                .render(&arrangement, &[marker], &mut prefix)
+                .unwrap();
+            assert_eq!(prefix, [[0.0; 2]; 1]);
+        }
+        let mut wrong_track = new_monitor(fixture.tracks[0]);
+        assert_eq!(
+            wrong_track
+                .playback
+                .try_inherit_state_live_from(&mut previous.playback),
+            Err(SessionPlaybackError::InvalidCommand)
+        );
+        let mut ordinary = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+        assert_eq!(
+            ordinary.try_inherit_state_live_from(&mut previous.playback),
+            Err(SessionPlaybackError::InvalidCommand)
+        );
+        let mut candidate = new_monitor(monitored_track);
+        candidate
+            .playback
+            .try_inherit_state_live_from(&mut previous.playback)
+            .unwrap();
+        let mut expected = [[0.0; 2]; 16];
+        oracle.drain(&arrangement, &mut expected).unwrap();
+        let mut actual = [[0.0; 2]; 16];
+        candidate.playback.render(&mut actual).unwrap();
+        assert_eq!(expected[6], marker);
+        assert_eq!(actual, expected);
+        assert_eq!(candidate.playback.performance_frame(), 0);
+    }
 
     #[test]
     fn paused_monitor_horizon_keeps_full_callback_extent_and_mutes_the_suffix() {
