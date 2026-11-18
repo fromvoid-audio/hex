@@ -5,6 +5,11 @@ use super::{
     preroll::arrangement_runtime_storage_preflight_bytes,
 };
 use crate::native_device_resources::{DeviceResourceAdmission, PreparedDeviceResources};
+use hex_lattice::{
+    ForeignProcessors, NativeRuntimeChain, PreparedForeignProcessor, PreparedProcessorFactory,
+    PreparedRuntimeInstance, RefuseForeign,
+};
+use hex_lattice_contract::ForeignProcessorBinding;
 use std::sync::Arc;
 
 /// A separate, owned monitor for one prepared revision and one track. The
@@ -41,6 +46,16 @@ pub enum PausedMonitorAdmissionError<E> {
     Admission(E),
 }
 
+/// One independently prepared same-device effect. Order a complete overlay by
+/// original binding. The engine checks equal processing facts and distinct
+/// epochs. Control must authenticate the actual workers, exact configuration
+/// and ownership in the output root before supplying a private callback view.
+#[derive(Clone, Copy)]
+pub struct PausedMonitorForeignBinding {
+    pub original: ForeignProcessorBinding,
+    pub replacement: PreparedForeignProcessor,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct Cursor {
     performance: u64,
@@ -60,7 +75,7 @@ impl PausedTrackMonitor {
         track: TrackId,
         max_runtime_bytes: usize,
     ) -> Result<Self, SessionPlaybackError> {
-        Self::prepare(revision, track, None, max_runtime_bytes)
+        Self::prepare(revision, track, None, &[], max_runtime_bytes)
     }
 
     /// Check the ordinary resident graph's eligibility and quote the
@@ -71,7 +86,7 @@ impl PausedTrackMonitor {
         resources: &PreparedDeviceResources,
         track: TrackId,
     ) -> Result<usize, SessionPlaybackError> {
-        Self::runtime_allowance(revision, track, Some(resources))
+        Self::runtime_allowance(revision, track, Some(resources), &[])
     }
 
     /// Prepare a monitor for the exact scoped resident revision. The compiler's
@@ -83,7 +98,7 @@ impl PausedTrackMonitor {
         track: TrackId,
         max_runtime_bytes: usize,
     ) -> Result<Self, SessionPlaybackError> {
-        Self::prepare(revision, track, Some(resources), max_runtime_bytes)
+        Self::prepare(revision, track, Some(resources), &[], max_runtime_bytes)
     }
 
     /// Admit the exact PCM leaves and the private runtime allowance before
@@ -97,10 +112,77 @@ impl PausedTrackMonitor {
         prepared_metadata_bytes: usize,
         admit: impl FnOnce(DeviceResourceAdmission<'_>) -> Result<(), E>,
     ) -> Result<(Self, PausedMonitorStorageHold), PausedMonitorAdmissionError<E>> {
+        Self::prepare_admitted(
+            revision,
+            Some(resources),
+            track,
+            &[],
+            prepared_metadata_bytes,
+            admit,
+        )
+    }
+
+    /// Borrow the exact authored Track, Return and Main foreign effect recipes.
+    /// These definitions share immutable configuration only, and supply no
+    /// authority to reuse a live worker or open a new one.
+    pub fn foreign_effect_nodes_on_control(
+        revision: &PreparedRevision,
+    ) -> impl Iterator<Item = &PreparedRuntimeInstance> {
+        let arrangement = revision.arrangement();
+        arrangement
+            .tracks()
+            .iter()
+            .flat_map(|track| track.device_chain.iter())
+            .chain(
+                arrangement
+                    .return_buses()
+                    .iter()
+                    .flat_map(|bus| bus.device_chain.iter()),
+            )
+            .chain(arrangement.main_device_chain.iter())
+            .filter(|entry| matches!(entry.definition, Some(PreparedProcessorFactory::Foreign(_))))
+    }
+
+    /// Prepare and charge a private monitor for the exact resident source.
+    /// The overlay changes only its runtime bindings. It must cover every
+    /// foreign effect in the graph. Instruments and source-bound automation
+    /// require their own admission contract. This hold charges engine state;
+    /// native source/worker admission and retirement remain with the host.
+    pub fn prepare_admitted_with_foreign_effects_on_control<E>(
+        revision: Arc<PreparedRevision>,
+        resources: Option<&PreparedDeviceResources>,
+        track: TrackId,
+        bindings: &[PausedMonitorForeignBinding],
+        prepared_metadata_bytes: usize,
+        admit: impl FnOnce(DeviceResourceAdmission<'_>) -> Result<(), E>,
+    ) -> Result<(Self, PausedMonitorStorageHold), PausedMonitorAdmissionError<E>> {
+        if bindings.is_empty() {
+            return Err(PausedMonitorAdmissionError::Preparation(
+                SessionPlaybackError::InvalidCommand,
+            ));
+        }
+        Self::prepare_admitted(
+            revision,
+            resources,
+            track,
+            bindings,
+            prepared_metadata_bytes,
+            admit,
+        )
+    }
+
+    fn prepare_admitted<E>(
+        revision: Arc<PreparedRevision>,
+        resources: Option<&PreparedDeviceResources>,
+        track: TrackId,
+        bindings: &[PausedMonitorForeignBinding],
+        prepared_metadata_bytes: usize,
+        admit: impl FnOnce(DeviceResourceAdmission<'_>) -> Result<(), E>,
+    ) -> Result<(Self, PausedMonitorStorageHold), PausedMonitorAdmissionError<E>> {
         use PausedMonitorAdmissionError::{Admission, Preparation};
 
-        let runtime = Self::resident_runtime_allowance_on_control(&revision, resources, track)
-            .map_err(Preparation)?;
+        let runtime =
+            Self::runtime_allowance(&revision, track, resources, bindings).map_err(Preparation)?;
         let allowance_bytes = runtime
             .checked_add(prepared_metadata_bytes)
             .and_then(|bytes| bytes.checked_add(size_of::<PausedMonitorStorageHold>()))
@@ -112,8 +194,8 @@ impl PausedTrackMonitor {
             lifetime: Arc::new(()),
         };
         admit(DeviceResourceAdmission::default().with_paused_monitor(&hold)).map_err(Admission)?;
-        let mut monitor = Self::prepare_resident_on_control(revision, resources, track, runtime)
-            .map_err(Preparation)?;
+        let mut monitor =
+            Self::construct(revision, resources, track, bindings, runtime).map_err(Preparation)?;
         monitor._admission_lifetime = Some(Arc::clone(&hold.lifetime));
         Ok((monitor, hold))
     }
@@ -122,6 +204,7 @@ impl PausedTrackMonitor {
         revision: &PreparedRevision,
         track: TrackId,
         resources: Option<&PreparedDeviceResources>,
+        bindings: &[PausedMonitorForeignBinding],
     ) -> Result<usize, SessionPlaybackError> {
         let arrangement = revision.arrangement();
         let tracks = arrangement.tracks();
@@ -137,22 +220,7 @@ impl PausedTrackMonitor {
             || tracks
                 .iter()
                 .any(|row| row.has_mutable_instrument() || row.foreign_instrument.is_some())
-            || tracks
-                .iter()
-                .flat_map(|row| row.device_chain.iter())
-                .chain(
-                    arrangement
-                        .return_buses()
-                        .iter()
-                        .flat_map(|bus| bus.device_chain.iter()),
-                )
-                .chain(arrangement.main_device_chain.iter())
-                .any(|entry| {
-                    matches!(
-                        entry.definition,
-                        Some(hex_lattice::PreparedProcessorFactory::Foreign(_))
-                    )
-                })
+            || !Self::validate_foreign_bindings(revision, bindings)
         {
             return Err(SessionPlaybackError::InvalidCommand);
         }
@@ -166,16 +234,37 @@ impl PausedTrackMonitor {
         revision: Arc<PreparedRevision>,
         track: TrackId,
         resources: Option<&PreparedDeviceResources>,
+        bindings: &[PausedMonitorForeignBinding],
         max_runtime_bytes: usize,
     ) -> Result<Self, SessionPlaybackError> {
         let limit = max_runtime_bytes.min(MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES);
-        let allowance = Self::runtime_allowance(&revision, track, resources)?;
+        let allowance = Self::runtime_allowance(&revision, track, resources, bindings)?;
         if allowance > limit {
             return Err(SessionPlaybackError::Allocation);
         }
-        let playback = match resources {
-            Some(resources) => SessionPlayback::new_with_device_resources(revision, resources)?,
-            None => SessionPlayback::new(revision)?,
+        Self::construct(revision, resources, track, bindings, limit)
+    }
+
+    fn construct(
+        revision: Arc<PreparedRevision>,
+        resources: Option<&PreparedDeviceResources>,
+        track: TrackId,
+        bindings: &[PausedMonitorForeignBinding],
+        limit: usize,
+    ) -> Result<Self, SessionPlaybackError> {
+        let playback = match (resources, bindings.is_empty()) {
+            (Some(resources), true) => {
+                SessionPlayback::new_with_device_resources(revision, resources)?
+            }
+            (None, true) => SessionPlayback::new(revision)?,
+            _ => SessionPlayback::new_with_render_policy_and_source_effects(
+                revision,
+                super::RenderConstruction::Interactive,
+                resources,
+                None,
+                None,
+                bindings,
+            )?,
         };
         if playback
             .accounted_runtime_storage_bytes()
@@ -193,6 +282,46 @@ impl PausedTrackMonitor {
         })
     }
 
+    fn validate_foreign_bindings(
+        revision: &PreparedRevision,
+        bindings: &[PausedMonitorForeignBinding],
+    ) -> bool {
+        if bindings
+            .windows(2)
+            .any(|pair| pair[0].original >= pair[1].original)
+        {
+            return false;
+        }
+        let mut count = 0;
+        for node in Self::foreign_effect_nodes_on_control(revision) {
+            let Some(PreparedProcessorFactory::Foreign(prepared)) = node.definition else {
+                return false;
+            };
+            let Some(original) = prepared.binding() else {
+                return false;
+            };
+            let Some(replacement) = replacement_binding(bindings, original) else {
+                return false;
+            };
+            let Some(new) = replacement.binding() else {
+                return false;
+            };
+            if original.root != new.root
+                || original.instance != node.device_id
+                || original.instance != new.instance
+                || original.epoch == new.epoch
+                || prepared.is_instrument_profile()
+                || prepared.with_binding(new) != Ok(replacement)
+                || node.automation.foreign().is_some()
+                || node.modulation.is_some()
+            {
+                return false;
+            }
+            count += 1;
+        }
+        count == bindings.len()
+    }
+
     /// Render at most one 256-frame input quantum. Even identical prepared
     /// content cannot replace this owner's revision. Refusal is silent and
     /// leaves the Arrangement and the monitor's committed history intact.
@@ -205,6 +334,16 @@ impl PausedTrackMonitor {
         input: &[Frame],
         output: &mut [Frame],
     ) -> Result<(), SessionPlaybackError> {
+        self.render_with_foreign(arrangement, input, output, &mut RefuseForeign)
+    }
+
+    pub(crate) fn render_with_foreign(
+        &mut self,
+        arrangement: &SessionPlayback,
+        input: &[Frame],
+        output: &mut [Frame],
+        foreign: &mut dyn ForeignProcessors,
+    ) -> Result<(), SessionPlaybackError> {
         let cursor = self.validate_cursor(arrangement, output)?;
         if self.release_remaining.is_some()
             || input.len() != output.len()
@@ -213,7 +352,7 @@ impl PausedTrackMonitor {
             output.fill([0.0; 2]);
             return Err(SessionPlaybackError::InvalidCommand);
         }
-        self.render_input(cursor, input, output)
+        self.render_input(cursor, input, output, foreign)
     }
 
     /// Feed silence through the same paused route. The rendered block is valid
@@ -224,6 +363,15 @@ impl PausedTrackMonitor {
         &mut self,
         arrangement: &SessionPlayback,
         output: &mut [Frame],
+    ) -> Result<bool, SessionPlaybackError> {
+        self.drain_with_foreign(arrangement, output, &mut RefuseForeign)
+    }
+
+    pub(crate) fn drain_with_foreign(
+        &mut self,
+        arrangement: &SessionPlayback,
+        output: &mut [Frame],
+        foreign: &mut dyn ForeignProcessors,
     ) -> Result<bool, SessionPlaybackError> {
         let cursor = self.validate_cursor(arrangement, output)?;
         if self.cursor.is_none()
@@ -252,7 +400,7 @@ impl PausedTrackMonitor {
         };
         let frames = remaining.min(output.len() as u64) as usize;
         let (tail, rest) = output.split_at_mut(frames);
-        self.render_input(cursor, &[[0.0; 2]; 256][..frames], tail)?;
+        self.render_input(cursor, &[[0.0; 2]; 256][..frames], tail, foreign)?;
         rest.fill([0.0; 2]);
         let remaining = remaining - frames as u64;
         let active = remaining != 0 && !self.is_quiescent();
@@ -305,14 +453,61 @@ impl PausedTrackMonitor {
         cursor: Cursor,
         input: &[Frame],
         output: &mut [Frame],
+        foreign: &mut dyn ForeignProcessors,
     ) -> Result<(), SessionPlaybackError> {
         if !input.is_empty() {
             self.playback.performance_frame = cursor.performance;
             self.playback.arrangement_frame = cursor.arrangement;
             self.playback.arrangement_loop_pass = cursor.loop_pass;
-            self.playback.render_paused_pcm(self.track, input, output)?;
+            self.playback
+                .render_paused_pcm(self.track, input, output, foreign)?;
             self.cursor = Some(cursor);
         }
         Ok(())
     }
+
+    /// Observe the actual private runtime bindings without transferring the
+    /// monitor or proving that an endpoint belongs to the host callback.
+    pub fn foreign_effect_bindings(&self) -> impl Iterator<Item = ForeignProcessorBinding> + '_ {
+        self.playback
+            .device_chains
+            .iter()
+            .chain(&self.playback.return_chains)
+            .chain(std::iter::once(&self.playback.main_chain))
+            .flat_map(NativeRuntimeChain::foreign_bindings)
+            .flatten()
+    }
+}
+
+fn replacement_binding(
+    bindings: &[PausedMonitorForeignBinding],
+    original: ForeignProcessorBinding,
+) -> Option<PreparedForeignProcessor> {
+    let index = bindings
+        .binary_search_by_key(&original, |binding| binding.original)
+        .ok()?;
+    Some(bindings[index].replacement)
+}
+
+pub(super) fn build_monitor_chain(
+    nodes: &[PreparedRuntimeInstance],
+    bindings: &[PausedMonitorForeignBinding],
+) -> Result<NativeRuntimeChain, SessionPlaybackError> {
+    let mut instances = Vec::new();
+    instances
+        .try_reserve_exact(nodes.len())
+        .map_err(|_| SessionPlaybackError::Allocation)?;
+    for mut entry in nodes.iter().cloned() {
+        if !bindings.is_empty()
+            && let Some(PreparedProcessorFactory::Foreign(prepared)) = entry.definition
+        {
+            let replacement = prepared
+                .binding()
+                .and_then(|original| replacement_binding(bindings, original))
+                .ok_or(SessionPlaybackError::InvalidCommand)?;
+            entry.definition = Some(PreparedProcessorFactory::Foreign(replacement));
+        }
+        instances.push(entry);
+    }
+    NativeRuntimeChain::new_prepared(instances).map_err(|_| SessionPlaybackError::DeviceRuntime)
 }
