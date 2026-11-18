@@ -81,6 +81,7 @@ pub(super) fn open_with_section_and_recovery(
     )
 }
 
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub(super) fn open_for_paused_monitor(
     cx: &mut TestAppContext,
     commands: Vec<hex_project::Command>,

@@ -66,15 +66,28 @@ enum Phase {
 pub(super) struct PausedInput {
     phase: Phase,
     failed: Option<Target>,
-    #[cfg(test)]
+    #[cfg(all(
+        test,
+        feature = "ui-test-support",
+        target_os = "macos",
+        target_arch = "aarch64"
+    ))]
     fixture_input: Option<Receiver<Result<PreparedInput, String>>>,
 }
 impl PausedInput {
     pub(super) fn pending(&self) -> bool {
         !matches!(self.phase, Phase::Idle)
     }
+    pub(super) fn user_changed_target(&mut self) {
+        self.failed = None;
+    }
     fn open(&mut self, target: &Target) -> Result<Receiver<Result<PreparedInput, String>>, String> {
-        #[cfg(test)]
+        #[cfg(all(
+            test,
+            feature = "ui-test-support",
+            target_os = "macos",
+            target_arch = "aarch64"
+        ))]
         if let Some(input) = self.fixture_input.take() {
             return Ok(input);
         }
@@ -146,7 +159,14 @@ impl EditorView {
 
     pub(super) fn tick_paused_input(&mut self) -> bool {
         let desired = self.paused_input_target();
-        if self.audio_recorder.paused_input.failed != desired {
+        if self
+            .audio_recorder
+            .paused_input
+            .failed
+            .as_ref()
+            .zip(desired.as_ref())
+            .is_some_and(|(failed, current)| failed != current)
+        {
             self.audio_recorder.paused_input.failed = None;
         }
         let phase = std::mem::take(&mut self.audio_recorder.paused_input.phase);
@@ -336,7 +356,12 @@ impl EditorView {
     }
 }
 
-#[cfg(all(test, target_os = "macos", target_arch = "aarch64"))]
+#[cfg(all(
+    test,
+    feature = "ui-test-support",
+    target_os = "macos",
+    target_arch = "aarch64"
+))]
 mod tests {
     use super::*;
     use crate::editor::worker_ui_fixture;
@@ -346,10 +371,7 @@ mod tests {
         time::{Duration, Instant},
     };
 
-    #[gpui::test]
-    fn stopped_software_monitor_reaches_the_armed_track_and_holds_record_until_retired(
-        cx: &mut TestAppContext,
-    ) {
+    fn arm_monitor_fixture(cx: &mut TestAppContext) -> worker_ui_fixture::WorkerUiFixture {
         let mut fixture = worker_ui_fixture::open_for_paused_monitor(
             cx,
             vec![hex_project::Command::AddTrack {
@@ -386,6 +408,14 @@ mod tests {
             std::thread::yield_now();
         }
         assert!(input.started());
+        fixture
+    }
+
+    #[gpui::test]
+    fn stopped_software_monitor_reaches_the_armed_track_and_holds_record_until_retired(
+        cx: &mut TestAppContext,
+    ) {
+        let mut fixture = arm_monitor_fixture(cx);
         fixture.editor.update(cx, |view, _| {
             let audio = view.audio.as_mut().unwrap();
             assert_eq!(audio.status().unwrap().position.load(Acquire), 0);
@@ -394,6 +424,7 @@ mod tests {
                 .command(hex_engine::PlaybackCommand::Play)
                 .unwrap();
         });
+        let mut block = [[0.0; 2]; 64];
         fixture.backend.render(&mut block).unwrap();
         assert_eq!(
             block, [[0.0; 2]; 64],
@@ -413,6 +444,7 @@ mod tests {
             view.toggle_audio_recording();
             assert!(view.audio_recorder.record_after_monitor.is_none());
         });
+        let deadline = Instant::now() + Duration::from_millis(500);
         loop {
             fixture.backend.render(&mut block).unwrap();
             let finished = fixture.editor.update(cx, |view, _| {
@@ -425,5 +457,40 @@ mod tests {
             assert!(Instant::now() < deadline, "old monitor did not retire");
             std::thread::yield_now();
         }
+    }
+
+    #[gpui::test]
+    fn failed_stopped_monitor_stays_closed_after_returning_its_endpoints(cx: &mut TestAppContext) {
+        let mut fixture = arm_monitor_fixture(cx);
+        let (send, receive) = mpsc::sync_channel(1);
+        send.try_send(Err("unexpected input reopen".into()))
+            .ok()
+            .unwrap();
+        fixture.editor.update(cx, |view, _| {
+            view.audio_recorder.paused_input.fixture_input = Some(receive);
+        });
+        let deadline = Instant::now() + Duration::from_millis(500);
+        loop {
+            fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+            let finished = fixture.editor.update(cx, |view, cx| {
+                view.tick(cx);
+                !view.audio_recorder.needs_poll()
+            });
+            if finished {
+                break;
+            }
+            assert!(Instant::now() < deadline, "failed input did not retire");
+            std::thread::yield_now();
+        }
+        fixture.editor.update(cx, |view, cx| {
+            view.tick(cx);
+            assert!(!view.audio_recorder.needs_poll());
+            assert!(
+                view.error
+                    .as_ref()
+                    .is_some_and(|error| error.contains("input monitor underrun"))
+            );
+            assert!(view.audio_recorder.paused_input.fixture_input.is_some());
+        });
     }
 }

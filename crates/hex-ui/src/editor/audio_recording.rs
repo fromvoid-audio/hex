@@ -287,6 +287,7 @@ impl EditorView {
         } else {
             Some((self.project_generation, track))
         };
+        self.audio_recorder.paused_input.user_changed_target();
         self.status = if self.audio_recorder.armed_track.is_some() {
             "track armed for audio recording"
         } else {
@@ -406,6 +407,7 @@ impl EditorView {
             return;
         }
         self.audio_recorder.input = id.map(|id| (id, name.clone()));
+        self.audio_recorder.paused_input.user_changed_target();
         self.error = None;
         self.status = format!(
             "audio input · {}",
@@ -420,6 +422,7 @@ impl EditorView {
             return;
         }
         self.audio_recorder.software_monitor = !self.audio_recorder.software_monitor;
+        self.audio_recorder.paused_input.user_changed_target();
         self.status = if self.audio_recorder.software_monitor {
             "software monitoring enabled"
         } else {
