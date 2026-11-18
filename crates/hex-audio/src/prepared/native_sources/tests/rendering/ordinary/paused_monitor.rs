@@ -166,8 +166,7 @@ fn paused_notes_use_original_generator_and_private_effect_after_host_acceptance(
     let missing = f
         .control
         .publish_paused_note_monitor(missing, source, epoch + 1)
-        .err()
-        .expect("a stale transport epoch returns the owner");
+        .expect_err("a stale transport epoch returns the owner");
     assert!(!missing_hold.released_on_control());
     assert!(
         f.control
@@ -178,8 +177,7 @@ fn paused_notes_use_original_generator_and_private_effect_after_host_acceptance(
     let monitor = f
         .control
         .publish_paused_note_monitor(monitor, source, epoch)
-        .err()
-        .expect("the bounded worker queue returns a second owner");
+        .expect_err("the bounded worker queue returns a second owner");
     assert!(!hold.released_on_control());
     assert_eq!(render(&mut f, None), [[0.0; 2]; Q]);
     assert_eq!(
@@ -276,8 +274,7 @@ fn paused_notes_use_original_generator_and_private_effect_after_host_acceptance(
     let closing = f
         .control
         .publish_paused_note_monitor(closing, source, epoch)
-        .err()
-        .expect("a closed output returns the monitor owner");
+        .expect_err("a closed output returns the monitor owner");
     assert!(!closing_hold.released_on_control());
     drop(closing);
     assert!(closing_hold.released_on_control());
