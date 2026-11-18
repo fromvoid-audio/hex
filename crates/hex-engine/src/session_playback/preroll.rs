@@ -785,7 +785,7 @@ pub(super) fn linear_export_runtime_storage_preflight_bytes(
 fn runtime_storage_preflight_bytes(
     revision: &PreparedRevision,
     release_capacity: usize,
-    owns_mutable_sources: bool,
+    owns_instrument_sources: bool,
 ) -> Option<usize> {
     let arrangement = revision.arrangement();
     let track_count = arrangement.tracks().len();
@@ -817,10 +817,12 @@ fn runtime_storage_preflight_bytes(
             &arrangement.source_effects,
         )?,
     )?;
-    checked_add(
-        &mut total,
-        foreign_arrangement::ForeignArrangement::preflight_bytes(revision)?,
-    )?;
+    if owns_instrument_sources {
+        checked_add(
+            &mut total,
+            foreign_arrangement::ForeignArrangement::preflight_bytes(revision)?,
+        )?;
+    }
     if let Some(graph) = &arrangement.signal_graph {
         checked_add(
             &mut total,
@@ -895,7 +897,7 @@ fn runtime_storage_preflight_bytes(
         .tracks()
         .iter()
         .enumerate()
-        .filter(|_| owns_mutable_sources)
+        .filter(|_| owns_instrument_sources)
     {
         let id = track.canonical_track_id()?;
         if let Some(factory) = revision.session().mutable_instrument_factory(id) {

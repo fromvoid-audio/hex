@@ -713,6 +713,114 @@ fn physical_block<const FRAMES: usize>(f: &mut OrdinaryFixture) -> [Frame; FRAME
 
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn actual_paused_vst3_instrument_auditions_on_its_original_worker() {
+    const CHILD: &str = "HEX_PAUSED_VST3_INSTRUMENT_SDK_DRIVER";
+    if std::env::var_os(CHILD).is_none() {
+        let result = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                std::thread::current().name().unwrap(),
+                "--ignored",
+            ])
+            .env(CHILD, "1")
+            .env("RUST_MIN_STACK", "16777216")
+            .env("HEX_ORIGINAL_INSTANCE_VARIANT", "146")
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success() && String::from_utf8_lossy(&result.stdout).contains("1 passed"),
+            "{}\n{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+        return;
+    }
+    use hex_engine::computer_keyboard::ComputerKeyboardInput;
+    use hex_lattice_contract::DeviceTypeId;
+    const QUANTUM: usize = 256;
+    let _serial = serial();
+    let mut f = fixture_with_authored_mode("processing", 0, QUANTUM as u16, &[], true);
+    f.editor
+        .execute(Command::InsertMainDevice {
+            before: None,
+            state: hex_engine::default_native_device_state(DeviceTypeId::from_static(
+                "hex.limiter",
+            ))
+            .unwrap(),
+        })
+        .unwrap();
+    let keys = Arc::new(ComputerKeyboardInput::default());
+    let mut playback = compile(&f, true);
+    let track = f.editor.project().tracks()[0].id();
+    playback
+        .prepare_computer_keyboard(f.editor.project(), track, Arc::clone(&keys))
+        .unwrap();
+    assert!(
+        Playback::paused_source_monitor_allowance_on_control(
+            playback.prepared_revision().unwrap(),
+            Some(&f.resources),
+        )
+        .unwrap()
+            > 0
+    );
+    playback
+        .prepare_resident_paused_source_monitor(Some(&f.resources))
+        .unwrap();
+    publish(&mut f.control, playback, PublicationPolicy::InheritRuntime);
+    let root = f.control.native_candidate_root();
+    let render = |f: &mut OrdinaryFixture| {
+        let output = physical_block::<QUANTUM>(f);
+        let mut committed = None;
+        f.data.owner_mut().unwrap().run(|callback, _| {
+            committed = callback.native_sources.test_committed_frames(f.binding);
+        });
+        replacement::wait_for_blocks(&root, f.binding, committed.unwrap() / QUANTUM as u64);
+        output
+    };
+    f.control.command(PlaybackCommand::Play).unwrap();
+    render(&mut f);
+    f.control.command(PlaybackCommand::Pause).unwrap();
+    render(&mut f);
+    assert!(!f.control.status.playing.load(Acquire));
+    let frozen = f.control.status.position.load(Acquire);
+    assert!(frozen > 0);
+    for _ in 0..5 {
+        render(&mut f);
+    }
+    assert_eq!(render(&mut f), [[0.0; 2]; QUANTUM]);
+    keys.set_key(0, Some((67, 100, 1))).unwrap();
+    let mut heard = false;
+    for _ in 0..6 {
+        heard |= render(&mut f)
+            .iter()
+            .flatten()
+            .any(|sample| sample.abs() > 0.001);
+    }
+    assert!(heard, "the original worker must render the paused key");
+    assert_eq!(f.control.status.position.load(Acquire), frozen);
+    assert_eq!(
+        f.control.native_source_endpoint_status(f.binding),
+        Some((true, true))
+    );
+    keys.set_key(0, None).unwrap();
+    for _ in 0..5 {
+        render(&mut f);
+    }
+    assert_eq!(render(&mut f), [[0.0; 2]; QUANTUM]);
+    f.control.command(PlaybackCommand::Play).unwrap();
+    render(&mut f);
+    assert!(f.control.status.playing.load(Acquire));
+    f.control.command(PlaybackCommand::Stop).unwrap();
+    render(&mut f);
+    assert_eq!(f.control.status.position.load(Acquire), 0);
+    let returned = dispose(f);
+    assert!(
+        matches!(returned.disposal, native::PreparationDisposal::Reaped(retired) if retired.status.success())
+    );
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn actual_ordinary_pause_keeps_the_vst3_source_available_for_play_from() {
     let _serial = serial();
     // The 128-frame Pause fade ends inside this physical callback.

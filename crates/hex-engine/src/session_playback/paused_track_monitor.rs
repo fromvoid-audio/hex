@@ -38,6 +38,12 @@ impl PausedTrackMonitor {
     ) -> Result<usize, SessionPlaybackError> {
         if Self::resident_source_track(revision).is_none()
             || !Self::accepts_effect_graph(revision, resources, &[])
+            || revision
+                .arrangement()
+                .tracks()
+                .iter()
+                .filter_map(|row| row.foreign_instrument.as_ref())
+                .any(|node| node.automation.foreign().is_some() || node.modulation.is_some())
         {
             return Ok(0);
         }
@@ -56,7 +62,12 @@ impl PausedTrackMonitor {
             return None;
         }
         arrangement.tracks().iter().find_map(|row| {
-            if row.instrument_state.is_some() && !row.instrument_bypassed {
+            if row.instrument_state.is_some() && !row.instrument_bypassed
+                || row
+                    .foreign_instrument
+                    .as_ref()
+                    .is_some_and(|node| !node.bypassed)
+            {
                 row.canonical_track_id()
             } else {
                 None
@@ -100,6 +111,7 @@ impl PausedTrackMonitor {
         output: &mut [Frame],
         observer: Option<&mut crate::NodeSignalObserver<'_>>,
         capture: Option<&mut dyn super::capture::CaptureSink>,
+        foreign: &mut dyn ForeignProcessors,
     ) -> Result<(), SessionPlaybackError> {
         if !Arc::ptr_eq(&self.playback.revision, &arrangement.revision) {
             output.fill([0.0; 2]);
@@ -116,7 +128,7 @@ impl PausedTrackMonitor {
         swap_pause_sources(&mut self.playback, arrangement);
         let result = self
             .playback
-            .render_resident_source_block(output, observer, capture);
+            .render_resident_source_block(output, observer, capture, foreign);
         swap_pause_sources(&mut self.playback, arrangement);
         result
     }
@@ -145,6 +157,12 @@ fn swap_pause_sources(private: &mut SessionPlayback, arrangement: &mut SessionPl
     swap(
         &mut private.mutable_instruments,
         &mut arrangement.mutable_instruments,
+    );
+    // The foreign ledger sends its note-offs and live notes to the same
+    // audio-owned worker. Only the host's built-in routing advances here.
+    swap(
+        &mut private.foreign_arrangement,
+        &mut arrangement.foreign_arrangement,
     );
     swap(
         &mut private.release_scratch,
@@ -451,6 +469,7 @@ impl PausedTrackMonitor {
             .any(|row| row.canonical_track_id() == Some(track))
             || revision.session().has_mutable_instruments()
             || tracks.iter().any(crate::Track::has_mutable_instrument)
+            || tracks.iter().any(|row| row.foreign_instrument.is_some())
             || !revision.arrangement().source_effects.is_empty()
             || !Self::accepts_effect_graph(revision, resources, bindings)
         {
@@ -472,10 +491,6 @@ impl PausedTrackMonitor {
             && revision.device_resource_scope == resources.map(PreparedDeviceResources::id)
             && revision.scalar_automation.is_none()
             && revision.foreign_automation.is_empty()
-            && arrangement
-                .tracks()
-                .iter()
-                .all(|row| row.foreign_instrument.is_none())
             && Self::validate_foreign_bindings(revision, bindings)
     }
 

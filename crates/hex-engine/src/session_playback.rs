@@ -1742,7 +1742,11 @@ impl SessionPlayback {
                 "audition loop exceeds the prepared vst3 automation capacity",
             ));
         }
-        let foreign_arrangement = foreign_arrangement::ForeignArrangement::prepare(&revision)?;
+        let foreign_arrangement = if policy == RenderConstruction::BorrowedPauseSources {
+            foreign_arrangement::ForeignArrangement::default()
+        } else {
+            foreign_arrangement::ForeignArrangement::prepare(&revision)?
+        };
         if lacks_foreign_renderer && !foreign_arrangement.is_empty() {
             return Err(SessionPlaybackError::MutableInstrumentDiagnostic(
                 "vst3 instruments require interactive arrangement playback",
