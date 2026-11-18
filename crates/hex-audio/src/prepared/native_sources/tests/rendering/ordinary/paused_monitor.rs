@@ -307,6 +307,17 @@ fn processor(playback: &Playback) -> PreparedForeignProcessor {
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn paused_monitor_uses_private_native_endpoint_and_contains_host_refusal() {
+    // The native fixture builds two prepared processor banks and a host
+    // callback carrier on the test lane.
+    std::thread::Builder::new()
+        .stack_size(16 * 1024 * 1024)
+        .spawn(exercise_paused_monitor_host_refusal)
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+fn exercise_paused_monitor_host_refusal() {
     let _serial = serial();
     let mut f = fixture_at("processing", 0);
     let root = f.control.native_candidate_root();
