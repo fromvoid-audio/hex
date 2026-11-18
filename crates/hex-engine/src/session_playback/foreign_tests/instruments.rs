@@ -166,6 +166,24 @@ fn prepare_instruments(
     instrument_profile: bool,
     epoch: u64,
 ) -> Result<Arc<PreparedRevision>, Invalid> {
+    prepare_instruments_with_media(
+        editor,
+        identity,
+        second,
+        instrument_profile,
+        epoch,
+        &std::collections::BTreeMap::new(),
+    )
+}
+
+fn prepare_instruments_with_media(
+    editor: &Editor,
+    identity: ProcessorInstanceIdentity,
+    second: Option<ProcessorInstanceIdentity>,
+    instrument_profile: bool,
+    epoch: u64,
+    media: &std::collections::BTreeMap<hex_project::AssetId, crate::Audio>,
+) -> Result<Arc<PreparedRevision>, Invalid> {
     let definition = InstrumentDefinition {
         identity,
         second,
@@ -177,7 +195,7 @@ fn prepare_instruments(
     let registry = NativeDeviceRegistry::new(&definitions).unwrap();
     PreparedRevision::prepare_with_effect_registry(
         editor.project(),
-        &std::collections::BTreeMap::new(),
+        media,
         Arc::new(SineTable::new()),
         None,
         &registry,
@@ -511,6 +529,105 @@ impl NoteEndpoint {
             effect.next_offset = 0;
         }
         playback.render_with_foreign_processors(frames, None, None, None, self)
+    }
+}
+
+#[test]
+fn paused_vst3_instrument_preserves_downstream_arrangement_pcm() {
+    use crate::computer_keyboard::ComputerKeyboardInput;
+    use crate::playback::{Playback, PlaybackCommand};
+
+    let (mut editor, identity) = fixture();
+    let track = editor.project().tracks()[0].id();
+    let Created::Imported { asset, .. } = editor
+        .execute(Command::ImportPreparedAudioTrack {
+            name: "audio".into(),
+            path: "pause-marker.wav".into(),
+            source_sample_rate: 48_000,
+            source_frames: 1024,
+            playback_frames: 1024,
+            conversion_version: hex_project::IDENTITY_CONVERSION,
+        })
+        .unwrap()
+    else {
+        panic!("audio marker")
+    };
+    let mut samples = vec![[0.0; 2]; 1024];
+    samples[253] = [0.25, -0.5];
+    let media =
+        std::collections::BTreeMap::from([(asset, crate::Audio::new(48_000, samples).unwrap())]);
+    let revision =
+        prepare_instruments_with_media(&editor, identity, None, true, 1, &media).unwrap();
+    assert_eq!(revision.arrangement().main_latency_frames(), 19);
+
+    for partition in [1, 257] {
+        let mut paused = Playback::try_from_prepared_with_session(Arc::clone(&revision)).unwrap();
+        let mut reference =
+            Playback::try_from_prepared_with_session(Arc::clone(&revision)).unwrap();
+        let keys = Arc::new(ComputerKeyboardInput::default());
+        paused
+            .prepare_computer_keyboard(editor.project(), track, Arc::clone(&keys))
+            .unwrap();
+        paused.prepare_resident_paused_source_monitor(None).unwrap();
+        let mut endpoint = NoteEndpoint {
+            instrument_sample: 0.125,
+            ..Default::default()
+        };
+        let mut reference_endpoint = NoteEndpoint {
+            instrument_sample: 0.125,
+            ..Default::default()
+        };
+        let render = |player: &mut Playback, endpoint: &mut NoteEndpoint, pcm: &mut [Frame]| {
+            endpoint.next_offset = 0;
+            endpoint.notes.clear();
+            player
+                .render_with_foreign_processors(pcm, None, None, None, endpoint)
+                .unwrap();
+        };
+        for (player, endpoint) in [
+            (&mut paused, &mut endpoint),
+            (&mut reference, &mut reference_endpoint),
+        ] {
+            player.apply(PlaybackCommand::Play);
+            render(player, endpoint, &mut [[0.0; 2]; 257]);
+            player.apply(PlaybackCommand::Pause);
+        }
+        let [(0, original)] = endpoint.notes[..] else {
+            panic!("authored onset")
+        };
+        assert!(original.on && original.pitch == 60);
+        keys.set_key(0, Some((67, 100, 1))).unwrap();
+        let mut pcm = [[0.0; 2]; 257];
+        let mut events = Vec::new();
+        for (index, block) in pcm.chunks_mut(partition).enumerate() {
+            render(&mut paused, &mut endpoint, block);
+            events.extend(
+                endpoint
+                    .notes
+                    .iter()
+                    .map(|(offset, note)| (index * partition + offset, *note)),
+            );
+        }
+        let [(0, off), (7, on)] = events[..] else {
+            panic!("one authored release and the next native-quantum live onset: {events:?}");
+        };
+        assert!(!off.on && off.note_id == original.note_id);
+        assert!(on.on && on.pitch == 67 && on.note_id != original.note_id);
+        assert_eq!(paused.position(), 257);
+        assert!(pcm.iter().any(|frame| *frame != [0.0; 2]));
+        let mut resumed = [[0.0; 2]; 19];
+        let mut expected = resumed;
+        paused.apply(PlaybackCommand::Play);
+        reference.apply(PlaybackCommand::Play);
+        render(&mut paused, &mut endpoint, &mut resumed);
+        render(&mut reference, &mut reference_endpoint, &mut expected);
+        assert!(
+            endpoint.notes.is_empty(),
+            "the retained source must not chase the old onset"
+        );
+        assert_eq!(expected[15][0] - expected[15][1], 0.75);
+        assert_eq!(resumed, expected, "partition {partition}");
+        assert!(pcm.iter().all(|frame| frame[0] == frame[1]));
     }
 }
 

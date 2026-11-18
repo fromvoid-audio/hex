@@ -660,6 +660,7 @@ impl SessionPlayback {
         output: &mut [Frame],
         observer: Option<&mut crate::NodeSignalObserver<'_>>,
         capture: Option<&mut dyn CaptureSink>,
+        foreign: &mut dyn hex_lattice::ForeignProcessors,
     ) -> Result<(), SessionPlaybackError> {
         self.monitor_source_releases = true;
         let pending_monitor_pcm = self
@@ -672,7 +673,7 @@ impl SessionPlayback {
             observer,
             capture,
             None,
-            &mut hex_lattice::RefuseForeign,
+            foreign,
             None,
             pending_monitor_pcm,
         )
@@ -698,7 +699,6 @@ impl SessionPlayback {
                 && self.anchor.is_none()
                 && self.transient_loop.is_none()
                 && self.current_sampler_keyboards.is_empty()
-                && self.foreign_arrangement.is_empty()
                 && self
                     .mutable_instruments
                     .iter()
@@ -713,7 +713,7 @@ impl SessionPlayback {
                 })
                 && !self.stopped_edit_tails();
             if isolated {
-                let result = monitor.render_resident(self, output, observer, capture);
+                let result = monitor.render_resident(self, output, observer, capture, foreign);
                 self.paused_source_monitor = Some(monitor);
                 return result;
             }
