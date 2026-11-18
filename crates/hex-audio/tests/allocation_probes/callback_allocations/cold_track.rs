@@ -709,8 +709,12 @@ fn verify_silent_track_latency_addition(
     })?;
     let mut next = Playback::try_from_prepared_with_session(prepare(editor.project())?)?;
     next.require_continuous_device_insert();
-    control.publish(next).map_err(|_| "updated publication")?;
+    let submitted = control.publish(next).map_err(|_| "updated publication")?;
     measured_block(&mut callback, &mut actual);
+    assert_eq!(
+        control.status.applied_revision.load(Ordering::Acquire),
+        submitted
+    );
     oracle.render(&mut expected)?;
     assert!(control.status.rejected_revision().is_none());
     assert!(expected.iter().flatten().any(|sample| *sample != 0.0));
