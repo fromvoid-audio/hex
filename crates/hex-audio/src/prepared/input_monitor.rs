@@ -4,13 +4,13 @@
 //! and returns the owner through a one-slot queue. A full or abandoned return
 //! queue retains it until control-side callback destruction. Stop bypasses the
 //! queue; a block already being rendered may finish. Priming and terminal
-//! errors leave ordinary playback intact. Streamed graphs, stopped transport
-//! and project PCM observation are refused. Input and output rates must match;
-//! independent device-clock drift is not corrected.
+//! errors leave ordinary playback intact. The playing mode borrows the active
+//! renderer. The paused mode carries separate processor history and is bound
+//! to a transport epoch as well as an exact resident source. Input and output
+//! rates must match; independent device-clock drift is not corrected.
 use super::AppliedAudioSource;
 use crate::input_capture::{MonitorBlock, MonitorStream, MonitorStreamError};
-use hex_engine::Frame;
-use hex_engine::OutputCaptureId;
+use hex_engine::{Frame, OutputCaptureId, PausedTrackMonitor, playback::Playback};
 use rtrb::{Consumer, Producer, PushError, RingBuffer};
 use std::sync::{
     Arc,
@@ -57,7 +57,14 @@ impl MonitorStatus {
 struct Binding {
     stream: Box<MonitorStream>,
     source: AppliedAudioSource,
-    track: OutputCaptureId,
+    mode: Mode,
+}
+enum Mode {
+    Playing(OutputCaptureId),
+    Paused {
+        monitor: PausedTrackMonitor,
+        transport_epoch: u64,
+    },
 }
 /// One-slot monitor publisher. Rejected publications retain their owner.
 pub struct Control {
@@ -78,6 +85,12 @@ pub(super) struct Callback {
 /// An installation refusal returns the original monitor stream on control.
 pub struct Refusal {
     pub stream: Box<MonitorStream>,
+}
+
+/// A paused installation refusal returns both original owners on control.
+pub struct PausedRefusal {
+    pub stream: Box<MonitorStream>,
+    pub monitor: PausedTrackMonitor,
 }
 
 pub(super) fn channel(rate: u32) -> (Control, Callback) {
@@ -119,32 +132,58 @@ impl Control {
         source: AppliedAudioSource,
         track: OutputCaptureId,
     ) -> Result<(), Refusal> {
+        if !matches!(track, OutputCaptureId::Track(_)) {
+            return Err(Refusal { stream });
+        }
+        self.publish_binding(stream, source, track, Mode::Playing)
+            .map_err(|(stream, _)| Refusal { stream })
+    }
+
+    /// Install a control-prepared monitor for a settled pause. Use the source and
+    /// transport epoch of that activation. The callback revalidates both and
+    /// confirms the monitor's actual prepared revision before producing audio.
+    /// The caller must budget the monitor runtime and keep its prepared data
+    /// accounted for until reclaim or control-side shutdown.
+    pub fn publish_paused(
+        &mut self,
+        stream: Box<MonitorStream>,
+        monitor: PausedTrackMonitor,
+        source: AppliedAudioSource,
+        transport_epoch: u64,
+    ) -> Result<(), PausedRefusal> {
+        self.publish_binding(stream, source, monitor, |monitor| Mode::Paused {
+            monitor,
+            transport_epoch,
+        })
+        .map_err(|(stream, monitor)| PausedRefusal { stream, monitor })
+    }
+
+    fn publish_binding<T>(
+        &mut self,
+        stream: Box<MonitorStream>,
+        source: AppliedAudioSource,
+        owner: T,
+        mode: impl FnOnce(T) -> Mode,
+    ) -> Result<(), (Box<MonitorStream>, T)> {
         if self.occupied
-            || !matches!(track, OutputCaptureId::Track(_))
             || self.incoming.is_abandoned()
             || stream.source().1.sample_rate != self.rate
         {
-            return Err(Refusal { stream });
+            return Err((stream, owner));
         }
-        self.stop.store(false, Release);
+        let Ok(slot) = self.incoming.write_chunk_uninit(1) else {
+            return Err((stream, owner));
+        };
         let binding = Box::new(Binding {
             stream,
             source,
-            track,
+            mode: mode(owner),
         });
+        self.stop.store(false, Release);
         self.state.store(MonitorStatus::Pending as u8, Release);
-        match self.incoming.push(binding) {
-            Ok(()) => {
-                self.occupied = true;
-                Ok(())
-            }
-            Err(PushError::Full(binding)) => {
-                self.state.store(MonitorStatus::Idle as u8, Release);
-                Err(Refusal {
-                    stream: binding.stream,
-                })
-            }
-        }
+        slot.fill_from_iter(std::iter::once(binding));
+        self.occupied = true;
+        Ok(())
     }
     /// Independent of queue pressure; the callback stops using the owner.
     pub fn stop(&self) {
@@ -153,7 +192,7 @@ impl Control {
     pub fn status(&self) -> MonitorStatus {
         MonitorStatus::decode(self.state.load(Acquire))
     }
-    /// Reclaim the original stream on control after the callback has returned it.
+    /// Reclaim the original stream and dispose of any paused renderer on control.
     pub fn reclaim(&mut self) -> Option<Box<MonitorStream>> {
         let binding = self.retired.pop().ok()?;
         self.occupied = false;
@@ -220,7 +259,34 @@ impl Callback {
         }
     }
     pub(super) fn target(&self) -> Option<OutputCaptureId> {
-        self.active.as_ref().map(|binding| binding.track)
+        match self.active.as_ref()?.mode {
+            Mode::Playing(track) => Some(track),
+            Mode::Paused { .. } => None,
+        }
+    }
+    pub(super) fn reject_paused(&mut self, reason: MonitorStatus) {
+        if !self.stop.load(Acquire)
+            && self
+                .active
+                .as_ref()
+                .is_some_and(|binding| matches!(binding.mode, Mode::Paused { .. }))
+        {
+            self.reject(reason);
+        }
+    }
+    fn source_matches(&mut self, source: Option<AppliedAudioSource>) -> bool {
+        if self.stop.load(Acquire) {
+            return false;
+        }
+        if self
+            .active
+            .as_ref()
+            .is_some_and(|binding| Some(binding.source) != source)
+        {
+            self.reject(MonitorStatus::SourceChanged);
+            return false;
+        }
+        true
     }
     /// Return a borrowed track and a complete block, or keep ordinary playback.
     pub(super) fn read(
@@ -230,27 +296,82 @@ impl Callback {
         playing: bool,
         output: &mut [Frame],
     ) -> Option<OutputCaptureId> {
-        let binding = self.active.as_mut()?;
-        if self.stop.load(Acquire) {
-            return None;
-        }
-        if source != Some(binding.source) {
-            self.reject(MonitorStatus::SourceChanged);
+        let track = self.target()?;
+        if !self.source_matches(source) {
             return None;
         }
         if !supported || !playing {
             self.reject(MonitorStatus::Unsupported);
             return None;
         }
+        if !self.read_stream(output) {
+            return None;
+        }
+        self.state.store(MonitorStatus::Running as u8, Release);
+        Some(track)
+    }
+
+    /// On success only the independently owned monitor rendered this block.
+    /// A refusal leaves the ordinary runtime free to render its own output.
+    pub(super) fn render_paused(
+        &mut self,
+        source: Option<AppliedAudioSource>,
+        epoch: u64,
+        playback: Option<&Playback>,
+        output: &mut [Frame],
+    ) -> bool {
+        let Some(Mode::Paused {
+            transport_epoch, ..
+        }) = self.active.as_ref().map(|binding| &binding.mode)
+        else {
+            return false;
+        };
+        let bound_epoch = *transport_epoch;
+        if !self.source_matches(source) {
+            return false;
+        }
+        if bound_epoch != epoch {
+            self.reject(MonitorStatus::Stopped);
+            return false;
+        }
+        let Some(playback) = playback.filter(|p| output.len() <= 256 && !p.playing()) else {
+            self.reject(MonitorStatus::Unsupported);
+            return false;
+        };
+        if output.is_empty() {
+            return false;
+        }
+        let mut input = [[0.0; 2]; 256];
+        let input = &mut input[..output.len()];
+        if !self.read_stream(input) {
+            return false;
+        }
+        let Some(Mode::Paused { monitor, .. }) =
+            self.active.as_mut().map(|binding| &mut binding.mode)
+        else {
+            return false;
+        };
+        if playback
+            .render_with_paused_track_monitor(monitor, input, output)
+            .is_err()
+        {
+            self.reject(MonitorStatus::Unsupported);
+            return false;
+        }
+        self.state.store(MonitorStatus::Running as u8, Release);
+        true
+    }
+
+    fn read_stream(&mut self, output: &mut [Frame]) -> bool {
+        let Some(binding) = self.active.as_mut() else {
+            return false;
+        };
         match binding.stream.read_block(output) {
             Ok(MonitorBlock::Priming) => {
                 self.state.store(MonitorStatus::Priming as u8, Release);
-                None
+                false
             }
-            Ok(MonitorBlock::Ready) => {
-                self.state.store(MonitorStatus::Running as u8, Release);
-                Some(binding.track)
-            }
+            Ok(MonitorBlock::Ready) => true,
             Err(error) => {
                 let reason = match error {
                     MonitorStreamError::InvalidBlock => MonitorStatus::Unsupported,
@@ -262,7 +383,7 @@ impl Callback {
                     MonitorStreamError::Input(_) => MonitorStatus::InputEnded,
                 };
                 self.reject(reason);
-                None
+                false
             }
         }
     }

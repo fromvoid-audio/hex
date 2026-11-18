@@ -4377,10 +4377,11 @@ pub use session_inventory::{
 pub use session_playback::{
     ArrangementPrerollError, LaunchQuantization, MAX_ARRANGEMENT_PREROLL_FRAMES,
     MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES, MAX_OUTPUT_CAPTURE_FRAMES, MAX_OUTPUT_CAPTURES,
-    OutputCapture, OutputCaptureError, OutputCaptureId, OutputCapturePlan, PreparedPrerollPages,
-    PreparedStreamAction, ProjectOutputTap, ProjectSignal, ProjectSignalObserver,
-    SessionHandoffReport, SessionPendingRouteStatus, SessionPlayback, SessionPlaybackCommand,
-    SessionPlaybackError, SessionPlaybackOwner, SessionRouteStatus, SessionRouteTarget,
+    OutputCapture, OutputCaptureError, OutputCaptureId, OutputCapturePlan, PausedTrackMonitor,
+    PreparedPrerollPages, PreparedStreamAction, ProjectOutputTap, ProjectSignal,
+    ProjectSignalObserver, SessionHandoffReport, SessionPendingRouteStatus, SessionPlayback,
+    SessionPlaybackCommand, SessionPlaybackError, SessionPlaybackOwner, SessionRouteStatus,
+    SessionRouteTarget,
 };
 
 #[cfg(test)]

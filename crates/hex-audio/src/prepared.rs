@@ -5237,6 +5237,8 @@ impl Callback {
         // Take and live-input quanta still run so a racing take or gesture
         // receives its `OutputFailed` terminal instead of waiting on silence.
         if self.status.render_fault.load(Acquire) {
+            self.input_monitor
+                .reject_paused(input_monitor::MonitorStatus::OutputFault);
             self.sample_recording
                 .end(crate::sample_recording::End::OutputFailed);
             if !output.is_empty() {
@@ -5250,6 +5252,8 @@ impl Callback {
             });
         }
         if self.output_transport.is_some() {
+            self.input_monitor
+                .reject_paused(input_monitor::MonitorStatus::Unsupported);
             self.sample_recording
                 .end(crate::sample_recording::End::UnsupportedOutput);
         } else {
@@ -5291,6 +5295,8 @@ impl Callback {
         capture_offset: usize,
     ) -> Result<(), Invalid> {
         if self.native_effects_revoked() {
+            self.input_monitor
+                .reject_paused(input_monitor::MonitorStatus::OutputFault);
             output.fill([0.0; 2]);
             return if self.status.playing.load(Relaxed) {
                 Err(Invalid("native effect callback is revoked"))
@@ -5300,6 +5306,8 @@ impl Callback {
         }
         self.read_sampler_keyboard();
         if let Some(ActivePublication::Candidate(active)) = self.active.as_mut() {
+            self.input_monitor
+                .reject_paused(input_monitor::MonitorStatus::Unsupported);
             if self.status.closing.load(Acquire) {
                 output.fill([0.0; 2]);
                 return Ok(());
@@ -5362,17 +5370,40 @@ impl Callback {
             self.sample_recording
                 .end(crate::sample_recording::End::SourceChanged);
         }
+        let resident = self
+            .active
+            .as_ref()
+            .is_some_and(|active| !active.streaming_enabled());
         let mut recording = self.sample_recording.observation();
+        let paused_playback = self
+            .active
+            .as_ref()
+            .filter(|_| {
+                resident
+                    && !node_observed
+                    && !project_observed
+                    && recording.is_none()
+                    && !self.status.closing.load(Acquire)
+            })
+            .and_then(ActivePublication::legacy)
+            .map(|active| active.playback.as_ref());
+        if self.input_monitor.render_paused(
+            recording_source,
+            self.status.transport_epoch.load(Acquire),
+            paused_playback,
+            output,
+        ) {
+            self.publish_transport();
+            self.publish_active_routes(false);
+            return Ok(());
+        }
         let monitor_track = self.input_monitor.target();
         let monitor_supported = output.len() <= 256
+            && resident
             && !project_observed
             && recording
                 .as_ref()
                 .is_none_or(|(layout, _)| layout.timing_only)
-            && self
-                .active
-                .as_ref()
-                .is_some_and(|active| !active.streaming_enabled())
             && active.as_ref().is_some_and(|active| {
                 monitor_track.is_some_and(|target| match target {
                     hex_engine::OutputCaptureId::Track(track) => {
@@ -5921,6 +5952,8 @@ impl Callback {
                 .store(prior_epoch.unwrap_or_else(|epoch| epoch), Release);
         }
         if prior_epoch.is_err() {
+            self.input_monitor
+                .reject_paused(input_monitor::MonitorStatus::Stopped);
             self.status.gain_recording_fault.store(true, Release);
         }
     }
