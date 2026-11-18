@@ -2089,6 +2089,43 @@ impl Session {
         )
     }
 
+    pub(super) fn poll_resident_paused_notes(
+        &self,
+        snapshot: Option<&Snapshot>,
+        sink: &mut dyn WorkerAudioSink,
+        admission: sampler_export::Admission<'_>,
+        cancellation: &RequestCancellation,
+    ) -> bool {
+        let graph = snapshot.and_then(|snapshot| {
+            let source = snapshot.submission?;
+            (snapshot.file_sources.is_none() && self.audio_mode() == DocumentAudioMode::Resident)
+                .then_some(PausedNoteGraph {
+                    source,
+                    revision: &snapshot.prepared,
+                    resources: &snapshot.resources,
+                    cancellation,
+                })
+        });
+        let native_runtime = sink.native_sampler_hold().construction_bytes;
+        sink.poll_paused_note_monitor(graph, &mut |native| {
+            let snapshot = snapshot.ok_or("paused note graph changed")?;
+            if cancellation.is_cancelled() {
+                return Err("paused note graph changed".into());
+            }
+            self.resident_seek_inputs(admission, None, None)
+                .and_then(|inputs| {
+                    inputs.admit(
+                        &snapshot.resources,
+                        Some(&snapshot.prepared),
+                        native,
+                        native_runtime,
+                        0,
+                    )
+                })
+                .map_err(|error| error.to_string())
+        })
+    }
+
     fn resident_seek_inputs<'a>(
         &'a self,
         admission: sampler_export::Admission<'a>,

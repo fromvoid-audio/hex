@@ -27,7 +27,9 @@ mod edits;
 mod offline_bounce;
 mod parameter_touches;
 mod paused_monitor;
-pub(super) use paused_monitor::PausedMonitorPreparation;
+pub(super) use paused_monitor::{
+    PREPARATION_TIMEOUT, PausedEffects, PausedMonitorPreparation, paused_monitor_busy,
+};
 mod reopen;
 mod save;
 use reopen::Reopen;
