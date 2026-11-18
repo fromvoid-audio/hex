@@ -712,6 +712,17 @@ impl SessionPlayback {
         foreign: &mut dyn hex_lattice::ForeignProcessors,
         live_audio: Option<LiveTrackAudio<'_>>,
     ) -> Result<(), SessionPlaybackError> {
+        if self.defer_paused_source_monitor
+            && !self.playing
+            && (self.performance_frame != 0 || self.arrangement_frame != 0)
+            && live_audio.is_none()
+        {
+            // Includes the suffix of a callback that just completed a Pause
+            // fade. Never spend original graph history while the host waits
+            // for private effects or after their activation is refused.
+            output.fill([0.0; 2]);
+            return Ok(());
+        }
         if !output.is_empty()
             && let Some(mut monitor) = self.paused_source_monitor.take()
         {

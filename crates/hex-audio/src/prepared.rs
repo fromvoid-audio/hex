@@ -5382,6 +5382,51 @@ impl Callback {
             self.sample_recording
                 .end(crate::sample_recording::End::SourceChanged);
         }
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        if self.input_monitor.has_paused_source_binding() {
+            let playback = self
+                .active
+                .as_mut()
+                .and_then(ActivePublication::legacy_mut)
+                .filter(|graph| {
+                    capture_offset == 0
+                        && !self.status.closing.load(Acquire)
+                        && self.output_transport.is_none()
+                        && self.recovery_seek_pending.is_none()
+                        && self.stream_pending_play.is_none()
+                        && self.transport_fade.is_none()
+                        && graph
+                            .streams
+                            .as_ref()
+                            .is_none_or(|streams| streams.permits_paused_monitor())
+                })
+                .map(|graph| graph.playback.as_mut());
+            let stages = &mut self.spectrum_stages;
+            let mut observe = |identity, phase, offset, frames: &[Frame]| {
+                stages.observe_signal(targets, identity, phase, offset, frames)
+            };
+            let observer: Option<&mut hex_engine::NodeSignalObserver<'_>> =
+                node_observed.then_some(&mut observe);
+            if self.input_monitor.render_paused_source(
+                recording_source,
+                self.status.transport_epoch.load(Acquire),
+                playback,
+                output,
+                observer,
+                self.paused_monitor_host_frames.map(|frames| {
+                    native_effects::PausedNoteBanks::new(
+                        &mut self.native_sources,
+                        &mut self.paused_native_sources,
+                        frames,
+                    )
+                }),
+            ) {
+                self.publish_transport();
+                self.publish_active_routes(false);
+                return Ok(());
+            }
+        }
+        let active = self.active.as_ref().and_then(ActivePublication::current);
         let resident = self
             .active
             .as_ref()

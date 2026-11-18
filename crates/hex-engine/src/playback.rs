@@ -2766,6 +2766,23 @@ impl Playback {
         result
     }
 
+    /// Opt this resident graph into the output-owned paused source route.
+    /// Ordinary pause blocks (including the suffix of a transport fade) hold
+    /// the Arrangement until a private monitor can render the loaned notes.
+    /// Call before publishing the graph on control.
+    pub fn defer_hosted_paused_source_monitor_on_control(&mut self) -> bool {
+        if self
+            .prepared_revision
+            .as_deref()
+            .is_some_and(crate::PausedSourceMonitor::can_defer_on_control)
+            && let Some(runtime) = self.session_runtime.as_mut()
+        {
+            runtime.defer_paused_source_monitor = true;
+            return true;
+        }
+        false
+    }
+
     /// Continue the same monitor callback with zero input. The final block
     /// can contain audio even when the engine reports no remaining tail.
     pub fn drain_paused_track_monitor_with_foreign(
