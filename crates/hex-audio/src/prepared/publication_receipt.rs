@@ -68,6 +68,10 @@ struct Decision {
 }
 
 impl CancellablePublicationReceipt {
+    pub(crate) const fn payload_bytes() -> usize {
+        std::mem::size_of::<Decision>()
+    }
+
     pub(super) fn new(
         output_identity: u64,
         context: Option<AudioSourceContext>,
@@ -171,7 +175,7 @@ impl CancellablePublicationReceipt {
 
 /// The queued graph retains the writer. Control destruction closes its
 /// unfinished receipt even if no further callback can run.
-pub(super) struct PublicationReceiptOwner(pub(super) CancellablePublicationReceipt);
+pub(crate) struct PublicationReceiptOwner(pub(super) CancellablePublicationReceipt);
 
 impl PublicationReceiptOwner {
     pub(super) fn device_insert_deadline(&self) -> Option<Instant> {
@@ -195,7 +199,7 @@ impl PublicationReceiptOwner {
         )
     }
 
-    pub(super) fn begin_apply(&self) -> bool {
+    pub(crate) fn begin_apply(&self) -> bool {
         self.0.expire_if_due();
         self.phase()
             .compare_exchange(PENDING, APPLYING, AcqRel, Acquire)
@@ -209,22 +213,30 @@ impl PublicationReceiptOwner {
             .is_ok()
     }
 
-    pub(super) fn begin_confirmed_apply(&self) -> bool {
+    pub(crate) fn begin_confirmed_apply(&self) -> bool {
         self.0.expire_if_due();
         self.phase()
             .compare_exchange(FADING, APPLYING, AcqRel, Acquire)
             .is_ok()
     }
 
-    pub(super) fn installed(&self) {
+    pub(crate) fn installed(&self) {
         let _ = self
             .phase()
             .compare_exchange(APPLYING, INSTALLED, AcqRel, Acquire);
     }
 
     /// Returns whether cancellation won, including against retirement.
-    pub(super) fn returned(&self, rejection: Option<PlaybackHandoffRejection>) -> bool {
+    pub(crate) fn returned(&self, rejection: Option<PlaybackHandoffRejection>) -> bool {
         self.finish(rejection.map_or(OUTPUT_CLOSED, |reason| REFUSED + reason as u32))
+    }
+
+    /// A pure handoff refusal left both graphs untouched. Make a deferred
+    /// seamless insert cancellable again before the next callback attempt.
+    pub(crate) fn defer_apply(&self) {
+        let _ = self
+            .phase()
+            .compare_exchange(APPLYING, PENDING, AcqRel, Acquire);
     }
 
     fn phase(&self) -> &AtomicU32 {

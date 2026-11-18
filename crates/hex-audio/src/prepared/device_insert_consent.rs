@@ -48,6 +48,32 @@ impl DeviceInsertBasis {
             && status.transport_epoch.load(Acquire) == self.transport_epoch
             && !status.closing.load(Acquire)
     }
+
+    pub(super) fn predecessor_fence(&self) -> (AppliedAudioSource, FreshRuntimeFence) {
+        (self.predecessor, self.fence)
+    }
+
+    pub(super) fn verified_cut_is_current(
+        &self,
+        status: &Status,
+        revision: u64,
+        routes: u64,
+        retained_routes: u64,
+    ) -> bool {
+        Instant::now() < self.install_deadline
+            && !Callback::runtime_frontier_changed(
+                status,
+                revision,
+                routes,
+                FreshRuntimeFence {
+                    route_state_generation: retained_routes,
+                    ..self.fence
+                },
+            )
+            && status.consumed_command.load(Acquire) == self.fence.admitted_command_ticket
+            && status.transport_epoch.load(Acquire) == self.transport_epoch
+            && !status.closing.load(Acquire)
+    }
 }
 
 pub(super) struct DeviceInsertAdmission<'a> {
@@ -82,6 +108,10 @@ impl DeviceInsertConsent {
 
     pub fn expires_at(&self) -> Instant {
         self.expires_at
+    }
+
+    pub(super) fn matches_fence(&self, fence: FreshRuntimeFence) -> bool {
+        self.fence == fence
     }
 
     fn matches_at(&self, control: &PublicationControl, now: Instant) -> bool {

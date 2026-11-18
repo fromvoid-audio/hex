@@ -96,10 +96,11 @@ pub use hex_lattice::ProcessorInstanceIdentity as NativeProcessorIdentity;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub use native_sources::NativeParameterContinuationRequest;
 mod device_insert_consent;
+mod eligible_device_insert;
 mod publication_receipt;
 pub use device_insert_consent::DeviceInsertConsent;
 use device_insert_consent::{DeviceInsertAdmission, DeviceInsertBasis};
-use publication_receipt::PublicationReceiptOwner;
+pub(crate) use publication_receipt::PublicationReceiptOwner;
 pub use publication_receipt::{
     CancellablePublicationReceipt, FreshRuntimeCancellationResult, PublicationReceiptState,
 };
@@ -3275,6 +3276,7 @@ impl Callback {
     }
     pub(crate) fn close_candidate_custody_on_control(&mut self) {
         self.status.closing.store(true, Release);
+        self.release_device_insert_fade_pins();
         self.candidate_root.close();
     }
     pub(crate) fn has_domain_pages(&self) -> bool {
@@ -3487,6 +3489,7 @@ impl Callback {
         if let Some(publication) = self.held_retirement.take() {
             self.return_publication(publication);
             if self.held_retirement.is_some() {
+                self.abort_blocked_verified_insert();
                 self.abort_blocked_device_insert();
                 // Ownership backpressure must not delay the independent Stop
                 // path. Keep the graph retained while consuming bounded control.
@@ -3512,9 +3515,13 @@ impl Callback {
             // A candidate return may end this block early; closing is already
             // silent and must expose stopped status at every such frontier.
             self.status.playing.store(false, Relaxed);
+            self.release_device_insert_fade_pins();
             if !self.retired.is_full()
-                && let Some(value) = self.deferred_eligible.take()
+                && let Some(mut value) = self.deferred_eligible.take()
             {
+                if value.device_insert().is_some() {
+                    value.cancel_stream_readiness(&mut self.domain_pages);
+                }
                 self.return_publication(ReturnedPublication::Eligible(
                     value.reject_before_install(),
                 ));
@@ -5313,6 +5320,13 @@ impl Callback {
     /// Stop immediately after a render fault; does not dispose graph ownership.
     pub fn stop_after_fault(&mut self) {
         self.release_device_insert_fade_pins();
+        if let Some(receipt) = self
+            .deferred_eligible
+            .as_ref()
+            .and_then(|next| next.device_insert())
+        {
+            receipt.returned(None);
+        }
         if let Some(next) = self.deferred.as_ref()
             && next.approved_device_insert().is_some()
             && let Some(receipt) = next.fresh_runtime_cancellation.as_ref()

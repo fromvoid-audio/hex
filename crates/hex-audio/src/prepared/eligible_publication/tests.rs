@@ -3,6 +3,12 @@ use super::*;
 mod actions;
 #[cfg(feature = "allocation-probe")]
 mod current_sampler;
+#[cfg(all(
+    feature = "allocation-probe",
+    target_os = "macos",
+    target_arch = "aarch64"
+))]
+mod device_insert;
 #[cfg(feature = "allocation-probe")]
 mod domain_facts;
 #[cfg(feature = "allocation-probe")]
