@@ -57,7 +57,7 @@ fn open_browser(
     location: u8,
     presentation: Option<EffectPresentation>,
 ) -> BrowserFixture {
-    open_browser_metadata(cx, location, presentation, "Fx", 0, false, false, |_| {})
+    open_browser_metadata(cx, location, presentation, "Fx", 0, false, false, None)
 }
 
 pub(super) fn copy_original_module(source: &Path, target: &Path) {
@@ -85,7 +85,7 @@ fn open_browser_metadata(
     factory_flags: u32,
     seed_anchor: bool,
     seed_instrument: bool,
-    configure: impl FnOnce(&ResidentHarness),
+    configure: Option<&mut dyn FnMut(&ResidentHarness)>,
 ) -> BrowserFixture {
     let (reached, facts) = mpsc::sync_channel(1);
     let (resume, resumed) = mpsc::sync_channel(1);
@@ -94,7 +94,9 @@ fn open_browser_metadata(
         host(),
         presentation,
         crate::native_audio::plugins::FactsGate::new(reached, resumed),
-        Some(files.0.canonicalize().unwrap().join("plugin-catalog.json")),
+        configure
+            .is_some()
+            .then(|| files.0.canonicalize().unwrap().join("plugin-catalog.json")),
     );
     assert!(h.next().error.is_none());
     let (mut applied, _) = h.applied(0);
@@ -185,7 +187,9 @@ fn open_browser_metadata(
     let completed = Arc::clone(&h.plugin_completed);
     let records = Arc::clone(&h.plugin_records);
     let progress = Arc::clone(&h.plugin_progress);
-    configure(&h);
+    if let Some(configure) = configure {
+        configure(&h);
+    }
     let backend = h.into_plugin_ui_backend();
     let window =
         hex_ui::open_sampler_load_test_backend(cx, backend, files.0.clone(), files.0.clone())
@@ -298,7 +302,7 @@ fn rendered_vst3_effect_drop_inserts_before_the_pointed_device_on_each_owner(
             0,
             true,
             false,
-            |_| {},
+            None,
         );
         let owner = fixture.expected_owner;
         let devices = |state: &hex_session::service::ViewState| -> Vec<hex_project::DeviceId> {
@@ -448,7 +452,7 @@ fn rendered_native_effect_refuses_changed_sources_and_unsupported_inventory_befo
             flags,
             false,
             false,
-            |_| {},
+            None,
         );
         // Change the owned source only after the last-good catalog has loaded
         // and its actual row has painted. Admission must revalidate at use.
@@ -576,7 +580,10 @@ fn rendered_native_effect_close_and_document_replacement_cancel_exact_preparatio
             }
             Closing::Discard => {
                 click(&mut fixture.visual, "window-control-close");
-                assert!(cx.has_pending_prompt());
+                until("close safety receipt and discard confirmation", || {
+                    repaint(cx, &mut fixture.visual);
+                    cx.has_pending_prompt()
+                });
                 cx.simulate_prompt_answer("cancel");
                 cx.run_until_parked();
                 assert!(
@@ -585,7 +592,10 @@ fn rendered_native_effect_close_and_document_replacement_cancel_exact_preparatio
                 );
                 assert!(fixture.view(cx).pending);
                 click(&mut fixture.visual, "window-control-close");
-                assert!(cx.has_pending_prompt());
+                until("close safety receipt and discard confirmation", || {
+                    repaint(cx, &mut fixture.visual);
+                    cx.has_pending_prompt()
+                });
                 cx.simulate_prompt_answer("discard");
                 cx.run_until_parked();
             }
@@ -1223,7 +1233,7 @@ fn rendered_vst3_instrument_drop_targets_the_instrument_slot_and_shows_editor_to
             0,
             true,
             drop == 1,
-            |_| {},
+            None,
         );
         let track = fixture.track;
         let anchor = fixture.state.project.track(track).unwrap().devices()[0].id();
@@ -2043,12 +2053,12 @@ fn rendered_staged_effect_saves_the_confirmed_chain_before_and_after_install(
         0,
         false,
         false,
-        |h| {
+        Some(&mut |h| {
             gates = Some((
                 h.probe_next_native_publication(),
                 h.probe_next_submitted_device_insert(),
             ));
-        },
+        }),
     );
     let ((prepared, enqueue, _busy), (submitted, resume)) = gates.unwrap();
     let chosen = fixture.files.0.join("staged.hex");
