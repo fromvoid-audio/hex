@@ -222,7 +222,8 @@ enum SilentLatencyCase {
     ActiveChangedTrack,
     StaleMutedHistory,
     IncreasedMaximum,
-    ConnectedTrack,
+    SendsToReturn,
+    ChildOfGroup,
 }
 
 #[test]
@@ -233,12 +234,168 @@ fn silent_isolated_latency_addition_preserves_other_track_reverb() {
 }
 
 #[test]
+fn isolated_latency_insert_keeps_unchanged_group_and_return_tails() {
+    use crate::{OutputCapture, OutputCaptureId};
+    use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
+    use hex_project::{Created, TrackSelectionIds};
+
+    let mut f = fixture(&[&[], &[], &[]], 12_000);
+    for audio in f.media.values_mut() {
+        let mut samples = vec![[0.0; 2]; 12_000];
+        samples[..512].fill([0.25, -0.125]);
+        *audio = crate::Audio::new(48_000, samples).unwrap();
+    }
+    let changed = f.tracks[0];
+    let child = f.tracks[1];
+    f.editor
+        .execute(Command::Mute {
+            track: changed,
+            muted: true,
+        })
+        .unwrap();
+    let Created::Track(group) = f
+        .editor
+        .execute(Command::GroupTracks {
+            tracks: TrackSelectionIds::new(&f.tracks[1..]).unwrap(),
+            name: "group".into(),
+        })
+        .unwrap()
+    else {
+        panic!("group")
+    };
+    let Created::ReturnTrack(bus) = f
+        .editor
+        .execute(Command::AddReturnTrack {
+            name: "room".into(),
+        })
+        .unwrap()
+    else {
+        panic!("return")
+    };
+    f.editor
+        .execute(Command::SetReturnSend {
+            track: child,
+            return_track: bus,
+            gain: 0.5,
+        })
+        .unwrap();
+    // The delayed child and its unprocessed sibling converge at the group.
+    // The same delayed child's send also reaches Main through the Return.
+    f.editor
+        .execute(Command::InsertDevice {
+            track: child,
+            before: None,
+            state: limiter(),
+        })
+        .unwrap();
+    let reverb = &hex_devices::reverb::REVERB_DEFINITION;
+    let wet = reverb
+        .patch_parameter(
+            &reverb.default_state().unwrap(),
+            hex_devices::reverb::parameter::DRY_WET,
+            ParameterValue::Float(100.0),
+        )
+        .unwrap();
+    f.editor
+        .execute(Command::InsertDevice {
+            track: group,
+            before: None,
+            state: wet.clone(),
+        })
+        .unwrap();
+    f.editor
+        .execute(Command::InsertReturnDevice {
+            return_track: bus,
+            before: None,
+            state: wet,
+        })
+        .unwrap();
+    let old_revision = prepare(&f);
+    f.editor
+        .execute(Command::InsertDevice {
+            track: changed,
+            before: None,
+            state: limiter(),
+        })
+        .unwrap();
+    let new_revision = prepare(&f);
+    let latency = old_revision.arrangement().main_latency_frames();
+    assert!(latency > 0);
+    assert_eq!(new_revision.arrangement().main_latency_frames(), latency);
+    let changed_arrival = |revision: &PreparedRevision| {
+        revision
+            .arrangement()
+            .signal_graph
+            .as_ref()
+            .unwrap()
+            .resident_main_alignment(0)
+            .unwrap()
+            .1
+    };
+    assert_eq!(changed_arrival(&old_revision), 0);
+    assert_eq!(changed_arrival(&new_revision), latency);
+
+    for partition in [1, 257] {
+        let mut old = SessionPlayback::new(Arc::clone(&old_revision)).unwrap();
+        let mut uninterrupted = SessionPlayback::new(Arc::clone(&old_revision)).unwrap();
+        let cut = 6_000;
+        for runtime in [&mut old, &mut uninterrupted] {
+            runtime.apply(SessionPlaybackCommand::Play).unwrap();
+            runtime.render(&mut vec![[0.0; 2]; cut]).unwrap();
+        }
+        let mut candidate = SessionPlayback::new(Arc::clone(&new_revision)).unwrap();
+        let mut fresh = SessionPlayback::new(Arc::clone(&new_revision)).unwrap();
+        fresh.play_from(cut as u64).unwrap();
+        candidate.require_continuous_insert = true;
+        candidate.try_inherit_state_live_from(&mut old).unwrap();
+        let render = |runtime: &mut SessionPlayback| {
+            let ids = [
+                OutputCaptureId::Track(group),
+                OutputCaptureId::Return(bus),
+                OutputCaptureId::Track(changed),
+            ];
+            let plan = runtime.output_capture_plan(&ids, partition).unwrap();
+            let mut pcm = [[0.0; 2]; 512];
+            let mut group = pcm;
+            let mut bus = pcm;
+            let mut changed = pcm;
+            for (((pcm, group), bus), changed) in pcm
+                .chunks_mut(partition)
+                .zip(group.chunks_mut(partition))
+                .zip(bus.chunks_mut(partition))
+                .zip(changed.chunks_mut(partition))
+            {
+                runtime
+                    .render_with_capture(
+                        pcm,
+                        &mut OutputCapture::new(&plan, &mut [group, bus, changed]),
+                    )
+                    .unwrap();
+            }
+            (pcm, group, bus, changed)
+        };
+        let (main, group, bus, affected) = render(&mut candidate);
+        let (old_main, old_group, old_bus, _) = render(&mut uninterrupted);
+        let (_, _, _, fresh_affected) = render(&mut fresh);
+        let bits = |pcm: [[f32; 2]; 512]| pcm.map(|frame| frame.map(f32::to_bits));
+        assert_eq!(bits(main), bits(old_main));
+        assert_eq!(bits(group), bits(old_group));
+        assert_eq!(bits(bus), bits(old_bus));
+        assert_eq!(bits(affected), bits(fresh_affected));
+        for tail in [group, bus] {
+            assert!(tail.iter().flatten().any(|sample| sample.abs() > 1e-7));
+        }
+    }
+}
+
+#[test]
 fn unproven_latency_additions_keep_existing_restart_behavior() {
     for case in [
         SilentLatencyCase::ActiveChangedTrack,
         SilentLatencyCase::StaleMutedHistory,
         SilentLatencyCase::IncreasedMaximum,
-        SilentLatencyCase::ConnectedTrack,
+        SilentLatencyCase::SendsToReturn,
+        SilentLatencyCase::ChildOfGroup,
     ] {
         silent_latency_addition_case(case, 257);
     }
@@ -273,7 +430,15 @@ fn silent_latency_addition_case(case: SilentLatencyCase, partition: usize) {
             })
             .unwrap();
     }
-    if matches!(case, SilentLatencyCase::ConnectedTrack) {
+    if matches!(case, SilentLatencyCase::ChildOfGroup) {
+        f.editor
+            .execute(Command::GroupTracks {
+                tracks: hex_project::TrackSelectionIds::new(&f.tracks).unwrap(),
+                name: "group".into(),
+            })
+            .unwrap();
+    }
+    if matches!(case, SilentLatencyCase::SendsToReturn) {
         let Created::ReturnTrack(bus) = f
             .editor
             .execute(Command::AddReturnTrack {
@@ -357,6 +522,14 @@ fn silent_latency_addition_case(case: SilentLatencyCase, partition: usize) {
         .unwrap();
     let revision = prepare(&f);
     let mut candidate = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+    if !matches!(case, SilentLatencyCase::Eligible) {
+        candidate.require_continuous_insert = true;
+        assert!(matches!(
+            candidate.try_inherit_state_live_from(&mut old),
+            Err(SessionPlaybackError::DeviceInsertNeedsConfirmation)
+        ));
+        candidate.require_continuous_insert = false;
+    }
     candidate.try_inherit_state_live_from(&mut old).unwrap();
     let mut actual = [[0.0; 2]; 512];
     for chunk in actual.chunks_mut(partition) {

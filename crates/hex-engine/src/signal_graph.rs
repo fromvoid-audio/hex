@@ -1510,9 +1510,11 @@ impl SignalGraph {
                                 || !other.is_independent_track(track, false)
                         }
                         FreshHistory::ChangedTrack(track, device) => {
+                            // Only the changed owner needs a private route to
+                            // Main. The retained order, typed arrivals and
+                            // edge delay histories below also prove unchanged
+                            // Groups and Returns with shared inputs.
                             self.tracks.len() != other.tracks.len()
-                                || !self.independent_main_routes()
-                                || !other.independent_main_routes()
                                 || self
                                     .tracks
                                     .iter()

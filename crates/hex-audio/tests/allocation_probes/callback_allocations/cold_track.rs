@@ -557,10 +557,25 @@ fn earlier_unused_return_remove_and_undo_preserve_pcm_without_callback_allocatio
 #[test]
 fn silent_track_latency_addition_preserves_other_reverb_without_callback_allocations()
 -> Result<(), Box<dyn Error>> {
+    verify_silent_track_latency_addition(false)
+}
+
+#[test]
+fn isolated_latency_insert_preserves_group_and_return_without_callback_allocations()
+-> Result<(), Box<dyn Error>> {
+    verify_silent_track_latency_addition(true)
+}
+
+fn verify_silent_track_latency_addition(group_and_return: bool) -> Result<(), Box<dyn Error>> {
     let mut editor = Editor::new(Project::new(RATE)?, 16)?;
     let mut media = BTreeMap::new();
     let mut tracks = Vec::new();
-    for name in ["muted", "reverb"] {
+    let names = if group_and_return {
+        &["muted", "limiter", "sibling"][..]
+    } else {
+        &["muted", "reverb"][..]
+    };
+    for &name in names {
         let Created::Imported { track, asset, .. } = editor.execute(Command::ImportAudioTrack {
             name: name.into(),
             path: "memory/source.wav".into(),
@@ -589,11 +604,42 @@ fn silent_track_latency_addition_preserves_other_reverb_without_callback_allocat
         ParameterId::from_static(2),
         ParameterValue::Float(100.0),
     )?;
-    editor.execute(Command::InsertDevice {
-        track: tracks[1],
-        before: None,
-        state: reverb,
-    })?;
+    if group_and_return {
+        let Created::Track(group) = editor.execute(Command::GroupTracks {
+            tracks: hex_project::TrackSelectionIds::new(&tracks[1..])?,
+            name: "group".into(),
+        })?
+        else {
+            return Err("expected group".into());
+        };
+        let Created::ReturnTrack(bus) = editor.execute(Command::AddReturnTrack {
+            name: "room".into(),
+        })?
+        else {
+            return Err("expected return".into());
+        };
+        editor.execute(Command::SetReturnSend {
+            track: tracks[1],
+            return_track: bus,
+            gain: 0.5,
+        })?;
+        editor.execute(Command::InsertDevice {
+            track: group,
+            before: None,
+            state: reverb.clone(),
+        })?;
+        editor.execute(Command::InsertReturnDevice {
+            return_track: bus,
+            before: None,
+            state: reverb,
+        })?;
+    } else {
+        editor.execute(Command::InsertDevice {
+            track: tracks[1],
+            before: None,
+            state: reverb,
+        })?;
+    }
     let table = Arc::new(SineTable::new());
     let prepare = |project: &Project| {
         PreparedRevision::prepare(project, &media, Arc::clone(&table), None).map(Arc::new)
@@ -618,11 +664,9 @@ fn silent_track_latency_addition_preserves_other_reverb_without_callback_allocat
         before: None,
         state: hex_engine::default_native_device_state(DeviceTypeId::from_static("hex.limiter"))?,
     })?;
-    control
-        .publish(Playback::try_from_prepared_with_session(prepare(
-            editor.project(),
-        )?)?)
-        .map_err(|_| "updated publication")?;
+    let mut next = Playback::try_from_prepared_with_session(prepare(editor.project())?)?;
+    next.require_continuous_device_insert();
+    control.publish(next).map_err(|_| "updated publication")?;
     measured_block(&mut callback, &mut actual);
     oracle.render(&mut expected)?;
     assert!(control.status.rejected_revision().is_none());
