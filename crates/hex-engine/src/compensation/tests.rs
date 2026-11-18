@@ -403,7 +403,8 @@ fn authored_origins_use_running_content_after_compensation_and_epoch_reset() {
     runtime.begin_transaction().unwrap();
     for (index, expected) in expected.into_iter().enumerate() {
         runtime.push_transport_stamp(stamp(index)).unwrap();
-        let clock = OriginClock(runtime.node_input_stamp(1).unwrap());
+        let stamp = runtime.node_input_stamp(1).unwrap();
+        let clock = OriginClock(stamp.as_ref());
         assert_eq!(clock.authored_arrangement_frame_at_offset(0), expected);
         assert_eq!(clock.authored_arrangement_frame_at_offset(1), None);
     }
@@ -412,7 +413,8 @@ fn authored_origins_use_running_content_after_compensation_and_epoch_reset() {
     runtime.begin_transaction().unwrap();
     for index in 101..105 {
         runtime.push_transport_stamp(stamp(index)).unwrap();
-        let clock = OriginClock(runtime.node_input_stamp(1).unwrap());
+        let stamp = runtime.node_input_stamp(1).unwrap();
+        let clock = OriginClock(stamp.as_ref());
         assert_eq!(
             clock.authored_arrangement_frame_at_offset(0),
             (index == 104).then_some(1)

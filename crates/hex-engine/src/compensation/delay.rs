@@ -70,6 +70,10 @@ impl<T: Copy + Default> RingPair<T> {
     }
 
     pub(super) fn at_delay(&self, delay: usize) -> Option<T> {
+        self.at_delay_ref(delay).copied()
+    }
+
+    pub(super) fn at_delay_ref(&self, delay: usize) -> Option<&T> {
         if delay >= self.scratch_cursor.valid {
             return None;
         }
@@ -79,7 +83,7 @@ impl<T: Copy + Default> RingPair<T> {
         } else {
             capacity - (delay + 1 - self.scratch_cursor.next)
         };
-        self.scratch.get(index).copied()
+        self.scratch.get(index)
     }
 
     fn copy_dirty(source: &[T], destination: &mut [T], start: usize, len: usize) {
