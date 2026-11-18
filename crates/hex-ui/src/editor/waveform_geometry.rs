@@ -1213,39 +1213,48 @@ fn build_waveform_geometry(
     #[cfg(all(test, feature = "ui-test-support"))]
     let _paths_timer =
         super::navigation_metrics::Timer::start(super::navigation_metrics::Stage::WaveformPaths);
+    let band_height = height * 0.5;
+    let amplitude = (band_height * 0.44).max(0.5);
+    let centers = [0, 1].map(|channel| height * channel as f32 * 0.5 + band_height * 0.5);
+    let mut envelopes = centers.map(|_| {
+        (
+            Vec::with_capacity(point_count),
+            Vec::with_capacity(point_count),
+        )
+    });
+    let point_origin = if grid.binned { y } else { bounds.origin.y };
+
+    for (column, peaks) in stereo_peaks.iter().enumerate() {
+        // Both bands share the exact device-pixel columns and edge positions.
+        let (positions, count) = if grid.binned {
+            let positions = [column, column + 1].map(|edge| {
+                if let Some(pitch) = local_pitch {
+                    edge as f32 * pitch
+                } else {
+                    grid.left + (first + edge) as f32 * grid.width / grid.columns as f32
+                }
+            });
+            (positions, 2)
+        } else {
+            let x = grid.left + ((first + column) as f32 + 0.5) * grid.width / grid.columns as f32;
+            ([x, 0.0], 1)
+        };
+        for (channel, (maxima, minima)) in envelopes.iter_mut().enumerate() {
+            let (top, bottom) =
+                peak_vertical_bounds(peaks[channel], centers[channel], amplitude, amplitude_scale);
+            for &x in &positions[..count] {
+                maxima.push(point(px(x), point_origin + px(top)));
+                minima.push(point(px(x), point_origin + px(bottom)));
+            }
+        }
+    }
+
     let mut channels = Vec::with_capacity(2);
     #[cfg(test)]
     let mut outlines = std::array::from_fn(|_| WaveformChannelGeometry {
         outline: Vec::new(),
     });
-    for channel in 0..2 {
-        let band_top = height * channel as f32 * 0.5;
-        let band_height = height * 0.5;
-        let center = band_top + band_height * 0.5;
-        let amplitude = (band_height * 0.44).max(0.5);
-        let mut maxima = Vec::with_capacity(point_count);
-        let mut minima = Vec::with_capacity(point_count);
-        for (column, peaks) in stereo_peaks.iter().enumerate() {
-            let (top, bottom) =
-                peak_vertical_bounds(peaks[channel], center, amplitude, amplitude_scale);
-            if grid.binned {
-                for edge in [column, column + 1] {
-                    let x = if let Some(pitch) = local_pitch {
-                        edge as f32 * pitch
-                    } else {
-                        grid.left + (first + edge) as f32 * grid.width / grid.columns as f32
-                    };
-                    maxima.push(point(px(x), y + px(top)));
-                    minima.push(point(px(x), y + px(bottom)));
-                }
-            } else {
-                let x =
-                    grid.left + ((first + column) as f32 + 0.5) * grid.width / grid.columns as f32;
-                maxima.push(point(px(x), bounds.origin.y + px(top)));
-                minima.push(point(px(x), bounds.origin.y + px(bottom)));
-            }
-        }
-
+    for (_channel, (center, (maxima, minima))) in centers.into_iter().zip(envelopes).enumerate() {
         let has_area = maxima
             .iter()
             .zip(&minima)
@@ -1278,7 +1287,7 @@ fn build_waveform_geometry(
         )?);
         #[cfg(test)]
         {
-            outlines[channel] = WaveformChannelGeometry {
+            outlines[_channel] = WaveformChannelGeometry {
                 outline: maxima.into_iter().chain(minima).collect(),
             };
         }
