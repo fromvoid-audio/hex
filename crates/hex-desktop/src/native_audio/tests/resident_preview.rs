@@ -1539,6 +1539,18 @@ struct ResidentSink {
     pending_observation_generation: Arc<AtomicU64>,
     publication_probe: Arc<Mutex<Option<PublicationProbe>>>,
     confirmation_probe: Arc<Mutex<Option<ConfirmationProbe>>>,
+    device_insert_probe: Arc<DeviceInsertProbe>,
+}
+#[derive(Default)]
+struct DeviceInsertProbe {
+    // Keep older fixtures on their submission-only contract. The insertion
+    // fixture opts into and retains the exact production callback receipt.
+    enabled: AtomicBool,
+    submitted: Mutex<Option<DeviceInsertGate>>,
+}
+struct DeviceInsertGate {
+    ready: SyncSender<hex_session::service::ResidentGraphSubmission>,
+    resume: mpsc::Receiver<()>,
 }
 struct ConfirmationProbe {
     ready: SyncSender<()>,
@@ -1947,6 +1959,26 @@ impl WorkerAudioSink for ResidentSink {
         self.inner.native_graph_busy_observer = None;
         self.file_publication_waiting
             .store(false, std::sync::atomic::Ordering::Release);
+        if let Ok(ResidentPublicationAcceptance::Submitted {
+            output_identity,
+            audio_revision,
+        }) = result.as_ref()
+            && matches!(policy, ResidentPublicationPolicy::DeviceInsert { .. })
+        {
+            let probe = self.device_insert_probe.submitted.lock().unwrap().take();
+            if let Some(probe) = probe
+                && probe
+                    .ready
+                    .send(hex_session::service::ResidentGraphSubmission {
+                        output_identity: *output_identity,
+                        audio_revision: *audio_revision,
+                        context: metadata.context,
+                    })
+                    .is_ok()
+            {
+                let _ = probe.resume.recv_timeout(Duration::from_secs(2));
+            }
+        }
         result
     }
     fn streamed_exporter(&self) -> Option<hex_session::service::StreamedExporter> {
@@ -2012,6 +2044,15 @@ impl WorkerAudioSink for ResidentSink {
             _ => {}
         }
         Ok(Some(actual))
+    }
+    fn confirms_device_inserts(&self) -> bool {
+        self.device_insert_probe.enabled.load(Acquire) && self.inner.confirms_device_inserts()
+    }
+    fn device_insert_receipt(
+        &mut self,
+        submission: hex_session::service::ResidentGraphSubmission,
+    ) -> Option<Box<dyn hex_session::service::DeviceInsertAudioReceipt>> {
+        self.inner.device_insert_receipt(submission)
     }
     fn resident_publication_enabled(&self) -> bool {
         self.inner.resident_publication_enabled()
@@ -2198,6 +2239,7 @@ pub(super) struct ResidentHarness {
     pub(super) pending_observation_generation: Arc<AtomicU64>,
     publication_probe: Arc<Mutex<Option<PublicationProbe>>>,
     confirmation_probe: Arc<Mutex<Option<ConfirmationProbe>>>,
+    device_insert_probe: Arc<DeviceInsertProbe>,
     allow_unavailable: bool,
     pub(super) unavailable: Vec<String>,
     pub(super) publication_refusals: Vec<String>,
@@ -2450,6 +2492,7 @@ impl ResidentHarness {
         let pending_observation_generation = Arc::new(AtomicU64::new(0));
         let publication_probe = Arc::new(Mutex::new(None));
         let confirmation_probe = Arc::new(Mutex::new(None));
+        let device_insert_probe = Arc::new(DeviceInsertProbe::default());
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         let control_polls = Arc::new(AtomicU64::new(0));
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -2473,6 +2516,7 @@ impl ResidentHarness {
                 pending_observation_generation: Arc::clone(&pending_observation_generation),
                 publication_probe: Arc::clone(&publication_probe),
                 confirmation_probe: Arc::clone(&confirmation_probe),
+                device_insert_probe: Arc::clone(&device_insert_probe),
             }),
             AudioPolicy::new().unwrap().resident_native,
         )
@@ -2498,6 +2542,7 @@ impl ResidentHarness {
             pending_observation_generation,
             publication_probe,
             confirmation_probe,
+            device_insert_probe,
             allow_unavailable,
             unavailable: Vec::new(),
             publication_refusals: Vec::new(),
@@ -2819,6 +2864,35 @@ impl ResidentHarness {
             assert_eq!(result, Some(Ok(())));
         })
     }
+    pub(super) fn enable_confirmed_device_inserts(&self) {
+        self.device_insert_probe
+            .enabled
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub(super) fn probe_next_submitted_device_insert(
+        &self,
+    ) -> (
+        mpsc::Receiver<hex_session::service::ResidentGraphSubmission>,
+        SyncSender<()>,
+    ) {
+        self.enable_confirmed_device_inserts();
+        let (ready, submitted) = mpsc::sync_channel(1);
+        let (resume, resumed) = mpsc::sync_channel(1);
+        let previous =
+            self.device_insert_probe
+                .submitted
+                .lock()
+                .unwrap()
+                .replace(DeviceInsertGate {
+                    ready,
+                    resume: resumed,
+                });
+        assert!(previous.is_none());
+        (submitted, resume)
+    }
+
     pub(super) fn probe_next_parameter_confirmation(&self) -> (mpsc::Receiver<()>, SyncSender<()>) {
         let (ready, entered) = mpsc::sync_channel(1);
         let (resume, resumed) = mpsc::sync_channel(1);
@@ -4239,4 +4313,70 @@ fn sealed_native_take_recovery_uses_canonical_publication_and_one_undo() {
     let undone = h.run(Request::Undo);
     assert_eq!(undone.state.project, inserted.state.project);
     assert_eq!(std::fs::read(path).unwrap(), bytes);
+}
+
+#[test]
+fn staged_native_insert_is_refused_on_real_output_fault_without_a_late_commit() {
+    use hex_session::service::DeviceInsertOutcome;
+
+    let _native = native_fixture();
+    let mut h = ResidentHarness::new();
+    let initial = h.next();
+    assert!(initial.error.is_none());
+    h.applied(0);
+    let predecessor = h
+        .audio
+        .as_ref()
+        .unwrap()
+        .status()
+        .unwrap()
+        .recording_source()
+        .unwrap();
+    h.enable_confirmed_device_inserts();
+    h.service
+        .submit(Request::Edit(hex_project::Command::InsertMainDevice {
+            before: None,
+            state: hex_engine::default_native_device_state_for_class(
+                hex_engine::NativeDeviceClass::Effect,
+                hex_engine::DeviceTypeId::from_static("hex.utility"),
+            )
+            .unwrap(),
+        }))
+        .unwrap();
+
+    let pending = h.next();
+    assert!(pending.error.is_none(), "{:?}", pending.error);
+    assert!(!pending.request_complete);
+    assert_eq!(pending.state.project, initial.state.project);
+    h.callback
+        .lock()
+        .unwrap()
+        .as_mut()
+        .unwrap()
+        .report_device_error()
+        .unwrap();
+    // Do not run another callback. The actual resident worker must observe
+    // the native error and close that publication without waiting for expiry.
+    let terminal = h.next();
+    let receipt = terminal.device_insert_complete.unwrap();
+    assert_eq!(
+        receipt.submission.output_identity,
+        predecessor.output_identity
+    );
+    assert_eq!(receipt.outcome, DeviceInsertOutcome::OutputClosed);
+    assert!(terminal.error.unwrap().contains("restart audio"));
+    assert_eq!(terminal.state.project, initial.state.project);
+    assert!(!terminal.state.can_undo);
+    // A retired native callback still cannot make the lost candidate current.
+    h.render();
+    assert_ne!(
+        h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .applied_revision
+            .load(Acquire),
+        receipt.submission.audio_revision,
+    );
 }

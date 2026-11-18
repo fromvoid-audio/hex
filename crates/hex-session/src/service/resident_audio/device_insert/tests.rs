@@ -8,10 +8,13 @@ const PENDING: u8 = 0;
 const INSTALLED: u8 = 1;
 const CANCELLED: u8 = 2;
 const REFUSED: u8 = 3;
+const EXPIRED: u8 = 4;
 
+#[derive(Debug)]
 struct FixtureReceipt {
     submission: ResidentGraphSubmission,
     state: AtomicU8,
+    deadline: Instant,
 }
 
 impl DeviceInsertAudioReceipt for Arc<FixtureReceipt> {
@@ -20,10 +23,16 @@ impl DeviceInsertAudioReceipt for Arc<FixtureReceipt> {
     }
 
     fn state(&self) -> DeviceInsertAudioState {
+        if Instant::now() >= self.deadline {
+            let _ =
+                self.state
+                    .compare_exchange(PENDING, EXPIRED, Ordering::AcqRel, Ordering::Acquire);
+        }
         match self.state.load(Ordering::Acquire) {
             PENDING => DeviceInsertAudioState::Pending,
             INSTALLED => DeviceInsertAudioState::Installed,
             CANCELLED => DeviceInsertAudioState::Cancelled,
+            EXPIRED => DeviceInsertAudioState::Expired,
             REFUSED => DeviceInsertAudioState::Refused(
                 hex_engine::PlaybackHandoffRejection::DeviceInsertNeedsConfirmation,
             ),
@@ -31,10 +40,10 @@ impl DeviceInsertAudioReceipt for Arc<FixtureReceipt> {
         }
     }
 
-    fn cancel(&self) {
-        let _ =
-            self.state
-                .compare_exchange(PENDING, CANCELLED, Ordering::AcqRel, Ordering::Acquire);
+    fn cancel(&self) -> bool {
+        self.state
+            .compare_exchange(PENDING, CANCELLED, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
     }
 }
 
@@ -127,7 +136,7 @@ impl WorkerAudioSink for Arc<Mutex<Fixture>> {
             source_origin: metadata.source_origin,
             section_loop: None,
         };
-        if let ResidentPublicationPolicy::DeviceInsert(predecessor) = policy {
+        if let ResidentPublicationPolicy::DeviceInsert { predecessor, .. } = policy {
             assert_eq!(Some(predecessor), fixture.active);
             fixture.candidate = Some(Arc::new(FixtureReceipt {
                 submission: ResidentGraphSubmission {
@@ -136,6 +145,7 @@ impl WorkerAudioSink for Arc<Mutex<Fixture>> {
                     context: metadata.context,
                 },
                 state: AtomicU8::new(PENDING),
+                deadline: Instant::now() + Duration::from_millis(250),
             }));
         } else {
             fixture.active = Some(observation);
@@ -302,7 +312,7 @@ fn refusal_and_expiry_keep_the_predecessor_and_leave_no_undo() {
                 outcome: if refusal {
                     DeviceInsertOutcome::ConfirmationRequired
                 } else {
-                    DeviceInsertOutcome::Cancelled
+                    DeviceInsertOutcome::Expired
                 },
             }),
         );
@@ -318,7 +328,7 @@ fn refusal_and_expiry_keep_the_predecessor_and_leave_no_undo() {
                     Ordering::AcqRel,
                     Ordering::Acquire
                 ),
-                Err(CANCELLED),
+                Err(EXPIRED),
             );
         }
     }

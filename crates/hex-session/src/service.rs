@@ -597,6 +597,7 @@ pub enum DeviceInsertOutcome {
     Installed,
     ConfirmationRequired,
     Cancelled,
+    Expired,
     Refused(hex_engine::PlaybackHandoffRejection),
     OutputClosed,
     ProjectCommitFailed,
@@ -6186,6 +6187,11 @@ fn run_worker(
                                 error =
                                     Some("device insertion cancelled before installation".into());
                                 DeviceInsertOutcome::Cancelled
+                            }
+                            DeviceInsertAudioState::Expired => {
+                                error =
+                                    Some("device insertion timed out before installation".into());
+                                DeviceInsertOutcome::Expired
                             }
                             DeviceInsertAudioState::Pending | DeviceInsertAudioState::Applying => {
                                 pending.plugin = plugin;

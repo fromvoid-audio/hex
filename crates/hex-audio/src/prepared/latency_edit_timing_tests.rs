@@ -431,3 +431,41 @@ fn rejecting_an_expired_cut_keeps_the_original_audio_and_action() {
     assert_eq!(control.status.applied_revision.load(Acquire), installed);
     assert!(control.status.playing.load(Acquire));
 }
+
+#[test]
+fn device_insert_expires_at_callback_without_control_polling() {
+    let ([old, next], track) = insert_revisions(
+        hex_devices::utility::UTILITY_DEFINITION
+            .default_state()
+            .unwrap(),
+    );
+    let (control, mut callback, predecessor, receipt) = begin_insert(old, next, track, 2990);
+    // Withhold both owners. The next callback must enforce the install
+    // deadline independently of a worker which might be occupied by Save.
+    std::thread::sleep(std::time::Duration::from_millis(280));
+    let mut pcm = [[0.0; 2]; BLOCK];
+    let mut render = || {
+        callback.begin_block();
+        callback.render(&mut pcm).unwrap();
+    };
+    #[cfg(feature = "allocation-probe")]
+    {
+        let counts = allocation_counter::measure(&mut render);
+        assert_eq!(
+            (
+                counts.count_total,
+                counts.bytes_total,
+                counts.count_current,
+                counts.bytes_current
+            ),
+            (0, 0, 0, 0),
+        );
+    }
+    #[cfg(not(feature = "allocation-probe"))]
+    render();
+
+    assert_eq!(control.status.recording_source(), Some(predecessor));
+    assert_eq!(receipt.state(), PublicationReceiptState::Expired);
+    assert!(pcm[..10].iter().all(|frame| *frame == SIGNAL));
+    assert!(pcm[10..].iter().all(|frame| *frame == [0.0; 2]));
+}

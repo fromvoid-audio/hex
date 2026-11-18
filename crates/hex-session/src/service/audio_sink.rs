@@ -503,7 +503,10 @@ pub enum ResidentPublicationPolicy {
     InheritRuntimeAt(ResidentRuntimeLoop),
     /// Install a staged device candidate against the exact current graph.
     /// This policy requires a cancellable callback receipt and live output.
-    DeviceInsert(ResidentRuntimeLoop),
+    DeviceInsert {
+        predecessor: ResidentRuntimeLoop,
+        hosted: bool,
+    },
     /// The sink owns the shared arrangement gate through exact callback installation.
     /// A playing witness inherits the actual boundary runtime; a stopped witness
     /// installs its prepared musical cursor.
@@ -550,16 +553,18 @@ pub enum DeviceInsertAudioState {
     Applying,
     Installed,
     Cancelled,
+    Expired,
     Refused(hex_engine::PlaybackHandoffRejection),
     OutputClosed,
 }
 
 /// The worker retains this exact receipt after enqueue. Cancellation is
 /// nonblocking, and the terminal remains readable across output replacement.
-pub trait DeviceInsertAudioReceipt: Send {
+/// The receipt owns the admission deadline even while the worker is busy.
+pub trait DeviceInsertAudioReceipt: Send + std::fmt::Debug {
     fn submission(&self) -> ResidentGraphSubmission;
     fn state(&self) -> DeviceInsertAudioState;
-    fn cancel(&self);
+    fn cancel(&self) -> bool;
 }
 /// Bind a control preparation to the client's observed resident graph and
 /// stopped transport. The output callback checks these facts again at activation.

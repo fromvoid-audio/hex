@@ -227,6 +227,7 @@ impl PublicationControl {
             },
             request.successor.project_generation,
             Some(request.successor),
+            None,
             Some(observation),
             admit,
         )

@@ -618,6 +618,18 @@ impl Plugins {
             None => Ok(PluginEffectPreparationState::Preparing),
         }
     }
+    /// The ready hosted operation alone may bind the successor's receipt.
+    pub(super) fn device_insert_control(
+        &self,
+        context: AudioSourceContext,
+    ) -> Option<Arc<PluginEffectControl>> {
+        let pending = self.pending.as_ref()?;
+        (pending.context.project_generation == context.project_generation
+            && pending.context.editor_revision.checked_add(1) == Some(context.editor_revision)
+            && matches!(pending.result, Some(Ok(_))))
+        .then(|| Arc::clone(&pending.operation))
+    }
+
     pub fn finish(&mut self, operation: &Arc<PluginEffectControl>, accepted: bool) {
         if self
             .pending

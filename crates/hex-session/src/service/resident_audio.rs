@@ -925,7 +925,7 @@ impl Inputs<'_> {
         let accepted =
             self.publish_runtime(snapshot, playback, sink, metadata, policy, additional_bytes)?;
         snapshot.record_submission(metadata.context, accepted);
-        if !matches!(policy, ResidentPublicationPolicy::DeviceInsert(_)) {
+        if !matches!(policy, ResidentPublicationPolicy::DeviceInsert { .. }) {
             selected.cancel_retired_from(&previous);
         }
         snapshot.inputs = selected;
@@ -1092,7 +1092,10 @@ fn inherited_runtime(
             }))
         }
         ResidentPublicationPolicy::InheritRuntimeAt(actual)
-        | ResidentPublicationPolicy::DeviceInsert(actual) => Ok((policy, actual.section_loop)),
+        | ResidentPublicationPolicy::DeviceInsert {
+            predecessor: actual,
+            ..
+        } => Ok((policy, actual.section_loop)),
         _ => Ok((policy, None)),
     }
 }

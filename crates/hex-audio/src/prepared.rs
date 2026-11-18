@@ -2026,6 +2026,7 @@ impl PublicationControl {
             policy,
             control_context_generation,
             None,
+            None,
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             None,
             admit,
@@ -2047,17 +2048,51 @@ impl PublicationControl {
             policy,
             source_context.project_generation,
             Some(source_context),
+            None,
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             None,
             admit,
         )
     }
+    /// Bind a device insert's exact receipt after preparation and before the
+    /// graph becomes visible to the callback. The binding runs on control.
+    pub fn publish_device_insert_with_receipt_on_control<E>(
+        &mut self,
+        playback: Playback,
+        policy: PublicationPolicy,
+        source_context: hex_engine::AudioSourceContext,
+        mut bind_receipt: impl FnMut(&CancellablePublicationReceipt),
+        admit: impl FnOnce(
+            hex_engine::native_device_resources::DeviceResourceAdmission<'_>,
+        ) -> Result<(), E>,
+    ) -> Result<u64, AdmittedPublishError<E>> {
+        if !matches!(policy, PublicationPolicy::DeviceInsert { .. }) {
+            return Err(AdmittedPublishError::Publication(PublishError {
+                kind: PublishErrorKind::Other,
+                reason: "receipt binding requires a device insert",
+                playback,
+            }));
+        }
+        self.publish_admitted_with_source(
+            playback,
+            policy,
+            source_context.project_generation,
+            Some(source_context),
+            Some(&mut bind_receipt),
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            None,
+            admit,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)] // One accounted publication with optional native and receipt inputs.
     fn publish_admitted_with_source<E>(
         &mut self,
         playback: Playback,
         policy: PublicationPolicy,
         control_context_generation: u64,
         source_context: Option<hex_engine::AudioSourceContext>,
+        bind_receipt: Option<&mut dyn FnMut(&CancellablePublicationReceipt)>,
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))] native_continuation: Option<
             hex_plugin_host::transport::ParameterInputSource,
         >,
@@ -2087,6 +2122,7 @@ impl PublicationControl {
                     true,
                     false,
                     source_context,
+                    bind_receipt,
                     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
                     native_continuation,
                 )
@@ -2216,6 +2252,7 @@ impl PublicationControl {
             explicit_control_context,
             forwarded_pcm,
             source_context,
+            None,
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             None,
         )
@@ -2230,6 +2267,7 @@ impl PublicationControl {
         explicit_control_context: bool,
         forwarded_pcm: bool,
         source_context: Option<hex_engine::AudioSourceContext>,
+        bind_receipt: Option<&mut dyn FnMut(&CancellablePublicationReceipt)>,
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))] native_continuation: Option<
             hex_plugin_host::transport::ParameterInputSource,
         >,
@@ -2350,13 +2388,6 @@ impl PublicationControl {
             });
         }
         let revision = self.revision + 1;
-        let cancellation = policy.fresh_fence().is_some().then(|| {
-            CancellablePublicationReceipt::new(
-                self.candidate_root.root_id(),
-                source_context,
-                revision,
-            )
-        });
         playback.set_device_metering(true);
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         let native_references = match self
@@ -2420,6 +2451,16 @@ impl PublicationControl {
         } else {
             None
         };
+        let cancellation = policy.fresh_fence().is_some().then(|| {
+            let deadline = matches!(policy, PublicationPolicy::DeviceInsert { .. })
+                .then(|| Instant::now() + std::time::Duration::from_millis(250));
+            CancellablePublicationReceipt::new(
+                self.candidate_root.root_id(),
+                source_context,
+                revision,
+                deadline,
+            )
+        });
         let publication = Publication {
             pcm_frames,
             forwarded_pcm,
@@ -2437,6 +2478,9 @@ impl PublicationControl {
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             native_references,
         };
+        if let (Some(bind), Some(receipt)) = (bind_receipt, cancellation.as_ref()) {
+            bind(receipt);
+        }
         if let Err(mut publication) = enqueue_legacy(&mut self.publications, publication) {
             publication.release_streams_on_control(&self.candidate_root);
             self.status.publication_pending.store(false, Release);
@@ -3756,7 +3800,7 @@ impl Callback {
             if next
                 .fresh_runtime_cancellation
                 .as_ref()
-                .is_some_and(PublicationReceiptOwner::cancel_requested)
+                .is_some_and(PublicationReceiptOwner::fenced_before_admission)
             {
                 if let Some(streams) = next.streams.as_mut() {
                     streams.cancel_install(&mut self.domain_pages);

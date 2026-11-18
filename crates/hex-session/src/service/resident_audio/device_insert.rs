@@ -1,14 +1,11 @@
 //! Keep a validated device edit private until the callback installs its exact graph.
 use super::*;
 
-const INSTALL_TIMEOUT: Duration = Duration::from_millis(250);
-
 pub(in crate::service) struct Pending {
     edit: hex_project::StagedProjectEdit,
     snapshot: Snapshot,
     receipt: Receipt,
     pub(in crate::service) document_intent: u64,
-    deadline: Instant,
     pub(in crate::service) plugin: Option<plugin_effect::Pending>,
 }
 
@@ -26,13 +23,7 @@ impl Pending {
     }
 
     pub(in crate::service) fn terminal(&self, cancel: bool) -> Option<DeviceInsertAudioState> {
-        if cancel
-            || Instant::now() >= self.deadline
-            || self
-                .plugin
-                .as_ref()
-                .is_some_and(|plugin| plugin.insertion.control.is_cancelled())
-        {
+        if cancel {
             // If the callback already claimed admission, its terminal owns the edit.
             self.receipt.0.cancel();
         }
@@ -134,7 +125,10 @@ impl Session {
                 edit.project(),
                 sink,
                 metadata,
-                ResidentPublicationPolicy::DeviceInsert(installed),
+                ResidentPublicationPolicy::DeviceInsert {
+                    predecessor: installed,
+                    hosted: plugin.is_some(),
+                },
             )?;
             let receipt = snapshot
                 .submission
@@ -148,7 +142,6 @@ impl Session {
                 snapshot,
                 receipt: Receipt(receipt),
                 document_intent,
-                deadline: Instant::now() + INSTALL_TIMEOUT,
                 plugin: None,
             })
         })();
