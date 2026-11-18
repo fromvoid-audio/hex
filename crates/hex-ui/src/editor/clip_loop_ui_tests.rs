@@ -237,6 +237,9 @@ fn clip_loop_outer_real_pointer_retains_released_paint_and_one_worker_history_ed
             "trim-live-preview"
         };
         let held = f.visual.debug_bounds(overlay).expect("held painted loop");
+        let header = Box::leak(format!("clip-name-{}", f.clip.value()).into_boxed_str());
+        let gradients = crate::editor::clip_header_loop::gradient_quads(&mut f.visual, header);
+        assert!(!gradients.is_empty());
         let marker = f
             .visual
             .debug_bounds("clip-repeat-marker-0")
@@ -263,6 +266,11 @@ fn clip_loop_outer_real_pointer_retains_released_paint_and_one_worker_history_ed
             f.visual.debug_bounds("clip-repeat-marker-0"),
             Some(marker),
             "marker stays at prospective boundary before ACK"
+        );
+        assert_eq!(
+            crate::editor::clip_header_loop::gradient_quads(&mut f.visual, header),
+            gradients,
+            "released header keeps the prospective gradient until acknowledgement"
         );
         f.editor.read_with(&f.visual, |v, _| {
             assert!(v.pending_trim.is_some());
@@ -307,6 +315,11 @@ fn clip_loop_outer_real_pointer_retains_released_paint_and_one_worker_history_ed
             assert_eq!(directed, reversed, "loop resizing retains direction");
             project.snapshot()
         });
+        assert_eq!(
+            crate::editor::clip_header_loop::gradient_quads(&mut f.visual, header),
+            gradients,
+            "the committed header paints the acknowledged cycle positions"
+        );
         if reversed {
             assert!(
                 f.visual.debug_bounds(selector(&f, "cycle")).is_none(),
@@ -324,6 +337,66 @@ fn clip_loop_outer_real_pointer_retains_released_paint_and_one_worker_history_ed
             assert_eq!(v.state.as_ref().unwrap().project.snapshot(), after)
         });
     }
+}
+
+#[gpui::test]
+fn audio_repeat_gap_drag_retains_marker_until_the_worker_ack(cx: &mut TestAppContext) {
+    let mut f = fixture(cx, false);
+    let outer = drag(&mut f, "outer", 100.0, Modifiers::default());
+    f.visual
+        .simulate_mouse_up(outer, MouseButton::Left, Modifiers::default());
+    pump(&f.editor, &mut f.visual);
+    let before = f.editor.read_with(&f.visual, |v, _| {
+        v.state.as_ref().unwrap().project.snapshot()
+    });
+    let target = drag(&mut f, "cycle", 35.0, Modifiers::default());
+    let marker = f
+        .visual
+        .debug_bounds("clip-repeat-marker-0")
+        .expect("held repeat marker");
+    f.editor.read_with(&f.visual, |v, _| {
+        let held = v.active_trim_drag.as_ref().unwrap().preview.borrow();
+        assert!(
+            held.as_ref()
+                .unwrap()
+                .clip
+                .audio_edit()
+                .unwrap()
+                .repeat_period
+                .is_some()
+        );
+    });
+    f.visual
+        .simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+    f.visual.run_until_parked();
+    assert_eq!(f.visual.debug_bounds("clip-repeat-marker-0"), Some(marker));
+    f.editor.read_with(&f.visual, |v, _| {
+        assert!(v.pending_trim.is_some());
+        assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
+    });
+    pump(&f.editor, &mut f.visual);
+    f.editor.read_with(&f.visual, |v, _| {
+        assert!(v.error.is_none(), "{:?}", v.error);
+        assert!(v.pending_trim.is_none());
+        assert!(
+            v.state
+                .as_ref()
+                .unwrap()
+                .project
+                .clip(f.clip)
+                .unwrap()
+                .audio_edit()
+                .unwrap()
+                .repeat_period
+                .is_some()
+        );
+    });
+    assert_eq!(f.visual.debug_bounds("clip-repeat-marker-0"), Some(marker));
+    f.visual.simulate_keystrokes("cmd-z");
+    pump(&f.editor, &mut f.visual);
+    f.editor.read_with(&f.visual, |v, _| {
+        assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before)
+    });
 }
 
 #[gpui::test]
@@ -608,12 +681,21 @@ fn clip_loop_existing_repeat_shift_warp_keeps_processed_waveform_and_real_histor
             .simulate_mouse_move(target, MouseButton::Left, shift);
         f.visual.run_until_parked();
         let held = f.visual.debug_bounds("trim-live-preview").unwrap();
+        let header = Box::leak(format!("clip-name-{}", f.clip.value()).into_boxed_str());
+        let gradient = crate::editor::clip_header_loop::gradient_quads(&mut f.visual, header);
+        assert!(!gradient.is_empty());
+
         f.editor.read_with(&f.visual,|v,_|assert!(v.waveform_geometry_cache.borrow().painted_waveforms().iter().any(|p|
             p.bounds.right()>=held.right()-px(2.0) && p.ordinates.iter().any(|(lo,hi)| hi-lo>1.0)
         ),"ordinary Shift-Warp retains accepted processed root peaks on an existing repeat; warped={warped}"));
         f.visual.simulate_mouse_up(target, MouseButton::Left, shift);
         f.visual.run_until_parked();
         assert_eq!(f.visual.debug_bounds("trim-live-preview"), Some(held));
+        assert_eq!(
+            crate::editor::clip_header_loop::gradient_quads(&mut f.visual, header),
+            gradient
+        );
+
         pump(&f.editor, &mut f.visual);
         f.editor.read_with(&f.visual, |v, _| {
             assert!(v.error.is_none(), "{:?}", v.error)
@@ -934,6 +1016,112 @@ fn warped_looping_clip_right_edge_extends_by_repeats_instead_of_cancelling(
             let canonical = state.project.clip(clip).unwrap();
             assert_eq!(canonical.start() + canonical.duration(), project_frame);
             assert!(loop_handles::audio_repeats(canonical));
+        });
+    }
+}
+
+#[gpui::test]
+fn option_repeat_edge_has_priority_over_a_covering_time_selection(cx: &mut TestAppContext) {
+    for (midi, boundary) in [(false, false), (false, true), (true, false), (true, true)] {
+        let mut f = fixture(cx, midi);
+        f.editor.update(&mut f.visual, |view, cx| {
+            let state = view.state.as_ref().unwrap();
+            let track = state
+                .project
+                .tracks()
+                .iter()
+                .find(|track| {
+                    if midi {
+                        track.midi_clips().iter().any(|clip| clip.id() == f.clip)
+                    } else {
+                        track.clips().iter().any(|clip| clip.id() == f.clip)
+                    }
+                })
+                .unwrap()
+                .id();
+            let clip_end = if midi {
+                state.midi_preview.get(f.clip).unwrap().frame_end
+            } else {
+                let clip = state.project.clip(f.clip).unwrap();
+                clip.start() + clip.duration()
+            };
+            view.time_selection = Some(super::super::time_selection::TimeSelection {
+                anchor_track: Some(track),
+                end_track: Some(track),
+                anchor_frame: 0,
+                end_frame: if boundary {
+                    clip_end
+                } else {
+                    state.timeline_frames
+                },
+            });
+            cx.notify();
+        });
+        f.visual.run_until_parked();
+        let down = f.visual.debug_bounds(right_edge(&f)).unwrap().center();
+        let selection_handle = f
+            .visual
+            .debug_bounds(Box::leak(
+                format!(
+                    "time-selection-handle-{}",
+                    f.editor.read_with(&f.visual, |view, _| view
+                        .time_selection
+                        .unwrap()
+                        .anchor_track
+                        .unwrap()
+                        .value())
+                )
+                .into_boxed_str(),
+            ))
+            .unwrap();
+        let away = point(
+            selection_handle.left() + px(5.0),
+            selection_handle.center().y,
+        );
+        f.visual
+            .simulate_mouse_move(away, None, Modifiers::default());
+        let option = Modifiers {
+            alt: true,
+            ..Default::default()
+        };
+        f.visual.simulate_modifiers_change(option);
+        f.visual.run_until_parked();
+        assert_eq!(
+            f.visual.rendered_cursor_style(),
+            Some(gpui::CursorStyle::OpenHand),
+            "range remains movable away from the clip edge"
+        );
+        f.visual.simulate_mouse_move(down, None, option);
+        f.visual.run_until_parked();
+        assert_eq!(
+            f.visual.rendered_cursor_style(),
+            Some(gpui::CursorStyle::Loop),
+            "midi={midi}"
+        );
+        let target = drag(&mut f, "outer", 70.0, Modifiers::default());
+        f.editor.read_with(&f.visual, |view, _| {
+            assert!(
+                view.time_selection_gesture.is_none() && view.time_range_move_gesture.is_none()
+            );
+            assert!(if midi {
+                view.active_midi_trim_drag.is_some()
+            } else {
+                view.active_trim_drag.is_some()
+            });
+        });
+        f.visual
+            .simulate_mouse_up(target, MouseButton::Left, option);
+        f.visual.run_until_parked();
+        f.editor
+            .read_with(&f.visual, |view, _| assert!(view.pending_trim.is_some()));
+        pump(&f.editor, &mut f.visual);
+        f.editor.read_with(&f.visual, |view, _| {
+            let project = &view.state.as_ref().unwrap().project;
+            assert!(if midi {
+                project.midi_clip(f.clip).unwrap().looping()
+            } else {
+                loop_handles::audio_repeats(project.clip(f.clip).unwrap())
+            });
         });
     }
 }

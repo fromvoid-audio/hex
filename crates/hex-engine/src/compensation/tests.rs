@@ -20,6 +20,34 @@ fn pair(delay: u32) -> DelayPair {
     DelayPair::new(delay, CompensationLimits::default()).unwrap()
 }
 
+#[test]
+fn delay_quiescence_follows_committed_pcm_across_transfer_and_rollback() {
+    let mut source = pair(2);
+    let mut target = pair(2);
+    let impulse = [0.5, -0.25];
+    let silence = [0.0; 2];
+    source.begin_transaction().unwrap();
+    source.process_in_place(&mut [impulse]).unwrap();
+    assert!(source.history_is_silent());
+    source.commit_transaction().unwrap();
+    assert!(!source.history_is_silent());
+    assert!(target.can_copy_history_from(&source));
+    target.copy_history_from(&source);
+
+    target.begin_transaction().unwrap();
+    target.process_in_place(&mut [silence; 2]).unwrap();
+    target.rollback_transaction().unwrap();
+    assert!(!target.history_is_silent());
+    target.begin_transaction().unwrap();
+    let mut tail = [silence; 2];
+    target.process_in_place(&mut tail).unwrap();
+    target.commit_transaction().unwrap();
+    assert_eq!(tail, [silence, impulse]);
+    assert!(target.history_is_silent());
+    source.reset_epoch();
+    assert!(source.history_is_silent());
+}
+
 fn sample(index: usize) -> Frame {
     [index as f32 + 1.0, -(index as f32) - 0.25]
 }
@@ -259,11 +287,13 @@ fn stamp(index: usize) -> TransportStamp {
     TransportStamp {
         tempo_micro_bpm: Some(123_000_000),
         performance_frame: index as u64,
-        transport_is_running: index % 3 != 0,
+        transport_is_running: !index.is_multiple_of(3),
         arrangement_frame: (index % 4) as u64,
         loop_pass: (index / 4) as u64,
         performance_beat_raw: (index as u64) << 30,
         arrangement_beat_raw: Some(((index % 4) as u64) << 30),
+        meter: None,
+        cycle_beats_raw: None,
     }
 }
 
@@ -318,13 +348,21 @@ fn stage_origin_preview_matches_actual_pushes_and_rollback() {
         runtime.push_transport_stamp(stamp(index)).unwrap();
     }
     runtime.commit_transaction().unwrap();
+    let incoming = std::array::from_fn::<_, 9, _>(|index| Some(stamp(7 + index)));
     for delay in [0, 3, 5] {
         let predicted: Vec<_> = (0..9)
             .map(|offset| preview(&runtime, delay, offset, 7))
             .collect();
+        let window = OriginWindow {
+            history: &runtime,
+            incoming: &incoming,
+            delay,
+        };
+        let projected = std::array::from_fn::<_, 9, _>(|index| window.stamp(index));
         runtime.begin_transaction().unwrap();
         for (offset, expected) in predicted.into_iter().enumerate() {
             runtime.push_transport_stamp(stamp(7 + offset)).unwrap();
+            assert_eq!(runtime.stamp_at_delay(delay), projected[offset]);
             assert_eq!(
                 runtime
                     .stamp_at_delay(delay)
@@ -341,6 +379,47 @@ fn stage_origin_preview_matches_actual_pushes_and_rollback() {
         preview(&runtime, 3, 3, 100),
         Some(stamp(100).arrangement_frame)
     );
+}
+
+#[test]
+fn authored_origins_use_running_content_after_compensation_and_epoch_reset() {
+    use crate::signal_graph::OriginClock;
+    use hex_lattice::NativeInstrumentClock;
+
+    let graph = plan(&[node(1, 3), node(2, 0)], &[edge(1, 1, 2)]);
+    let mut runtime = CompensationRuntime::new(graph, CompensationLimits::default()).unwrap();
+    let incoming = std::array::from_fn::<_, 8, _>(|index| Some(stamp(index)));
+    let window = OriginWindow {
+        history: &runtime,
+        incoming: &incoming,
+        delay: 3,
+    };
+    let expected = [None, None, None, None, Some(1), Some(2), None, Some(0)];
+    assert_eq!(
+        std::array::from_fn(|offset| window.authored_arrangement_frame_at_offset(offset)),
+        expected
+    );
+
+    runtime.begin_transaction().unwrap();
+    for (index, expected) in expected.into_iter().enumerate() {
+        runtime.push_transport_stamp(stamp(index)).unwrap();
+        let stamp = runtime.node_input_stamp(1).unwrap();
+        let clock = OriginClock(stamp.as_ref());
+        assert_eq!(clock.authored_arrangement_frame_at_offset(0), expected);
+        assert_eq!(clock.authored_arrangement_frame_at_offset(1), None);
+    }
+    runtime.commit_transaction().unwrap();
+    runtime.reset_epoch();
+    runtime.begin_transaction().unwrap();
+    for index in 101..105 {
+        runtime.push_transport_stamp(stamp(index)).unwrap();
+        let stamp = runtime.node_input_stamp(1).unwrap();
+        let clock = OriginClock(stamp.as_ref());
+        assert_eq!(
+            clock.authored_arrangement_frame_at_offset(0),
+            (index == 104).then_some(1)
+        );
+    }
 }
 
 #[test]
@@ -494,6 +573,8 @@ fn bounded_history_copy_keeps_wrapped_full_origins_and_transaction_rollback() {
                 loop_pass: frame / 3,
                 performance_beat_raw: (frame << 30) + 27,
                 arrangement_beat_raw: (frame % 2 == 0).then_some(frame << 28),
+                meter: Some(hex_project::Meter::COMMON_TIME),
+                cycle_beats_raw: Some((0, 4 << 32)),
             }));
         }
         source.commit();
@@ -508,6 +589,8 @@ fn bounded_history_copy_keeps_wrapped_full_origins_and_transaction_rollback() {
                 loop_pass: 0,
                 performance_beat_raw: 0,
                 arrangement_beat_raw: None,
+                meter: None,
+                cycle_beats_raw: None,
             }));
         }
         target.commit();

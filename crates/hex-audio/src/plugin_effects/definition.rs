@@ -10,11 +10,14 @@ use hex_lattice_contract::{
 /// Borrow actual constructor-paired owners, or Root's original worker while
 /// its endpoint is loaned, during pure graph preparation. Copied IDs or equal
 /// state cannot construct these instances. Root/publication retains the same
-/// resources through the endpoint's actual return.
+/// resources through the endpoint's actual return. Private offline preparation
+/// may borrow an actual stopped lease and reserved epoch; it must complete that
+/// epoch before rendering. Neither view grants live Root source admission.
 pub struct NativeEffectDefinition<'a> {
     // Borrow only immutable configuration across pure compiler threads. The
     // lifetime retains each original owner; joining workers are not Sync.
     effects: Vec<&'a Configuration>,
+    canonical: &'a [CapturedCanonicalBases],
     unavailable: Vec<(ProcessorInstanceIdentity, &'a NativeDeviceState)>,
 }
 
@@ -73,8 +76,53 @@ impl<'a> NativeEffectDefinition<'a> {
         }
         Ok(Self {
             effects,
+            canonical: self.canonical,
             unavailable,
         })
+    }
+    /// Borrow actual zero-PCM private offline leases and their reserved epochs.
+    /// Their original owners must complete those epochs before any rendering;
+    /// this definition cannot admit sources into a live Root.
+    pub(super) fn from_offline_preparations(
+        effects: &'a [super::OfflineEffectPreparation],
+    ) -> Result<Self, DeviceContractError> {
+        let mut selected = Vec::new();
+        selected
+            .try_reserve_exact(effects.len().min(hex_lattice::MAX_STATEFUL_PROCESSORS))
+            .map_err(|_| DeviceContractError::RuntimeBudgetExceeded)?;
+        for effect in effects {
+            let configuration = effect.configuration()?;
+            Self::push_configuration(&mut selected, configuration)?;
+        }
+        Ok(Self {
+            effects: selected,
+            canonical: &[],
+            unavailable: Vec::new(),
+        })
+    }
+    fn push_configuration(
+        selected: &mut Vec<&'a Configuration>,
+        configuration: &'a Configuration,
+    ) -> Result<(), DeviceContractError> {
+        if selected.len() == hex_lattice::MAX_STATEFUL_PROCESSORS {
+            return Err(DeviceContractError::RuntimeBudgetExceeded);
+        }
+        if selected
+            .iter()
+            .any(|old| old.identity.device_id() == configuration.identity.device_id())
+            || selected.first().is_some_and(|first| {
+                first.binding.root != configuration.binding.root
+                    || first.sample_rate != configuration.sample_rate
+                    || first.prepared.quantum_frames() != configuration.prepared.quantum_frames()
+            })
+        {
+            return Err(DeviceContractError::InvalidId);
+        }
+        selected
+            .try_reserve(1)
+            .map_err(|_| DeviceContractError::RuntimeBudgetExceeded)?;
+        selected.push(configuration);
+        Ok(())
     }
     pub fn new(effects: &'a [NativeEffect]) -> Result<Self, DeviceContractError> {
         if effects.len() > hex_lattice::MAX_STATEFUL_PROCESSORS {
@@ -94,34 +142,118 @@ impl<'a> NativeEffectDefinition<'a> {
             )
         }))
     }
+    pub(crate) fn including_canonical_bases(
+        mut self,
+        facts: &'a [CapturedCanonicalBases],
+    ) -> Result<Self, DeviceContractError> {
+        if facts.len() > self.effects.len() || !self.canonical.is_empty() {
+            return Err(DeviceContractError::ForeignProcessingUnavailable);
+        }
+        for (index, current) in facts.iter().enumerate() {
+            let effect = self
+                .effects
+                .iter()
+                .copied()
+                .find(|effect| effect.binding == current.binding())
+                .ok_or(DeviceContractError::ForeignProcessingUnavailable)?;
+            if current.prepared() != effect.prepared
+                || current.sample_rate() != effect.sample_rate
+                || !effect
+                    .state_verifier
+                    .is_some_and(|v| v.approves_processing(current.canonical_state()))
+                || !effect.authored.same_parameters(&current.capabilities)
+            {
+                return Err(DeviceContractError::ForeignProcessingUnavailable);
+            }
+            // Duplicate bindings cannot choose between different canonical bases.
+            if facts[..index]
+                .iter()
+                .any(|old| old.binding() == current.binding())
+            {
+                return Err(DeviceContractError::ForeignProcessingUnavailable);
+            }
+        }
+        self.canonical = facts;
+        Ok(self)
+    }
+
+    fn canonical_for(
+        &self,
+        effect: &Configuration,
+        state: &NativeDeviceState,
+    ) -> Result<Option<&CapturedCanonicalBases>, DeviceContractError> {
+        if state.processing_eq(&effect.state) {
+            return Ok(None);
+        }
+        if !effect.state_verifier.is_some_and(|v| v.approves(state)) {
+            return Err(DeviceContractError::ForeignProcessingUnavailable);
+        }
+        self.canonical
+            .iter()
+            .find(|facts| {
+                facts.binding() == effect.binding && facts.canonical_state().processing_eq(state)
+            })
+            .map(Some)
+            .ok_or(DeviceContractError::ForeignProcessingUnavailable)
+    }
+
+    fn exact_configuration(
+        &self,
+        identity: ProcessorInstanceIdentity,
+        state: &NativeDeviceState,
+        rate: u32,
+    ) -> Result<Option<&Configuration>, DeviceContractError> {
+        if let Some(effect) = self
+            .effects
+            .iter()
+            .copied()
+            .find(|effect| effect.identity == identity)
+        {
+            if effect.sample_rate != rate {
+                return Err(DeviceContractError::ForeignProcessingUnavailable);
+            }
+            self.canonical_for(effect, state)?;
+            return Ok(Some(effect));
+        }
+        if self
+            .unavailable
+            .iter()
+            .any(|(missing, preserved)| *missing == identity && state.processing_eq(preserved))
+        {
+            return Ok(None);
+        }
+        Err(DeviceContractError::ForeignProcessingUnavailable)
+    }
+
+    /// Copy the processing declaration from a real source that matches this
+    /// exact authored state and rate. This does not loan or publish an endpoint.
+    pub fn prepared_processor_on_control(
+        &self,
+        node: &hex_lattice::PreparedRuntimeInstance,
+    ) -> Result<Option<hex_lattice::PreparedForeignProcessor>, DeviceContractError> {
+        let identity = ProcessorInstanceIdentity::new(node.owner, node.device_id)?;
+        let state = node
+            .configuration
+            .as_deref()
+            .ok_or(DeviceContractError::ForeignProcessingUnavailable)?;
+        Ok(self
+            .exact_configuration(identity, state, node.sample_rate)?
+            .map(|effect| effect.prepared))
+    }
+
     pub(super) fn from_selected(
         effects: impl IntoIterator<Item = (&'a Configuration, bool)>,
     ) -> Result<Self, DeviceContractError> {
         let mut selected: Vec<&'a Configuration> = Vec::new();
         for (configuration, paired) in effects {
-            if selected.len() == hex_lattice::MAX_STATEFUL_PROCESSORS {
-                return Err(DeviceContractError::RuntimeBudgetExceeded);
-            }
-            if !paired
-                || selected
-                    .iter()
-                    .any(|old| old.identity.device_id() == configuration.identity.device_id())
-                || selected.first().is_some_and(|first| {
-                    first.binding.root != configuration.binding.root
-                        || first.sample_rate != configuration.sample_rate
-                        || first.prepared.quantum_frames()
-                            != configuration.prepared.quantum_frames()
-                })
-            {
+            if !paired {
                 return Err(DeviceContractError::InvalidId);
             }
-            selected
-                .try_reserve(1)
-                .map_err(|_| DeviceContractError::RuntimeBudgetExceeded)?;
-            selected.push(configuration);
+            Self::push_configuration(&mut selected, configuration)?;
         }
         Ok(Self {
             effects: selected,
+            canonical: &[],
             unavailable: Vec::new(),
         })
     }
@@ -177,6 +309,23 @@ impl NativeDeviceMetadata for NativeEffectDefinition<'_> {
     }
 }
 impl NativeDeviceDefinition for NativeEffectDefinition<'_> {
+    fn prepare_instance_state(
+        &self,
+        identity: ProcessorInstanceIdentity,
+        state: &NativeDeviceState,
+        context: &DevicePreparationContext<'_>,
+    ) -> Result<NativeDeviceState, DeviceContractError> {
+        self.migrate_state(state)?;
+        match self.exact_configuration(identity, state, context.sample_rate)? {
+            Some(effect) => self
+                .canonical_for(effect, state)?
+                .map_or(&effect.state, CapturedCanonicalBases::canonical_state)
+                .clone()
+                .with_host_metadata_from(state),
+            None => Ok(state.clone()),
+        }
+    }
+
     fn prepare_processor(
         &self,
         _: &NativeDeviceState,
@@ -204,24 +353,33 @@ impl NativeDeviceDefinition for NativeEffectDefinition<'_> {
         state: &NativeDeviceState,
         context: &DevicePreparationContext<'_>,
     ) -> Result<Option<PreparedProcessorFactory>, DeviceContractError> {
-        let effect = self
-            .effects
-            .iter()
-            .find(|effect| effect.identity == identity);
-        let Some(effect) = effect else {
-            if self
-                .unavailable
-                .iter()
-                .any(|(missing, preserved)| *missing == identity && state.processing_eq(preserved))
-            {
-                return Ok(None);
-            }
-            return Err(DeviceContractError::ForeignProcessingUnavailable);
+        Ok(self
+            .exact_configuration(identity, state, context.sample_rate)?
+            .map(|effect| PreparedProcessorFactory::Foreign(effect.prepared)))
+    }
+    fn foreign_automation_source(
+        &self,
+        identity: ProcessorInstanceIdentity,
+        state: &NativeDeviceState,
+        context: &DevicePreparationContext<'_>,
+    ) -> Result<Option<hex_lattice::ForeignAutomationSource<'_>>, DeviceContractError> {
+        let Some(effect) = self.exact_configuration(identity, state, context.sample_rate)? else {
+            return Ok(None);
         };
-        if effect.sample_rate != context.sample_rate || !state.processing_eq(&effect.state) {
-            return Err(DeviceContractError::ForeignProcessingUnavailable);
-        }
-        Ok(Some(PreparedProcessorFactory::Foreign(effect.prepared)))
+        let capabilities = self
+            .canonical_for(effect, state)?
+            .map_or(&effect.authored, |facts| &facts.capabilities);
+        Ok(capabilities
+            .view(
+                effect.binding,
+                effect.sample_rate,
+                effect.prepared.quantum_frames(),
+                effect.program_revision,
+            )
+            .map(|mut source| {
+                source.dense_parameter = effect.dense_raw_id;
+                source
+            }))
     }
 }
 

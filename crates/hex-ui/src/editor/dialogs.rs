@@ -98,6 +98,7 @@ impl EditorView {
         if !self.finalize_track_name_for_open(window, cx)
             || !self.finalize_clip_name_for_open(window, cx)
             || !self.finalize_section_name_for_open(window, cx)
+            || !self.finalize_locator_name_for_open(window, cx)
         {
             cx.notify();
             return;
@@ -136,14 +137,19 @@ impl EditorView {
                         }
                         match picked {
                             Ok(Ok(Some(mut paths))) if !paths.is_empty() => {
-                                if let Some(path) = paths.pop() {
-                                    if super::device_panel::finalize_controls(view, cx) {
-                                        view.choose_project(path, mode);
-                                    }
+                                if let Some(path) = paths.pop()
+                                    && super::device_panel::finalize_controls(view, cx)
+                                {
+                                    view.choose_project(path, mode);
                                 }
                             }
                             Ok(Err(error)) => {
-                                view.error = Some(error.to_string().to_lowercase().into())
+                                view.error = Some(
+                                    hex_session::service::text::lowercase_outside_verbatim(
+                                        &error.to_string(),
+                                    )
+                                    .into(),
+                                )
                             }
                             _ => view.status = "open cancelled".into(),
                         }
@@ -241,6 +247,7 @@ impl EditorView {
             || !self.finalize_track_name_for_open(window, cx)
             || !self.finalize_clip_name_for_open(window, cx)
             || !self.finalize_section_name_for_open(window, cx)
+            || !self.finalize_locator_name_for_open(window, cx)
         {
             return;
         }
@@ -333,7 +340,14 @@ impl EditorView {
                             }
                         }
                     }
-                    Ok(Err(error)) => view.error = Some(error.to_string().to_lowercase().into()),
+                    Ok(Err(error)) => {
+                        view.error = Some(
+                            hex_session::service::text::lowercase_outside_verbatim(
+                                &error.to_string(),
+                            )
+                            .into(),
+                        )
+                    }
                     _ => {}
                 }
                 cx.notify();
@@ -380,7 +394,14 @@ impl EditorView {
                             }
                         }
                     }
-                    Ok(Err(error)) => view.error = Some(error.to_string().to_lowercase().into()),
+                    Ok(Err(error)) => {
+                        view.error = Some(
+                            hex_session::service::text::lowercase_outside_verbatim(
+                                &error.to_string(),
+                            )
+                            .into(),
+                        )
+                    }
                     _ => {}
                 }
                 cx.notify();
@@ -390,7 +411,7 @@ impl EditorView {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "ui-test-support")))]
 mod tests {
     use super::ImportPromptTarget;
     use hex_project::{Command, Created, Editor, Project};

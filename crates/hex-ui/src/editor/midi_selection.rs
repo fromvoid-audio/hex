@@ -32,10 +32,12 @@ impl Marquee {
     ) -> Option<Self> {
         if !context.bounds.is_valid()
             || context.scene.beat_span == 0
+            || context.scene.beat_start
+                != midi_scene::clamp_start(context.scene.beat_start, context.scene.beat_span)
             || context
                 .scene
                 .beat_start
-                .checked_add(context.scene.beat_span)
+                .checked_add(i128::from(context.scene.beat_span))
                 .is_none()
             || !midi_scene::valid_pitch_range(context.scene.pitch_low, context.scene.pitch_rows)
             || !first.into_iter().all(f32::is_finite)
@@ -98,6 +100,10 @@ impl Marquee {
 
     pub(super) fn context(&self) -> MarqueeContext {
         self.context
+    }
+
+    pub(super) fn additive(&self) -> bool {
+        self.additive
     }
 
     /// Surfaces supply their own bounded hit geometry; selection, additive preview,
@@ -413,7 +419,7 @@ pub(super) fn marquee_hits(
     Ok(hits)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "ui-unit-tier"))]
 mod tests {
     use super::{MidiSelection, marquee_hits};
     use crate::editor::midi_scene::NoteGeometry;

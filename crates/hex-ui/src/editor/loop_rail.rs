@@ -5,8 +5,7 @@ use gpui::{
     Bounds, Context, CursorStyle, Div, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent,
     MouseUpEvent, canvas, div, prelude::*, px, relative, rgb,
 };
-use hex_project::{Command, LoopRegion};
-use hex_session::service::Request;
+use hex_project::LoopRegion;
 
 mod pending;
 
@@ -14,9 +13,12 @@ mod pending;
 pub(super) struct PendingLoop {
     generation: u64,
     region: LoopRegion,
+    toggle: bool,
     remaining: Option<usize>,
     // Selection intent for automatic focus after a successful section-loop ACK.
     focus_intent: Option<u64>,
+    start_intent: Option<u64>,
+    launch: Option<hex_session::arrangement_seek::SectionLaunch>,
 }
 
 const EDGE_HIT_PIXELS: f32 = 6.0;
@@ -70,6 +72,7 @@ impl EditorView {
         if self.mode != EditorMode::Arrangement
             || self.edit_pending()
             || self.context_menu.is_some()
+            || super::device_panel::picker_is_open(self)
             || self.theme_settings.open
             || self.opening_project
             || self.close_prompt_open
@@ -169,6 +172,7 @@ impl EditorView {
             || modifiers.alt
             || modifiers.control
             || self.context_menu.is_some()
+            || super::device_panel::picker_is_open(self)
             || self.opening_project
             || self.close_prompt_open
             || !x.is_finite()
@@ -293,14 +297,14 @@ impl EditorView {
             return true;
         }
         if !gesture.click_disqualified && gesture.toggle_on_click && modifiers.platform {
-            let _ = self.enqueue(Request::Edit(Command::ToggleLoopRegion));
+            self.toggle_loop();
             return true;
         }
         if matches!(gesture.mode, EditMode::Move { .. }) && !gesture.moved {
             return true;
         }
         let Some(region) = gesture.preview else {
-            self.error = Some("loop region needs a non-empty time range".into());
+            self.error = Some("scope needs a non-empty time range".into());
             return true;
         };
         if Some(region) == gesture.loop_region {
@@ -342,6 +346,20 @@ impl EditorView {
     }
 }
 
+pub(super) fn displayed_region(view: &EditorView, state: &ViewState) -> Option<LoopRegion> {
+    let current_region = state.project.loop_region();
+    let gesture = view.loop_rail_gesture.filter(|gesture| {
+        gesture.generation == view.project_generation
+            && gesture.revision == state.revision
+            && gesture.loop_region == state.project.loop_region()
+            && view.mode == EditorMode::Arrangement
+    });
+    gesture
+        .and_then(|gesture| gesture.preview)
+        .or_else(|| view.pending_loop_region())
+        .or(current_region)
+}
+
 pub(super) fn view(
     view: &EditorView,
     state: &ViewState,
@@ -350,16 +368,7 @@ pub(super) fn view(
     cx: &mut Context<EditorView>,
 ) -> Div {
     let current_region = state.project.loop_region();
-    let gesture = view.loop_rail_gesture.filter(|gesture| {
-        gesture.generation == view.project_generation
-            && gesture.revision == state.revision
-            && gesture.loop_region == state.project.loop_region()
-            && view.mode == EditorMode::Arrangement
-    });
-    let shown_region = gesture
-        .and_then(|gesture| gesture.preview)
-        .or_else(|| view.pending_loop_region())
-        .or(current_region);
+    let shown_region = displayed_region(view, state);
     let entity = cx.entity();
     let rail = super::timeline_strip::loop_surface()
         .flex()
@@ -373,8 +382,8 @@ pub(super) fn view(
                 .min_w_0()
                 .cursor(view.loop_rail_cursor)
                 .tooltip(|_, cx| {
-                    cx.new(|_| super::transport::MiniTooltip { kind: crate::tooltips::Kind::control("loop range"),
-                        description: "drag empty rail to set loop · drag bar to move · shift-click selects range · shift-drag steps loop length · cmd-click toggles · cmd-drag is free".into(),
+                    cx.new(|_| super::transport::MiniTooltip { kind: crate::tooltips::Kind::control("scope bar"),
+                        description: "drag empty rail to set scope · drag scope bar to move · shift-click selects scope · shift-drag steps scope length · cmd-click toggles · cmd-drag is free".into(),
                     })
                     .into()
                 })
@@ -717,7 +726,7 @@ pub(super) fn cancel_stale(
     false
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "ui-test-support")))]
 mod tests {
     use super::{binary_duration, stepped_start, visible_region_pixels};
     use crate::editor::viewport::Viewport;
@@ -829,6 +838,50 @@ mod tests {
             project,
             LoopRegion::new(u64::MAX - 1, u64::MAX, false).unwrap()
         ));
+    }
+
+    #[test]
+    fn hit_budget_preserves_outside_capture_clipped_bodies_and_wide_edges() {
+        use super::{EditMode, region_edit_mode};
+        use gpui::{point, px};
+        let bounds = gpui::Bounds::new(point(px(100.0), px(0.0)), gpui::size(px(300.0), px(18.0)));
+        let viewport = Viewport {
+            start: 0,
+            length: 300,
+        };
+        let kind = |region, viewport, x| match region_edit_mode(region, viewport, bounds, x) {
+            Some(EditMode::Move { .. }) => "move",
+            Some(EditMode::ResizeStart { .. }) => "start",
+            Some(EditMode::ResizeEnd { .. }) => "end",
+            Some(EditMode::Paint { .. }) | None => "none",
+        };
+        for width in [1, 8, 12, 18, 48] {
+            let r = LoopRegion::new(100, 100 + width, true).unwrap();
+            assert_eq!(kind(r, viewport, 200.0), "start");
+            assert_eq!(kind(r, viewport, 200.0 + width as f32), "end");
+            assert_eq!(kind(r, viewport, 194.0), "start");
+            assert_eq!(kind(r, viewport, 193.9), "none");
+            assert_eq!(kind(r, viewport, 206.0 + width as f32), "end");
+            assert_eq!(kind(r, viewport, 206.1 + width as f32), "none");
+            assert_eq!(kind(r, viewport, 200.0 + width as f32 / 2.0), "move");
+        }
+        let wide = LoopRegion::new(100, 148, false).unwrap();
+        assert_eq!(kind(wide, viewport, 206.0), "start");
+        assert_eq!(kind(wide, viewport, 206.1), "move");
+        assert_eq!(kind(wide, viewport, 241.9), "move");
+        assert_eq!(kind(wide, viewport, 242.0), "end");
+        // A clipped-away start cannot steal the visible body, even when only 3px remain.
+        let clipped = Viewport {
+            start: 145,
+            length: 300,
+        };
+        assert_eq!(kind(wide, clipped, 100.0), "move");
+        assert_eq!(kind(wide, clipped, 103.0), "end");
+        let clipped_end = Viewport {
+            start: 0,
+            length: 110,
+        };
+        assert_eq!(kind(wide, clipped_end, 400.0), "move");
     }
 
     #[test]

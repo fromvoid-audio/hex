@@ -2,7 +2,9 @@
 //!
 //! The engine supplies accepted note transitions from one completed render.
 //! Only the native output owner may confirm them after conversion into its sink.
-//! Control retains take construction/history. Neither endpoint owns a project,
+//! Receipt note positions account for the admitted graph's fixed Main latency;
+//! Arm and terminal clocks remain raw so control can validate continuity. Control
+//! retains take construction/history. Neither endpoint owns a project,
 //! graph, input worker or native device. Ordinary receipt pressure interrupts a
 //! take explicitly; independent terminal capacity keeps Stop effective.
 //! There is one pending Arm, 1024 note receipts and two critical receipts
@@ -70,6 +72,8 @@ pub enum Receipt {
     Armed {
         target: Target,
         clock: MidiCaptureClock,
+        /// Main graph latency, frozen for this source-bound take.
+        latency_frames: u32,
     },
     Note {
         target: Target,
@@ -115,7 +119,8 @@ pub(crate) struct Callback {
     terminals: Producer<Receipt>,
     finish_intent: Arc<AtomicU64>,
     target: Option<Target>,
-    staged: Option<(MidiCaptureClock, usize)>,
+    staged: Option<(MidiCaptureClock, usize, u32)>,
+    latency_frames: Option<u32>,
     last_delivered: Option<MidiCaptureClock>,
     armed_delivered: bool,
     note_ons: u64,
@@ -151,6 +156,7 @@ pub(crate) fn channel() -> (Control, Callback) {
             finish_intent,
             target: None,
             staged: None,
+            latency_frames: None,
             last_delivered: None,
             armed_delivered: false,
             note_ons: 0,
@@ -263,6 +269,7 @@ impl Callback {
     pub(crate) fn accept(&mut self, target: Target) {
         self.target = Some(target);
         self.staged = None;
+        self.latency_frames = None;
         self.last_delivered = None;
         self.armed_delivered = false;
         self.note_ons = 0;
@@ -277,8 +284,18 @@ impl Callback {
     pub(crate) fn has_staged(&self) -> bool {
         self.staged.is_some()
     }
-    pub(crate) fn stage(&mut self, clock: MidiCaptureClock, frames: usize) {
-        self.staged = Some((clock, frames));
+    pub(crate) fn stage(
+        &mut self,
+        clock: MidiCaptureClock,
+        frames: usize,
+        latency_frames: u32,
+    ) -> bool {
+        if self.latency_frames.is_some_and(|old| old != latency_frames) {
+            return false;
+        }
+        self.latency_frames = Some(latency_frames);
+        self.staged = Some((clock, frames, latency_frames));
+        true
     }
     fn terminal(&mut self, receipt: Receipt) {
         if self.terminals.push(receipt).is_err() {
@@ -316,7 +333,7 @@ impl Callback {
         let Some(target) = self.target else {
             return;
         };
-        let Some((clock, frames)) = self.staged.take() else {
+        let Some((clock, frames, latency_frames)) = self.staged.take() else {
             self.abort(AbortReason::InvalidClock);
             return;
         };
@@ -343,14 +360,36 @@ impl Callback {
             self.abort(AbortReason::InvalidClock);
             return;
         };
+        let Some(capture_end) = target
+            .capture
+            .end_frame
+            .checked_add(u64::from(latency_frames))
+        else {
+            self.abort(AbortReason::InvalidClock);
+            return;
+        };
+        if clock.content_frame >= capture_end {
+            self.abort(AbortReason::InvalidClock);
+            return;
+        }
+        let Some(delivered_performance_end) =
+            performance_end.checked_sub(end.saturating_sub(capture_end))
+        else {
+            self.abort(AbortReason::InvalidClock);
+            return;
+        };
         self.last_delivered = Some(MidiCaptureClock {
-            content_frame: end.min(target.capture.end_frame),
-            performance_frame: performance_end,
+            content_frame: end.min(capture_end),
+            performance_frame: delivered_performance_end,
         });
         if !self.armed_delivered {
             if self
                 .terminals
-                .push(Receipt::Armed { target, clock })
+                .push(Receipt::Armed {
+                    target,
+                    clock,
+                    latency_frames,
+                })
                 .is_err()
             {
                 self.receipt_fault = true;
@@ -364,17 +403,20 @@ impl Callback {
                 self.abort(AbortReason::InvalidClock);
                 return;
             };
-            let Some(content_frame) = clock.content_frame.checked_add(offset) else {
+            let Some(raw_frame) = clock.content_frame.checked_add(offset) else {
                 self.abort(AbortReason::InvalidClock);
                 return;
             };
-            if content_frame >= target.capture.end_frame {
+            if raw_frame >= capture_end {
                 continue;
             }
-            if content_frame < target.capture.first_frame || content_frame >= end {
+            if raw_frame < target.capture.first_frame || raw_frame >= end {
                 self.abort(AbortReason::InvalidClock);
                 return;
             }
+            let content_frame = raw_frame
+                .saturating_sub(u64::from(latency_frames))
+                .max(target.capture.first_frame);
             if matches!(note.event, MidiCaptureEvent::On { .. }) {
                 if self.note_ons >= MAX_TAKE_NOTES {
                     self.abort(AbortReason::TakeFull);
@@ -395,7 +437,7 @@ impl Callback {
                 return;
             }
         }
-        if end >= target.capture.end_frame {
+        if end >= capture_end {
             self.finish();
         }
     }
@@ -456,7 +498,7 @@ mod tests {
             },
             occurrence_id: frame / 2 + 1,
             performance_frame: frame,
-            event: if frame % 2 == 0 {
+            event: if frame.is_multiple_of(2) {
                 MidiCaptureEvent::On {
                     pitch: 60,
                     velocity: 100,
@@ -464,6 +506,71 @@ mod tests {
             } else {
                 MidiCaptureEvent::Off
             },
+        }
+    }
+    #[test]
+    fn delivered_clock_past_capture_end_aborts_without_underflow() {
+        let (mut control, mut callback) = channel();
+        let target = target();
+        control.begin(target).unwrap();
+        let requested = callback.next_arm().unwrap();
+        callback.accept(requested);
+        let clock = MidiCaptureClock {
+            content_frame: target.capture.end_frame + 1,
+            performance_frame: 0,
+        };
+        assert!(callback.stage(clock, 1, 0));
+        callback.delivered(MidiCaptureRender {
+            binding: target.capture,
+            clock,
+            frames: 1,
+            events: &[],
+        });
+        assert!(matches!(
+            control.try_receipt(),
+            Some(Receipt::Aborted {
+                reason: AbortReason::InvalidClock,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn delivered_note_uses_fixed_latency_across_block_boundaries() {
+        for (latency, expected) in [(0, 100), (7, 93)] {
+            for partition in [1_u64, 4, 8] {
+                let (mut control, mut callback) = channel();
+                let target = target();
+                control.begin(target).unwrap();
+                let requested = callback.next_arm().unwrap();
+                callback.accept(requested);
+                let event = note(target, 100);
+                for start in (96..104).step_by(partition as usize) {
+                    let clock = MidiCaptureClock {
+                        content_frame: start,
+                        performance_frame: start,
+                    };
+                    assert!(callback.stage(clock, partition as usize, latency));
+                    let events = if (start..start + partition).contains(&100) {
+                        std::slice::from_ref(&event)
+                    } else {
+                        &[]
+                    };
+                    callback.delivered(MidiCaptureRender {
+                        binding: target.capture,
+                        clock,
+                        frames: partition as usize,
+                        events,
+                    });
+                }
+                let receipts: Vec<_> = std::iter::from_fn(|| control.try_receipt()).collect();
+                assert!(
+                    receipts.iter().any(|receipt| matches!(receipt,
+                        Receipt::Note { content_frame, .. } if *content_frame == expected
+                    )),
+                    "latency={latency} partition={partition} receipts={receipts:?}"
+                );
+            }
         }
     }
     #[test]
@@ -485,6 +592,7 @@ mod tests {
                     performance_frame: start,
                 },
                 512,
+                0,
             );
             callback.delivered(MidiCaptureRender {
                 binding: target.capture,
@@ -546,7 +654,7 @@ mod tests {
                 content_frame: 0,
                 performance_frame: 0,
             };
-            callback.stage(clock, 4);
+            callback.stage(clock, 4, 0);
             callback.delivered(MidiCaptureRender {
                 binding: target.capture,
                 clock: MidiCaptureClock {

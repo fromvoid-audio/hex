@@ -407,7 +407,11 @@ fn ordinary_eq_density_scales_storage_to_authored_node_count() {
     let one = runtime::PreparedEq::new(settings, 48000).unwrap();
     assert!(empty.declared_runtime_bytes() < one.declared_runtime_bytes());
     assert!(one.declared_runtime_bytes() * 100 < hex_lattice::MAX_PROCESSOR_BANK_RUNTIME_BYTES);
-    assert!(one.declared_runtime_bytes() < 2048);
+    // Authored nodes still cost under 2 KiB each. Pulse #4122 adds one fixed
+    // outgoing-routing reserve of `MAX_NODES` bands (about 19 KiB) so a mode
+    // switch that also removes nodes still crossfades; it is not per node.
+    assert!(one.declared_runtime_bytes() - empty.declared_runtime_bytes() < 2048);
+    assert!(empty.declared_runtime_bytes() < 24 * 1024);
 }
 
 struct TestClock {
@@ -541,7 +545,141 @@ fn plotted_response_matches_actual_cut_impulse_transform() {
         );
     }
 }
+/// Impulse-transform oracle for one band: renders the impulse in blocks until
+/// its last 256 frames settle below 1e-8 (at most `max_frames`), then compares
+/// the plotted response at 0.37x, 1x and 1.73x the band frequency with the
+/// measured transform using the exhaustive audit's tolerances: 0.05 db above
+/// -80 db, otherwise absolute linear 1e-5. Returns the queries checked.
+fn assert_plotted_matches_impulse(
+    kind: NodeKind,
+    slope: u8,
+    frequency: f32,
+    q: f32,
+    gain: f32,
+    rate: u32,
+    max_frames: usize,
+) -> usize {
+    let label = format!("{rate}/{kind:?}/{slope}/{frequency}/{q}");
+    let mut settings = EqState::default();
+    let mut band = node(1);
+    band.kind = kind;
+    band.slope = slope;
+    band.frequency_hz = frequency;
+    band.q = q;
+    band.gain_db = gain;
+    settings.add(band).unwrap();
+    let prepared = runtime::PreparedEq::new(settings, rate).unwrap();
+    let mut rt = prepared.create_runtime();
+    const BLOCK: usize = 4096;
+    let mut frames: Vec<StereoFrame> = Vec::with_capacity(BLOCK);
+    loop {
+        let start = frames.len();
+        frames.resize(start + BLOCK, [0.0; 2]);
+        if start == 0 {
+            frames[0] = [1.0, -1.0];
+        }
+        rt.process_block(&mut frames[start..], &hex_lattice::EMPTY_DEVICE_RESOURCES);
+        let settled = frames[frames.len() - 256..]
+            .iter()
+            .flatten()
+            .all(|v| v.abs() < 1e-8);
+        if settled {
+            break;
+        }
+        assert!(frames.len() < max_frames, "unsettled impulse: {label}");
+    }
+    assert!(
+        frames.iter().all(|f| f[0].is_finite() && f[0] == -f[1]),
+        "stereo polarity must not cancel independent channel processing: {label}"
+    );
+    let mut queries = 0;
+    for query in [frequency * 0.37, frequency, frequency * 1.73] {
+        if query >= rate as f32 * 0.5 {
+            continue;
+        }
+        // Phasor recurrence instead of per-frame sin/cos, renormalized each
+        // block; its drift is far below the 1e-5 tolerance.
+        let step = std::f64::consts::TAU * f64::from(query) / f64::from(rate);
+        let rotation = (step.cos(), -step.sin());
+        let (mut phasor_re, mut phasor_im) = (1.0_f64, 0.0_f64);
+        let (mut real, mut imaginary) = (0.0, 0.0);
+        for (index, frame) in frames.iter().enumerate() {
+            let sample = f64::from(frame[0]);
+            real += sample * phasor_re;
+            imaginary += sample * phasor_im;
+            (phasor_re, phasor_im) = (
+                phasor_re * rotation.0 - phasor_im * rotation.1,
+                phasor_re * rotation.1 + phasor_im * rotation.0,
+            );
+            if index % 1024 == 1023 {
+                let norm = phasor_re.hypot(phasor_im);
+                phasor_re /= norm;
+                phasor_im /= norm;
+            }
+        }
+        let actual = real.hypot(imaginary);
+        let shown = f64::from(prepared.frequency_response_at_hz(query).unwrap()[0]);
+        if actual > 0.0001 {
+            let error = (20.0 * (shown / actual).log10()).abs();
+            assert!(
+                error < 0.05,
+                "response error {error}db at {label} query{query}"
+            );
+        } else {
+            assert!(
+                (shown - actual).abs() < 0.00001,
+                "deep transfer differs at {label} query{query}"
+            );
+        }
+        queries += 1;
+    }
+    queries
+}
+/// Fast merge-scope sample of the exhaustive audit below (Pulse #4123): every
+/// shape and cut slope at every extreme, with the rate rotating so each of
+/// 8/44.1/48/96/192 khz is exercised. The 20 hz, q 0.1 extreme needs about a
+/// million frames to settle at high rates, so it runs at the low rates here.
 #[test]
+fn plotted_response_matches_actual_impulse_transform_sampled() {
+    const RATES: [u32; 5] = [8000, 44100, 48000, 96000, 192000];
+    let mut queries = 0;
+    let mut rates_seen = [false; RATES.len()];
+    let mut combination = 0;
+    for kind in [
+        NodeKind::Bell,
+        NodeKind::LowShelf,
+        NodeKind::HighShelf,
+        NodeKind::LowCut,
+        NodeKind::HighCut,
+        NodeKind::Notch,
+    ] {
+        let slopes = if matches!(kind, NodeKind::LowCut | NodeKind::HighCut) {
+            4
+        } else {
+            1
+        };
+        for slope in 0..slopes {
+            combination += 1;
+            let rate_index = combination % RATES.len();
+            rates_seen[rate_index] = true;
+            let rate = RATES[rate_index];
+            queries += assert_plotted_matches_impulse(kind, slope, 20.0, 0.1, -12.0, 8000, 1 << 20);
+            queries +=
+                assert_plotted_matches_impulse(kind, slope, 1000.0, 18.0, 12.0, rate, 1 << 20);
+            let high = (rate as f32 * 0.45).min(18000.0);
+            queries +=
+                assert_plotted_matches_impulse(kind, slope, high, 18.0, -12.0, rate, 1 << 20);
+        }
+    }
+    assert!(rates_seen.iter().all(|seen| *seen));
+    assert!(queries >= 80, "{queries} queries");
+}
+/// Exhaustive qualification audit: every shape, slope, extreme and rate with
+/// the original fixed impulse lengths. About 40 s in debug, so it is ignored
+/// in merge scope; run it with `--ignored` when changing the band designs or
+/// `frequency_response_at_hz`. The sampled test above covers merges.
+#[test]
+#[ignore = "exhaustive qualification audit (~40 s debug); see the sampled test"]
 fn plotted_response_matches_actual_impulse_transform_across_shapes_rates_and_extremes() {
     // Fixed before the UI sampling repair: 0.05db above -80db, otherwise
     // absolute linear 1e-5. An unsettled impulse is not an acceptable oracle.
@@ -740,6 +878,118 @@ fn legacy_shelf_semantics_report_actual_lane_refusals_without_disabling_authored
     assert!(
         EQ_DEFINITION
             .parameter_enabled(&state, shelf.id.parameter(NodeParameter::Gain).unwrap())
+            .unwrap()
+    );
+}
+
+#[test]
+fn shared_node_admission_and_factory_agree_with_descriptors_and_refusals() {
+    use hex_lattice::{
+        DevicePreparationContext, EMPTY_DEVICE_RESOURCES, ProcessorChainOwner,
+        ProcessorInstanceIdentity, TuningTable,
+    };
+    let mut settings = EqState::default();
+    let id = NodeId::new(7).unwrap();
+    settings.add(node(7)).unwrap();
+    let state = settings.encode().unwrap();
+    let tuning = TuningTable::default();
+    let context = DevicePreparationContext {
+        sample_rate: 48000,
+        tuning: &tuning,
+        resources: &EMPTY_DEVICE_RESOURCES,
+    };
+    let identity = ProcessorInstanceIdentity::new(ProcessorChainOwner::Track(1), 1).unwrap();
+    for field in NodeParameter::ALL {
+        let parameter = id.parameter(field).unwrap();
+        assert!(
+            EQ_DEFINITION
+                .supports_parameter_automation(&state, parameter)
+                .unwrap(),
+            "{field:?}"
+        );
+        let processor = EQ_DEFINITION
+            .prepare_automated_runtime_instance(identity, &state, &context, &[parameter])
+            .unwrap()
+            .processor
+            .unwrap();
+        assert_eq!(
+            processor.parameter_automation_descriptor(parameter),
+            Some(descriptor(id, field).unwrap())
+        );
+    }
+    for (parameter, descriptor) in [(MODE, DESCRIPTORS[200]), (OUTPUT_GAIN, DESCRIPTORS[201])] {
+        assert!(
+            EQ_DEFINITION
+                .supports_parameter_automation(&state, parameter)
+                .unwrap()
+        );
+        let semantics = EQ_DEFINITION
+            .parameter_semantics_for_state(&state, parameter)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            semantics.automation,
+            hex_lattice_contract::ParameterAutomation::DeviceArrangementEnvelope
+        );
+        assert_eq!(
+            semantics.smoothing,
+            hex_lattice_contract::ParameterSmoothing::DeviceManaged
+        );
+        let processor = EQ_DEFINITION
+            .prepare_automated_runtime_instance(identity, &state, &context, &[parameter])
+            .unwrap()
+            .processor
+            .unwrap();
+        assert_eq!(
+            processor.parameter_automation_descriptor(parameter),
+            Some(descriptor)
+        );
+    }
+    for parameter in [
+        ParameterId::from_static(1063),
+        NodeId::new(99)
+            .unwrap()
+            .parameter(NodeParameter::Gain)
+            .unwrap(),
+    ] {
+        assert!(
+            !EQ_DEFINITION
+                .supports_parameter_automation(&state, parameter)
+                .unwrap()
+        );
+        assert!(
+            EQ_DEFINITION
+                .prepare_automated_runtime_instance(identity, &state, &context, &[parameter])
+                .is_err()
+        );
+    }
+    settings.nodes[0].kind = NodeKind::LowShelf;
+    settings.nodes[0].legacy_shelf = true;
+    let legacy = settings.encode().unwrap();
+    for field in NodeParameter::ALL {
+        let parameter = id.parameter(field).unwrap();
+        let supported = !matches!(
+            field,
+            NodeParameter::Kind | NodeParameter::Gain | NodeParameter::Q
+        );
+        assert_eq!(
+            EQ_DEFINITION
+                .supports_parameter_automation(&legacy, parameter)
+                .unwrap(),
+            supported
+        );
+        assert_eq!(
+            EQ_DEFINITION
+                .prepare_automated_runtime_instance(identity, &legacy, &context, &[parameter])
+                .is_ok(),
+            supported
+        );
+    }
+    settings.remove(id).unwrap();
+    let removed = settings.encode().unwrap();
+    assert!(
+        !EQ_DEFINITION
+            .supports_parameter_automation(&removed, id.parameter(NodeParameter::Gain).unwrap())
             .unwrap()
     );
 }

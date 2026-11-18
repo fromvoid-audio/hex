@@ -1,0 +1,8 @@
+{
+  "writer_source": "4ce0ecfb0",
+  "writer_schema": 65,
+  "writer": "schema65-writer.rs",
+  "writer_command": "cargo run --locked -p hex-storage --example w4565 -- schema65.json (writer copied to crates/hex-storage/examples/w4565.rs in a checkout of the writer source)",
+  "fixture_sha256": "0f7ffc2007a23dfba2f1501c8593b2b28aef32a2c4f265757c8a8469cd1025dc",
+  "input": "Original synthetic project at 48000 hz with one 30000-frame asset and tempo 240 bpm then 60 bpm from beat 1/2: a musical-clock reversed clip (fractional directed view), a frame-clock reversed clip (integer directed view) and a +700 cent clip whose v2 content law makes the document schema65. No media files are referenced or required."
+}

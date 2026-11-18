@@ -3,7 +3,7 @@
 use super::EditorView;
 use gpui::{Context, PathPromptOptions, PromptButton, PromptLevel, Window};
 use hex_session::service::{ProjectSource, Request};
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, path::Path};
 
 #[derive(Clone, Copy)]
 pub(super) enum OpenKind {
@@ -11,6 +11,8 @@ pub(super) enum OpenKind {
     Untitled,
     SavedEdits,
     PreviousSave,
+    /// A copy kept by discard or copy-on-first-edit: a journal or its folder.
+    Kept,
 }
 
 impl EditorView {
@@ -51,25 +53,31 @@ impl EditorView {
         } else {
             None
         };
+        let own_slot = self.service.recovery_slot().map(Path::to_path_buf);
         self.opening_project = true;
         self.pending_open_path = None;
         cx.spawn(async move |this, cx| {
             let result: Result<Option<ProjectSource>, String> = async {
-                if let Some(confirmation) = confirmation {
-                    if confirmation.await.ok() != Some(1) {
-                        return Ok(None);
-                    }
+                if let Some(confirmation) = confirmation
+                    && confirmation.await.ok() != Some(1)
+                {
+                    return Ok(None);
                 }
                 let source = if matches!(kind, OpenKind::Untitled) {
-                    ProjectSource::Journal(hex_session::service::untitled_recovery_path()?)
+                    own_untitled_source(own_slot.as_deref())?
                 } else {
                     let response = this
                         .update(cx, |_, cx| {
                             cx.prompt_for_paths(PathPromptOptions {
                                 files: true,
-                                directories: false,
+                                // Kept copies may be hidden dot-files: their folder is accepted.
+                                directories: matches!(kind, OpenKind::Kept),
                                 multiple: false,
-                                prompt: Some("choose saved project".into()),
+                                prompt: Some(if matches!(kind, OpenKind::Kept) {
+                                    "choose kept session".into()
+                                } else {
+                                    "choose saved project".into()
+                                }),
                             })
                         })
                         .map_err(|e| e.to_string())?;
@@ -87,6 +95,7 @@ impl EditorView {
                         OpenKind::Relink => ProjectSource::Saved(path),
                         OpenKind::SavedEdits => ProjectSource::SavedJournal(path),
                         OpenKind::PreviousSave => ProjectSource::PreviousSave(path),
+                        OpenKind::Kept => hex_session::service::kept_journal(&path)?,
                         OpenKind::Untitled => return Ok(None),
                     }
                 };
@@ -195,5 +204,31 @@ impl EditorView {
         })
         .detach();
         cx.notify();
+    }
+}
+
+/// `file > recover latest untitled project…` opens only this window's own
+/// claimed untitled slot, never another live instance's (Pulse #4575).
+/// Leftovers of ended instances are offered at launch instead.
+fn own_untitled_source(slot: Option<&Path>) -> Result<ProjectSource, String> {
+    slot.map(|slot| ProjectSource::Journal(slot.to_path_buf()))
+        .ok_or_else(|| "this window has no untitled recovery slot".into())
+}
+
+#[cfg(all(test, not(feature = "ui-test-support")))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn untitled_recovery_opens_only_the_window_s_own_slot() {
+        let own = Path::new("/recovery/untitled-3.hex-journal");
+        assert!(matches!(
+            own_untitled_source(Some(own)),
+            Ok(ProjectSource::Journal(path)) if path == own
+        ));
+        assert_eq!(
+            own_untitled_source(None).err().as_deref(),
+            Some("this window has no untitled recovery slot")
+        );
     }
 }

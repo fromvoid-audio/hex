@@ -3,6 +3,203 @@ use gpui::{Modifiers, TestAppContext, VisualTestContext};
 use std::sync::Arc;
 
 #[gpui::test]
+fn track_switch_observation_paints_without_installing_project_and_rejects_stale_scope(
+    cx: &mut TestAppContext,
+) {
+    use hex_session::service::{TrackSwitchState, TrackSwitchViewObservation};
+    let (project, first, _, _) = audio_project();
+    let (handle, editor) = editor_window(cx, project, Arc::default());
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let (generation, revision) = editor.read_with(&visual, |view, _| {
+        (
+            view.project_generation,
+            view.state.as_ref().unwrap().revision,
+        )
+    });
+    let selector = Box::leak(format!("track-solo-{}", first.value()).into_boxed_str());
+    let before = visual.rendered_background(selector);
+    editor.update(&mut visual, |view, cx| {
+        assert!(view.observe_track_switch_view(TrackSwitchViewObservation {
+            project_generation: generation,
+            first_previous_revision: revision,
+            previous_revision: revision,
+            revision: revision + 1,
+            tracks: vec![TrackSwitchState {
+                track: first,
+                muted: false,
+                soloed: true,
+            }],
+        }));
+        assert!(
+            !view
+                .state
+                .as_ref()
+                .unwrap()
+                .project
+                .track(first)
+                .unwrap()
+                .soloed()
+        );
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let after = visual.rendered_background(selector);
+    assert_ne!(before, after);
+    editor.update(&mut visual, |view, cx| {
+        let track = view.state.as_ref().unwrap().project.track(first).unwrap();
+        assert_eq!(view.displayed_track_switches(track), (false, true));
+        assert!(!view.observe_track_switch_view(TrackSwitchViewObservation {
+            project_generation: generation + 1,
+            first_previous_revision: revision,
+            previous_revision: revision,
+            revision: revision + 1,
+            tracks: vec![TrackSwitchState {
+                track: first,
+                muted: false,
+                soloed: false,
+            }],
+        }));
+        let track = view.state.as_ref().unwrap().project.track(first).unwrap();
+        assert_eq!(view.displayed_track_switches(track), (false, true));
+        view.project_generation += 1;
+        assert_eq!(view.displayed_track_switches(track), (false, false));
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert_eq!(visual.rendered_background(selector), before);
+}
+
+#[gpui::test]
+fn coalesced_track_switch_view_requires_a_valid_contiguous_span(cx: &mut TestAppContext) {
+    use hex_session::service::{TrackSwitchState, TrackSwitchViewObservation};
+    let (project, track, _, _) = audio_project();
+    let (handle, editor) = editor_window(cx, project, Arc::default());
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    editor.update(&mut visual, |view, _| {
+        let revision = view.state.as_ref().unwrap().revision;
+        let make = |generation, first, previous| TrackSwitchViewObservation {
+            project_generation: generation,
+            first_previous_revision: first,
+            previous_revision: previous,
+            revision: previous + 1,
+            tracks: vec![TrackSwitchState {
+                track,
+                muted: true,
+                soloed: false,
+            }],
+        };
+        let generation = view.project_generation;
+        assert!(!view.observe_track_switch_view(make(generation, revision + 1, revision + 1)));
+        assert!(!view.observe_track_switch_view(make(generation, revision + 2, revision + 1)));
+        assert!(view.observe_track_switch_view(make(generation, revision, revision + 1)));
+        let canonical = view.state.as_ref().unwrap().project.track(track).unwrap();
+        assert!(view.displayed_track_switches(canonical).0);
+        view.project_generation += 1;
+        assert!(!view.observe_track_switch_view(make(
+            view.project_generation,
+            revision + 2,
+            revision + 2
+        )));
+        let canonical = view.state.as_ref().unwrap().project.track(track).unwrap();
+        assert!(!view.displayed_track_switches(canonical).0);
+    });
+}
+
+#[gpui::test]
+fn consecutive_switch_views_stay_visible_through_earlier_terminal(cx: &mut TestAppContext) {
+    use gpui::AppContext;
+    use hex_session::service::{Request, Service};
+    let service = Service::new(48_000, 16, 8_000_000).unwrap();
+    let next = |service: &Service| {
+        let deadline = crate::test_wait::hang_deadline();
+        loop {
+            if let Ok(event) = service.try_event() {
+                break event;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "initial service event"
+            );
+            std::thread::yield_now();
+        }
+    };
+    next(&service);
+    service
+        .submit(Request::Edit(hex_project::Command::AddTrack {
+            name: "track".into(),
+        }))
+        .unwrap();
+    let state = next(&service).state;
+    let track = state.project.tracks()[0].id();
+    let handle = *cx.add_window(|_, _| gpui::Empty);
+    let editor = cx
+        .update_window(handle, |_, window, cx| {
+            let editor = window.replace_root(cx, |window, cx| {
+                super::EditorView::new(window, cx, service, Err("offline ui test".into()))
+            });
+            editor.update(cx, |view, cx| {
+                view.state = Some(state);
+                cx.notify();
+            });
+            editor
+        })
+        .unwrap();
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let selector = Box::leak(format!("track-mute-{}", track.value()).into_boxed_str());
+    let original = visual.rendered_background(selector);
+    let mut events = Vec::new();
+    for expected in [true, false] {
+        editor.read_with(&visual, |view, _| {
+            view.service
+                .submit(Request::Edit(hex_project::Command::ToggleMute(track)))
+                .unwrap()
+        });
+        let deadline = crate::test_wait::hang_deadline();
+        let event = loop {
+            if let Ok(event) = editor.read_with(&visual, |view, _| view.service.try_event()) {
+                break event;
+            }
+            assert!(std::time::Instant::now() < deadline, "switch terminal");
+            std::thread::yield_now();
+        };
+        let observation = editor.read_with(&visual, |view, _| {
+            view.service.try_track_switch_view().unwrap()
+        });
+        editor.update(&mut visual, |view, cx| {
+            assert!(view.observe_track_switch_view(observation));
+            let canonical = view.state.as_ref().unwrap().project.track(track).unwrap();
+            assert_eq!(view.displayed_track_switches(canonical).0, expected);
+            cx.notify();
+        });
+        visual.run_until_parked();
+        if expected {
+            assert_ne!(visual.rendered_background(selector), original);
+        } else {
+            assert_eq!(visual.rendered_background(selector), original);
+        }
+        events.push(event);
+    }
+    let second = events.pop().unwrap();
+    let first = events.pop().unwrap();
+    editor.update(&mut visual, |view, cx| {
+        view.receive(first);
+        let canonical = view.state.as_ref().unwrap().project.track(track).unwrap();
+        assert!(!view.displayed_track_switches(canonical).0);
+        assert!(view.track_switch_observation.is_some());
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert_eq!(visual.rendered_background(selector), original);
+    editor.update(&mut visual, |view, cx| {
+        view.receive(second);
+        assert!(view.track_switch_observation.is_none());
+        cx.notify();
+    });
+}
+
+#[gpui::test]
 fn track_headers_toggle_range_and_render_explicit_members_including_empty_tracks(
     cx: &mut TestAppContext,
 ) {
@@ -28,12 +225,20 @@ fn track_headers_toggle_range_and_render_explicit_members_including_empty_tracks
         assert_eq!(view.selected_track_ids(), [source, empty])
     });
     for id in [source, empty] {
+        let name = Box::leak(format!("track-name-{}", id.value()).into_boxed_str());
+        let marker = visual
+            .debug_bounds(Box::leak(
+                format!("selected-track-marker-{}", id.value()).into_boxed_str(),
+            ))
+            .expect("selected member has a compact inset");
+        let name_bounds = visual.debug_bounds(name).unwrap();
+        assert!(name_bounds.contains(&marker.center()));
+        assert_eq!(marker.size.width, gpui::px(4.5));
+        assert_eq!(marker.size.height, gpui::px(15.0));
         assert!(
             visual
-                .debug_bounds(Box::leak(
-                    format!("selected-track-{}", id.value()).into_boxed_str()
-                ))
-                .is_some()
+                .rendered_border(name)
+                .is_none_or(|(_, widths, _)| widths == Default::default())
         );
     }
     visual.simulate_click(
@@ -45,6 +250,13 @@ fn track_headers_toggle_range_and_render_explicit_members_including_empty_tracks
     );
     visual.run_until_parked();
     editor.read_with(cx, |view, _| assert_eq!(view.selected_track_ids(), [empty]));
+    assert!(
+        visual
+            .debug_bounds(Box::leak(
+                format!("selected-track-marker-{}", source.value()).into_boxed_str()
+            ))
+            .is_none()
+    );
     visual.simulate_click(
         last,
         Modifiers {
@@ -54,7 +266,24 @@ fn track_headers_toggle_range_and_render_explicit_members_including_empty_tracks
     );
     visual.run_until_parked();
     editor.read_with(cx, |view, _| assert!(view.selected_track_ids().is_empty()));
+    for id in [source, empty] {
+        assert!(
+            visual
+                .debug_bounds(Box::leak(
+                    format!("selected-track-marker-{}", id.value()).into_boxed_str()
+                ))
+                .is_none()
+        );
+    }
     visual.simulate_keystrokes("up");
+    visual.run_until_parked();
+    assert!(
+        visual
+            .debug_bounds(Box::leak(
+                format!("selected-track-marker-{}", source.value()).into_boxed_str()
+            ))
+            .is_some()
+    );
     editor.read_with(cx, |view, _| {
         assert_eq!(view.selected_track_ids(), [source]);
         assert_eq!(
@@ -80,8 +309,8 @@ fn track_headers_toggle_range_and_render_explicit_members_including_empty_tracks
     editor.update(cx, |view, _| {
         view.time_selection_project_scope = true;
         view.time_selection = Some(super::time_selection::TimeSelection {
-            anchor_track: source,
-            end_track: empty,
+            anchor_track: Some(source),
+            end_track: Some(empty),
             anchor_frame: 0,
             end_frame: 48_000,
         });
@@ -155,8 +384,8 @@ fn export_sources_use_explicit_ids_and_names_not_time_scope_or_focused_track(
         view.selected_track = Some(third);
         view.time_selection_project_scope = true;
         view.time_selection = Some(super::time_selection::TimeSelection {
-            anchor_track: source,
-            end_track: third,
+            anchor_track: Some(source),
+            end_track: Some(third),
             anchor_frame: 0,
             end_frame: 48_000,
         });
@@ -193,9 +422,7 @@ fn export_sources_use_explicit_ids_and_names_not_time_scope_or_focused_track(
 }
 
 #[gpui::test]
-fn selected_track_lanes_paint_subtle_tint_and_both_edges_only_for_explicit_members(
-    cx: &mut TestAppContext,
-) {
+fn selected_track_lanes_fill_bounds_only_for_explicit_members(cx: &mut TestAppContext) {
     let (project, source, empty, _) = audio_project();
     let before = project.snapshot();
     let (handle, editor) = editor_window(cx, project, Arc::default());
@@ -252,23 +479,17 @@ fn selected_track_lanes_paint_subtle_tint_and_both_edges_only_for_explicit_membe
         });
         for id in [source, empty] {
             let active = selected.contains(&id);
-            for prefix in [
-                "selected-track-lane",
-                "selected-track-lane-top",
-                "selected-track-lane-bottom",
-            ] {
-                let name = selector(prefix, id);
+            let tint = selector("selected-track-lane", id);
+            assert_eq!(visual.debug_bounds(tint).is_some(), active);
+            for edge in ["selected-track-lane-top", "selected-track-lane-bottom"] {
+                assert!(visual.debug_bounds(selector(edge, id)).is_none());
+            }
+            if active {
+                assert!(visual.rendered_background(tint).is_some());
                 assert_eq!(
-                    visual.debug_bounds(name).is_some(),
-                    active,
-                    "{prefix} {id:?}"
+                    visual.debug_bounds(tint),
+                    visual.debug_bounds(selector("arrangement-lane", id))
                 );
-                if active {
-                    assert!(
-                        visual.rendered_background(name).is_some(),
-                        "actual completed selection paint"
-                    );
-                }
             }
         }
     }
@@ -298,14 +519,17 @@ fn selected_lane_palette_and_paint_order_preserve_clip_fill_and_outer_selection_
     visual.simulate_click(at, Modifiers::default());
     let tint = Box::leak(format!("selected-track-lane-{}", source.value()).into_boxed_str());
     let clip_visual = Box::leak(format!("clip-visual-{}", clip.value()).into_boxed_str());
-    for palette in [
-        hex_preferences::ThemePreferences::default(),
-        hex_preferences::ThemePreferences {
-            background: hex_preferences::RgbColor::new(240, 240, 240),
-            text: hex_preferences::RgbColor::new(16, 16, 16),
-            primary: hex_preferences::RgbColor::new(166, 65, 47),
-            secondary: hex_preferences::RgbColor::new(40, 88, 170),
-        },
+    for (palette, expected_tint) in [
+        (hex_preferences::ThemePreferences::default(), 0xa4ccd7),
+        (
+            hex_preferences::ThemePreferences {
+                background: hex_preferences::RgbColor::new(240, 240, 240),
+                text: hex_preferences::RgbColor::new(16, 16, 16),
+                primary: hex_preferences::RgbColor::new(166, 65, 47),
+                secondary: hex_preferences::RgbColor::new(40, 88, 170),
+            },
+            0x2858aa,
+        ),
     ] {
         theme::apply_preferences(palette);
         editor.update(&mut visual, |_, cx| cx.notify());
@@ -313,16 +537,19 @@ fn selected_lane_palette_and_paint_order_preserve_clip_fill_and_outer_selection_
         assert_eq!(
             visual.rendered_background(tint),
             Some(
-                gpui::Hsla::from(gpui::rgb(theme::color(theme::PaletteRole::Secondary)))
-                    .alpha(theme::TRACK_SELECTION_OPACITY)
+                gpui::Hsla::from(gpui::rgb(expected_tint))
+                    .alpha(0.28)
                     .into()
             )
         );
         let fill = editor.read_with(&visual, |v, _| {
             let p = &v.state.as_ref().unwrap().project;
-            theme::clip_fill(
-                p.track(source).unwrap().color(),
-                p.clip(clip).unwrap().flavor(),
+            theme::arrangement_clip_body_fill(
+                theme::clip_fill(
+                    p.track(source).unwrap().color(),
+                    p.clip(clip).unwrap().flavor(),
+                    false,
+                ),
                 true,
             )
         });
@@ -341,33 +568,6 @@ fn selected_lane_palette_and_paint_order_preserve_clip_fill_and_outer_selection_
             tint_layers.iter().map(|x| x.0).max().unwrap()
                 < clip_layers.iter().map(|x| x.0).min().unwrap()
         );
-        let lane = visual.debug_bounds(tint).unwrap();
-        let scale = visual.update(|window, _| window.scale_factor());
-        for edge in ["top", "bottom"] {
-            let selector = Box::leak(
-                format!("selected-track-lane-{edge}-{}", source.value()).into_boxed_str(),
-            );
-            let bounds = visual.debug_bounds(selector).unwrap();
-            let edge_layers = visual.rendered_quad_paint_layers(selector, false);
-            assert!(
-                edge_layers.iter().map(|x| x.0).max().unwrap()
-                    < clip_layers.iter().map(|x| x.0).min().unwrap(),
-                "lane accents must remain below all four clip selection strokes"
-            );
-            assert!((f32::from(bounds.size.height) * scale - 1.0).abs() < 0.001);
-            assert!(
-                bounds.top() >= lane.top() + gpui::px(1.0)
-                    && bounds.bottom() <= lane.bottom() - gpui::px(1.0)
-            );
-            assert_eq!(
-                visual.rendered_background(selector),
-                Some(
-                    gpui::Hsla::from(gpui::rgb(theme::color(theme::PaletteRole::Secondary)))
-                        .alpha(theme::TRACK_SELECTION_EDGE_OPACITY)
-                        .into()
-                )
-            );
-        }
     }
 }
 
@@ -486,28 +686,24 @@ fn empty_lane_click_moves_header_and_lane_highlight_with_active_track(cx: &mut T
                 );
                 assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before);
                 if !modifiers.shift {
-                    assert_eq!(view.edit_cursor.unwrap().track, target);
+                    assert_eq!(view.edit_cursor.unwrap().track, Some(target));
                 }
             });
             for id in [source, empty] {
+                let name = selector("selected-track-lane", id);
+                assert_eq!(visual.debug_bounds(name).is_some(), selected.contains(&id));
+                if selected.contains(&id) {
+                    assert!(
+                        visual.rendered_background(name).is_some(),
+                        "completed lane paint"
+                    );
+                }
                 for prefix in [
                     "selected-track",
-                    "selected-track-lane",
                     "selected-track-lane-top",
                     "selected-track-lane-bottom",
                 ] {
-                    let name = selector(prefix, id);
-                    assert_eq!(
-                        visual.debug_bounds(name).is_some(),
-                        selected.contains(&id),
-                        "{prefix} after release={released}"
-                    );
-                    if selected.contains(&id) && prefix != "selected-track" {
-                        assert!(
-                            visual.rendered_background(name).is_some(),
-                            "completed lane paint"
-                        );
-                    }
+                    assert!(visual.debug_bounds(selector(prefix, id)).is_none());
                 }
             }
         }
@@ -515,7 +711,9 @@ fn empty_lane_click_moves_header_and_lane_highlight_with_active_track(cx: &mut T
 }
 
 #[gpui::test]
-fn selected_solo_click_shortcut_and_history_share_the_complete_selection(cx: &mut TestAppContext) {
+fn track_switch_clicks_paint_before_the_terminal_and_solo_preserves_selection(
+    cx: &mut TestAppContext,
+) {
     use gpui::AppContext;
     use hex_project::{Command, TrackId};
     use hex_session::service::{Event, Request, Service};
@@ -550,6 +748,28 @@ fn selected_solo_click_shortcut_and_history_share_the_complete_selection(cx: &mu
                 "flush: hang guard expired"
             );
             std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
+    fn observe_switch(editor: &gpui::Entity<super::EditorView>, visual: &mut VisualTestContext) {
+        let deadline = crate::test_wait::hang_deadline();
+        loop {
+            let observed = editor.update(&mut *visual, |view, cx| {
+                if let Ok(observation) = view.service.try_track_switch_view() {
+                    let accepted = view.observe_track_switch_view(observation);
+                    cx.notify();
+                    accepted
+                } else {
+                    false
+                }
+            });
+            if observed {
+                return;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "track switch observation missing"
+            );
+            std::thread::yield_now();
         }
     }
     cx.update(super::bind_editor_keys);
@@ -625,8 +845,23 @@ fn selected_solo_click_shortcut_and_history_share_the_complete_selection(cx: &mu
     let revision = editor.read_with(cx, |view, _| view.state.as_ref().unwrap().revision);
     let solo = bounds(&mut visual, "track-solo", tracks[0]);
     visual.simulate_click(solo.center(), Modifiers::default());
+    observe_switch(&editor, &mut visual);
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        let state = view.state.as_ref().unwrap();
+        for id in [tracks[0], tracks[2]] {
+            assert_eq!(
+                view.displayed_track_switches(state.project.track(id).unwrap()),
+                (false, true)
+            );
+        }
+        assert_eq!(state.revision, revision);
+    });
     flush(&editor, cx);
     check([true, false, true], cx);
+    editor.read_with(cx, |view, _| {
+        assert!(view.track_switch_observation.is_none())
+    });
     editor.read_with(cx, |view, _| {
         assert_eq!(view.state.as_ref().unwrap().revision, revision + 1)
     });
@@ -655,4 +890,48 @@ fn selected_solo_click_shortcut_and_history_share_the_complete_selection(cx: &mu
     );
     flush(&editor, cx);
     check([true; 3], cx);
+    for (mode, prefix, muted) in [
+        (super::EditorMode::Arrangement, "track-mute", true),
+        (super::EditorMode::Session, "console-track-mute", false),
+    ] {
+        editor.update(&mut visual, |view, cx| {
+            view.set_mode(mode);
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let selector = Box::leak(format!("{prefix}-{}", tracks[0].value()).into_boxed_str());
+        let before = visual
+            .rendered_background(selector)
+            .expect("track activator paints");
+        let hit = visual.debug_bounds(selector).unwrap().center();
+        visual.simulate_click(hit, Modifiers::default());
+        visual.simulate_mouse_move(
+            gpui::point(gpui::px(-1.0), gpui::px(-1.0)),
+            None,
+            Modifiers::default(),
+        );
+        observe_switch(&editor, &mut visual);
+        visual.run_until_parked();
+        let after = visual.rendered_background(selector).unwrap();
+        let (background, _) = super::track_gain::activator_colors(!muted);
+        assert_eq!(after, gpui::rgb(background).into());
+        assert_ne!(before, after);
+        editor.read_with(&visual, |view, _| {
+            let track = view
+                .state
+                .as_ref()
+                .unwrap()
+                .project
+                .track(tracks[0])
+                .unwrap();
+            assert_eq!(track.muted(), !muted, "terminal has not been installed");
+            assert_eq!(view.displayed_track_switches(track), (muted, true));
+        });
+        flush(&editor, cx);
+        visual.run_until_parked();
+        assert_eq!(visual.rendered_background(selector), Some(after));
+        editor.read_with(&visual, |view, _| {
+            assert!(view.track_switch_observation.is_none())
+        });
+    }
 }

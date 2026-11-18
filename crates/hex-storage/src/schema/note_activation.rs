@@ -73,8 +73,10 @@ pub(crate) fn encode(project: &Project) -> Result<Value, StorageError> {
 }
 
 pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
-    let _: super::audio_events::UniqueKeys = serde_json::from_slice(bytes)?;
-    let mut value: Value = serde_json::from_slice(bytes)?;
+    decode_value(super::audio_events::parse_unique(bytes)?)
+}
+/// Decode an envelope parsed once by [`super::audio_events::parse_unique`].
+pub(crate) fn decode_value(mut value: Value) -> Result<Project, StorageError> {
     if value.get("version").and_then(Value::as_u64) != Some(56) {
         return Err(StorageError::Invalid("invalid midi note activation schema"));
     }
@@ -96,7 +98,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
         return Err(StorageError::Invalid("duplicate inactive midi note"));
     }
     value["version"] = 55.into();
-    let project = super::automation_read::decode(&serde_json::to_vec(&value)?)?;
+    let project = super::automation_read::decode_value(value)?;
     if inactive.is_empty() {
         return Ok(project);
     }

@@ -111,7 +111,10 @@ pub(super) fn prepare_clip(
 ) -> Result<PreparedSessionMidiClip, crate::Invalid> {
     let source_identity = clip.source_identity();
     let mutable_limits = config.mutable_limits;
-    if !clip.volume().is_unity()
+    // Preserve authored volume on existing projects. The foreign Console
+    // launch owner refuses the unsupported route, and its template stays silent.
+    if !config.foreign_events
+        && !clip.volume().is_unity()
         && mutable_limits.is_some_and(|limits| !limits.supports_clip_volume)
     {
         return Err(crate::Invalid(
@@ -130,7 +133,7 @@ pub(super) fn prepare_clip(
     }
     let instrument_id = config.device_id;
     let instrument_state = config.state.clone();
-    let instrument_enabled = clip.active() && config.config.is_some() && !config.bypassed;
+    let instrument_enabled = config.clip_instrument_enabled(clip);
     let cached = cached.filter(|old| {
         old.track == destination
             && old.source_identity == source_identity

@@ -3,9 +3,12 @@
 //! zero total and signed-net callback allocations/frees.
 use super::resident_preview::ResidentHarness;
 use super::*;
-use hex_engine::eq::{EqState, Node, NodeId, NodeKind};
+use hex_engine::eq::{EqState, Node, NodeId, NodeKind, NodeParameter};
 use hex_project::{Command, Created};
-use hex_session::device_gesture::{EqNodeCreationSnapshot, GestureKey, GestureRequest};
+use hex_session::device_gesture::{
+    EqNodeCreationSnapshot, GestureKey, GestureRequest, GestureTarget, ParameterPairValue,
+    ParameterValue,
+};
 use std::sync::atomic::Ordering;
 
 fn periodic_source(files: &Files, frames: u32) -> PathBuf {
@@ -27,6 +30,213 @@ fn level(h: &ResidentHarness) -> f32 {
 }
 
 #[test]
+fn eq_curve_drag_and_burst_reach_the_actual_callback() {
+    let _native = native_fixture();
+    let files = Files::new();
+    let mut h = ResidentHarness::with_frame_limit(131_072);
+    assert!(h.next().error.is_none());
+    let (mut applied, _) = h.applied(0);
+    let imported = h.run(Request::Import(files.wav(48_000, 131_072)));
+    (applied, _) = h.applied(applied);
+    let track = imported.state.project.tracks()[0].id();
+    let node_id = NodeId::new(1).unwrap();
+    let mut node = Node::new(node_id, 750.0, 0.0, 0).unwrap();
+    node.kind = NodeKind::LowShelf;
+    let mut eq = EqState::default();
+    eq.add(node).unwrap();
+    let inserted = h.run(Request::Edit(Command::InsertDevice {
+        track,
+        before: None,
+        state: eq.encode().unwrap(),
+    }));
+    let Some(Created::Device(device)) = inserted.created else {
+        panic!("eq device");
+    };
+    (applied, _) = h.applied(applied);
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    for _ in 0..20 {
+        h.render();
+    }
+    let key = GestureKey {
+        generation: 0,
+        token: 17,
+    };
+    let began = h.run(Request::DeviceGesture(GestureRequest::Begin {
+        key,
+        target: GestureTarget::DeviceParameterPair {
+            device,
+            first: node_id.parameter(NodeParameter::Frequency).unwrap(),
+            second: node_id.parameter(NodeParameter::Gain).unwrap(),
+        },
+    }));
+    assert!(began.gesture_ack.as_ref().is_some_and(|ack| ack.accepted));
+    let mut last = h.render()[63];
+    assert!(last.iter().all(|sample| (*sample - 0.25).abs() < 0.001));
+    for (sequence, frequency, gain) in [(1, 1000.0, 12.0), (2, 400.0, -12.0), (3, 750.0, 0.0)] {
+        h.service
+            .submit(Request::DeviceGesture(GestureRequest::ChangePair {
+                key,
+                sequence,
+                value: ParameterPairValue {
+                    first: ParameterValue::Float(frequency),
+                    second: ParameterValue::Float(gain),
+                },
+            }))
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut event = None;
+        let mut blocks = 0;
+        loop {
+            h.pump();
+            for frame in h.render() {
+                assert!(
+                    frame
+                        .iter()
+                        .all(|sample| sample.is_finite() && sample.abs() < 4.0)
+                );
+                last = frame;
+            }
+            blocks += 1;
+            if event.is_none() {
+                event = h.service.try_event().ok();
+            }
+            let active = h
+                .audio
+                .as_ref()
+                .unwrap()
+                .status()
+                .unwrap()
+                .applied_revision
+                .load(Acquire);
+            if let (Some(event), Some((revision, metadata))) = (&event, h.submitted)
+                && event.gesture_ack.as_ref().is_some_and(|ack| ack.accepted)
+                && metadata
+                    .device_preview
+                    .is_some_and(|preview| preview.sequence == sequence)
+                && active == revision
+                && revision > applied
+            {
+                applied = revision;
+                break;
+            }
+            assert!(blocks < 450, "source exhausted waiting for EQ preview");
+            assert!(
+                Instant::now() < deadline,
+                "EQ preview did not reach the active graph"
+            );
+            std::thread::yield_now();
+        }
+        for _ in 0..12 {
+            for frame in h.render() {
+                assert!(
+                    frame
+                        .iter()
+                        .all(|sample| sample.is_finite() && sample.abs() < 4.0)
+                );
+                last = frame;
+            }
+        }
+        let expected = 0.25 * 10.0_f32.powf(gain / 20.0);
+        assert!(
+            (last[0] - expected).abs() < 0.015,
+            "EQ preview sequence {sequence}: {} vs {expected}",
+            last[0]
+        );
+    }
+    // Queue repeated pointer moves before pumping the callback, then verify
+    // that the final preview is really installed and its audio stays smooth.
+    for sequence in 4..=11 {
+        h.service
+            .submit(Request::DeviceGesture(GestureRequest::ChangePair {
+                key,
+                sequence,
+                value: ParameterPairValue {
+                    first: ParameterValue::Float(if sequence % 2 == 0 { 400.0 } else { 1200.0 }),
+                    second: ParameterValue::Float(if sequence == 11 {
+                        6.0
+                    } else if sequence % 2 == 0 {
+                        -12.0
+                    } else {
+                        12.0
+                    }),
+                },
+            }))
+            .unwrap();
+    }
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut acknowledged = 0;
+    let mut blocks = 0;
+    loop {
+        h.pump();
+        for frame in h.render() {
+            assert!(
+                frame
+                    .iter()
+                    .all(|sample| sample.is_finite() && sample.abs() < 4.0)
+            );
+            last = frame;
+        }
+        blocks += 1;
+        while let Ok(event) = h.service.try_event() {
+            let ack = event.gesture_ack.expect("gesture acknowledgement");
+            assert!(ack.accepted, "{ack:?}");
+            acknowledged += 1;
+        }
+        let active = h
+            .audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .applied_revision
+            .load(Acquire);
+        if let Some((revision, metadata)) = h.submitted
+            && acknowledged == 8
+            && revision > applied
+            && active == revision
+            && metadata
+                .device_preview
+                .is_some_and(|preview| preview.sequence == 11)
+        {
+            break;
+        }
+        assert!(
+            blocks < 450,
+            "EQ gesture burst not applied: acknowledged={acknowledged}, active={active}, prior={applied}, submitted={:?}",
+            h.submitted
+        );
+        assert!(
+            Instant::now() < deadline,
+            "final EQ burst preview did not reach the active graph"
+        );
+        // A headless callback can outrun the worker by many times the device
+        // rate; give control-side preparation a chance to publish the burst.
+        std::thread::sleep(Duration::from_micros(200));
+    }
+    for _ in 0..12 {
+        for frame in h.render() {
+            assert!(
+                frame
+                    .iter()
+                    .all(|sample| sample.is_finite() && sample.abs() < 4.0)
+            );
+            last = frame;
+        }
+    }
+    let expected = 0.25 * 10.0_f32.powf(6.0 / 20.0);
+    assert!(
+        (last[0] - expected).abs() < 0.015,
+        "EQ burst final level {} vs {expected}",
+        last[0]
+    );
+}
+
+#[test]
 fn held_eq_creation_reaches_track_return_and_main_pcm_before_commit_with_atomic_history() {
     let _native = native_fixture();
     for owner in 0..3 {
@@ -38,15 +248,14 @@ fn held_eq_creation_reaches_track_return_and_main_pcm_before_commit_with_atomic_
             let imported = h.run(Request::Import(periodic_source(&files, 4096)));
             (applied, _) = h.applied(applied);
             let track = imported.state.project.tracks()[0].id();
-            let transient = owner == 0 && kind != NodeKind::LowCut;
-            if !transient {
-                h.run(Request::Edit(Command::SetLoopRegion {
-                    start: 0,
-                    end: 4096,
-                    enabled: true,
-                }));
-                (applied, _) = h.applied(applied);
-            }
+            let launched_section = owner == 0 && kind != NodeKind::LowCut;
+            let loop_set = h.run(Request::Edit(Command::SetLoopRegion {
+                start: 0,
+                end: 4096,
+                enabled: true,
+            }));
+            assert!(loop_set.error.is_none(), "{:?}", loop_set.error);
+            (applied, _) = h.applied(applied);
             let main_compensated = owner == 0 && kind == NodeKind::LowCut;
             if main_compensated {
                 h.run(Request::Edit(Command::InsertMainDevice {
@@ -106,8 +315,8 @@ fn held_eq_creation_reaches_track_return_and_main_pcm_before_commit_with_atomic_
                 panic!("eq")
             };
             let before = added.state.project.snapshot();
-            if transient {
-                // A real section-launch loop is absent from saved project state.
+            if launched_section {
+                // The enabled launch must match the canonical project loop.
                 let mut intent = h.seek_intent(1, added.state.revision, None, None);
                 intent.destination_frame = 0;
                 intent.section = Some(hex_session::arrangement_seek::SectionLaunch {
@@ -118,7 +327,10 @@ fn held_eq_creation_reaches_track_return_and_main_pcm_before_commit_with_atomic_
                 assert!(h.next().error.is_none());
                 assert!(h.seek_result().result.is_ok());
                 (applied, _) = h.applied(applied);
-                assert!(added.state.project.loop_region().is_none());
+                assert_eq!(
+                    added.state.project.loop_region(),
+                    Some(hex_project::LoopRegion::new(0, 4096, true).unwrap())
+                );
             }
             h.audio
                 .as_mut()
@@ -187,7 +399,7 @@ fn held_eq_creation_reaches_track_return_and_main_pcm_before_commit_with_atomic_
                 vec![node]
             );
             let held = level(&h);
-            if transient {
+            if launched_section {
                 assert_runtime_loop(&h);
             }
             if kind == NodeKind::Bell {
@@ -234,7 +446,7 @@ fn held_eq_creation_reaches_track_return_and_main_pcm_before_commit_with_atomic_
                 snapshot: draft,
             }));
             (applied, _) = h.applied(preview_audio);
-            if transient {
+            if launched_section {
                 assert_runtime_loop(&h);
             }
             assert_eq!(committed.state.project.next_identity(), before.next_id + 1);
@@ -250,7 +462,7 @@ fn held_eq_creation_reaches_track_return_and_main_pcm_before_commit_with_atomic_
             restored.next_id = before.next_id;
             assert_eq!(restored, before);
             assert!((level(&h) - dry).abs() < dry * 0.05);
-            if transient {
+            if launched_section {
                 assert_runtime_loop(&h);
             }
             let redone = h.run(Request::Redo);
@@ -260,7 +472,7 @@ fn held_eq_creation_reaches_track_return_and_main_pcm_before_commit_with_atomic_
                 assert_eq!(metadata.context.editor_revision, redone.state.revision);
             }
             assert_eq!(redone.state.project, committed.state.project);
-            if transient {
+            if launched_section {
                 assert_runtime_loop(&h);
             }
             if main_compensated {
@@ -407,7 +619,9 @@ fn held_sampler_note_survives_eq_creation_commit_and_history_inside_a_launched_l
         project_generation: 0,
         revision: added.state.revision,
         track,
-        empty_sampler: None,
+        slot: hex_session::service::SamplerLoadSlot::New(
+            hex_project::InstrumentLoadPlacement::First,
+        ),
         // Keep natural source exhaustion beyond the held-note/release checks.
         path: periodic_source(&files, 192_000),
         cancel: Arc::new(AtomicBool::new(false)),
@@ -418,6 +632,13 @@ fn held_sampler_note_survives_eq_creation_commit_and_history_inside_a_launched_l
         start: BeatTime::ZERO,
         length: BeatTime::ONE,
     }));
+    (applied, _) = h.applied(applied);
+    let loop_set = h.run(Request::Edit(Command::SetLoopRegion {
+        start: 0,
+        end: 4096,
+        enabled: true,
+    }));
+    assert!(loop_set.error.is_none(), "{:?}", loop_set.error);
     (applied, _) = h.applied(applied);
     let added = h.run(Request::Edit(Command::InsertDevice {
         track,
@@ -512,4 +733,118 @@ fn held_sampler_note_survives_eq_creation_commit_and_history_inside_a_launched_l
             .all(|sample| sample.abs() < 1e-7)
     );
     assert!(h.publication_refusals.is_empty());
+}
+
+#[test]
+fn refused_eq_creation_releases_the_editor_and_restart_discards_only_the_preview() {
+    use hex_engine::eq::EQ_TYPE_ID;
+    use hex_project::DeviceVariant;
+    use hex_session::device_gesture::GesturePhase;
+    use std::sync::atomic::Ordering::Release;
+
+    let _native = native_fixture();
+    let mut h = ResidentHarness::new();
+    assert!(h.next().error.is_none());
+    let (applied, _) = h.applied(0);
+    let added = h.run(Request::Edit(Command::AddTrack { name: "eq".into() }));
+    let Some(Created::Track(track)) = added.created else {
+        panic!("track");
+    };
+    let (applied, _) = h.applied(applied);
+    let before = h.run(Request::AddNativeDevice {
+        track,
+        class: hex_engine::NativeDeviceClass::Effect,
+        type_id: Box::new(EQ_TYPE_ID),
+        before: None,
+    });
+    let (applied, _) = h.applied(applied);
+    let device = before.state.project.track(track).unwrap().devices()[0].id();
+    let snapshot_for = |state: &hex_session::service::ViewState| {
+        let next_id = state.project.next_identity();
+        let node = Node::new(NodeId::new(next_id).unwrap(), 1200.0, 6.0, 0).unwrap();
+        EqNodeCreationSnapshot::new(node, DeviceVariant::A, next_id).unwrap()
+    };
+    let snapshot = snapshot_for(&before.state);
+    let key = |token| GestureKey {
+        generation: 0,
+        token,
+    };
+    let begin = |token, snapshot| {
+        Request::DeviceGesture(GestureRequest::BeginEqCreation {
+            key: key(token),
+            device,
+            snapshot,
+        })
+    };
+    let change = |token, snapshot| {
+        Request::DeviceGesture(GestureRequest::ChangeEqCreation {
+            key: key(token),
+            sequence: 1,
+            snapshot,
+        })
+    };
+    let commit = |token, snapshot| {
+        Request::DeviceGesture(GestureRequest::CommitEqCreation {
+            key: key(token),
+            sequence: 2,
+            snapshot,
+        })
+    };
+
+    assert!(h.run(begin(1, snapshot)).gesture_ack.unwrap().accepted);
+    h.refuse.store(true, Release);
+    let refused = h.run(change(1, snapshot));
+    assert!(!refused.gesture_ack.unwrap().accepted);
+    assert!(refused.device_preview.is_none());
+    let refused = h.run(commit(1, snapshot));
+    let ack = refused.gesture_ack.unwrap();
+    assert_eq!((ack.key, ack.phase), (key(1), GesturePhase::Commit));
+    assert!(!ack.accepted && !ack.preview_retained);
+    assert!(refused.active_device_gesture.is_none());
+    assert_eq!(refused.state.revision, before.state.revision);
+    assert_eq!(refused.state.project, before.state.project);
+
+    h.refuse.store(false, Release);
+    assert!(h.run(begin(2, snapshot)).gesture_ack.unwrap().accepted);
+    let committed = h.run(commit(2, snapshot));
+    assert!(committed.gesture_ack.unwrap().accepted);
+    assert_eq!(committed.state.revision, before.state.revision + 1);
+    let state = committed.state.project.device(device).unwrap().state();
+    assert_eq!(EqState::decode(state).unwrap().nodes, vec![snapshot.node]);
+    let (applied, _) = h.applied(applied);
+    let undone = h.run(Request::Undo);
+    let mut restored = undone.state.project.snapshot();
+    let before = before.state.project.snapshot();
+    restored.next_id = before.next_id;
+    assert_eq!(restored, before);
+    let (applied, _) = h.applied(applied);
+
+    let snapshot = snapshot_for(&undone.state);
+    assert!(h.run(begin(3, snapshot)).gesture_ack.unwrap().accepted);
+    assert!(h.run(change(3, snapshot)).gesture_ack.unwrap().accepted);
+    let (_, metadata) = h.applied(applied);
+    assert_eq!(metadata.device_preview.unwrap().key, key(3));
+    h.refuse.store(true, Release);
+    let retained = h.run(commit(3, snapshot));
+    assert!(retained.gesture_ack.unwrap().preview_retained);
+    assert!(retained.device_preview.is_some());
+
+    h.refuse.store(false, Release);
+    let old_output = h.audio.as_ref().unwrap().control.output_identity().unwrap();
+    let restarted = h.run(Request::RestartAudio {
+        project_generation: 0,
+        request_id: 1,
+    });
+    let retired = restarted.gesture_ack.unwrap();
+    assert_eq!((retired.key, retired.phase), (key(3), GesturePhase::Cancel));
+    assert!(!retired.preview_retained);
+    assert!(restarted.active_device_gesture.is_none());
+    assert!(restarted.device_preview.is_none());
+    assert_eq!(restarted.state.revision, undone.state.revision);
+    assert_eq!(restarted.state.project, undone.state.project);
+    h.release_relinquished_output();
+    h.wait_fresh_output(old_output);
+    let (_, metadata) = h.applied(0);
+    assert_eq!(metadata.context.editor_revision, undone.state.revision);
+    assert!(metadata.device_preview.is_none());
 }

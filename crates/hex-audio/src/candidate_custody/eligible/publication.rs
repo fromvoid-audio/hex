@@ -24,7 +24,7 @@ mod streaming;
 use resources::RootResourceWitness;
 pub(super) use resources::remaining_handle_reservation;
 pub(in crate::candidate_custody) use streaming::OrdinaryReservation;
-pub(crate) use streaming::{ActiveView, OrdinaryStreams};
+pub(crate) use streaming::{ActiveView, OrdinaryStreams, QuantumFailure, QuantumPins};
 pub(crate) use streaming::{StageAction, StreamInstall, StreamOutcome, StreamProgress};
 mod preparation;
 use preparation::PreparationExecution;
@@ -220,9 +220,11 @@ struct State {
     manifest: Option<AudioCandidateTransfer>,
     domain_refs: [Option<AudioCandidateDomainToken>; 2],
     streaming: Option<streaming::Workspace>,
+    device_insert: Option<crate::prepared::PublicationReceiptOwner>,
 }
 pub(crate) struct Queued {
     state: Box<State>,
+    pub(crate) insert_cut: Option<u64>,
 }
 pub(crate) struct Returned {
     state: Option<Box<State>>,
@@ -261,6 +263,9 @@ impl Returned {
 impl Queued {
     /// Called at the actual queue rejection frontier, never at staging time.
     pub(crate) fn reject_before_install(self) -> Returned {
+        if let Some(receipt) = self.state.device_insert.as_ref() {
+            receipt.returned(None);
+        }
         if let Some(claims) = self.state.claims.as_ref() {
             claims.life.cancellation.store(FINISHED, Ordering::Release);
         }
@@ -836,15 +841,14 @@ impl super::Custody {
                 .position(|slot| slot.phase == Phase::Vacant)
                 .ok_or("constructor runtime cells are full")?
         };
-        if let Some(pending) = bank.publication.slots[index].preparation_reservation {
-            if summary.member_rows > pending.member_rows
+        if let Some(pending) = bank.publication.slots[index].preparation_reservation
+            && (summary.member_rows > pending.member_rows
                 || summary.transfer_rows > pending.transfer_rows
                 || summary.shared_resource_handles > pending.handle_rows
                 || retained > bank.publication.slots[index].retained
-                || peak > bank.publication.slots[index].peak
-            {
-                return Err("candidate exceeded its construction reservation");
-            }
+                || peak > bank.publication.slots[index].peak)
+        {
+            return Err("candidate exceeded its construction reservation");
         }
         let runtime_storage = bank.publication.slots[index]
             .streaming
@@ -913,6 +917,7 @@ impl super::Custody {
             manifest: None,
             domain_refs: std::array::from_fn(|index| domains.get(index).copied()),
             streaming: None,
+            device_insert: None,
         })
     }
     fn commit_stage(
@@ -1008,7 +1013,13 @@ impl super::Custody {
         let _ = runtime.set_device_metering(true);
         state.runtime = Some(runtime);
         slot.life.live.store(true, Ordering::Release);
-        (Queued { state }, AudioCandidateTicket { stamp })
+        (
+            Queued {
+                state,
+                insert_cut: None,
+            },
+            AudioCandidateTicket { stamp },
+        )
     }
 }
 

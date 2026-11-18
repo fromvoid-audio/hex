@@ -8,6 +8,8 @@
 use crate::Frame;
 use std::{fmt, mem::size_of};
 
+mod block_origins;
+pub(crate) use block_origins::OriginWindow;
 mod delay;
 mod plan;
 pub use delay::DelayPair;
@@ -131,6 +133,9 @@ pub struct TransportStamp {
     /// Loop-normalized Arrangement beat when representable in Q32.32.
     /// An unavailable beat does not invalidate the exact frame identity.
     pub arrangement_beat_raw: Option<u64>,
+    /// Meter and active cycle at the same source origin as the audio.
+    pub meter: Option<hex_project::Meter>,
+    pub cycle_beats_raw: Option<(u64, u64)>,
 }
 
 /// One fixed prepared graph. Every edge uses the plan's stable-key sorted index.
@@ -303,6 +308,10 @@ impl CompensationRuntime {
         self.stamps.at_delay(delay_frames as usize).flatten()
     }
 
+    pub(crate) fn stamp_at_delay_ref(&self, delay_frames: u32) -> Option<&TransportStamp> {
+        self.stamps.at_delay_ref(delay_frames as usize)?.as_ref()
+    }
+
     /// Preview an upcoming stage's Arrangement frame before its stamp is pushed.
     /// The supplied incoming projection belongs to the same planned clock as
     /// the caller's eventual render. Historical stamps are read verbatim from
@@ -385,6 +394,18 @@ impl CompensationRuntime {
     }
     pub(crate) fn history_horizon(&self) -> u32 {
         self.plan.max_latency_frames()
+    }
+    pub(crate) fn edge_history_is_silent(&self, index: usize) -> bool {
+        self.is_closed()
+            && self
+                .edges
+                .get(index)
+                .is_some_and(DelayPair::history_is_silent)
+    }
+    /// True when no committed routing edge holds PCM. Transport stamps do not
+    /// affect signal quiescence. This visits only the bounded edge table.
+    pub(crate) fn pcm_history_is_silent(&self) -> bool {
+        self.is_closed() && self.edges.iter().all(DelayPair::history_is_silent)
     }
     pub(crate) fn can_copy_edge_history_from(
         &self,

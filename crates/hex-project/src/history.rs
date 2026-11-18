@@ -1,5 +1,6 @@
 use crate::{Command, Created, Invalid, Project};
 use std::collections::VecDeque;
+use std::sync::Arc;
 
 /// Bounded snapshot history on the control thread. Oldest edits expire at capacity.
 /// IDs never rewind across undo, redo or branching, so stale references stay stale.
@@ -14,13 +15,48 @@ struct HistoryEntry {
     stopped_bounce: bool,
 }
 
+/// A rate-changing edge uses the exact same bounded history stacks as edits.
+pub enum SampleRateHistoryAction {
+    Apply {
+        rate: u32,
+        mode: crate::SampleRateMode,
+    },
+    Undo,
+    Redo,
+}
+
+/// One validated edit and its reserved history step. It can outlive the
+/// Editor borrow while an external owner prepares or applies the candidate.
+/// Dropping it leaves the authored project and history unchanged.
+#[must_use]
+pub struct StagedProjectEdit {
+    editor_identity: Arc<()>,
+    history_revision: u64,
+    project: Project,
+    created: Created,
+    changed: bool,
+    midi_effect: Option<crate::MidiHistoryEffect>,
+    section_publication: bool,
+    stopped_bounce: bool,
+}
+
+impl StagedProjectEdit {
+    pub fn project(&self) -> &Project {
+        &self.project
+    }
+}
+
 pub struct Editor {
     project: Project,
     undo: VecDeque<HistoryEntry>,
     redo: Vec<HistoryEntry>,
     capacity: usize,
+    identity: Arc<()>,
+    history_revision: u64,
 }
 impl Editor {
+    /// Start history for an already validated project, including retained source
+    /// paths. Subsequent edits validate source and receiver bindings before commit.
     pub fn new(project: Project, capacity: usize) -> Result<Self, Invalid> {
         if !(1..=128).contains(&capacity) {
             return Err(Invalid("history capacity must be 1..128"));
@@ -30,6 +66,8 @@ impl Editor {
             undo: VecDeque::new(),
             redo: Vec::new(),
             capacity,
+            identity: Arc::new(()),
+            history_revision: 0,
         })
     }
     pub fn project(&self) -> &Project {
@@ -89,6 +127,136 @@ impl Editor {
         .is_some_and(|entry| entry.section_publication)
     }
 
+    /// Prepare a rate edge with the optional live-state projection validated
+    /// by the Session owner. The projection describes the outgoing project
+    /// with its freshly captured device state. Failure and no-op restore the
+    /// exact original model and leave both history stacks unchanged.
+    pub fn change_sample_rate_prepared<T, E: From<Invalid>>(
+        &mut self,
+        action: SampleRateHistoryAction,
+        outgoing: Option<Project>,
+        prepare: impl FnOnce(&Project) -> Result<T, E>,
+    ) -> Result<Option<T>, E> {
+        if outgoing.as_ref().is_some_and(|project| {
+            project.sample_rate() != self.project.sample_rate()
+                || project.sample_rate_mode() != self.project.sample_rate_mode()
+        }) {
+            return Err(E::from(Invalid(
+                "captured project clock differs from the current rate",
+            )));
+        }
+        let original = outgoing.map(|project| std::mem::replace(&mut self.project, project));
+        let result = match action {
+            SampleRateHistoryAction::Apply { rate, mode } => {
+                self.apply_sample_rate(rate, mode, prepare)
+            }
+            SampleRateHistoryAction::Undo => self.undo_prepared(prepare),
+            SampleRateHistoryAction::Redo => self.redo_prepared(prepare),
+        };
+        if !matches!(result, Ok(Some(_)))
+            && let Some(original) = original
+        {
+            self.project = original;
+        }
+        result
+    }
+
+    fn apply_sample_rate<T, E: From<Invalid>>(
+        &mut self,
+        rate: u32,
+        mode: crate::SampleRateMode,
+        prepare: impl FnOnce(&Project) -> Result<T, E>,
+    ) -> Result<Option<T>, E> {
+        let candidate = self
+            .project
+            .at_sample_rate(rate)?
+            .with_sample_rate_mode(mode);
+        if candidate == self.project {
+            return Ok(None);
+        }
+        self.undo
+            .try_reserve(1)
+            .map_err(|_| E::from(Invalid("could not reserve sample rate history")))?;
+        let prepared = prepare(&candidate)?;
+        self.commit_candidate(candidate, None, false, false);
+        Ok(Some(prepared))
+    }
+
+    fn commit_candidate(
+        &mut self,
+        candidate: Project,
+        midi_effect: Option<crate::MidiHistoryEffect>,
+        section_publication: bool,
+        stopped_bounce: bool,
+    ) {
+        let previous = std::mem::replace(&mut self.project, candidate);
+        self.push_undo(previous, midi_effect, section_publication, stopped_bounce);
+    }
+
+    fn push_undo(
+        &mut self,
+        previous: Project,
+        midi_effect: Option<crate::MidiHistoryEffect>,
+        section_publication: bool,
+        stopped_bounce: bool,
+    ) {
+        if self.undo.len() == self.capacity {
+            self.undo.pop_front();
+        }
+        self.undo.push_back(HistoryEntry {
+            project: previous,
+            midi_effect,
+            section_publication,
+            stopped_bounce,
+        });
+        self.redo.clear();
+        self.advance_history_revision();
+    }
+
+    fn advance_history_revision(&mut self) {
+        self.history_revision = self.history_revision.saturating_add(1);
+    }
+
+    /// Commit one device state with the actual pre-gesture state as its Undo
+    /// preimage. Preparation still compares the canonical source and candidate.
+    pub fn replace_captured_device_state<T, E: From<Invalid>>(
+        &mut self,
+        device: crate::DeviceId,
+        before: hex_lattice_contract::NativeDeviceState,
+        after: hex_lattice_contract::NativeDeviceState,
+        prepare: impl FnOnce(&Project, &Project) -> Result<T, E>,
+    ) -> Result<T, E> {
+        let original = self
+            .project
+            .device(device)
+            .ok_or(Invalid("device no longer exists"))?;
+        if before.type_id() != original.state().type_id() || after.type_id() != before.type_id() {
+            return Err(Invalid("captured device type changed").into());
+        }
+        let previous = self
+            .project
+            .preview_device_edit(&Command::ReplaceDeviceState {
+                device,
+                state: before,
+            })?;
+        let candidate = self
+            .project
+            .preview_device_edit(&Command::ReplaceDeviceState {
+                device,
+                state: after,
+            })?;
+        if previous == candidate {
+            return Err(Invalid("captured device edit has no state change").into());
+        }
+        self.undo
+            .try_reserve(1)
+            .map_err(|_| E::from(Invalid("could not reserve device edit history")))?;
+        let prepared = prepare(&self.project, &candidate)?;
+        self.project = candidate;
+        self.push_undo(previous, None, false, false);
+        Ok(prepared)
+    }
+
     pub fn execute(&mut self, command: Command) -> Result<Created, Invalid> {
         self.execute_validated(command, |_| Ok(()))
     }
@@ -138,6 +306,43 @@ impl Editor {
         require_midi: bool,
         prepare: impl FnOnce(&Project, &Project) -> Result<T, E>,
     ) -> Result<(Created, T), E> {
+        let edit = self.stage_transition(command, require_midi)?;
+        let prepared = prepare(&self.project, edit.project())?;
+        Ok((self.commit_staged_edit(edit)?, prepared))
+    }
+
+    /// Validate one command and reserve history before a delayed consumer
+    /// can publish its graph. The canonical project remains available to save.
+    pub fn stage_edit(&mut self, command: Command) -> Result<StagedProjectEdit, Invalid> {
+        self.stage_transition(command, false)
+    }
+
+    /// Commit exactly the prepared edit, consuming its reserved history step.
+    /// The caller owns the external approval and must prevent intervening edits
+    /// once publication may install. A stale or foreign candidate is refused.
+    pub fn commit_staged_edit(&mut self, edit: StagedProjectEdit) -> Result<Created, Invalid> {
+        if edit.history_revision != self.history_revision
+            || !Arc::ptr_eq(&edit.editor_identity, &self.identity)
+        {
+            return Err(Invalid("staged edit no longer matches project history"));
+        }
+        // No-op controls should neither add history nor erase a redo branch.
+        if edit.changed {
+            self.commit_candidate(
+                edit.project,
+                edit.midi_effect,
+                edit.section_publication,
+                edit.stopped_bounce,
+            );
+        }
+        Ok(edit.created)
+    }
+
+    fn stage_transition(
+        &mut self,
+        command: Command,
+        require_midi: bool,
+    ) -> Result<StagedProjectEdit, Invalid> {
         let mut command = command;
         let alias_plan = crate::clip_alias_edit::Plan::capture(&self.project, &mut command)?;
         let section_publication = command.requires_section_publication();
@@ -152,14 +357,16 @@ impl Editor {
             plan.ok().flatten()
         };
         if require_midi && plan.is_none() {
-            return Err(E::from(Invalid("unsupported midi edit command")));
+            return Err(Invalid("unsupported midi edit command"));
         }
         let mut candidate = self.project.clone();
         let result = candidate.apply(command)?;
         let alias_changed = alias_plan.finish(&mut candidate)?;
+        candidate.prune_deleted_sidechains();
         if alias_changed {
             Project::from_snapshot(candidate.snapshot())?;
         }
+        candidate.validate_serial_units()?;
         candidate.validate_source_bindings()?;
         candidate.validate_track_hierarchy()?;
         candidate.validate_changed_midi_occupancy(&self.project)?;
@@ -167,36 +374,35 @@ impl Editor {
         candidate.validate_retained_audio_roots()?;
         candidate.validate_device_asset_references()?;
         candidate.validate_device_automation()?;
+        candidate.validate_device_modulation()?;
         candidate.validate_midi_volumes()?;
         candidate.validate_playable_routes()?;
         let effect = plan.and_then(|p| p.finish(result, &self.project, &candidate));
-        if require_midi && candidate != self.project && effect.is_none() {
-            return Err(E::from(Invalid(
-                "midi command changed unsupported project state",
-            )));
+        let changed = candidate != self.project;
+        if require_midi && changed && effect.is_none() {
+            return Err(Invalid("midi command changed unsupported project state"));
         }
-        if candidate != self.project {
+        if changed {
             self.undo
                 .try_reserve(1)
-                .map_err(|_| E::from(Invalid("could not reserve edit history")))?;
+                .map_err(|_| Invalid("could not reserve edit history"))?;
         }
-        let prepared = prepare(&self.project, &candidate)?;
-        // No-op controls should neither add history nor erase a redo branch.
-        if candidate == self.project {
-            return Ok((result, prepared));
+        // Renew the identity before admission so commit never allocates a
+        // replacement key, and an exhausted revision cannot alias old edits.
+        if self.history_revision == u64::MAX {
+            self.identity = Arc::new(());
+            self.history_revision = 0;
         }
-        let previous = std::mem::replace(&mut self.project, candidate);
-        if self.undo.len() == self.capacity {
-            self.undo.pop_front();
-        }
-        self.undo.push_back(HistoryEntry {
-            project: previous,
+        Ok(StagedProjectEdit {
+            editor_identity: Arc::clone(&self.identity),
+            history_revision: self.history_revision,
+            project: candidate,
+            created: result,
+            changed,
             midi_effect: effect,
             section_publication,
             stopped_bounce,
-        });
-        self.redo.clear();
-        Ok((result, prepared))
+        })
     }
     /// Apply at most MAX_CLIPS ordered commands to one private candidate and
     /// prepare it once. Preparation sees each command's result in input order.
@@ -225,8 +431,10 @@ impl Editor {
         )
     }
 
-    /// Apply the captured import policy to each new Arrangement source before
-    /// placement and preparation. Refusal preserves the complete previous history.
+    /// Apply the captured import policy to each new or reused Arrangement source
+    /// before placement and preparation. `Command::ImportExistingAudio` members
+    /// place an existing asset under the same law without adding one. Refusal
+    /// preserves the complete previous history.
     /// Console imports remain unwarped and reject a non-Off policy.
     pub fn execute_audio_imports_with_warp_prepared<T, E: From<Invalid>>(
         &mut self,
@@ -234,6 +442,22 @@ impl Editor {
         warp: crate::AudioImportWarp,
         prepare: impl FnOnce(&Project, &[Created]) -> Result<T, E>,
     ) -> Result<(Vec<Created>, T), E> {
+        self.execute_audio_imports_with_track_gain_prepared(commands, warp, None, prepare)
+    }
+
+    /// Apply an optional linear gain to tracks created by an Arrangement import.
+    /// Existing tracks and Console imports retain their authored gains. The gain
+    /// is captured before preparation and participates in the same undo step.
+    pub fn execute_audio_imports_with_track_gain_prepared<T, E: From<Invalid>>(
+        &mut self,
+        commands: Vec<Command>,
+        warp: crate::AudioImportWarp,
+        new_track_gain: Option<f32>,
+        prepare: impl FnOnce(&Project, &[Created]) -> Result<T, E>,
+    ) -> Result<(Vec<Created>, T), E> {
+        if new_track_gain.is_some_and(|gain| !gain.is_finite() || !(0.0..=2.0).contains(&gain)) {
+            return Err(E::from(Invalid("gain must be finite and within 0..2")));
+        }
         let arrangement = !commands.is_empty()
             && commands.iter().all(|command| {
                 matches!(
@@ -241,20 +465,44 @@ impl Editor {
                     Command::ImportPreparedAudioTrackAt { .. }
                         | Command::ImportPreparedAudioClip { .. }
                         | Command::ImportPreparedAudioClipWithOverwrite { .. }
+                ) || matches!(
+                    command,
+                    Command::ImportExistingAudio { placement, .. } if placement.is_arrangement()
                 )
             });
+        if !arrangement
+            && new_track_gain.is_some()
+            && commands.iter().any(|command| {
+                matches!(command, Command::ImportPreparedAudioTrackAt { .. })
+                    || matches!(
+                        command,
+                        Command::ImportExistingAudio {
+                            placement: crate::ExistingAudioPlacement::NewTrack { .. },
+                            ..
+                        }
+                    )
+            })
+        {
+            return Err(E::from(Invalid(
+                "new track gain requires an arrangement import batch",
+            )));
+        }
         if !arrangement && warp != crate::AudioImportWarp::Off {
             return Err(E::from(Invalid(
                 "auto-warp requires arrangement audio imports",
             )));
         }
-        self.execute_batch_prepared(commands, arrangement.then_some(warp), prepare)
+        self.execute_batch_prepared(
+            commands,
+            arrangement.then_some((warp, new_track_gain)),
+            prepare,
+        )
     }
 
     fn execute_batch_prepared<T, E: From<Invalid>>(
         &mut self,
         commands: Vec<Command>,
-        arrangement_import: Option<crate::AudioImportWarp>,
+        arrangement_import: Option<(crate::AudioImportWarp, Option<f32>)>,
         prepare: impl FnOnce(&Project, &[Created]) -> Result<T, E>,
     ) -> Result<(Vec<Created>, T), E> {
         if commands.len() > crate::MAX_CLIPS {
@@ -266,25 +514,29 @@ impl Editor {
             .try_reserve_exact(commands.len())
             .map_err(|_| E::from(Invalid("could not reserve batch results")))?;
         let mut candidate = self.project.clone();
-        if let Some(warp) = arrangement_import {
-            results = candidate.apply_audio_imports(commands, warp)?;
+        if let Some((warp, new_track_gain)) = arrangement_import {
+            results = candidate.apply_audio_imports(commands, warp, new_track_gain)?;
         } else {
             let mut alias_changed = false;
             for mut command in commands {
                 let alias_plan = crate::clip_alias_edit::Plan::capture(&candidate, &mut command)?;
                 results.push(candidate.apply(command)?);
+                candidate.prune_deleted_sidechains();
                 alias_changed |= alias_plan.finish(&mut candidate)?;
             }
             if alias_changed {
                 Project::from_snapshot(candidate.snapshot())?;
             }
         }
+        candidate.validate_serial_units()?;
+        candidate.validate_source_bindings()?;
         candidate.validate_track_hierarchy()?;
         candidate.validate_changed_midi_occupancy(&self.project)?;
         candidate.validate_changed_arrangement_occupancy(&self.project)?;
         candidate.validate_retained_audio_roots()?;
         candidate.validate_device_asset_references()?;
         candidate.validate_device_automation()?;
+        candidate.validate_device_modulation()?;
         candidate.validate_midi_volumes()?;
         candidate.validate_playable_routes()?;
         // Reserve before preparation/commit. No history allocation follows it.
@@ -293,17 +545,7 @@ impl Editor {
             .map_err(|_| E::from(Invalid("could not reserve batch history")))?;
         let prepared = prepare(&candidate, &results)?;
         if candidate != self.project {
-            let previous = std::mem::replace(&mut self.project, candidate);
-            if self.undo.len() == self.capacity {
-                self.undo.pop_front();
-            }
-            self.undo.push_back(HistoryEntry {
-                project: previous,
-                midi_effect: None,
-                section_publication,
-                stopped_bounce: false,
-            });
-            self.redo.clear();
+            self.commit_candidate(candidate, None, section_publication, false);
         }
         Ok((results, prepared))
     }
@@ -322,7 +564,16 @@ impl Editor {
             section_publication: previous.section_publication,
             stopped_bounce: previous.stopped_bounce,
         });
+        self.advance_history_revision();
         true
+    }
+
+    /// Undo without an external preparation step. Returns false only when
+    /// history is empty; reservation failures leave history unchanged.
+    /// Callers that must prepare playback before committing use `undo_prepared`.
+    pub fn try_undo(&mut self) -> Result<bool, Invalid> {
+        self.undo_prepared(|_| Ok::<(), Invalid>(()))
+            .map(|result| result.is_some())
     }
 
     /// Prepare the previous snapshot before moving it across history. Failure
@@ -361,6 +612,7 @@ impl Editor {
             section_publication,
             stopped_bounce,
         });
+        self.advance_history_revision();
         Ok(Some(prepared))
     }
 
@@ -376,7 +628,16 @@ impl Editor {
             section_publication: next.section_publication,
             stopped_bounce: next.stopped_bounce,
         });
+        self.advance_history_revision();
         true
+    }
+
+    /// Redo without an external preparation step. Returns false only when
+    /// history is empty; reservation failures leave history unchanged.
+    /// Callers that must prepare playback before committing use `redo_prepared`.
+    pub fn try_redo(&mut self) -> Result<bool, Invalid> {
+        self.redo_prepared(|_| Ok::<(), Invalid>(()))
+            .map(|result| result.is_some())
     }
 
     /// Prepare the next snapshot before moving it across history. Failure
@@ -418,7 +679,393 @@ impl Editor {
             section_publication,
             stopped_bounce,
         });
+        self.advance_history_revision();
         Ok(Some(prepared))
+    }
+}
+
+#[cfg(test)]
+mod staged_edit_tests {
+    use super::*;
+
+    fn insert() -> Command {
+        Command::InsertMainDevice {
+            before: None,
+            state: crate::default_instrument_state().unwrap(),
+        }
+    }
+
+    #[test]
+    fn staged_insert_is_private_until_its_one_history_commit() {
+        let original = Project::new(48_000).unwrap();
+        let mut editor = Editor::new(original.clone(), 2).unwrap();
+        let abandoned = editor.stage_edit(insert()).unwrap();
+        let candidate = abandoned.project().clone();
+        assert_eq!(candidate.main_devices().len(), 1);
+        assert_eq!(editor.project(), &original);
+        assert!(!editor.can_undo());
+        assert!(!editor.can_redo());
+        drop(abandoned);
+        assert_eq!(editor.project(), &original);
+
+        let insertion = editor.stage_edit(insert()).unwrap();
+        assert_eq!(insertion.project(), &candidate);
+        assert_eq!(
+            editor.commit_staged_edit(insertion).unwrap(),
+            Created::Device(candidate.main_devices()[0].id())
+        );
+        assert_eq!(editor.project(), &candidate);
+        assert!(editor.undo());
+        assert!(editor.project().main_devices().is_empty());
+        assert!(!editor.can_undo());
+        assert!(editor.redo());
+        assert_eq!(editor.project(), &candidate);
+    }
+
+    #[test]
+    fn staged_edit_cannot_cross_editor_or_return_to_an_old_history_edge() {
+        let original = Project::new(48_000).unwrap();
+        let mut editor = Editor::new(original.clone(), 2).unwrap();
+        let mut other = Editor::new(original.clone(), 2).unwrap();
+        let foreign = editor.stage_edit(insert()).unwrap();
+        assert!(other.commit_staged_edit(foreign).is_err());
+        assert_eq!(other.project(), &original);
+        assert!(!other.can_undo());
+
+        let stale = editor.stage_edit(insert()).unwrap();
+        editor.execute(Command::MasterGain { gain: 0.5 }).unwrap();
+        assert!(editor.try_undo().unwrap());
+        assert_eq!(editor.project(), &original);
+        assert!(editor.commit_staged_edit(stale).is_err());
+        assert!(editor.can_redo());
+
+        let before_redo = editor.stage_edit(insert()).unwrap();
+        assert!(editor.try_redo().unwrap());
+        assert!(editor.commit_staged_edit(before_redo).is_err());
+        assert!(editor.project().main_devices().is_empty());
+    }
+
+    #[test]
+    fn a_staged_no_op_keeps_redo_and_a_batch_invalidates_older_candidates() {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 2).unwrap();
+        editor.execute(Command::MasterGain { gain: 0.5 }).unwrap();
+        assert!(editor.undo());
+        let no_op = editor
+            .stage_edit(Command::MasterGain { gain: 1.0 })
+            .unwrap();
+        editor.commit_staged_edit(no_op).unwrap();
+        assert!(!editor.can_undo());
+        assert!(editor.can_redo());
+
+        let older = editor.stage_edit(insert()).unwrap();
+        editor
+            .execute_many_prepared(vec![Command::MasterGain { gain: 0.7 }], |_, _| {
+                Ok::<_, Invalid>(())
+            })
+            .unwrap();
+        assert!(editor.commit_staged_edit(older).is_err());
+        assert!(editor.project().main_devices().is_empty());
+        assert!(!editor.can_redo());
+    }
+}
+
+#[cfg(test)]
+mod retained_source_batch_tests {
+    use super::*;
+
+    fn editor_with_receiver(retained: bool) -> (Editor, crate::TrackId, crate::SourceId) {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+        let Created::Track(receiver) = editor
+            .execute(Command::AddMidiTrack {
+                name: "receiver".into(),
+            })
+            .unwrap()
+        else {
+            panic!("track")
+        };
+        let Created::NativeSource(source) = editor
+            .execute(Command::CreateNativeSource {
+                name: "source".into(),
+                devices: vec![crate::default_instrument_state().unwrap()],
+                instrument_index: 0,
+            })
+            .unwrap()
+        else {
+            panic!("source")
+        };
+        editor
+            .execute(Command::BindTrackSource {
+                track: receiver,
+                source: Some(source),
+            })
+            .unwrap();
+        let mut snapshot = editor.project().snapshot();
+        if retained {
+            snapshot.retained_source_paths.push(receiver.value());
+        }
+        let editor = Editor::new(Project::from_snapshot(snapshot).unwrap(), 16).unwrap();
+        (editor, receiver, source)
+    }
+
+    #[test]
+    fn batches_validate_retained_receiver_before_preparation_and_preserve_history_on_refusal() {
+        for unlink in [false, true] {
+            let (mut editor, receiver, source) = editor_with_receiver(true);
+            editor
+                .execute(Command::RenameTrack {
+                    track: receiver,
+                    name: "changed".into(),
+                })
+                .unwrap();
+            assert!(editor.undo());
+            let before = editor.project().snapshot();
+            let undo = editor.can_undo();
+            let redo = editor.can_redo();
+            let mut called = false;
+            let command = if unlink {
+                Command::BindTrackSource {
+                    track: receiver,
+                    source: None,
+                }
+            } else {
+                Command::SetNativeSourceReceiver {
+                    source,
+                    track: None,
+                }
+            };
+            let result = editor.execute_many_prepared(
+                vec![
+                    Command::AddTrack {
+                        name: "temporary".into(),
+                    },
+                    command,
+                ],
+                |_, _| {
+                    called = true;
+                    Ok::<(), Invalid>(())
+                },
+            );
+            assert!(result.is_err());
+            assert!(!called, "invalid candidates must not reach preparation");
+            assert_eq!(editor.project().snapshot(), before);
+            assert_eq!(editor.can_undo(), undo);
+            assert_eq!(editor.can_redo(), redo);
+            assert!(editor.redo());
+            assert_eq!(editor.project().track(receiver).unwrap().name(), "changed");
+        }
+    }
+
+    #[test]
+    fn valid_retained_and_ordinary_batches_remain_editable_and_undoable() {
+        for retained in [false, true] {
+            let (mut editor, receiver, source) = editor_with_receiver(retained);
+            let before = editor.project().snapshot();
+            editor
+                .execute_many_prepared(
+                    vec![
+                        Command::SetNativeSourceReceiver {
+                            source,
+                            track: None,
+                        },
+                        Command::SetNativeSourceReceiver {
+                            source,
+                            track: Some(receiver),
+                        },
+                        Command::RenameTrack {
+                            track: receiver,
+                            name: "renamed".into(),
+                        },
+                    ],
+                    |_, _| Ok::<(), Invalid>(()),
+                )
+                .unwrap();
+            assert_eq!(editor.project().track(receiver).unwrap().name(), "renamed");
+            assert!(editor.undo());
+            assert_eq!(editor.project().snapshot(), before);
+            assert!(editor.redo());
+            assert_eq!(editor.project().track(receiver).unwrap().name(), "renamed");
+        }
+    }
+
+    fn add_peer(editor: &mut Editor, source: crate::SourceId) -> crate::TrackId {
+        let Created::Track(peer) = editor
+            .execute(Command::AddMidiTrack {
+                name: "peer".into(),
+            })
+            .unwrap()
+        else {
+            panic!("peer")
+        };
+        editor
+            .execute(Command::BindTrackSource {
+                track: peer,
+                source: Some(source),
+            })
+            .unwrap();
+        peer
+    }
+
+    fn group(editor: &mut Editor, tracks: &[crate::TrackId]) -> crate::TrackId {
+        let Created::Track(group) = editor
+            .execute(Command::GroupTracks {
+                tracks: crate::TrackSelectionIds::new(tracks).unwrap(),
+                name: "group".into(),
+            })
+            .unwrap()
+        else {
+            panic!("group")
+        };
+        group
+    }
+
+    #[test]
+    fn deleting_retained_receiver_cannot_strand_surviving_source_peers() {
+        for mode in 0..3 {
+            let (mut editor, receiver, source) = editor_with_receiver(true);
+            let peer = add_peer(&mut editor, source);
+            let target = if mode == 2 {
+                let inner = group(&mut editor, &[receiver]);
+                group(&mut editor, &[inner])
+            } else {
+                receiver
+            };
+            editor
+                .execute(Command::RenameTrack {
+                    track: peer,
+                    name: "changed".into(),
+                })
+                .unwrap();
+            assert!(editor.undo());
+            let before = editor.project().snapshot();
+            let undo = editor.can_undo();
+            let mut prepared = false;
+            let result = if mode == 1 {
+                editor
+                    .execute_many_prepared(vec![Command::RemoveTrack(target)], |_, _| {
+                        prepared = true;
+                        Ok::<(), Invalid>(())
+                    })
+                    .map(|_| ())
+            } else {
+                editor
+                    .execute_prepared(Command::RemoveTrack(target), |_| {
+                        prepared = true;
+                        Ok::<(), Invalid>(())
+                    })
+                    .map(|_| ())
+            };
+            assert!(result.is_err());
+            assert!(!prepared);
+            assert_eq!(editor.project().snapshot(), before);
+            assert_eq!(editor.can_undo(), undo);
+            assert!(editor.redo());
+            assert_eq!(editor.project().track(peer).unwrap().name(), "changed");
+        }
+    }
+
+    #[test]
+    fn retained_receiver_and_all_peers_can_be_deleted_together_and_undone() {
+        for grouped in [false, true] {
+            let (mut editor, receiver, source) = editor_with_receiver(true);
+            let peer = add_peer(&mut editor, source);
+            let group = grouped.then(|| {
+                let inner = group(&mut editor, &[receiver, peer]);
+                group(&mut editor, &[inner])
+            });
+            let before = editor.project().snapshot();
+            let command = match group {
+                Some(group) => Command::RemoveTrack(group),
+                None => Command::RemoveTracks(vec![receiver, peer]),
+            };
+            editor.execute(command).unwrap();
+            assert!(editor.project().track(receiver).is_none());
+            assert!(editor.project().track(peer).is_none());
+            assert_eq!(
+                editor.project().native_source(source).unwrap().receiver(),
+                None
+            );
+            assert!(editor.undo());
+            assert_eq!(editor.project().snapshot(), before);
+            assert!(editor.redo());
+            assert!(editor.project().track(receiver).is_none());
+        }
+        let (mut editor, receiver, source) = editor_with_receiver(true);
+        editor.execute(Command::RemoveTrack(receiver)).unwrap();
+        assert_eq!(
+            editor.project().native_source(source).unwrap().receiver(),
+            None
+        );
+        let (mut ordinary, receiver, source) = editor_with_receiver(false);
+        let peer = add_peer(&mut ordinary, source);
+        ordinary.execute(Command::RemoveTrack(receiver)).unwrap();
+        assert!(ordinary.project().track(peer).is_some());
+        assert_eq!(
+            ordinary.project().native_source(source).unwrap().receiver(),
+            None
+        );
+    }
+}
+
+#[cfg(test)]
+mod prepared_capacity_tests {
+    use super::*;
+
+    #[test]
+    fn fallible_simple_transitions_report_empty_and_retain_capacity() {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 1).unwrap();
+        assert!(!editor.try_undo().unwrap());
+        assert!(!editor.try_redo().unwrap());
+        for name in ["first", "second"] {
+            editor
+                .execute(Command::AddTrack { name: name.into() })
+                .unwrap();
+        }
+        assert!(editor.try_undo().unwrap());
+        assert_eq!(editor.project().tracks().len(), 1);
+        assert!(!editor.try_undo().unwrap());
+        assert!(editor.try_redo().unwrap());
+        assert_eq!(editor.project().tracks().len(), 2);
+        assert!(!editor.try_redo().unwrap());
+    }
+
+    #[test]
+    fn prepared_undo_and_redo_preserve_the_bounded_history() {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 2).unwrap();
+        for name in ["first", "second", "third"] {
+            editor
+                .execute(Command::AddTrack { name: name.into() })
+                .unwrap();
+        }
+        for expected_tracks in [2, 1] {
+            assert!(
+                editor
+                    .undo_prepared(|_| Ok::<(), Invalid>(()))
+                    .unwrap()
+                    .is_some()
+            );
+            assert_eq!(editor.project().tracks().len(), expected_tracks);
+        }
+        assert!(
+            editor
+                .undo_prepared(|_| Ok::<(), Invalid>(()))
+                .unwrap()
+                .is_none()
+        );
+        for expected_tracks in [2, 3] {
+            assert!(
+                editor
+                    .redo_prepared(|_| Ok::<(), Invalid>(()))
+                    .unwrap()
+                    .is_some()
+            );
+            assert_eq!(editor.project().tracks().len(), expected_tracks);
+        }
+        assert!(
+            editor
+                .redo_prepared(|_| Ok::<(), Invalid>(()))
+                .unwrap()
+                .is_none()
+        );
     }
 }
 

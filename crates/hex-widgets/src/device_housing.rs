@@ -1,5 +1,5 @@
-//! Shared device-housing display state. Panels are explicit placeholders and
-//! never edit mappings, devices or audio. State lasts while the caller's stable
+//! Shared device-housing display state and caller-supplied panel contents.
+//! State lasts while the caller's stable
 //! device identity is continuously rendered. Both header and body use that scope.
 use crate::{
     ActionStyle, ControlStyle, DEVICE_HEADER_ACTION_SIZE, DeviceFrameStyle, toggle_action,
@@ -26,6 +26,7 @@ fn state(window: &mut Window, cx: &mut App) -> Entity<Panels> {
 #[derive(IntoElement)]
 pub(super) struct Housing {
     pub body: AnyElement,
+    pub modulator_panel: Option<AnyElement>,
     pub title: AnyElement,
     pub leading: AnyElement,
     pub actions: AnyElement,
@@ -37,15 +38,20 @@ impl RenderOnce for Housing {
         let style = self.style.controls;
         let mut controls = div()
             .flex()
+            .flex_col()
+            .flex_shrink_0()
             .items_center()
-            .gap(px(crate::DEVICE_FRAME_HEADER_GAP))
-            .child(self.leading);
+            .gap(px(crate::DEVICE_FRAME_HEADER_GAP));
         for (index, (id, glyph, label)) in [
             ("device-macro-toggle", "m", "macro edit panel · placeholder"),
             (
                 "device-modulator-toggle",
                 "~",
-                "modulator panel · placeholder",
+                if self.modulator_panel.is_some() {
+                    "modulators"
+                } else {
+                    "modulator panel · unavailable"
+                },
             ),
         ]
         .into_iter()
@@ -116,27 +122,31 @@ impl RenderOnce for Housing {
             );
         }
         let visible = state.read(cx).visible;
-        let body = panel_body(self.body, style, visible);
+        let body = panel_body(self.body, self.modulator_panel, style, visible);
         div()
             .flex()
-            .flex_col()
             .flex_1()
+            .min_w_0()
             .min_h_0()
-            .child(crate::device_header(
-                self.title,
-                self.style,
-                controls,
-                self.actions,
-            ))
+            .child(
+                crate::device_header(self.title, self.style, self.leading, self.actions)
+                    .child(controls),
+            )
             .child(body)
     }
 }
-fn panel_body(body: AnyElement, style: ControlStyle, visible: [bool; 2]) -> AnyElement {
+fn panel_body(
+    body: AnyElement,
+    mut modulator_panel: Option<AnyElement>,
+    style: ControlStyle,
+    visible: [bool; 2],
+) -> AnyElement {
     let mut content = div()
         .id("device-housing-content")
         .flex()
         .flex_col()
         .flex_1()
+        .min_w_0()
         .min_h_0()
         .overflow_y_scroll();
     for (index, (id, title, detail)) in [
@@ -147,8 +157,8 @@ fn panel_body(body: AnyElement, style: ControlStyle, visible: [bool; 2]) -> AnyE
         ),
         (
             "device-modulator-panel",
-            "modulators · placeholder",
-            "modulation routing is not implemented",
+            "modulators",
+            "no supported modulation targets",
         ),
     ]
     .into_iter()
@@ -166,8 +176,18 @@ fn panel_body(body: AnyElement, style: ControlStyle, visible: [bool; 2]) -> AnyE
                     .bg(rgb(style.rail))
                     .text_color(rgb(style.text))
                     .text_size(px(style.font_size))
-                    .child(div().child(style.text_case.present(title)))
-                    .child(div().child(style.text_case.present(detail))),
+                    .child(if index == 1 {
+                        modulator_panel.take().unwrap_or_else(|| {
+                            div()
+                                .child(style.text_case.present("no supported modulation targets"))
+                                .into_any_element()
+                        })
+                    } else {
+                        div()
+                            .child(div().child(style.text_case.present(title)))
+                            .child(div().child(style.text_case.present(detail)))
+                            .into_any_element()
+                    }),
             );
         }
     }

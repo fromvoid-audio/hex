@@ -2,9 +2,26 @@
 // pointers and grant no edit, graph or DSP-application acknowledgement.
 #pragma once
 #include "macos_host.hpp"
+#include "macos_editor_position.hpp"
 
 namespace hex_instance {
 inline constexpr size_t CONTROLLER_PAGE_COUNT=4;
+inline constexpr uint8 TOGGLE_EDITOR=6;
+inline constexpr uint8 CLOSE_EDITOR=7;
+inline constexpr uint8 SELECTED_PARAMETERS=8;
+inline constexpr uint8 DETACH_EDITOR=11;
+inline constexpr uint8 REOPEN_EDITOR=12;
+inline constexpr uint8 SEAL_EDITOR_EDITS=13;
+inline constexpr uint8 DETACH_EDITOR_WHEN_IDLE=14;
+inline constexpr uint8 EDITOR_VISIBILITY=15;
+inline bool closes_open_editor(uint8 kind) {
+    return kind==TOGGLE_EDITOR || kind==CLOSE_EDITOR || kind==DETACH_EDITOR;
+}
+inline bool editor_request(uint8 kind) {
+    return closes_open_editor(kind) ||
+        kind==REOPEN_EDITOR || kind==SEAL_EDITOR_EDITS || kind==DETACH_EDITOR_WHEN_IDLE ||
+        kind==EDITOR_VISIBILITY;
+}
 struct ControllerQuery {
     uint16 first=0;uint64 revision=0;
     uint8 kind=0;uint32 id=0;uint64 bits=0;String128 text{};
@@ -13,6 +30,13 @@ struct ControllerQuery {
             id==other.id && bits==other.bits && !std::memcmp(text,other.text,sizeof(text));
     }
 };
+// The reopen kind uses the reserved revision/bits words as two doubles.
+inline EditorPosition editor_reopen_position(const ControllerQuery& query) {
+    EditorPosition position{};
+    std::memcpy(&position.x,&query.revision,8);
+    std::memcpy(&position.y,&query.bits,8);
+    return position;
+}
 struct ControllerConversion {
     uint32 id=0;uint8 status=3; // converted/refused/unsupported/missing
     double normalized=0,plain=std::numeric_limits<double>::quiet_NaN();
@@ -20,6 +44,7 @@ struct ControllerConversion {
 };
 struct ControllerParameter {
     ParameterInfo info{};
+    uint64 editor_sequence=0;
     ParamValue normalized=0;
     double plain=0,default_plain=0;
     String128 display{},default_display{};
@@ -30,6 +55,7 @@ struct ControllerParameterPage {
     uint16 first=0,total=0,count=0;
     bool changed=false;
     bool conversion=false;ControllerConversion converted{};
+    std::array<unsigned char,32> descriptor_signature{};
     std::array<ControllerParameter,CONTROLLER_PAGE_COUNT> parameters{};
 };
 static_assert(sizeof(ControllerParameterPage)<8192,
@@ -53,9 +79,17 @@ inline bool controller_text(String128 value) {
     return false;
 }
 inline bool valid_controller_query(const ControllerQuery& query) {
-    if(query.first>HOST_PARAMETER_COUNT || (query.first && !query.revision) || query.kind>5) return false;
+    if(query.first>HOST_PARAMETER_COUNT ||
+       (query.first && !query.revision && query.kind!=SELECTED_PARAMETERS) || query.kind>EDITOR_VISIBILITY) return false;
     String128 text{};std::memcpy(text,query.text,sizeof(text));
     if(!controller_text(text) || std::memcmp(text,query.text,sizeof(text))) return false;
+    if(query.kind==REOPEN_EDITOR) {
+        return !query.first && !text[0] &&
+            (query.id==1?editor_reopen_position(query).valid():!query.id && !query.revision && !query.bits);
+    }
+    if(editor_request(query.kind)) return !query.first && !query.revision && !query.id && !query.bits && !text[0];
+    if(query.kind==SELECTED_PARAMETERS) return !query.revision && !query.id && !query.bits && !text[0];
+    if(query.kind>5) return false;
     if(!query.kind) return !query.id && !query.bits && !text[0];
     if(query.first || query.id>static_cast<uint32>(std::numeric_limits<int32>::max())) return false;
     double value=0;std::memcpy(&value,&query.bits,8);
@@ -93,12 +127,18 @@ inline bool controller_conversion(IEditController* controller,const ParameterSna
 inline bool controller_page(IEditController* controller,const ParameterSnapshot* snapshot,
                             const ControllerQuery& query,ControllerParameterPage& result) {
     const auto first=query.first;const auto revision=query.revision;
-    if(![NSThread isMainThread] || !valid_controller_query(query)) return false;
+    if(![NSThread isMainThread] || !valid_controller_query(query) || editor_request(query.kind)) return false;
     result={};result.first=first;
     if((controller && !snapshot) || (snapshot && snapshot->count>HOST_PARAMETER_COUNT)) return false;
-    if(snapshot) {result.revision=snapshot->revision;result.total=static_cast<uint16>(snapshot->count);}
+    if(snapshot) {
+        result.revision=snapshot->revision;result.total=static_cast<uint16>(snapshot->count);
+        result.descriptor_signature=snapshot->descriptor_signature;
+    }
     if((revision && revision!=result.revision) || first>result.total) {result.changed=true;return true;}
-    if(query.kind) {
+    // Selected eligibility reads remain fresh while PCM feedback advances the
+    // ordinary enumeration revision. The original reader validates its target
+    // row before granting eligibility; this page itself is only copied data.
+    if(query.kind && query.kind!=SELECTED_PARAMETERS) {
         result.conversion=true;
         return controller_conversion(controller,snapshot,query,result.converted);
     }
@@ -106,6 +146,8 @@ inline bool controller_page(IEditController* controller,const ParameterSnapshot*
     for(size_t index=first;index<result.total && result.count<result.parameters.size();++index) {
         auto& parameter=result.parameters[result.count];
         parameter.info=snapshot->parameters[index].info;
+        // Same main-lane observation as the value and its formatted text.
+        parameter.editor_sequence=snapshot->parameters[index].editor_sequence;
         if(!controller_text(parameter.info.title) || !controller_text(parameter.info.shortTitle) ||
             !controller_text(parameter.info.units)) return false;
         const auto id=parameter.info.id;

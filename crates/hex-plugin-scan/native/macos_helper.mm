@@ -183,7 +183,7 @@ int main(int argc,char** argv) {
             if (!length || length>2) return 2;
             int scenario=0;
             for (size_t n=0;n<length;++n) { if (argv[2][n]<'0' || argv[2][n]>'9') return 2; scenario=scenario*10+(argv[2][n]-'0'); }
-            if (scenario>13) return 2;
+            if (scenario>15) return 2;
             host_evidence.scenario=scenario; lifecycle_evidence.mode=1; lifecycle_evidence.failure=0;
             try { const bool valid=fixture("lifecycle",HEX_LIFECYCLE_SHA256); print_host(); return valid?0:1; }
             catch (...) { std::fprintf(stderr,"host-control fault; module custody retained until process exit\n"); return 1; }

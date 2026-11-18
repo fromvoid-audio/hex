@@ -356,18 +356,19 @@ fn actual_inline_pair_capacity_and_complete_pool_accounting() {
         2054168
     );
     assert_eq!(pool_bytes(), 2817144);
-    assert_eq!(context_bytes(), 2628);
+    assert_eq!(context_bytes(), 2644);
     let charge = size_of::<CompactSlot>() + context_bytes();
-    assert_eq!(charge, 5084);
-    assert_eq!(2 * 1024 * 1024 / charge, 412);
-    assert!(413 * charge > 2 * 1024 * 1024);
+    assert_eq!(charge, 5100);
+    assert_eq!(2 * 1024 * 1024 / charge, 411);
+    assert!(411 * charge <= 2 * 1024 * 1024);
+    assert!(412 * charge > 2 * 1024 * 1024);
     assert_eq!(30728168 + pool_bytes(), 33545312);
     assert_eq!(33554432 - (30728168 + pool_bytes()), 9120);
     // Preserve the original negative admission evidence, not a universal fit.
     assert_eq!(size_of::<AdditivePair>(), 8312);
     assert_eq!(super::pool_bytes(), 2853688);
     eprintln!(
-        "inline pair=8024 align=8 pair_capacity={} pair_vec_charge={} record=2408 slot=2456 pool={} context=2628 recipe=5084 retained=412 historical_EQ=33545312 historical_margin=9120",
+        "inline pair=8024 align=8 pair_capacity={} pair_vec_charge={} record=2408 slot=2456 pool={} context=2644 recipe=5100 retained=411 historical_EQ=33545312 historical_margin=9120",
         pairs.capacity(),
         size_of_val(&pairs) + pairs.capacity() * size_of::<CandidatePair>(),
         pool_bytes()

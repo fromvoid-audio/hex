@@ -41,16 +41,44 @@ impl MediaPages for Pages {
         self.requests += 1;
     }
 }
+struct Catalog<const N: usize>([Pages; N]);
+impl<const N: usize> MediaPages for Catalog<N> {
+    fn page(&mut self, _: crate::StreamSourceKey, _: u64) -> Option<BorrowedMediaPage<'_>> {
+        None
+    }
+    fn request_page(&mut self, _: crate::StreamSourceKey, _: u64) {}
+    fn scalar_page(&mut self, key: ScalarSourceKey, index: u64) -> Option<BorrowedScalarPage<'_>> {
+        self.0
+            .iter_mut()
+            .find(|page| page.key == key)?
+            .scalar_page(key, index)
+    }
+    fn request_scalar_page(&mut self, key: ScalarSourceKey, index: u64) {
+        if let Some(page) = self.0.iter_mut().find(|page| page.key == key) {
+            page.request_scalar_page(key, index);
+        }
+    }
+}
+
 fn source(
     map: &hex_project::TempoMap,
     device: hex_project::DeviceId,
     target: DeviceAutomationTarget,
 ) -> ScalarSourceMetadata {
+    source_with_id(map, device, target, 1)
+}
+
+fn source_with_id(
+    map: &hex_project::TempoMap,
+    device: hex_project::DeviceId,
+    target: DeviceAutomationTarget,
+    id: u64,
+) -> ScalarSourceMetadata {
     use sha2::{Digest, Sha256};
     let mut hash = Sha256::new();
     hex_project::visit_automation_projection_identity(map, &mut |bytes| hash.update(bytes));
     ScalarSourceMetadata::new(
-        ScalarSourceKey::new(7, 1, 1).unwrap(),
+        ScalarSourceKey::new(7, id, 1).unwrap(),
         crate::ScalarSourceTarget::Device { device, target },
         48000,
         4094,
@@ -411,6 +439,38 @@ fn delayed_scalar_values_follow_loop_origins_across_irregular_blocks() {
     seek(&mut runtime);
     let mut warmup = vec![[0.0; 2]; latency as usize];
     runtime.render_with_pages(&mut warmup, &mut pages).unwrap();
+    let before = (runtime.arrangement_frame(), runtime.performance_frame());
+    let mut projected = Vec::new();
+    assert_eq!(
+        runtime.visit_current_stream_quantum(8, None, true, &mut |extent| {
+            projected.push(extent);
+            Ok(())
+        }),
+        Ok(8)
+    );
+    assert_eq!(
+        (runtime.arrangement_frame(), runtime.performance_frame()),
+        before
+    );
+    let mut committed = Vec::new();
+    let mut advanced = 0;
+    while advanced < 8 {
+        let window = runtime
+            .visit_ordinary_stream_chunk(8 - advanced, None, &mut |extent| {
+                committed.push(extent);
+                Ok(())
+            })
+            .unwrap();
+        assert!(window.frames > 0);
+        runtime
+            .render_with_pages(&mut vec![[0.0; 2]; window.frames], &mut pages)
+            .unwrap();
+        advanced += window.frames;
+    }
+    assert_eq!(
+        projected, committed,
+        "delayed scalar loop demand differs from committed chunks"
+    );
     let mut actual = Vec::new();
     for width in [1, 3, 2, 2] {
         let mut block = vec![[0.0; 2]; width];
@@ -593,19 +653,46 @@ fn recorded_binding_refuses_overridden_shared_lane_until_reenabled() {
 fn optimized_scalar_render_cost() {
     let target = DeviceAutomationTarget::Parameter(parameter::GAIN);
     let (f, device, _, mut pages) = fixture(target);
-    let original = source(f.editor.project().tempo_map(), device, target);
-    let source = ScalarSourceMetadata::new(
-        original.key(),
-        original.target(),
-        original.project_rate(),
-        0,
-        8192,
-        original.projection_identity(),
-        original.file_identity(),
-    )
-    .unwrap();
-    pages.values = [vec![0.5; 4096], vec![0.5; 4096]];
+    let targets = [
+        target,
+        DeviceAutomationTarget::Parameter(parameter::MUTE),
+        DeviceAutomationTarget::HostInputGain,
+        DeviceAutomationTarget::HostOutputGain,
+    ];
+    let bindings = targets
+        .into_iter()
+        .enumerate()
+        .map(|(index, target)| {
+            let original = source_with_id(
+                f.editor.project().tempo_map(),
+                device,
+                target,
+                index as u64 + 1,
+            );
+            let source = ScalarSourceMetadata::new(
+                original.key(),
+                original.target(),
+                original.project_rate(),
+                0,
+                8192,
+                original.projection_identity(),
+                original.file_identity(),
+            )
+            .unwrap();
+            ScalarAutomationBinding {
+                device,
+                target,
+                source,
+            }
+        })
+        .collect();
+    pages.values = [vec![0.25; 4096], vec![0.25; 4096]];
     pages.coverage = [vec![u64::MAX; 64], vec![u64::MAX; 64]];
+    let mut pages = Catalog::<4>(std::array::from_fn(|index| {
+        let mut source = pages.clone();
+        source.key = ScalarSourceKey::new(7, index as u64 + 1, 1).unwrap();
+        source
+    }));
     let plain = PreparedRevision::prepare(
         f.editor.project(),
         &f.media,
@@ -613,19 +700,27 @@ fn optimized_scalar_render_cost() {
         None,
     )
     .unwrap();
-    let automated = PreparedRevision::prepare_with_scalar_automation(
+    let sources = f
+        .media
+        .iter()
+        .map(|(&asset, audio)| {
+            (
+                asset,
+                crate::compile::PreparedAudioSource::Resident(audio.clone()),
+            )
+        })
+        .collect();
+    let automated = PreparedRevision::prepare_with_scalar_automation_bindings(
         f.editor.project(),
-        &f.media,
+        &sources,
+        7,
         Arc::new(SineTable::new()),
         None,
-        ScalarAutomationBinding {
-            device,
-            target: DeviceAutomationTarget::Parameter(parameter::GAIN),
-            source,
-        },
+        bindings,
+        None,
     )
     .unwrap();
-    for (label, revision) in [("inactive", plain), ("active", automated)] {
+    for (label, revision) in [("inactive", plain), ("four active lanes", automated)] {
         let mut runtime = SessionPlayback::new(Arc::new(revision)).unwrap();
         runtime.apply(SessionPlaybackCommand::Play).unwrap();
         let mut output = [[0.0; 2]; 256];
@@ -642,7 +737,8 @@ fn optimized_scalar_render_cost() {
             }
         }
         eprintln!(
-            "scalar render profile: {label}, 50 x 8192 frames, 256-frame blocks, {elapsed:?} total; one warm-up iteration; seek and setup excluded; no native deadline claim"
+            "scalar render profile: {label}, 50 x 8192 frames, 256-frame blocks, {elapsed:?} total; runtime backing {} bytes; one warm-up iteration; seek and setup excluded; no native deadline claim",
+            runtime.accounted_runtime_storage_bytes().unwrap(),
         );
     }
 }
@@ -916,4 +1012,161 @@ fn staged_seek_and_candidate_handoff_plan_the_same_scalar_window_without_committ
     runtime.render_with_pages(&mut output, &mut pages).unwrap();
     assert_eq!(output[0], [0.0; 2]);
     assert_eq!(output[2], [0.25, -0.5]);
+}
+
+#[test]
+fn grouped_scalar_pages_drive_same_and_distinct_processors_as_one_window() {
+    let input = DeviceAutomationTarget::HostInputGain;
+    let output = DeviceAutomationTarget::HostOutputGain;
+    let (mut f, first, _, pages) = fixture(input);
+    let Created::ReturnTrack(bus) = f
+        .editor
+        .execute(Command::AddReturnTrack {
+            name: "return".into(),
+        })
+        .unwrap()
+    else {
+        panic!("return bus");
+    };
+    let Created::Device(return_device) = f
+        .editor
+        .execute(Command::InsertReturnDevice {
+            return_track: bus,
+            before: None,
+            state: UTILITY_DEFINITION.default_state().unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("return device");
+    };
+    let Created::Device(main_device) = f
+        .editor
+        .execute(Command::InsertMainDevice {
+            before: None,
+            state: UTILITY_DEFINITION.default_state().unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("main device");
+    };
+    f.editor
+        .execute(Command::SetReturnSend {
+            track: f.tracks[0],
+            return_track: bus,
+            gain: 1.0,
+        })
+        .unwrap();
+    let tempo = f.editor.project().tempo_map();
+    let targets = [
+        (first, input),
+        (first, output),
+        (return_device, input),
+        (main_device, input),
+    ];
+    let bindings: Vec<_> = targets
+        .into_iter()
+        .enumerate()
+        .rev()
+        .map(|(index, (device, target))| ScalarAutomationBinding {
+            device,
+            target,
+            source: source_with_id(tempo, device, target, index as u64 + 1),
+        })
+        .collect();
+    let sources = f
+        .media
+        .iter()
+        .map(|(&asset, audio)| {
+            (
+                asset,
+                crate::compile::PreparedAudioSource::Resident(audio.clone()),
+            )
+        })
+        .collect();
+    let prepare = |bindings| {
+        PreparedRevision::prepare_with_scalar_automation_bindings(
+            f.editor.project(),
+            &sources,
+            7,
+            Arc::new(SineTable::new()),
+            None,
+            bindings,
+            Some((first, input)),
+        )
+    };
+    assert_eq!(
+        prepare(vec![bindings[0].clone(), bindings[0].clone()])
+            .unwrap_err()
+            .0,
+        "duplicate scalar automation target"
+    );
+    let revision = Arc::new(prepare(bindings.clone()).unwrap());
+    assert_eq!(revision.scalar_automation_bindings().count(), 4);
+
+    let gain =
+        [-6.0, -12.0, -18.0, -9.0].map(|db| hex_lattice_contract::HostGain::from_db(db).unwrap());
+    let mut catalog = Catalog::<4>(std::array::from_fn(|index| {
+        let mut page = pages.clone();
+        page.key = ScalarSourceKey::new(7, index as u64 + 1, 1).unwrap();
+        page.values[0][4094..].fill(gain[index].normalized());
+        page.values[1].fill(gain[index].normalized());
+        page
+    }));
+    let mut runtime = SessionPlayback::new(revision).unwrap();
+    seek(&mut runtime);
+    let mut demanded = std::collections::BTreeSet::new();
+    runtime
+        .visit_ordinary_stream_chunk(4, None, &mut |extent| {
+            demanded.insert(extent.source);
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(
+        demanded,
+        catalog.0.iter().map(|page| page.key.into()).collect()
+    );
+
+    catalog.0[2].missing = Some(1);
+    let mut rendered = [[9.0; 2]; 4];
+    assert!(
+        runtime
+            .render_with_pages(&mut rendered, &mut catalog)
+            .is_err()
+    );
+    assert_eq!(runtime.arrangement_frame(), 4094);
+    assert_eq!(rendered, [[0.0; 2]; 4]);
+    catalog.0[2].missing = None;
+    runtime
+        .render_with_pages(&mut rendered, &mut catalog)
+        .unwrap();
+    let [track_input, track_output, return_gain, main_gain] =
+        gain.map(hex_lattice_contract::HostGain::linear);
+    let factor = track_input * track_output * (1.0 + return_gain) * main_gain;
+    for frame in [0, 1, 3] {
+        assert!(
+            (rendered[frame][0] - 0.25 * factor).abs() < 1e-6,
+            "{rendered:?}"
+        );
+        assert!(
+            (rendered[frame][1] + 0.5 * factor).abs() < 1e-6,
+            "{rendered:?}"
+        );
+    }
+    assert_eq!(rendered[2], [0.5, -1.0]);
+
+    seek(&mut runtime);
+    let manual = hex_lattice_contract::HostGain::from_db(-3.0).unwrap();
+    runtime
+        .set_native_parameter_input(hex_lattice::NativeTransientOperation::Set(
+            hex_lattice::NativeTransientValue::HostInputGain(manual),
+        ))
+        .unwrap();
+    runtime
+        .render_with_pages(&mut rendered, &mut catalog)
+        .unwrap();
+    let manual_factor = manual.linear() * track_output * (1.0 + return_gain) * main_gain;
+    assert!(
+        (rendered[0][0] - 0.25 * manual_factor).abs() < 1e-6,
+        "{rendered:?}"
+    );
 }

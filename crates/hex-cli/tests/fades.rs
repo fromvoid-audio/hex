@@ -79,9 +79,17 @@ fn assert_stereo_pcm(wav: &[u8], expected: &[i16]) {
     assert_eq!(&wav[..4], b"RIFF");
     assert_eq!(&wav[36..40], b"data");
     assert_eq!(wav.len(), 44 + expected.len() * 4);
+    // PCM16 export applies ±1 LSB TPDF dither; digital silence stays exact.
     for (frame, value) in wav[44..].chunks_exact(4).zip(expected) {
-        assert_eq!(i16::from_le_bytes([frame[0], frame[1]]), *value);
-        assert_eq!(i16::from_le_bytes([frame[2], frame[3]]), *value);
+        for actual in [
+            i16::from_le_bytes([frame[0], frame[1]]),
+            i16::from_le_bytes([frame[2], frame[3]]),
+        ] {
+            assert!(
+                (i32::from(actual) - i32::from(*value)).abs() <= 1,
+                "{actual} not within one lsb of {value}"
+            );
+        }
     }
 }
 
@@ -145,9 +153,9 @@ fn saved_fade_endpoints_and_recursive_splits_export_identical_pcm() {
             })
             .unwrap();
         assert_eq!(fixture.render(editor.project(), "split"), original);
-        assert!(editor.undo());
+        assert!(editor.try_undo().unwrap());
         assert_eq!(fixture.render(editor.project(), "undo"), original);
-        assert!(editor.redo());
+        assert!(editor.try_redo().unwrap());
         assert_eq!(fixture.render(editor.project(), "redo"), original);
     }
 }
@@ -238,8 +246,8 @@ fn lower_fade_resize_save_reopen_exports_the_resized_boundary_and_one_step_histo
         &resized,
         &[0, 0, 0, 2731, 5461, 8192, 8192, 8192, 8192, 4096, 0],
     );
-    assert!(editor.undo());
+    assert!(editor.try_undo().unwrap());
     assert_eq!(fixture.render(editor.project(), "undo-resize"), left);
-    assert!(editor.redo());
+    assert!(editor.try_redo().unwrap());
     assert_eq!(fixture.render(editor.project(), "redo-resize"), resized);
 }

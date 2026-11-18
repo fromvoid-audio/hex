@@ -27,6 +27,8 @@ pub(super) const STYLE: ControlStyle = ControlStyle {
     focus_marker: 0xaaaaaa,
     dial_rail: 0x000000,
     hover: 0x404040,
+    selection: 0x3350a0,
+    invalid: 0xff554c,
     font_size: 10.0,
     text_case: crate::TextCase::Preserve,
 };
@@ -231,7 +233,7 @@ impl Render for TestRoot {
     }
 }
 
-fn open_numeric_control(
+pub(crate) fn open_numeric_control(
     cx: &mut TestAppContext,
     kind: NumericControlKind,
 ) -> (gpui::AnyWindowHandle, Entity<NumericControl>) {
@@ -751,6 +753,39 @@ fn shift_changes_adjustment_sensitivity_without_jumping(cx: &mut TestAppContext)
         assert!((control.value() - (normal_value + 0.02)).abs() < 1.0e-6);
     });
     visual.simulate_mouse_up(fine_position, MouseButton::Left, Modifiers::default());
+}
+
+#[gpui::test]
+fn invalid_value_border_paints_the_injected_style_color(cx: &mut TestAppContext) {
+    const INVALID: u32 = 0x00ff7f;
+    let (handle, control) = open_numeric_control(cx, NumericControlKind::Knob);
+    control.update(cx, |control, cx| {
+        control
+            .set_external_style(
+                ControlStyle {
+                    invalid: INVALID,
+                    ..STYLE
+                },
+                cx,
+            )
+            .expect("valid style");
+    });
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let value = visual
+        .debug_bounds("test-control-value")
+        .expect("numeric value field")
+        .center();
+    visual.simulate_click(value, Modifiers::default());
+    visual.simulate_keystrokes("cmd-a");
+    visual.simulate_input("invalid");
+    visual.simulate_keystrokes("enter");
+    visual.run_until_parked();
+    control.read_with(cx, |control, _| assert!(control.invalid_text));
+    let (border, _, _) = visual
+        .rendered_border("test-control-value")
+        .expect("value field border");
+    assert_eq!(border, gpui::Hsla::from(gpui::rgb(INVALID)));
 }
 
 #[gpui::test]
@@ -1579,7 +1614,7 @@ fn selector_popup_flips_above_near_window_bottom(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn selector_popup_caps_many_choices_to_window_height(cx: &mut TestAppContext) {
-    let (handle, selector, _) = open_clipped_selector(cx, 0.0, 128);
+    let (handle, selector, _) = open_clipped_selector(cx, 0.0, 257);
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.simulate_resize(size(px(240.0), px(80.0)));
     visual.run_until_parked();

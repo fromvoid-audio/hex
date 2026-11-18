@@ -112,14 +112,22 @@ impl<'a> DocumentV29<'a> {
     pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
         Self::decode_historical(bytes, 29)
     }
+    /// Decode a duplicate-checked schema29 envelope parsed by an upper layer.
+    pub(super) fn decode_value(value: serde_json::Value) -> Result<Project, StorageError> {
+        Self::decode_historical_value(value, 29)
+    }
     pub(super) fn decode_historical(bytes: &[u8], version: u32) -> Result<Project, StorageError> {
+        // Validate the original token stream before Value adaptation can discard
+        // duplicate keys, exactly as the underlying strict event codec does.
+        Self::decode_historical_value(super::audio_events::parse_unique(bytes)?, version)
+    }
+    fn decode_historical_value(
+        mut value: serde_json::Value,
+        version: u32,
+    ) -> Result<Project, StorageError> {
         if !(27..=29).contains(&version) {
             return Err(StorageError::Invalid("invalid historical fade version"));
         }
-        // Validate the original token stream before Value adaptation can discard
-        // duplicate keys, exactly as the underlying strict event codec does.
-        let _: super::audio_events::UniqueKeys = serde_json::from_slice(bytes)?;
-        let mut value: serde_json::Value = serde_json::from_slice(bytes)?;
         let object = value
             .as_object_mut()
             .ok_or(StorageError::Invalid("invalid fade envelope"))?;
@@ -133,9 +141,9 @@ impl<'a> DocumentV29<'a> {
         )?;
         object.insert("version".into(), (version - 1).into());
         let base = match version {
-            27 => super::clip_names::DocumentV26::decode(&serde_json::to_vec(&value)?)?,
-            28 => super::appearance::DocumentV27::decode(&serde_json::to_vec(&value)?)?,
-            29 => super::audio_events::decode(&serde_json::to_vec(&value)?)?,
+            27 => super::clip_names::DocumentV26::decode_value(value)?,
+            28 => super::appearance::DocumentV27::decode_value(value)?,
+            29 => super::audio_events::decode_value(value)?,
             _ => return Err(StorageError::Invalid("invalid historical fade version")),
         };
         apply_shapes(base, shapes.0)
