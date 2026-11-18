@@ -218,6 +218,11 @@ fn compatible_base(
     b: &[u8; ENABLE_PAYLOAD_BYTES],
     allow_routing: bool,
 ) -> bool {
+    // An unrelated graph edit commonly inherits an unchanged instrument.
+    // Compare its prepared bytes in bulk before checking retargetable fields.
+    if a == b {
+        return true;
+    }
     a.iter().zip(b).enumerate().all(|(i, (a, b))| {
         let levels = [4..8, 16..20, 28..32, 40..44]
             .iter()
