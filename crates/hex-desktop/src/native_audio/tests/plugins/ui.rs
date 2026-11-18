@@ -278,6 +278,173 @@ impl BrowserFixture {
 
 #[gpui::test]
 #[ignore = "explicit original SDK helper and source fixtures required"]
+fn arrangement_bounce_to_new_track_preserves_vst3_controls_and_reports_failure(
+    cx: &mut TestAppContext,
+) {
+    const RELEASE: &str = "HEX_ORIGINAL_INSTANCE_RELEASE";
+    const CHILD: &str = "HEX_DESKTOP_TEST_BOUNCE_VST3_PANEL";
+    if std::env::var_os(CHILD).is_none() {
+        let files = Files::new();
+        let release = files.0.join("release");
+        fs::write(&release, []).unwrap();
+        let name = std::thread::current().name().unwrap().to_owned();
+        let result = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", &name, "--ignored", "--nocapture"])
+            .env(CHILD, "1")
+            // The original effect waits inside process() if the release file is absent.
+            .env("HEX_ORIGINAL_INSTANCE_VARIANT", "28")
+            .env(RELEASE, release)
+            .env("HOME", files.0.join("home"))
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+        return;
+    }
+    let _native = native_fixture();
+    let files = Files::new();
+    let root = files.0.canonicalize().unwrap();
+    let mut selected = selection();
+    let module = root.join("original.vst3");
+    copy_original_module(&selected.module, &module);
+    selected.module = module;
+    hex_ui::write_plugin_effect_test_catalog(&root, &selected, "Fx", 0).unwrap();
+    let mut h = ResidentHarness::with_plugins_at_rate_and_catalog_recovery(
+        host(),
+        None,
+        44_100,
+        2_000_000,
+        root.join("plugin-catalog.json"),
+        root.join("bounce.hex-journal"),
+    );
+    assert!(h.next().error.is_none());
+    let (applied, _) = h.applied(0);
+    let imported = h.run(Request::Import(files.wav(44_100, 4096)));
+    assert!(imported.error.is_none(), "{:?}", imported.error);
+    let (applied, _) = h.applied(applied);
+    let track = imported.state.project.tracks()[0].id();
+    let clip = imported.state.project.track(track).unwrap().clips()[0].id();
+    let mut insertion = request(&imported.state, PluginEffectDestination::Track(track));
+    insertion.selection = selected;
+    h.service
+        .submit(Request::InsertPluginEffect(insertion))
+        .unwrap();
+    let inserted = terminal(&mut h);
+    assert!(inserted.error.is_none(), "{:?}", inserted.error);
+    h.applied(applied);
+    let binding = h.plugin_progress.lock().unwrap().binding.unwrap();
+    let original = inserted.state;
+    let source_track = original.project.track(track).unwrap();
+    let device = source_track.devices()[0].id().value();
+    let active = Box::leak(format!("device-vst3-active-{device}").into_boxed_str());
+    let pending = Box::leak(format!("device-vst3-pending-{device}").into_boxed_str());
+
+    h.service.submit(Request::CopyClips(vec![clip])).unwrap();
+    let callback = Arc::clone(&h.callback);
+    let backend = h.into_plugin_ui_backend();
+    let window =
+        hex_ui::open_sampler_load_test_backend(cx, backend, files.0.clone(), files.0.clone())
+            .unwrap();
+    let mut visual = VisualTestContext::from_window(window, cx);
+    visual.update(|window, _| window.activate_window());
+    let view = |cx: &mut TestAppContext| {
+        cx.update(|app| hex_ui::plugin_effect_test_view(window, app))
+            .unwrap()
+    };
+    until("source track is rendered", || {
+        repaint(cx, &mut visual);
+        view(cx)
+            .state
+            .is_some_and(|state| state.revision == original.revision)
+    });
+    let track_selector = |track: hex_project::TrackId| {
+        Box::leak(format!("track-name-{}", track.value()).into_boxed_str()) as &'static str
+    };
+    click(&mut visual, track_selector(track));
+    assert!(visual.debug_bounds(active).is_some());
+
+    click(
+        &mut visual,
+        Box::leak(format!("clip-drag-surface-{}", clip.value()).into_boxed_str()),
+    );
+    visual.simulate_keystrokes("b");
+    let bounced_revision = original.revision + 1;
+    let step = |cx: &mut TestAppContext, visual: &mut VisualTestContext| {
+        callback
+            .lock()
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .render_native_direct(&mut [[0.0; 2]; 256], &mut [0.0; 512])
+            .unwrap();
+        repaint(cx, visual);
+    };
+    until("applied bounce to new track", || {
+        step(cx, &mut visual);
+        let view = view(cx);
+        assert!(view.error.is_none(), "{:?}", view.error);
+        view.applied
+            .is_some_and(|source| source.context.editor_revision == bounced_revision)
+            && view
+                .state
+                .is_some_and(|state| state.revision == bounced_revision)
+    });
+    let bounced = view(cx).state.unwrap();
+    assert_eq!(
+        bounced.project.tracks().len(),
+        original.project.tracks().len() + 1
+    );
+    assert_eq!(bounced.project.track(track), Some(source_track));
+    let bounced_track = bounced
+        .project
+        .tracks()
+        .iter()
+        .find(|row| row.id() != track)
+        .unwrap();
+    assert_eq!(bounced_track.clips().len(), 1);
+    for selected in [bounced_track.id(), track] {
+        click(&mut visual, track_selector(selected));
+        assert_eq!(
+            view(cx).selected_owner,
+            Some(PluginEffectDestination::Track(selected)),
+        );
+    }
+    for _ in 0..3 {
+        step(cx, &mut visual);
+        assert!(visual.debug_bounds(active).is_some());
+        assert!(visual.debug_bounds(pending).is_none());
+    }
+    assert!(visual.debug_bounds("vst3-parameter-search-input").is_some());
+
+    let release = PathBuf::from(std::env::var_os(RELEASE).unwrap());
+    fs::remove_file(&release).unwrap();
+    visual.simulate_keystrokes("space");
+    let degraded = Box::leak(format!("device-vst3-degraded-{device}").into_boxed_str());
+    until("live VST3 deadline failure is displayed", || {
+        step(cx, &mut visual);
+        visual.debug_bounds(degraded).is_some()
+    });
+    fs::write(release, []).unwrap();
+    let fault = callback
+        .lock()
+        .unwrap()
+        .as_mut()
+        .unwrap()
+        .native_source_fault_on_control(binding);
+    assert!(format!("{fault:?}").contains("MissingOutput"), "{fault:?}");
+    assert!(visual.debug_bounds(active).is_none());
+    assert!(visual.debug_bounds(pending).is_none());
+    assert_eq!(view(cx).state.unwrap().project, bounced.project);
+    visual.update(|window, _| window.remove_window());
+    visual.run_until_parked();
+}
+
+#[gpui::test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
 fn rendered_vst3_effect_drop_inserts_before_the_pointed_device_on_each_owner(
     cx: &mut TestAppContext,
 ) {
