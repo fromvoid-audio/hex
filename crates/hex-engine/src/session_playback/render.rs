@@ -208,6 +208,29 @@ impl SessionPlayback {
         Ok(())
     }
 
+    /// Only the separate paused input owner calls this after binding and
+    /// validating the borrowed quantum. The ordinary live track entry stays
+    /// restricted to the playing Arrangement runtime.
+    pub(super) fn render_paused_pcm(
+        &mut self,
+        track: TrackId,
+        input: &[Frame],
+        output: &mut [Frame],
+    ) -> Result<(), SessionPlaybackError> {
+        self.render_internal_with_live_audio::<dyn MediaPages>(
+            output,
+            None,
+            None,
+            None,
+            None,
+            &mut hex_lattice::RefuseForeign,
+            Some(LiveTrackAudio {
+                track,
+                frames: input,
+            }),
+        )
+    }
+
     /// Render using borrowed, already admitted foreign endpoints. This stages
     /// copied input only: the audio owner must separately accept the complete
     /// physical callback after final host conversion. Every refusal revokes
@@ -662,8 +685,9 @@ impl SessionPlayback {
         output.fill([0.0; 2]);
         let stopped_edit_tails = self.stopped_edit_tails();
         if output.is_empty()
-            || self.renders_no_device_chains()
+            || (live_audio.is_none() && self.renders_no_device_chains())
             || (!self.playing
+                && live_audio.is_none()
                 && !self.foreign_arrangement.has_started()
                 && !self.foreign_arrangement.has_keyboard()
                 && self.computer_keyboard.is_none()
@@ -765,6 +789,7 @@ impl SessionPlayback {
         }
         self.foreign_arrangement.begin();
         let main_tails_only = !self.playing
+            && live_audio.is_none()
             && !self.foreign_arrangement.has_started()
             && !self.foreign_arrangement.has_keyboard()
             && stopped_edit_tails
@@ -800,7 +825,14 @@ impl SessionPlayback {
             // plugin's DSP clock by feeding it invented monitoring callbacks.
             self.render_stopped_main_tails(output, foreign)
         } else {
-            self.render_keyboard_monitor(output, &mut observer, &mut capture, sources, foreign)
+            self.render_keyboard_monitor(
+                output,
+                &mut observer,
+                &mut capture,
+                sources,
+                foreign,
+                live_audio,
+            )
         };
         if result.is_err() {
             self.browser_audition.voices = audition_before;

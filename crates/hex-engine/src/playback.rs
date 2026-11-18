@@ -2644,6 +2644,27 @@ impl Playback {
         self.render_with_post_node_observer(output, None)
     }
 
+    /// Render a separately prepared paused monitor without mutating the
+    /// installed Arrangement or terminating an in-flight transport fade.
+    pub fn render_with_paused_track_monitor(
+        &self,
+        monitor: &mut crate::session_playback::PausedTrackMonitor,
+        input: &[Frame],
+        output: &mut [Frame],
+    ) -> Result<(), Invalid> {
+        if let Some(runtime) = self.session_runtime.as_ref()
+            && self.pending_transport_fade().is_none()
+        {
+            return monitor
+                .render(runtime, input, output)
+                .map_err(|error| Invalid(error.diagnostic_message()));
+        }
+        output.fill([0.0; 2]);
+        Err(Invalid(
+            "paused track monitoring requires a settled session runtime",
+        ))
+    }
+
     /// Render one bounded physical callback with a borrowed live track block.
     /// Track input follows transport fades; only timing-only project taps are admitted.
     #[allow(clippy::too_many_arguments)]

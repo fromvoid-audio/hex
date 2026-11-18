@@ -32,6 +32,64 @@ fn playback(
 }
 
 #[test]
+fn independent_paused_track_monitor_renders_and_drains_without_allocations()
+-> Result<(), Box<dyn Error>> {
+    use hex_engine::session_playback::{MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES, PausedTrackMonitor};
+    let mut editor = Editor::new(Project::new(48_000)?, 16)?;
+    let Created::Track(track) = editor.execute(Command::AddTrack {
+        name: "input".into(),
+    })?
+    else {
+        return Err("missing input track".into());
+    };
+    let limiter = hex_engine::default_native_device_state_for_class(
+        hex_engine::NativeDeviceClass::Effect,
+        hex_lattice_contract::DeviceTypeId::from_static("hex.limiter"),
+    )?;
+    editor.execute(Command::InsertDevice {
+        track,
+        before: None,
+        state: limiter,
+    })?;
+    let revision = prepared(editor.project())?;
+    let latency = revision.arrangement().main_latency_frames() as usize;
+    assert!((1..256).contains(&latency));
+    let mut monitor = PausedTrackMonitor::prepare_on_control(
+        Arc::clone(&revision),
+        track,
+        MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES,
+    )?;
+    let arrangement = Playback::try_from_prepared_with_session(revision)?;
+    let mut first = [[0.0; 2]; 1];
+    let mut drain = [[0.0; 2]; 256];
+    let mut results = (Ok(()), Ok(()));
+    let stats = allocation_counter::measure(|| {
+        results.0 =
+            arrangement.render_with_paused_track_monitor(&mut monitor, &[[0.125; 2]], &mut first);
+        results.1 = arrangement.render_with_paused_track_monitor(
+            &mut monitor,
+            &[[0.0; 2]; 256],
+            &mut drain,
+        );
+    });
+    results.0?;
+    results.1?;
+    assert_eq!(
+        (
+            stats.count_total,
+            stats.bytes_total,
+            stats.count_current,
+            stats.bytes_current
+        ),
+        (0, 0, 0, 0),
+    );
+    assert_eq!(first, [[0.0; 2]; 1]);
+    assert!(drain[latency - 1].iter().all(|sample| *sample > 0.0));
+    assert_eq!(arrangement.position(), 0);
+    Ok(())
+}
+
+#[test]
 fn compensated_shared_analytic_receiver_has_no_callback_allocations() -> Result<(), Box<dyn Error>>
 {
     let mut editor = Editor::new(Project::new(48_000)?, 16)?;
