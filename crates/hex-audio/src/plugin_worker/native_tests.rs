@@ -197,22 +197,81 @@ fn slow_exchange_sample_survives_worker_retirement() {
         epoch: 1,
     };
     let instance = original_instance_with_inputs(binding, 0);
-    let (mut worker, mut callback) = NativeWorker::start_on_control(instance).unwrap();
-    callback
-        .stage(&[[0.0; 2]; 8], &[], &mut [[0.0; 2]; 8])
-        .unwrap();
-    callback.finish(true).unwrap();
-    let until = std::time::Instant::now() + Duration::from_secs(3);
-    while worker.published_blocks_on_control() < 1 {
-        assert!(std::time::Instant::now() < until);
-        thread::yield_now();
+    let (release, mut worker, mut callback) = hold_original_worker(instance);
+    let submit = |callback: &mut Callback| {
+        let counts = allocation_counter::measure(|| {
+            callback
+                .stage(&[[0.0; 2]; 8], &[], &mut [[0.0; 2]; 8])
+                .unwrap();
+            callback.finish(true).unwrap();
+        });
+        assert_eq!(
+            (
+                counts.count_total,
+                counts.bytes_total,
+                counts.count_current,
+                counts.bytes_current,
+            ),
+            (0, 0, 0, 0)
+        );
+    };
+    let await_blocks = |worker: &NativeWorker, blocks| {
+        let until = Instant::now() + Duration::from_secs(3);
+        while worker.published_blocks_on_control() < blocks {
+            assert!(Instant::now() < until);
+            thread::yield_now();
+        }
+    };
+    // The first input is already queued when the worker starts polling.
+    submit(&mut callback);
+    release.send(()).unwrap();
+    await_blocks(&worker, 1);
+    let first = worker.take_slow_exchange_on_control().unwrap();
+    assert_eq!((first.binding, first.sequence), (binding, 0));
+    assert_eq!(first.empty_poll_to_pickup_ns, None);
+
+    // The worker advances at most one controller query per loop, after the
+    // input poll. Two successive replies without another PCM submission
+    // therefore witness a real empty poll without relying on a timed sleep.
+    let until = Instant::now() + Duration::from_secs(3);
+    for _ in 0..2 {
+        let query = loop {
+            match worker.begin_controller_query_on_control(ParameterPageQuery {
+                first: 0,
+                revision: 0,
+                conversion: None,
+            }) {
+                Ok(query) => break query,
+                Err("native controller mailbox is busy") => {
+                    assert!(Instant::now() < until, "controller mailbox stayed busy");
+                    thread::yield_now();
+                }
+                Err(error) => panic!("controller query refused: {error}"),
+            }
+        };
+        loop {
+            match worker.poll_controller_query_on_control(&query).unwrap() {
+                NativeWorkerControllerProgress::Page(_) => break,
+                NativeWorkerControllerProgress::Pending => {
+                    assert!(
+                        Instant::now() < until,
+                        "controller did not observe an idle worker"
+                    );
+                    thread::yield_now();
+                }
+                progress => panic!("unexpected controller progress: {progress:?}"),
+            }
+        }
     }
+    submit(&mut callback);
+    await_blocks(&worker, 2);
     assert!(worker.retire_on_control().unwrap().failure.is_none());
     let sample = worker.take_slow_exchange_on_control().unwrap();
     assert_eq!(
         (sample.binding, sample.sequence, sample.quantum_ns),
-        (binding, 0, 166_666)
+        (binding, 1, 166_666)
     );
+    assert!(sample.empty_poll_to_pickup_ns.is_some());
     assert!(sample.sdk_process_ns >= 4_000_000 && sample.exchange_ns >= sample.sdk_process_ns);
     assert!(worker.take_slow_exchange_on_control().is_none());
     assert!(
