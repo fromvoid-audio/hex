@@ -1492,6 +1492,23 @@ fn actual_tail_drain_waits_for_final_acceptance_and_preserves_last_bridge_sample
             }
         }
         if !refuse_at_horizon {
+            let mut silence = [[0.0; 2]; 8];
+            callback.begin_host_callback(8).unwrap();
+            callback
+                .process_segment(node, 0, &mut silence[..3], None)
+                .unwrap();
+            assert!(!callback.committed_tail_is_drained(node));
+            callback
+                .process_segment(node, 3, &mut silence[3..], None)
+                .unwrap();
+            assert!(callback.committed_tail_is_drained(node));
+            let wrong_node = ForeignProcessorNode {
+                device_id: node.device_id + 1,
+                ..node
+            };
+            assert!(!callback.committed_tail_is_drained(wrong_node));
+            callback.finish_host_callback(true).unwrap();
+
             let mut renewed = [[0.5; 2]; 8];
             let measured = allocation_counter::measure(|| {
                 callback.begin_host_callback(8).unwrap();
@@ -1518,7 +1535,7 @@ fn actual_tail_drain_waits_for_final_acceptance_and_preserves_last_bridge_sample
         let stopped = worker.quiesce_on_control().unwrap();
         assert_eq!(
             stopped.completed_blocks(),
-            if refuse_at_horizon { 2 } else { 3 }
+            if refuse_at_horizon { 2 } else { 4 }
         );
         drop(callback);
         drop(worker);
