@@ -93,20 +93,20 @@ impl EditorView {
                     }) {
                         return;
                     }
-                    if !view.clip_view_open
+                    let changed = if !view.clip_view_open
                         || view.device_panel_active
                         || view.audio_event_editor.source_view
                         || !view.audio_event_focus.is_focused(window)
                         || !f32::from(position.x).is_finite()
                         || !f32::from(position.y).is_finite()
                     {
-                        view.cancel_audio_loop_gesture();
+                        view.cancel_audio_loop_gesture()
                     } else {
                         let platform = moved
                             .map(|e| e.modifiers.platform)
                             .or_else(|| released.map(|e| e.modifiers.platform))
                             .unwrap_or(false);
-                        view.audio_loop_update(f32::from(position.x), platform);
+                        let changed = view.audio_loop_update(f32::from(position.x), platform);
                         if released.is_some()
                             && let Some(g) = view.clip_loop.audio_gesture.take()
                             && g.preview != (g.root.view_start, g.root.view_end)
@@ -120,8 +120,11 @@ impl EditorView {
                                 },
                             );
                         }
+                        changed
+                    };
+                    if changed || released.is_some() {
+                        cx.notify();
                     }
-                    cx.notify();
                 });
             },
             move |_, cx| {
@@ -140,12 +143,12 @@ impl EditorView {
             cx,
         )
     }
-    fn audio_loop_update(&mut self, x: f32, platform: bool) {
+    fn audio_loop_update(&mut self, x: f32, platform: bool) -> bool {
         let Some(mut g) = self.clip_loop.audio_gesture.take() else {
-            return;
+            return false;
         };
         let Some(state) = &self.state else {
-            return;
+            return true;
         };
         if !x.is_finite()
             || self.project_generation != g.generation
@@ -156,8 +159,9 @@ impl EditorView {
             || self.event_frame_window(&g.root) != g.viewport
             || g.grid != self.audio_loop_grid()
         {
-            return;
+            return true;
         }
+        let previous = g.preview;
         if (x - g.down_x).abs() >= 3.0 {
             let tempo = state.project.tempo_map();
             let first = g.root.root_frame_at(event_grid_origin(&g.root), tempo).ok();
@@ -177,7 +181,7 @@ impl EditorView {
                     tempo,
                 ) else {
                     self.clip_loop.audio_gesture = Some(g);
-                    return;
+                    return false;
                 };
                 let raw = (i128::from(edge)
                     + offset.clamp(-(u64::MAX as f64), u64::MAX as f64) as i128)
@@ -215,7 +219,9 @@ impl EditorView {
         } else if g.handle == Handle::Body {
             g.preview = (g.root.view_start, g.root.view_end);
         }
+        let changed = g.preview != previous;
         self.clip_loop.audio_gesture = Some(g);
+        changed
     }
     pub(in crate::editor) fn audio_scope_preview_active(
         &self,

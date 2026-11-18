@@ -240,6 +240,19 @@ fn assert_audio_loop_receipt(cx: &mut TestAppContext, start_edge: bool) {
             "scope {preview:?}: {original_bounds:?} -> {held_bounds:?}"
         );
     }
+    let redraws = Rc::new(Cell::new(0));
+    let _observe = visual.update(|_, app| {
+        let redraws = Rc::clone(&redraws);
+        app.observe(&editor, move |_, _| redraws.set(redraws.get() + 1))
+    });
+    visual.simulate_mouse_move(
+        moved + point(px(0.), px(4.)),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    visual.run_until_parked();
+    assert_eq!(redraws.get(), 0, "unchanged scope does not repaint");
+    assert_eq!(visual.debug_bounds(selector), Some(held_bounds));
     visual.simulate_mouse_up(
         point(moved.x, px(10.)),
         MouseButton::Left,
