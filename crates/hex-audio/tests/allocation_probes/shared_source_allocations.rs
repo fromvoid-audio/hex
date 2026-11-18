@@ -62,18 +62,14 @@ fn independent_paused_track_monitor_renders_and_drains_without_allocations()
     let arrangement = Playback::try_from_prepared_with_session(revision)?;
     let mut first = [[0.0; 2]; 1];
     let mut drain = [[0.0; 2]; 256];
-    let mut results = (Ok(()), Ok(()));
+    let mut results = (Ok(()), Ok(true));
     let stats = allocation_counter::measure(|| {
         results.0 =
             arrangement.render_with_paused_track_monitor(&mut monitor, &[[0.125; 2]], &mut first);
-        results.1 = arrangement.render_with_paused_track_monitor(
-            &mut monitor,
-            &[[0.0; 2]; 256],
-            &mut drain,
-        );
+        results.1 = arrangement.drain_paused_track_monitor(&mut monitor, &mut drain);
     });
     results.0?;
-    results.1?;
+    assert!(!results.1?);
     assert_eq!(
         (
             stats.count_total,

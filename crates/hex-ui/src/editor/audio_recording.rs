@@ -618,15 +618,25 @@ impl EditorView {
     }
 
     fn stop_recording_monitor(&mut self, output_identity: u64) {
+        self.retire_input_monitor(output_identity, false);
+    }
+
+    fn retire_input_monitor(&mut self, output_identity: u64, release_paused: bool) {
         if let Some(control) = self
             .audio
             .as_mut()
             .filter(|audio| audio.control.output_identity() == Some(output_identity))
             .and_then(|audio| audio.control.input_monitor())
         {
-            control.stop();
+            if release_paused {
+                control.release_paused();
+            } else {
+                control.stop();
+            }
             if control.reclaim().is_none() {
                 self.audio_recorder.retiring_monitor_output = Some(output_identity);
+            } else if self.audio_recorder.retiring_monitor_output == Some(output_identity) {
+                self.audio_recorder.retiring_monitor_output = None;
             }
         }
     }

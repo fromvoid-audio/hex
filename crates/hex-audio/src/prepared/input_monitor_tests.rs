@@ -249,10 +249,19 @@ fn paused_monitor_accepts_the_exact_accounted_resident_graph() {
     assert_eq!(control.status.position.load(Acquire), 0);
     assert!(!control.status.playing.load(Acquire));
     assert_eq!(control.outstanding_device_resource_leases(), 0);
-    assert_eq!(input.submit(&[0.25; 512]), 2);
-    control.command(PlaybackCommand::Play).unwrap();
-    assert_eq!(render_block(), [[0.0; 2]; 64]);
-    assert!(control.status.playing.load(Acquire));
+    assert_eq!(input.submit(&[0.75; 512]), 2);
+    control.input_monitor.release_paused();
+    let tail: Vec<_> = (0..(latency.div_ceil(64) + 2))
+        .flat_map(|_| render_block())
+        .collect();
+    assert!(tail[..latency].iter().all(|frame| *frame == output[1023]));
+    assert!(tail[latency..].iter().all(|frame| *frame == [0.0; 2]));
+    assert_eq!(control.status.position.load(Acquire), 0);
+    assert!(!control.status.playing.load(Acquire));
+    assert_eq!(
+        control.input_monitor.status(),
+        input_monitor::MonitorStatus::Stopped
+    );
     assert_eq!(render_block(), [[0.0; 2]; 64]);
     assert!(
         !hold.released_on_control(),
@@ -277,10 +286,16 @@ fn paused_monitor_accepts_the_exact_accounted_resident_graph() {
 fn paused_input_uses_the_resident_callback_and_retires_at_discontinuities() {
     use input_monitor::MonitorStatus;
 
-    for (command, terminal) in [
-        (Some(PlaybackCommand::Stop), MonitorStatus::Stopped),
-        (Some(PlaybackCommand::Seek(0)), MonitorStatus::Stopped),
-        (None, MonitorStatus::SourceChanged),
+    for (command, hard_stop, terminal) in [
+        (Some(PlaybackCommand::Stop), false, MonitorStatus::Stopped),
+        (
+            Some(PlaybackCommand::Seek(0)),
+            false,
+            MonitorStatus::Stopped,
+        ),
+        (Some(PlaybackCommand::Play), false, MonitorStatus::Stopped),
+        (None, false, MonitorStatus::SourceChanged),
+        (None, true, MonitorStatus::Stopped),
     ] {
         let (revision, track) = paused_fixture();
         let (mut control, mut callback) = channel(48_000).unwrap();
@@ -312,7 +327,11 @@ fn paused_input_uses_the_resident_callback_and_retires_at_discontinuities() {
         assert_eq!(control.status.position.load(Acquire), 0);
         assert!(!control.status.playing.load(Acquire));
 
-        if let Some(command) = command {
+        control.input_monitor.release_paused();
+        if hard_stop {
+            control.input_monitor.stop();
+            control.input_monitor.release_paused();
+        } else if let Some(command) = command {
             control.command(command).unwrap();
         } else {
             // Same project context and prepared allocation, different applied
@@ -320,8 +339,15 @@ fn paused_input_uses_the_resident_callback_and_retires_at_discontinuities() {
             publish_paused_fixture_graph(&mut control, revision);
         }
         assert_eq!(render_paused_fixture_block(&mut callback), [[0.0; 2]; 64]);
-        assert_eq!(control.input_monitor.status(), terminal);
-        assert_eq!(control.status.position.load(Acquire), 0);
+        assert_eq!(
+            control.input_monitor.status(),
+            terminal,
+            "monitor terminal for {command:?}, hard stop {hard_stop}"
+        );
+        assert_eq!(
+            control.status.playing.load(Acquire),
+            matches!(command, Some(PlaybackCommand::Play))
+        );
         assert_eq!(render_paused_fixture_block(&mut callback), [[0.0; 2]; 64]);
         assert_eq!(
             original,

@@ -2665,6 +2665,26 @@ impl Playback {
         ))
     }
 
+    /// Advance only the paused monitor's retained audio after input removal.
+    /// `false` means this was the final block, which can still contain output.
+    pub fn drain_paused_track_monitor(
+        &self,
+        monitor: &mut crate::session_playback::PausedTrackMonitor,
+        output: &mut [Frame],
+    ) -> Result<bool, Invalid> {
+        if let Some(runtime) = self.session_runtime.as_ref()
+            && self.pending_transport_fade().is_none()
+        {
+            return monitor
+                .drain(runtime, output)
+                .map_err(|error| Invalid(error.diagnostic_message()));
+        }
+        output.fill([0.0; 2]);
+        Err(Invalid(
+            "paused track monitoring requires a settled session runtime",
+        ))
+    }
+
     /// Render one bounded physical callback with a borrowed live track block.
     /// Track input follows transport fades; only timing-only project taps are admitted.
     #[allow(clippy::too_many_arguments)]

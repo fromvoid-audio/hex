@@ -59,7 +59,10 @@ enum Phase {
         started: bool,
         audible: bool,
     },
-    Stopping(MonitorCapture),
+    Stopping {
+        capture: MonitorCapture,
+        releasing_output: Option<u64>,
+    },
 }
 
 #[derive(Default)]
@@ -243,7 +246,13 @@ impl EditorView {
                 Ok(Ok(PreparedInput { capture, stream })) => {
                     if desired != Some(&target) {
                         capture.stop_on_control();
-                        return (Phase::Stopping(capture), false);
+                        return (
+                            Phase::Stopping {
+                                capture,
+                                releasing_output: None,
+                            },
+                            false,
+                        );
                     }
                     let installed = self
                         .audio
@@ -273,7 +282,13 @@ impl EditorView {
                     }
                     capture.stop_on_control();
                     self.paused_input_failed(target, "output monitor is unavailable");
-                    (Phase::Stopping(capture), true)
+                    (
+                        Phase::Stopping {
+                            capture,
+                            releasing_output: None,
+                        },
+                        true,
+                    )
                 }
                 _ if desired != Some(&target) => (Phase::Idle, false),
                 Ok(Err(reason)) => self.paused_input_failed(target, &reason),
@@ -288,9 +303,23 @@ impl EditorView {
                 mut audible,
             } => {
                 if desired != Some(&target) {
+                    let release = (!self.audio_recorder.software_monitor
+                        || self.audio_recorder.armed_track.is_none())
+                        && self
+                            .audio
+                            .as_ref()
+                            .and_then(|audio| audio.control.status())
+                            .and_then(|status| status.paused_input_source())
+                            == Some((target.source(), target.request.transport_epoch));
+                    self.retire_input_monitor(target.output(), release);
                     capture.stop_on_control();
-                    self.stop_recording_monitor(target.output());
-                    return (Phase::Stopping(capture), false);
+                    return (
+                        Phase::Stopping {
+                            capture,
+                            releasing_output: release.then(|| target.output()),
+                        },
+                        false,
+                    );
                 }
                 let status = self
                     .audio
@@ -315,7 +344,13 @@ impl EditorView {
                     capture.stop_on_control();
                     self.stop_recording_monitor(target.output());
                     self.paused_input_failed(target, &reason);
-                    return (Phase::Stopping(capture), true);
+                    return (
+                        Phase::Stopping {
+                            capture,
+                            releasing_output: None,
+                        },
+                        true,
+                    );
                 }
                 if action == MonitorAction::StartInput && capture.phase() == InputPhase::Ready {
                     started = capture.start_on_control();
@@ -337,13 +372,31 @@ impl EditorView {
                     became_audible,
                 )
             }
-            Phase::Stopping(capture) => {
+            Phase::Stopping {
+                capture,
+                mut releasing_output,
+            } => {
+                if let Some(output) = releasing_output
+                    && self.audio_recorder.retiring_monitor_output == Some(output)
+                    && self.audio_recorder.software_monitor
+                    && self.audio_recorder.armed_track.is_some()
+                {
+                    // A new activation should not wait for the old effects.
+                    self.stop_recording_monitor(output);
+                    releasing_output = None;
+                }
                 if matches!(capture.phase(), InputPhase::Finished(_))
                     && self.audio_recorder.retiring_monitor_output.is_none()
                 {
                     (Phase::Idle, false)
                 } else {
-                    (Phase::Stopping(capture), false)
+                    (
+                        Phase::Stopping {
+                            capture,
+                            releasing_output,
+                        },
+                        false,
+                    )
                 }
             }
         }
@@ -371,13 +424,24 @@ mod tests {
         time::{Duration, Instant},
     };
 
-    fn arm_monitor_fixture(cx: &mut TestAppContext) -> worker_ui_fixture::WorkerUiFixture {
-        let mut fixture = worker_ui_fixture::open_for_paused_monitor(
-            cx,
-            vec![hex_project::Command::AddTrack {
-                name: "input".into(),
-            }],
-        );
+    fn arm_monitor_fixture(
+        cx: &mut TestAppContext,
+        with_latency: bool,
+    ) -> worker_ui_fixture::WorkerUiFixture {
+        let mut commands = vec![hex_project::Command::AddTrack {
+            name: "input".into(),
+        }];
+        if with_latency {
+            commands.push(hex_project::Command::InsertMainDevice {
+                before: None,
+                state: hex_engine::default_native_device_state_for_class(
+                    hex_engine::NativeDeviceClass::Effect,
+                    hex_lattice_contract::DeviceTypeId::from_static("hex.limiter"),
+                )
+                .unwrap(),
+            });
+        }
+        let mut fixture = worker_ui_fixture::open_for_paused_monitor(cx, commands);
         let (capture, feed, input) = hex_audio::worker_fixture::monitor_only_input().unwrap();
         let stream = Box::new(MonitorStream::new_on_control(feed, 48_000).ok().unwrap());
         let (send, receive) = mpsc::sync_channel(1);
@@ -415,7 +479,7 @@ mod tests {
     fn stopped_software_monitor_reaches_the_armed_track_and_holds_record_until_retired(
         cx: &mut TestAppContext,
     ) {
-        let mut fixture = arm_monitor_fixture(cx);
+        let mut fixture = arm_monitor_fixture(cx, false);
         fixture.editor.update(cx, |view, _| {
             let audio = view.audio.as_mut().unwrap();
             assert_eq!(audio.status().unwrap().position.load(Acquire), 0);
@@ -460,8 +524,36 @@ mod tests {
     }
 
     #[gpui::test]
+    fn stopped_monitor_off_drains_buffered_main_effect_audio(cx: &mut TestAppContext) {
+        let mut fixture = arm_monitor_fixture(cx, true);
+        fixture.editor.update(cx, |view, _| {
+            view.toggle_software_monitor();
+            view.tick_audio_recording();
+        });
+        let mut block = [[0.0; 2]; 64];
+        fixture.backend.render(&mut block).unwrap();
+        assert!(block.iter().any(|frame| frame[0] > 0.0));
+        let deadline = Instant::now() + Duration::from_millis(500);
+        loop {
+            fixture.backend.render(&mut block).unwrap();
+            let finished = fixture.editor.update(cx, |view, _| {
+                let status = view.audio.as_ref().unwrap().status().unwrap();
+                assert_eq!(status.position.load(Acquire), 0);
+                view.tick_audio_recording();
+                !view.audio_recorder.needs_poll()
+            });
+            if finished {
+                assert_eq!(block, [[0.0; 2]; 64]);
+                break;
+            }
+            assert!(Instant::now() < deadline, "monitor tail did not retire");
+            std::thread::yield_now();
+        }
+    }
+
+    #[gpui::test]
     fn failed_stopped_monitor_stays_closed_after_returning_its_endpoints(cx: &mut TestAppContext) {
-        let mut fixture = arm_monitor_fixture(cx);
+        let mut fixture = arm_monitor_fixture(cx, false);
         let (send, receive) = mpsc::sync_channel(1);
         send.try_send(Err("unexpected input reopen".into()))
             .ok()

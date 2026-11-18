@@ -398,6 +398,11 @@ impl CompensationRuntime {
                 .get(index)
                 .is_some_and(DelayPair::history_is_silent)
     }
+    /// True when no committed routing edge holds PCM. Transport stamps do not
+    /// affect signal quiescence. This visits only the bounded edge table.
+    pub(crate) fn pcm_history_is_silent(&self) -> bool {
+        self.is_closed() && self.edges.iter().all(DelayPair::history_is_silent)
+    }
     pub(crate) fn can_copy_edge_history_from(
         &self,
         target: usize,
