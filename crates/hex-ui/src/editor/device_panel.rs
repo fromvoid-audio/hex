@@ -2427,7 +2427,7 @@ fn vst3_status_body(
         Ok(false) => None,
         Err(_) => vst3_parameters::pending_body(view, device_id, cx),
     };
-    if let Some(parameters) = parameters {
+    if let Some(body) = parameters {
         let status = if availability.is_ok() {
             "active"
         } else {
@@ -2435,7 +2435,7 @@ fn vst3_status_body(
         };
         let body = div()
             .debug_selector(move || format!("device-vst3-{status}-{}", device_id.value()))
-            .child(parameters);
+            .child(body);
         return div()
             .id(("device-body", device_id.value()))
             .debug_selector(move || format!("device-body-{}", device_id.value()))
