@@ -1575,6 +1575,85 @@ fn confirmed_main_limiter_keeps_the_foreign_gate_on_the_original_worker() {
 }
 
 #[test]
+fn confirmed_hosted_main_append_keeps_the_original_instrument_gate() {
+    let (mut editor, instrument) = fixture_with_duration(BeatTime::from_ratio(1, 32).unwrap());
+    let original = prepare(&editor, instrument, true).unwrap();
+    let mut deadline = None;
+    original.arrangement().tracks()[0]
+        .for_each_mutable_midi_span(0, 1, |span| deadline = Some(span.gate_end))
+        .unwrap();
+    let mut playing = SessionPlayback::new(original).unwrap();
+    let mut endpoint = NoteEndpoint::default();
+    playing.apply(SessionPlaybackCommand::Play).unwrap();
+    endpoint.render(&mut playing, &mut [[0.0; 2]; 256]).unwrap();
+    let [(0, onset)] = endpoint.notes.as_slice() else {
+        panic!("one original note-on");
+    };
+    assert!(onset.on);
+    let onset = *onset;
+
+    let Created::Device(device) = editor
+        .execute(Command::InsertMainDevice {
+            before: None,
+            state: state(19).unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("one hosted Main effect");
+    };
+    let owner = ProcessorChainOwner::Main;
+    let effect = BorrowedDefinition {
+        binding_epoch: Some(1),
+        unbounded_tail: false,
+        instances: vec![(
+            ProcessorInstanceIdentity::new(owner, device.value()).unwrap(),
+            3,
+        )],
+    };
+    let synth = InstrumentDefinition {
+        identity: instrument,
+        second: None,
+        instrument_profile: true,
+        epoch: 1,
+    };
+    let definitions: [&dyn NativeDeviceDefinition; 2] = [&synth, &effect];
+    let registry = NativeDeviceRegistry::new(&definitions).unwrap();
+    let prepared = PreparedRevision::prepare_with_effect_registry(
+        editor.project(),
+        &std::collections::BTreeMap::new(),
+        Arc::new(SineTable::new()),
+        None,
+        &registry,
+    )
+    .unwrap();
+    let mut edited = SessionPlayback::new(Arc::new(prepared)).unwrap();
+
+    playing.set_playing_at_device_insert_cut(false);
+    edited
+        .try_inherit_state_at_device_insert_cut(&mut playing)
+        .unwrap();
+    assert_eq!(edited.performance_frame(), 256);
+    assert_eq!(edited.arrangement_frame(), 256);
+    edited.set_playing_at_device_insert_cut(true);
+    endpoint.effect = Some(Borrowed::new(owner, device.value()));
+    let release = usize::try_from(deadline.unwrap() - 256).unwrap();
+    endpoint
+        .render(&mut edited, &mut vec![[0.0; 2]; release + 1])
+        .unwrap();
+    assert_eq!(
+        endpoint.notes,
+        [(
+            release,
+            hex_lattice::ForeignNote {
+                on: false,
+                velocity: 0,
+                ..onset
+            }
+        )]
+    );
+}
+
+#[test]
 fn adding_delay_during_a_loop_keeps_the_foreign_instrument_gate_and_clock() {
     let (mut editor, identity) = fixture_with_duration(BeatTime::from_ratio(1, 128).unwrap());
     let track = editor.project().tracks()[0].id();

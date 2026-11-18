@@ -125,6 +125,8 @@ pub(super) struct PreparationObservation {
     pub(super) binding: Option<Binding>,
     /// First two accepted (device, binding, completed prefix) facts; no custody authority.
     pub(super) source_bindings: [Option<(u64, Binding, Option<u64>)>; 2],
+    /// Last prepared device and its accepted flag, including staged insertions.
+    pub(super) newest_source: Option<(u64, Binding, bool)>,
     pub(super) pending: bool,
     pub(super) accepted: bool,
     pub(super) retiring: bool,
@@ -895,6 +897,10 @@ impl Plugins {
                     output: control.output_identity(),
                     binding: source.map(|source| source.binding),
                     source_bindings,
+                    newest_source: self
+                        .sources
+                        .last()
+                        .map(|source| (source.device, source.binding, source.accepted)),
                     pending: self.pending.is_some(),
                     accepted: source.is_some_and(|source| source.accepted),
                     retiring: source.is_some_and(|source| source.retiring),

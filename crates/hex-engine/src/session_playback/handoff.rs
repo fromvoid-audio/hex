@@ -1591,11 +1591,11 @@ impl SessionPlayback {
         let running_restart =
             relocate && previous.playing && mapped_main_clock && same_periodic_timing;
         let preserve_restart_clock = running_restart || (relocate && confirmed_insert);
-        // A confirmed native Main append can rebuild local delay history
+        // A confirmed Main effect append can rebuild local delay history
         // without altering any instrument's input clock. The foreign plan
-        // has already matched the exact workers and checked their held gates
-        // at the cut. Preserve their ledgers while the new delay fills.
-        let confirmed_native_main_append = confirmed_insert
+        // has already matched the exact instrument workers and checked held
+        // gates at the cut. Preserve their ledgers while the new delay fills.
+        let confirmed_main_effect_append = confirmed_insert
             && self.revision.arrangement().main_latency_frames()
                 > previous.revision.arrangement().main_latency_frames()
             && self
@@ -1605,13 +1605,8 @@ impl SessionPlayback {
                 .split_last()
                 .is_some_and(|(appended, prefix)| {
                     let old = &previous.revision.arrangement().main_device_chain;
-                    matches!(
-                        appended.definition,
-                        Some(
-                            hex_lattice::PreparedProcessorFactory::Legacy(_)
-                                | hex_lattice::PreparedProcessorFactory::Owned(_)
-                        )
-                    ) && prefix.len() == old.len()
+                    appended.definition.is_some()
+                        && prefix.len() == old.len()
                         && prefix
                             .iter()
                             .zip(old.iter())
@@ -1622,7 +1617,7 @@ impl SessionPlayback {
         let keep_foreign_gates = foreign_handoff.requires_clock_continuity
             && !force_restart
             && source_transfer.is_none()
-            && (confirmed_native_main_append
+            && (confirmed_main_effect_append
                 || running_restart
                     && self
                         .revision
