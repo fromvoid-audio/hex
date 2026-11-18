@@ -56,6 +56,152 @@ fn idle_pause_freezes_queued_arrangement_pcm() {
 }
 
 #[test]
+fn paused_keyboard_audition_preserves_queued_arrangement_pcm() {
+    use crate::computer_keyboard::ComputerKeyboardInput;
+    use crate::playback::{Playback, PlaybackCommand};
+    use hex_project::Command;
+
+    for instrument_track in [0, 1] {
+        let mut f = fixture(&[&[7], &[]], 1024);
+        let track = f.tracks[instrument_track];
+        f.editor
+            .execute(Command::InsertInstrument {
+                track,
+                state: hex_project::default_instrument_state().unwrap(),
+            })
+            .unwrap();
+        let revision = prepare(&f).unwrap();
+        assert_eq!(revision.arrangement().main_latency_frames(), 7);
+        for partition in [1, 257] {
+            let input = Arc::new(ComputerKeyboardInput::default());
+            let mut paused = Playback::from_prepared(Arc::clone(&revision));
+            let mut uninterrupted = Playback::from_prepared(Arc::clone(&revision));
+            for playback in [&mut paused, &mut uninterrupted] {
+                playback.apply(PlaybackCommand::Play);
+                let mut prefix = [[0.0; 2]; 4];
+                playback.render(&mut prefix).unwrap();
+                assert_eq!(prefix, [[0.0; 2]; 4]);
+            }
+            paused.apply(PlaybackCommand::Pause);
+            let (mut monitor, hold) = crate::PausedKeyboardMonitor::prepare_admitted_on_control(
+                Arc::clone(&revision),
+                None,
+                f.editor.project(),
+                track,
+                Arc::clone(&input),
+                0,
+                |_| Ok::<_, ()>(()),
+            )
+            .unwrap();
+            input.set_key(0, Some((60, 100, 1))).unwrap();
+            let mut pressed = [[0.0; 2]; 257];
+            for chunk in pressed.chunks_mut(partition) {
+                chunk.fill([9.0; 2]);
+                paused.render(chunk).unwrap();
+                assert!(chunk.iter().all(|frame| *frame == [0.0; 2]));
+                paused
+                    .render_paused_keyboard_monitor(&mut monitor, chunk)
+                    .unwrap();
+            }
+            input.set_key(0, None).unwrap();
+            let mut released = [[0.0; 2]; 257];
+            for chunk in released.chunks_mut(partition) {
+                paused
+                    .render_paused_keyboard_monitor(&mut monitor, chunk)
+                    .unwrap();
+            }
+            assert_eq!(paused.position(), uninterrupted.position());
+            assert!(pressed[32..].iter().any(|frame| *frame != [0.0; 2]));
+            assert!(released[32..].iter().any(|frame| *frame != [0.0; 2]));
+            paused.apply(PlaybackCommand::Play);
+            let mut refused = [[9.0; 2]; 1];
+            assert!(
+                paused
+                    .render_paused_keyboard_monitor(&mut monitor, &mut refused)
+                    .is_err()
+            );
+            assert_eq!(refused, [[0.0; 2]; 1]);
+            assert!(!hold.released_on_control());
+            drop(monitor);
+            assert!(hold.released_on_control());
+            let mut resumed = [[0.0; 2]; 32];
+            let mut expected = resumed;
+            paused.render(&mut resumed).unwrap();
+            uninterrupted.render(&mut expected).unwrap();
+            assert_eq!(expected[3], [0.5, -1.0]);
+            assert_eq!(
+                resumed[3], expected[3],
+                "track {instrument_track}, partition {partition}"
+            );
+            assert_eq!(resumed, expected);
+            assert_eq!(pressed[..7], [[0.0; 2]; 7]);
+            assert!(pressed.iter().all(|frame| frame[0] == frame[1]));
+        }
+    }
+}
+
+#[test]
+fn paused_keyboard_monitor_checks_admission_and_exact_revision() {
+    use crate::computer_keyboard::ComputerKeyboardInput;
+    use crate::{PausedKeyboardMonitor, PausedMonitorAdmissionError};
+    use hex_project::Command;
+
+    let mut f = fixture(&[&[7]], 512);
+    let track = f.tracks[0];
+    f.editor
+        .execute(Command::InsertInstrument {
+            track,
+            state: hex_project::default_instrument_state().unwrap(),
+        })
+        .unwrap();
+    let revision = prepare(&f).unwrap();
+    let project = f.editor.project();
+    let keys = Arc::new(ComputerKeyboardInput::default());
+    let denied = PausedKeyboardMonitor::prepare_admitted_on_control(
+        Arc::clone(&revision),
+        None,
+        project,
+        track,
+        Arc::clone(&keys),
+        0,
+        |_| Err("no capacity"),
+    );
+    assert!(matches!(
+        denied,
+        Err(PausedMonitorAdmissionError::Admission("no capacity"))
+    ));
+    let (mut monitor, _hold) = PausedKeyboardMonitor::prepare_admitted_on_control(
+        Arc::clone(&revision),
+        None,
+        project,
+        track,
+        keys,
+        0,
+        |_| Ok::<_, ()>(()),
+    )
+    .unwrap();
+    let same_files = SessionPlayback::new(prepare(&f).unwrap()).unwrap();
+    let mut refused = [[1.0; 2]; 1];
+    assert_eq!(
+        monitor.render(&same_files, &mut refused),
+        Err(SessionPlaybackError::InvalidCommand)
+    );
+    assert_eq!(refused, [[0.0; 2]; 1]);
+
+    let mut active = SessionPlayback::new(revision).unwrap();
+    monitor.render(&active, &mut [[0.0; 2]; 1]).unwrap();
+    active.apply(SessionPlaybackCommand::Play).unwrap();
+    active.render(&mut [[0.0; 2]; 1]).unwrap();
+    active.apply(SessionPlaybackCommand::Pause).unwrap();
+    refused.fill([1.0; 2]);
+    assert_eq!(
+        monitor.render(&active, &mut refused),
+        Err(SessionPlaybackError::InvalidCommand)
+    );
+    assert_eq!(refused, [[0.0; 2]; 1]);
+}
+
+#[test]
 fn compensated_pause_still_renders_a_held_note_release() {
     use crate::playback::{Playback, PlaybackCommand};
     use hex_project::{Command, Created};

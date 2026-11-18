@@ -4377,7 +4377,7 @@ pub use session_inventory::{
 pub use session_playback::{
     ArrangementPrerollError, LaunchQuantization, MAX_ARRANGEMENT_PREROLL_FRAMES,
     MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES, MAX_OUTPUT_CAPTURE_FRAMES, MAX_OUTPUT_CAPTURES,
-    OutputCapture, OutputCaptureError, OutputCaptureId, OutputCapturePlan,
+    OutputCapture, OutputCaptureError, OutputCaptureId, OutputCapturePlan, PausedKeyboardMonitor,
     PausedMonitorAdmissionError, PausedMonitorForeignBinding, PausedMonitorStorageHold,
     PausedTrackMonitor, PreparedPrerollPages, PreparedStreamAction, ProjectOutputTap,
     ProjectSignal, ProjectSignalObserver, SessionHandoffReport, SessionPendingRouteStatus,

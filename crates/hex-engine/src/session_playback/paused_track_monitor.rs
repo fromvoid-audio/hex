@@ -4,6 +4,7 @@ use super::{
     SessionPlayback, SessionPlaybackError, TrackId,
     preroll::arrangement_runtime_storage_preflight_bytes,
 };
+use crate::computer_keyboard::{ComputerKeyboardInput, ComputerKeyboardRuntime};
 use crate::native_device_resources::{DeviceResourceAdmission, PreparedDeviceResources};
 use hex_lattice::{
     ForeignProcessors, NativeRuntimeChain, PreparedForeignProcessor, PreparedProcessorFactory,
@@ -25,6 +26,93 @@ pub struct PausedTrackMonitor {
     _admission_lifetime: Option<Arc<()>>,
 }
 
+/// One separately admitted keyboard and track-to-Main graph for a paused
+/// Arrangement. Its owner gives this monitor exclusive use of the keyboard
+/// lease and retires it on resume, Stop, seek, or source replacement.
+pub struct PausedKeyboardMonitor(PausedTrackMonitor);
+
+impl PausedKeyboardMonitor {
+    /// Prepare a private built-in keyboard route from the exact compiled
+    /// instrument, tuning, and graph. Only ordinary, unshared native analytic
+    /// sources and owned effects are supported. The caller admits the private
+    /// runtime and retains the returned hold until it is destroyed on control.
+    pub fn prepare_admitted_on_control<E>(
+        revision: Arc<PreparedRevision>,
+        resources: Option<&PreparedDeviceResources>,
+        project: &hex_project::Project,
+        track: TrackId,
+        input: Arc<ComputerKeyboardInput>,
+        prepared_metadata_bytes: usize,
+        admit: impl FnOnce(DeviceResourceAdmission<'_>) -> Result<(), E>,
+    ) -> Result<(Self, PausedMonitorStorageHold), PausedMonitorAdmissionError<E>> {
+        use PausedMonitorAdmissionError::{Admission, Preparation};
+
+        let arrangement = revision.arrangement();
+        let instrument = project
+            .track(track)
+            .filter(|row| !row.retained_source_path())
+            .and_then(hex_project::Track::instrument)
+            .filter(|device| !device.bypassed())
+            .ok_or(Preparation(SessionPlaybackError::InvalidCommand))?;
+        let (index, compiled) = arrangement
+            .tracks()
+            .iter()
+            .enumerate()
+            .find(|(_, row)| row.canonical_track_id() == Some(track))
+            .ok_or(Preparation(SessionPlaybackError::UnknownTrack))?;
+        let tuning = project
+            .tuning()
+            .table()
+            .map_err(|error| Preparation(SessionPlaybackError::Arrangement(error.0)))?;
+        if project.sample_rate() != arrangement.sample_rate()
+            || arrangement.shared_contexts().tuning() != &tuning
+            || revision.source_routing().is_shared(index)
+            || compiled.instrument_id != Some(instrument.id())
+            || compiled.instrument_state.as_ref() != Some(instrument.state())
+            || compiled.instrument_bypassed
+        {
+            return Err(Preparation(SessionPlaybackError::InvalidCommand));
+        }
+        let graph = PausedTrackMonitor::runtime_allowance(&revision, track, resources, &[])
+            .map_err(Preparation)?;
+        let runtime = graph
+            .checked_add(input.runtime_storage_limit_on_control())
+            .filter(|bytes| *bytes <= MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES)
+            .ok_or(Preparation(SessionPlaybackError::Allocation))?;
+        let hold = PausedMonitorStorageHold::new(&revision, runtime, prepared_metadata_bytes)
+            .map_err(Preparation)?;
+        admit(DeviceResourceAdmission::default().with_paused_monitor(&hold)).map_err(Admission)?;
+        let mut monitor = PausedTrackMonitor::construct(revision, resources, track, &[], graph)
+            .map_err(Preparation)?;
+        let keyboard = ComputerKeyboardRuntime::prepare(project, track, input)
+            .map_err(|error| Preparation(SessionPlaybackError::Arrangement(error.0)))?;
+        monitor.playback.computer_keyboard = Some(Box::new(keyboard));
+        monitor._admission_lifetime = Some(Arc::clone(&hold.lifetime));
+        Ok((Self(monitor), hold))
+    }
+
+    /// Render at most 512 frames without advancing the Arrangement.
+    /// Release envelopes and downstream history remain on the private graph.
+    /// Refusal silences output and leaves the Arrangement untouched.
+    pub fn render(
+        &mut self,
+        arrangement: &SessionPlayback,
+        output: &mut [Frame],
+    ) -> Result<(), SessionPlaybackError> {
+        if output.len() > 512 {
+            output.fill([0.0; 2]);
+            return Err(SessionPlaybackError::InvalidCommand);
+        }
+        let cursor = self.0.validate_cursor(arrangement, output)?;
+        if !output.is_empty() {
+            self.0.set_cursor_on_private_playback(cursor);
+            self.0.playback.render(output)?;
+            self.0.cursor = Some(cursor);
+        }
+        Ok(())
+    }
+}
+
 /// Control-side storage obligation for an admitted paused monitor. Keep this
 /// in the ordinary resource inventory across replacement and output teardown
 /// until the matching monitor has actually been destroyed on control.
@@ -34,6 +122,23 @@ pub struct PausedMonitorStorageHold {
     lifetime: Arc<()>,
 }
 impl PausedMonitorStorageHold {
+    fn new(
+        revision: &Arc<PreparedRevision>,
+        runtime: usize,
+        prepared_metadata_bytes: usize,
+    ) -> Result<Self, SessionPlaybackError> {
+        let allowance_bytes = runtime
+            .checked_add(prepared_metadata_bytes)
+            .and_then(|bytes| bytes.checked_add(size_of::<Self>()))
+            .and_then(|bytes| bytes.checked_add(2 * size_of::<usize>()))
+            .ok_or(SessionPlaybackError::Allocation)?;
+        Ok(Self {
+            revision: Arc::clone(revision),
+            allowance_bytes,
+            lifetime: Arc::new(()),
+        })
+    }
+
     /// A terminal or return-queue message alone cannot release this hold.
     pub fn released_on_control(&self) -> bool {
         Arc::strong_count(&self.lifetime) == 1
@@ -183,16 +288,8 @@ impl PausedTrackMonitor {
 
         let runtime =
             Self::runtime_allowance(&revision, track, resources, bindings).map_err(Preparation)?;
-        let allowance_bytes = runtime
-            .checked_add(prepared_metadata_bytes)
-            .and_then(|bytes| bytes.checked_add(size_of::<PausedMonitorStorageHold>()))
-            .and_then(|bytes| bytes.checked_add(2 * size_of::<usize>()))
-            .ok_or(Preparation(SessionPlaybackError::Allocation))?;
-        let hold = PausedMonitorStorageHold {
-            revision: Arc::clone(&revision),
-            allowance_bytes,
-            lifetime: Arc::new(()),
-        };
+        let hold = PausedMonitorStorageHold::new(&revision, runtime, prepared_metadata_bytes)
+            .map_err(Preparation)?;
         admit(DeviceResourceAdmission::default().with_paused_monitor(&hold)).map_err(Admission)?;
         let mut monitor =
             Self::construct(revision, resources, track, bindings, runtime).map_err(Preparation)?;
@@ -346,6 +443,7 @@ impl PausedTrackMonitor {
     ) -> Result<(), SessionPlaybackError> {
         let cursor = self.validate_cursor(arrangement, output)?;
         if self.release_remaining.is_some()
+            || output.len() > 256
             || input.len() != output.len()
             || input.iter().flatten().any(|value| !value.is_finite())
         {
@@ -374,6 +472,10 @@ impl PausedTrackMonitor {
         foreign: &mut dyn ForeignProcessors,
     ) -> Result<bool, SessionPlaybackError> {
         let cursor = self.validate_cursor(arrangement, output)?;
+        if output.len() > 256 {
+            output.fill([0.0; 2]);
+            return Err(SessionPlaybackError::InvalidCommand);
+        }
         if self.cursor.is_none()
             || self.release_remaining == Some(0)
             || (self.release_remaining.is_none() && self.is_quiescent())
@@ -441,12 +543,17 @@ impl PausedTrackMonitor {
             || arrangement.anchor.is_some()
             || arrangement.transient_loop.is_some()
             || self.cursor.is_some_and(|bound| bound != cursor)
-            || output.len() > 256
         {
             output.fill([0.0; 2]);
             return Err(SessionPlaybackError::InvalidCommand);
         }
         Ok(cursor)
+    }
+
+    fn set_cursor_on_private_playback(&mut self, cursor: Cursor) {
+        self.playback.performance_frame = cursor.performance;
+        self.playback.arrangement_frame = cursor.arrangement;
+        self.playback.arrangement_loop_pass = cursor.loop_pass;
     }
 
     fn render_input(
@@ -457,9 +564,7 @@ impl PausedTrackMonitor {
         foreign: &mut dyn ForeignProcessors,
     ) -> Result<(), SessionPlaybackError> {
         if !input.is_empty() {
-            self.playback.performance_frame = cursor.performance;
-            self.playback.arrangement_frame = cursor.arrangement;
-            self.playback.arrangement_loop_pass = cursor.loop_pass;
+            self.set_cursor_on_private_playback(cursor);
             self.playback
                 .render_paused_pcm(self.track, input, output, foreign)?;
             self.cursor = Some(cursor);
