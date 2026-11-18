@@ -1215,21 +1215,16 @@ fn unused_lower_header_space_selects_tracks_with_modifiers_in_both_audio_modes(
             mode,
         );
         visual.run_until_parked();
+        for track in [first, second] {
+            let resize = bounds(&mut visual, "track-height-resize", track).center();
+            drag(&mut visual, resize, resize + point(px(0.0), px(44.0)));
+        }
         let lower_gap = |visual: &mut VisualTestContext, track: TrackId| {
-            let a = Box::leak(format!("gain-lane-show-{}", track.value()).into_boxed_str());
-            let next = if mode == hex_session::DocumentAudioMode::Resident {
-                format!("track-return-sends-{}", track.value())
-            } else {
-                format!("track-volume-{}", track.value())
-            };
-            let b = Box::leak(next.into_boxed_str());
-            let left = visual.debug_bounds(a).unwrap();
-            let right = visual.debug_bounds(b).unwrap();
-            assert!(
-                left.right() < right.left(),
-                "use actual unused space between controls"
-            );
-            point((left.right() + right.left()) / 2.0, left.center().y)
+            let controls = bounds(visual, "track-controls", track);
+            let header = bounds(visual, "arrangement-track-header", track);
+            let blank = point(controls.center().x, header.bottom() - px(8.0));
+            assert!(blank.y > controls.bottom(), "use empty mixer space");
+            blank
         };
         let first_gap = lower_gap(&mut visual, first);
         let second_gap = lower_gap(&mut visual, second);
