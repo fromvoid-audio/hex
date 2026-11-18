@@ -57,7 +57,7 @@ fn open_browser(
     location: u8,
     presentation: Option<EffectPresentation>,
 ) -> BrowserFixture {
-    open_browser_metadata(cx, location, presentation, "Fx", 0, false, false)
+    open_browser_metadata(cx, location, presentation, "Fx", 0, false, false, |_| {})
 }
 
 pub(super) fn copy_original_module(source: &Path, target: &Path) {
@@ -76,6 +76,7 @@ pub(super) fn copy_original_module(source: &Path, target: &Path) {
     }
 }
 
+#[allow(clippy::too_many_arguments)] // Reuse the same rendered browser fixture with an optional backend probe.
 fn open_browser_metadata(
     cx: &mut TestAppContext,
     location: u8,
@@ -84,17 +85,19 @@ fn open_browser_metadata(
     factory_flags: u32,
     seed_anchor: bool,
     seed_instrument: bool,
+    configure: impl FnOnce(&ResidentHarness),
 ) -> BrowserFixture {
     let (reached, facts) = mpsc::sync_channel(1);
     let (resume, resumed) = mpsc::sync_channel(1);
+    let files = Files::new();
     let mut h = ResidentHarness::with_plugins_paused_at_facts(
         host(),
         presentation,
         crate::native_audio::plugins::FactsGate::new(reached, resumed),
+        Some(files.0.canonicalize().unwrap().join("plugin-catalog.json")),
     );
     assert!(h.next().error.is_none());
     let (mut applied, _) = h.applied(0);
-    let files = Files::new();
     let mut state = h.run(Request::Import(files.wav(48_000, 4096))).state;
     (applied, _) = h.applied(applied);
     let track = state.project.tracks()[0].id();
@@ -182,6 +185,7 @@ fn open_browser_metadata(
     let completed = Arc::clone(&h.plugin_completed);
     let records = Arc::clone(&h.plugin_records);
     let progress = Arc::clone(&h.plugin_progress);
+    configure(&h);
     let backend = h.into_plugin_ui_backend();
     let window =
         hex_ui::open_sampler_load_test_backend(cx, backend, files.0.clone(), files.0.clone())
@@ -294,6 +298,7 @@ fn rendered_vst3_effect_drop_inserts_before_the_pointed_device_on_each_owner(
             0,
             true,
             false,
+            |_| {},
         );
         let owner = fixture.expected_owner;
         let devices = |state: &hex_session::service::ViewState| -> Vec<hex_project::DeviceId> {
@@ -443,6 +448,7 @@ fn rendered_native_effect_refuses_changed_sources_and_unsupported_inventory_befo
             flags,
             false,
             false,
+            |_| {},
         );
         // Change the owned source only after the last-good catalog has loaded
         // and its actual row has painted. Admission must revalidate at use.
@@ -1217,6 +1223,7 @@ fn rendered_vst3_instrument_drop_targets_the_instrument_slot_and_shows_editor_to
             0,
             true,
             drop == 1,
+            |_| {},
         );
         let track = fixture.track;
         let anchor = fixture.state.project.track(track).unwrap().devices()[0].id();
@@ -2014,6 +2021,183 @@ fn native_editor_touch_updates_host_follow_knob_and_arranger(cx: &mut gpui::Test
                 id == device && parameter == 7 && value < 0.74 && control.is_some() && lane
             })
     });
+    fixture.visual.update(|window, _| window.remove_window());
+    fixture.visual.run_until_parked();
+}
+
+#[gpui::test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
+fn rendered_staged_effect_saves_the_confirmed_chain_before_and_after_install(
+    cx: &mut TestAppContext,
+) {
+    let _native = native_fixture();
+    let mut gates = None;
+    let mut fixture = open_browser_metadata(
+        cx,
+        2,
+        Some(EffectPresentation {
+            input_frames: 0,
+            output_frames: 512,
+        }),
+        "Fx",
+        0,
+        false,
+        false,
+        |h| {
+            gates = Some((
+                h.probe_next_native_publication(),
+                h.probe_next_submitted_device_insert(),
+            ));
+        },
+    );
+    let ((prepared, enqueue, _busy), (submitted, resume)) = gates.unwrap();
+    let chosen = fixture.files.0.join("staged.hex");
+    let saved = fixture.files.0.join("staged/staged.hex");
+    click(&mut fixture.visual, "main-track-header");
+    fixture.visual.simulate_keystrokes("cmd-s");
+    let picker_deadline = Instant::now() + Duration::from_secs(2);
+    while !cx.did_prompt_for_new_path() {
+        repaint(cx, &mut fixture.visual);
+        let view = fixture.view(cx);
+        assert!(view.error.is_none(), "{:?}", view.error);
+        assert!(
+            Instant::now() < picker_deadline,
+            "initial Save As path picker: {}",
+            view.status
+        );
+        std::thread::yield_now();
+    }
+    cx.simulate_new_path_selection(|_| Some(chosen.clone()));
+    until("named predecessor saved", || {
+        repaint(cx, &mut fixture.visual);
+        fixture.view(cx).state.is_some_and(|state| {
+            !state.unsaved && state.document_path.as_deref() == Some(saved.as_path())
+        })
+    });
+    let baseline = fixture.view(cx).state.unwrap();
+    let shell =
+        Box::leak(format!("device-shell-{}", baseline.project.next_identity()).into_boxed_str());
+    let active = Box::leak(
+        format!("device-vst3-active-{}", baseline.project.next_identity()).into_boxed_str(),
+    );
+
+    fixture.activate_to_facts(cx, false);
+    fixture.resume.send(()).unwrap();
+    until(
+        "original endpoint prepared and real graph parked before queue",
+        || {
+            fixture.step(cx);
+            let view = fixture.view(cx);
+            assert!(view.error.is_none() && view.pending, "{:?}", view.error);
+            prepared.try_recv().is_ok()
+        },
+    );
+    enqueue.send(()).unwrap();
+    let submission = submitted.recv_timeout(Duration::from_secs(2)).unwrap();
+    assert_eq!(submission.context.editor_revision, baseline.revision + 1);
+    resume.send(()).unwrap();
+    // Repaint the actual UI but withhold the callback. Save and the visible
+    // device chain must use the incumbent project even though audio queued the successor.
+    let previous_save = hex_storage::recovery_path(&saved).unwrap();
+    click(&mut fixture.visual, "main-track-header");
+    fixture.visual.simulate_keystrokes("cmd-s");
+    until("Save Current completed while callback was held", || {
+        repaint(cx, &mut fixture.visual);
+        let view = fixture.view(cx);
+        assert!(view.error.is_none() && view.pending, "{:?}", view.error);
+        let state = view.state.unwrap();
+        assert_eq!(state.revision, baseline.revision);
+        assert_eq!(state.can_undo, baseline.can_undo);
+        assert!(state.project.main_devices().is_empty());
+        assert!(fixture.visual.debug_bounds(shell).is_none());
+        assert!(view.applied.is_none());
+        previous_save.exists() && view.queued_requests == 0
+    });
+    assert!(hex_storage::load(&saved).unwrap().main_devices().is_empty());
+
+    until(
+        "exact receipt installs and paints the hosted device",
+        || {
+            fixture.step(cx);
+            let view = fixture.view(cx);
+            assert!(view.error.is_none(), "{:?}", view.error);
+            !view.pending
+                && view
+                    .state
+                    .is_some_and(|state| state.revision == submission.context.editor_revision)
+                && view.applied.is_some_and(|source| {
+                    source.output_identity == submission.output_identity
+                        && source.audio_revision == submission.audio_revision
+                        && source.context == submission.context
+                })
+                && fixture.visual.debug_bounds(active).is_some()
+        },
+    );
+    let installed = fixture.view(cx).state.unwrap();
+    assert_eq!(installed.project.main_devices().len(), 1);
+
+    for (label, active_after) in [("undo · cmd+z", false), ("redo · cmd+shift+z", true)] {
+        let revision = fixture.view(cx).state.unwrap().revision + 1;
+        click(&mut fixture.visual, label);
+        until(label, || {
+            fixture.step(cx);
+            let view = fixture.view(cx);
+            assert!(view.error.is_none(), "{label}: {:?}", view.error);
+            view.state.is_some_and(|state| state.revision == revision)
+                && fixture.visual.debug_bounds(shell).is_some() == active_after
+        });
+    }
+    assert_eq!(fixture.view(cx).state.unwrap().project, installed.project);
+
+    click(&mut fixture.visual, "main-track-header");
+    fixture.visual.simulate_keystrokes("cmd-s");
+    until("installed device saved through the rendered editor", || {
+        fixture.step(cx);
+        let view = fixture.view(cx);
+        assert!(view.error.is_none(), "{:?}", view.error);
+        view.state.is_some_and(|state| !state.unsaved)
+    });
+    let stored = hex_storage::load(&saved).unwrap();
+    assert_eq!(stored.main_devices().len(), 1);
+    assert_eq!(
+        stored.main_devices()[0].id(),
+        installed.project.main_devices()[0].id()
+    );
+
+    click(&mut fixture.visual, "main-track-header");
+    fixture.visual.simulate_keystrokes("cmd-o");
+    until("open project picker", || {
+        repaint(cx, &mut fixture.visual);
+        cx.did_prompt_for_paths()
+    });
+    cx.simulate_paths_selection(Some(vec![saved]));
+    let reopen_deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        fixture.step(cx);
+        let view = fixture.view(cx);
+        assert!(view.error.is_none(), "{:?}", view.error);
+        let state = view.state.as_ref().unwrap();
+        let context = state.canonical_audio_source.as_ref().unwrap().context();
+        let saved_chain = state.project.main_devices() == stored.main_devices();
+        if context.project_generation > submission.context.project_generation
+            && view.applied.is_some_and(|source| source.context == context)
+            && saved_chain
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < reopen_deadline,
+            "reopen did not restore the confirmed effect: status={}, context={context:?}, applied={:?}, stored matches={saved_chain}, requests={}, mode={:?}, native={:?}",
+            view.status,
+            view.applied,
+            view.queued_requests,
+            state.canonical_audio_source.as_ref().unwrap().audio_mode(),
+            fixture.progress.lock().unwrap(),
+        );
+        std::thread::yield_now();
+    }
+    click(&mut fixture.visual, "main-track-header");
+    assert!(fixture.visual.debug_bounds(active).is_some());
     fixture.visual.update(|window, _| window.remove_window());
     fixture.visual.run_until_parked();
 }

@@ -1676,10 +1676,12 @@ fn native_effect_real_work_contention_returns_through_session_for_both_timing_mo
                 output_frames: 512,
             }),
             crate::native_audio::plugins::FactsGate::new(reached, resumed),
+            None,
         );
         let initial = h.next();
         assert!(initial.error.is_none());
         h.applied(0);
+        h.enable_confirmed_device_inserts();
         let input = request(&initial.state, PluginEffectDestination::Main);
         h.service
             .submit(Request::InsertPluginEffect(input.clone()))
@@ -1713,6 +1715,10 @@ fn native_effect_real_work_contention_returns_through_session_for_both_timing_mo
             &input.control
         ));
         assert!(finished.plugin_effect_complete[0].accepted);
+        assert_eq!(
+            finished.device_insert_complete.unwrap().outcome,
+            hex_session::service::DeviceInsertOutcome::Installed,
+        );
         assert!(finished.error.is_none(), "{:?}", finished.error);
         assert_eq!(finished.state.revision, initial.state.revision + 1);
         assert_eq!(finished.state.project.main_devices().len(), 1);

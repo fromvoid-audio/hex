@@ -2335,6 +2335,7 @@ impl ResidentHarness {
         host: hex_audio::plugin_effects::Hosting,
         presentation: Option<hex_audio::plugin_effects::EffectPresentation>,
         facts: crate::native_audio::plugins::FactsGate,
+        catalog: Option<PathBuf>,
     ) -> Self {
         Self::with_plugin_fixture(
             8192,
@@ -2343,7 +2344,7 @@ impl ResidentHarness {
             48_000,
             Some((host, presentation, None)),
             Some(facts),
-            None,
+            catalog,
             None,
         )
     }
@@ -4333,16 +4334,32 @@ fn staged_native_insert_is_refused_on_real_output_fault_without_a_late_commit() 
         .recording_source()
         .unwrap();
     h.enable_confirmed_device_inserts();
-    h.service
-        .submit(Request::Edit(hex_project::Command::InsertMainDevice {
+    let insert = || {
+        Request::Edit(hex_project::Command::InsertMainDevice {
             before: None,
             state: hex_engine::default_native_device_state_for_class(
                 hex_engine::NativeDeviceClass::Effect,
                 hex_engine::DeviceTypeId::from_static("hex.utility"),
             )
             .unwrap(),
-        }))
-        .unwrap();
+        })
+    };
+    h.refuse.store(true, std::sync::atomic::Ordering::Release);
+    h.service.submit(insert()).unwrap();
+    let refused = h.next();
+    assert!(refused.error.unwrap().contains("final admission refusal"));
+    assert_eq!(refused.state.project, initial.state.project);
+    let current = h
+        .audio
+        .as_ref()
+        .unwrap()
+        .status()
+        .unwrap()
+        .recording_source();
+    assert_eq!(current, Some(predecessor));
+    h.refuse.store(false, std::sync::atomic::Ordering::Release);
+
+    h.service.submit(insert()).unwrap();
 
     let pending = h.next();
     assert!(pending.error.is_none(), "{:?}", pending.error);
@@ -4379,4 +4396,37 @@ fn staged_native_insert_is_refused_on_real_output_fault_without_a_late_commit() 
             .load(Acquire),
         receipt.submission.audio_revision,
     );
+
+    let restarted = h.run(Request::RestartAudio {
+        project_generation: predecessor.context.project_generation,
+        request_id: 1,
+    });
+    assert_eq!(restarted.state.project, initial.state.project);
+    h.release_relinquished_output();
+    h.wait_fresh_output(predecessor.output_identity);
+    let (_, recovered) = h.applied(0);
+    assert_eq!(recovered.context, predecessor.context);
+    let fresh = h
+        .audio
+        .as_ref()
+        .unwrap()
+        .status()
+        .unwrap()
+        .recording_source()
+        .unwrap();
+    assert_ne!(fresh.output_identity, predecessor.output_identity);
+    assert_eq!(fresh.context, predecessor.context);
+
+    h.service.submit(insert()).unwrap();
+    let pending = h.next();
+    assert!(pending.error.is_none(), "{:?}", pending.error);
+    assert!(!pending.request_complete);
+    assert!(pending.state.project.main_devices().is_empty());
+    h.render();
+    let installed = h.next();
+    let receipt = installed.device_insert_complete.unwrap();
+    assert_eq!(receipt.outcome, DeviceInsertOutcome::Installed);
+    assert_eq!(receipt.submission.output_identity, fresh.output_identity);
+    assert_eq!(installed.state.project.main_devices().len(), 1);
+    assert!(installed.state.can_undo);
 }
