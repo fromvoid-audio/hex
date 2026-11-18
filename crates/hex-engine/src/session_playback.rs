@@ -515,6 +515,7 @@ pub struct SessionPlayback {
     pub(crate) live_expression: Option<Arc<crate::live_expression::LiveExpressionInput>>,
     pub(crate) computer_keyboard: Option<Box<crate::computer_keyboard::ComputerKeyboardRuntime>>,
     pub(crate) paused_source_monitor: Option<Box<PausedTrackMonitor>>,
+    pub(crate) defer_paused_source_monitor: bool,
     pub(crate) current_sampler_keyboard_epoch: u64,
     pub(crate) current_sampler_keyboard_revoked: u64,
     // Nontransferable constructor-owned pairs; no UI input/source owners.
@@ -960,6 +961,7 @@ impl SessionPlayback {
             live_expression,
             computer_keyboard,
             paused_source_monitor: _,
+            defer_paused_source_monitor: _,
             current_sampler_keyboards: _,
             current_sampler_keyboard_epoch: _,
             current_sampler_keyboard_revoked: _,
@@ -2243,6 +2245,7 @@ impl SessionPlayback {
             live_expression: None,
             computer_keyboard: None,
             paused_source_monitor: None,
+            defer_paused_source_monitor: false,
             current_sampler_keyboards,
             current_sampler_keyboard_epoch: 0,
             current_sampler_keyboard_revoked: 0,

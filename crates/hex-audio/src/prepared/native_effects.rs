@@ -1,6 +1,118 @@
 //! Physical callback acceptance for the original endpoint bank. Rendering only
 //! stages input; the device calls finish after complete final-format conversion.
 use super::*;
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+use crate::candidate_custody::NativeEndpointBank;
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+use hex_lattice::{ForeignNote, ForeignProcessorNode, ForeignProcessors, NativeInstrumentClock};
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+use hex_lattice_contract::{DeviceContractError, ForeignParameterPoint};
+
+/// One physical render borrows original generators and private effects.
+/// Neither bank accepts input here. The output owner accepts both after copy.
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub(super) struct PausedNoteBanks<'a> {
+    ordinary: &'a mut NativeEndpointBank,
+    private: &'a mut NativeEndpointBank,
+    frames: usize,
+    staged_instrument: bool,
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+impl<'a> PausedNoteBanks<'a> {
+    pub(super) fn new(
+        ordinary: &'a mut NativeEndpointBank,
+        private: &'a mut NativeEndpointBank,
+        frames: usize,
+    ) -> Self {
+        Self {
+            ordinary,
+            private,
+            frames,
+            staged_instrument: false,
+        }
+    }
+
+    pub(super) fn render(
+        &mut self,
+        scope: (AppliedAudioSource, u64),
+        playback: &mut Playback,
+        monitor: &mut hex_engine::PausedSourceMonitor,
+        output: &mut [Frame],
+        observer: Option<&mut hex_engine::NodeSignalObserver<'_>>,
+    ) -> bool {
+        if self.frames != output.len()
+            || !self
+                .private
+                .matches_paused_monitor(scope, monitor.foreign_effect_bindings())
+            || self.private.begin_rendering(self.frames).is_err()
+        {
+            return false;
+        }
+        if playback
+            .render_paused_source_monitor_with_foreign(monitor, output, observer, self)
+            .is_err()
+            || !self.private.transports_are_live()
+        {
+            self.reject_callback();
+            return false;
+        }
+        true
+    }
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+impl ForeignProcessors for PausedNoteBanks<'_> {
+    fn returns_post_trim(&self, _: ForeignProcessorNode<'_>) -> bool {
+        true
+    }
+
+    fn process_segment(
+        &mut self,
+        node: ForeignProcessorNode<'_>,
+        offset: usize,
+        frames: &mut [Frame],
+        clock: Option<&dyn NativeInstrumentClock>,
+    ) -> Result<(), DeviceContractError> {
+        self.process_segment_with_notes(node, offset, frames, &[], &[], clock)
+    }
+
+    fn process_segment_with_notes(
+        &mut self,
+        node: ForeignProcessorNode<'_>,
+        offset: usize,
+        frames: &mut [Frame],
+        parameters: &[ForeignParameterPoint],
+        notes: &[ForeignNote],
+        clock: Option<&dyn NativeInstrumentClock>,
+    ) -> Result<(), DeviceContractError> {
+        let bank = if node.prepared.is_instrument_profile() {
+            self.staged_instrument = true;
+            &mut self.ordinary
+        } else {
+            &mut self.private
+        };
+        bank.process_segment_with_notes(node, offset, frames, parameters, notes, clock)
+    }
+
+    fn committed_tail_is_drained(&self, node: ForeignProcessorNode<'_>) -> bool {
+        let bank = if node.prepared.is_instrument_profile() {
+            &self.ordinary
+        } else {
+            &self.private
+        };
+        bank.committed_tail_is_drained(node)
+    }
+
+    fn reject_callback(&mut self) {
+        self.private.reject_rendering();
+        if self.staged_instrument {
+            self.ordinary.reject_rendering();
+        }
+    }
+}
+
 impl Callback {
     pub(crate) fn native_effect_quantum(&self) -> Option<usize> {
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -135,8 +247,15 @@ impl Callback {
                 return OutputTransportDelivery::Cancelled;
             }
             if self.paused_native_sources.rendering_active() {
-                // The monitor rendered the entire physical block. Close the
-                // unvisited ordinary cycle before accepting any monitor work.
+                let paused_notes = self.input_monitor.has_paused_source_binding();
+                if paused_notes && !accepted {
+                    self.revoke_native_effects();
+                    self.input_monitor
+                        .reject(input_monitor::MonitorStatus::OutputFault);
+                    return OutputTransportDelivery::Cancelled;
+                }
+                // Ordinary input can contain borrowed generator notes for a
+                // paused-source block. For physical input it was unvisited.
                 if self.native_sources.finish_rendering(true).is_err() {
                     self.revoke_native_effects();
                     return OutputTransportDelivery::Refused;
@@ -147,6 +266,9 @@ impl Callback {
                     .is_err()
                     || !self.paused_native_sources.transports_are_live()
                 {
+                    if paused_notes {
+                        self.native_sources.reject_rendering();
+                    }
                     self.input_monitor
                         .reject(input_monitor::MonitorStatus::OutputFault);
                     return OutputTransportDelivery::Cancelled;

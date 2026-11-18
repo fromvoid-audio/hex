@@ -15,6 +15,7 @@ impl SessionPlayback {
             live_expression,
             computer_keyboard,
             paused_source_monitor,
+            defer_paused_source_monitor: _,
             current_sampler_keyboards,
             current_sampler_keyboard_epoch: _,
             current_sampler_keyboard_revoked: _,

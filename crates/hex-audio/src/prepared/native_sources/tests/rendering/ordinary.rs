@@ -273,15 +273,21 @@ fn fixture_with_authored_mode_and_capacity(
     }
 }
 fn compile(f: &OrdinaryFixture, with_native: bool) -> Playback {
+    compile_with_bindings(
+        f,
+        if with_native {
+            std::slice::from_ref(&f.binding)
+        } else {
+            &[]
+        },
+    )
+}
+fn compile_with_bindings(f: &OrdinaryFixture, bindings: &[Binding]) -> Playback {
     let deadline = Instant::now() + Duration::from_secs(3);
     loop {
         let result = crate::plugin_effects::Hosting::prepare_on_control(
             &f.control,
-            if with_native {
-                std::slice::from_ref(&f.binding)
-            } else {
-                &[]
-            },
+            bindings,
             &[],
             &mut |effects| {
                 effects.prepare_registered_revision(

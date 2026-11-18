@@ -43,12 +43,7 @@ impl PausedTrackMonitor {
     ) -> Result<usize, SessionPlaybackError> {
         if Self::resident_source_track(revision).is_none()
             || !Self::accepts_effect_graph(revision, resources, bindings)
-            || revision
-                .arrangement()
-                .tracks()
-                .iter()
-                .filter_map(|row| row.foreign_instrument.as_ref())
-                .any(|node| node.automation.foreign().is_some() || node.modulation.is_some())
+            || !Self::resident_instruments_are_isolatable(revision)
         {
             return Ok(0);
         }
@@ -78,6 +73,15 @@ impl PausedTrackMonitor {
                 None
             }
         })
+    }
+
+    fn resident_instruments_are_isolatable(revision: &PreparedRevision) -> bool {
+        revision
+            .arrangement()
+            .tracks()
+            .iter()
+            .filter_map(|row| row.foreign_instrument.as_ref())
+            .all(|node| node.automation.foreign().is_none() && node.modulation.is_none())
     }
 
     pub(crate) fn prepare_resident_graph(
@@ -178,6 +182,28 @@ impl PausedSourceMonitor {
     /// Hosted instruments continue to render on their original endpoints.
     pub fn foreign_effect_bindings(&self) -> impl Iterator<Item = ForeignProcessorBinding> + '_ {
         self.0.foreign_effect_bindings()
+    }
+
+    /// Check the static shape before an output opts into isolated pause
+    /// rendering. Actual replacement bindings are validated at admission.
+    pub(crate) fn can_defer_on_control(revision: &PreparedRevision) -> bool {
+        if revision.resource_scope.is_some()
+            || revision.scalar_automation.is_some()
+            || !revision.foreign_automation.is_empty()
+            || PausedTrackMonitor::resident_source_track(revision).is_none()
+            || !PausedTrackMonitor::resident_instruments_are_isolatable(revision)
+        {
+            return false;
+        }
+        let mut nodes = PausedTrackMonitor::foreign_effect_nodes_on_control(revision).peekable();
+        nodes.peek().is_some()
+            && nodes.all(|node| {
+                node.automation.foreign().is_none()
+                    && node.modulation.is_none()
+                    && node.foreign_processor().is_some_and(|processor| {
+                        !processor.is_instrument_profile() && processor.binding().is_some()
+                    })
+            })
     }
 
     pub(crate) fn render(
