@@ -2,6 +2,7 @@
 //! Control may cancel Pending. Only the callback can admit or install.
 //! Graph retirement on the callback or final destruction on control seals
 //! an unfinished receipt. Neither path can overwrite a terminal.
+use super::DeviceInsertBasis;
 use hex_engine::{AudioSourceContext, PlaybackHandoffRejection};
 use std::sync::{
     Arc,
@@ -58,7 +59,7 @@ struct Decision {
     output_identity: u64,
     context: Option<AudioSourceContext>,
     revision: u64,
-    deadline: Option<Instant>,
+    device_insert: Option<DeviceInsertBasis>,
     phase: AtomicU32,
 }
 
@@ -67,15 +68,23 @@ impl CancellablePublicationReceipt {
         output_identity: u64,
         context: Option<AudioSourceContext>,
         revision: u64,
-        deadline: Option<Instant>,
+        device_insert: Option<DeviceInsertBasis>,
     ) -> Self {
         Self(Arc::new(Decision {
             output_identity,
             context,
             revision,
-            deadline,
+            device_insert,
             phase: AtomicU32::new(PENDING),
         }))
+    }
+
+    pub(super) fn same_decision(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+
+    pub(super) fn device_insert_basis(&self) -> Option<&DeviceInsertBasis> {
+        self.0.device_insert.as_ref()
     }
 
     pub fn output_identity(&self) -> u64 {
@@ -125,7 +134,7 @@ impl CancellablePublicationReceipt {
     /// Seal an unapplied device insert after a witnessed fault of its output.
     /// An admitted callback still owns its exact terminal.
     pub(super) fn close_device_insert_on_fault(&self) {
-        if self.0.deadline.is_some() {
+        if self.0.device_insert.is_some() {
             let _ = self
                 .0
                 .phase
@@ -138,8 +147,9 @@ impl CancellablePublicationReceipt {
         // deadline. Only a device insert consults it on the callback.
         if self
             .0
-            .deadline
-            .is_some_and(|deadline| Instant::now() >= deadline)
+            .device_insert
+            .as_ref()
+            .is_some_and(|basis| Instant::now() >= basis.install_deadline)
         {
             let _ = self
                 .0

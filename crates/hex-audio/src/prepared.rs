@@ -94,7 +94,10 @@ mod native_sources;
 pub use hex_lattice::ProcessorInstanceIdentity as NativeProcessorIdentity;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub use native_sources::NativeParameterContinuationRequest;
+mod device_insert_consent;
 mod publication_receipt;
+use device_insert_consent::DeviceInsertBasis;
+pub use device_insert_consent::DeviceInsertConsent;
 use publication_receipt::PublicationReceiptOwner;
 pub use publication_receipt::{
     CancellablePublicationReceipt, FreshRuntimeCancellationResult, PublicationReceiptState,
@@ -2452,13 +2455,17 @@ impl PublicationControl {
             None
         };
         let cancellation = policy.fresh_fence().is_some().then(|| {
-            let deadline = matches!(policy, PublicationPolicy::DeviceInsert { .. })
-                .then(|| Instant::now() + std::time::Duration::from_millis(250));
+            let device_insert = match policy {
+                PublicationPolicy::DeviceInsert { predecessor, fence } => {
+                    Some(DeviceInsertBasis::new(predecessor, fence, &self.status))
+                }
+                _ => None,
+            };
             CancellablePublicationReceipt::new(
                 self.candidate_root.root_id(),
                 source_context,
                 revision,
-                deadline,
+                device_insert,
             )
         });
         let publication = Publication {

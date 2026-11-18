@@ -12,7 +12,7 @@ const DELAY: usize = 72;
 const BLOCK: usize = 257;
 const SIGNAL: Frame = [0.25; 2];
 
-fn revisions() -> ([Arc<hex_engine::PreparedRevision>; 2], hex_project::TrackId) {
+pub(super) fn revisions() -> ([Arc<hex_engine::PreparedRevision>; 2], hex_project::TrackId) {
     let limiter = &hex_devices::limiter::DEFINITION;
     let state = limiter
         .patch_parameter(
@@ -66,7 +66,7 @@ fn insert_revisions(
     ([dry, delayed], track)
 }
 
-fn begin_insert(
+pub(super) fn begin_insert(
     old: Arc<hex_engine::PreparedRevision>,
     next: Arc<hex_engine::PreparedRevision>,
     track: hex_project::TrackId,
