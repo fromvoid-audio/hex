@@ -6663,8 +6663,8 @@ fn fresh_added_audio_track(
 }
 
 /// Exactly one already-muted resident audio track gains a native latency processor.
-/// Unchanged native Arrangement instruments use the ordinary voice handoff;
-/// graph preflight independently proves isolation, equal maximum latency and
+/// Unchanged native Arrangement instruments use the ordinary voice handoff.
+/// Graph preflight independently proves isolation, equal maximum latency and
 /// silent discarded rings before any runtime state is moved.
 fn muted_isolated_latency_addition(
     candidate: &SessionPlayback,
