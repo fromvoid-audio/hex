@@ -1,25 +1,43 @@
-//! Keep a validated device edit private until the callback installs its exact graph.
+//! Keep a validated graph edit private until the callback installs its exact graph.
 use super::*;
 
-/// A one-shot decision for a staged insert. It grants no direct audio access.
+/// The user operation associated with an audio-confirmed graph edit.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GraphEditOperation {
+    InsertDevice,
+    RemoveDevice,
+    RemoveTrack,
+}
+
+/// A one-shot decision for a staged graph edit. It grants no direct audio access.
 #[derive(Clone, Debug)]
 pub struct DeviceInsertConfirmation {
     submission: ResidentGraphSubmission,
     deadline: Instant,
     decision: Arc<std::sync::atomic::AtomicU8>,
+    operation: GraphEditOperation,
 }
 
 impl DeviceInsertConfirmation {
-    fn new(submission: ResidentGraphSubmission, deadline: Instant) -> Self {
+    fn new(
+        submission: ResidentGraphSubmission,
+        deadline: Instant,
+        operation: GraphEditOperation,
+    ) -> Self {
         Self {
             submission,
             deadline,
             decision: Arc::default(),
+            operation,
         }
     }
 
     pub fn submission(&self) -> ResidentGraphSubmission {
         self.submission
+    }
+
+    pub fn operation(&self) -> GraphEditOperation {
+        self.operation
     }
 
     pub fn is_pending(&self) -> bool {
@@ -56,6 +74,10 @@ pub(in crate::service) struct Pending {
     edit: hex_project::StagedProjectEdit,
     prepared: Prepared,
     confirmation: Option<DeviceInsertConfirmation>,
+    pub(in crate::service) operation: GraphEditOperation,
+    // A cut publishes its captured selection only with the canonical removal.
+    pub(in crate::service) cut_devices: Option<Arc<hex_project::DeviceClipboard>>,
+    pub(in crate::service) cut_tracks: Option<Arc<hex_project::TrackClipboard>>,
     pub(in crate::service) document_intent: u64,
     pub(in crate::service) plugin: Option<plugin_effect::Pending>,
 }
@@ -283,7 +305,7 @@ impl Pending {
         }) {
             return None;
         }
-        let offer = DeviceInsertConfirmation::new(submission, deadline);
+        let offer = DeviceInsertConfirmation::new(submission, deadline, self.operation);
         self.confirmation = Some(offer.clone());
         Some(offer)
     }
@@ -371,9 +393,9 @@ fn insert_receipt(
         ))
 }
 
-pub(in crate::service) fn is_insert(command: &Command) -> bool {
+pub(in crate::service) fn graph_edit_operation(command: &Command) -> Option<GraphEditOperation> {
     match command {
-        Command::InitializeDevice(initialization) => is_insert(initialization.command()),
+        Command::InitializeDevice(initialization) => graph_edit_operation(initialization.command()),
         Command::InsertDevice { .. }
         | Command::InsertInstrument { .. }
         | Command::InsertMainDevice { .. }
@@ -381,8 +403,12 @@ pub(in crate::service) fn is_insert(command: &Command) -> bool {
         | Command::InsertTrackWithDevice { .. }
         | Command::InsertDefaultTrackWithDevice { .. }
         | Command::InsertDefaultTrackWithDeviceAndGain { .. }
-        | Command::InsertNestedDevice { .. } => true,
-        _ => false,
+        | Command::InsertNestedDevice { .. } => Some(GraphEditOperation::InsertDevice),
+        Command::RemoveDevice(_)
+        | Command::RemoveDevices { .. }
+        | Command::RemoveInstrument { .. } => Some(GraphEditOperation::RemoveDevice),
+        Command::RemoveTrack(_) | Command::RemoveTracks(_) => Some(GraphEditOperation::RemoveTrack),
+        _ => None,
     }
 }
 
@@ -414,6 +440,8 @@ impl Session {
                 "verified device insert authoring revision changed",
             ));
         }
+        let operation = graph_edit_operation(&command)
+            .ok_or(SessionError::Invalid("unsupported staged graph edit"))?;
         let edit = self.editor.stage_edit(command)?;
         let prepared = crate::prepare_with_waveforms(
             edit.project(),
@@ -446,6 +474,9 @@ impl Session {
                 editor_revision: Arc::new(prepared),
             },
             confirmation: None,
+            operation,
+            cut_devices: None,
+            cut_tracks: None,
             document_intent,
             plugin: None,
         })
@@ -464,6 +495,13 @@ impl Session {
     ) -> Result<Pending, SessionError> {
         let staged = (|| {
             crate::validate_command_media(&command)?;
+            let operation = if plugin.is_some() {
+                // The hosted browser also stages replacement of an instrument.
+                GraphEditOperation::InsertDevice
+            } else {
+                graph_edit_operation(&command)
+                    .ok_or(SessionError::Invalid("unsupported staged graph edit"))?
+            };
             let edit = self.editor.stage_edit(command)?;
             let installed = sink
                 .resident_runtime_loop(context)
@@ -529,6 +567,9 @@ impl Session {
                     predecessor: installed,
                 })),
                 confirmation: None,
+                operation,
+                cut_devices: None,
+                cut_tracks: None,
                 document_intent,
                 plugin: None,
             })
