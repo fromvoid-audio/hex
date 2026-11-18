@@ -501,46 +501,45 @@ fn clip_grid_layer_impl(
     if start >= end {
         return None;
     }
+    // Ruler lines arrive in frame order. Only strictly interior lines
+    // belong to the clip; its borders already share the lane's grid pixel.
+    let after_start = &lines[lines.partition_point(|line| line.frame <= start)..];
+    let interior = &after_start[..after_start.partition_point(|line| line.frame < end)];
+    if interior.is_empty() {
+        return None;
+    }
     let width = end - start;
-    let children = lines
-        .iter()
-        .filter_map(|line| {
-            let offset = line.frame.checked_sub(start)?;
-            if offset == 0 || offset >= width {
-                return None;
-            }
-            Some(
-                div()
-                    .debug_selector(|| format!("clip-grid-line-{}", line.frame))
-                    .absolute()
-                    .top_0()
-                    .bottom_0()
-                    .left(relative((offset as f64 / width as f64) as f32))
-                    .w(px(stroke.unwrap_or(if line.meter_marker {
-                        1.5
-                    } else {
-                        1.0
-                    })))
-                    .bg(rgb(if line.meter_marker {
-                        theme::color(theme::PaletteRole::Primary)
-                    } else {
-                        theme::color(theme::PaletteRole::Grid)
-                    }))
-                    .opacity(if line.meter_marker || line.bar_start {
-                        0.42
-                    } else {
-                        0.24
-                    }),
-            )
-        })
-        .collect::<Vec<_>>();
-    (!children.is_empty()).then(|| {
+    let children = interior.iter().map(|line| {
+        let offset = line.frame - start;
+        div()
+            .debug_selector(|| format!("clip-grid-line-{}", line.frame))
+            .absolute()
+            .top_0()
+            .bottom_0()
+            .left(relative((offset as f64 / width as f64) as f32))
+            .w(px(stroke.unwrap_or(if line.meter_marker {
+                1.5
+            } else {
+                1.0
+            })))
+            .bg(rgb(if line.meter_marker {
+                theme::color(theme::PaletteRole::Primary)
+            } else {
+                theme::color(theme::PaletteRole::Grid)
+            }))
+            .opacity(if line.meter_marker || line.bar_start {
+                0.42
+            } else {
+                0.24
+            })
+    });
+    Some(
         div()
             .debug_selector(|| "clip-musical-grid".to_owned())
             .absolute()
             .inset_0()
-            .children(children)
-    })
+            .children(children),
+    )
 }
 
 pub(super) struct ClipViewTimeline<'a> {
