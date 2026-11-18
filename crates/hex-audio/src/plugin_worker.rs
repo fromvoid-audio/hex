@@ -9,7 +9,7 @@ use std::{
     sync::atomic::Ordering::{Acquire, Release},
     sync::{Arc, atomic::AtomicU64},
     thread::{self, JoinHandle},
-    time::Duration,
+    time::{Duration, Instant},
 };
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 mod capture;
@@ -21,11 +21,33 @@ pub use controller::{
     NativeWorkerControllerQuery,
 };
 pub use hex_plugin_host::protocol::{
-    ControllerRequest, ParameterEdit, ParameterEditKind, ParameterPageQuery, PluginEditorPosition,
-    PluginEditorState, RecoveryEdits,
+    ControllerRequest, ParameterConversion, ParameterConversionStatus, ParameterEdit,
+    ParameterEditKind, ParameterPageQuery, ParameterText, PluginEditorPosition, PluginEditorState,
+    RecoveryEdits,
 };
+
+/// One successful slow helper exchange; diagnostic only, never audio acceptance.
+/// Samples are best-effort and may be discarded when their source retires.
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SlowPluginExchange {
+    pub binding: Binding,
+    pub sequence: u64,
+    /// Wall time between this worker's last empty live poll and the return of
+    /// the next accepted pickup. No empty observation means no sample. The
+    /// callback's publish timestamp is unavailable, so this interval can
+    /// include time before publication as well as receipt validation.
+    pub empty_poll_to_pickup_ns: Option<u64>,
+    pub exchange_ns: u64,
+    pub sdk_process_ns: u64,
+    pub quantum_ns: u64,
+    /// Samples dropped since the previous successful drain, saturating.
+    pub dropped: u64,
+}
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 mod edits;
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub use edits::StoppedEditProgress;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 mod parameter_change;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -39,7 +61,10 @@ pub use parameter_change::{
 pub use parameters::{MAX_OBSERVED_PARAMETERS, NativeParameterValue, NativeParameterValues};
 mod storage;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-pub use capture::{NativeWorkerCapture, NativeWorkerCaptureProgress};
+pub use capture::{
+    NativeWorkerCapture, NativeWorkerCaptureProgress, NativeWorkerParameterApplication,
+    NativeWorkerSequencedCaptureProgress, NativeWorkerStateAfterParameter,
+};
 /// Non-terminal helper refusal carried by [`NativeWorkerCaptureProgress::Refused`].
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub use hex_plugin_host::protocol::StateCaptureRefusal;
@@ -62,6 +87,10 @@ struct Signal {
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     failure_diagnostic: std::sync::Mutex<Option<String>>,
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    slow_exchange: std::sync::Mutex<Option<SlowPluginExchange>>,
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    slow_exchange_dropped: AtomicU64,
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     parameter_change_requested: std::sync::atomic::AtomicBool,
 }
 #[derive(Default)]
@@ -74,6 +103,35 @@ struct OfflineProgress {
 // also lets both sides check revocation, cancellation, or a failed worker.
 const OFFLINE_IDLE: Duration = Duration::from_millis(10);
 const LIVE_POLL: Duration = Duration::from_micros(50);
+const QUIET_TRANSPORT: Duration = Duration::from_millis(40);
+const LIVE_IDLE_POLL: Duration = Duration::from_millis(1);
+
+// Keep fast polling during ordinary PCM delivery. A stopped instance still
+// checks revocation, input and control work every millisecond without a
+// callback wake or another handoff.
+fn live_poll_wait(
+    empty_since: &mut Option<Instant>,
+    now: Instant,
+    active_poll: Duration,
+) -> Duration {
+    if now.saturating_duration_since(*empty_since.get_or_insert(now)) >= QUIET_TRANSPORT {
+        LIVE_IDLE_POLL
+    } else {
+        active_poll
+    }
+}
+
+// Poll within roughly one thirty-second of an admitted native quantum,
+// retaining the original slice for fast or small quanta. This executes once
+// on the transport worker and never schedules from the callback.
+#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
+fn native_active_poll(quantum: u16, sample_rate: f64) -> Duration {
+    if !sample_rate.is_finite() || sample_rate <= 0.0 {
+        return LIVE_POLL;
+    }
+    let micros = f64::from(quantum) * (1_000_000.0 / 32.0) / sample_rate;
+    Duration::from_micros(micros.clamp(50.0, 250.0) as u64)
+}
 
 impl Signal {
     fn new(offline: bool) -> Self {
@@ -93,6 +151,10 @@ impl Signal {
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             failure_diagnostic: std::sync::Mutex::new(None),
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            slow_exchange: std::sync::Mutex::new(None),
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            slow_exchange_dropped: AtomicU64::new(0),
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             parameter_change_requested: std::sync::atomic::AtomicBool::new(false),
         }
     }
@@ -108,6 +170,31 @@ impl Signal {
         } else {
             self.blocks.store(blocks, Release);
         }
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn publish_slow_exchange(&self, sample: SlowPluginExchange) {
+        if let Ok(mut slot) = self.slow_exchange.try_lock()
+            && slot.is_none()
+        {
+            *slot = Some(sample);
+        } else {
+            let _ = self.slow_exchange_dropped.fetch_update(
+                std::sync::atomic::Ordering::Relaxed,
+                std::sync::atomic::Ordering::Relaxed,
+                |count| Some(count.saturating_add(1)),
+            );
+        }
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn take_slow_exchange(&self) -> Option<SlowPluginExchange> {
+        let mut slot = self.slow_exchange.try_lock().ok()?;
+        let mut sample = slot.take()?;
+        sample.dropped = self
+            .slow_exchange_dropped
+            .swap(0, std::sync::atomic::Ordering::Relaxed);
+        Some(sample)
     }
 }
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -253,6 +340,15 @@ struct State {
     editor_lost: Option<std::num::NonZeroU64>,
 }
 impl State {
+    fn active_poll(&self) -> Duration {
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        if let Some(Processor::Native(instance)) = &self.processor {
+            let configuration = instance.configuration();
+            return native_active_poll(configuration.quantum, configuration.sample_rate);
+        }
+        LIVE_POLL
+    }
+
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     fn report_native_failure(
         &self,
@@ -331,6 +427,7 @@ impl State {
                     block,
                     performs: Default::default(),
                     restorations: Default::default(),
+                    sdk_process_ns: None,
                 }),
             Some(Processor::Function(_)) => Err(Fault::InvalidParameters),
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -364,20 +461,10 @@ impl State {
                     (None, true, true, None) => instance
                         .exchange_armed_authored_with_editor_on_worker(block, manual_parameter),
                     (None, false, true, None) => instance.exchange_editor_on_worker(block),
-                    (None, true, false, None) => instance
-                        .exchange_armed_authored_with_manual_on_worker(block, manual_parameter)
-                        .map(|block| hex_plugin_host::protocol::EditorPcm {
-                            block,
-                            performs: Default::default(),
-                            restorations: Default::default(),
-                        }),
-                    (None, false, false, None) => instance.exchange_on_worker(block).map(|block| {
-                        hex_plugin_host::protocol::EditorPcm {
-                            block,
-                            performs: Default::default(),
-                            restorations: Default::default(),
-                        }
-                    }),
+                    (None, true, false, None) => {
+                        instance.exchange_armed_authored_timed_on_worker(block, manual_parameter)
+                    }
+                    (None, false, false, None) => instance.exchange_timed_on_worker(block),
                 };
                 match result {
                     Ok(reply) => Ok(reply),
@@ -586,18 +673,22 @@ fn transport_runner_with_setup(
 ) -> impl FnOnce() -> Completion + Send + 'static {
     move || {
         let mut fault = None;
-        match guard.owner_mut() {
+        let active_poll = match guard.owner_mut() {
             Some(state) => {
                 if let Err(error) = setup(state) {
                     return Completion { fault: Some(error) };
                 }
+                state.active_poll()
             }
             None => {
                 return Completion {
                     fault: Some(Fault::Protocol),
                 };
             }
-        }
+        };
+        let mut empty_since = None;
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        let mut last_empty_poll: Option<Instant> = None;
         loop {
             let Some(state) = guard.owner_mut() else {
                 fault = Some(Fault::Protocol);
@@ -612,6 +703,12 @@ fn transport_runner_with_setup(
                     manual_origin_available,
                     editor_scope,
                 })) => {
+                    empty_since = None;
+                    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                    let empty_poll_to_pickup_ns = last_empty_poll
+                        .take()
+                        .and_then(|empty| Instant::now().checked_duration_since(empty))
+                        .and_then(|elapsed| u64::try_from(elapsed.as_nanos()).ok());
                     let dense = dense_parameter.as_ref().map(|request| request.lane());
                     let authored = authored_program.is_some() || dense.is_some();
                     #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
@@ -661,46 +758,75 @@ fn transport_runner_with_setup(
                     };
                     #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
                     let lost_origin = false;
-                    let result = state
-                        .process(
-                            block,
-                            authored,
-                            dense,
-                            manual_parameter,
-                            editor_scope.is_some(),
+                    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                    let exchange = match state.processor.as_ref() {
+                        Some(Processor::Native(instance)) => Some((
+                            block.binding,
+                            block.sequence,
+                            (f64::from(block.frames) * 1_000_000_000.0
+                                / instance.configuration().sample_rate)
+                                as u64,
+                            std::time::Instant::now(),
+                        )),
+                        _ => None,
+                    };
+                    let processed = state.process(
+                        block,
+                        authored,
+                        dense,
+                        manual_parameter,
+                        editor_scope.is_some(),
+                        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                        editor_touch,
+                    );
+                    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                    if let (Some((binding, sequence, quantum_ns, started)), Ok(reply)) =
+                        (exchange, &processed)
+                        && let Some(sdk_process_ns) = reply.sdk_process_ns
+                    {
+                        let exchange_ns =
+                            started.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64;
+                        if exchange_ns >= quantum_ns {
+                            published.publish_slow_exchange(SlowPluginExchange {
+                                binding,
+                                sequence,
+                                empty_poll_to_pickup_ns,
+                                exchange_ns,
+                                sdk_process_ns,
+                                quantum_ns,
+                                dropped: 0,
+                            });
+                        }
+                    }
+                    let result = processed.and_then(
+                        |hex_plugin_host::protocol::EditorPcm {
+                             block: reply,
+                             performs,
+                             restorations,
+                             sdk_process_ns: _,
+                         }| {
+                            // Native exchange already validated the complete SDK
+                            // reply. Retain its private input receipt even if Stop
+                            // revokes the transport before callback publication.
+                            // The live terminal is still published only below.
                             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-                            editor_touch,
-                        )
-                        .and_then(
-                            |hex_plugin_host::protocol::EditorPcm {
-                                 block: reply,
-                                 performs,
-                                 restorations,
-                             }| {
-                                // Native exchange already validated the complete SDK
-                                // reply. Retain its private input receipt even if Stop
-                                // revokes the transport before callback publication.
-                                // The live terminal is still published only below.
-                                #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-                                let manual = state.complete_parameter_change(&reply)?;
-                                #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
-                                let manual = None;
-                                state.worker.complete_with_editor_facts(
-                                    reply,
-                                    manual,
-                                    editor_scope.map(|_| {
-                                        hex_plugin_host::transport::EditorPcmFacts {
-                                            performs,
-                                            restorations,
-                                            lost_origin,
-                                        }
-                                    }),
-                                )?;
-                                #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-                                state.observe_parameter_reply(&reply)?;
-                                Ok(())
-                            },
-                        );
+                            let manual = state.complete_parameter_change(&reply)?;
+                            #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+                            let manual = None;
+                            state.worker.complete_with_editor_facts(
+                                reply,
+                                manual,
+                                editor_scope.map(|_| hex_plugin_host::transport::EditorPcmFacts {
+                                    performs,
+                                    restorations,
+                                    lost_origin,
+                                }),
+                            )?;
+                            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                            state.observe_parameter_reply(&reply)?;
+                            Ok(())
+                        },
+                    );
                     if let Err(error) = result {
                         state.worker.revoke();
                         if error != Fault::Revoked {
@@ -718,7 +844,12 @@ fn transport_runner_with_setup(
                     if published.offline.is_some() {
                         thread::park_timeout(OFFLINE_IDLE);
                     } else {
-                        thread::sleep(LIVE_POLL);
+                        let now = Instant::now();
+                        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                        if matches!(state.processor, Some(Processor::Native(_))) {
+                            last_empty_poll = Some(now);
+                        }
+                        thread::sleep(live_poll_wait(&mut empty_since, now, active_poll));
                     }
                 }
                 Err(Fault::Revoked) => break,
@@ -769,6 +900,7 @@ pub struct NativeWorker {
     binding: Binding,
     quantum: u16,
     retirement_requested: bool,
+    editor_edits_sealed: bool,
     grouped_editor_callbacks: bool,
     source_storage: Option<hex_plugin_host::native::PreparedStorage>,
 }
@@ -896,6 +1028,17 @@ impl NativeWorker {
         !self.retirement_requested && !self.reaper.control.is_revoked()
     }
 
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub(crate) fn take_slow_exchange_on_control(&self) -> Option<SlowPluginExchange> {
+        self.reaper.completed.take_slow_exchange()
+    }
+
+    pub(crate) fn take_concealed_output_on_control(
+        &self,
+    ) -> Option<hex_plugin_host::transport::ConcealedOutput> {
+        self.reaper.control.take_concealed_output()
+    }
+
     pub(crate) fn take_failure_diagnostic_on_control(&self) -> Option<String> {
         if let Some(diagnostic) = self
             .reaper
@@ -946,6 +1089,16 @@ impl NativeWorker {
         }
     }
 
+    /// Copied untouched-or-committed observation on the original live pair.
+    /// This is not a source, installation, or quiescence witness.
+    pub fn quantum_observation_on_control(
+        &self,
+    ) -> Option<hex_plugin_host::transport::QuantumObservation> {
+        self.transport_is_live_on_control()
+            .then(|| self.reaper.control.quantum_observation())
+            .flatten()
+    }
+
     /// Last accepted callback quantum on this original pair. This is not an
     /// installed-graph, quiescence, worker-receipt or reclamation witness.
     pub fn committed_quantum_on_control(&self) -> Option<CommittedQuantum> {
@@ -979,13 +1132,29 @@ impl NativeWorker {
     /// Join, retain the exact old ring endpoints, and consume the returned
     /// native processor into its actual quiescent protocol. An admitted capture
     /// first drains through its existing bounded terminal. Unwind/refusal is
-    /// terminal and cannot become a retry. Old callback custody stays separate.
+    /// terminal and cannot become a retry. A pending editor seal or a sealed
+    /// editor refuses this reusable transition without taking the source; the
+    /// sealed worker remains available for receipt draining and retirement.
+    /// Old callback custody stays separate.
     pub fn quiesce_on_control(
         &mut self,
     ) -> Result<hex_plugin_host::native::Quiescent, hex_plugin_host::Error> {
         if self.retirement_requested {
             return Err(hex_plugin_host::Error::Protocol(
                 "native worker retirement is terminal",
+            ));
+        }
+        if self.editor_edits_sealed {
+            return Err(hex_plugin_host::Error::Protocol(
+                "sealed editor source cannot resume",
+            ));
+        }
+        if self
+            .editor_seal_query_pending_on_control()
+            .map_err(hex_plugin_host::Error::Protocol)?
+        {
+            return Err(hex_plugin_host::Error::Protocol(
+                "native editor seal query is pending",
             ));
         }
         if self
@@ -1097,7 +1266,52 @@ impl NativeWorker {
 mod tests {
     use super::*;
 
-    fn run_offline_transport(offline: bool, blocks: u64, fail_at: Option<u64>) -> Duration {
+    #[test]
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn slow_exchange_sample_is_bounded_and_preserves_its_original_source() {
+        let signal = Signal::new(false);
+        let first = SlowPluginExchange {
+            binding: Binding {
+                root: 1,
+                instance: 2,
+                graph: 3,
+                epoch: 4,
+            },
+            sequence: 7,
+            empty_poll_to_pickup_ns: Some(300),
+            exchange_ns: 900,
+            sdk_process_ns: 400,
+            quantum_ns: 800,
+            dropped: 0,
+        };
+        signal.publish_slow_exchange(first);
+        signal.publish_slow_exchange(SlowPluginExchange {
+            sequence: 8,
+            ..first
+        });
+        let held = signal.slow_exchange.lock().unwrap();
+        signal.publish_slow_exchange(SlowPluginExchange {
+            sequence: 9,
+            ..first
+        });
+        assert!(signal.take_slow_exchange().is_none());
+        drop(held);
+        assert_eq!(
+            signal.take_slow_exchange(),
+            Some(SlowPluginExchange {
+                dropped: 2,
+                ..first
+            })
+        );
+        assert!(signal.take_slow_exchange().is_none());
+    }
+
+    fn run_fixed_pipeline(
+        offline: bool,
+        blocks: u64,
+        fail_at: Option<u64>,
+        idle_before_start: Duration,
+    ) -> Duration {
         const QUANTUM: u16 = 256;
         let (control, mut callback, worker) = channel(
             Binding {
@@ -1121,7 +1335,8 @@ mod tests {
         }));
         let mut reaper = spawn_processor_with(control, worker, processor, offline, spawn_transport)
             .unwrap_or_else(|failure| panic!("transport spawn: {}", failure.error));
-        let start = std::time::Instant::now();
+        thread::sleep(idle_before_start);
+        let start = Instant::now();
         for index in 0..blocks {
             let input = [(index % 4 + 1) as f32 / 8.0; 2];
             let mut output = [[0.0; 2]; QUANTUM as usize];
@@ -1155,17 +1370,60 @@ mod tests {
     }
 
     #[test]
+    fn native_active_poll_tracks_the_admitted_quantum_with_bounded_waits() {
+        assert_eq!(
+            native_active_poll(256, 44_100.0),
+            Duration::from_micros(181)
+        );
+        assert_eq!(native_active_poll(256, 96_000.0), Duration::from_micros(83));
+        assert_eq!(native_active_poll(64, 96_000.0), LIVE_POLL);
+        assert_eq!(native_active_poll(256, 8_000.0), Duration::from_micros(250));
+    }
+
+    #[test]
+    fn live_worker_backs_off_only_after_a_quiet_request_window() {
+        let start = Instant::now();
+        let mut empty_since = None;
+        assert_eq!(
+            live_poll_wait(&mut empty_since, start, LIVE_POLL),
+            LIVE_POLL
+        );
+        assert_eq!(
+            live_poll_wait(
+                &mut empty_since,
+                start + QUIET_TRANSPORT - LIVE_POLL,
+                LIVE_POLL
+            ),
+            LIVE_POLL
+        );
+        assert_eq!(
+            live_poll_wait(&mut empty_since, start + QUIET_TRANSPORT, LIVE_POLL),
+            LIVE_IDLE_POLL
+        );
+        empty_since = None; // A new PCM request resets the quiet window.
+        assert_eq!(
+            live_poll_wait(&mut empty_since, start + QUIET_TRANSPORT, LIVE_POLL),
+            LIVE_POLL
+        );
+    }
+
+    #[test]
+    fn live_transport_keeps_its_reply_prefix_after_idle() {
+        run_fixed_pipeline(false, 16, None, QUIET_TRANSPORT * 2);
+    }
+
+    #[test]
     fn offline_worker_publishes_exact_replies_and_joins_on_failure() {
-        run_offline_transport(true, 16, None);
-        run_offline_transport(true, 16, Some(5));
+        run_fixed_pipeline(true, 16, None, Duration::ZERO);
+        run_fixed_pipeline(true, 16, Some(5), Duration::ZERO);
     }
 
     #[test]
     #[ignore = "release transport timing, run explicitly"]
     fn measure_offline_worker_wakeup() {
         for _ in 0..3 {
-            let polling = run_offline_transport(false, 6000, None);
-            let wakeups = run_offline_transport(true, 6000, None);
+            let polling = run_fixed_pipeline(false, 6000, None, Duration::ZERO);
+            let wakeups = run_fixed_pipeline(true, 6000, None, Duration::ZERO);
             eprintln!("6000 x 256 frames: polling={polling:?}, wakeups={wakeups:?}");
         }
     }
@@ -1389,11 +1647,13 @@ mod tests {
             epoch: 4,
         };
         let (control, mut callback, worker) = channel(binding, 8).unwrap();
-        let gate = Arc::new(std::sync::Barrier::new(2));
-        let processing = Arc::clone(&gate);
+        let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel(1);
+        let (resume_tx, resume_rx) = std::sync::mpsc::sync_channel(1);
         let mut reaper = spawn(control, worker, move |_| {
-            processing.wait();
-            processing.wait();
+            entered_tx.send(()).unwrap();
+            resume_rx
+                .recv_timeout(Duration::from_secs(3))
+                .expect("control did not release the worker fixture");
             panic!("original worker unwind fixture");
         })
         .unwrap();
@@ -1401,9 +1661,11 @@ mod tests {
             .stage(&[[0.5; 2]; 8], &[], &mut [[0.0; 2]; 8])
             .unwrap();
         callback.finish(true).unwrap();
-        gate.wait();
+        entered_rx
+            .recv_timeout(Duration::from_secs(3))
+            .expect("worker fixture did not begin processing");
         drop(callback); // worker endpoint is now the only owner of both rings
-        gate.wait();
+        resume_tx.send(()).unwrap();
         assert_eq!(reaper.join_on_control(), Err(Fault::Protocol));
         assert!(reaper.result.as_ref().unwrap().is_err());
         assert!(

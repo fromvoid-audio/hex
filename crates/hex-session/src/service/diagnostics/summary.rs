@@ -1625,6 +1625,12 @@ pub(super) fn request(value: &Request) -> Description {
         Request::ContinuePluginParameters => {
             describe!("continue_plugin_parameters"; []; omitted="")
         }
+        Request::QueryPluginParameterConversion(query) => {
+            describe!("query_plugin_parameter_conversion"; ["device" => query.device.value(), "request_id" => query.request_id]; omitted="operation")
+        }
+        Request::ContinuePluginParameterConversion => {
+            describe!("continue_plugin_parameter_conversion"; []; omitted="")
+        }
         Request::ContinuePluginStateRestore => {
             describe!("continue_plugin_state_restore"; []; omitted="")
         }
@@ -1715,6 +1721,9 @@ pub(super) fn request(value: &Request) -> Description {
             target,
         } => {
             describe!("arm_native_parameter_recording"; ["project_generation" => project_generation, "revision" => revision, "armed" => target.is_some()]; omitted="")
+        }
+        Request::PreparePausedInputMonitor { request, .. } => {
+            describe!("prepare_paused_input_monitor"; ["project_generation" => request.source.context.project_generation, "revision" => request.source.context.editor_revision, "audio_revision" => request.source.audio_revision, "transport_epoch" => request.transport_epoch, "track" => request.track.value()]; omitted="reply channel")
         }
         Request::ArmGainRecording {
             project_generation,

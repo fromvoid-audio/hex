@@ -170,6 +170,7 @@ fn queued_tempo_completion_keeps_drop_feedback_frozen_until_exact_refusal(cx: &m
         let mut receipt = Receipt::new(v.project_generation);
         assert!(receipt.submitted(2));
         v.sections.pending = Some(Pending {
+            copied: None,
             generation: v.project_generation,
             revision: g.revision,
             command: g.command.unwrap(),

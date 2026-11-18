@@ -241,12 +241,14 @@ impl ReturnEffectTailBank {
                     if frames.len() != 1 {
                         return Err(SessionPlaybackError::DeviceRuntime);
                     }
-                    let origin = crate::signal_graph::OriginClock(
-                        compensation.delays.stamp_at_delay(arrival),
-                    );
-                    let output_origin = crate::signal_graph::OriginClock(
-                        compensation.delays.stamp_at_delay(output_arrival),
-                    );
+                    let input_stamp = compensation.delays.stamp_at_delay_ref(arrival);
+                    let origin = crate::signal_graph::OriginClock(input_stamp);
+                    let output_origin =
+                        crate::signal_graph::OriginClock(if arrival == output_arrival {
+                            input_stamp
+                        } else {
+                            compensation.delays.stamp_at_delay_ref(output_arrival)
+                        });
                     tail.chain.process_range_with_foreign(
                         entry..entry + 1,
                         frames,
@@ -419,6 +421,7 @@ impl ReturnEffectTailPlan {
         processor_count: &mut usize,
         runtime_bytes: &mut usize,
         entry_count: &mut usize,
+        continuation: Option<&hex_lattice::ForeignConfigurationContinuation<'_>>,
     ) -> Result<Self, SessionPlaybackError> {
         if old_buses.len() > MAX_RETURN_TRACKS
             || new_buses.len() > MAX_RETURN_TRACKS
@@ -452,6 +455,7 @@ impl ReturnEffectTailPlan {
             reserve_chain(
                 &tail.chain,
                 tail.active_start(),
+                tail.return_id().is_none(),
                 sample_rate,
                 processor_count,
                 runtime_bytes,
@@ -470,7 +474,12 @@ impl ReturnEffectTailPlan {
                     .ok_or(SessionPlaybackError::DeviceRuntime)?;
                 let same_topology = old_chain.len() == new_chain.len();
                 let same_configuration = same_topology
-                    && old_chain.configuration_matches_range(new_chain, 0..old_chain.len());
+                    && super::handoff::configuration_matches_continuation(
+                        old_chain,
+                        new_chain,
+                        0..old_chain.len(),
+                        continuation,
+                    );
                 let retargetable_configuration = !same_configuration
                     && same_topology
                     && new_chain.can_retarget_parameters_from_range(old_chain, 0..old_chain.len());
@@ -510,6 +519,7 @@ impl ReturnEffectTailPlan {
             reserve_chain(
                 old_chain,
                 0,
+                false,
                 sample_rate,
                 processor_count,
                 runtime_bytes,
@@ -530,12 +540,17 @@ impl ReturnEffectTailPlan {
         processor_count: &mut usize,
         runtime_bytes: &mut usize,
         entry_count: &mut usize,
+        continuation: Option<&hex_lattice::ForeignConfigurationContinuation<'_>>,
     ) -> Result<(), SessionPlaybackError> {
         let mut start = 0;
         let mut arrival = pre_main_arrival;
         while start < old.len().min(current.len())
-            && (old.configuration_matches_range(current, start..start + 1)
-                || current.can_retarget_parameters_from_range(old, start..start + 1))
+            && (super::handoff::configuration_matches_continuation(
+                old,
+                current,
+                start..start + 1,
+                continuation,
+            ) || current.can_retarget_parameters_from_range(old, start..start + 1))
         {
             arrival = arrival
                 .checked_add(
@@ -578,6 +593,7 @@ impl ReturnEffectTailPlan {
         reserve_chain(
             old,
             start,
+            true,
             sample_rate,
             processor_count,
             runtime_bytes,
@@ -773,13 +789,14 @@ impl ReturnEffectTailPlan {
 fn reserve_chain(
     chain: &NativeRuntimeChain,
     active_start: usize,
+    allow_unbounded_foreign: bool,
     sample_rate: u32,
     processor_count: &mut usize,
     runtime_bytes: &mut usize,
     entry_count: &mut usize,
 ) -> Result<(), SessionPlaybackError> {
     let active = active_start..chain.len();
-    if chain.range_has_unbounded_foreign_tail(active.clone()) {
+    if !allow_unbounded_foreign && chain.range_has_unbounded_foreign_tail(active.clone()) {
         return Err(SessionPlaybackError::DeviceRuntime);
     }
     match chain
@@ -796,6 +813,8 @@ fn reserve_chain(
                 return Err(SessionPlaybackError::ReleaseBankFull);
             }
         }
+        // The fixed tail bank retains this owner until Stop/seek or a proven
+        // drain. A full bank refuses a later handoff without discarding it.
         OutputTail::Unbounded => {}
     }
     *processor_count = processor_count

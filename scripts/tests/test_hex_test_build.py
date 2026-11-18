@@ -16,8 +16,9 @@ import signal
 import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
-from contextlib import contextmanager, redirect_stderr
+from contextlib import contextmanager, nullcontext, redirect_stderr
 from test_ci_target_storage import reuse_fixed_scratch_observations
+import test_local_ci
 from test_local_ci import install_delivery_source_fixture, load_delivery_source_fixture
 
 delivery = load_delivery_source_fixture("hex_test_build")
@@ -27,6 +28,125 @@ SIGNED = {"identifier": delivery.IDENTITY, "team_identifier": SIGNING["team_iden
 
 
 class DeliveryTests(unittest.TestCase):
+    def test_delivery_switches_validation_when_fresh_owner_is_admitted(self):
+        (self.root / "scripts/hex-test-build.json").write_text(json.dumps({"app_path": "hex.app", "signing": SIGNING}))
+        included = self.root / "included.json"
+        included.write_text(json.dumps([{"pr": "https://github.com/PORTALSURFER/hex/pull/1", "head": "a" * 40}]))
+        checklist = self.root / "checklist"
+        checklist.write_text("review")
+        args = SimpleNamespace(candidate="a" * 40, ci_report=self.root / "report", included=included,
+                               checklist=checklist, build_only=False, prepare_only=False)
+        runner = Mock(root=self.root, output_dir=self.root / "output")
+        runner._resolve_cargo_identity.return_value = True
+        runner._check_disk_headroom.return_value = True
+        reservation = object()
+        owner = {"state": "pending"}
+        class Finished(Exception):
+            pass
+        def guard(_runner, **kwargs):
+            self.assertIs(kwargs["reservation"], reservation)
+            kwargs["verification_check"]()
+            kwargs["on_admission"](owner)
+            kwargs["verification_check"]()
+            raise Finished
+        with patch.object(delivery, "ROOT", self.root), patch.object(delivery.sys, "platform", "darwin"), \
+                patch.dict(os.environ, {"HEX_DEV_APP_PATH": str(self.app)}), \
+                patch.object(delivery.ci, "LocalCiRunner", return_value=runner), \
+                patch.object(delivery, "activation_lock", return_value=nullcontext()), \
+                patch.object(delivery, "recover"), patch.object(delivery, "assert_inactive"), \
+                patch.object(delivery, "changelog_payload", return_value=(None, {})), \
+                patch.object(delivery, "prepare_discovery_input", return_value=None), \
+                patch.object(delivery, "optimized_artifact", side_effect=guard), \
+                patch.object(delivery, "validate_ci") as validate:
+            with self.assertRaises(Finished):
+                delivery._build(args, reservation=reservation)
+        self.assertEqual(len(validate.call_args_list), 4)
+        self.assertTrue(all(call.kwargs.get("reservation") is reservation for call in validate.call_args_list[:3]))
+        self.assertNotIn("reservation", validate.call_args_list[3].kwargs)
+        runner._resolve_cargo_identity.assert_called_once_with(reservation)
+        runner.validate_release_inputs.assert_called_once_with(owner)
+
+    def test_fresh_delivery_reserves_before_build_and_rejects_recovery(self):
+        target = self.root / "fresh-target"
+        target.mkdir()
+        args = SimpleNamespace(fresh_release_target=True)
+        with patch.object(delivery, "ROOT", self.root), \
+                patch.dict(os.environ, {"CARGO_TARGET_DIR": str(target), "CARGO_CACHE_RUSTC_INFO": "0"}), \
+                patch.object(delivery, "_build") as build:
+            def observe(_args, *, reservation):
+                reservation.revalidate(str(target))
+                self.assertIsNotNone(reservation._lock.file)
+                return "built"
+            build.side_effect = observe
+            self.assertEqual(delivery.build(args), "built")
+            self.assertIsNone(build.call_args.kwargs["reservation"]._lock.file)
+            for field in ("adopt_release_target", "expected_release_owner_sha256",
+                          "expected_recreated_target_device", "expected_recreated_target_inode"):
+                with self.subTest(field=field):
+                    with self.assertRaisesRegex(delivery.DeliveryError, "cannot adopt"):
+                        delivery.build(SimpleNamespace(fresh_release_target=True, **{field: 1}))
+            target.rmdir()
+            with self.assertRaisesRegex(delivery.ci.TargetCacheError, "absent"):
+                delivery.build(args)
+            target.mkdir()
+            (target / "foreign").write_text("preserve")
+            with self.assertRaises(delivery.ci.TargetCacheError):
+                delivery.build(args)
+            self.assertEqual((target / "foreign").read_text(), "preserve")
+
+    def test_optimized_delivery_keeps_fresh_reservation_through_build(self):
+        fixture = test_local_ci.LocalCiRunnerTests()
+        fixture.setUp()
+        self.addCleanup(fixture.tearDown)
+        runner, reservation, target = fixture._reserved_release_runner("delivery-fresh")
+        runner.env["CARGO_CACHE_RUSTC_INFO"] = "0"
+        runner.output_dir.mkdir(parents=True)
+        lock = reservation._lock
+        tree = runner.summary["start_tree"]
+        plan = {"scope": "tooling", "profile": "merge", "qualifies_merge": True,
+                "source": tree["commit"], "base": "b" * 40}
+        dependencies = {"fixture": "matching input identity"}
+        report = fixture.base / "ci-report.json"
+        delivery.write_json(report, {"schema_version": 2, "mode": "merge", "status": "passed", "stale": False,
+            "exit_code": 0, "commit": tree["commit"], "dirty": False, "start_tree": tree, "end_tree": tree,
+            "plan": plan, "target_cache": {"dependency_inputs": dependencies},
+            "steps": [{"step_id": step.step_id, "argv": list(step.argv), "status": "passed",
+                       "test_results": {"python_executions": [1]}} for step in delivery.ci.planned_steps(plan)]})
+        actual_run = subprocess.run
+        checks = []
+        admitted = [False]
+        def run(argv, **kwargs):
+            if argv[:2] == ["cargo", "build"]:
+                self.assertIs(runner.target_lock, lock)
+                artifact = target / "release" / "hex-desktop"
+                artifact.parent.mkdir(parents=True)
+                artifact.write_bytes(b"optimized fixture")
+                event = {"reason": "compiler-artifact", "executable": str(artifact),
+                         "target": {"name": "hex-desktop"}, "profile": {"opt_level": "3"}}
+                return subprocess.CompletedProcess(argv, 0, json.dumps(event) + "\n")
+            return actual_run(argv, **kwargs)
+        def verify():
+            if runner.target_lock is not None:
+                self.assertIs(runner.target_lock, lock)
+            delivery.validate_ci(report, runner, tree["commit"], allow_dev_profile=True,
+                                 reservation=None if admitted[0] else reservation)
+            checks.append(True)
+        def admit(owner):
+            admitted[0] = True
+            checks.append(owner["state"])
+        with patch.object(subprocess, "run", side_effect=run), \
+                patch.object(delivery, "run", self.mock.temp_original), \
+                patch.object(delivery.ci.ci_plan, "resolve", return_value=plan), \
+                patch.object(runner, "_dependency_context", return_value=dependencies):
+            verify()
+            with delivery.optimized_artifact(runner, reservation=reservation, verification_check=verify,
+                                             on_admission=admit) as (binary, owner):
+                self.assertEqual(binary.read_bytes(), b"optimized fixture")
+                self.assertIs(runner.target_lock, lock)
+                self.assertEqual(owner["state"], "pending")
+        self.assertEqual(checks, [True, True, "pending", True])
+        self.assertIsNone(lock.file)
+
     def test_direct_delivery_compiles_witnessed_bytes_before_qualifying_source(self):
         scripts = self.root / "scripts"
         path = scripts / "hex-test-build.py"
@@ -721,6 +841,9 @@ if os.environ.get("HEX_FIXTURE_CHANGE_DELIVERY") == "1":
     def test_production_build_assembles_and_replaces_stable_app(self):
         self.assert_production_build(build_only=False)
 
+    def test_production_build_version_metadata_uses_runner_environment(self):
+        self.assert_production_build(build_only=True, metadata_env_check=True)
+
     def test_default_build_stages_discovery_in_the_installed_app(self):
         self.assert_production_build(build_only=False, discovery=True)
 
@@ -922,7 +1045,7 @@ if os.environ.get("HEX_FIXTURE_CHANGE_DELIVERY") == "1":
 
     def assert_production_build(self, *, build_only, drift=False, finder_metadata=False, rmdir_member=None,
                                 prepare_only=False, followup_failure=False, validate_ci_receipt=False,
-                                discovery=False):
+                                discovery=False, metadata_env_check=False):
         # Exercise real assembly/receipt/activation with native external tools
         # substituted. A missing Contents parent failed actual post-merge delivery.
         self.bundle(self.app, b"old")
@@ -953,6 +1076,23 @@ if os.environ.get("HEX_FIXTURE_CHANGE_DELIVERY") == "1":
         checklist = self.root / "USER-TEST.md"
         checklist.write_text("1. launch stable app\n2. inspect source identity\n")
         runner = delivery.ci.LocalCiRunner(source)
+        metadata_environment = {}
+        real_subprocess_run = subprocess.run
+        if metadata_env_check:
+            tools = self.root / "fake-cargo-bin"
+            tools.mkdir()
+            cargo = tools / "cargo"
+            cargo.write_text(f"#!{sys.executable}\n" +
+                "import json, os\n"
+                "version = '0.2.7' if os.environ.get('CARGO_CACHE_RUSTC_INFO') == '0' and "
+                "os.environ.get('CARGO_TARGET_DIR') == os.environ.get('EXPECTED_TARGET') else '9.9.9'\n"
+                "print(json.dumps({'packages': [{'name': 'hex-desktop', 'version': version}]}))\n")
+            cargo.chmod(0o755)
+            metadata_environment = {"PATH": str(tools) + os.pathsep + os.environ["PATH"],
+                                    "CARGO_TARGET_DIR": str(self.root / "ambient-target"),
+                                    "CARGO_CACHE_RUSTC_INFO": "1"}
+            runner.env.update(PATH=metadata_environment["PATH"], CARGO_TARGET_DIR=str(target.parent.parent),
+                              EXPECTED_TARGET=str(target.parent.parent), CARGO_CACHE_RUSTC_INFO="0")
         runner.summary["start_tree"] = {"commit":candidate, "dirty":False, "dirty_files":[],
                                         "content_sha256":"d" * 64}
         dependency_inputs = {"fixture": "guarded input identity"}
@@ -984,10 +1124,13 @@ if os.environ.get("HEX_FIXTURE_CHANGE_DELIVERY") == "1":
         owner = dev_owner.with_name(dev_owner.name.replace(".owner.json", ".release-owner.json"))
         event = {"reason":"compiler-artifact", "executable":str(executable),
                  "target":{"name":"hex-desktop"}, "profile":{"opt_level":"3"}}
-        def tool(argv, root=source):
+        def tool(argv, root=source, *, env=None):
             if argv[:2] == ["git", "rev-parse"]:
                 return str(source / ".git")
             if argv[:2] == ["cargo", "metadata"]:
+                if metadata_env_check:
+                    return real_subprocess_run(argv, cwd=root, env=env, check=True,
+                                               capture_output=True, text=True).stdout.strip()
                 return json.dumps({"packages":[{"name":"hex-desktop", "version":"0.1.0"}]})
             if prepare_only and argv[0] == "ps":
                 return f"123 {self.app}/Contents/MacOS/hex"
@@ -1037,7 +1180,7 @@ if os.environ.get("HEX_FIXTURE_CHANGE_DELIVERY") == "1":
                                  side_effect=AssertionError("CI required for build-only") if build_only else None))
         with patch.object(delivery, "ROOT", source), \
                 patch.object(delivery.sys, "platform", "darwin"), \
-                patch.dict(os.environ, {"HEX_DEV_APP_PATH":str(self.app)}), \
+                patch.dict(os.environ, {"HEX_DEV_APP_PATH":str(self.app), **metadata_environment}), \
                 patch.object(delivery.ci, "LocalCiRunner", return_value=runner), \
                 ci_check as checked_ci, \
                 patch.object(runner, "run", side_effect=AssertionError("tests during packaging")), \
@@ -1272,6 +1415,8 @@ if os.environ.get("HEX_FIXTURE_CHANGE_DELIVERY") == "1":
                 delivery.verify(self.app)
             delivery.write_json(self.app / "Contents/Resources/test-build.json", verified)
         self.assertEqual(verified["source"], candidate)
+        if metadata_env_check:
+            self.assertEqual(receipt["version"], "0.2.7")
         self.assertEqual(verified["profile"], "release")
         if discovery:
             self.assertEqual(verified["vst3_discovery"], discovery_evidence)
@@ -1345,6 +1490,97 @@ if os.environ.get("HEX_FIXTURE_CHANGE_DELIVERY") == "1":
             runner.summary["start_tree"] = {**tree, "content_sha256": "changed"}
             with self.assertRaises(delivery.DeliveryError):
                 delivery.validate_ci(report, runner, tree["commit"])
+
+    def test_scoped_ci_metadata_uses_runner_environment(self):
+        tools = self.root / "metadata-tools"
+        tools.mkdir()
+        cargo = tools / "cargo"
+        cargo.write_text(f"#!{sys.executable}\n" +
+            "import json, os\n"
+            "print(json.dumps({'target_directory': os.environ.get('CARGO_TARGET_DIR'), "
+            "'cache': os.environ.get('CARGO_CACHE_RUSTC_INFO')}))\n")
+        cargo.chmod(0o755)
+        path = str(tools) + os.pathsep + os.environ["PATH"]
+        runner_target = str(self.root / "runner-target")
+        env = {**os.environ, "PATH": path, "CARGO_TARGET_DIR": runner_target,
+               "CARGO_CACHE_RUSTC_INFO": "0"}
+        runner = delivery.ci.LocalCiRunner(self.root, env=env)
+        tree = {"commit": "a" * 40, "dirty": False, "content_sha256": "fixture"}
+        runner.summary["start_tree"] = tree
+        plan = {"scope": "tooling", "profile": "merge", "qualifies_merge": True,
+                "source": tree["commit"], "base": "b" * 40}
+        required = delivery.ci.planned_steps(plan)
+        evidence = {"schema_version": 2, "mode": "merge", "status": "passed", "stale": False,
+                    "exit_code": 0, "commit": tree["commit"], "dirty": False,
+                    "start_tree": tree, "end_tree": tree, "plan": plan,
+                    "steps": [{"step_id": step.step_id, "argv": list(step.argv), "status": "passed",
+                               "test_results": {"python_executions": [1]}} for step in required]}
+        report = self.root / "scoped-env.json"
+        delivery.write_json(report, evidence)
+        def resolve(_root, **kwargs):
+            self.assertEqual(kwargs["metadata"], {"target_directory": runner_target, "cache": "0"})
+            self.assertIs(kwargs["env"], runner.env)
+            return plan
+        with patch.dict(os.environ, {"PATH": path, "CARGO_TARGET_DIR": str(self.root / "ambient-target"),
+                                    "CARGO_CACHE_RUSTC_INFO": "1"}), \
+                patch.object(runner, "_capture_repository_state", return_value=True), \
+                patch.object(delivery, "run", self.mock.temp_original), \
+                patch.object(delivery.ci.ci_plan, "resolve", side_effect=resolve):
+            delivery.validate_ci(report, runner, tree["commit"], allow_dev_profile=True)
+
+    def test_scoped_ci_reuse_uses_runner_environment(self):
+        runner = delivery.ci.LocalCiRunner(self.root, env={**os.environ, "HEX_VST3_SDK_DIR": "fixture"})
+        tree = {"commit": "a" * 40, "dirty": False, "content_sha256": "fixture"}
+        runner.summary["start_tree"] = tree
+        plan = {"scope": "tooling", "profile": "merge", "qualifies_merge": True,
+                "source": tree["commit"], "base": "b" * 40, "reuse": {"report": "previous.json"}}
+        report = self.root / "scoped-reuse-env.json"
+        report.write_text(json.dumps({"schema_version": 2, "steps": [], "start_tree": tree,
+                                      "end_tree": tree, "plan": plan}))
+        with patch.object(runner, "_capture_repository_state", return_value=True), \
+                patch.object(delivery, "run", return_value="{}"), \
+                patch.object(delivery.ci.ci_plan, "resolve", return_value={}), \
+                patch.object(delivery.ci, "reusable_plan", side_effect=ValueError("fixture stop")) as reuse:
+            with self.assertRaisesRegex(ValueError, "fixture stop"):
+                delivery.validate_ci(report, runner, tree["commit"], allow_dev_profile=True)
+        self.assertIs(reuse.call_args.kwargs["env"], runner.env)
+
+    def test_scoped_ci_revalidates_reserved_target_around_metadata(self):
+        target = self.root / "reserved-metadata"
+        target.mkdir()
+        runner = delivery.ci.LocalCiRunner(self.root, env={**os.environ, "CARGO_TARGET_DIR": str(target),
+                                                           "CARGO_CACHE_RUSTC_INFO": "0"})
+        tree = {"commit": "a" * 40, "dirty": False, "content_sha256": "fixture"}
+        runner.summary["start_tree"] = tree
+        plan = {"scope": "tooling", "profile": "merge", "qualifies_merge": True,
+                "source": tree["commit"], "base": "b" * 40}
+        evidence = {"schema_version": 2, "mode": "merge", "status": "passed", "stale": False,
+                    "exit_code": 0, "commit": tree["commit"], "dirty": False,
+                    "start_tree": tree, "end_tree": tree, "plan": plan,
+                    "steps": [{"step_id": step.step_id, "argv": list(step.argv), "status": "passed",
+                               "test_results": {"python_executions": [1]}}
+                              for step in delivery.ci.planned_steps(plan)]}
+        report = self.root / "reserved-report.json"
+        delivery.write_json(report, evidence)
+        reservation = delivery.ci.FreshTargetReservation.acquire(self.root, str(target), {"run_id": "ci"})
+        self.addCleanup(reservation.close)
+        foreign = target / "foreign"
+        def metadata(*_args, **_kwargs):
+            self.assertIsNotNone(reservation._lock.file)
+            if mutate[0]:
+                foreign.write_text("preserve")
+            return json.dumps({"workspace_root": str(self.root), "target_directory": str(target)})
+        mutate = [False]
+        with patch.object(runner, "_capture_repository_state", return_value=True), \
+                patch.object(delivery, "run", side_effect=metadata), \
+                patch.object(delivery.ci.ci_plan, "resolve", return_value=plan) as resolve:
+            delivery.validate_ci(report, runner, tree["commit"], allow_dev_profile=True, reservation=reservation)
+            resolve.assert_called_once()
+            mutate[0] = True
+            with self.assertRaisesRegex(delivery.ci.TargetCacheError, "not empty"):
+                delivery.validate_ci(report, runner, tree["commit"], allow_dev_profile=True, reservation=reservation)
+            resolve.assert_called_once()
+        self.assertEqual(foreign.read_text(), "preserve")
 
     def test_scoped_ci_requires_explicit_dev_and_recomputed_plan_with_positive_tests(self):
         # Fabricated report data tests consumer refusal, not product execution.

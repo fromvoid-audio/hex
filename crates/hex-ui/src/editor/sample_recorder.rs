@@ -7,6 +7,7 @@ use crate::theme;
 use gpui::{Context, Div, Stateful, div, prelude::*, px, rgb};
 use hex_audio::sample_recording::{self, End, OutputCaptureId, Phase, Source, Take};
 use std::{
+    path::{Path, PathBuf},
     sync::mpsc::{self, Receiver, TryRecvError},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -56,7 +57,7 @@ pub(super) struct Recorder {
 }
 
 struct Job {
-    result: Receiver<std::io::Result<sample_recording::Takes>>,
+    result: Receiver<Result<sample_recording::Takes, String>>,
     names: Vec<(Source, String)>,
     output: u64,
 }
@@ -230,12 +231,11 @@ impl EditorView {
         std::thread::Builder::new()
             .name("hex-sample-takes".into())
             .spawn(move || {
-                let result = hex_session::service::sample_take_root(document.as_deref())
-                    .map_err(std::io::Error::other)
-                    .and_then(|root| {
-                        std::fs::create_dir_all(&root)?;
-                        sample_recording::write_takes(reader, &root.join(name))
-                    });
+                let result = write_sample_take(
+                    hex_session::service::sample_take_root(document.as_deref()),
+                    &name,
+                    |directory| sample_recording::write_takes(reader, directory),
+                );
                 let _ = complete.send(result);
             })
             .map_err(|e| e.to_string())?;
@@ -281,7 +281,7 @@ impl EditorView {
             .unwrap_or(Phase::Finishing);
         let phase_changed = self.sample_recorder.phase.replace(phase) != Some(phase);
         let result = match job.result.try_recv() {
-            Ok(result) => result.map_err(|error| error.to_string()),
+            Ok(result) => result,
             Err(TryRecvError::Disconnected) => Err("sample take writer exited".into()),
             Err(TryRecvError::Empty) => return arms_changed || phase_changed || preview_changed,
         };
@@ -433,6 +433,24 @@ impl EditorView {
     }
 }
 
+fn write_sample_take(
+    root: Result<PathBuf, String>,
+    name: &str,
+    write: impl FnOnce(&Path) -> std::io::Result<sample_recording::Takes>,
+) -> Result<sample_recording::Takes, String> {
+    let root = root?;
+    std::fs::create_dir_all(&root).map_err(|error| error.to_string())?;
+    let directory = root.join(name);
+    write(&directory).map_err(|error| take_write_error(&directory, &error))
+}
+
+fn take_write_error(directory: &Path, error: &std::io::Error) -> String {
+    format!(
+        "{error} · check {} for recoverable take files",
+        hex_session::service::text::verbatim(directory.display())
+    )
+}
+
 fn end_label(end: End) -> &'static str {
     match end {
         End::Stopped => "stopped",
@@ -442,6 +460,7 @@ fn end_label(end: End) -> &'static str {
         End::InvalidBlock => "audio was unavailable",
         End::UnsupportedOutput => "unsupported output mode",
         End::StorageFailed => "storage unavailable",
+        End::TransportChanged => "transport changed",
     }
 }
 
@@ -452,11 +471,141 @@ mod tests {
     use gpui::{Modifiers, TestAppContext, VisualTestContext};
 
     #[gpui::test]
+    fn failed_take_reports_the_case_sensitive_recovery_location(cx: &mut TestAppContext) {
+        let (project, _, _, _) = audio_project();
+        let (window, editor) = editor_window(cx, project, Default::default());
+        let mut visual = VisualTestContext::from_window(window, cx);
+        struct TestRoot(PathBuf);
+        impl Drop for TestRoot {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let root = std::env::temp_dir().join(format!(
+            "Hex-Recovery-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        let _cleanup = TestRoot(root.clone());
+        let directory = root.join("Take-ABC");
+        let result = write_sample_take(Ok(root.clone()), "Take-ABC", |path| {
+            std::fs::create_dir(path)?;
+            std::fs::write(path.join("Partial.WAV"), b"recoverable bytes")?;
+            Err(std::io::Error::other("No Space Left"))
+        });
+        let (sender, receiver) = mpsc::sync_channel(1);
+        sender.send(result).unwrap();
+        editor.update(&mut visual, |view, _| {
+            view.sample_recorder.job = Some(Job {
+                result: receiver,
+                names: Vec::new(),
+                output: 0,
+            });
+            assert!(view.tick_sample_recorder());
+            let message = theme::text(view.sample_recorder.error.as_deref().unwrap());
+            assert_eq!(
+                message.as_ref(),
+                format!(
+                    "sample take writer · no space left · check {} for recoverable take files",
+                    directory.display()
+                )
+            );
+        });
+        let (sender, receiver) = mpsc::sync_channel(1);
+        sender
+            .send(write_sample_take(
+                Err("sample take storage is unavailable".into()),
+                "Take-ABC",
+                |_| panic!("writer must not run without a root"),
+            ))
+            .unwrap();
+        editor.update(&mut visual, |view, _| {
+            view.sample_recorder.job = Some(Job {
+                result: receiver,
+                names: Vec::new(),
+                output: 0,
+            });
+            assert!(view.tick_sample_recorder());
+            assert_eq!(
+                view.sample_recorder.error.as_deref(),
+                Some("sample take writer · sample take storage is unavailable")
+            );
+        });
+        let (sender, receiver) = mpsc::sync_channel(1);
+        sender
+            .send(Ok(sample_recording::Takes {
+                takes: vec![Take {
+                    source: Source::Main,
+                    path: directory.join("main.wav"),
+                    frames: 64,
+                    sample_rate: 48_000,
+                    timing: std::sync::Arc::from([]),
+                }],
+                end: End::Stopped,
+                write_error: None,
+            }))
+            .unwrap();
+        editor.update(&mut visual, |view, _| {
+            view.sample_recorder.job = Some(Job {
+                result: receiver,
+                names: vec![(Source::Main, "main".into())],
+                output: 0,
+            });
+            assert!(view.tick_sample_recorder());
+            assert!(view.sample_recorder.error.is_none());
+            assert_eq!(view.sample_recorder.recent.len(), 1);
+            assert_eq!(
+                view.sample_recorder.recent[0].take.path,
+                directory.join("main.wav")
+            );
+        });
+        assert_eq!(
+            std::fs::read(directory.join("Partial.WAV")).unwrap(),
+            b"recoverable bytes"
+        );
+        let (sender, receiver) = mpsc::sync_channel(1);
+        drop(sender);
+        editor.update(&mut visual, |view, _| {
+            view.sample_recorder.job = Some(Job {
+                result: receiver,
+                names: Vec::new(),
+                output: 0,
+            });
+            assert!(view.tick_sample_recorder());
+            assert_eq!(
+                view.sample_recorder.error.as_deref(),
+                Some("sample take writer · sample take writer exited")
+            );
+        });
+    }
+
+    #[gpui::test]
     fn recorder_header_fits_the_button_labels_and_hit_targets(cx: &mut TestAppContext) {
         #[cfg(target_os = "macos")]
         {
             cx.use_native_text_system().expect("native font shaping");
-            cx.update(|cx| theme::load_fonts(cx).expect("bundled fonts"));
+            cx.update(|cx| {
+                // Register the same embedded faces without enumerating every
+                // installed system font. Each shaped run is checked below.
+                let fonts: Vec<std::borrow::Cow<'static, [u8]>> = vec![
+                    std::borrow::Cow::Borrowed(include_bytes!(
+                        "../../../../assets/fonts/ioskeley-mono/ioskeley-mono-regular.ttf"
+                    )),
+                    std::borrow::Cow::Borrowed(include_bytes!(
+                        "../../../../assets/fonts/ioskeley-mono/ioskeley-mono-medium.ttf"
+                    )),
+                    std::borrow::Cow::Borrowed(include_bytes!(
+                        "../../../../assets/fonts/ioskeley-mono/ioskeley-mono-bold.ttf"
+                    )),
+                    std::borrow::Cow::Borrowed(include_bytes!(
+                        "../../../../assets/fonts/ioskeley-mono/ioskeley-mono-italic.ttf"
+                    )),
+                ];
+                cx.text_system().add_fonts(fonts).expect("bundled fonts");
+            });
         }
         let (project, _, _, _) = audio_project();
         let (window, editor) = editor_window(cx, project, Default::default());
@@ -464,22 +613,31 @@ mod tests {
         let check = |visual: &mut VisualTestContext, selector, label: &str| {
             let text = theme::text(label);
             let width = visual.update(|window, _| {
-                window
-                    .text_system()
-                    .shape_line(
-                        text.clone(),
-                        window.rem_size() * 0.75,
-                        &[gpui::TextRun {
-                            len: text.len(),
-                            font: gpui::font(theme::FONT_FAMILY),
-                            color: rgb(0xffffff).into(),
-                            background_color: None,
-                            underline: None,
-                            strikethrough: None,
-                        }],
-                        None,
-                    )
-                    .width
+                let text_system = window.text_system();
+                let shaped = text_system.shape_line(
+                    text.clone(),
+                    window.rem_size() * 0.75,
+                    &[gpui::TextRun {
+                        len: text.len(),
+                        font: gpui::font(theme::FONT_FAMILY),
+                        color: rgb(0xffffff).into(),
+                        background_color: None,
+                        underline: None,
+                        strikethrough: None,
+                    }],
+                    None,
+                );
+                #[cfg(target_os = "macos")]
+                {
+                    assert!(!shaped.runs.is_empty(), "label must have shaped glyphs");
+                    for run in &shaped.runs {
+                        let font = text_system
+                            .get_font_for_id(run.font_id)
+                            .expect("shaped font must be identified");
+                        assert_eq!(font.family.as_ref(), theme::FONT_FAMILY);
+                    }
+                }
+                shaped.width
             });
             let bounds = visual.debug_bounds(selector).expect("painted control");
             assert!(bounds.size.width > width, "{label} must fit its button");

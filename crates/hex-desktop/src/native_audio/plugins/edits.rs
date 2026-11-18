@@ -141,6 +141,22 @@ impl Plugins {
                 continue;
             }
             if changed_state
+                && !destination.is_instrument()
+                && input.preparing_edit()
+                && let Some(gesture) = self.parameter_gesture.as_ref()
+                && gesture.sequenced_candidate_source(
+                    control,
+                    input.context(),
+                    desired.map(|old| old.context()),
+                    source.binding,
+                    device,
+                    state,
+                    cancellation,
+                )?
+            {
+                return Ok(Some(source.binding));
+            }
+            if changed_state
                 && !retain_instrument
                 && !matches!(source.operation, SourceOperation::Edit(context) if context == input.context())
             {
@@ -149,7 +165,10 @@ impl Plugins {
                 // own source instead of introducing a current/tail alias.
                 continue;
             }
-            if (retain_instrument
+            // A fenced stopped restore may reuse the exact source whose
+            // sequenced capture became canonical during a playing gesture.
+            // The original prepared state can predate that capture.
+            if ((retain_instrument || self.restored_canonical_source(input.context()).is_some())
                 && captured_state_approved(control, source.binding, state, cancellation)?)
                 || original_state(control, source.binding, cancellation)?.processing_eq(state)
             {
@@ -288,6 +307,7 @@ impl Plugins {
             observes_latency: false,
             editor_open: false,
             editor_transfer: false,
+            editor_open_on_insert: false,
             edit_backlog: false,
             edit_recovery: None,
             pending_touch: None,

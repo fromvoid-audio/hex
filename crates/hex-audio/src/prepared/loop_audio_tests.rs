@@ -5,6 +5,157 @@ use hex_project::{Command, Created, Editor, Project};
 use std::collections::BTreeMap;
 
 #[test]
+fn silent_audio_repeat_reaches_callback_without_allocations_or_frees() {
+    const RATE: u32 = 48_000;
+    let mut editor = Editor::new(Project::new(RATE).unwrap(), 8).unwrap();
+    let Created::Imported { asset, clip, .. } = editor
+        .execute(Command::ImportAudioTrack {
+            name: "source".into(),
+            path: "source.wav".into(),
+            sample_rate: RATE,
+            frames: 1_024,
+        })
+        .unwrap()
+    else {
+        panic!("audio import")
+    };
+    for operation in [
+        hex_project::AudioViewResizeOperation::RepeatOuterEnd {
+            project_frame: 3_000,
+        },
+        hex_project::AudioViewResizeOperation::CycleEnd {
+            project_frame: 1_200,
+        },
+    ] {
+        editor
+            .execute(Command::ResizeAudioClipView { clip, operation })
+            .unwrap();
+    }
+    let media = BTreeMap::from([(asset, Audio::new(RATE, vec![[0.5, -0.25]; 1_024]).unwrap())]);
+    for block_size in [64, 127] {
+        let revision = Arc::new(
+            PreparedRevision::prepare(editor.project(), &media, Arc::new(SineTable::new()), None)
+                .unwrap(),
+        );
+        let (mut control, mut callback) = channel(RATE).unwrap();
+        control
+            .publish(Playback::try_from_prepared_with_session(revision).unwrap())
+            .unwrap();
+        control.command(PlaybackCommand::Play).unwrap();
+        let mut output = vec![[0.0; 2]; 3_000];
+        let allocations = allocation_counter::measure(|| {
+            for block in output.chunks_mut(block_size) {
+                callback.begin_block();
+                callback.render(block).unwrap();
+            }
+        });
+        assert_eq!(
+            (
+                allocations.count_total,
+                allocations.bytes_total,
+                allocations.count_current,
+                allocations.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        for (frame, actual) in output.iter().enumerate() {
+            let expected = if frame % 1_200 < 1_024 {
+                [0.5, -0.25]
+            } else {
+                [0.0; 2]
+            };
+            assert_eq!(*actual, expected, "frame {frame}");
+        }
+        control.request_shutdown();
+        callback.begin_block();
+        control.reclaim();
+    }
+}
+
+#[test]
+fn silent_audio_repeat_edit_publishes_during_playback_without_allocations_or_frees() {
+    const RATE: u32 = 48_000;
+    let mut editor = Editor::new(Project::new(RATE).unwrap(), 8).unwrap();
+    let Created::Imported { asset, clip, .. } = editor
+        .execute(Command::ImportAudioTrack {
+            name: "source".into(),
+            path: "source.wav".into(),
+            sample_rate: RATE,
+            frames: 1_024,
+        })
+        .unwrap()
+    else {
+        panic!("audio import")
+    };
+    editor
+        .execute(Command::ResizeAudioClipView {
+            clip,
+            operation: hex_project::AudioViewResizeOperation::RepeatOuterEnd {
+                project_frame: 3_000,
+            },
+        })
+        .unwrap();
+    let media = BTreeMap::from([(asset, Audio::new(RATE, vec![[0.5, -0.25]; 1_024]).unwrap())]);
+    let table = Arc::new(SineTable::new());
+    let before = Arc::new(
+        PreparedRevision::prepare(editor.project(), &media, Arc::clone(&table), None).unwrap(),
+    );
+    editor
+        .execute(Command::ResizeAudioClipView {
+            clip,
+            operation: hex_project::AudioViewResizeOperation::CycleEnd {
+                project_frame: 1_200,
+            },
+        })
+        .unwrap();
+    let after = Arc::new(PreparedRevision::prepare(editor.project(), &media, table, None).unwrap());
+    let (mut control, mut callback) = channel(RATE).unwrap();
+    control
+        .publish(Playback::try_from_prepared_with_session(before).unwrap())
+        .unwrap();
+    control.command(PlaybackCommand::Play).unwrap();
+    callback.begin_block();
+    callback.render(&mut [[0.0; 2]; 128]).unwrap();
+    let revision = control
+        .publish(Playback::try_from_prepared_with_session(after).unwrap())
+        .unwrap();
+    let mut output = [[0.0; 2]; 1_800];
+    let allocations = allocation_counter::measure(|| {
+        for block in output.chunks_mut(127) {
+            callback.begin_block();
+            callback.render(block).unwrap();
+        }
+    });
+    assert_eq!(
+        (
+            allocations.count_total,
+            allocations.bytes_total,
+            allocations.count_current,
+            allocations.bytes_current
+        ),
+        (0, 0, 0, 0)
+    );
+    assert_eq!(control.status.applied_revision.load(Acquire), revision);
+    assert!(control.status.playing.load(Acquire));
+    for (offset, frame) in output.iter().enumerate().skip(256) {
+        let position = (128 + offset) % 1_200;
+        assert_eq!(
+            *frame,
+            if position < 1_024 {
+                [0.5, -0.25]
+            } else {
+                [0.0; 2]
+            },
+            "frame {}",
+            128 + offset
+        );
+    }
+    control.request_shutdown();
+    callback.begin_block();
+    control.reclaim();
+}
+
+#[test]
 fn loop_end_fades_without_callback_allocations() {
     const RATE: u32 = 48_000;
     const START: usize = 41;
@@ -1502,4 +1653,121 @@ fn removing_utility_from_shared_chain_waits_for_stop_without_callback_allocation
             }
         }
     }
+}
+
+#[test]
+fn live_track_audio_engine_render_has_no_allocations_or_frees() {
+    for compensated in [false, true] {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let Created::Track(track) = editor
+            .execute(Command::AddTrack {
+                name: "input".into(),
+            })
+            .unwrap()
+        else {
+            panic!("track")
+        };
+        if compensated {
+            let limiter = hex_engine::default_native_device_state_for_class(
+                hex_engine::NativeDeviceClass::Effect,
+                hex_engine::DeviceTypeId::from_static("hex.limiter"),
+            )
+            .unwrap();
+            editor
+                .execute(Command::InsertDevice {
+                    track,
+                    before: None,
+                    state: limiter,
+                })
+                .unwrap();
+        }
+        let revision = Arc::new(
+            PreparedRevision::prepare(
+                editor.project(),
+                &BTreeMap::new(),
+                Arc::new(SineTable::new()),
+                None,
+            )
+            .unwrap(),
+        );
+        let mut playback = hex_engine::SessionPlayback::new(revision).unwrap();
+        playback
+            .apply(hex_engine::SessionPlaybackCommand::Play)
+            .unwrap();
+        let mut output = [[0.0; 2]; 256];
+        let input = [[0.25, -0.5]; 256];
+        let mut result = Ok(());
+        let counts = allocation_counter::measure(|| {
+            result = playback.render_with_live_track_audio(
+                &mut output,
+                track,
+                &input,
+                None,
+                None,
+                None,
+                &mut hex_lattice::RefuseForeign,
+            );
+        });
+        result.unwrap();
+        assert_eq!(
+            (
+                counts.count_total,
+                counts.bytes_total,
+                counts.count_current,
+                counts.bytes_current
+            ),
+            (0, 0, 0, 0),
+            "compensated: {compensated}"
+        );
+    }
+}
+
+#[test]
+fn live_track_audio_playback_wrapper_has_no_allocations_or_frees() {
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+    let Created::Track(track) = editor
+        .execute(Command::AddTrack {
+            name: "input".into(),
+        })
+        .unwrap()
+    else {
+        panic!("track")
+    };
+    let revision = Arc::new(
+        PreparedRevision::prepare(
+            editor.project(),
+            &BTreeMap::new(),
+            Arc::new(SineTable::new()),
+            None,
+        )
+        .unwrap(),
+    );
+    let mut playback =
+        hex_engine::playback::Playback::try_from_prepared_with_session(revision).unwrap();
+    playback.apply(hex_engine::PlaybackCommand::Play);
+    let input = [[0.25, -0.5]; 512];
+    let mut output = [[0.0; 2]; 512];
+    let mut result = Ok(());
+    let counts = allocation_counter::measure(|| {
+        result = playback.render_with_live_track_audio(
+            &mut output,
+            track,
+            &input,
+            None,
+            None,
+            None,
+            &mut hex_lattice::RefuseForeign,
+        );
+    });
+    result.unwrap();
+    assert_eq!(
+        (
+            counts.count_total,
+            counts.bytes_total,
+            counts.count_current,
+            counts.bytes_current
+        ),
+        (0, 0, 0, 0)
+    );
+    assert!(output.iter().any(|frame| *frame != [0.0; 2]));
 }

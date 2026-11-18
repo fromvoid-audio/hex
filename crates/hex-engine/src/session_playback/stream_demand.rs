@@ -21,14 +21,58 @@ pub(super) enum ScalarOriginHistory<'a> {
 
 impl SessionPlayback {
     /// This is derived from the retained runtime graph, not a caller-declared
-    /// readiness mode. Keyboard and previously unsupported compensated graphs
-    /// retain their existing refusal.
+    /// readiness mode. Serial Main-only latency reads the ordinary source
+    /// frontier for Arrangement and Session audio. Flat audio-only tracks and
+    /// grouped audio, track feeds and Return feeds may use upstream
+    /// compensation with closed native effects. Instruments, foreign effects
+    /// and keyboard remain excluded from these compensated extensions.
     pub(super) fn supports_closed_stream_demand(&self) -> bool {
         self.computer_keyboard.is_none()
-            && self
-                .compensation
-                .as_ref()
-                .is_none_or(|runtime| runtime.graph.supports_closed_group_stream())
+            && self.compensation.as_ref().is_none_or(|runtime| {
+                let native_audio_only = || {
+                    self.revision.session().midi_clips().is_empty()
+                        && self
+                            .revision
+                            .arrangement()
+                            .tracks()
+                            .iter()
+                            .flat_map(|track| track.device_chain.iter())
+                            .chain(
+                                self.revision
+                                    .arrangement()
+                                    .return_buses()
+                                    .iter()
+                                    .flat_map(|bus| bus.device_chain.iter()),
+                            )
+                            .chain(self.revision.arrangement().main_device_chain.iter())
+                            .all(|device| {
+                                crate::native_effect_storage::is_closed_type(device.device_type)
+                                    && !matches!(
+                                        device.definition,
+                                        Some(hex_lattice::PreparedProcessorFactory::Foreign(_))
+                                    )
+                            })
+                        && self.revision.arrangement().tracks().iter().all(|track| {
+                            track.instrument_id.is_none()
+                                && track.instrument.is_none()
+                                && track.foreign_instrument.is_none()
+                                && track.midi_source_index.is_none()
+                        })
+                };
+                runtime.graph.supports_closed_group_stream()
+                    || (runtime.graph.supports_closed_compensated_audio_groups()
+                        && native_audio_only())
+                    || (runtime.graph.supports_closed_compensated_track_feeds()
+                        && native_audio_only())
+                    || (runtime.graph.supports_closed_compensated_audio_returns()
+                        && native_audio_only())
+                    || (runtime.graph.independent_main_routes()
+                        && ((!runtime.graph.needs_upstream_frame_routing()
+                            && self.revision.session().audio_clips().is_empty())
+                            || (runtime.graph.tracks.iter().enumerate().all(|(index, _)| {
+                                runtime.graph.resident_main_alignment(index).is_some()
+                            }) && native_audio_only())))
+            })
     }
 
     /// Repeat the actual handoff's pure planning and enumerate its next chunk.
@@ -110,6 +154,28 @@ impl SessionPlayback {
         ordinary: bool,
         fenced_restart: bool,
     ) -> Result<(StreamChunkWindow, SessionHandoffReport), SessionPlaybackError> {
+        self.preview_stream_handoff_with_continuation_and_report(
+            previous,
+            maximum_frames,
+            playing,
+            visit,
+            ordinary,
+            fenced_restart,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)] // Preserve the actual source, preview scope and exact borrowed matcher.
+    pub(crate) fn preview_stream_handoff_with_continuation_and_report(
+        &mut self,
+        previous: &mut Self,
+        maximum_frames: usize,
+        playing: Option<bool>,
+        visit: &mut impl FnMut(StreamResourceExtent) -> Result<(), Invalid>,
+        ordinary: bool,
+        fenced_restart: bool,
+        continuation: Option<&hex_lattice::ForeignConfigurationContinuation<'_>>,
+    ) -> Result<(StreamChunkWindow, SessionHandoffReport), SessionPlaybackError> {
         if self.linear_arrangement_export
             || previous.linear_arrangement_export
             || (!ordinary
@@ -126,8 +192,26 @@ impl SessionPlayback {
             visit,
             window: None,
         };
-        let report =
-            self.inherit_state_planned(previous, None, Some(&mut demand), true, fenced_restart)?;
+        let report = self
+            .inherit_state_planned(
+                previous,
+                None,
+                Some(&mut demand),
+                true,
+                fenced_restart,
+                continuation,
+            )
+            .map_err(|error| {
+                // Keep a draining endpoint retryable. A frozen predecessor
+                // cannot clear ownership without a new transport action.
+                if error == SessionPlaybackError::ForeignTailSourceBusy
+                    && previous.renders_no_device_chains()
+                {
+                    SessionPlaybackError::ForeignTailSourcePaused
+                } else {
+                    error
+                }
+            })?;
         let window = demand
             .window
             .ok_or(SessionPlaybackError::ArithmeticOverflow)?;

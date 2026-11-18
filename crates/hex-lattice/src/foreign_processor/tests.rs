@@ -675,3 +675,172 @@ fn retained_programs_keep_exact_allocations_and_refuse_alias_or_capacity_without
     assert_eq!(refused.storage_bytes(), bytes);
     assert_eq!(refused.storage_owners().count(), 1);
 }
+
+#[test]
+fn exact_foreign_continuation_compares_only_the_named_state_pair() {
+    let binding = hex_lattice_contract::ForeignProcessorBinding {
+        root: 1,
+        instance: 17,
+        graph: 2,
+        epoch: 3,
+    };
+    let identity = crate::ProcessorInstanceIdentity::new(ProcessorChainOwner::Main, 17).unwrap();
+    let previous = state();
+    let candidate = Arc::new(
+        NativeDeviceState::new(TYPE, 1, vec![4, 5, 6])
+            .unwrap()
+            .with_input_gain_db(20.0)
+            .unwrap()
+            .with_output_gain_db(-20.0)
+            .unwrap(),
+    );
+    let declaration_for = |state: Arc<NativeDeviceState>, binding| {
+        let mut entry = declaration(ProcessorChainOwner::Main, false);
+        entry.configuration = Some(state);
+        entry.definition = Some(PreparedProcessorFactory::Foreign(
+            PreparedForeignProcessor::new(8, 3, 16)
+                .unwrap()
+                .with_binding(binding)
+                .unwrap(),
+        ));
+        NativeRuntimeChain::new_prepared(vec![entry]).unwrap()
+    };
+    let old = declaration_for(Arc::clone(&previous), binding);
+    let next = declaration_for(Arc::clone(&candidate), binding);
+    let proof =
+        crate::ForeignConfigurationContinuation::new(identity, binding, &previous, &candidate)
+            .unwrap();
+    assert!(!old.configuration_matches_range(&next, 0..1));
+    assert!(old.configuration_matches_range_with_foreign_continuation(&next, 0..1, &proof));
+    assert!(!next.configuration_matches_range_with_foreign_continuation(&old, 0..1, &proof));
+
+    let copied = Arc::new(
+        NativeDeviceState::new(TYPE, 1, vec![4, 5, 6])
+            .unwrap()
+            .with_input_gain_db(20.0)
+            .unwrap()
+            .with_output_gain_db(-20.0)
+            .unwrap(),
+    );
+    let reconstructed = declaration_for(copied, binding);
+    assert!(!old.configuration_matches_range_with_foreign_continuation(
+        &reconstructed,
+        0..1,
+        &proof
+    ));
+    let changed_epoch = declaration_for(
+        Arc::clone(&candidate),
+        hex_lattice_contract::ForeignProcessorBinding {
+            epoch: 4,
+            ..binding
+        },
+    );
+    assert!(!old.configuration_matches_range_with_foreign_continuation(
+        &changed_epoch,
+        0..1,
+        &proof
+    ));
+    let wrong_identity =
+        crate::ProcessorInstanceIdentity::new(ProcessorChainOwner::Track(5), 17).unwrap();
+    let wrong = crate::ForeignConfigurationContinuation::new(
+        wrong_identity,
+        binding,
+        &previous,
+        &candidate,
+    )
+    .unwrap();
+    assert!(!old.configuration_matches_range_with_foreign_continuation(&next, 0..1, &wrong));
+    let mut bypassed = declaration(ProcessorChainOwner::Main, true);
+    bypassed.configuration = Some(Arc::clone(&candidate));
+    bypassed.definition = Some(PreparedProcessorFactory::Foreign(
+        PreparedForeignProcessor::new(8, 3, 16)
+            .unwrap()
+            .with_binding(binding)
+            .unwrap(),
+    ));
+    let bypassed = NativeRuntimeChain::new_prepared(vec![bypassed]).unwrap();
+    assert!(!old.configuration_matches_range_with_foreign_continuation(&bypassed, 0..1, &proof));
+
+    let automation = crate::PreparedParameterAutomation::new_with_host(
+        vec![],
+        vec![crate::HostAutomationLane {
+            target: hex_lattice_contract::DeviceAutomationTarget::HostInputGain,
+            points: 0..1,
+        }],
+        vec![crate::ParameterAutomationPoint {
+            beat_raw: 0,
+            normalized: 0.5,
+            step: true,
+        }],
+    )
+    .unwrap();
+    let mut automated_old = declaration_for(Arc::clone(&previous), binding);
+    let mut automated_next = declaration_for(Arc::clone(&candidate), binding);
+    automated_old.entries[0].automation = automation.clone();
+    automated_next.entries[0].automation = automation;
+    assert!(
+        !automated_old.configuration_matches_range_with_foreign_continuation(
+            &automated_next,
+            0..1,
+            &proof
+        )
+    );
+    let instrument_chain = |state| {
+        let mut entry = declaration(ProcessorChainOwner::Main, false);
+        entry.configuration = Some(state);
+        entry.definition = Some(PreparedProcessorFactory::Foreign(
+            PreparedForeignProcessor::new(8, 3, 16)
+                .unwrap()
+                .with_binding(binding)
+                .unwrap()
+                .with_instrument_profile(),
+        ));
+        NativeRuntimeChain::new_prepared(vec![entry]).unwrap()
+    };
+    let instrument_old = instrument_chain(Arc::clone(&previous));
+    let instrument_next = instrument_chain(Arc::clone(&candidate));
+    assert!(
+        !instrument_old.configuration_matches_range_with_foreign_continuation(
+            &instrument_next,
+            0..1,
+            &proof
+        )
+    );
+    let mut native_old = declaration_for(Arc::clone(&previous), binding);
+    let mut native_next = declaration_for(Arc::clone(&candidate), binding);
+    native_old.entries[0].runtime = crate::runtime_ownership::RuntimeOwnership::Memoryless;
+    native_next.entries[0].runtime = crate::runtime_ownership::RuntimeOwnership::Memoryless;
+    assert!(
+        !native_old.configuration_matches_range_with_foreign_continuation(
+            &native_next,
+            0..1,
+            &proof
+        )
+    );
+    assert!(
+        crate::ForeignConfigurationContinuation::new(
+            identity,
+            hex_lattice_contract::ForeignProcessorBinding { root: 0, ..binding },
+            &previous,
+            &candidate,
+        )
+        .is_err()
+    );
+    assert!(
+        crate::ForeignConfigurationContinuation::new(
+            identity,
+            hex_lattice_contract::ForeignProcessorBinding {
+                instance: 18,
+                ..binding
+            },
+            &previous,
+            &candidate,
+        )
+        .is_err()
+    );
+    let changed_gain = candidate.as_ref().clone().with_input_gain_db(0.0).unwrap();
+    assert!(
+        crate::ForeignConfigurationContinuation::new(identity, binding, &previous, &changed_gain)
+            .is_err()
+    );
+}

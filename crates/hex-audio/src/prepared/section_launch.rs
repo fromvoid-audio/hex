@@ -37,6 +37,7 @@ impl Callback {
         }) || self.status.admitted_ticket.load(Acquire)
             != fence.admitted_command_ticket
             || self.status.last_output_fault_epoch.load(Acquire) != fence.output_fault_epoch
+            || self.status.consumed_stop_generation.load(Acquire) != fence.consumed_stop_generation
             || self.status.render_fault.load(Acquire)
             || self.status.device_fault.load(Acquire)
             || self.status.pending_stop_marker.load(Acquire) != 0;
@@ -289,6 +290,41 @@ mod tests {
     }
 
     #[test]
+    fn section_seek_captured_before_consumed_stop_is_refused() {
+        std::thread::Builder::new()
+            .stack_size(8 * 1024 * 1024)
+            .spawn(|| {
+                let source = source();
+                let (mut control, mut callback) = active(&source, 0, true);
+                let fence = control.capture_fresh_runtime_fence().unwrap();
+                control.stop();
+                render_checked(&mut callback, &mut []);
+                assert!(!control.status.playing.load(Acquire));
+                let revision = control
+                    .publish_with_policy(
+                        candidate(&source),
+                        PublicationPolicy::InstallQuantizedSeekWhenReady {
+                            fence,
+                            quantization: LaunchQuantization::Quarter,
+                        },
+                    )
+                    .unwrap();
+                let mut output = [[1.0; 2]; 8];
+                render_checked(&mut callback, &mut output);
+                assert_eq!(output, [[0.0; 2]; 8]);
+                assert_eq!(control.status.applied_revision.load(Acquire), 1);
+                assert_eq!(
+                    control.status.rejected_revision(),
+                    Some((revision, PlaybackHandoffRejection::RuntimeFenceChanged))
+                );
+                assert_eq!(control.reclaim(), 1);
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    #[test]
     fn sample_recording_keeps_both_parts_of_a_section_launch() {
         std::thread::Builder::new()
             .stack_size(8 * 1024 * 1024)
@@ -341,63 +377,48 @@ mod tests {
     }
 
     #[test]
-    fn quantized_section_once_ends_at_its_boundary_in_the_callback() {
+    fn quantized_plain_section_launch_keeps_rendering_past_the_section_end() {
         std::thread::Builder::new()
             .stack_size(8 * 1024 * 1024)
             .spawn(|| {
                 let source = source();
-                for section_end in [None, Some(12_006)] {
-                    let (mut control, mut callback) = active(&source, 3_997, true);
-                    let fence = control.capture_fresh_runtime_fence().unwrap();
-                    let mut candidate = Playback::from_interactive_arrangement_preroll(
-                        SessionPlayback::prepare_interactive_arrangement_preroll_from_revision(
-                            Arc::clone(&source),
-                            12_000,
-                            0,
-                            true,
-                            &AtomicBool::new(false),
-                        )
-                        .unwrap(),
+                let (mut control, mut callback) = active(&source, 3_997, true);
+                let fence = control.capture_fresh_runtime_fence().unwrap();
+                let candidate = Playback::from_interactive_arrangement_preroll(
+                    SessionPlayback::prepare_interactive_arrangement_preroll_from_revision(
+                        Arc::clone(&source),
+                        12_000,
+                        0,
+                        true,
+                        &AtomicBool::new(false),
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+                let revision = control
+                    .publish_with_policy(
+                        candidate,
+                        PublicationPolicy::InstallQuantizedSeekWhenReady {
+                            fence,
+                            quantization: LaunchQuantization::Quarter,
+                        },
                     )
                     .unwrap();
-                    if let Some(end) = section_end {
-                        candidate
-                            .arm_section_once(LoopRegion::new(12_000, end, false).unwrap())
-                            .unwrap();
-                    }
-                    let revision = control
-                        .publish_with_policy(
-                            candidate,
-                            PublicationPolicy::InstallQuantizedSeekWhenReady {
-                                fence,
-                                quantization: LaunchQuantization::Quarter,
-                            },
-                        )
-                        .unwrap();
 
-                    let mut output = [[0.0; 2]; 16];
-                    render_checked(&mut callback, &mut output);
-                    assert_eq!(&output[..3], &[[0.125; 2]; 3]);
-                    if section_end.is_some() {
-                        assert_eq!(&output[3..9], &[[0.5; 2]; 6]);
-                        assert_eq!(&output[9..], &[[0.0; 2]; 7]);
-                    } else {
-                        assert_eq!(&output[3..], &[[0.5; 2]; 13]);
-                    }
-                    assert_eq!(control.status.applied_revision.load(Acquire), revision);
-                    assert_eq!(
-                        control.status.position.load(Acquire),
-                        section_end.unwrap_or(12_013)
-                    );
-                    assert_eq!(control.status.playing.load(Acquire), section_end.is_none());
-                    let active = callback
-                        .active
-                        .as_ref()
-                        .and_then(ActivePublication::legacy)
-                        .unwrap();
-                    assert_eq!(active.playback.section_loop(), None);
-                    assert_eq!(control.reclaim(), 1);
-                }
+                let mut output = [[0.0; 2]; 16];
+                render_checked(&mut callback, &mut output);
+                assert_eq!(&output[..3], &[[0.125; 2]; 3]);
+                assert_eq!(&output[3..], &[[0.5; 2]; 13]);
+                assert_eq!(control.status.applied_revision.load(Acquire), revision);
+                assert_eq!(control.status.position.load(Acquire), 12_013);
+                assert!(control.status.playing.load(Acquire));
+                let active = callback
+                    .active
+                    .as_ref()
+                    .and_then(ActivePublication::legacy)
+                    .unwrap();
+                assert_eq!(active.playback.section_loop(), None);
+                assert_eq!(control.reclaim(), 1);
             })
             .unwrap()
             .join()

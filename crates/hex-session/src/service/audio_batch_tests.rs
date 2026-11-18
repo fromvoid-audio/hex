@@ -36,6 +36,30 @@ impl Files {
         fs::write(&p, bytes).unwrap();
         p
     }
+    fn recorded_wav(&self, name: &str, frames: &[[f32; 2]]) -> PathBuf {
+        let n = (frames.len() * 8) as u32;
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"RIFF");
+        bytes.extend_from_slice(&(36 + n).to_le_bytes());
+        bytes.extend_from_slice(b"WAVEfmt ");
+        bytes.extend_from_slice(&16_u32.to_le_bytes());
+        bytes.extend_from_slice(&3_u16.to_le_bytes());
+        bytes.extend_from_slice(&2_u16.to_le_bytes());
+        bytes.extend_from_slice(&48_000_u32.to_le_bytes());
+        bytes.extend_from_slice(&(48_000_u32 * 8).to_le_bytes());
+        bytes.extend_from_slice(&8_u16.to_le_bytes());
+        bytes.extend_from_slice(&32_u16.to_le_bytes());
+        bytes.extend_from_slice(b"data");
+        bytes.extend_from_slice(&n.to_le_bytes());
+        for frame in frames {
+            for sample in frame {
+                bytes.extend_from_slice(&sample.to_le_bytes());
+            }
+        }
+        let path = self.0.join(name);
+        fs::write(&path, bytes).unwrap();
+        path
+    }
 }
 impl Drop for Files {
     fn drop(&mut self) {
@@ -76,6 +100,72 @@ fn new_tracks() -> AudioBatchDestination {
         before_track: None,
         start: 0,
     }
+}
+
+#[test]
+fn recorded_take_uses_captured_project_and_preserves_one_undo() {
+    let files = Files::new();
+    let first = files.recorded_wav("first.wav", &[[0.125, 0.25]; 8]);
+    let take = files.recorded_wav("take.wav", &[[0.5, 0.25]; 8]);
+    let (s, _) = service();
+    s.submit(Request::Edit(Command::InsertTrack {
+        name: "record".into(),
+        before_track: None,
+    }))
+    .unwrap();
+    let added = event(&s);
+    let track = added.state.project.tracks()[0].id();
+    let (request, _) =
+        Request::recorded_audio_take(first, track, 16, context(&added.state)).unwrap();
+    s.submit(request).unwrap();
+    let before = event(&s);
+    assert!(before.error.is_none(), "{:?}", before.error);
+    let snapshot = before.state.project.snapshot();
+
+    let mut stale = context(&before.state);
+    stale.revision += 1;
+    for (path, source) in [
+        (take.clone(), stale),
+        (files.0.join("missing.wav"), context(&before.state)),
+    ] {
+        let (request, control) = Request::recorded_audio_take(path, track, 16, source).unwrap();
+        s.submit(request).unwrap();
+        let refused = event(&s);
+        assert!(refused.error.is_some());
+        assert_eq!(control.progress().phase, AudioBatchPhase::Failed);
+        assert_eq!(refused.state.project.snapshot(), snapshot);
+        assert_eq!(refused.state.revision, before.state.revision);
+        assert!(take.exists());
+    }
+    let (request, control) =
+        Request::recorded_audio_take(take.clone(), track, 16, context(&before.state)).unwrap();
+    s.submit(request).unwrap();
+    let mut committed = event(&s);
+    assert!(committed.error.is_none(), "{:?}", committed.error);
+    assert_eq!(control.progress().phase, AudioBatchPhase::Completed);
+    let clips = committed.state.project.track(track).unwrap().clips();
+    assert_eq!(clips.len(), 1);
+    assert_eq!(clips[0].start(), 16);
+    assert_ne!(
+        clips[0].asset(),
+        before.state.project.track(track).unwrap().clips()[0].asset()
+    );
+    let after = committed.state.project.snapshot();
+    let mut playback = committed.playback.take().unwrap();
+    playback.apply(hex_engine::playback::PlaybackCommand::Seek(16));
+    playback.apply(hex_engine::playback::PlaybackCommand::Play);
+    let mut out = [[0.0; 2]; 8];
+    playback.render(&mut out).unwrap();
+    assert!(out.iter().any(|frame| frame[0] > 0.0 && frame[1] > 0.0));
+    s.submit(Request::Undo).unwrap();
+    let mut restored = event(&s).state.project.snapshot();
+    // IDs are monotonic across undo to prevent reuse; musical state is restored.
+    assert!(restored.next_id >= snapshot.next_id);
+    restored.next_id = snapshot.next_id;
+    assert_eq!(restored, snapshot);
+    s.submit(Request::Redo).unwrap();
+    assert_eq!(event(&s).state.project.snapshot(), after);
+    assert!(take.exists());
 }
 
 #[test]

@@ -65,6 +65,7 @@ pub(super) fn completed_event(state: &ViewState) -> Event {
         plugin_effect_complete: Vec::new(),
         plugin_parameter_observation: false,
         plugin_parameters: None,
+        plugin_parameter_conversion: None,
         computer_keyboard_complete: None,
         midi_take_complete: None,
         device_automation_take_complete: None,

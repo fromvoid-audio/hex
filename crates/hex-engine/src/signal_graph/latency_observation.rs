@@ -1,5 +1,5 @@
-//! Control-side projection of admitted compensation facts for display.
-use super::{SignalGraph, TrackOutput};
+//! Control-side projections of admitted compensation facts.
+use super::{NodeId, SignalGraph, TrackOutput};
 
 /// Algorithmic latency from one prepared owner, expressed in frames at the
 /// applied render rate. Hardware buffers and round-trip latency are separate.
@@ -14,7 +14,44 @@ pub struct OutputLatency {
     pub default_route_delay_frames: u32,
 }
 
+/// Transit through one processor stage in the prepared compensation graph, in
+/// frames at the render rate. These graph-only values are not SDK presentation
+/// latency: they exclude hardware I/O and do not place a foreign bridge on a
+/// particular SDK port. The stage itself includes its declared bridge latency.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ProcessorGraphLatency {
+    /// Compensated arrival at this stage's input, including upstream devices.
+    pub upstream_frames: u32,
+    /// This stage's own declared latency, excluded from both other fields.
+    pub stage_frames: u32,
+    /// Remaining compensated transit from the stage's output to final Main.
+    pub downstream_frames: u32,
+}
+
 impl SignalGraph {
+    pub(crate) fn processor_latency(
+        &self,
+        device_id: u64,
+        generator_track: Option<hex_project::TrackId>,
+    ) -> Option<ProcessorGraphLatency> {
+        let key = generator_track.map_or(NodeId::Device(device_id), |track| {
+            NodeId::Generator(track.value())
+        });
+        let index = self.typed.binary_search(&key).ok()?;
+        let node = self.plan.nodes().get(index)?;
+        let final_output = self.main_devices.last().copied().unwrap_or(self.main);
+        Some(ProcessorGraphLatency {
+            upstream_frames: node.input_arrival_frames,
+            stage_frames: node.latency_frames,
+            downstream_frames: self
+                .plan
+                .nodes()
+                .get(final_output)?
+                .output_arrival_frames
+                .checked_sub(node.output_arrival_frames)?,
+        })
+    }
+
     pub(crate) fn track_latency(
         &self,
         index: usize,
@@ -116,6 +153,7 @@ mod tests {
         else {
             panic!("return")
         };
+        let mut downstream_devices = Vec::new();
         for command in [
             Command::SetReturnSend {
                 track: groups[1],
@@ -132,11 +170,52 @@ mod tests {
                 state: state(7).unwrap(),
             },
         ] {
-            f.editor.execute(command).unwrap();
+            if let Created::Device(device) = f.editor.execute(command).unwrap() {
+                downstream_devices.push(device);
+            }
         }
+        let devices: Vec<_> = f
+            .editor
+            .project()
+            .track(f.tracks[0])
+            .unwrap()
+            .devices()
+            .iter()
+            .map(|device| device.id())
+            .collect();
         let revision = prepare(&f).unwrap();
         let reading = PreparedPlaybackObservation::prepare_on_control(&revision).unwrap();
         assert_eq!(reading.sample_rate(), 48_000);
+        let quote =
+            PreparedPlaybackObservation::preparation_storage_quote_on_control(&revision).unwrap();
+        assert!(reading.retained_bytes_on_control().unwrap() <= quote);
+        let timing = |upstream_frames, stage_frames, downstream_frames| {
+            Some(ProcessorGraphLatency {
+                upstream_frames,
+                stage_frames,
+                downstream_frames,
+            })
+        };
+        let kind = state(0).unwrap().type_id();
+        // Independent totals: 3+5 on the source, 4 on the send, then 7 on Main.
+        // The dry/group route's four alignment frames belong downstream.
+        assert_eq!(
+            reading.processor_latency(devices[0].value(), kind),
+            timing(0, 3, 16)
+        );
+        assert_eq!(
+            reading.processor_latency(devices[1].value(), kind),
+            timing(3, 5, 11)
+        );
+        assert_eq!(
+            reading.processor_latency(downstream_devices[0].value(), kind),
+            timing(8, 4, 7)
+        );
+        assert_eq!(
+            reading.processor_latency(downstream_devices[1].value(), kind),
+            timing(12, 7, 0)
+        );
+        assert_eq!(reading.processor_latency(u64::MAX, kind), None);
         let facts = |local_frames, arrival_frames, default_route_delay_frames| {
             Some(OutputLatency {
                 local_frames,
@@ -164,6 +243,18 @@ mod tests {
         let next = PreparedPlaybackObservation::prepare_on_control(&prepare(&f).unwrap()).unwrap();
         assert_eq!(next.track_latency(f.tracks[0]), facts(3, 3, 0));
         assert_eq!(next.main_latency(), facts(7, 14, 0));
+        assert_eq!(
+            next.processor_latency(devices[1].value(), kind),
+            timing(3, 0, 11)
+        );
+        assert_eq!(
+            next.processor_latency(downstream_devices[0].value(), kind),
+            timing(3, 4, 7)
+        );
+        assert_eq!(
+            reading.processor_latency(devices[1].value(), kind),
+            timing(3, 5, 11)
+        );
         assert_eq!(
             reading.main_latency(),
             facts(7, 19, 0),
@@ -211,5 +302,17 @@ mod tests {
         let bypassed = observe(&f);
         assert_eq!(bypassed.track_latency(track), enabled.track_latency(track));
         assert_eq!(bypassed.main_latency(), enabled.main_latency());
+        let kind = hex_lattice_contract::DeviceTypeId::from_static("hex.overdrive");
+        assert_eq!(
+            bypassed.processor_latency(device.value(), kind),
+            enabled.processor_latency(device.value(), kind)
+        );
+        let latency = enabled.processor_latency(device.value(), kind).unwrap();
+        assert_eq!(latency.upstream_frames, 0);
+        assert_eq!(
+            latency.stage_frames,
+            enabled.track_latency(track).unwrap().local_frames
+        );
+        assert_eq!(latency.downstream_frames, 0);
     }
 }

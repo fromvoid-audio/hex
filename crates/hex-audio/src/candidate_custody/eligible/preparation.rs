@@ -32,6 +32,24 @@ impl Custody {
         self.begin_between(
             config,
             definitions,
+            None,
+            readiness,
+            || {},
+            #[cfg(feature = "stream-test-support")]
+            None,
+        )
+    }
+    pub(in crate::candidate_custody) fn begin_granular_preparation(
+        &self,
+        config: StreamConfig,
+        definitions: Vec<SourceDefinition>,
+        granular: hex_stream::GranularWorkerBank,
+        readiness: hex_stream::StreamReadinessReservation,
+    ) -> Result<AudioCandidateDomainToken, AudioCandidateDomainStartError> {
+        self.begin_between(
+            config,
+            definitions,
+            Some(granular),
             readiness,
             || {},
             #[cfg(feature = "stream-test-support")]
@@ -46,22 +64,34 @@ impl Custody {
         readiness: hex_stream::StreamReadinessReservation,
         gate: hex_stream::test_support::PageGate,
     ) -> Result<AudioCandidateDomainToken, AudioCandidateDomainStartError> {
-        self.begin_between(config, definitions, readiness, || {}, Some(gate))
+        self.begin_between(config, definitions, None, readiness, || {}, Some(gate))
     }
     fn begin_between(
         &self,
         config: StreamConfig,
         definitions: Vec<SourceDefinition>,
+        granular: Option<hex_stream::GranularWorkerBank>,
         readiness: hex_stream::StreamReadinessReservation,
         after_reservation: impl FnOnce(),
         #[cfg(feature = "stream-test-support")] gate: Option<hex_stream::test_support::PageGate>,
     ) -> Result<AudioCandidateDomainToken, AudioCandidateDomainStartError> {
-        let bound = PendingStreamDomain::preparation_bound(
-            config,
-            &definitions,
-            definitions.capacity(),
-            Some(readiness),
-        )
+        let bound = match &granular {
+            Some(bank) => PendingStreamDomain::preparation_bound_with_granular_sources(
+                config,
+                &definitions,
+                definitions.capacity(),
+                &[],
+                0,
+                bank,
+                Some(readiness),
+            ),
+            None => PendingStreamDomain::preparation_bound(
+                config,
+                &definitions,
+                definitions.capacity(),
+                Some(readiness),
+            ),
+        }
         .map_err(AudioCandidateDomainStartError::Factory)?;
         let token = {
             let mut bank = lock(&self.bank);
@@ -168,29 +198,45 @@ impl Custody {
             max_construction_peak_data_bytes: bound.construction_peak_data_bytes,
             max_shared_handle_bound: bound.shared_handle_bound,
         };
-        #[cfg(feature = "stream-test-support")]
-        let result = match gate {
-            Some(gate) => PendingStreamDomain::try_start_with_page_gate_on_control(
+        let result = if let Some(granular) = granular {
+            PendingStreamDomain::try_start_with_granular_sources_on_control(
+                config,
+                definitions,
+                vec![],
+                granular,
+                Some(readiness),
+                hex_stream::GranularStreamPreparationAllowance {
+                    stream: allowance,
+                    max_source_readers: bound.source_reader_bound,
+                    max_worker_lifetimes: bound.worker_lifetimes,
+                },
+            )
+        } else {
+            #[cfg(feature = "stream-test-support")]
+            let raw_result = match gate {
+                Some(gate) => PendingStreamDomain::try_start_with_page_gate_on_control(
+                    config,
+                    definitions,
+                    Some(readiness),
+                    allowance,
+                    gate,
+                ),
+                None => PendingStreamDomain::try_start_on_control(
+                    config,
+                    definitions,
+                    Some(readiness),
+                    allowance,
+                ),
+            };
+            #[cfg(not(feature = "stream-test-support"))]
+            let raw_result = PendingStreamDomain::try_start_on_control(
                 config,
                 definitions,
                 Some(readiness),
                 allowance,
-                gate,
-            ),
-            None => PendingStreamDomain::try_start_on_control(
-                config,
-                definitions,
-                Some(readiness),
-                allowance,
-            ),
+            );
+            raw_result
         };
-        #[cfg(not(feature = "stream-test-support"))]
-        let result = PendingStreamDomain::try_start_on_control(
-            config,
-            definitions,
-            Some(readiness),
-            allowance,
-        );
         let mut bank = lock(&self.bank);
         let closing = bank.closing;
         // Private index from the same fixed array above; only close can race,
@@ -429,6 +475,7 @@ mod tests {
             .begin_between(
                 StreamConfig::with_pool_pages(4),
                 vec![],
+                None,
                 readiness(),
                 || {
                     let before = root.usage().unwrap();
@@ -476,6 +523,136 @@ mod tests {
             (0, 0, 0, 0)
         );
         assert_eq!(root.usage(), before);
+        assert!(root.complete());
+    }
+    #[test]
+    fn granular_domains_keep_the_original_n2_cells_and_actual_resource_counts() {
+        use crate::candidate_custody::granular_test_fixture::bank;
+        let root = configured(64 * 1024 * 1024);
+        let (_wav_a, a, metadata_a) = bank(hex_project::WarpMode::Tones { grain_ms: 32 }, 71);
+        let (_wav_b, b, metadata_b) = bank(
+            hex_project::WarpMode::Texture {
+                grain_ms: 32,
+                fluctuation: 35,
+                seed: 42,
+            },
+            72,
+        );
+        let a = root
+            .begin_granular_preparation(StreamConfig::with_pool_pages(4), vec![], a, readiness())
+            .unwrap();
+        let pages_a = ready(&root, a);
+        let b = root
+            .begin_granular_preparation(StreamConfig::with_pool_pages(4), vec![], b, readiness())
+            .unwrap();
+        let pages_b = ready(&root, b);
+        {
+            let bank = lock(&root.bank);
+            for (token, metadata) in [(a, metadata_a), (b, metadata_b)] {
+                let slot = &bank.domains[token.slot];
+                assert!(slot.owner.as_ref().unwrap().covers_source(&metadata));
+                let resources = slot.resources.unwrap();
+                assert_eq!(resources.worker_lifetimes, 2);
+                assert_eq!(resources.catalog_channel_lifetimes, 1);
+                assert_eq!(resources.source_reader_lifetimes, 1);
+                assert_eq!(resources.kernel_handle_bound, 1);
+            }
+        }
+        let (_wav_c, c, _) = bank(hex_project::WarpMode::Tones { grain_ms: 32 }, 73);
+        assert!(matches!(
+            root.begin_granular_preparation(
+                StreamConfig::with_pool_pages(4),
+                vec![],
+                c,
+                readiness()
+            ),
+            Err(AudioCandidateDomainStartError::Busy(
+                "two actual stream domains already retained"
+            ))
+        ));
+        for (token, pages) in [(a, pages_a), (b, pages_b)] {
+            assert!(root.retire_domain(token));
+            assert!(root.ingest_pages(pages).is_ok());
+            let report = report(&root, token);
+            assert_eq!(report.page_buffers, 4);
+            assert!(report.worker_joined && report.accounting_complete);
+            assert!(root.poll_preparation(token).is_err());
+        }
+        assert!(root.complete());
+    }
+    #[test]
+    fn granular_constructor_refuses_data_peak_and_closed_roots_before_the_start_checkpoint() {
+        use crate::candidate_custody::granular_test_fixture::bank;
+        for case in 0..3 {
+            let root = configured(64 * 1024 * 1024);
+            if case == 0 {
+                lock(&root.bank).reservation.max_retained_data_bytes = 128;
+            }
+            if case == 1 {
+                lock(&root.bank)
+                    .reservation
+                    .max_construction_peak_data_bytes = 128;
+            }
+            if case == 2 {
+                root.close();
+            }
+            let before = root.usage();
+            let (_wav, bank, _) = bank(hex_project::WarpMode::Tones { grain_ms: 32 }, 71);
+            let started = std::cell::Cell::new(false);
+            assert!(matches!(
+                root.begin_between(
+                    StreamConfig::with_pool_pages(4),
+                    vec![],
+                    Some(bank),
+                    readiness(),
+                    || started.set(true),
+                    #[cfg(feature = "stream-test-support")]
+                    None
+                ),
+                Err(AudioCandidateDomainStartError::Busy(_))
+            ));
+            assert!(!started.get());
+            assert_eq!(root.usage(), before);
+            assert!(root.complete());
+        }
+    }
+    #[test]
+    fn granular_starting_close_preserves_the_pending_pair_until_actual_cleanup() {
+        let root = configured(64 * 1024 * 1024);
+        let (_wav, bank, _) = crate::candidate_custody::granular_test_fixture::bank(
+            hex_project::WarpMode::Tones { grain_ms: 32 },
+            71,
+        );
+        let token = root
+            .begin_between(
+                StreamConfig::with_pool_pages(4),
+                vec![],
+                Some(bank),
+                readiness(),
+                || {
+                    let before = root.usage();
+                    root.close();
+                    root.advance_on_control(false);
+                    assert_eq!(root.usage(), before);
+                    let bank = lock(&root.bank);
+                    assert!(bank.domains[0].starting);
+                    assert_eq!(
+                        bank.domains[0].preparation_bound.unwrap().worker_lifetimes,
+                        2
+                    );
+                    assert!(bank.domains[0].preparing.is_none());
+                },
+                #[cfg(feature = "stream-test-support")]
+                None,
+            )
+            .unwrap();
+        assert_eq!(
+            root.poll_preparation(token).unwrap().0,
+            AudioCandidateDomainPreparationProgress::Retiring
+        );
+        let report = report(&root, token);
+        assert_eq!(report.page_buffers, 4);
+        assert!(report.worker_joined && report.accounting_complete);
         assert!(root.complete());
     }
 }

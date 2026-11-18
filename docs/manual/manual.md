@@ -200,10 +200,10 @@ cell stops, ends or another clip takes the track.
 
 hover the saved play-start marker to highlight its grab target. drag the audio
 arrow or midi ruler triangle to choose where playback starts, keeping the clip's
-position, length and loop ends. hold cmd/control to invert snapping; escape
+position, length and scope ends. hold cmd/control to invert snapping; escape
 cancels. holding **2** selects time even at the marker. reversed repeats can keep
 the start editable when musical timing is off; moving it preserves their trim
-and loop bounds. audio with looping off falls silent after the remaining source
+and scope bounds. audio with looping off falls silent after the remaining source
 ends. some audio views currently show a read-only marker while start editing for that audio view is unavailable.
 
 the audio editor's events and source tabs keep independent zoom and scroll
@@ -223,27 +223,31 @@ warp off keeps its natural playback speed. if a faster bpm makes an audio tail
 reach the next clip on that track, hex crops that tail at the next start. original
 media remains available, and undo restores the previous tempo and clip extents.
 
-with the computer midi keyboard off, **l** or **w** sets and enables a loop around
-selected clips, a time selection, or the selected main sections. pressing again
-with the same bounds toggles looping off or on, retaining the range. with no
-selection, these keys toggle the existing loop. **command+l** toggles the active
-transport loop without changing its bounds. when starting playback with space,
-playback starts at the time-selection start or the edit cursor, even when an
-enabled loop lies elsewhere: starting before the loop plays into it and then
-repeats it, and starting after its end plays on without looping. only when there
-is no selection or edit cursor does an enabled loop supply its beginning.
-moving or resizing the loop during playback takes effect immediately with the
-same rule: inside the new loop the playhead wraps at its new end, before it the
-playhead plays into it, and after it playback continues. some first-pass loop
+the **scope bar** at the top of the arranger defines the **scope**: the time
+range used for selection and, when looping is enabled, repeated playback. drag
+the scope bar to move the scope, or drag either end to resize it.
+
+with the computer midi keyboard off, **l** or **w** sets the scope around
+selected clips, a time selection, or the selected main sections and enables
+looping. pressing again with the same bounds toggles looping off or on,
+retaining the scope. with no selection, these keys toggle looping for the
+existing scope. **command+l** toggles transport looping without changing the
+scope. when starting playback with space, playback starts at the time-selection
+start or the edit cursor, even when looping is enabled for a scope elsewhere: starting before the scope plays into it and then repeats it,
+and starting after its end plays on without looping. only when there is no
+selection or edit cursor does a scope with looping enabled supply its beginning.
+moving or resizing the scope during playback takes effect immediately with the
+same rule: inside the new scope the playhead wraps at its new end, before it the
+playhead plays into it, and after it playback continues. some first-pass scope
 edits keep a held arrangement instrument note sounding, when the note and its
-release finish before both loop ends and playback can retain the same source
+release finish before both scope ends and playback can retain the same source
 history. when playback needs to restart at the playhead, effect tails reset and
 notes under the playhead start again from there.
 at a normal loop wrap, arrangement audio fades briefly at the end so the next
 pass can keep its original attack. this fade belongs to the loop boundary.
-for multiple sections, the loop spans the earliest start to the latest end,
+for multiple sections, the scope spans the earliest start to the latest end,
 including gaps. while the computer midi keyboard is on, plain **l** and **w** play notes.
-setting new loop bounds from selected main sections also turns on section focus
+setting a new scope from selected main sections also turns on section focus
 after the edit is accepted. focus shows tracks that intersect the selected
 sections, excluding gaps between them. repeated loop toggles leave focus unchanged;
 press **q** or use the section focus toggle to restore all tracks.
@@ -292,10 +296,12 @@ section snapping; **control** remains an alias, including during marker-only edi
 release outside the section lane to accept the last valid preview, or press **escape**
 to cancel.
 
-click a section's play button, or turn on **section autoplay and loop** in the
-top toolbar and click a section body. hex sets the arrange loop marker to that
-section, turns the loop on and starts playback at the section start.
-**enter** launches the focused section button. **space** controls play and
+click a section's play button or press **enter** on the focused button
+to play from the section start and continue through the arrangement. a plain
+launch turns off the arrangement loop. hold **l** while clicking the play
+button to loop that section. you can also turn on **section autoplay and loop**
+in the top toolbar and click a section body to start and loop that section.
+**space** controls play and
 pause even while the button has focus. the launch dropdown in the toolbar also
 sets quantization for console clip and scene launches: **none**, **8 bars**,
 **4 bars**, **2 bars**, **1 bar**, **1/2**, **1/2t**, **1/4**, **1/4t**, **1/8**,
@@ -309,7 +315,7 @@ as it is ready. a stopped transport starts immediately. clicking another section
 replaces the pending launch. stop or turning autoplay off cancels a pending
 launch; turning autoplay off leaves current music playing.
 
-the loop marker controls repetition after the launch. turn the loop off or move
+the scope controls repetition after the launch. turn looping off or move
 its edges to change what repeats. the marker is saved with the project and
 changing it is undoable. autoplay stays armed for the next section click.
 modifier clicks, renaming and dragging keep their editing actions.
@@ -640,11 +646,18 @@ plain **f** keeps its momentary fade-handle behavior.
 
 ## audio event fades
 
-the audio event editor marks the clip's playback start with a fixed vertical
-line and a small right-pointing arrow at the top. it follows the clip's source
-crop and loop phase, independently of the edit cursor and loop brace. zooming
-or scrolling can move the marker out of view; it returns when that source
-position is visible again. the marker is a read-only guide.
+the **scope bar** at the top of each clip editor defines the clip's **scope**.
+in the audio editor, drag the scope bar to move both ends together, or drag an
+end to resize the scope. both edits update the clip's bounds in the arranger. an existing play start stays at its source position while
+it remains inside the new scope; otherwise it moves to the scope start. looping
+controls whether playback repeats within the scope.
+
+the audio event editor marks playback start with a vertical line and a small
+right-pointing arrow at the top. drag this marker to shift the audio inside the
+arrangement clip: the chosen play start aligns with the clip's arrangement start,
+and the arrangement clip's start and end stay fixed. with looping off, playback
+falls silent after the remaining audio ends. zooming or scrolling can move the
+marker out of view; it returns when that source position is visible again.
 
 select an audio clip and choose **events** in its detail area. focus the event
 waveform and select an event, then press **c** or **0** to change its activation.
@@ -974,6 +987,11 @@ hex opens the system's default output device with that device's default
 configuration. **settings…** is available from the hex menu or **command+,**;
 it does not currently provide an audio device, sample-rate or buffer-size chooser.
 
+**space controls transport in vst3 editors** is on by default. plain **space**
+starts or pauses playback while a vst3 editor has focus. turn the setting off
+to give plain **space** to the plug-in. restart hex to apply changes. modified
+**space** and other shortcuts still go to the plug-in.
+
 if the toolbar reports unavailable output, check the default output and device
 connection in macos. the toolbar offers **restart default audio output · stays
 stopped**. restart does not start the transport; confirm the status before playing.
@@ -1000,12 +1018,28 @@ saved in the project. check the range and output choice before
 exporting, then audition the resulting files. offline rendering can be available
 even when live audio output is unavailable.
 
+when you confirm replacing an existing wav, hex keeps the previous file and
+shows its location after export. inspect it and remove it yourself when you no
+longer need it; retained files use disk space.
+
+if export fails or is cancelled after writing begins, inspect the staging path
+shown in the error before removing anything. a cancelled export during shutdown
+can leave a hidden `.hex-export-*.tmp` file beside the chosen destination even
+if the error is no longer visible. older running versions of hex may remove
+these files, so move anything you need to keep before running an older version.
+
 file-backed audio in ordinary and verified streaming projects uses offline
 media verification during export. keep original media available until export completes. hex verifies those files
 before reading and again before publishing; missing or changed media, unavailable
 pages and cancellation leave the previous destination intact. choose an export
 path separate from the original media. editing or opening another document does
 not change an export already in progress.
+
+an interrupted export can leave hidden `.hex-export-<pid>-<number>.tmp` files
+beside the destination. inspect and preserve any files you need; hex does not
+automatically remove them. older versions can remove matching files when
+exporting to the same folder, so keep possible recovery files elsewhere before
+using those versions.
 
 # reversing clips
 
@@ -1035,8 +1069,8 @@ the complete edit.
 | save / save as | command+s / command+shift+s |
 | play or pause / stop | space / escape |
 | previous / next arrangement locator | command+option+left / command+option+right |
-| set loop from selection / toggle matching loop | l / w |
-| toggle active transport loop | command+l |
+| set scope from selection / toggle matching scope | l / w |
+| toggle active transport looping | command+l |
 | import audio | command+i |
 | add track | t |
 | add track for notes / midi clip | command+shift+t / command+shift+m |

@@ -2,13 +2,14 @@
 //! successor claim anchors the actual retained successor until return metadata
 //! normally drops on control. No callback lock, clone or destructor is needed.
 use super::*;
+use crate::audio_diagnostics::PublicationWaitReason;
 pub(crate) struct Active {
     pub(super) state: Box<State>,
 }
 pub(crate) struct FinalReturn(Returned);
 pub(crate) enum InstallDecision {
     Ready,
-    Retry,
+    Retry(PublicationWaitReason),
     Refused(hex_engine::PlaybackHandoffRejection),
 }
 impl Claims {
@@ -92,7 +93,7 @@ impl Queued {
             {
                 // The candidate's claims and cancellation were checked first.
                 // Let the predecessor complete its exact pending window.
-                return InstallDecision::Retry;
+                return InstallDecision::Retry(PublicationWaitReason::PredecessorWindow);
             }
             let Some(request) = stream.as_deref_mut() else {
                 return InstallDecision::Refused(
@@ -106,7 +107,15 @@ impl Queued {
             ) {
                 Ok(Some(_)) => {}
                 Ok(None) => {
-                    return InstallDecision::Retry;
+                    let reason = next
+                        .streaming
+                        .as_mut()
+                        .and_then(|workspace| workspace.take_handoff_diagnostic())
+                        .map_or(
+                            PublicationWaitReason::StreamPages,
+                            PublicationWaitReason::RuntimeHandoff,
+                        );
+                    return InstallDecision::Retry(reason);
                 }
                 Err(_) => {
                     let capacity_conflict = next
@@ -117,10 +126,10 @@ impl Queued {
                         && next
                             .streaming
                             .as_mut()
-                            .is_some_and(|workspace| workspace.retry_capacity_conflict())
+                            .is_some_and(|workspace| workspace.retry_candidate_capacity_conflict())
                     {
                         next.cancel_stream_pending(request.domains);
-                        return InstallDecision::Retry;
+                        return InstallDecision::Retry(PublicationWaitReason::StreamPageCapacity);
                     }
                     let source_changed = next
                         .streaming
@@ -139,7 +148,7 @@ impl Queued {
         }
         let promotions = if streamed {
             let Some(request) = stream else {
-                return InstallDecision::Retry;
+                return InstallDecision::Retry(PublicationWaitReason::StreamPages);
             };
             match next.prepare_stream_commit(request.domains) {
                 Ok(promotions) => Some(promotions),
@@ -259,7 +268,9 @@ impl Queued {
                 .life
                 .successor_dependencies
                 .store(0, Ordering::Release);
-            return if result.is_some_and(|r| r.is_err_and(|e| e.is_transient())) {
+            return if let Some(Err(error)) = result
+                && error.is_transient()
+            {
                 // No owner/history/origin move occurred. Restore cancellable
                 // deferred custody; a racing cancellation can now win Pending.
                 let _ = decision.compare_exchange(
@@ -268,7 +279,7 @@ impl Queued {
                     Ordering::AcqRel,
                     Ordering::Acquire,
                 );
-                InstallDecision::Retry
+                InstallDecision::Retry(PublicationWaitReason::RuntimeHandoff(error))
             } else {
                 InstallDecision::Refused(
                     hex_engine::PlaybackHandoffRejection::ConstructorClaimsUnavailable,

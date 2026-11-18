@@ -36,6 +36,8 @@ pub(super) struct Workspace {
     pub(super) read_failed: bool,
     pub(super) capacity_conflict: bool,
     capacity_attempts: u8,
+    candidate_capacity_attempts: u8,
+    candidate_frame_limit: usize,
     pub(super) extents: [Vec<StreamResourceExtent>; 2],
     pub(super) quantum_extents: [Vec<StreamResourceExtent>; 2],
     pub(super) limit: usize,
@@ -71,6 +73,8 @@ impl Workspace {
             read_failed: false,
             capacity_conflict: false,
             capacity_attempts: 0,
+            candidate_capacity_attempts: 0,
+            candidate_frame_limit: 256,
             extents,
             quantum_extents,
             limit,
@@ -108,6 +112,8 @@ impl Workspace {
         self.read_failed = false;
         self.capacity_conflict = false;
         self.capacity_attempts = 0;
+        self.candidate_capacity_attempts = 0;
+        self.candidate_frame_limit = 256;
         for rows in &mut self.extents {
             rows.clear();
         }
@@ -130,6 +136,14 @@ impl Workspace {
         const MAX_CAPACITY_ATTEMPTS: u8 = 8;
         self.capacity_attempts = self.capacity_attempts.saturating_add(1);
         self.capacity_attempts < MAX_CAPACITY_ATTEMPTS
+    }
+
+    /// Candidate windows can halve from 256 to one; permit the one-frame
+    /// attempt before returning a bounded capacity refusal.
+    pub(super) fn retry_candidate_capacity_conflict(&mut self) -> bool {
+        const MAX_CANDIDATE_ATTEMPTS: u8 = 9;
+        self.candidate_capacity_attempts = self.candidate_capacity_attempts.saturating_add(1);
+        self.candidate_capacity_attempts < MAX_CANDIDATE_ATTEMPTS
     }
 }
 impl Custody {
