@@ -4513,6 +4513,7 @@ fn installed_instrument_and_effect_export_with_streamed_audio() {
         !full_playthrough || (complete && !probe),
         "full playthrough requires a complete export"
     );
+    assert!(!full_playthrough || live_playback);
     // The fixture uses the project default of 120 BPM at 48 kHz.
     const FRAMES_PER_QUARTER: usize = 24_000;
     const PHRASE_QUARTERS: usize = 8;
@@ -4562,6 +4563,41 @@ fn installed_instrument_and_effect_export_with_streamed_audio() {
     });
     let (applied, _) = h.applied(applied);
     let audio_track = imported.state.project.tracks()[0].id();
+    let (imported, applied) = if full_playthrough {
+        let marker =
+            files.constant_wav("insert-witness.wav", 48_000, MIXED_WITNESS_FRAMES, &[0, 0]);
+        let mut bytes = fs::read(&marker).unwrap();
+        for (index, frame) in bytes[44..].chunks_exact_mut(4).enumerate() {
+            frame[..2].copy_from_slice(&mixed_witness_sample(index as u64).to_le_bytes());
+        }
+        fs::write(&marker, bytes).unwrap();
+        let event = h.run(Request::ImportToNewTrack {
+            path: marker,
+            before_track: None,
+            start: 0,
+        });
+        let mut resident = false;
+        let mut file_backed = false;
+        for (_, source) in event
+            .state
+            .canonical_audio_source
+            .as_ref()
+            .unwrap()
+            .required_sources()
+        {
+            match source {
+                hex_session::AudioSourceBinding::Resident(_) => resident = true,
+                hex_session::AudioSourceBinding::VerifiedFile(_) => file_backed = true,
+            }
+        }
+        assert!(
+            resident && file_backed,
+            "edit qualification needs both source kinds"
+        );
+        (event, h.applied(applied).0)
+    } else {
+        (imported, applied)
+    };
     let mut insertion = request(&imported.state, PluginEffectDestination::Track(audio_track));
     insertion.selection = effect;
     h.service
@@ -4637,9 +4673,10 @@ fn installed_instrument_and_effect_export_with_streamed_audio() {
     h.service
         .submit(Request::InsertPluginEffect(insertion))
         .unwrap();
-    let inserted = terminal(&mut h);
+    let mut inserted = terminal(&mut h);
     assert!(inserted.error.is_none(), "{:?}", inserted.error);
     let (mut applied, _) = h.applied(applied);
+    let before_insert = Arc::clone(&inserted.state.project);
     let mut expected_revision = inserted.state.revision;
     let mut expected_can_undo = inserted.state.can_undo;
     let mut expected_can_redo = inserted.state.can_redo;
@@ -4684,6 +4721,13 @@ fn installed_instrument_and_effect_export_with_streamed_audio() {
             }),
             "live mix did not differ from the controlled effect alone"
         );
+        if full_playthrough {
+            inserted = exercise_mixed_native_insert(&mut h, &inserted.state);
+            (applied, _) = h.applied(applied);
+            expected_revision = inserted.state.revision;
+            expected_can_undo = inserted.state.can_undo;
+            expected_can_redo = inserted.state.can_redo;
+        }
         if full_playthrough {
             let callback_period = std::env::var("HEX_TEST_FULL_MIXED_CALLBACK_PERIOD_US")
                 .ok()
@@ -4987,6 +5031,17 @@ fn installed_instrument_and_effect_export_with_streamed_audio() {
         );
         assert_eq!(restored.state.project, inserted.state.project);
         (applied, _) = h.applied(applied);
+        if full_playthrough {
+            let undone = h.run(Request::Undo);
+            assert_eq!(undone.state.project, before_insert);
+            (applied, _) = h.applied(applied);
+            let redone = h.run(Request::Redo);
+            assert_eq!(redone.state.project, inserted.state.project);
+            (applied, _) = h.applied(applied);
+            expected_revision = redone.state.revision;
+            expected_can_undo = redone.state.can_undo;
+            expected_can_redo = redone.state.can_redo;
+        }
     }
     let before = Arc::clone(&inserted.state.project);
     let live_binding = h.plugin_progress.lock().unwrap().binding;
@@ -5289,6 +5344,129 @@ fn installed_instrument_and_effect_export_with_streamed_audio() {
         }
     }
     assert_eq!(fs::read(source).unwrap(), source_bytes);
+}
+
+const MIXED_WITNESS_FRAMES: u32 = 8192;
+
+fn mixed_witness_sample(frame: u64) -> i16 {
+    (((frame * 73) ^ ((frame >> 3) * 17)) & 1023) as i16 - 512
+}
+
+fn assert_mixed_insert_pcm(block: &[hex_engine::Frame; 256], start: u64) {
+    assert!(start + block.len() as u64 <= u64::from(MIXED_WITNESS_FRAMES));
+    let baseline = block[0][0] - f32::from(mixed_witness_sample(start)) / 32768.0;
+    assert!(
+        baseline > 0.01,
+        "streamed tone is absent from the marker block"
+    );
+    // The SDK effect changes its constant output level between processing
+    // quanta. Adjacent pairs distinguish the resident samples from that level.
+    for (offset, pair) in block.chunks_exact(2).enumerate() {
+        let frame = start + 2 * offset as u64;
+        let expected =
+            f32::from(mixed_witness_sample(frame + 1) - mixed_witness_sample(frame)) / 32768.0;
+        let actual = pair[1][0] - pair[0][0];
+        assert!(
+            (actual - expected).abs() < 2e-5,
+            "resident marker in block at {start}, frame {frame}: {actual} != {expected}"
+        );
+    }
+    let (low, high) = block
+        .iter()
+        .map(|frame| frame[1])
+        .fold((f32::INFINITY, f32::NEG_INFINITY), |(low, high), sample| {
+            (low.min(sample), high.max(sample))
+        });
+    assert!(
+        high - low > 0.01,
+        "expected a held Diva note in the right channel"
+    );
+}
+
+fn exercise_mixed_native_insert(
+    h: &mut ResidentHarness,
+    before: &hex_session::service::ViewState,
+) -> Event {
+    use hex_session::service::DeviceInsertOutcome;
+
+    h.enable_confirmed_device_inserts();
+    let status = h.audio.as_ref().unwrap().status().unwrap();
+    let predecessor = status.recording_source().unwrap();
+    let previous_start = status.audible_position.load(Acquire);
+    assert_mixed_insert_pcm(&render_completed_block(h), previous_start);
+    let (submitted, resume) = h.probe_next_submitted_device_insert();
+    let state = hex_engine::default_native_device_state(hex_engine::DeviceTypeId::from_static(
+        "hex.utility",
+    ))
+    .unwrap();
+    h.service
+        .submit(Request::Edit(Command::InsertMainDevice {
+            before: None,
+            state,
+        }))
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let next = loop {
+        if let Ok(next) = submitted.try_recv() {
+            break next;
+        }
+        h.pump();
+        if let Ok(event) = h.service.try_event() {
+            assert!(
+                event.error.is_none(),
+                "mixed Utility staging: {:?}",
+                event.error
+            );
+            assert_eq!(event.state.project, before.project);
+        }
+        assert!(
+            Instant::now() < deadline,
+            "mixed Utility submission stalled"
+        );
+        std::thread::yield_now();
+    };
+    let status = h.audio.as_ref().unwrap().status().unwrap();
+    let position = status.position.load(Acquire);
+    let start = status.audible_position.load(Acquire);
+    assert_eq!(start, previous_start + 256);
+    assert_eq!(status.recording_source(), Some(predecessor));
+    // The Session worker is parked after enqueue; this block owns admission.
+    let output = h.render_plugin_block();
+    let installed = status.recording_source().unwrap();
+    assert_eq!(installed.context, next.context);
+    assert_eq!(installed.audio_revision, next.audio_revision);
+    assert_eq!(installed.output_identity, predecessor.output_identity);
+    assert_eq!(status.position.load(Acquire), position + 256);
+    assert_mixed_insert_pcm(&output, start);
+    println!(
+        "seamless_utility output={} predecessor_revision={} installed_revision={} marked_start={previous_start}..{}",
+        installed.output_identity,
+        predecessor.audio_revision,
+        installed.audio_revision,
+        start + 256
+    );
+    resume.send(()).unwrap();
+    loop {
+        let event = h.next();
+        assert!(
+            event.error.is_none(),
+            "mixed Utility install: {:?}",
+            event.error
+        );
+        assert!(event.device_insert_confirmation.is_none());
+        if let Some(receipt) = event.device_insert_complete {
+            assert_eq!(receipt.submission, next);
+            assert_eq!(receipt.outcome, DeviceInsertOutcome::Installed);
+            assert_eq!(event.state.revision, before.revision + 1);
+            assert_eq!(event.state.project.main_devices().len(), 1);
+            assert_eq!(
+                event.state.project.main_devices()[0].state().type_id(),
+                hex_engine::DeviceTypeId::from_static("hex.utility")
+            );
+            return event;
+        }
+        assert_eq!(event.state.project, before.project);
+    }
 }
 
 fn exercise_mixed_streamed_loop(
