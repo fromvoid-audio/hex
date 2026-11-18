@@ -297,6 +297,7 @@ pub enum PlaybackHandoffRejection {
     SharedSourceVoiceCapacity = 13,
     StreamedPageCapacity = 14,
     ForeignTailSourcePaused = 15,
+    DeviceInsertNeedsConfirmation = 16,
 }
 
 impl PlaybackHandoffRejection {
@@ -305,6 +306,9 @@ impl PlaybackHandoffRejection {
             PlaybackHandoffError::Session(crate::SessionPlaybackError::LatencyLayoutChanged) => {
                 Self::LatencyLayoutChanged
             }
+            PlaybackHandoffError::Session(
+                crate::SessionPlaybackError::DeviceInsertNeedsConfirmation,
+            ) => Self::DeviceInsertNeedsConfirmation,
             PlaybackHandoffError::Session(
                 crate::SessionPlaybackError::SharedSourceVoiceCapacity,
             ) => Self::SharedSourceVoiceCapacity,
@@ -351,6 +355,7 @@ impl PlaybackHandoffRejection {
             13 => Some(Self::SharedSourceVoiceCapacity),
             14 => Some(Self::StreamedPageCapacity),
             15 => Some(Self::ForeignTailSourcePaused),
+            16 => Some(Self::DeviceInsertNeedsConfirmation),
             _ => None,
         }
     }
@@ -388,6 +393,9 @@ impl PlaybackHandoffRejection {
             }
             Self::LatencyLayoutChanged => {
                 "latency layout could not change live · previous audio continues"
+            }
+            Self::DeviceInsertNeedsConfirmation => {
+                "device insertion needs confirmation before interrupting playback"
             }
             Self::SourceHistoryUnavailable => {
                 "source history cannot transfer live · previous audio continues"
@@ -2259,6 +2267,14 @@ impl Playback {
         previous: &mut Self,
     ) -> Result<(), PlaybackHandoffError> {
         self.try_inherit_runtime_impl(previous, false, false, false, None)
+    }
+
+    /// Mark this prepared insert for the same no-restart law in stream
+    /// preflight and callback commit. Only Session graphs support that proof.
+    pub fn require_continuous_device_insert(&mut self) {
+        if let Some(runtime) = self.session_runtime.as_mut() {
+            runtime.require_continuous_insert = true;
+        }
     }
 
     /// Ordinary publication may rebind a fresh monitor to the same physical input client in
