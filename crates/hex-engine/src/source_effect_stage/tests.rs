@@ -234,6 +234,118 @@ fn fixture(route: usize, move_receiver: bool) -> Project {
     .unwrap()
 }
 
+#[test]
+fn compensated_pause_uses_private_source_effect_history() {
+    use crate::playback::{Playback, PlaybackCommand};
+    use crate::{NativeDeviceClass, PreparedRevision};
+
+    let (mut editor, asset) = authored_fixture(0, false);
+    let source = editor.project().tracks()[0].source_id().unwrap();
+    let Created::Track(latency_track) = editor
+        .execute(Command::AddTrack {
+            name: "latency".into(),
+        })
+        .unwrap()
+    else {
+        panic!("latency track")
+    };
+    editor
+        .execute(Command::InsertDevice {
+            track: latency_track,
+            before: None,
+            state: crate::default_native_device_state_for_class(
+                NativeDeviceClass::Effect,
+                DeviceTypeId::from_static("hex.limiter"),
+            )
+            .unwrap(),
+        })
+        .unwrap();
+    let media = BTreeMap::from([(asset, Audio::new(48_000, vec![CLIP; WIDTH]).unwrap())]);
+    let prepare = || {
+        PreparedRevision::prepare(
+            editor.project(),
+            &media,
+            Arc::new(crate::SineTable::new()),
+            None,
+        )
+        .unwrap()
+    };
+    let dry = Arc::new(prepare());
+    let mut wet = prepare();
+    wet.test_install_source_effect_recipes(vec![PreparedSourceEffects {
+        source,
+        receiver: 0,
+        factory_bytes: 0,
+        instances: Arc::from([recipe(source, Some(0))]),
+    }]);
+    let wet = Arc::new(wet);
+    let latency = wet.arrangement().main_latency_frames() as usize;
+    assert!(latency > 0);
+
+    for partition in [1, 257] {
+        let mut dry = Playback::try_from_prepared_with_session(Arc::clone(&dry)).unwrap();
+        let mut wet_player = Playback::try_from_prepared_with_session(Arc::clone(&wet)).unwrap();
+        let mut queued = Playback::try_from_prepared_with_session(Arc::clone(&wet)).unwrap();
+        for player in [&mut dry, &mut wet_player] {
+            player.prepare_resident_paused_source_monitor(None).unwrap();
+        }
+        for player in [&mut dry, &mut wet_player, &mut queued] {
+            player.apply(PlaybackCommand::Play);
+            player.render(&mut [[0.0; 2]; 257]).unwrap();
+            player.apply(PlaybackCommand::Pause);
+        }
+        let mut dry_pause = vec![[0.0; 2]; latency + 257];
+        let mut wet_pause = dry_pause.clone();
+        for (player, pcm) in [
+            (&mut dry, &mut dry_pause),
+            (&mut wet_player, &mut wet_pause),
+        ] {
+            for block in pcm.chunks_mut(partition) {
+                player.render(block).unwrap();
+            }
+            assert_eq!(player.position(), 257);
+        }
+        assert!(wet_pause[..latency].iter().all(|frame| *frame == [0.0; 2]));
+        // Apply the source effect to the independently rendered dry release.
+        // The first sample has no previous input in the private stage.
+        assert!(
+            dry_pause[latency..]
+                .iter()
+                .any(|frame| frame[0].abs() > 0.001)
+        );
+        for frame in latency..wet_pause.len() {
+            for channel in 0..2 {
+                let input = dry_pause[frame][channel];
+                let previous = dry_pause[frame - 1][channel];
+                let expected = input * input + previous * 0.125;
+                assert!((wet_pause[frame][channel] - expected).abs() < 1.0e-6);
+            }
+        }
+
+        let mut dry_resume = vec![[0.0; 2]; latency + 1];
+        let mut wet_resume = dry_resume.clone();
+        let mut queued_pcm = dry_resume.clone();
+        for (player, pcm) in [
+            (&mut dry, &mut dry_resume),
+            (&mut wet_player, &mut wet_resume),
+            (&mut queued, &mut queued_pcm),
+        ] {
+            player.apply(PlaybackCommand::Play);
+            player.render(pcm).unwrap();
+        }
+        assert_eq!(wet_resume[..latency], queued_pcm[..latency]);
+        // Beyond the queued window, check the actual source effect history.
+        // The first new input must use the last pre-Pause source sample.
+        for (channel, clip) in CLIP.into_iter().enumerate() {
+            let last = dry_resume[latency - 1][channel] - clip;
+            let first = dry_resume[latency][channel] - clip;
+            assert!(last.abs() > 0.001);
+            let expected = clip + first * first + last * 0.125;
+            assert!((wet_resume[latency][channel] - expected).abs() < 1.0e-6);
+        }
+    }
+}
+
 fn with_recipe<'a>(
     project: &'a Project,
     receiver: usize,
