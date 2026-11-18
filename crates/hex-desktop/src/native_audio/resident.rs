@@ -15,9 +15,20 @@ use hex_session::service::{
 };
 
 #[derive(Debug)]
-struct InsertReceipt {
+pub(super) struct InsertReceipt {
     submission: ResidentGraphSubmission,
     receipt: hex_audio::prepared::CancellablePublicationReceipt,
+}
+impl InsertReceipt {
+    pub(super) fn new(
+        submission: ResidentGraphSubmission,
+        receipt: hex_audio::prepared::CancellablePublicationReceipt,
+    ) -> Self {
+        Self {
+            submission,
+            receipt,
+        }
+    }
 }
 
 impl DeviceInsertAudioReceipt for InsertReceipt {
@@ -179,7 +190,7 @@ pub(super) fn classify_publication(
     }
 }
 
-fn resident_insert_consent(
+pub(super) fn resident_insert_consent(
     control: &hex_audio::prepared::PublicationControl,
     submission: ResidentGraphSubmission,
 ) -> Option<hex_audio::prepared::DeviceInsertConsent> {

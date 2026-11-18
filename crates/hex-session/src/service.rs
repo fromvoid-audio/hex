@@ -594,7 +594,7 @@ pub struct DeviceInsertCompletion {
     pub outcome: DeviceInsertOutcome,
 }
 
-pub use resident_audio::device_insert::DeviceInsertConfirmation;
+pub use resident_audio::device_insert::{DeviceInsertConfirmation, VerifiedDeviceInsertAttempt};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DeviceInsertOutcome {
@@ -6153,6 +6153,16 @@ fn run_worker(
                             continue 'requests;
                         };
                         let terminal = match progress {
+                            Progress::PreparationFailed => {
+                                error = pending.preparation_error();
+                                if let Some(attempt) = pending.verified_attempt()
+                                    && let Some(sink) = events.resident_audio()
+                                {
+                                    sink.finish_verified_device_insert(attempt, false);
+                                }
+                                request_complete = true;
+                                break 'device_insert;
+                            }
                             Progress::Proceed => {
                                 let admission = export_lane.admission_with_resident_owners(
                                     compiled.as_ref().map(|(_, prepared)| {
@@ -6203,7 +6213,17 @@ fn run_worker(
                             pending_device_insert = Some(pending);
                             break 'device_insert;
                         }
-                        let submission = pending.submission();
+                        let Some(submission) = pending.submission() else {
+                            if let Some(attempt) = pending.verified_attempt()
+                                && let Some(sink) = events.resident_audio()
+                            {
+                                sink.finish_verified_device_insert(attempt, false);
+                            }
+                            status = Some("device insertion cancelled".into());
+                            request_complete = true;
+                            break 'device_insert;
+                        };
+                        let verified = pending.verified_attempt().cloned();
                         let was_offered = pending.awaiting_confirmation();
                         let plugin = pending.plugin.take();
                         let publish_created = plugin.as_ref().is_none_or(|plugin| {
@@ -6216,13 +6236,15 @@ fn run_worker(
                         let outcome = match terminal {
                             DeviceInsertAudioState::Installed => {
                                 match pending.commit(&mut session, resident_snapshot.as_ref()) {
-                                    Ok((new, snapshot)) => {
+                                    Ok((new, prepared, snapshot)) => {
                                         if publish_created {
                                             created = Some(new);
                                         }
                                         unsaved = true;
-                                        replacement_revision = Some(Arc::clone(&snapshot.prepared));
-                                        resident_snapshot = Some(snapshot);
+                                        replacement_revision = Some(prepared);
+                                        if let Some(snapshot) = snapshot {
+                                            resident_snapshot = Some(snapshot);
+                                        }
                                         status = Some("device inserted".into());
                                         DeviceInsertOutcome::Installed
                                     }
@@ -6275,7 +6297,11 @@ fn run_worker(
                         });
                         let accepted = outcome == DeviceInsertOutcome::Installed;
                         if let Some(sink) = events.resident_audio() {
-                            sink.finish_resident_effect_edit(submission.context, accepted);
+                            if let Some(attempt) = verified.as_ref() {
+                                sink.finish_verified_device_insert(attempt, accepted);
+                            } else {
+                                sink.finish_resident_effect_edit(submission.context, accepted);
+                            }
                         }
                         if let Some(plugin) = plugin {
                             plugin_effect_complete
@@ -7098,6 +7124,34 @@ fn run_worker(
                             || session.audio_mode() != DocumentAudioMode::Resident) =>
                 {
                     error = Some("vst3 recovery lost its resident publication path".into());
+                }
+                Request::Edit(command)
+                    if session.audio_mode() == DocumentAudioMode::VerifiedStreaming
+                        && resident_audio::device_insert::is_insert(&command)
+                        && events
+                            .resident_audio()
+                            .is_some_and(|sink| sink.confirms_verified_device_inserts()) =>
+                {
+                    let result = events
+                        .resident_audio()
+                        .ok_or(SessionError::Invalid("native worker unavailable"))
+                        .and_then(|sink| {
+                            session.stage_verified_device_insert(
+                                command,
+                                &state,
+                                compiled.as_ref().map(|(_, prepared)| prepared.as_ref()),
+                                sink,
+                                request_document_intent,
+                            )
+                        });
+                    match result {
+                        Ok(staged) => {
+                            pending_device_insert = Some(staged);
+                            request_complete = false;
+                            status = Some("device insert pending · waiting for audio".into());
+                        }
+                        Err(reason) => error = Some(reason.to_string()),
+                    }
                 }
                 Request::Edit(command)
                     if events.resident_publication_enabled()

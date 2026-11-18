@@ -627,6 +627,25 @@ pub trait WorkerAudioSink: Send {
         false
     }
 
+    fn confirms_verified_device_inserts(&self) -> bool {
+        false
+    }
+
+    /// Prepare the immutable source of an uncommitted editor transaction.
+    fn begin_verified_device_insert(
+        &mut self,
+        _attempt: super::VerifiedDeviceInsertAttempt,
+    ) -> Result<(), String> {
+        Err("verified device inserts are unavailable on this output".into())
+    }
+
+    fn finish_verified_device_insert(
+        &mut self,
+        _attempt: &super::VerifiedDeviceInsertAttempt,
+        _installed: bool,
+    ) {
+    }
+
     /// Borrow the exact receipt immediately after submitting a DeviceInsert.
     fn device_insert_receipt(
         &mut self,
@@ -1782,7 +1801,6 @@ impl WorkerEvents {
     ) -> Option<QueuedRequest> {
         if let Some(pending) = device_insert {
             loop {
-                self.poll();
                 let cancel = self.shutdown.load(Ordering::Acquire)
                     || pending.document_intent != document_intent.load(Ordering::Acquire);
                 if self.device_insert_deferred.is_some() {
@@ -1794,6 +1812,7 @@ impl WorkerEvents {
                         document_intent,
                     ));
                 }
+                self.poll();
                 if cancel || self.device_insert_deferred.is_some() {
                     thread::sleep(BUSY_POLL_INTERVAL);
                     continue;
