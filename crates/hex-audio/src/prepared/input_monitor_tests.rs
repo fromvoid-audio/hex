@@ -70,7 +70,8 @@ fn render_paused_fixture_block(callback: &mut Callback) -> [Frame; 64] {
 
 #[test]
 fn paused_keyboard_render_preserves_callback_allocation_budget() {
-    use hex_engine::{ComputerKeyboardInput, NativeDeviceClass, PausedKeyboardMonitor};
+    use hex_engine::computer_keyboard::ComputerKeyboardInput;
+    use hex_engine::{NativeDeviceClass, PausedKeyboardMonitor};
     use hex_lattice_contract::DeviceTypeId;
 
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
