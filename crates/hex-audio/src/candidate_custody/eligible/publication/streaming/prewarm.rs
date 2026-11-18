@@ -111,6 +111,7 @@ impl ActiveView<'_> {
             command_prefix: prefix,
             frames,
             fenced_restart: false,
+            foreign_continuation: false,
         };
         if self
             .state

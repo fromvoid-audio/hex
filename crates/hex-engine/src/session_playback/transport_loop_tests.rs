@@ -1393,6 +1393,14 @@ fn mutable_transport_loops_admit_while_linear_export_still_refuses_source_loops(
         SessionPlayback::new_linear_arrangement_export(prepare_mutable(&transport_loop)).err(),
         Some(SessionPlaybackError::MutableInstrumentLoopUnsupported)
     );
+    assert_eq!(
+        SessionPlayback::new_linear_arrangement_export_with_foreign(
+            prepare_mutable(&transport_loop),
+            None
+        )
+        .err(),
+        Some(SessionPlaybackError::MutableInstrumentLoopUnsupported)
+    );
 }
 
 #[test]

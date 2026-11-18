@@ -277,6 +277,56 @@ impl StreamPlayback<'_> {
             false,
         )
     }
+    /// Preview an ordinary graph continuation using an exact borrowed matcher.
+    /// The host must separately authenticate the actual endpoint, source,
+    /// predecessor, candidate, transport and custody at preview and commit.
+    /// This projection does not admit a graph or transfer any resource.
+    #[cfg(test)]
+    pub(crate) fn preview_ordinary_with_foreign_continuation(
+        &mut self,
+        previous: &mut StreamPlayback<'_>,
+        maximum_frames: usize,
+        playing: Option<bool>,
+        visit: &mut impl FnMut(StreamResourceExtent) -> Result<(), Invalid>,
+        continuation: &hex_lattice::ForeignConfigurationContinuation<'_>,
+    ) -> Result<StreamChunkWindow, PlaybackHandoffError> {
+        match (&mut self.runtime, &mut previous.runtime) {
+            (Runtime::Ordinary(next, _), Runtime::Ordinary(old, _)) => next
+                .preview_stream_handoff_with_continuation_and_report(
+                    old,
+                    maximum_frames,
+                    playing,
+                    visit,
+                    true,
+                    false,
+                    Some(continuation),
+                )
+                .map(|(window, _)| window),
+            _ => Err(PlaybackHandoffError::RuntimeFenceChanged),
+        }
+    }
+
+    /// Preview with state retained by this ordinary candidate. The host must
+    /// independently validate the source and transaction at preview and commit.
+    pub fn preview_ordinary_with_stored_foreign_continuation(
+        &mut self,
+        previous: &mut StreamPlayback<'_>,
+        maximum_frames: usize,
+        playing: Option<bool>,
+        visit: &mut impl FnMut(StreamResourceExtent) -> Result<(), Invalid>,
+    ) -> Result<StreamChunkWindow, PlaybackHandoffError> {
+        match (&mut self.runtime, &mut previous.runtime) {
+            (Runtime::Ordinary(next, _), Runtime::Ordinary(old, _)) => next
+                .preview_stream_handoff_with_stored_foreign_continuation(
+                    old,
+                    maximum_frames,
+                    playing,
+                    visit,
+                ),
+            _ => Err(PlaybackHandoffError::RuntimeFenceChanged),
+        }
+    }
+
     /// Preview only: the publication owner must validate the actual live fence
     /// and protect these pages before committing the corresponding reset.
     pub fn preview_ordinary_fenced_restart(
@@ -308,6 +358,27 @@ impl StreamPlayback<'_> {
                     true,
                 ),
             _ => Err(PlaybackHandoffError::RuntimeFenceChanged),
+        }
+    }
+    /// Borrow live track input through the current streamed runtime.
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_with_live_track_audio(
+        &mut self,
+        output: &mut [crate::Frame],
+        track: hex_project::TrackId,
+        input: &[crate::Frame],
+        pages: Option<&mut dyn crate::MediaPages>,
+        observer: Option<&mut crate::NodeSignalObserver<'_>>,
+        project: Option<&mut crate::ProjectOutputTap<'_, '_>>,
+        foreign: &mut dyn hex_lattice::ForeignProcessors,
+    ) -> Result<(), Invalid> {
+        match &mut self.runtime {
+            Runtime::Constructor(runtime) => runtime.render_with_live_track_audio(
+                output, track, input, pages, observer, project, foreign,
+            ),
+            Runtime::Ordinary(runtime, _) => runtime.render_with_live_track_audio(
+                output, track, input, pages, observer, project, foreign,
+            ),
         }
     }
     /// Borrow the existing admitted foreign endpoints through the same runtime

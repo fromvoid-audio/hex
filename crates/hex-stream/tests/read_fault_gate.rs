@@ -224,3 +224,86 @@ fn external_gate_preserves_real_read_failure_retry_cancel_and_pool_custody() {
         );
     }
 }
+
+#[test]
+fn pitched_page_read_failure_never_publishes_and_retry_succeeds() {
+    let wav = Wav::new();
+    let raw = wav.definition();
+    let pitched = raw
+        .metadata
+        .with_plain_pitch(700, hex_project::WarpResampler::V2)
+        .unwrap();
+    let key = PageKey {
+        source: pitched.key(),
+        page_index: 1,
+    };
+    let definition = SourceDefinition::new(raw.path.clone(), pitched, raw.reader_limits);
+    let (gate, entered, release) = PageGate::new(key);
+    let mut runtime = StreamRuntime::new_with_page_gate(
+        StreamConfig::with_pool_pages(4),
+        vec![definition],
+        gate.with_read_failure_after(1),
+    )
+    .unwrap();
+    runtime.wait_until_ready(Duration::from_secs(1)).unwrap();
+    measured(|| runtime.request_page(key.source, key.page_index));
+    runtime.wake_worker();
+    entered.recv_timeout(Duration::from_secs(1)).unwrap();
+    release.send(()).unwrap();
+    let mut failures = [StreamFailure {
+        key: key.source.into(),
+        page_index: 0,
+        kind: StreamFailureKind::Cancelled,
+    }];
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while measured(|| runtime.take_failures(&mut failures)) == 0 {
+        assert!(Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+    assert_eq!(
+        failures[0],
+        StreamFailure {
+            key: key.source.into(),
+            page_index: 1,
+            kind: StreamFailureKind::DecodeFailed
+        }
+    );
+    assert_eq!(measured(|| runtime.pump_ready(1)), 0);
+    assert!(runtime.page(key.source, key.page_index).is_none());
+    measured(|| runtime.request_page(key.source, key.page_index));
+    runtime.wake_worker();
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while runtime.page(key.source, key.page_index).is_none() {
+        measured(|| runtime.pump_ready(1));
+        assert!(Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+    let report = runtime.shutdown().unwrap();
+    assert!(report.worker_joined && report.accounting_complete);
+}
+
+#[test]
+fn pitched_page_cancel_while_read_is_gated_reclaims_worker() {
+    let wav = Wav::new();
+    let raw = wav.definition();
+    let pitched = raw
+        .metadata
+        .with_plain_pitch(-700, hex_project::WarpResampler::V1)
+        .unwrap();
+    let key = PageKey {
+        source: pitched.key(),
+        page_index: 1,
+    };
+    let definition = SourceDefinition::new(raw.path.clone(), pitched, raw.reader_limits);
+    let (gate, entered, _release) = PageGate::new(key);
+    let mut runtime =
+        StreamRuntime::new_with_page_gate(StreamConfig::with_pool_pages(4), vec![definition], gate)
+            .unwrap();
+    runtime.wait_until_ready(Duration::from_secs(1)).unwrap();
+    measured(|| runtime.request_page(key.source, key.page_index));
+    runtime.wake_worker();
+    entered.recv_timeout(Duration::from_secs(1)).unwrap();
+    assert!(runtime.page(key.source, key.page_index).is_none());
+    let report = runtime.shutdown().unwrap();
+    assert!(report.worker_joined && report.accounting_complete);
+}

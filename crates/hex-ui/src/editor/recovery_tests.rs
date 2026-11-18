@@ -774,6 +774,8 @@ struct Sink {
     cancellation_done: Arc<AtomicBool>,
     section_fixture: bool,
     section_fence: Option<(hex_audio::prepared::StoppedEditFence, Option<u64>)>,
+    paused_monitor_enabled: bool,
+    paused_monitor: Option<hex_engine::PausedMonitorStorageHold>,
 }
 
 /// Existing production-path test sink with neutral gates. Callers retain the
@@ -784,6 +786,7 @@ pub(in crate::editor) fn worker_fixture_sink(
     audition_ready: bool,
     consume_next_inherited_candidate: Arc<AtomicBool>,
     section_fixture: bool,
+    paused_monitor_enabled: bool,
 ) -> Box<dyn WorkerAudioSink> {
     Box::new(Sink {
         output,
@@ -797,6 +800,8 @@ pub(in crate::editor) fn worker_fixture_sink(
         cancellation_done: Arc::new(AtomicBool::new(false)),
         section_fixture,
         section_fence: None,
+        paused_monitor_enabled,
+        paused_monitor: None,
     })
 }
 
@@ -871,7 +876,7 @@ fn stop_restarts_audio_from_zero_when_a_vst3_worker_is_degraded(cx: &mut gpui::T
 }
 
 #[gpui::test]
-fn play_restarts_audio_if_stop_has_already_degraded_the_worker(cx: &mut gpui::TestAppContext) {
+fn play_recovers_a_faulted_output_with_a_degraded_worker(cx: &mut gpui::TestAppContext) {
     degraded_worker_recovers(cx, false, None);
 }
 
@@ -902,6 +907,7 @@ fn degraded_worker_recovers(
     if !stop_first {
         client.stop();
         backend.render(&mut [[0.0; 2]; 64]).unwrap();
+        client.status().unwrap().device_fault.store(true, Release);
     }
 
     let (_, editor) = super::super::clip_drag_ui_test::editor_window(
@@ -942,6 +948,98 @@ fn degraded_worker_recovers(
         assert_eq!(view.recovery.position(), Some(explicit_frame.unwrap_or(0)));
         view.stop();
         assert!(view.deferred_play.is_none());
+    });
+    drop(backend);
+    output.publication.close();
+}
+
+#[gpui::test]
+fn play_after_pause_keeps_the_applied_output_when_a_vst3_is_degraded(
+    cx: &mut gpui::TestAppContext,
+) {
+    play_on_degraded_output(cx, None);
+}
+
+#[gpui::test]
+fn explicit_play_from_keeps_the_requested_cursor_when_a_vst3_is_degraded(
+    cx: &mut gpui::TestAppContext,
+) {
+    play_on_degraded_output(cx, Some(18_000));
+}
+
+fn play_on_degraded_output(cx: &mut gpui::TestAppContext, explicit_frame: Option<u64>) {
+    let _output_serial = hex_audio::worker_fixture::serial_output();
+    let (mut output, mut backend) =
+        hex_audio::worker_fixture::open_after_retirement(48_000, false).unwrap();
+    let source = hex_engine::Audio::new(48_000, vec![[0.25; 2]; 20_000]).unwrap();
+    let clip = hex_engine::Clip::new(source, 0, 20_000, false).unwrap();
+    let track = hex_engine::Track::new(vec![clip], 1.0, false).unwrap();
+    let playback = Playback::new(hex_engine::Project::new(48_000, vec![track]).unwrap());
+    let revision = output
+        .publication
+        .control()
+        .unwrap()
+        .publish(playback)
+        .unwrap();
+    let mut client = output.take_client().unwrap();
+    let identity = client.output_identity().unwrap();
+    client.command(PlaybackCommand::Play).unwrap();
+    let mut frames = [[0.0; 2]; 64];
+    backend.render(&mut frames).unwrap();
+
+    let (_, editor) = super::super::clip_drag_ui_test::editor_window(
+        cx,
+        hex_project::Project::new(48_000).unwrap(),
+        Arc::default(),
+    );
+    editor.update(cx, |view, _| {
+        view.audio = Some(EditorAudio {
+            control: client,
+            sample_rate: 48_000,
+            label: "degraded vst3 fixture".into(),
+            spectrum_error: None,
+            mode: hex_session::DocumentAudioMode::Resident,
+        });
+        let state = Arc::clone(view.state.as_ref().unwrap());
+        view.applied_project_revision = Some(state.revision);
+        view.audible_playback = Some(super::super::PlaybackCandidate {
+            clip_preview_identity: None,
+            worker_requires_preroll: Some(false),
+            observation: None,
+            audio_revision: revision,
+            project_generation: view.project_generation,
+            state,
+            prepared_revision: None,
+            seek_request_id: None,
+            device_preview_identity: None,
+            tuning_preview_identity: None,
+        });
+        view.degraded_plugins = crate::editor_backend::DegradedDevices::new(vec![2]);
+        view.toggle_play();
+        backend.render(&mut frames).unwrap();
+        backend.render(&mut frames).unwrap();
+        assert!(!view.audio_status().unwrap().playing.load(Acquire));
+
+        if let Some(frame) = explicit_frame {
+            view.queue_audio_command(PlaybackCommand::PlayFrom(frame));
+        } else {
+            view.toggle_play();
+        }
+        assert!(view.pending_restart_request.is_none());
+        assert!(view.deferred_play.is_none());
+        assert_eq!(
+            view.audio.as_ref().unwrap().control.output_identity(),
+            Some(identity)
+        );
+        backend.render(&mut frames).unwrap();
+        let status = view.audio_status().unwrap();
+        assert!(status.playing.load(Acquire));
+        assert_eq!(status.applied_revision.load(Acquire), revision);
+        assert_eq!(
+            status.position.load(Acquire),
+            explicit_frame.unwrap_or(0) + 64
+        );
+        assert!(frames.iter().any(|frame| *frame != [0.0; 2]));
     });
     drop(backend);
     output.publication.close();
@@ -1058,7 +1156,7 @@ impl WorkerAudioSink for Sink {
         &mut self,
     ) -> hex_session::service::ResidentPublicationReadiness {
         use hex_session::service::ResidentPublicationReadiness;
-        if !self.audition_ready {
+        if !self.audition_ready && !self.paused_monitor_enabled {
             return ResidentPublicationReadiness::NoOutput;
         }
         let Some(control) = self.output.publication.control() else {
@@ -1067,6 +1165,20 @@ impl WorkerAudioSink for Sink {
         let Some(output_identity) = control.output_identity() else {
             return ResidentPublicationReadiness::NoOutput;
         };
+        if self.paused_monitor_enabled
+            && let Some(source) = control.status.recording_source()
+        {
+            return ResidentPublicationReadiness::Applied {
+                submission: hex_session::service::ResidentRuntimeLoop {
+                    output_identity,
+                    audio_revision: source.audio_revision,
+                    source_context: Some(source.context),
+                    source_origin: hex_session::service::ResidentSourceOrigin::Unknown,
+                    section_loop: None,
+                },
+                publication_in_flight: control.status.publication_in_flight(),
+            };
+        }
         ResidentPublicationReadiness::Idle {
             output_identity,
             applied_revision: control.status.applied_revision.load(Acquire),
@@ -1077,20 +1189,54 @@ impl WorkerAudioSink for Sink {
         true
     }
     fn resident_admission(&self) -> [DeviceResourceAdmission<'_>; 3] {
+        let monitor_view = DeviceResourceAdmission::default();
         [
             self.output
                 .publication
                 .device_resource_admission_on_control()
                 .unwrap(),
-            DeviceResourceAdmission::default(),
+            self.paused_monitor
+                .as_ref()
+                .map_or(monitor_view, |hold| monitor_view.with_paused_monitor(hold)),
             DeviceResourceAdmission::default(),
         ]
+    }
+    fn prepare_paused_input_monitor(
+        &mut self,
+        request: hex_session::service::PausedInputMonitorRequest,
+        revision: &Arc<hex_engine::PreparedRevision>,
+        resources: &hex_engine::native_device_resources::PreparedDeviceResources,
+        admit: &mut dyn FnMut(&[DeviceResourceAdmission<'_>]) -> Result<(), String>,
+    ) -> Result<hex_engine::PausedTrackMonitor, String> {
+        if !self.paused_monitor_enabled || self.paused_monitor.is_some() {
+            return Err("fixture paused monitor unavailable".into());
+        }
+        let (monitor, hold) = hex_engine::PausedTrackMonitor::prepare_admitted_resident_on_control(
+            Arc::clone(revision),
+            resources,
+            request.track,
+            4096,
+            |view| {
+                let [current, retired, pending] = self.resident_admission();
+                admit(&[current, retired, pending, view])
+            },
+        )
+        .map_err(|error| format!("{error:?}"))?;
+        self.paused_monitor = Some(hold);
+        Ok(monitor)
     }
     fn initialize(&mut self, _: &AtomicBool) -> Result<u32, String> {
         Ok(48_000)
     }
     fn canonical_changed(&mut self, _: Arc<CanonicalAudioSourceSnapshot>) {}
     fn poll(&mut self) {
+        if self
+            .paused_monitor
+            .as_ref()
+            .is_some_and(|hold| hold.released_on_control())
+        {
+            self.paused_monitor = None;
+        }
         let control = self.output.publication.control().unwrap();
         control.reclaim();
         if let Some((fence, Some(revision))) = self.section_fence
@@ -1142,7 +1288,8 @@ impl WorkerAudioSink for Sink {
         let output_identity = control.output_identity().unwrap();
         let policy = match policy {
             ResidentPublicationPolicy::InheritRuntime => PublicationPolicy::InheritRuntime,
-            ResidentPublicationPolicy::InheritRuntimeAt(_) => {
+            ResidentPublicationPolicy::InheritRuntimeAt(_)
+            | ResidentPublicationPolicy::DeviceInsert { .. } => {
                 return Err(ResidentPublicationRefusal {
                     kind: hex_session::service::ResidentPublicationFailure::Other,
                     playback,
@@ -1175,6 +1322,7 @@ impl WorkerAudioSink for Sink {
                         && actual.route_state_generation() == expected.route_generation
                         && actual.admitted_command_ticket() == expected.admitted_command_ticket
                         && actual.output_fault_epoch() == expected.output_fault_epoch
+                        && actual.consumed_stop_generation() == expected.consumed_stop_generation
                 }) else {
                     return Err(ResidentPublicationRefusal {
                         kind: hex_session::service::ResidentPublicationFailure::Other,
@@ -1477,6 +1625,8 @@ fn second_limiter_while_playing_applies_without_stopping(cx: &mut gpui::TestAppC
             cancellation_done: Arc::clone(&cancellation_done),
             section_fixture: false,
             section_fence: None,
+            paused_monitor_enabled: false,
+            paused_monitor: None,
         }),
         reservation,
     )
@@ -1697,6 +1847,8 @@ fn recovered_mutable_cursor_uses_stopped_preroll_and_exact_callback_ack(
             cancellation_done: Arc::new(AtomicBool::new(false)),
             section_fixture: false,
             section_fence: None,
+            paused_monitor_enabled: false,
+            paused_monitor: None,
         }),
         reservation,
     )

@@ -116,6 +116,18 @@ impl Published {
     }
 }
 
+/// Whether a failure occurred before or after exclusive destination creation.
+#[derive(Debug)]
+pub(super) enum NewPublicationError {
+    BeforeCopy(io::Error),
+    IncompleteCopy(io::Error),
+}
+impl From<io::Error> for NewPublicationError {
+    fn from(error: io::Error) -> Self {
+        Self::BeforeCopy(error)
+    }
+}
+
 /// Publish a complete, synced staging file at an absent destination without
 /// ever replacing an existing file. Tries, in order:
 ///
@@ -125,17 +137,21 @@ impl Published {
 ///    the staging name).
 /// 3. When exclusive rename is also unsupported, an exclusively created,
 ///    written and synced copy. It is not atomic: a crash during the copy can
-///    leave an incomplete *new* file, never a replaced one. A failed write
-///    removes the incomplete copy it created.
+///    leave an incomplete *new* file, never a replaced one. On failure the
+///    destination pathname is retained for inspection: another writer may
+///    have replaced it after creation.
 ///
 /// Every step refuses an existing destination with `AlreadyExists`; other
 /// link failures (`EACCES`, `ENOSPC`, ...) propagate without fallback. This
 /// mirrors hex-storage's create-new publication locally because the
 /// dependency policy permits hex-export to depend only on hex-engine.
-pub(super) fn publish_new(staging: &Path, destination: &Path) -> io::Result<Published> {
+pub(super) fn publish_new(
+    staging: &Path,
+    destination: &Path,
+) -> Result<Published, NewPublicationError> {
     match link(staging, destination) {
         Ok(()) => return Ok(Published::Linked),
-        Err(error) if !link_unsupported(&error) => return Err(error),
+        Err(error) if !link_unsupported(&error) => return Err(error.into()),
         Err(_) => {}
     }
     match exclusive_rename_step(staging, destination) {
@@ -144,7 +160,7 @@ pub(super) fn publish_new(staging: &Path, destination: &Path) -> io::Result<Publ
             copy_exclusive(staging, destination)?;
             Ok(Published::Copied)
         }
-        Err(error) => Err(error),
+        Err(error) => Err(error.into()),
     }
 }
 
@@ -164,7 +180,7 @@ fn exclusive_rename_step(staging: &Path, destination: &Path) -> io::Result<()> {
     rename_exclusive(staging, destination)
 }
 
-fn copy_exclusive(staging: &Path, destination: &Path) -> io::Result<()> {
+fn copy_exclusive(staging: &Path, destination: &Path) -> Result<(), NewPublicationError> {
     let mut source = File::open(staging)?;
     let mut options = OpenOptions::new();
     options.write(true).create_new(true);
@@ -175,11 +191,24 @@ fn copy_exclusive(staging: &Path, destination: &Path) -> io::Result<()> {
         options.mode(source.metadata()?.permissions().mode() & 0o777);
     }
     let mut target = options.open(destination)?;
-    if let Err(error) = io::copy(&mut source, &mut target).and_then(|_| target.sync_all()) {
-        drop(target);
-        // This exclusive create made the incomplete file; nothing else is removed.
-        let _ = fs::remove_file(destination);
-        return Err(error);
+    #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+    let result = match simulate::copy_failure() {
+        Some(simulate::CopyFailure::Write) => target.write_all(b"partial").and_then(|()| {
+            super::after_exchange_hook::run(destination);
+            Err(io::Error::other("injected copy failure"))
+        }),
+        Some(simulate::CopyFailure::Sync) => io::copy(&mut source, &mut target).and_then(|_| {
+            super::after_exchange_hook::run(destination);
+            Err(io::Error::other("injected sync failure"))
+        }),
+        None => io::copy(&mut source, &mut target).and_then(|_| target.sync_all()),
+    };
+    #[cfg(not(all(test, any(target_os = "linux", target_os = "macos"))))]
+    let result = io::copy(&mut source, &mut target).and_then(|_| target.sync_all());
+    if let Err(error) = result {
+        // Even an exclusively created pathname can have been replaced since
+        // opening it. Preserve the current entry and report it for inspection.
+        return Err(NewPublicationError::IncompleteCopy(error));
     }
     Ok(())
 }
@@ -273,6 +302,32 @@ pub(super) mod simulate {
     }
 
     thread_local!(static VOLUME: Cell<Option<Volume>> = const { Cell::new(None) });
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[derive(Clone, Copy)]
+    pub(crate) enum CopyFailure {
+        Write,
+        Sync,
+    }
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    thread_local!(static COPY_FAILURE: Cell<Option<CopyFailure>> = const { Cell::new(None) });
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    pub(crate) struct CopyFailureGuard;
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    impl Drop for CopyFailureGuard {
+        fn drop(&mut self) {
+            COPY_FAILURE.with(|flag| flag.set(None));
+        }
+    }
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    pub(crate) fn fail_copy(failure: CopyFailure) -> CopyFailureGuard {
+        COPY_FAILURE.with(|flag| flag.set(Some(failure)));
+        CopyFailureGuard
+    }
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    pub(super) fn copy_failure() -> Option<CopyFailure> {
+        COPY_FAILURE.with(Cell::get)
+    }
 
     /// Restores native behaviour on drop, including after a failed assertion.
     pub(crate) struct Guard;

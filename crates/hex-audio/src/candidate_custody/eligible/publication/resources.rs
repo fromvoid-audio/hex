@@ -26,7 +26,10 @@ impl RootResourceWitness {
             && self.native_workers <= hex_lattice::MAX_STATEFUL_PROCESSORS
             && self.native_children <= hex_lattice::MAX_STATEFUL_PROCESSORS
             && self.native_ipc.checked_add(self.native_children).is_some()
-            && self.source_workers <= 2 && self.catalog_channels <= 2
+            // Two N2 domains each retain one ordinary worker and, when
+            // granular sources are present, one dedicated rendering worker.
+            && self.catalog_channels <= 2
+            && (self.catalog_channels..=2 * self.catalog_channels).contains(&self.source_workers)
             // Counts are retained until actual source-pair/report closure;
             // zero sources legitimately need no reader or kernel handles.
             && self.source_readers.checked_add(self.kernel_handles).is_some()

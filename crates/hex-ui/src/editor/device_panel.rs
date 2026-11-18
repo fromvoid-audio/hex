@@ -3442,7 +3442,7 @@ fn instrument_actions(
     let actions = if device.state().type_id().as_str() == Ok("hex.vst3")
         && !view.degraded_plugins.contains(id.value())
     {
-        actions.child(vst3_editor_button(id, selected, cx))
+        actions.child(vst3_editor_button(view, id, selected, cx))
     } else {
         actions
     };
@@ -3541,7 +3541,7 @@ fn device_actions(
     if device.state().type_id().as_str() == Ok("hex.vst3")
         && !view.degraded_plugins.contains(id.value())
     {
-        actions = actions.child(vst3_editor_button(id, selected, cx));
+        actions = actions.child(vst3_editor_button(view, id, selected, cx));
     }
     if presets_available {
         actions = actions.child(super::device_comparison::actions(
@@ -3571,12 +3571,26 @@ fn device_actions(
     )
 }
 
-fn vst3_editor_button(id: DeviceId, selected: bool, cx: &mut Context<EditorView>) -> Stateful<Div> {
+fn vst3_editor_button(
+    view: &EditorView,
+    id: DeviceId,
+    selected: bool,
+    cx: &mut Context<EditorView>,
+) -> Stateful<Div> {
+    let open = view.plugin_editor_windows.contains(&id.value());
     action_button(
         format!("device-vst3-editor-{}", id.value()),
         "↗",
-        "show or hide plugin editor",
-        theme::DeviceActionRole::Normal,
+        if open {
+            "hide plugin editor"
+        } else {
+            "show plugin editor"
+        },
+        if open {
+            theme::DeviceActionRole::Enabled
+        } else {
+            theme::DeviceActionRole::Normal
+        },
         selected,
     )
     .on_click(cx.listener(move |view, _, _, cx| {

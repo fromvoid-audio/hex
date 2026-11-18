@@ -238,8 +238,10 @@ impl CanonicalBasesCapture {
             Some(Progress::Facts(_)) => {
                 output.complete_native_source_preparation(self.scratch, self.presentation)
             }
-            Some(Progress::Prepared { .. }) => output
-                .start_native_effect_with_authored_selection(self.scratch, Some(&self.selection)),
+            Some(Progress::Prepared { .. }) => output.start_native_effect_with_authored_selection(
+                self.scratch,
+                (!self.selection.parameters().1.is_empty()).then_some(&self.selection),
+            ),
             Some(Progress::Effect { prepared }) => self
                 .read_bases(output, prepared)
                 .map(|()| self.phase = Phase::Retire(Ok(()))),
@@ -324,6 +326,12 @@ impl CanonicalBasesCapture {
             self.selection.parameters().1,
             metadata.authored_base_values(),
         )?;
+        // The private restored instance has already established the exact
+        // class and compatible processing profile. An unlaned state has no
+        // parameter capabilities to read or claim.
+        if self.selection.parameters().1.is_empty() {
+            return Ok(());
+        }
         let canonical = self
             .canonical
             .as_ref()

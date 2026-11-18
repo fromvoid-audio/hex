@@ -4,6 +4,8 @@ use super::*;
 mod bypass_latency;
 mod delay_bypass;
 mod discrete_automation;
+mod granular_playback;
+mod granular_source_projection;
 mod limiter;
 mod limiter_bypass;
 mod manual_host_gain;
@@ -16,6 +18,7 @@ mod resident_bounce;
 mod resident_eq_creation;
 mod resident_export;
 mod resident_file_metadata;
+mod resident_granular;
 mod resident_grouping;
 mod resident_history_seek;
 mod resident_lifecycle;
@@ -428,6 +431,12 @@ impl WorkerAudioSink for ObservedSink {
                 .push((identity, kind));
         }
         accepted
+    }
+    fn verified_arrangement_gain_update(
+        &mut self,
+        update: hex_session::service::VerifiedArrangementGainUpdate,
+    ) -> bool {
+        self.inner.verified_arrangement_gain_update(update)
     }
     fn native_sampler_input(&mut self, input: hex_session::service::NativeSamplerInput<'_>) {
         self.inner.native_sampler_input(input);
@@ -1458,6 +1467,104 @@ fn verified_adapter_seek_pause_and_priority_stop_preserve_applied_source_and_dom
 
 #[path = "controller_input_tests.rs"]
 mod controller_input_tests;
+#[test]
+fn verified_repitch_publishes_worker_audio_through_native_candidate() {
+    let _native = native_fixture();
+    let files = Files::new();
+    let path = files.wav(48_000, 9_600);
+    let mut h = Harness::with_rate(48_000);
+    h.next();
+    h.open();
+    h.run(Request::NewWithAudioMode {
+        mode: DocumentAudioMode::VerifiedStreaming,
+        reservation: Some(AudioPolicy::source_reservation()),
+    });
+    h.open();
+    h.applied(h.context.unwrap());
+    let imported = h.run(Request::Import(path));
+    h.applied(h.context.unwrap());
+    let clip = imported.state.project.tracks()[0].clips()[0].id();
+    let neutral = h.run(Request::Edit(hex_project::Command::SetClipFades {
+        clip,
+        fade_in: 0,
+        fade_out: 0,
+    }));
+    h.applied(h.context.unwrap());
+    let warp = hex_project::default_audio_warp(
+        neutral.state.project.clip(clip).unwrap(),
+        neutral.state.project.tempo_map(),
+        hex_project::WarpMode::RePitch,
+    )
+    .unwrap();
+    let edited = h.run(Request::Edit(hex_project::Command::SetAudioClipWarp {
+        clip,
+        settings: Some(warp),
+    }));
+    assert!(edited.playback.is_none());
+    h.applied(h.context.unwrap());
+    play_from_start_expecting(&mut h, 0.25);
+}
+
+#[test]
+fn verified_long_repitch_publishes_worker_audio_through_native_candidate() {
+    use std::io::Write;
+
+    let _native = native_fixture();
+    let files = Files::new();
+    let path = files.0.join("long-repitch.wav");
+    let mut file = fs::File::create(&path).unwrap();
+    let data_bytes = 40_000_000u32;
+    file.write_all(b"RIFF").unwrap();
+    file.write_all(&(36 + data_bytes).to_le_bytes()).unwrap();
+    file.write_all(b"WAVEfmt ").unwrap();
+    file.write_all(&16u32.to_le_bytes()).unwrap();
+    file.write_all(&1u16.to_le_bytes()).unwrap();
+    file.write_all(&1u16.to_le_bytes()).unwrap();
+    file.write_all(&48_000u32.to_le_bytes()).unwrap();
+    file.write_all(&96_000u32.to_le_bytes()).unwrap();
+    file.write_all(&2u16.to_le_bytes()).unwrap();
+    file.write_all(&16u16.to_le_bytes()).unwrap();
+    file.write_all(b"data").unwrap();
+    file.write_all(&data_bytes.to_le_bytes()).unwrap();
+    for _ in 0..8192 {
+        file.write_all(&8192i16.to_le_bytes()).unwrap();
+    }
+    file.set_len(44 + u64::from(data_bytes)).unwrap();
+    drop(file);
+
+    let mut h = Harness::with_rate(48_000);
+    h.next();
+    h.open();
+    h.run(Request::NewWithAudioMode {
+        mode: DocumentAudioMode::VerifiedStreaming,
+        reservation: Some(AudioPolicy::source_reservation()),
+    });
+    h.open();
+    h.applied(h.context.unwrap());
+    let imported = h.run(Request::Import(path));
+    h.applied(h.context.unwrap());
+    let clip = imported.state.project.tracks()[0].clips()[0].id();
+    let neutral = h.run(Request::Edit(hex_project::Command::SetClipFades {
+        clip,
+        fade_in: 0,
+        fade_out: 0,
+    }));
+    h.applied(h.context.unwrap());
+    let warp = hex_project::default_audio_warp(
+        neutral.state.project.clip(clip).unwrap(),
+        neutral.state.project.tempo_map(),
+        hex_project::WarpMode::RePitch,
+    )
+    .unwrap();
+    let edited = h.run(Request::Edit(hex_project::Command::SetAudioClipWarp {
+        clip,
+        settings: Some(warp),
+    }));
+    assert!(edited.playback.is_none());
+    h.applied(h.context.unwrap());
+    play_from_start_expecting(&mut h, 0.25);
+}
+
 #[test]
 fn native_verified_downsample_uses_source_window_and_applies_decoded_pcm() {
     let _native = native_fixture();

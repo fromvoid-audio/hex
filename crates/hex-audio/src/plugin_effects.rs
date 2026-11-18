@@ -31,8 +31,13 @@ mod transport;
 pub use definition::{NativeEffectDefinition, UnavailableEffect};
 use transport::EffectTransport;
 mod hosting;
+mod offline_preparation;
+pub use offline_preparation::OfflineEffectPreparation;
 pub(crate) mod manual_base_capture;
 pub use hex_lattice_contract::ForeignProcessorBinding as EffectBinding;
+pub use hex_plugin_host::protocol::{
+    Presentation as EffectPresentationReceipt, PresentationPlan as EffectPresentationPlan,
+};
 pub use hosting::{EffectPresentation, EffectSelection, Hosting, PluginProfile};
 pub(crate) use manual_base_capture::BaseCaptureSource;
 pub use manual_base_capture::ManualBaseCapture;
@@ -92,7 +97,8 @@ pub struct NativeEffect {
     state_authority: hex_lattice_contract::Vst3StateAuthority,
 }
 
-/// Private original-source facts retained by Root while the SDK lease renews.
+/// Original-source facts retained by Root or private offline preparation while
+/// the same SDK lease renews.
 /// No copied metadata or external caller can construct this authority packet.
 pub(crate) struct NativeEffectRenewal {
     binding: Binding,
@@ -642,6 +648,14 @@ impl NativeEffectCallback {
     pub fn matches_worker(&self, worker: &NativeWorker) -> bool {
         self.transport.matches_worker(worker)
     }
+    /// Reserve an observation only on its constructor-paired endpoint. This
+    /// is not graph, state, transport or publication authorization.
+    pub(crate) fn reserve_observed_parameter_input(
+        &self,
+        source: &hex_plugin_host::transport::ParameterInputSource,
+    ) -> Option<hex_plugin_host::transport::ParameterInputFence<'_>> {
+        self.transport.reserve_observed_parameter_input(source)
+    }
     /// Bound one actual complete host callback before the engine stages any
     /// segments. A chunk/subsegment length is not the physical callback extent.
     pub fn begin_host_callback(&mut self, frames: usize) -> Result<(), Fault> {
@@ -668,8 +682,8 @@ impl NativeEffectCallback {
     pub fn take_accepted_manual_parameter(&mut self) -> Option<AcceptedManualParameter> {
         self.transport.take_accepted_manual_parameter()
     }
-    pub(crate) fn end_staging_at_pause(&mut self, frame: usize) {
-        self.transport.end_staging_at_pause(frame);
+    pub(crate) fn end_staging_at_rendered_prefix(&mut self, frame: usize) {
+        self.transport.end_staging_at_rendered_prefix(frame);
     }
     /// This original live epoch has accepted enough consecutive zero input to
     /// drain its source-reported tail and fixed processor/bridge latency. New
@@ -826,9 +840,11 @@ impl ForeignProcessors for NativeEffectCallback {
     }
 
     fn committed_tail_is_drained(&self, node: ForeignProcessorNode<'_>) -> bool {
-        self.matches(node)
+        // Scalar compensated rendering only finishes staging on the last
+        // segment. Avoid comparing processor facts for an incomplete callback.
+        self.transport.has_complete_staged_callback()
             && self.reported_tail_is_drained()
-            && self.transport.has_complete_staged_callback()
+            && self.matches(node)
     }
 
     fn reject_callback(&mut self) {
@@ -865,24 +881,30 @@ impl NativeEffectCallback {
             self.reject_callback();
             return Err(DeviceContractError::ForeignProcessingUnavailable);
         }
-        let mut events = InputEvents::default();
-        for note in notes {
-            let status = if note.on { 0x90 } else { 0x80 };
-            if note.channel >= 16
-                || events
-                    .push(MidiEvent {
-                        frame: note.frame,
-                        bytes: [status | note.channel, note.pitch, note.velocity],
-                        len: 3,
-                        note_id: note.note_id,
-                    })
-                    .is_err()
-            {
-                self.reject_callback();
-                frames.fill([0.0; 2]);
-                return Err(DeviceContractError::ForeignProcessingFailed);
+        let mut events;
+        let events: &[MidiEvent] = if notes.is_empty() {
+            &[]
+        } else {
+            events = InputEvents::default();
+            for note in notes {
+                let status = if note.on { 0x90 } else { 0x80 };
+                if note.channel >= 16
+                    || events
+                        .push(MidiEvent {
+                            frame: note.frame,
+                            bytes: [status | note.channel, note.pitch, note.velocity],
+                            len: 3,
+                            note_id: note.note_id,
+                        })
+                        .is_err()
+                {
+                    self.reject_callback();
+                    frames.fill([0.0; 2]);
+                    return Err(DeviceContractError::ForeignProcessingFailed);
+                }
             }
-        }
+            events.as_slice()
+        };
         if self.configuration.prepared.is_instrument_profile() {
             frames.fill([0.0; 2]);
         }
@@ -942,10 +964,10 @@ impl NativeEffectCallback {
                 loop_pass: clock.loop_pass_at_offset(index)?,
             })
         };
-        let result = self.transport.stage_effect_segment(
+        let result = self.transport.stage_effect_pcm_segment(
             offset,
             input,
-            events.as_slice(),
+            events,
             parameters,
             frames,
             timing,
@@ -961,7 +983,7 @@ impl NativeEffectCallback {
                 normalized: lane.normalized,
             }),
         );
-        let Ok(reply) = result else {
+        let Ok(concealed_output) = result else {
             // The transport revoked only this endpoint's epoch. Leave the
             // aligned dry input so a containing carrier can keep rendering.
             frames.copy_from_slice(&self.dry_output[..frames.len()]);
@@ -973,7 +995,7 @@ impl NativeEffectCallback {
             }
             return Err(DeviceContractError::ForeignProcessingFailed);
         };
-        if let Some((start, end)) = reply.concealed_output {
+        if let Some((start, end)) = concealed_output {
             // The transport still owns this epoch. Replace just the missing
             // wet samples with the same latency-aligned dry history used for
             // bypass. An instrument's dry history is already silence.

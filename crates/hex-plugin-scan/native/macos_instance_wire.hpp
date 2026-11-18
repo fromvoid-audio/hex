@@ -178,9 +178,15 @@ struct Presentation {
 struct PresentationPlan {
     std::optional<Presentation> known;
     bool allow_unknown=false;
+    uint8_t known_mode=1; // 1: both, 3: input only, 4: output only
 };
+inline bool known_presentation(uint64_t mode,uint32_t input,uint32_t output,PresentationPlan& result) {
+    if((mode!=1 && mode!=3 && mode!=4) || (mode==3 && output) || (mode==4 && input)) return false;
+    result.known=Presentation{input,output};result.known_mode=static_cast<uint8_t>(mode);return true;
+}
 // No SDK call occurs inside this parser. Unknown presentation is explicit and
-// carries no invented numeric values. All bounds/identity precede application.
+// carries no invented numeric facts. Mixed modes reserve the unknown word as
+// zero; the mode retains its unknown identity. All bounds/identity precede application.
 inline bool presentation(int fd,const Config& config,PresentationPlan& result) {
     try {
         std::array<uint8_t,12> header{};
@@ -189,10 +195,13 @@ inline bool presentation(int fd,const Config& config,PresentationPlan& result) {
         Reader in{Bytes(static_cast<size_t>(size)),0};
         if(read_exact(fd,in.bytes.data(),in.bytes.size())!=1 || in.number(2)!=1) return false;
         for(auto id:config.binding) if(in.number(8)!=id) return false;
-        const auto mode=in.number(1);if(mode>2) return false;
+        const auto mode=in.number(1);if(mode>4) return false;
         result={};
         result.allow_unknown=mode==2;
-        if(mode==1) result.known=Presentation{static_cast<uint32_t>(in.number(4)),static_cast<uint32_t>(in.number(4))};
+        if(mode==1 || mode==3 || mode==4) {
+            const auto input=static_cast<uint32_t>(in.number(4)),output=static_cast<uint32_t>(in.number(4));
+            if(!known_presentation(mode,input,output,result)) return false;
+        }
         return in.at==in.bytes.size();
     } catch(const std::runtime_error&) { return false; }
 }
@@ -207,6 +216,7 @@ struct Packet {
     static constexpr size_t editor_touch_bytes=24, editor_restore_bytes=24;
     static constexpr size_t dense_header_bytes=8;
     static constexpr uint64_t dense_parameter_bit=0x0800;
+    static constexpr uint64_t sdk_timing_bit=0x0400;
     static constexpr size_t editor_target_bytes=16, editor_group_header_bytes=16;
     static constexpr size_t editor_group_bytes=editor_group_header_bytes+
         hex_instance::HOST_EDIT_COUNT*editor_target_bytes;
@@ -215,7 +225,8 @@ struct Packet {
     std::array<uint8_t,header_size+max_frames*8+hex_instance::INPUT_NOTE_COUNT*12+hex_instance::PARAMETER_POINT_COUNT*20+extended_timing_size+timing_change_limit*timing_change_bytes+dense_header_bytes+max_frames*8+editor_group_bytes> bytes{};
     std::array<hex_instance::ParameterPoint,hex_instance::PARAMETER_POINT_COUNT> parameters{};
     std::array<uint32_t,hex_instance::PARAMETER_POINT_COUNT> authored_steps{};
-    bool authored_parameters=false,manual_parameter=false,dense_parameter=false;
+    bool authored_parameters=false,manual_parameter=false,dense_parameter=false,observe_sdk_timing=false;
+    uint64_t sdk_process_ns=0;
     uint32_t dense_id=0,dense_steps=0;
     std::array<Steinberg::Vst::ParamValue,max_frames> dense_values{};
     std::array<hex_instance::InputNote,hex_instance::INPUT_NOTE_COUNT> notes{};
@@ -251,6 +262,7 @@ struct Packet {
         const auto wire_version=number(p+4,2);
         constexpr uint64_t authored_bit=0x8000;
         authored_parameters=pcm && (wire_version&authored_bit);
+        observe_sdk_timing=pcm && (wire_version&sdk_timing_bit);sdk_process_ns=0;
         dense_parameter=pcm && (wire_version&dense_parameter_bit);
         if(dense_parameter && !authored_parameters) return -1;
         observe_editor_pcm=pcm && (wire_version&editor_pcm_bit);reply_editor_count=0;
@@ -260,7 +272,8 @@ struct Packet {
         editor_touch.reset();editor_restore={};
         const auto version=wire_version&~((authored_parameters?authored_bit:0)|
             (observe_editor_pcm?editor_pcm_bit:0)|(touch?editor_touch_bit:0)|
-            (group_touch?editor_group_touch_bit:0)|(dense_parameter?dense_parameter_bit:0));
+            (group_touch?editor_group_touch_bit:0)|(dense_parameter?dense_parameter_bit:0)|
+            (observe_sdk_timing?sdk_timing_bit:0));
         release_gates=quiesce && version==2 && !config.inputs;
         observe_latency=edit_query && (version==2 || version==3);
         flush_idle_edits=edit_query && version==3;
@@ -291,12 +304,12 @@ struct Packet {
         frames=static_cast<uint16_t>(number(p+6,2));
         if(resume) {
             next_graph=number(p+48,8);next_epoch=number(p+56,8);
-            if(frames || p[10]>2 || next_graph<config.binding[2] || next_epoch<=config.binding[3]) return -1;
+            if(frames || p[10]>4 || next_graph<config.binding[2] || next_epoch<=config.binding[3]) return -1;
             resumed_presentation={};
             resumed_presentation.allow_unknown=p[10]==2;
-            if(p[10]==1) {
+            if(p[10]==1 || p[10]==3 || p[10]==4) {
                 if(read_exact(fd,p+header_size,8,true)!=1) return -1;
-                resumed_presentation.known=Presentation{static_cast<uint32_t>(number(p+header_size,4)),static_cast<uint32_t>(number(p+header_size+4,4))};
+                if(!known_presentation(p[10],static_cast<uint32_t>(number(p+header_size,4)),static_cast<uint32_t>(number(p+header_size+4,4)),resumed_presentation)) return -1;
             }
             return 4;
         }
@@ -508,7 +521,8 @@ struct Packet {
     bool write(int fd) {
         bytes[4]=reply_parameter_count?2:1;
         bytes[5]=static_cast<uint8_t>(((observe_editor_pcm?editor_pcm_bit:0)|
-            (group_touch?editor_group_touch_bit:(editor_touch?editor_touch_bit:0)))>>8);
+            (group_touch?editor_group_touch_bit:(editor_touch?editor_touch_bit:0))|
+            (observe_sdk_timing?sdk_timing_bit:0))>>8);
         bytes[8]=bytes[9]=0; // Input notes are never echoed as processor output.
         bytes[10]=static_cast<uint8_t>(reply_parameter_count);
         std::fill(bytes.begin()+11,bytes.begin()+16,0); // Request timing is never echoed.
@@ -524,6 +538,10 @@ struct Packet {
             put(out,restored.sequence,8);put(out+8,restored.gesture,8);
             put(out+16,restored.parameter,4);put(out+20,0,4);
             ++bytes[13];size+=editor_restore_bytes;
+        }
+        if(observe_sdk_timing) {
+            if(size+8>bytes.size()) return false;
+            put(bytes.data()+size,sdk_process_ns,8);size+=8;
         }
         return write_exact(fd,bytes.data(),size);
     }

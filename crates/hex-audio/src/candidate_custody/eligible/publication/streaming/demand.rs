@@ -63,6 +63,7 @@ pub(crate) struct StreamInstall<'a> {
     pub(crate) command_prefix: u64,
     pub(crate) frames: usize,
     pub(crate) fenced_restart: bool,
+    pub(crate) foreign_continuation: bool,
 }
 pub(super) fn envelope(
     domains: &mut [Option<DomainEnvelope>; 2],
@@ -168,6 +169,13 @@ impl StateView<'_> {
         // maximum to one, without allocating or publishing a partial intent.
         // Failure at one frame retains the existing refusal.
         let mut frames = request.frames.min(256);
+        // Only an immediate successor shrinks after shared-pool capacity
+        // refusal. Each retry replans its exact source and clock; the owner
+        // cancels every partial domain intent before retrying. Current demand
+        // and scheduled prewarm retain their existing limits and protection.
+        if role == ProtectionRole::Candidate && due.is_none() {
+            frames = frames.min(workspace.candidate_frame_limit);
+        }
         let window = loop {
             for rows in &mut workspace.extents {
                 rows.clear();
@@ -213,6 +221,13 @@ impl StateView<'_> {
                         request.pending_play.then_some(true),
                         &mut visit,
                     )
+                } else if request.foreign_continuation {
+                    runtime.preview_ordinary_with_stored_foreign_continuation(
+                        previous,
+                        frames,
+                        request.pending_play.then_some(true),
+                        &mut visit,
+                    )
                 } else {
                     runtime.preview_stream_handoff(
                         previous,
@@ -240,6 +255,7 @@ impl StateView<'_> {
                         // deferred carrier and let the predecessor drain before
                         // replanning; this is not a page-readiness rejection.
                         workspace.cancel_pending(refs, request.domains);
+                        workspace.handoff_diagnostic = Some(error);
                         return Ok(None);
                     }
                     Err(error) => {
@@ -351,8 +367,35 @@ impl StateView<'_> {
                     admitted_command_prefix: request.command_prefix,
                     window,
                 };
-                if let Err(refusal) = loan.submit_resources(role, stamp, rows) {
+                #[cfg(all(test, feature = "allocation-probe", feature = "stream-test-support"))]
+                if role == ProtectionRole::Candidate && due.is_none() {
+                    crate::candidate_window_probe::attempt(window.frames);
+                }
+                let submitted = loan.submit_resources(role, stamp, rows);
+                #[cfg(all(test, feature = "allocation-probe", feature = "stream-test-support"))]
+                if role == ProtectionRole::Candidate && due.is_none() && submitted.is_ok() {
+                    crate::candidate_window_probe::accepted(token.slot);
+                }
+                if let Err(refusal) = submitted {
+                    #[cfg(all(
+                        test,
+                        feature = "allocation-probe",
+                        feature = "stream-test-support"
+                    ))]
+                    if role == ProtectionRole::Candidate
+                        && due.is_none()
+                        && refusal == hex_stream::ReadinessRefusal::Capacity
+                    {
+                        crate::candidate_window_probe::capacity(window.frames, token.slot);
+                    }
                     workspace.capacity_conflict = refusal == hex_stream::ReadinessRefusal::Capacity;
+                    if workspace.capacity_conflict
+                        && role == ProtectionRole::Candidate
+                        && due.is_none()
+                        && window.frames > 1
+                    {
+                        workspace.candidate_frame_limit = window.frames.div_ceil(2);
+                    }
                     return Err(hex_engine::Invalid("stream protection reservation refused"));
                 }
                 pages.inner.epoch = epoch;
@@ -562,6 +605,7 @@ impl ActiveView<'_> {
             command_prefix,
             frames: output.len(),
             fenced_restart: false,
+            foreign_continuation: false,
         };
         let (action_applied, action_rejection) = match self.resolve_stream_action(&mut request) {
             super::actions::ActionResolution::Ready(Some((ticket, Ok(())))) => (Some(ticket), None),
@@ -598,6 +642,7 @@ impl ActiveView<'_> {
                 command_prefix,
                 frames: output.len() - committed,
                 fenced_restart: false,
+                foreign_continuation: false,
             };
             let mut planned =
                 self.state

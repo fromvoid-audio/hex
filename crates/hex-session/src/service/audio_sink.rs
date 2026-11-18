@@ -5,8 +5,8 @@ use std::time::Duration;
 mod file_sources;
 pub(super) mod native_sampler;
 pub use file_sources::{
-    ResidentFileInput, ResidentFileMetadata, ResidentFilePublication, ResidentFileSeekPreparer,
-    ResidentFileSeekRequest, ResidentFileSet,
+    ResidentFileInput, ResidentFileMetadata, ResidentFilePitch, ResidentFilePublication,
+    ResidentFileSeekPreparer, ResidentFileSeekRequest, ResidentFileSet,
 };
 pub use native_sampler::{
     NativeSamplerInput, NativeSamplerReservationHold, NativeSamplerRetryFacts,
@@ -171,6 +171,14 @@ impl<'a> ResidentEffectPreparation<'a> {
     /// Ordinary edits and transient audition requests cannot consume its sources.
     pub fn restoring_plugin_state(&self) -> bool {
         self.restoring_plugin_state
+    }
+    /// Canonical bypass state of one exact plugin visited by this preparation.
+    /// This copied display/control fact grants no native source or admission.
+    pub fn plugin_device_bypassed(&self, id: u64) -> Option<bool> {
+        self.project
+            .automation_devices()
+            .find(|device| device.id().value() == id && is_plugin_effect(device))
+            .map(|device| device.bypassed())
     }
     /// Whether the saved document needs the fixed-quantum plugin output profile.
     pub fn requires_plugin_profile(&self) -> bool {
@@ -339,8 +347,15 @@ impl<'a> ResidentEffectPreparation<'a> {
 
 /// One private native bounce owner. It supplies exact compile facts before
 /// rendering and is dropped before Session adopts any of the output media.
-pub trait OfflineBounceSource: hex_export::ForeignBounceRenderer {
+pub trait OfflineBounceSource: hex_export::ForeignBounceRenderer + Send {
     fn retained_data_bytes(&self) -> usize;
+    /// Finalize this private source against the one compiled graph before any
+    /// render or publication. Failure aborts the export/bounce without adoption.
+    fn finalize_on_control(
+        &mut self,
+        revision: &hex_engine::PreparedRevision,
+        control: &hex_export::ExportControl,
+    ) -> Result<(), String>;
     fn prepare(
         &self,
         compile: &mut dyn FnMut(
@@ -381,6 +396,7 @@ pub enum ResidentSourceOrigin {
     ClipMovePreview,
     ClipStretchPreview,
     ClipPlayStartPreview,
+    ClipGainPreview,
 }
 
 /// Scalar identity for one worker-private ordinary resident graph. Neither preview correlation
@@ -408,6 +424,8 @@ pub struct ResidentFreshRuntimeFence {
     pub admitted_command_ticket: u64,
     /// Last output-fault epoch observed before the seek was prepared.
     pub output_fault_epoch: u64,
+    /// Callback-observed priority Stop generation of the captured audio fence.
+    pub consumed_stop_generation: u64,
 }
 /// Nonowning scalar witness for the actual installed graph's audition loop.
 /// No PCM, prepared graph, lease or callback runtime is borrowed or transferred.
@@ -483,6 +501,12 @@ pub enum ResidentPublicationPolicy {
     /// Preserve this exact applied graph's loop through ordinary inheritance.
     /// The native owner revalidates it before admission/enqueue; it grants no custody.
     InheritRuntimeAt(ResidentRuntimeLoop),
+    /// Install a staged device candidate against the exact current graph.
+    /// This policy requires a cancellable callback receipt and live output.
+    DeviceInsert {
+        predecessor: ResidentRuntimeLoop,
+        hosted: bool,
+    },
     /// The sink owns the shared arrangement gate through exact callback installation.
     /// A playing witness inherits the actual boundary runtime; a stopped witness
     /// installs its prepared musical cursor.
@@ -514,6 +538,61 @@ pub enum ResidentPublicationAcceptance {
     },
     OfflineRetained,
 }
+/// A control-side receipt for one exact prepared graph submission. It does not
+/// acknowledge callback application, retain a graph, or grant a source fence.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ResidentGraphSubmission {
+    pub output_identity: u64,
+    pub audio_revision: u64,
+    pub context: hex_engine::AudioSourceContext,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeviceInsertAudioState {
+    Pending,
+    Applying,
+    Installed,
+    Cancelled,
+    Expired,
+    Refused(hex_engine::PlaybackHandoffRejection),
+    OutputClosed,
+}
+
+/// The worker retains this exact receipt after enqueue. Cancellation is
+/// nonblocking, and the terminal remains readable across output replacement.
+/// The receipt owns the admission deadline even while the worker is busy.
+pub trait DeviceInsertAudioReceipt: Send + std::fmt::Debug {
+    fn submission(&self) -> ResidentGraphSubmission;
+    fn state(&self) -> DeviceInsertAudioState;
+    fn cancel(&self) -> bool;
+}
+/// Bind a control preparation to the client's observed resident graph and
+/// stopped transport. The output callback checks these facts again at activation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PausedInputMonitorRequest {
+    pub source: ResidentGraphSubmission,
+    pub transport_epoch: u64,
+    pub track: hex_project::TrackId,
+}
+/// Exact resident graph and reservation inputs for one automatic note-monitor
+/// poll. Only the output worker can observe or advance the installed pause.
+pub struct PausedNoteGraph<'a> {
+    pub source: ResidentGraphSubmission,
+    pub revision: &'a Arc<PreparedRevision>,
+    pub resources: &'a hex_engine::native_device_resources::PreparedDeviceResources,
+    pub cancellation: &'a super::RequestCancellation,
+}
+impl ResidentGraphSubmission {
+    /// Compare with the callback's correlated publication observation. A pending
+    /// successor is not a stable source for a stopped edit. The caller must still
+    /// establish and hold the exact fence before using this as a predecessor.
+    pub fn matches_applied(self, readiness: ResidentPublicationReadiness) -> bool {
+        matches!(readiness, ResidentPublicationReadiness::Applied {
+            submission: ResidentRuntimeLoop { output_identity, audio_revision, source_context: Some(context), .. },
+            publication_in_flight: false,
+        } if output_identity == self.output_identity && audio_revision == self.audio_revision && context == self.context)
+    }
+}
 /// Reason category for a refused resident publication. The unavailable
 /// category describes source custody only; it does not imply a deadline fault.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -541,6 +620,19 @@ impl std::fmt::Debug for ResidentPublicationRefusal {
 /// Construction must not start device work or hold an opened output: a failed
 /// thread spawn may drop the uninitialized adapter on the constructing thread.
 pub trait WorkerAudioSink: Send {
+    /// Whether the sink uses installed-graph commits for resident insertions.
+    fn confirms_device_inserts(&self) -> bool {
+        false
+    }
+
+    /// Borrow the exact receipt immediately after submitting a DeviceInsert.
+    fn device_insert_receipt(
+        &mut self,
+        _submission: ResidentGraphSubmission,
+    ) -> Option<Box<dyn DeviceInsertAudioReceipt>> {
+        None
+    }
+
     /// Before Begin, request renewal only when the exact stopped source has
     /// returned its endpoints. Session republishes its unchanged canonical
     /// snapshot through the existing stopped-restore owner before admission.
@@ -723,6 +815,18 @@ pub trait WorkerAudioSink: Send {
     fn take_plugin_parameters(&mut self) -> Option<PluginParameterResult> {
         None
     }
+    fn query_plugin_parameter_conversion(
+        &mut self,
+        _query: PluginParameterConversionQuery,
+    ) -> Result<(), String> {
+        Err("vst3 conversion unavailable for this output".into())
+    }
+    fn plugin_parameter_conversion_ready(&self) -> bool {
+        false
+    }
+    fn take_plugin_parameter_conversion(&mut self) -> Option<PluginParameterConversionResult> {
+        None
+    }
     /// Match the exact request control; never cancel an unrelated later source.
     /// Exact canonical terminal. Rejected requests retire only their matching native preparation;
     /// acceptance transfers display/request custody, never the native source's lifetime.
@@ -742,6 +846,25 @@ pub trait WorkerAudioSink: Send {
             -> Result<hex_engine::PreparedRevision, hex_engine::Invalid>,
     ) -> Result<Option<hex_engine::PreparedRevision>, String> {
         Ok(None)
+    }
+    /// Optionally hold the exact stopped predecessor while a saturated history
+    /// is prepared. False preserves the ordinary conservative history path.
+    /// A successful lease must remain held through its publication terminal.
+    fn begin_stopped_foreign_history(
+        &mut self,
+        _predecessor: ResidentGraphSubmission,
+        _successor: hex_engine::AudioSourceContext,
+    ) -> Result<bool, String> {
+        Ok(false)
+    }
+    /// Confirm a leased successor before canonical history commits. Hosts with
+    /// no lease leave the existing publication path unchanged.
+    fn confirm_stopped_foreign_history(
+        &mut self,
+        _context: hex_engine::AudioSourceContext,
+        _accepted: ResidentPublicationAcceptance,
+    ) -> Result<(), String> {
+        Ok(())
     }
     /// Actual original-worker pickup only, for bounded immutable program
     /// retention. Unknown/Empty retain existing history; only an actual empty
@@ -860,6 +983,30 @@ pub trait WorkerAudioSink: Send {
     ) -> [hex_engine::native_device_resources::DeviceResourceAdmission<'_>; 3] {
         [hex_engine::native_device_resources::DeviceResourceAdmission::default(); 3]
     }
+    /// Prepare one control-owned monitor under the existing resident union.
+    /// The sink retains its corresponding storage hold until retirement.
+    fn prepare_paused_input_monitor(
+        &mut self,
+        _request: PausedInputMonitorRequest,
+        _revision: &Arc<PreparedRevision>,
+        _resources: &hex_engine::native_device_resources::PreparedDeviceResources,
+        _admit: &mut dyn FnMut(
+            &[hex_engine::native_device_resources::DeviceResourceAdmission<'_>],
+        ) -> Result<(), String>,
+    ) -> Result<hex_engine::PausedTrackMonitor, String> {
+        Err("paused input monitor output is unavailable".into())
+    }
+    /// Advance a bounded preparation step. No output ownership survives the
+    /// call except in the sink's own pending state. Return true while busy.
+    fn poll_paused_note_monitor(
+        &mut self,
+        _graph: Option<PausedNoteGraph<'_>>,
+        _admit: &mut dyn FnMut(
+            &[hex_engine::native_device_resources::DeviceResourceAdmission<'_>],
+        ) -> Result<(), String>,
+    ) -> bool {
+        false
+    }
     /// Final fallible prepared-transition operation. An active output must refuse queue/resource
     /// pressure unchanged; explicit unavailable/opening state may accept one admitted latest owner
     /// privately with no submitted/applied revision. Cancellation checks precede this call.
@@ -953,6 +1100,11 @@ pub trait WorkerAudioSink: Send {
     /// Accept source-bound clip intent on control. This is not graph admission
     /// or callback acknowledgement; false retains no worker-side delivery claim.
     fn verified_clip_move_update(&mut self, _update: VerifiedClipMoveUpdate) -> bool {
+        false
+    }
+    /// Replace or retire temporary Arrangement gain metadata. Acceptance is
+    /// a bounded control handoff, independent of callback application.
+    fn verified_arrangement_gain_update(&mut self, _update: VerifiedArrangementGainUpdate) -> bool {
         false
     }
     /// Synchronous private canonical/original PCM input; no borrow may survive.
@@ -1112,6 +1264,8 @@ pub(super) struct WorkerEvents {
     // At most one request parked on the stopped Arrangement lease (#4544).
     stopped_fence: super::stopped_arrangement::Fence,
     publication_wait: Option<super::publication_wait::Wait>,
+    // Park only the FIFO head while the callback owns a staged edit.
+    device_insert_deferred: Option<QueuedRequest>,
     // Consecutive request-wait iterations with no pending work (#4574).
     idle_polls: u32,
 }
@@ -1299,6 +1453,7 @@ impl WorkerEvents {
             startup_error: None,
             stopped_fence: Default::default(),
             publication_wait: None,
+            device_insert_deferred: None,
             idle_polls: 0,
         }
     }
@@ -1601,7 +1756,7 @@ impl WorkerEvents {
             thread::sleep(super::stopped_arrangement::FENCE_POLL);
         }
     }
-    #[allow(clippy::too_many_arguments)] // Existing FIFO/control wakeups plus accepted source-intent cancellation.
+    #[allow(clippy::too_many_arguments)] // Each continuation has one worker owner.
     pub(super) fn next_request_with_control_poll(
         &mut self,
         requests: &Receiver<QueuedRequest>,
@@ -1609,10 +1764,47 @@ impl WorkerEvents {
         recording_barrier: &mut super::recording_barrier::State,
         bounded: bool,
         plugin_effect: Option<&PluginEffectInsertion>,
+        device_insert: Option<&super::resident_audio::device_insert::Pending>,
         stopped_restore: Option<hex_engine::AudioSourceContext>,
         context: hex_engine::AudioSourceContext,
         mut control_poll: impl FnMut(Option<&mut dyn WorkerAudioSink>, bool) -> ControlPoll,
     ) -> Option<QueuedRequest> {
+        if let Some(pending) = device_insert {
+            loop {
+                self.poll();
+                let cancel = self.shutdown.load(Ordering::Acquire)
+                    || pending.document_intent != document_intent.load(Ordering::Acquire);
+                if pending.terminal(cancel).is_some() {
+                    return Some(QueuedRequest::continuation(
+                        Request::ContinueDeviceInsert,
+                        document_intent,
+                    ));
+                }
+                if cancel || self.device_insert_deferred.is_some() {
+                    thread::sleep(BUSY_POLL_INTERVAL);
+                    continue;
+                }
+                match requests.recv_timeout(BUSY_POLL_INTERVAL) {
+                    Ok(queued)
+                        if matches!(
+                            queued.request,
+                            Request::SaveNew(_)
+                                | Request::SaveProjectAs { .. }
+                                | Request::SaveCurrent
+                                | Request::SaveCurrentWithFormatUpgrade { .. }
+                        ) =>
+                    {
+                        return Some(queued);
+                    }
+                    Ok(queued) => self.device_insert_deferred = Some(queued),
+                    Err(mpsc::RecvTimeoutError::Timeout) => (),
+                    Err(mpsc::RecvTimeoutError::Disconnected) => return None,
+                }
+            }
+        }
+        if let Some(queued) = self.device_insert_deferred.take() {
+            return Some(queued);
+        }
         // The original barrier retains its FIFO place. Continue polling SDK/disk
         // work without consuming a later request; accepted New/Open intent and
         // shutdown are observable independently of the bounded channel.
@@ -1757,6 +1949,16 @@ impl WorkerEvents {
             {
                 return Some(QueuedRequest::continuation(
                     Request::ContinuePluginParameters,
+                    document_intent,
+                ));
+            }
+            if self
+                .audio
+                .as_ref()
+                .is_some_and(|audio| audio.plugin_parameter_conversion_ready())
+            {
+                return Some(QueuedRequest::continuation(
+                    Request::ContinuePluginParameterConversion,
                     document_intent,
                 ));
             }

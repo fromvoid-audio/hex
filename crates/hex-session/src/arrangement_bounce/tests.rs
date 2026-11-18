@@ -340,7 +340,7 @@ fn bounce_failure_case(whole_track: bool) {
         &folder.0,
         &hex_export::ExportControl::default(),
         |_, _, _| Ok(()),
-        |path, _, item, _, _| {
+        |path, _, _, item, _, _| {
             fs::write(path, b"not a wav").unwrap();
             files_seen.push(path.to_path_buf());
             Ok(item.end - item.start)
@@ -434,7 +434,7 @@ fn multi_track_failure_and_cancellation_after_render_preserve_the_entire_transac
                 .map(Arc::new)
                 .map_err(|e| e.to_string())
             },
-            |path, revision, item, tails, control| {
+            |path, revision, _, item, tails, control| {
                 if !rendered.is_empty() {
                     return Err("second output failed".into());
                 }
@@ -2386,7 +2386,7 @@ fn whole_track_console_second_output_cancel_and_final_publication_fail_without_p
                 .map(Arc::new)
                 .map_err(|e| e.to_string())
             },
-            |path, revision, item, tails, control| {
+            |path, revision, _, item, tails, control| {
                 if failure == 0 && paths.len() == 1 {
                     return Err("second console output failed".into());
                 }
@@ -2532,7 +2532,7 @@ fn retired_clip_and_range_in_place_intents_refuse_before_render_or_media_work() 
             &folder.0,
             &hex_export::ExportControl::default(),
             |_, _, _| -> Result<(), String> { panic!("retired intent must not prepare") },
-            |_, _, _, _, _| panic!("retired intent must not render"),
+            |_, _, _, _, _, _| panic!("retired intent must not render"),
             |_, _, _| panic!("retired intent must not commit"),
         );
         assert!(result.unwrap_err().contains("complete track"));

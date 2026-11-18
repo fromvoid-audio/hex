@@ -20,7 +20,9 @@
 mod budget;
 mod content;
 mod events;
+mod granular_requirements;
 mod group;
+pub use granular_requirements::{StreamedGranularRequirement, StreamedGranularRequirements};
 pub(crate) use group::{GroupSource, sparse_group_plan};
 mod mapping;
 mod view;
@@ -91,9 +93,9 @@ fn warp_law(law: WarpResampler) -> hex_warp::Resampler {
 }
 
 /// Check the existing renderer's projected stretch capability without PCM or
-/// preparation/cache ownership. Allocates the same bounded metadata map (at most
-/// 8192 segments and 1024 explicit attacks); this is control-side work, not a
-/// callback API and not a proof of available render memory or work budget.
+/// preparation/cache ownership. Supported streamed roots use their bounded map
+/// extent. Map allocation (at most 8192 segments and 1024 explicit attacks) and
+/// ratio checks run on control, before any file, page or render admission.
 pub fn validate_clip_warp_preview(
     clip: &hex_project::Clip,
     tempo: &hex_project::TempoMap,
@@ -101,9 +103,291 @@ pub fn validate_clip_warp_preview(
     let Some(edit) = clip.audio_edit() else {
         return Ok(());
     };
-    let (map, _) = mapping::prepare_map(edit, tempo, &AtomicBool::new(false))?;
+    let cancel = AtomicBool::new(false);
+    let (map, _) = if edit.is_streamed_repitch_root() || edit.is_streamed_granular_root() {
+        mapping::prepare_streamed_map(edit, tempo, &cancel)?
+    } else {
+        mapping::prepare_map(edit, tempo, &cancel)?
+    };
     map.validate_stretch(render_mode(&edit.domain)?, edit.domain.pitch_cents)
         .map_err(warp_error)
+}
+
+/// Project a validated canonical Re-Pitch root for a bounded streaming worker.
+/// The returned map covers the full processed root; view cropping is applied by
+/// the consumer. It owns no audio and does not establish file or page custody.
+/// Unsupported source processing is refused rather than silently omitted.
+pub fn streamed_repitch_map(
+    edit: &AudioClipEdit,
+    tempo: &hex_project::TempoMap,
+    source_frames: u64,
+    cancel: &AtomicBool,
+) -> Result<(hex_warp::TimeMap, hex_warp::Resampler), Invalid> {
+    let domain = &edit.domain;
+    if !edit.is_streamed_repitch_root() || domain.source_length != source_frames {
+        return Err(Invalid(
+            "streamed repitch requires an unlooped neutral full-source warp root",
+        ));
+    }
+    let (map, attacks) = mapping::prepare_streamed_map(edit, tempo, cancel)?;
+    if !attacks.is_empty() {
+        return Err(Invalid("streamed repitch cannot use beat attacks"));
+    }
+    map.validate_stretch(hex_warp::Mode::RePitch, 0)
+        .map_err(warp_error)?;
+    Ok((map, render_resampler(domain)))
+}
+
+/// Canonical granular root inputs, not a file owner, worker or page lease.
+/// The worker must bind the raw asset/generation to the verified reader
+/// and retain the existing aggregate memory and source invalidation contracts.
+pub struct StreamedGranularRoot {
+    metadata: crate::StreamedSourceMetadata,
+    region: hex_warp::SourceRegion,
+    map: hex_warp::TimeMap,
+    mode: hex_warp::Mode,
+    pitch_cents: i16,
+    law: hex_warp::Resampler,
+}
+impl StreamedGranularRoot {
+    pub fn metadata(&self) -> &crate::StreamedSourceMetadata {
+        &self.metadata
+    }
+    /// Actual retained map and envelope payload, excluding this inline value.
+    pub fn backing_bytes(&self) -> Option<usize> {
+        self.region
+            .backing_bytes()?
+            .checked_add(self.map.backing_bytes()?)
+    }
+    /// Move the exact projected inputs to their eventual control-side owner.
+    pub fn into_parts(
+        self,
+    ) -> (
+        crate::StreamedSourceMetadata,
+        hex_warp::SourceRegion,
+        hex_warp::TimeMap,
+        hex_warp::Mode,
+        i16,
+        hex_warp::Resampler,
+    ) {
+        (
+            self.metadata,
+            self.region,
+            self.map,
+            self.mode,
+            self.pitch_cents,
+            self.law,
+        )
+    }
+}
+
+/// Project a validated canonical Tones/Texture root for a streamed worker.
+/// The caller validates the edit and binds its asset to `raw`; this operation
+/// only derives bounded metadata and grants no source or playback admission.
+/// The map covers the full processing root; consumers apply view cropping.
+/// Output fades and composed/directed placements are refused until their
+/// consumers implement them. Warped phase belongs in the map, so the source
+/// region has zero phase just like resident root preparation.
+pub fn streamed_granular_root(
+    raw: &crate::StreamedSourceMetadata,
+    edit: &AudioClipEdit,
+    tempo: &hex_project::TempoMap,
+    cancel: &AtomicBool,
+) -> Result<StreamedGranularRoot, Invalid> {
+    let domain = &edit.domain;
+    if cancel.load(Ordering::Acquire) {
+        return Err(Invalid("audio preparation cancelled"));
+    }
+    if !raw.key().is_raw()
+        || raw.project_rate() != tempo.sample_rate()
+        || !edit.is_streamed_granular_root()
+        || domain.source_gain.len() > hex_warp::MAX_POINTS
+    {
+        return Err(Invalid("unsupported streamed granular root"));
+    }
+    let mode = render_mode(domain)?;
+    if !matches!(
+        mode,
+        hex_warp::Mode::Tones { .. } | hex_warp::Mode::Texture { .. }
+    ) {
+        return Err(Invalid("unsupported streamed granular mode"));
+    }
+    let (map, attacks) = mapping::prepare_streamed_map(edit, tempo, cancel)?;
+    if !attacks.is_empty() {
+        return Err(Invalid("streamed granular root has beat attacks"));
+    }
+    let mut envelope = Vec::new();
+    envelope
+        .try_reserve_exact(domain.source_gain.len())
+        .map_err(|_| Invalid("source envelope allocation failed"))?;
+    envelope.extend(domain.source_gain.iter().map(|point| hex_warp::GainPoint {
+        source_frame: point.frame,
+        gain_q16: point.gain_q16,
+    }));
+    let region = hex_warp::SourceRegion::new(
+        raw.playback_frames(),
+        domain.source_offset,
+        domain.source_length,
+        0,
+        domain.looping,
+        envelope,
+    )
+    .map_err(warp_error)?;
+    let law = render_resampler(domain);
+    let metadata = raw.with_granular(&region, &map, mode, domain.pitch_cents, law)?;
+    if cancel.load(Ordering::Acquire) {
+        return Err(Invalid("audio preparation cancelled"));
+    }
+    Ok(StreamedGranularRoot {
+        metadata,
+        region,
+        map,
+        mode,
+        pitch_cents: domain.pitch_cents,
+        law,
+    })
+}
+
+/// Immutable control-side file facts and canonical map for one streamed
+/// Re-Pitch source. This is not a worker, page lease or publication authority.
+#[derive(Clone)]
+pub struct StreamedRepitchRequirement {
+    inner: Arc<StreamedRepitchRequirementInner>,
+}
+struct StreamedRepitchRequirementInner {
+    raw: crate::StreamedSourceMetadata,
+    map: hex_warp::TimeMap,
+    law: hex_warp::Resampler,
+}
+impl StreamedRepitchRequirement {
+    pub fn new(
+        raw: &crate::StreamedSourceMetadata,
+        edit: &AudioClipEdit,
+        tempo: &hex_project::TempoMap,
+        cancel: &AtomicBool,
+    ) -> Result<Self, Invalid> {
+        if !raw.key().is_raw() || raw.project_rate() != tempo.sample_rate() {
+            return Err(Invalid(
+                "repitch requirement needs a raw source at the project rate",
+            ));
+        }
+        let (map, law) = streamed_repitch_map(edit, tempo, raw.playback_frames(), cancel)?;
+        Ok(Self {
+            inner: Arc::new(StreamedRepitchRequirementInner {
+                raw: raw.clone(),
+                map,
+                law,
+            }),
+        })
+    }
+    /// Derive a catalog-specific key only for the same verified file facts.
+    pub fn metadata_for(
+        &self,
+        raw: &crate::StreamedSourceMetadata,
+    ) -> Result<crate::StreamedSourceMetadata, Invalid> {
+        let expected = &self.inner.raw;
+        if !raw.key().is_raw()
+            || raw.key().asset() != expected.key().asset()
+            || raw.source_rate() != expected.source_rate()
+            || raw.project_rate() != expected.project_rate()
+            || raw.source_frames() != expected.source_frames()
+            || raw.playback_frames() != expected.playback_frames()
+            || raw.conversion_version() != expected.conversion_version()
+            || raw.fingerprint() != expected.fingerprint()
+        {
+            return Err(Invalid("repitch requirement source facts differ"));
+        }
+        raw.with_repitch(&self.inner.map, self.inner.law)
+    }
+    pub fn asset(&self) -> hex_project::AssetId {
+        self.inner.raw.key().asset()
+    }
+    pub fn map(&self) -> &hex_warp::TimeMap {
+        &self.inner.map
+    }
+    /// Copy the bounded map for an independent worker without infallible allocation.
+    pub fn try_owned_map(&self) -> Result<hex_warp::TimeMap, Invalid> {
+        let source = self.inner.map.segments();
+        let end = source
+            .last()
+            .ok_or(Invalid("empty repitch map"))?
+            .output_end;
+        let mut segments = Vec::new();
+        segments
+            .try_reserve_exact(source.len())
+            .map_err(|_| Invalid("repitch map reservation failed"))?;
+        segments.extend_from_slice(source);
+        hex_warp::TimeMap::new_streamed(segments, end).map_err(warp_error)
+    }
+    pub fn law(&self) -> hex_warp::Resampler {
+        self.inner.law
+    }
+    /// Bytes retained by the shared map owner, excluding the caller's handle/vector.
+    pub fn retained_bytes(&self) -> Option<usize> {
+        std::mem::size_of::<StreamedRepitchRequirementInner>()
+            .checked_add(2 * std::mem::size_of::<usize>())?
+            .checked_add(self.inner.map.backing_bytes()?)
+    }
+}
+
+/// Immutable control-owned handles to Re-Pitch source requirements.
+/// The set is factual metadata, not a worker, page lease or publication owner.
+#[derive(Clone, Default)]
+pub struct StreamedRepitchRequirements {
+    requirements: Vec<StreamedRepitchRequirement>,
+}
+impl StreamedRepitchRequirements {
+    pub fn new(requirements: Vec<StreamedRepitchRequirement>) -> Result<Self, Invalid> {
+        if requirements.len() > hex_project::MAX_CLIPS
+            || requirements.capacity() > hex_project::MAX_CLIPS
+        {
+            return Err(Invalid("repitch requirement count exceeded"));
+        }
+        Ok(Self { requirements })
+    }
+    pub fn try_push(&mut self, requirement: StreamedRepitchRequirement) -> Result<(), Invalid> {
+        if self.requirements.len() >= hex_project::MAX_CLIPS {
+            return Err(Invalid("repitch requirement count exceeded"));
+        }
+        self.requirements
+            .try_reserve_exact(1)
+            .map_err(|_| Invalid("repitch requirement reservation failed"))?;
+        if self.requirements.capacity() > hex_project::MAX_CLIPS {
+            return Err(Invalid("repitch requirement capacity exceeded"));
+        }
+        self.requirements.push(requirement);
+        Ok(())
+    }
+    pub fn handle_capacity_bytes(&self) -> Option<usize> {
+        self.requirements
+            .capacity()
+            .checked_mul(std::mem::size_of::<StreamedRepitchRequirement>())
+    }
+    pub fn requirements(&self) -> &[StreamedRepitchRequirement] {
+        &self.requirements
+    }
+    pub(crate) fn visit<'a>(
+        &'a self,
+        ledger: &mut crate::AudioRootStorageLedger<'a>,
+    ) -> Result<(), crate::AudioStorageError> {
+        use crate::audio_storage::{Location, Owner};
+        ledger.bytes(
+            Owner::exclusive(self),
+            Location("repitch-requirement-set", 0),
+            std::mem::size_of::<Self>(),
+        )?;
+        ledger.vec(&self.requirements)?;
+        for requirement in &self.requirements {
+            ledger.bytes(
+                Owner::shared(&requirement.inner),
+                Location("repitch-requirement-map", 0),
+                requirement
+                    .retained_bytes()
+                    .ok_or(crate::AudioStorageError::Overflow)?,
+            )?;
+        }
+        Ok(())
+    }
 }
 
 pub const MAX_CACHED_DERIVED_BYTES: usize = 256 * 1024 * 1024;
@@ -781,6 +1065,75 @@ impl AudioTransformPreparation {
             return direct_clip(clip, source).map(Some);
         };
         edit.validate(clip, tempo_map, asset.playback_frames())?;
+        if edit.is_long_inactive_warp_root(clip.duration()) {
+            return direct_clip(clip, source).map(Some);
+        }
+        if let PreparedAudioSourceRef::StreamedWithPitch(raw, derived_sources) = source
+            && let Ok((map, law)) =
+                streamed_repitch_map(edit, tempo_map, raw.playback_frames(), &self.shutdown)
+        {
+            let expected = raw.with_repitch(&map, law)?;
+            let derived = derived_sources
+                .get(&expected.key())
+                .filter(|candidate| candidate.as_ref() == &expected)
+                .ok_or(Invalid("matching repitch stream is unavailable"))?;
+            let (_, _, view_start, view_end) = edit.projected_domain(tempo_map)?;
+            return Clip::streamed_region(
+                Arc::clone(derived),
+                clip.start(),
+                clip.duration(),
+                view_start,
+                view_end - view_start,
+                false,
+            )
+            .map(|prepared| Some(prepared.with_gain(clip.gain())));
+        }
+        if let PreparedAudioSourceRef::StreamedWithPitch(raw, derived_sources) = source
+            && let Ok(root) = streamed_granular_root(raw, edit, tempo_map, &self.shutdown)
+        {
+            let expected = root.metadata();
+            let derived = derived_sources
+                .get(&expected.key())
+                .filter(|candidate| candidate.as_ref() == expected)
+                .ok_or(Invalid("matching granular stream is unavailable"))?;
+            let (_, _, view_start, view_end) = edit.projected_domain(tempo_map)?;
+            return Clip::streamed_region(
+                Arc::clone(derived),
+                clip.start(),
+                clip.duration(),
+                view_start,
+                view_end - view_start,
+                false,
+            )
+            .map(|prepared| Some(prepared.with_gain(clip.gain())));
+        }
+        if let PreparedAudioSourceRef::StreamedWithPitch(raw, pitched) = source
+            && edit.is_plain_pitch_capture(clip)
+            && clip.source_length() == asset.playback_frames()
+        {
+            let expected =
+                raw.with_plain_pitch(edit.domain.pitch_cents, edit.domain.warp_resampler)?;
+            let derived = pitched
+                .get(&expected.key())
+                .filter(|candidate| candidate.as_ref() == &expected)
+                .ok_or(Invalid("matching pitched stream is unavailable"))?;
+            return Clip::streamed_region_with_fade(
+                Arc::clone(derived),
+                clip.start(),
+                clip.duration(),
+                0,
+                clip.duration(),
+                false,
+                edit.domain.fade,
+            )
+            .map(|prepared| Some(prepared.with_gain(clip.gain())));
+        }
+        let source = match source {
+            PreparedAudioSourceRef::StreamedWithPitch(raw, _) => {
+                PreparedAudioSourceRef::Streamed(raw)
+            }
+            source => source,
+        };
         if edit.content_view.is_some() {
             if let PreparedAudioSourceRef::Streamed(source) = source
                 && let Some((offset, length)) = edit.plain_reversed_source(clip)
@@ -837,7 +1190,8 @@ impl AudioTransformPreparation {
                     length,
                     domain.looping,
                 )?,
-                PreparedAudioSourceRef::Streamed(source) => Clip::streamed_region(
+                PreparedAudioSourceRef::Streamed(source)
+                | PreparedAudioSourceRef::StreamedWithPitch(source, _) => Clip::streamed_region(
                     Arc::clone(source),
                     clip.start(),
                     clip.duration(),
@@ -913,7 +1267,8 @@ fn direct_clip(
             clip.looping(),
             clip.fade(),
         )?,
-        PreparedAudioSourceRef::Streamed(source) => Clip::streamed_region_with_fade(
+        PreparedAudioSourceRef::Streamed(source)
+        | PreparedAudioSourceRef::StreamedWithPitch(source, _) => Clip::streamed_region_with_fade(
             Arc::clone(source),
             clip.start(),
             clip.duration(),
@@ -944,7 +1299,7 @@ mod tests;
 /// Bounded growable map boundaries, two maps, attack/gain points, group bindings
 /// and identities, tempo/projection copies and fixed wrappers are independent of
 /// PCM and of the warp library's separate scratch ceiling.
-pub(crate) fn native_metadata_workspace_bytes() -> Option<usize> {
+pub fn native_metadata_workspace_bytes() -> Option<usize> {
     use std::mem::size_of;
     let maps = hex_warp::MAX_MAP_SEGMENTS.checked_mul(
         4usize

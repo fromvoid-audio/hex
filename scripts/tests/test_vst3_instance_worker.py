@@ -200,6 +200,30 @@ class NativeInstanceTests(unittest.TestCase):
         if controller:
             self.assertEqual(state[128:], b"HXCT" + struct.pack("<I", 7))
 
+    def test_clean_stop_retires_without_switching_off_inactive_buses(self):
+        # Both fixtures refuse any bus-off call after stopping; the instrument
+        # also has an active MIDI event input. Termination itself must succeed.
+        for variant, channels in [(151, (2, 2)), (152, (0, 2))]:
+            with self.subTest(variant=variant):
+                session = self.session(variant=variant, channels=channels)
+                if channels[0]:
+                    self.ready(session, controller=True)
+                else:
+                    magic, ready = session.message()
+                    self.assertEqual(magic, b"HXVIRD05")
+                    self.assertEqual(struct.unpack_from("<H4Q", ready), (1, *BINDING))
+                session.render(8)
+                self.assertEqual(self.terminal(session, 0, message=session.stop())[5:7], (1, 8))
+
+    def test_failed_stop_still_refuses_termination_and_unload(self):
+        # These failures occur before the clean-stop retirement route.
+        for variant in (58, 100):
+            with self.subTest(variant=variant):
+                session = self.session(variant=variant)
+                self.ready(session, controller=True)
+                session.render(8)
+                self.terminal(session, 10, closed=False, unloaded=False, message=session.stop())
+
     def test_actual_parameter_step_ramp_and_feedback_across_variable_sdk_blocks(self):
         session = self.session(variant=37)
         self.ready(session, controller=True)
@@ -1382,9 +1406,12 @@ class NativeInstanceTests(unittest.TestCase):
             bad = base.copy()
             struct.pack_into("<QQ", bad, 48, graph, epoch)
             cases.append(bytes(bad))
-        bad = base.copy()
-        bad[10] = 3
-        cases.append(bytes(bad))
+        for mode in (3, 4, 5):
+            bad = base.copy()
+            # Mixed modes require the unknown word to remain reserved zero;
+            # this 77/91 payload is malformed for either. Mode5 is unsupported.
+            bad[10] = mode
+            cases.append(bytes(bad))
         for packet in cases:
             with self.subTest(packet=packet.hex()):
                 session = self.session()

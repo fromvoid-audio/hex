@@ -4,6 +4,8 @@
 //! application-only completion witness; no CPAL/OS stop success is asserted.
 use crate::native_callback_owner::{ErrorCallbackOwner, Guard, NativeCallbackOwner};
 
+pub use crate::input_capture::fixture::{InputObserver, monitor_only_input, monitored_input};
+
 pub struct HeadlessBackend {
     data: Option<Guard<NativeCallbackOwner>>,
     errors: Option<Guard<ErrorCallbackOwner>>,
@@ -60,6 +62,35 @@ impl HeadlessBackend {
         });
         result
     }
+    /// Render and confirm one output timing packet using a synthetic common
+    /// clock. This proves no native timestamp, device or playback behavior.
+    pub fn render_recording_fixture(
+        &mut self,
+        output: &mut [hex_engine::Frame],
+        offset: u32,
+    ) -> Result<(), hex_engine::Invalid> {
+        let owner = self
+            .data
+            .as_mut()
+            .and_then(Guard::owner_mut)
+            .ok_or(hex_engine::Invalid("headless backend is closed"))?;
+        let mut result = Ok(());
+        owner.run(|callback, _| {
+            callback.begin_block();
+            result = callback.render(output);
+            callback.set_sample_recording_output_clock(Some(
+                crate::sample_recording::OutputClock {
+                    playback: cpal::StreamInstant::new(50, 0),
+                    offset_frames: offset,
+                    graph_latency_frames: None,
+                    origin: crate::sample_recording::OutputClockOrigin::CoreAudioHostTime,
+                },
+            ));
+            callback.finish_sample_recording(result.is_ok());
+        });
+        result
+    }
+
     /// Simulate a direct stereo f32 host sink through the actual native final
     /// conversion/receipt boundary. Caller buffers stay borrowed; no owner escapes.
     /// This is headless sink delivery, not an OS callback or physical playback.
@@ -574,6 +605,91 @@ mod tests {
             .render_direct(&mut frames, &mut host)
             .unwrap();
         assert_eq!(host, [0.5; 16]);
+    }
+
+    #[test]
+    fn client_preview_windows_preserve_order_backpressure_and_owner_custody() {
+        use crate::sample_preview::{Phase, WindowRefusalReason};
+
+        let _serial = crate::prepared::candidate_tests::serial();
+        let (mut output, mut backend) = open_after_retirement(48_000, false).unwrap();
+        let mut client = output.take_client().unwrap();
+        let pcm = |value, frames| hex_engine::Audio::new(48_000, vec![[value; 2]; frames]).unwrap();
+        let token = client.preview_request().unwrap();
+        client.preview_begin_windows(token, 0, 5).unwrap();
+        client
+            .preview_publish_window(token, 0, pcm(0.25, 3))
+            .unwrap();
+        let next = pcm(0.5, 2);
+        let owner = next.frames().as_ptr();
+        let refused = client.preview_publish_window(token, 3, next).unwrap_err();
+        assert_eq!(refused.reason, WindowRefusalReason::Full);
+        assert_eq!(refused.audio.frames().as_ptr(), owner);
+
+        let mut first = [[0.0; 2]; 1];
+        let measured = allocation_counter::measure(|| backend.render(&mut first).unwrap());
+        assert_eq!(
+            (
+                measured.count_total,
+                measured.bytes_total,
+                measured.count_current,
+                measured.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        assert_eq!(first, [[0.25; 2]; 1]);
+        client
+            .preview_publish_window(token, 3, refused.audio)
+            .unwrap();
+        let mut rest = [[0.0; 2]; 4];
+        let measured = allocation_counter::measure(|| backend.render(&mut rest).unwrap());
+        assert_eq!(
+            (
+                measured.count_total,
+                measured.bytes_total,
+                measured.count_current,
+                measured.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        assert_eq!(rest, [[0.25; 2], [0.25; 2], [0.5; 2], [0.5; 2]]);
+        let snapshot = client.preview_snapshot().unwrap();
+        assert_eq!(
+            (snapshot.phase, snapshot.frame, snapshot.frames),
+            (Phase::Finished, 5, 5)
+        );
+
+        client.preview_cancel();
+        let stale = pcm(0.75, 1);
+        let owner = stale.frames().as_ptr();
+        let refused = client.preview_publish_window(token, 0, stale).unwrap_err();
+        assert_eq!(refused.reason, WindowRefusalReason::Invalid);
+        assert_eq!(refused.audio.frames().as_ptr(), owner);
+        let mut silence = [[1.0; 2]; 1];
+        backend.render(&mut silence).unwrap();
+        assert_eq!(silence, [[0.0; 2]; 1]);
+
+        let token = client.preview_request().unwrap();
+        client.preview_begin_windows(token, 0, 1).unwrap();
+        backend.report_device_error().unwrap();
+        let unavailable = pcm(0.75, 1);
+        let owner = unavailable.frames().as_ptr();
+        let refused = client
+            .preview_publish_window(token, 0, unavailable)
+            .unwrap_err();
+        assert_eq!(refused.reason, WindowRefusalReason::Invalid);
+        assert_eq!(refused.audio.frames().as_ptr(), owner);
+        client.close();
+        assert!(client.preview_begin_windows(token, 0, 1).is_err());
+        let owner = refused.audio.frames().as_ptr();
+        let closed = client
+            .preview_publish_window(token, 0, refused.audio)
+            .unwrap_err();
+        assert_eq!(closed.reason, WindowRefusalReason::Invalid);
+        assert_eq!(closed.audio.frames().as_ptr(), owner);
+        drop(client);
+        backend.close();
+        drop(output);
     }
 
     #[test]

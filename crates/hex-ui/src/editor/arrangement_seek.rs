@@ -58,6 +58,10 @@ impl SeekAudioControl for Client {
 #[derive(Clone, Copy)]
 pub(super) enum SeekKind {
     Fresh,
+    CommittedLocator {
+        source: hex_audio::prepared::AppliedAudioSource,
+        quantization: Option<hex_engine::LaunchQuantization>,
+    },
     History,
     Section(hex_session::arrangement_seek::SectionLaunch),
     Locator(hex_engine::LaunchQuantization),
@@ -74,6 +78,7 @@ impl SeekKind {
         match self {
             Self::Section(section) => Some(section.quantization),
             Self::Locator(quantization) => Some(quantization),
+            Self::CommittedLocator { quantization, .. } => quantization,
             _ => None,
         }
     }
@@ -81,14 +86,20 @@ impl SeekKind {
     fn preparation_status(self) -> &'static str {
         match self {
             Self::Section(_) => "preparing section launch",
-            Self::Locator(_) => "preparing locator launch",
+            Self::Locator(_)
+            | Self::CommittedLocator {
+                quantization: Some(_),
+                ..
+            } => "preparing locator launch",
             _ => "preparing arrangement seek",
         }
     }
 
     pub(super) fn mode(self) -> ArrangementSeekMode {
         match self {
-            Self::Fresh | Self::Locator(_) => ArrangementSeekMode::Interactive,
+            Self::Fresh | Self::CommittedLocator { .. } | Self::Locator(_) => {
+                ArrangementSeekMode::Interactive
+            }
             Self::History => ArrangementSeekMode::HistoryPreservingInteractive,
             Self::Section(section) => section.mode(),
         }
@@ -420,6 +431,27 @@ impl EditorView {
             }
     }
 
+    pub(super) fn pending_seek_source_is_current(&self, pending: &PendingSeek) -> bool {
+        match pending.kind {
+            SeekKind::CommittedLocator { source, .. } => {
+                // A fast callback may install the candidate before the worker's
+                // result reports its audio revision. Keep only the pending scalar
+                // correlation in that interval; the callback fence still decides
+                // whether the worker's candidate can actually be installed.
+                (pending.stage == SeekStage::Preparing
+                    && self.committed_locator_seek_context_is_current(source))
+                    || self.committed_locator_seek_source_is_current(source)
+                    || self.native_seek_applied_source(pending).is_some()
+            }
+            _ => self.seek_source_is_current(
+                pending.project_generation,
+                pending.project_revision,
+                pending.device_preview_identity,
+                pending.recovery_generation,
+            ),
+        }
+    }
+
     pub(super) fn seek_publication_is_current(
         &self,
         request_id: u64,
@@ -437,12 +469,8 @@ impl EditorView {
                 // promotion proves which runtime was installed or returned.
                 && matches!(pending.stage, SeekStage::Published { .. })
                 && pending.device_preview_identity == preview
-                && (self.native_seek_applied_source(pending).is_some() || self.seek_source_is_current(
-                    pending.project_generation,
-                    pending.project_revision,
-                    preview,
-                    pending.recovery_generation,
-                ))
+                && (self.native_seek_applied_source(pending).is_some()
+                    || self.pending_seek_source_is_current(pending))
         }) || (preview.is_none()
             && self.recovery.prepared_request() == Some(request_id)
             && self.state.as_ref().is_some_and(|state| {
@@ -467,7 +495,12 @@ impl EditorView {
             || pending.native_output_identity.is_none()
             || pending.native_output_identity != audio.control.output_identity()
             || pending.project_generation != self.project_generation
-            || self.state.as_ref()?.revision != pending.project_revision
+            || match pending.kind {
+                SeekKind::CommittedLocator { source, .. } => self
+                    .committed_locator_seek_ack_view(source)
+                    .is_none_or(|state| state.revision != pending.project_revision),
+                _ => self.state.as_ref()?.revision != pending.project_revision,
+            }
             || audio.control.status()?.applied_revision.load(Acquire) != audio_revision
             || pending
                 .device_preview_identity
@@ -541,6 +574,42 @@ impl EditorView {
 
     pub(super) fn request_prepared_seek(&mut self, destination_frame: u64, start_playing: bool) {
         self.request_prepared_seek_with_kind(destination_frame, start_playing, SeekKind::Fresh);
+    }
+
+    /// Start only from the exact applied graph for a complete committed locator view.
+    pub(super) fn request_committed_locator_seek(
+        &mut self,
+        destination_frame: u64,
+        source: hex_audio::prepared::AppliedAudioSource,
+        quantization: Option<hex_engine::LaunchQuantization>,
+    ) {
+        let Some(state) = self.committed_locator_seek_view(source) else {
+            return;
+        };
+        if state
+            .project
+            .arrangement_locators()
+            .binary_search_by_key(&destination_frame, |locator| locator.frame())
+            .is_err()
+        {
+            return;
+        }
+        let intent = SeekIntent {
+            kind: SeekKind::CommittedLocator {
+                source,
+                quantization,
+            },
+            recovery_generation: None,
+            destination_frame,
+            start_playing: true,
+            project_generation: self.project_generation,
+            project_revision: state.revision,
+            prepared_revision: None,
+            device_preview_identity: None,
+        };
+        self.wake_poll();
+        self.latency_rebuild = None;
+        self.admit_prepared_seek(intent, source.audio_revision);
     }
 
     pub(super) fn request_history_playback(&mut self, frame: u64) {
@@ -723,6 +792,30 @@ impl EditorView {
         mut intent: super::arrangement_seek::SeekIntent,
         mut audio_revision: u64,
     ) {
+        if let SeekKind::CommittedLocator { source, .. } = intent.kind {
+            let fence = self
+                .committed_locator_seek_source_is_current(source)
+                .then(|| {
+                    let state = self.committed_locator_seek_view(source)?;
+                    let audio = self.audio.as_ref()?;
+                    super::arrangement_seek::capture_arrangement_fence(
+                        &audio.control,
+                        &state.project,
+                        source.audio_revision,
+                    )
+                })
+                .flatten();
+            // A Stop may have landed while the fence was captured. The
+            // callback separately checks later commands and priority Stop.
+            if let Some(fence) =
+                fence.filter(|_| self.committed_locator_seek_source_is_current(source))
+            {
+                self.admit_worker_owned_seek(intent, fence);
+            } else {
+                self.error = Some("arrangement seek source is no longer available".into());
+            }
+            return;
+        }
         if !self.seek_context_is_current(
             intent.project_generation,
             intent.project_revision,
@@ -827,6 +920,7 @@ impl EditorView {
             section: intent.kind.section(),
             locator_quantization: match intent.kind {
                 SeekKind::Locator(quantization) => Some(quantization),
+                SeekKind::CommittedLocator { quantization, .. } => quantization,
                 _ => None,
             },
             fence: hex_session::service::ResidentFreshRuntimeFence {
@@ -835,6 +929,7 @@ impl EditorView {
                 route_generation: fence.route_state_generation(),
                 admitted_command_ticket: fence.admitted_command_ticket(),
                 output_fault_epoch: fence.output_fault_epoch(),
+                consumed_stop_generation: fence.consumed_stop_generation(),
             },
             device_preview: intent.device_preview_identity,
             tuning_preview: None,
@@ -884,7 +979,11 @@ impl EditorView {
                 pending.stage = SeekStage::Published { audio_revision };
                 match pending.kind {
                     SeekKind::Section(_) => self.status = "section launch queued".into(),
-                    SeekKind::Locator(_) => self.status = "locator launch queued".into(),
+                    SeekKind::Locator(_)
+                    | SeekKind::CommittedLocator {
+                        quantization: Some(_),
+                        ..
+                    } => self.status = "locator launch queued".into(),
                     _ => {}
                 }
                 self.recovery
@@ -971,15 +1070,11 @@ impl EditorView {
 
     pub(super) fn tick_prepared_arrangement_seek(&mut self) -> bool {
         let mut changed = self.poll_worker_owned_seek();
-        if let Some(pending) = self.prepared_seek.as_ref().filter(|pending| {
-            !pending.cancelled
-                && !self.seek_source_is_current(
-                    pending.project_generation,
-                    pending.project_revision,
-                    pending.device_preview_identity,
-                    pending.recovery_generation,
-                )
-        }) {
+        if let Some(pending) = self
+            .prepared_seek
+            .as_ref()
+            .filter(|pending| !pending.cancelled && !self.pending_seek_source_is_current(pending))
+        {
             // Retain intent only for another sequence of this SAME held
             // gesture. Terminal, replacement, and other owners never restart it.
             let retry = pending.device_preview_identity.and_then(|previous| {
@@ -1420,7 +1515,11 @@ pub(super) fn resolve_prepared_seek_terminal(
     } else if !cancelled {
         *status = match kind {
             SeekKind::Section(_) => "section launch applied",
-            SeekKind::Locator(_) => "locator launch applied",
+            SeekKind::Locator(_)
+            | SeekKind::CommittedLocator {
+                quantization: Some(_),
+                ..
+            } => "locator launch applied",
             _ => "cursor ready",
         }
         .into();

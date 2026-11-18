@@ -37,7 +37,153 @@ pub struct PitchWindow {
     bank: Bandlimited,
 }
 
+/// Bounded, non-looping Re-Pitch reconstruction at complete-map coordinates.
+/// The caller owns source identity and supplies the requested source halo.
+/// Construction and rendering are control/worker operations, not callback work.
+pub struct RepitchWindow {
+    source_frames: u64,
+    map: TimeMap,
+    bank: Bandlimited,
+}
+
+impl RepitchWindow {
+    /// Prepare the same versioned filter and segment rates as resident Re-Pitch.
+    pub fn new(
+        source_frames: u64,
+        map: TimeMap,
+        resampler: Resampler,
+        cancel: &mut dyn FnMut() -> bool,
+    ) -> Result<Self, Error> {
+        if source_frames == 0
+            || source_frames > (1_u64 << 36)
+            || map.segments.capacity() > MAX_MAP_SEGMENTS
+        {
+            return Err(Error::Invalid("invalid repitch source extent"));
+        }
+        map.validate_stretch(Mode::RePitch, 0)?;
+        let mut work = Work {
+            cancel,
+            used: 0,
+            limit: MAX_WORK_UNITS,
+            scratch: 0,
+            base_scratch: 0,
+            resampler,
+        };
+        work.check(0)?;
+        let bank = Bandlimited::new(map.rate_at(0), &mut work)?;
+        Ok(Self {
+            source_frames,
+            map,
+            bank,
+        })
+    }
+
+    /// Maximum filter payload and actual retained backing capacities for a worker reservation.
+    pub const fn filter_reservation_bytes(resampler: Resampler) -> usize {
+        bank_bytes(resampler)
+    }
+    pub fn filter_backing_bytes(&self) -> Option<usize> {
+        self.bank
+            .coefficients
+            .capacity()
+            .checked_mul(std::mem::size_of::<f64>())
+    }
+    pub fn map_backing_bytes(&self) -> Option<usize> {
+        self.map
+            .segments
+            .capacity()
+            .checked_mul(std::mem::size_of::<MapSegment>())
+    }
+
+    /// Return a conservative halo for at most 4096 output frames. Positions
+    /// outside the complete source are zero, just as in resident rendering.
+    pub fn required_source_range(
+        &self,
+        output_start: u64,
+        count: usize,
+    ) -> Result<std::ops::Range<u64>, Error> {
+        if count == 0 || count > 4096 {
+            return Err(Error::Invalid("invalid repitch window length"));
+        }
+        let output_extent = self
+            .map
+            .segments
+            .last()
+            .ok_or(Error::Invalid("empty audio map"))?
+            .output_end;
+        let end = output_start
+            .checked_add(count as u64)
+            .filter(|end| *end <= output_extent)
+            .ok_or(Error::Invalid("repitch window exceeds output extent"))?;
+        let first = self
+            .map
+            .position_q32(i128::from(output_start))?
+            .div_euclid(Q32);
+        let last = self.map.position_q32(i128::from(end - 1))?.div_euclid(Q32);
+        let half = match self.bank.resampler {
+            Resampler::V1 => TAPS / 2,
+            Resampler::V2 => V2_MAX_TAPS / 2,
+        } as i128;
+        let limit = i128::from(self.source_frames);
+        Ok((first - (half - 1)).clamp(0, limit) as u64..(last + half + 1).clamp(0, limit) as u64)
+    }
+
+    /// Render an exact output window from its requested halo. Arbitrary window
+    /// order is supported; cancellation may leave output partially written.
+    pub fn render(
+        &mut self,
+        output_start: u64,
+        source_start: u64,
+        source: &[Frame],
+        output: &mut [Frame],
+        cancel: &mut dyn FnMut() -> bool,
+    ) -> Result<(), Error> {
+        let range = self.required_source_range(output_start, output.len())?;
+        if source_start != range.start || source.len() as u64 != range.end - range.start {
+            return Err(Error::Invalid("incomplete repitch source window"));
+        }
+        let mut work = Work {
+            cancel,
+            used: 0,
+            limit: MAX_WORK_UNITS,
+            scratch: 0,
+            base_scratch: 0,
+            resampler: self.bank.resampler,
+        };
+        for (index, target) in output.iter_mut().enumerate() {
+            if index % 1024 == 0 {
+                work.check(1024 * V2_MAX_TAPS as u64)?;
+            }
+            let frame = output_start + index as u64;
+            let position = self.map.position_q32(i128::from(frame))?;
+            self.bank.set_rate(self.map.rate_at(frame), &mut work)?;
+            *target = finite(self.bank.sample_with(position, |at| {
+                if at < i128::from(range.start) || at >= i128::from(range.end) {
+                    return [0.0; 2];
+                }
+                let sample = source[(at - i128::from(range.start)) as usize];
+                [f64::from(sample[0]), f64::from(sample[1])]
+            }))?;
+        }
+        Ok(())
+    }
+}
+
 impl PitchWindow {
+    /// Maximum coefficient payload requested during construction for this law.
+    /// The caller must compare actual retained capacity against its reservation.
+    pub const fn filter_reservation_bytes(resampler: Resampler) -> usize {
+        bank_bytes(resampler)
+    }
+
+    /// Actual retained coefficient capacity, excluding this inline value.
+    pub fn filter_backing_bytes(&self) -> Option<usize> {
+        self.bank
+            .coefficients
+            .capacity()
+            .checked_mul(std::mem::size_of::<f64>())
+    }
+
     /// Prepare the same filter and fixed-point pitch used by resident rendering.
     pub fn new(
         source_frames: u64,
@@ -179,6 +325,11 @@ impl<'a> FrameCache<'a> {
     }
 }
 impl Bandlimited {
+    pub(super) fn backing_bytes(&self) -> Option<usize> {
+        self.coefficients
+            .capacity()
+            .checked_mul(std::mem::size_of::<f64>())
+    }
     pub(super) fn new(rate: f64, work: &mut Work<'_>) -> Result<Self, Error> {
         let resampler = work.resampler;
         work.scratch(bank_bytes(resampler))?;
@@ -200,6 +351,14 @@ impl Bandlimited {
             return Err(Error::Invalid("invalid resampling rate"));
         }
         if self.rate.to_bits() == rate.to_bits() {
+            return Ok(());
+        }
+        // Both reconstruction laws use the same full-band coefficients for
+        // every positive rate at or below unity. Keep the cancellation check
+        // at a changed segment, but do not charge work for a rebuild we skip.
+        if self.rate > 0.0 && self.rate <= 1.0 && rate <= 1.0 {
+            work.check(0)?;
+            self.rate = rate;
             return Ok(());
         }
         match self.resampler {
@@ -297,7 +456,11 @@ impl Bandlimited {
             input.frame(interval.map_or(at, |(start, end)| at.clamp(start, end)))
         })
     }
-    fn sample_with(&self, position_q32: i128, mut frame: impl FnMut(i128) -> [f64; 2]) -> [f64; 2] {
+    pub(super) fn sample_with(
+        &self,
+        position_q32: i128,
+        mut frame: impl FnMut(i128) -> [f64; 2],
+    ) -> [f64; 2] {
         let integer = position_q32.div_euclid(Q32);
         let fraction = position_q32.rem_euclid(Q32);
         if fraction == 0 && self.rate <= 1.0 {
@@ -407,6 +570,143 @@ fn bessel_i0(x: f64) -> f64 {
 mod cache_tests {
     use super::*;
     use crate::GainPoint;
+
+    fn segmented_map(rates: &[(u64, u64)], frames_per_segment: u64) -> TimeMap {
+        let mut source = 0_i128;
+        let segments = rates
+            .iter()
+            .enumerate()
+            .map(|(i, &(numerator, denominator))| {
+                let start = source;
+                source += i128::from(frames_per_segment) * i128::from(numerator) * Q32
+                    / i128::from(denominator);
+                MapSegment {
+                    output_start: i as u64 * frames_per_segment,
+                    output_end: (i as u64 + 1) * frames_per_segment,
+                    source_start_q32: start,
+                    source_end_q32: source,
+                }
+            })
+            .collect();
+        TimeMap::new_streamed(segments, rates.len() as u64 * frames_per_segment).unwrap()
+    }
+
+    #[test]
+    fn repitch_rate_changes_match_independently_rebuilt_filters() {
+        let map = segmented_map(&[(1, 2), (3, 4), (1, 1), (3, 2), (1, 2), (3, 4)], 32);
+        let source: Vec<_> = (0..512)
+            .map(|i| [(i as f32 * 0.031).sin(), (i as f32 * 0.047).cos()])
+            .collect();
+        for law in [Resampler::V1, Resampler::V2] {
+            let mut window =
+                RepitchWindow::new(source.len() as u64, map.clone(), law, &mut || false).unwrap();
+            let range = window.required_source_range(0, 192).unwrap();
+            let mut actual = [[0.0; 2]; 192];
+            window
+                .render(
+                    0,
+                    range.start,
+                    &source[range.start as usize..range.end as usize],
+                    &mut actual,
+                    &mut || false,
+                )
+                .unwrap();
+            let mut bank = None;
+            for (i, actual) in actual.iter().enumerate() {
+                if i % 32 == 0 {
+                    let mut cancel = || false;
+                    let mut work = Work {
+                        cancel: &mut cancel,
+                        used: 0,
+                        limit: MAX_WORK_UNITS,
+                        scratch: 0,
+                        base_scratch: 0,
+                        resampler: law,
+                    };
+                    bank = Some(Bandlimited::new(map.rate_at(i as u64), &mut work).unwrap());
+                }
+                let bank = bank.as_ref().unwrap();
+                let expected = finite(bank.sample_with(
+                    map.position_q32(i as i128).unwrap(),
+                    |at| {
+                        usize::try_from(at)
+                            .ok()
+                            .and_then(|at| source.get(at))
+                            .map_or([0.0; 2], |frame| [f64::from(frame[0]), f64::from(frame[1])])
+                    },
+                ))
+                .unwrap();
+                assert_eq!(*actual, expected, "law {law:?}, frame {i}");
+            }
+            // Cancellation on a changed segment must leave that segment
+            // untouched, and the same prepared window must remain reusable.
+            let mut interrupted =
+                RepitchWindow::new(source.len() as u64, map.clone(), law, &mut || false).unwrap();
+            let mut partial = [[-9.0; 2]; 192];
+            let mut checks = 0;
+            let error = interrupted
+                .render(
+                    0,
+                    range.start,
+                    &source[range.start as usize..range.end as usize],
+                    &mut partial,
+                    &mut || {
+                        checks += 1;
+                        checks == 2
+                    },
+                )
+                .unwrap_err();
+            assert_eq!(error, Error::Cancelled);
+            assert!(partial[32..].iter().all(|frame| *frame == [-9.0; 2]));
+            interrupted
+                .render(
+                    0,
+                    range.start,
+                    &source[range.start as usize..range.end as usize],
+                    &mut partial,
+                    &mut || false,
+                )
+                .unwrap();
+            assert_eq!(partial, actual);
+        }
+    }
+
+    #[test]
+    #[ignore = "explicit optimized window timing profile"]
+    fn segmented_repitch_window_profile() {
+        use std::time::Instant;
+        let rates: Vec<_> = (0..32)
+            .map(|i| if i % 2 == 0 { (1, 2) } else { (3, 4) })
+            .collect();
+        let map = segmented_map(&rates, 128);
+        let source: Vec<_> = (0..4096)
+            .map(|i| [(i as f32 * 0.013).sin(), (i as f32 * 0.017).cos()])
+            .collect();
+        let mut window =
+            RepitchWindow::new(source.len() as u64, map, Resampler::V2, &mut || false).unwrap();
+        let range = window.required_source_range(0, 4096).unwrap();
+        let source_window = &source[range.start as usize..range.end as usize];
+        let mut output = [[0.0; 2]; 4096];
+        let mut samples = Vec::new();
+        for iteration in 0..8 {
+            let start = Instant::now();
+            window
+                .render(0, range.start, source_window, &mut output, &mut || false)
+                .unwrap();
+            if iteration >= 3 {
+                samples.push(start.elapsed().as_nanos());
+            }
+        }
+        samples.sort_unstable();
+        let checksum = output
+            .iter()
+            .flatten()
+            .fold(0u64, |n, value| n.wrapping_add(u64::from(value.to_bits())));
+        eprintln!(
+            "repitch_window rate=48000 output=4096 segments=32 slopes=0.5,0.75 law=v2 warmup=3 samples=5 p50_ns={} checksum={checksum}",
+            samples[2]
+        );
+    }
 
     #[test]
     fn cached_samples_match_uncached_for_loops_edges_collisions_and_envelopes() {

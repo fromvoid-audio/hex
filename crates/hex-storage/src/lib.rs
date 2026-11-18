@@ -10,6 +10,8 @@
 //! # Does not own
 //! Does not decode PCM, construct DSP, access callback state or silently convert unsupported
 //! formats. Unsupported/malformed input refuses without rewriting the original file.
+//! Interrupted-save temporaries remain for deliberate inspection: their names and ages do not
+//! establish ownership or authorize deletion.
 pub mod automation_draft;
 mod files;
 mod journal;
@@ -29,6 +31,7 @@ mod audio_edit;
 mod extended_attributes;
 mod replacement;
 mod schema;
+#[cfg(test)]
 mod temporaries;
 pub use extended_attributes::MetadataWarning;
 pub use files::{
@@ -81,7 +84,18 @@ pub const RETAINED_RECEIVER_SCHEMA_VERSION: u32 = 68;
 /// Schema69 stores the Compressor's authored stereo sidechain source.
 pub const SIDECHAIN_SCHEMA_VERSION: u32 = 69;
 /// Newest schema this build opens; anything above it is refused as newer.
-pub const NEWEST_SCHEMA_VERSION: u32 = LONG_REVERSE_SCHEMA_VERSION;
+pub const NEWEST_SCHEMA_VERSION: u32 = LONG_INACTIVE_WARP_SCHEMA_VERSION;
+/// Schema121 stores long raw clips with retained inactive Warp settings.
+pub const LONG_INACTIVE_WARP_SCHEMA_VERSION: u32 = 121;
+/// Schema120 stores bounded long Tones/Texture roots over a valid prior document.
+/// Older readers refuse this extension; see `schema::long_granular`.
+pub const LONG_GRANULAR_SCHEMA_VERSION: u32 = 120;
+/// Full-source long pitch with its retained frame-clock fade.
+pub const LONG_PITCH_FADE_SCHEMA_VERSION: u32 = 119;
+/// Independent frame-clock audio repeat periods containing silence.
+pub const SILENT_REPEAT_SCHEMA_VERSION: u32 = 118;
+/// Exact plain pitch of full frame domains beyond the resident transform cap.
+pub const LONG_PITCH_SCHEMA_VERSION: u32 = 117;
 /// Exact plain reversals of frame domains beyond the resident transform cap.
 pub const LONG_REVERSE_SCHEMA_VERSION: u32 = 116;
 /// Adds ordered pairs of device automation points at the same beat.
@@ -216,6 +230,7 @@ fn contains_extended_frame_events(project: &Project) -> bool {
 }
 
 /// Schema [`encode`] writes for `project`:
+/// [`LONG_PITCH_SCHEMA_VERSION`] for exact long plain pitch,
 /// [`LONG_REVERSE_SCHEMA_VERSION`] for an exact long plain reversal,
 /// [`VST3_AUTOMATION_SCHEMA_VERSION`] when VST3 lanes are present,
 /// [`SAMPLE_RATE_MODE_SCHEMA_VERSION`] when the mode is Follow Interface,
@@ -251,10 +266,30 @@ fn contains_extended_frame_events(project: &Project) -> bool {
 /// Free-running Steps uses schema107, or schema108 alongside those touches.
 /// Arrangement Steps uses schema109, or schema110 alongside those touches.
 /// Mutable Operator banks use schema111, or schema112 alongside those touches.
+/// Schema120 wraps a valid prior document and restores complete long granular edits.
+/// Schema119 wraps a prior document for full-source long pitch with a fade.
+/// Schema118 wraps the appropriate prior document for independent audio repeat periods.
+/// Schema117 wraps the appropriate prior document for exact full-source long pitch.
 /// Schema116 wraps the appropriate prior document for exact long plain reversals.
 /// Schema115 wraps the appropriate prior document only when an authored device
 /// lane has two points at one beat. Projects with unique beats retain their format.
 pub fn schema_version_for(project: &Project) -> u32 {
+    use schema::long_granular::{self, LongWarpSchema};
+    if long_granular::contains(project, LongWarpSchema::Inactive) {
+        return LONG_INACTIVE_WARP_SCHEMA_VERSION;
+    }
+    if long_granular::contains(project, LongWarpSchema::Granular) {
+        return LONG_GRANULAR_SCHEMA_VERSION;
+    }
+    if schema::long_pitch_fade::contains(project) {
+        return LONG_PITCH_FADE_SCHEMA_VERSION;
+    }
+    if schema::silent_repeat::contains(project) {
+        return SILENT_REPEAT_SCHEMA_VERSION;
+    }
+    if schema::long_pitch::contains(project) {
+        return LONG_PITCH_SCHEMA_VERSION;
+    }
     if schema::long_reverse::contains(project) {
         return LONG_REVERSE_SCHEMA_VERSION;
     }
@@ -527,6 +562,22 @@ impl From<serde_json::Error> for StorageError {
 /// but the codec materializes metadata and is not a streaming or OOM-proof reader.
 /// Nonempty serial units use schema80; flat projects retain their prior layout.
 pub fn encode(project: &Project) -> Result<Vec<u8>, StorageError> {
+    use schema::long_granular::{self, LongWarpSchema};
+    if long_granular::contains(project, LongWarpSchema::Inactive) {
+        return long_granular::encode(project, LongWarpSchema::Inactive);
+    }
+    if long_granular::contains(project, LongWarpSchema::Granular) {
+        return long_granular::encode(project, LongWarpSchema::Granular);
+    }
+    if schema::long_pitch_fade::contains(project) {
+        return schema::long_pitch_fade::encode(project);
+    }
+    if schema::silent_repeat::contains(project) {
+        return schema::silent_repeat::encode(project);
+    }
+    if schema::long_pitch::contains(project) {
+        return schema::long_pitch::encode(project);
+    }
     if schema::long_reverse::contains(project) {
         return schema::long_reverse::encode(project);
     }
@@ -856,6 +907,7 @@ fn decode_base(bytes: &[u8]) -> Result<Project, StorageError> {
 }
 
 fn decode_impl(bytes: &[u8], inside_envelope: bool) -> Result<Project, StorageError> {
+    use schema::long_granular::{self, LongWarpSchema};
     #[derive(serde::Deserialize)]
     struct CurrentHeader<'a> {
         format: &'a str,
@@ -864,6 +916,21 @@ fn decode_impl(bytes: &[u8], inside_envelope: bool) -> Result<Project, StorageEr
     let header: CurrentHeader<'_> = serde_json::from_slice(bytes)?;
     if header.format != "hex-project" {
         return Err(StorageError::Invalid("unsupported project format"));
+    }
+    if header.version == LONG_INACTIVE_WARP_SCHEMA_VERSION && !inside_envelope {
+        return long_granular::decode(bytes, LongWarpSchema::Inactive);
+    }
+    if header.version == LONG_GRANULAR_SCHEMA_VERSION && !inside_envelope {
+        return long_granular::decode(bytes, LongWarpSchema::Granular);
+    }
+    if header.version == LONG_PITCH_FADE_SCHEMA_VERSION && !inside_envelope {
+        return schema::long_pitch_fade::decode(bytes);
+    }
+    if header.version == SILENT_REPEAT_SCHEMA_VERSION && !inside_envelope {
+        return schema::silent_repeat::decode(bytes);
+    }
+    if header.version == LONG_PITCH_SCHEMA_VERSION && !inside_envelope {
+        return schema::long_pitch::decode(bytes);
     }
     if header.version == LONG_REVERSE_SCHEMA_VERSION && !inside_envelope {
         return schema::long_reverse::decode(bytes);
@@ -984,6 +1051,26 @@ fn decode_impl(bytes: &[u8], inside_envelope: bool) -> Result<Project, StorageEr
             "unsupported older project schema; open a copy with the hex build that saved it and retain the original for recovery",
         )),
     }?;
+    if long_granular::contains(&project, LongWarpSchema::Inactive) {
+        return Err(StorageError::Invalid(
+            "long inactive warp roots require their current project schema",
+        ));
+    }
+    if long_granular::contains(&project, LongWarpSchema::Granular) {
+        return Err(StorageError::Invalid(
+            "long granular roots require their current project schema",
+        ));
+    }
+    if schema::long_pitch_fade::contains(&project) {
+        return Err(StorageError::Invalid(
+            "long pitch with fade requires its current project schema",
+        ));
+    }
+    if schema::long_pitch::contains(&project) {
+        return Err(StorageError::Invalid(
+            "long plain pitch requires its current project schema",
+        ));
+    }
     if schema::long_reverse::contains(&project) {
         return Err(StorageError::Invalid(
             "long plain reversal requires its current project schema",

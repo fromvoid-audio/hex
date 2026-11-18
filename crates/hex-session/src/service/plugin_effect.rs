@@ -1,7 +1,10 @@
 //! Canonical worker's explicit plugin insertion request, not native custody.
 use super::*;
 pub use hex_lattice_contract::NativeDeviceState;
-use std::{path::Component, sync::atomic::AtomicU8};
+use std::{
+    path::Component,
+    sync::{Mutex, PoisonError, atomic::AtomicU8},
+};
 
 /// Copied catalog identity. Filesystem, helper and native class revalidation
 /// belong to the injected audio owner before it returns a captured state.
@@ -109,7 +112,7 @@ impl PluginEffectDestination {
     }
 }
 
-/// Per-request cancellation only, following the existing export/import atomic
+/// Per-request intent and cancellation, following the existing export/import atomic
 /// admission pattern. It owns no native token, descriptor, source or endpoint.
 /// Cancellation can win until final publication admission begins.
 #[derive(Debug, Default)]
@@ -117,15 +120,58 @@ pub struct PluginEffectControl {
     // 0 preparing, 1 cancelled, 2 admitting, 3 finished, 4 finished after cancellation.
     phase: AtomicU8,
     claimed: AtomicBool,
+    open_editor: bool,
+    // Held only by editor/worker control code during the bounded receipt update.
+    install_receipt: Mutex<Option<Box<dyn DeviceInsertAudioReceipt>>>,
 }
 impl PluginEffectControl {
+    pub fn opening_editor() -> Self {
+        Self {
+            open_editor: true,
+            ..Self::default()
+        }
+    }
+
+    pub fn opens_editor(&self) -> bool {
+        self.open_editor
+    }
+
     pub fn cancel(&self) -> bool {
+        let receipt = self
+            .install_receipt
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Some(receipt) = receipt.as_ref() {
+            return match self.phase.load(Ordering::Acquire) {
+                1 => true,
+                0 if receipt.cancel() => {
+                    self.phase.store(1, Ordering::Release);
+                    true
+                }
+                _ => false,
+            };
+        }
         matches!(
             self.phase
                 .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire),
             Ok(_) | Err(1)
         )
     }
+
+    /// Bind the exact receipt before the audio owner makes its graph visible.
+    /// A prior cancellation must fence this graph before it reaches the callback.
+    pub fn bind_device_insert_receipt(&self, receipt: Box<dyn DeviceInsertAudioReceipt>) {
+        let mut bound = self
+            .install_receipt
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if self.phase.load(Ordering::Acquire) != 0 || bound.is_some() {
+            receipt.cancel();
+        } else {
+            *bound = Some(receipt);
+        }
+    }
+
     pub fn is_cancelled(&self) -> bool {
         matches!(self.phase.load(Ordering::Acquire), 1 | 4)
     }
@@ -135,11 +181,16 @@ impl PluginEffectControl {
             .is_ok()
     }
     pub(super) fn finish(&self) {
+        let mut receipt = self
+            .install_receipt
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         let _ = self
             .phase
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |phase| {
                 Some(if phase == 1 { 4 } else { 3 })
             });
+        *receipt = None;
     }
 }
 
