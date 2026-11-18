@@ -11,6 +11,7 @@ use hex_engine::native_device_resources::{
 use std::time::{Duration, Instant};
 
 mod bounce;
+pub(super) mod device_insert;
 mod runtime_inputs;
 pub(super) use bounce::{bounce_arrangement, bounce_clip, bounce_history};
 pub(super) use runtime_inputs::{RequiredInput, RuntimeInputs};
@@ -924,7 +925,9 @@ impl Inputs<'_> {
         let accepted =
             self.publish_runtime(snapshot, playback, sink, metadata, policy, additional_bytes)?;
         snapshot.record_submission(metadata.context, accepted);
-        selected.cancel_retired_from(&previous);
+        if !matches!(policy, ResidentPublicationPolicy::DeviceInsert(_)) {
+            selected.cancel_retired_from(&previous);
+        }
         snapshot.inputs = selected;
         Ok(accepted)
     }
@@ -1088,7 +1091,8 @@ fn inherited_runtime(
                 )
             }))
         }
-        ResidentPublicationPolicy::InheritRuntimeAt(actual) => Ok((policy, actual.section_loop)),
+        ResidentPublicationPolicy::InheritRuntimeAt(actual)
+        | ResidentPublicationPolicy::DeviceInsert(actual) => Ok((policy, actual.section_loop)),
         _ => Ok((policy, None)),
     }
 }

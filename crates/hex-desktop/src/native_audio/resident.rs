@@ -9,9 +9,37 @@ use hex_engine::{
     playback::Playback,
 };
 use hex_session::service::{
+    DeviceInsertAudioReceipt, DeviceInsertAudioState, ResidentGraphSubmission,
     ResidentPublicationAcceptance, ResidentPublicationMetadata, ResidentPublicationPolicy,
     ResidentPublicationReadiness, ResidentPublicationRefusal, ResidentRuntimeLoop,
 };
+
+struct InsertReceipt {
+    submission: ResidentGraphSubmission,
+    receipt: hex_audio::prepared::CancellablePublicationReceipt,
+}
+
+impl DeviceInsertAudioReceipt for InsertReceipt {
+    fn submission(&self) -> ResidentGraphSubmission {
+        self.submission
+    }
+
+    fn state(&self) -> DeviceInsertAudioState {
+        use hex_audio::prepared::PublicationReceiptState as Receipt;
+        match self.receipt.state() {
+            Receipt::Pending => DeviceInsertAudioState::Pending,
+            Receipt::Applying => DeviceInsertAudioState::Applying,
+            Receipt::Installed => DeviceInsertAudioState::Installed,
+            Receipt::Cancelled => DeviceInsertAudioState::Cancelled,
+            Receipt::Refused(reason) => DeviceInsertAudioState::Refused(reason),
+            Receipt::OutputClosed => DeviceInsertAudioState::OutputClosed,
+        }
+    }
+
+    fn cancel(&self) {
+        self.receipt.cancel();
+    }
+}
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 use std::time::Instant;
 
@@ -150,6 +178,26 @@ pub(super) fn classify_publication(
 }
 
 impl NativeAudioSink {
+    pub(super) fn retain_device_insert_receipt(
+        &mut self,
+        submission: ResidentGraphSubmission,
+    ) -> Option<Box<dyn DeviceInsertAudioReceipt>> {
+        let receipt = self
+            .output
+            .as_mut()?
+            .publication
+            .control()?
+            .fresh_runtime_receipt(submission.audio_revision)?;
+        (receipt.output_identity() == submission.output_identity
+            && receipt.context() == Some(submission.context))
+        .then(|| {
+            Box::new(InsertReceipt {
+                submission,
+                receipt,
+            }) as Box<_>
+        })
+    }
+
     /// Match the exact callback terminal before committing a native edit that
     /// requires confirmation. A timed-out graph cannot later install.
     pub(super) fn confirm_resident_edit_publication(
@@ -859,7 +907,10 @@ impl NativeAudioSink {
         {
             playback.defer_hosted_paused_source_monitor_on_control();
         }
-        if let ResidentPublicationPolicy::InheritRuntimeAt(expected) = policy {
+        let inserting_device = matches!(policy, ResidentPublicationPolicy::DeviceInsert(_));
+        if let ResidentPublicationPolicy::InheritRuntimeAt(expected)
+        | ResidentPublicationPolicy::DeviceInsert(expected) = policy
+        {
             match self.current_runtime_loop(metadata.context) {
                 Ok(Some(actual)) if actual == expected && section_loop == actual.section_loop => {}
                 Ok(_) => {
@@ -959,6 +1010,22 @@ impl NativeAudioSink {
                     )
                 });
             let policy = match policy {
+                ResidentPublicationPolicy::DeviceInsert(expected) => {
+                    let source = control.status.recording_source().filter(|source| {
+                        source.output_identity == expected.output_identity
+                            && source.audio_revision == expected.audio_revision
+                            && Some(source.context) == expected.source_context
+                    });
+                    let fence = control.capture_fresh_runtime_fence();
+                    let (Some(predecessor), Some(fence)) = (source, fence) else {
+                        return Err(ResidentPublicationRefusal {
+                            kind: hex_session::service::ResidentPublicationFailure::Other,
+                            playback,
+                            error: "device insert lost its installed source".into(),
+                        });
+                    };
+                    hex_audio::prepared::PublicationPolicy::DeviceInsert { predecessor, fence }
+                }
                 ResidentPublicationPolicy::ArrangementEdit => {
                     let Some(policy) = section_policy else {
                         return Err(ResidentPublicationRefusal {
@@ -1154,7 +1221,8 @@ impl NativeAudioSink {
                 }
                 match published {
                     Err(hex_audio::prepared::AdmittedPublishError::Publication(error))
-                        if error.reason == "native graph preparation is busy" =>
+                        if !inserting_device
+                            && error.reason == "native graph preparation is busy" =>
                     {
                         // Root has not retained sources or enqueued the graph,
                         // but the caller's admission hook may already have won.
@@ -1237,6 +1305,7 @@ impl NativeAudioSink {
         if matches!(
             policy,
             ResidentPublicationPolicy::InheritRuntimeAt(_)
+                | ResidentPublicationPolicy::DeviceInsert(_)
                 | ResidentPublicationPolicy::FreshIfUnchanged(_)
                 | ResidentPublicationPolicy::QuantizedSeekWhenReady { .. }
         ) {

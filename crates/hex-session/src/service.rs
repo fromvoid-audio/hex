@@ -91,16 +91,17 @@ pub(crate) mod sampler_export;
 mod sampler_parameter;
 use audio_sink::WorkerEvents;
 pub use audio_sink::{
-    ArrangementEditPosition, NativeSamplerInput, NativeSamplerReservationHold,
-    NativeSamplerRetryFacts, OfflineBounceSource, PausedInputMonitorRequest, PausedNoteGraph,
-    PluginEditorRecordingInput, PluginParameterCapture, PluginParameterDelivery,
-    PluginParameterGestureError, PluginParameterGestureInput, PluginParameterGestureResult,
-    PluginParameterObservation, PluginParameterOverride, ResidentEffectPreparation,
-    ResidentFileInput, ResidentFileMetadata, ResidentFilePitch, ResidentFilePublication,
-    ResidentFileSeekPreparer, ResidentFileSeekRequest, ResidentFileSet, ResidentFreshRuntimeFence,
-    ResidentGraphSubmission, ResidentPublicationAcceptance, ResidentPublicationFailure,
-    ResidentPublicationMetadata, ResidentPublicationPolicy, ResidentPublicationReadiness,
-    ResidentPublicationRefusal, ResidentRuntimeLoop, ResidentSourceOrigin, WorkerAudioSink,
+    ArrangementEditPosition, DeviceInsertAudioReceipt, DeviceInsertAudioState, NativeSamplerInput,
+    NativeSamplerReservationHold, NativeSamplerRetryFacts, OfflineBounceSource,
+    PausedInputMonitorRequest, PausedNoteGraph, PluginEditorRecordingInput, PluginParameterCapture,
+    PluginParameterDelivery, PluginParameterGestureError, PluginParameterGestureInput,
+    PluginParameterGestureResult, PluginParameterObservation, PluginParameterOverride,
+    ResidentEffectPreparation, ResidentFileInput, ResidentFileMetadata, ResidentFilePitch,
+    ResidentFilePublication, ResidentFileSeekPreparer, ResidentFileSeekRequest, ResidentFileSet,
+    ResidentFreshRuntimeFence, ResidentGraphSubmission, ResidentPublicationAcceptance,
+    ResidentPublicationFailure, ResidentPublicationMetadata, ResidentPublicationPolicy,
+    ResidentPublicationReadiness, ResidentPublicationRefusal, ResidentRuntimeLoop,
+    ResidentSourceOrigin, WorkerAudioSink,
 };
 pub use comparison_audio::ComparisonAudioBinding;
 use export_lane::ExportLane;
@@ -345,6 +346,8 @@ pub struct Event {
     pub sampler_edit_complete: Option<u64>,
     /// At most two exact terminals: a refused new request and an invalidated pending one.
     pub plugin_effect_complete: Vec<PluginEffectCompletion>,
+    /// Terminal for the exact audio-confirmed native or hosted device edit.
+    pub device_insert_complete: Option<DeviceInsertCompletion>,
     /// This response consumed a read-only parameter or failed-take query.
     /// Its request completion never acknowledges an editor mutation. Canonical
     /// state and unrelated completions still follow the normal ordered contract.
@@ -579,6 +582,24 @@ pub enum DeviceClipboardAction {
 pub enum SourceUtilityMove {
     Earlier,
     Later,
+}
+
+/// The terminal of one submitted device insert. An installed terminal is
+/// emitted alongside the newly committed canonical project and Undo step.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DeviceInsertCompletion {
+    pub submission: ResidentGraphSubmission,
+    pub outcome: DeviceInsertOutcome,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeviceInsertOutcome {
+    Installed,
+    ConfirmationRequired,
+    Cancelled,
+    Refused(hex_engine::PlaybackHandoffRejection),
+    OutputClosed,
+    ProjectCommitFailed,
 }
 
 /// Bounded requests accepted by the control worker.
@@ -858,6 +879,8 @@ pub enum Request {
     InsertPluginEffect(PluginEffectInsertion),
     /// Worker-internal wakeup; never a FIFO request completion.
     ContinuePluginEffect,
+    #[doc(hidden)]
+    ContinueDeviceInsert,
     /// Worker-internal wakeup for a completed recovery publication.
     ContinueRecovery,
     TogglePluginEditor {
@@ -2934,6 +2957,7 @@ fn run_worker(
                 sampler_load_complete: None,
                 sampler_edit_complete: None,
                 plugin_effect_complete: Vec::new(),
+                device_insert_complete: None,
                 plugin_parameter_observation: false,
                 plugin_parameters: None,
                 plugin_parameter_conversion: None,
@@ -2979,6 +3003,7 @@ fn run_worker(
             sampler_load_complete: None,
             sampler_edit_complete: None,
             plugin_effect_complete: Vec::new(),
+            device_insert_complete: None,
             plugin_parameter_observation: false,
             plugin_parameters: None,
             plugin_parameter_conversion: None,
@@ -3078,6 +3103,7 @@ fn run_worker(
 
     let mut pending_sampler_parameter: Option<SamplerEdit> = None;
     let mut pending_plugin_effect: Option<plugin_effect::Pending> = None;
+    let mut pending_device_insert: Option<resident_audio::device_insert::Pending> = None;
     let mut pending_stopped_restore = None;
     let mut native_automation_take = native_automation_recording::Lane::default();
     let mut plugin_recording = plugin_recording::State::default();
@@ -3093,6 +3119,13 @@ fn run_worker(
     macro_rules! deliver_outcome {
         ($outcome:expr) => {
             events.send_pending_with_control_poll($outcome, |mut audio| {
+                if let Some(pending) = pending_device_insert.as_ref() {
+                    pending.terminal(
+                        session.shutdown.load(Ordering::Acquire)
+                            || pending.document_intent != document_intent.load(Ordering::Acquire),
+                    );
+                    return;
+                }
                 if let Some(seek) = resident_seek.as_mut() {
                     seek.drive(
                         &session,
@@ -3195,6 +3228,7 @@ fn run_worker(
         pending_plugin_effect
             .as_ref()
             .map(|pending| &pending.insertion),
+        pending_device_insert.as_ref(),
         pending_stopped_restore,
         hex_engine::AudioSourceContext {
             project_generation,
@@ -3527,6 +3561,7 @@ fn run_worker(
             queued.document_intent,
             queued.publication_waited,
         );
+        let request_document_intent = queued.document_intent;
         let save_correlation = queued.save_correlation;
         let defaults_directory = queued.native_device_defaults;
         let defaults_root = defaults_directory.as_deref().map(PathBuf::as_path);
@@ -3570,6 +3605,7 @@ fn run_worker(
             &request,
             Request::ContinueSamplerEdit
                 | Request::ContinuePluginEffect
+                | Request::ContinueDeviceInsert
                 | Request::ContinuePluginEditor
                 | Request::ContinuePluginEditorRecording { .. }
                 | Request::ContinuePluginParameters
@@ -3578,6 +3614,7 @@ fn run_worker(
                 | Request::ContinueStoppedPlaybackRestore
         );
         let mut plugin_effect_complete = Vec::new();
+        let mut device_insert_complete = None;
         let plugin_parameter_observation = request.is_read_only_observation();
         let mut plugin_parameters = None;
         let mut plugin_parameter_conversion = None;
@@ -5357,6 +5394,7 @@ fn run_worker(
                     | Request::RecoverDeviceAutomationTake { .. }
                     | Request::InsertPluginEffect(_)
                     | Request::ContinuePluginEffect
+                    | Request::ContinueDeviceInsert
                     | Request::TogglePluginEditor { .. }
                     | Request::ContinuePluginEditor
                     | Request::QueryPluginParameters(_)
@@ -6096,6 +6134,79 @@ fn run_worker(
                         result.value = Err("vst3 parameter target changed".into());
                     }
                 }
+                Request::ContinueDeviceInsert => {
+                    if let Some(mut pending) = pending_device_insert.take() {
+                        let Some(terminal) = pending.terminal(false) else {
+                            // An ordinary request cannot force a pending transaction.
+                            pending_device_insert = Some(pending);
+                            continue;
+                        };
+                        let submission = pending.submission();
+                        let plugin = pending.plugin.take();
+                        let publish_created = plugin.as_ref().is_none_or(|plugin| {
+                            !matches!(
+                                plugin.insertion.destination,
+                                PluginEffectDestination::NewTrack { .. }
+                            )
+                        });
+                        request_complete = plugin.is_none();
+                        let outcome = match terminal {
+                            DeviceInsertAudioState::Installed => {
+                                match pending.commit(&mut session, resident_snapshot.as_ref()) {
+                                    Ok((new, snapshot)) => {
+                                        if publish_created {
+                                            created = Some(new);
+                                        }
+                                        unsaved = true;
+                                        replacement_revision = Some(Arc::clone(&snapshot.prepared));
+                                        resident_snapshot = Some(snapshot);
+                                        status = Some("device inserted".into());
+                                        DeviceInsertOutcome::Installed
+                                    }
+                                    Err(reason) => {
+                                        error = Some(reason.to_string());
+                                        DeviceInsertOutcome::ProjectCommitFailed
+                                    }
+                                }
+                            }
+                            DeviceInsertAudioState::Refused(reason) => {
+                                error = Some(reason.message().into());
+                                if reason == hex_engine::PlaybackHandoffRejection::DeviceInsertNeedsConfirmation {
+                                    DeviceInsertOutcome::ConfirmationRequired
+                                } else {
+                                    DeviceInsertOutcome::Refused(reason)
+                                }
+                            }
+                            DeviceInsertAudioState::OutputClosed => {
+                                error =
+                                    Some("audio output closed · restart audio to recover".into());
+                                DeviceInsertOutcome::OutputClosed
+                            }
+                            DeviceInsertAudioState::Cancelled => {
+                                error =
+                                    Some("device insertion cancelled before installation".into());
+                                DeviceInsertOutcome::Cancelled
+                            }
+                            DeviceInsertAudioState::Pending | DeviceInsertAudioState::Applying => {
+                                pending.plugin = plugin;
+                                pending_device_insert = Some(pending);
+                                continue;
+                            }
+                        };
+                        device_insert_complete = Some(DeviceInsertCompletion {
+                            submission,
+                            outcome,
+                        });
+                        let accepted = outcome == DeviceInsertOutcome::Installed;
+                        if let Some(sink) = events.resident_audio() {
+                            sink.finish_resident_effect_edit(submission.context, accepted);
+                        }
+                        if let Some(plugin) = plugin {
+                            plugin_effect_complete
+                                .push(plugin.finish(events.sampler_edit_audio(), accepted));
+                        }
+                    }
+                }
                 request @ (Request::InsertPluginEffect(_) | Request::ContinuePluginEffect) => {
                     if let Request::InsertPluginEffect(insertion) = request {
                         match plugin_effect::Pending::new(insertion, session.project()) {
@@ -6146,6 +6257,7 @@ fn run_worker(
                                         compiled.as_ref().map(|(_, p)| hex_engine::native_device_resources::ControlSamplerSelection { sources: current_sources.as_ref(), prepared: Some(p) }),
                                         resident_seek.as_ref(), resident_preview.as_ref(),
                                     );
+                                    let mut staged_insert = None;
                                     let committed = result.and_then(|state| {
                                         let PluginEffectPreparationState::Ready(state) = state
                                         else {
@@ -6157,6 +6269,22 @@ fn run_worker(
                                         let sink = events
                                             .resident_audio()
                                             .ok_or("native worker unavailable")?;
+                                        if sink.confirms_device_inserts() {
+                                            staged_insert = Some(
+                                                session
+                                                    .stage_resident_device_insert(
+                                                        command,
+                                                        context,
+                                                        sink,
+                                                        admission,
+                                                        resident_snapshot.as_ref(),
+                                                        Some(&pending.insertion.control),
+                                                        request_document_intent,
+                                                    )
+                                                    .map_err(|e| e.to_string())?,
+                                            );
+                                            return Ok(None);
+                                        }
                                         session
                                             .plugin_effect_resident_snapshot(
                                                 command,
@@ -6169,29 +6297,38 @@ fn run_worker(
                                                 admission,
                                                 resident_snapshot.as_ref(),
                                             )
+                                            .map(Some)
                                             .map_err(|e| e.to_string())
                                     });
-                                    let accepted = committed.is_ok();
-                                    match committed {
-                                        Ok((new, snapshot)) => {
-                                            if !matches!(
-                                                pending.insertion.destination,
-                                                PluginEffectDestination::NewTrack { .. }
-                                            ) {
-                                                created = Some(new);
+                                    if let Some(mut staged) = staged_insert {
+                                        staged.plugin = Some(pending);
+                                        pending_device_insert = Some(staged);
+                                        status = Some("vst3 pending · waiting for audio".into());
+                                    } else {
+                                        let accepted = matches!(committed, Ok(Some(_)));
+                                        match committed {
+                                            Ok(Some((new, snapshot))) => {
+                                                if !matches!(
+                                                    pending.insertion.destination,
+                                                    PluginEffectDestination::NewTrack { .. }
+                                                ) {
+                                                    created = Some(new);
+                                                }
+                                                unsaved = true;
+                                                replacement_revision =
+                                                    Some(Arc::clone(&snapshot.prepared));
+                                                resident_snapshot = Some(snapshot);
+                                                status = Some(
+                                                    "vst3 inserted · waiting for audio".into(),
+                                                );
                                             }
-                                            unsaved = true;
-                                            replacement_revision =
-                                                Some(Arc::clone(&snapshot.prepared));
-                                            resident_snapshot = Some(snapshot);
-                                            status =
-                                                Some("vst3 inserted · waiting for audio".into());
+                                            Ok(None) => {}
+                                            Err(reason) => error = Some(reason),
                                         }
-                                        Err(reason) => error = Some(reason),
+                                        plugin_effect_complete.push(
+                                            pending.finish(events.sampler_edit_audio(), accepted),
+                                        );
                                     }
-                                    plugin_effect_complete.push(
-                                        pending.finish(events.sampler_edit_audio(), accepted),
-                                    );
                                 }
                             }
                         }
@@ -6908,6 +7045,24 @@ fn run_worker(
                         .resident_audio()
                         .ok_or(SessionError::Invalid("native worker unavailable"))
                         .and_then(|sink| {
+                            if resident_audio::device_insert::is_insert(&command)
+                                && sink.confirms_device_inserts()
+                            {
+                                let staged = session.stage_resident_device_insert(
+                                    command,
+                                    hex_engine::AudioSourceContext {
+                                        project_generation,
+                                        editor_revision: revision,
+                                    },
+                                    sink,
+                                    admission,
+                                    resident_snapshot.as_ref(),
+                                    None,
+                                    request_document_intent,
+                                )?;
+                                pending_device_insert = Some(staged);
+                                return Ok(None);
+                            }
                             if let Some((_, target)) = adopted_device_draft.as_ref() {
                                 session.device_take_resident_snapshot(
                                     command,
@@ -6926,9 +7081,14 @@ fn run_worker(
                                     resident_snapshot.as_ref(),
                                 )
                             }
+                            .map(Some)
                         });
                     match result {
-                        Ok((new, snapshot)) => {
+                        Ok(None) => {
+                            request_complete = false;
+                            status = Some("device insert pending · waiting for audio".into());
+                        }
+                        Ok(Some((new, snapshot))) => {
                             if failed_plugin_adoption.is_some() {
                                 // Device-take VST3 publication returns only after the exact
                                 // output/revision callback confirmation.
@@ -10636,6 +10796,7 @@ fn run_worker(
             sampler_load_complete,
             sampler_edit_complete,
             plugin_effect_complete,
+            device_insert_complete,
             plugin_parameter_observation,
             plugin_parameters,
             plugin_parameter_conversion,
