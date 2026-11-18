@@ -252,7 +252,7 @@ impl EditorView {
             active.project_generation == drag.project_generation
                 && active.revision == drag.revision
                 && active.clip == drag.clip
-                && std::rc::Rc::ptr_eq(&active.group, &drag.group)
+                && std::rc::Rc::ptr_eq(&active.tracking, &drag.tracking)
         })
     }
 

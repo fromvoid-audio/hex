@@ -88,10 +88,10 @@ impl EditorView {
 /// includes the parent's leading stroke; the trailing stroke belongs to the
 /// separate boundary shell, so there is no trailing layout border to expand.
 fn clip_drag_span(payload: &ClipDrag, leading_border: f32) -> impl IntoElement + use<> {
-    let span = std::rc::Rc::clone(&payload.source_span);
+    let tracking = std::rc::Rc::clone(&payload.tracking);
     canvas(
         move |bounds, _, _| {
-            span.set(Some((
+            tracking.source_span.set(Some((
                 f32::from(bounds.left()),
                 f32::from(bounds.size.width),
             )));
@@ -3027,7 +3027,6 @@ impl EditorView {
             .map(|lane| {
                 (
                     ClipDrag {
-                        group: Default::default(),
                         project_generation: self.project_generation,
                         revision: state.revision,
                         source_track: track,
@@ -3036,27 +3035,17 @@ impl EditorView {
                             start: clip.start(),
                             duration: clip.duration(),
                         },
-                        grab_offset: std::rc::Rc::new(std::cell::Cell::new(None)),
-                        snap_edge: std::rc::Rc::new(std::cell::Cell::new(None)),
-                        source_span: Default::default(),
-                        capture: std::rc::Rc::new(std::cell::Cell::new(None)),
                         viewport_start: viewport.start,
                         viewport_length: viewport.length,
                         scroll: Default::default(),
                         snap_grid: self.snap_grid,
-                        snap_modifier: std::rc::Rc::new(std::cell::Cell::new(false)),
-                        copy_modifier: std::rc::Rc::new(std::cell::Cell::new(false)),
-                        preview: std::rc::Rc::new(std::cell::Cell::new(None)),
-                        destination: std::rc::Rc::new(std::cell::Cell::new(None)),
-                        insertion_line_y: std::rc::Rc::new(std::cell::Cell::new(None)),
                         ghost_label: format!("audio clip {}", clip_id.value()),
                         ghost_waveform: if clip.audio_edit().is_none() {
                             state.waveforms.get(&clip.asset()).cloned()
                         } else {
                             None
                         },
-                        lane_hovered: std::rc::Rc::new(std::cell::Cell::new(false)),
-                        last_pointer: std::rc::Rc::new(std::cell::Cell::new(None)),
+                        tracking: Default::default(),
                     },
                     lane,
                 )
@@ -3616,29 +3605,18 @@ impl EditorView {
         let _ = start.raw().checked_add(length.raw())?;
         (start_frame < end_frame).then_some((
             ClipDrag {
-                group: Default::default(),
                 project_generation: self.project_generation,
                 revision: state.revision,
                 source_track: track,
                 clip: clip.id(),
                 position: ClipPosition::Midi { start, length },
-                grab_offset: std::rc::Rc::new(std::cell::Cell::new(None)),
-                snap_edge: std::rc::Rc::new(std::cell::Cell::new(None)),
-                source_span: Default::default(),
-                capture: std::rc::Rc::new(std::cell::Cell::new(None)),
                 viewport_start: viewport.start,
                 viewport_length: viewport.length,
                 scroll: Default::default(),
                 snap_grid: self.snap_grid,
-                snap_modifier: std::rc::Rc::new(std::cell::Cell::new(false)),
-                copy_modifier: std::rc::Rc::new(std::cell::Cell::new(false)),
-                preview: std::rc::Rc::new(std::cell::Cell::new(None)),
-                destination: std::rc::Rc::new(std::cell::Cell::new(None)),
-                insertion_line_y: std::rc::Rc::new(std::cell::Cell::new(None)),
                 ghost_label: format!("midi clip {}", clip.id().value()),
                 ghost_waveform: None,
-                lane_hovered: std::rc::Rc::new(std::cell::Cell::new(false)),
-                last_pointer: std::rc::Rc::new(std::cell::Cell::new(None)),
+                tracking: Default::default(),
             },
             lane,
         ))

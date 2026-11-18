@@ -2788,7 +2788,6 @@ fn clip_and_sample_drags_clear_unavailable_targets_and_recover_from_invalid_poin
             last_pointer: Rc::new(Cell::new(None)),
         };
         let clip_drag = ClipDrag {
-            group: Default::default(),
             project_generation: view.project_generation,
             revision: current.revision.saturating_add(1),
             source_track: track,
@@ -2797,23 +2796,17 @@ fn clip_and_sample_drags_clear_unavailable_targets_and_recover_from_invalid_poin
                 start: clip.start(),
                 length: clip.length(),
             },
-            grab_offset: Rc::new(Cell::new(Some(0))),
-            snap_edge: Rc::new(Cell::new(Some(super::drag::ClipSnapEdge::Leading))),
-            source_span: Default::default(),
-            capture: Rc::new(Cell::new(None)),
             viewport_start: viewport.start,
             viewport_length: viewport.length,
             scroll: Default::default(),
             snap_grid: view.snap_grid,
-            snap_modifier: Rc::new(Cell::new(false)),
-            copy_modifier: Rc::new(Cell::new(false)),
-            preview: Rc::new(Cell::new(None)),
-            destination: Rc::new(Cell::new(None)),
-            insertion_line_y: Rc::new(Cell::new(None)),
             ghost_label: "clip".into(),
             ghost_waveform: None,
-            lane_hovered: Rc::new(Cell::new(false)),
-            last_pointer: Rc::new(Cell::new(None)),
+            tracking: Rc::new(super::drag::ClipDragTracking {
+                grab_offset: Cell::new(Some(0)),
+                snap_edge: Cell::new(Some(super::drag::ClipSnapEdge::Leading)),
+                ..Default::default()
+            }),
         };
         cx.notify();
         (return_id, browser_drag, clip_drag)

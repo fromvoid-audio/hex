@@ -50,6 +50,26 @@ pub(super) struct MoveAudition {
     pub(super) target: Option<hex_session::service::ArrangementMoveAudition>,
 }
 
+/// Transient gesture data shared by the rendered source and its drag handlers.
+#[derive(Default, Debug)]
+pub(super) struct ClipDragTracking {
+    pub(super) group: RefCell<ClipDragGroup>,
+    pub(super) grab_offset: Cell<Option<u64>>,
+    pub(super) snap_edge: Cell<Option<ClipSnapEdge>>,
+    /// Last completed resting layout, before trim handles narrow the move hit
+    /// surface. Used only while admitting the original press.
+    pub(super) source_span: Cell<Option<(f32, f32)>>,
+    pub(super) capture: Cell<Option<PointerDown>>,
+    /// Command bypasses both original-position capture and the move grid.
+    pub(super) snap_modifier: Cell<bool>,
+    pub(super) copy_modifier: Cell<bool>,
+    pub(super) preview: Cell<Option<DropPreview>>,
+    pub(super) destination: Cell<Option<ClipDropDestination>>,
+    pub(super) insertion_line_y: Cell<Option<f32>>,
+    pub(super) lane_hovered: Cell<bool>,
+    pub(super) last_pointer: Cell<Option<(f32, f32)>>,
+}
+
 /// Bounded, metadata-only payload for one native pointer drag.
 #[derive(Clone, Debug)]
 pub(super) struct ClipDrag {
@@ -57,28 +77,22 @@ pub(super) struct ClipDrag {
     pub(super) revision: u64,
     pub(super) source_track: TrackId,
     pub(super) clip: ClipId,
-    pub(super) group: Rc<RefCell<ClipDragGroup>>,
     pub(super) position: ClipPosition,
-    pub(super) grab_offset: Rc<Cell<Option<u64>>>,
-    pub(super) snap_edge: Rc<Cell<Option<ClipSnapEdge>>>,
-    /// Last completed resting layout, before trim handles narrow the move hit
-    /// surface. Used only while admitting the original press.
-    pub(super) source_span: Rc<Cell<Option<(f32, f32)>>>,
-    pub(super) capture: Rc<Cell<Option<PointerDown>>>,
     pub(super) viewport_start: u64,
     pub(super) viewport_length: u64,
     pub(super) scroll: super::drag_autoscroll::DragScroll,
     pub(super) snap_grid: SnapGrid,
-    /// Command bypasses both original-position capture and the move grid.
-    pub(super) snap_modifier: Rc<Cell<bool>>,
-    pub(super) copy_modifier: Rc<Cell<bool>>,
-    pub(super) preview: Rc<Cell<Option<DropPreview>>>,
-    pub(super) destination: Rc<Cell<Option<ClipDropDestination>>>,
-    pub(super) insertion_line_y: Rc<Cell<Option<f32>>>,
     pub(super) ghost_label: String,
     pub(super) ghost_waveform: Option<std::sync::Arc<hex_session::CachedWaveform>>,
-    pub(super) lane_hovered: Rc<Cell<bool>>,
-    pub(super) last_pointer: Rc<Cell<Option<(f32, f32)>>>,
+    pub(super) tracking: Rc<ClipDragTracking>,
+}
+
+impl std::ops::Deref for ClipDrag {
+    type Target = ClipDragTracking;
+
+    fn deref(&self) -> &Self::Target {
+        &self.tracking
+    }
 }
 
 impl ClipDrag {
@@ -904,7 +918,7 @@ impl super::EditorView {
         if self
             .active_clip_drag
             .as_ref()
-            .is_some_and(|active| Rc::ptr_eq(&active.group, &drag.group))
+            .is_some_and(|active| Rc::ptr_eq(&active.tracking, &drag.tracking))
         {
             return;
         }
@@ -1096,7 +1110,7 @@ impl super::EditorView {
         let owns_gesture = self.active_clip_drag.as_ref().is_some_and(|active| {
             active.project_generation == drag.project_generation
                 && active.clip == drag.clip
-                && Rc::ptr_eq(&active.destination, &drag.destination)
+                && Rc::ptr_eq(&active.tracking, &drag.tracking)
         });
         if !owns_gesture {
             return;
@@ -1753,7 +1767,7 @@ impl super::EditorView {
         if !self
             .active_clip_drag
             .as_ref()
-            .is_some_and(|active| Rc::ptr_eq(&active.group, &drag.group))
+            .is_some_and(|active| Rc::ptr_eq(&active.tracking, &drag.tracking))
         {
             return;
         }
@@ -2154,7 +2168,6 @@ mod tests {
 
     fn drag(source: TrackId, clip: hex_project::ClipId) -> ClipDrag {
         ClipDrag {
-            group: Default::default(),
             project_generation: 3,
             revision: 9,
             source_track: source,
@@ -2163,29 +2176,22 @@ mod tests {
                 start: 40,
                 duration: 100,
             },
-            grab_offset: Rc::new(Cell::new(Some(50))),
-            snap_edge: Rc::new(Cell::new(Some(super::ClipSnapEdge::Leading))),
-            source_span: Default::default(),
-            capture: Rc::new(Cell::new(None)),
             viewport_start: 0,
             viewport_length: 1_000,
             scroll: Default::default(),
             snap_grid: SnapGrid::Off,
-            snap_modifier: Rc::new(Cell::new(false)),
-            copy_modifier: Rc::new(Cell::new(false)),
-            preview: Rc::new(Cell::new(None)),
-            destination: Rc::new(Cell::new(None)),
-            insertion_line_y: Rc::new(Cell::new(None)),
             ghost_label: "audio clip".into(),
             ghost_waveform: None,
-            lane_hovered: Rc::new(Cell::new(false)),
-            last_pointer: Rc::new(Cell::new(None)),
+            tracking: Rc::new(super::ClipDragTracking {
+                grab_offset: Cell::new(Some(50)),
+                snap_edge: Cell::new(Some(super::ClipSnapEdge::Leading)),
+                ..Default::default()
+            }),
         }
     }
 
     fn midi_drag(source: TrackId, clip: hex_project::ClipId) -> ClipDrag {
         ClipDrag {
-            group: Default::default(),
             project_generation: 3,
             revision: 9,
             source_track: source,
@@ -2194,23 +2200,17 @@ mod tests {
                 start: BeatTime::from_quarters(4).expect("clip beat"),
                 length: BeatTime::from_quarters(4).expect("clip length"),
             },
-            grab_offset: Rc::new(Cell::new(Some(BeatTime::ONE.raw()))),
-            snap_edge: Rc::new(Cell::new(Some(super::ClipSnapEdge::Leading))),
-            source_span: Default::default(),
-            capture: Rc::new(Cell::new(None)),
             viewport_start: 0,
             viewport_length: 288_000,
             scroll: Default::default(),
             snap_grid: SnapGrid::Quarter,
-            snap_modifier: Rc::new(Cell::new(false)),
-            copy_modifier: Rc::new(Cell::new(false)),
-            preview: Rc::new(Cell::new(None)),
-            destination: Rc::new(Cell::new(None)),
-            insertion_line_y: Rc::new(Cell::new(None)),
             ghost_label: "midi clip".into(),
             ghost_waveform: None,
-            lane_hovered: Rc::new(Cell::new(false)),
-            last_pointer: Rc::new(Cell::new(None)),
+            tracking: Rc::new(super::ClipDragTracking {
+                grab_offset: Cell::new(Some(BeatTime::ONE.raw())),
+                snap_edge: Cell::new(Some(super::ClipSnapEdge::Leading)),
+                ..Default::default()
+            }),
         }
     }
 

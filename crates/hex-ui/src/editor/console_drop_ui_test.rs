@@ -1442,7 +1442,7 @@ fn console_column_stale_clip_release_preserves_a_new_capture_of_the_same_source(
     );
     let mut visual = begin_arrangement_clip_in_console(cx, handle, &editor, source);
     let fresh = editor.read_with(&visual, |view, _| view.active_clip_drag.clone().unwrap());
-    assert!(!std::rc::Rc::ptr_eq(&old.group, &fresh.group));
+    assert!(!std::rc::Rc::ptr_eq(&old.tracking, &fresh.tracking));
     // Deliver an older receiver's payload after a new real pointer capture.
     // Same clip/generation/revision does not transfer ownership to that receiver.
     editor.update(cx, |view, cx| {
@@ -1460,7 +1460,7 @@ fn console_column_stale_clip_release_preserves_a_new_capture_of_the_same_source(
             .active_clip_drag
             .as_ref()
             .expect("stale Console release must preserve newer pointer capture");
-        assert!(std::rc::Rc::ptr_eq(&active.group, &fresh.group));
+        assert!(std::rc::Rc::ptr_eq(&active.tracking, &fresh.tracking));
         assert_eq!(
             view.worker_requests_pending, 0,
             "stale receiver must not admit a duplicate birth"

@@ -555,7 +555,7 @@ fn compact_mixed_group_drag_has_titles_without_bodies_and_preserves_capture(
         let drag = view.active_clip_drag.as_ref().expect("mixed group drag");
         assert_eq!(drag.group.borrow().ids, f.clips);
         assert_eq!(drag.group.borrow().previews().len(), 2);
-        Rc::clone(&drag.group)
+        Rc::clone(&drag.tracking)
     });
     let previews = f.clips.map(|clip| {
         let preview = bounds(&mut f.visual, "group-clip-preview", clip.value());
@@ -583,7 +583,7 @@ fn compact_mixed_group_drag_has_titles_without_bodies_and_preserves_capture(
     f.editor.read_with(&f.visual, |view, _| {
         assert!(Rc::ptr_eq(
             &capture,
-            &view.active_clip_drag.as_ref().unwrap().group
+            &view.active_clip_drag.as_ref().unwrap().tracking
         ))
     });
     f.visual.simulate_keystrokes("escape");
