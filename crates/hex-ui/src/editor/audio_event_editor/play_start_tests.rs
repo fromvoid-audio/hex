@@ -292,6 +292,9 @@ fn audio_start_recovery(cx: &mut TestAppContext, released: bool, failed: bool) {
     });
     visual.run_until_parked();
     assert!((marker_fraction(&mut visual) - shown).abs() < 0.003);
+    editor.update(&mut visual, |v, _| {
+        v.audio.take().unwrap().control.close();
+    });
     drop(callback);
     fresh.publication.close();
 }
