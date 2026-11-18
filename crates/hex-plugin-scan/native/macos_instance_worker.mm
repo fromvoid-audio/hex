@@ -418,6 +418,16 @@ int main(int argc,char** argv) {
             std::optional<hex_instance::EditorPosition> detached_editor_position;
             uint32_t page_failure=0;
             std::atomic<bool> pcm_since_main_pump{false};
+            auto observe_editor_visibility=[&] {
+                if(page_stage.load(std::memory_order_acquire)!=PageRequested ||
+                   page_query.kind!=hex_instance::EDITOR_VISIBILITY) return false;
+                detached_editor_position.reset();
+                editor_state=editor.is_open()?hex_instance::EditorState::Open:hex_instance::EditorState::Closed;
+                page_stage.store(PageComplete,std::memory_order_release);
+                return true;
+            };
+            hex_instance::ModalEditorObservation modal_editor_observation(observe_editor_visibility);
+            if(!modal_editor_observation) { failure=HostControl;throw Refusal{}; }
             std::thread worker([&] {
                 bool started=false;
                 try {
@@ -683,10 +693,17 @@ int main(int argc,char** argv) {
                             if(state!=PageIdle || page_operation==std::numeric_limits<uint64_t>::max() ||
                                 request.capture_operation!=page_operation+1) return false;
                             page_query=request.parameter_query;
-                            // A previous PCM result may still be waiting for
-                            // the main-lane feedback slot. Publish it before
-                            // allowing the controller to answer this query.
-                            ++page_operation;page_stage.store(parameter_feedback.count?PageFeedbackPending:PageRequested,std::memory_order_release);
+                            ++page_operation;
+                            if(page_query.kind==hex_instance::EDITOR_VISIBILITY) {
+                                // Visibility reads only the AppKit window, so it can
+                                // complete before pending SDK parameter feedback.
+                                page_stage.store(PageRequested,std::memory_order_release);
+                                modal_editor_observation.notify();
+                            } else {
+                                // Publish any preceding PCM feedback before asking
+                                // the original controller to service a query.
+                                page_stage.store(parameter_feedback.count?PageFeedbackPending:PageRequested,std::memory_order_release);
+                            }
                         } else if(state==PageIdle || request.capture_operation!=page_operation ||
                                   !(request.parameter_query==page_query)) return false;
                         if(state==PageFailed) {worker_failure.store(page_failure);return false;}
@@ -1194,7 +1211,8 @@ int main(int argc,char** argv) {
                     if(const auto flags=instance.host_refusals()) {
                         control_failure(runtime_host_failure(flags,false));continue;
                     }
-                    if(page_stage.load(std::memory_order_acquire)==PageRequested) {
+                    if(page_stage.load(std::memory_order_acquire)==PageRequested &&
+                       !observe_editor_visibility()) {
                         page_failure=0;
                         try {
                             // Acquire the exact prior worker publication even
@@ -1223,8 +1241,6 @@ int main(int argc,char** argv) {
                                         editor_state=hex_instance::EditorState::GestureActive;
                                     else if(kind==hex_instance::SEAL_EDITOR_EDITS)
                                         editor_edits_sealed=instance.seal_editor_edits_on_control();
-                                    else if(kind==hex_instance::EDITOR_VISIBILITY)
-                                        editor_state=was_open?hex_instance::EditorState::Open:hex_instance::EditorState::Closed;
                                     else if(kind==hex_instance::REOPEN_EDITOR && was_open)
                                         editor_state=hex_instance::EditorState::Open;
                                     else if(!editor.close()) page_failure=Teardown;

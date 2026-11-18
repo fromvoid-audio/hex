@@ -2,6 +2,7 @@
 #include "macos_editor.hpp"
 #include "pluginterfaces/base/keycodes.h"
 #include <cassert>
+#include <thread>
 
 using namespace hex_instance;
 
@@ -18,6 +19,37 @@ using namespace hex_instance;
 - (void)orderOut:(id)sender { (void)sender;test_visible=NO;++hides; }
 - (void)orderFrontRegardless { test_visible=YES;++shows; }
 @end
+
+static void check_modal_editor_observation() {
+    std::atomic<bool> entered=false;
+    int answered=0;
+    auto observe=[&] {
+        assert([NSThread isMainThread]);
+        auto mode=CFRunLoopCopyCurrentMode(CFRunLoopGetMain());
+        assert(mode && CFEqual(mode,(CFStringRef)NSModalPanelRunLoopMode));
+        CFRelease(mode);
+        ++answered;
+    };
+    ModalEditorObservation observation(observe);
+    assert(observation);
+    auto* entered_ptr=&entered;
+    auto enter=CFRunLoopObserverCreateWithHandler(kCFAllocatorDefault,kCFRunLoopEntry,false,0,
+        ^(CFRunLoopObserverRef,CFRunLoopActivity) {
+            entered_ptr->store(true,std::memory_order_release);
+        });
+    assert(enter);
+    CFRunLoopAddObserver(CFRunLoopGetMain(),enter,(CFStringRef)NSModalPanelRunLoopMode);
+    std::thread requester([&] {
+        while(!entered.load(std::memory_order_acquire)) std::this_thread::yield();
+        observation.notify();
+    });
+    const auto result=CFRunLoopRunInMode((CFStringRef)NSModalPanelRunLoopMode,0.5,true);
+    entered.store(true,std::memory_order_release); // Join even if mode entry failed.
+    requester.join();
+    CFRunLoopObserverInvalidate(enter);
+    CFRelease(enter);
+    assert(result==kCFRunLoopRunHandledSource && answered==1);
+}
 
 static void check_floating_panel() {
     auto* panel=[[HexFixturePanel alloc] initWithContentRect:NSMakeRect(0,0,320,240)
@@ -452,6 +484,7 @@ static void check_reentrant_keys() {
 int main() {
     @autoreleasepool {
         [NSApplication sharedApplication];
+        check_modal_editor_observation();
         check_floating_panel();
         check_editor_placement();
         ResizeView fixed(nullptr);
