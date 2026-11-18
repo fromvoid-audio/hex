@@ -4440,18 +4440,120 @@ fn staged_native_insert_is_refused_on_real_output_fault_without_a_late_commit() 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 #[test]
 fn confirmed_limiter_keeps_the_same_output_and_commits_only_after_its_fade() {
-    confirmed_limiter_keeps_the_same_output(262_144, false);
+    confirmed_limiter_keeps_the_same_output(262_144, false, LimiterEdit::Insert);
 }
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 #[test]
 fn confirmed_limiter_resumes_file_backed_audio_on_the_same_output() {
-    confirmed_limiter_keeps_the_same_output(8_192, true);
+    confirmed_limiter_keeps_the_same_output(8_192, true, LimiterEdit::Insert);
 }
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-fn confirmed_limiter_keeps_the_same_output(frame_limit: u64, streamed: bool) {
-    use hex_session::service::DeviceInsertOutcome;
+#[test]
+fn removing_limiter_requires_consent_and_keeps_the_same_output() {
+    confirmed_limiter_keeps_the_same_output(262_144, false, LimiterEdit::RemoveDevice);
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[test]
+fn cutting_limiter_from_file_backed_playback_requires_consent_and_commits_clipboard() {
+    confirmed_limiter_keeps_the_same_output(8_192, true, LimiterEdit::CutDevice);
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[test]
+fn removing_track_with_limiter_requires_consent_and_keeps_the_same_output() {
+    confirmed_limiter_keeps_the_same_output(262_144, false, LimiterEdit::RemoveTrack);
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[test]
+fn ordinary_zero_latency_track_and_device_edits_keep_compensated_playback_running() {
+    use hex_project::{Command, Created};
+    use hex_session::service::{DeviceInsertOutcome, ViewState};
+
+    let _native = native_fixture();
+    let files = Files::new();
+    let mut h = ResidentHarness::with_frame_limit(262_144);
+    assert!(h.next().error.is_none());
+    let (mut applied, _) = h.applied(0);
+    h.run(Request::Import(files.wav(48_000, 16_384)));
+    applied = h.applied(applied).0;
+    let state = |id| {
+        hex_engine::default_native_device_state(hex_engine::DeviceTypeId::from_static(id)).unwrap()
+    };
+    h.run(Request::Edit(Command::InsertMainDevice {
+        before: None,
+        state: state("hex.limiter"),
+    }));
+    h.applied(applied);
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    assert_ne!(h.render(), [[0.25; 2]; 64], "limiter must introduce delay");
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while h.render() != [[0.25; 2]; 64] {
+        assert!(Instant::now() < deadline, "compensated source never played");
+    }
+    h.enable_confirmed_device_inserts();
+    let added = h.run(Request::Edit(Command::AddTrack {
+        name: "empty".into(),
+    }));
+    assert_eq!(h.render(), [[0.25; 2]; 64]);
+    let Some(Created::Track(track)) = added.created else {
+        panic!("empty track not created");
+    };
+    let apply = |h: &mut ResidentHarness, previous: &ViewState, command| {
+        h.service.submit(Request::Edit(command)).unwrap();
+        let staged = h.next();
+        assert!(!staged.request_complete);
+        assert_eq!(staged.state.project, previous.project);
+        assert_eq!(h.render(), [[0.25; 2]; 64]);
+        let installed = h.next();
+        assert!(installed.device_insert_confirmation.is_none());
+        assert_eq!(
+            installed.device_insert_complete.unwrap().outcome,
+            DeviceInsertOutcome::Installed
+        );
+        assert_eq!(installed.state.revision, previous.revision + 1);
+        assert_eq!(h.render(), [[0.25; 2]; 64]);
+        installed
+    };
+    let inserted = apply(
+        &mut h,
+        &added.state,
+        Command::InsertDevice {
+            track,
+            before: None,
+            state: state("hex.utility"),
+        },
+    );
+    let Some(Created::Device(device)) = inserted.created else {
+        panic!("utility not created");
+    };
+    let removed = apply(&mut h, &inserted.state, Command::RemoveDevice(device));
+    assert!(removed.state.project.device(device).is_none());
+    let removed = apply(&mut h, &removed.state, Command::RemoveTrack(track));
+    assert!(removed.state.project.track(track).is_none());
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LimiterEdit {
+    Insert,
+    RemoveDevice,
+    CutDevice,
+    RemoveTrack,
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn confirmed_limiter_keeps_the_same_output(frame_limit: u64, streamed: bool, edit: LimiterEdit) {
+    use hex_project::{Command, Created, DeviceChainOwner, DeviceSelectionIds};
+    use hex_session::service::{DeviceClipboardAction, DeviceInsertOutcome, GraphEditOperation};
 
     fn status(h: &ResidentHarness) -> &hex_audio::prepared::Status {
         h.audio.as_ref().unwrap().status().unwrap()
@@ -4476,7 +4578,47 @@ fn confirmed_limiter_keeps_the_same_output(frame_limit: u64, streamed: bool) {
             )),
         streamed
     );
-    let (applied, _) = h.applied(applied);
+    let (mut applied, _) = h.applied(applied);
+    let limiter = || {
+        hex_engine::default_native_device_state_for_class(
+            hex_engine::NativeDeviceClass::Effect,
+            hex_engine::DeviceTypeId::from_static("hex.limiter"),
+        )
+        .unwrap()
+    };
+    let track = if edit == LimiterEdit::RemoveTrack {
+        let added = h.run(Request::Edit(Command::AddTrack {
+            name: "limiter".into(),
+        }));
+        applied = h.applied(applied).0;
+        let Some(Created::Track(track)) = added.created else {
+            panic!("limiter track was not created");
+        };
+        Some(track)
+    } else {
+        None
+    };
+    let insert = || {
+        track.map_or_else(
+            || Command::InsertMainDevice {
+                before: None,
+                state: limiter(),
+            },
+            |track| Command::InsertDevice {
+                track,
+                before: None,
+                state: limiter(),
+            },
+        )
+    };
+    let remove = edit != LimiterEdit::Insert;
+    let before = if remove {
+        let installed = h.run(Request::Edit(insert()));
+        applied = h.applied(applied).0;
+        installed.state
+    } else {
+        imported.state
+    };
     let predecessor = status(&h).recording_source().unwrap();
     assert_eq!(predecessor.audio_revision, applied);
     h.audio
@@ -4487,30 +4629,48 @@ fn confirmed_limiter_keeps_the_same_output(frame_limit: u64, streamed: bool) {
         .unwrap();
     let deadline = Instant::now() + Duration::from_secs(2);
     while h.render() != [[0.25; 2]; 64] {
-        assert!(streamed && Instant::now() < deadline, "source never played");
+        assert!(
+            (streamed || remove) && Instant::now() < deadline,
+            "source never played"
+        );
         std::thread::yield_now();
     }
     h.enable_confirmed_device_inserts();
     for proceed in [false, true] {
-        let state = hex_engine::default_native_device_state_for_class(
-            hex_engine::NativeDeviceClass::Effect,
-            hex_engine::DeviceTypeId::from_static("hex.limiter"),
-        )
-        .unwrap();
-        h.service
-            .submit(Request::Edit(hex_project::Command::InsertMainDevice {
-                before: None,
-                state,
-            }))
-            .unwrap();
+        let request = match edit {
+            LimiterEdit::Insert => Request::Edit(insert()),
+            LimiterEdit::RemoveDevice => {
+                Request::Edit(Command::RemoveDevice(before.project.main_devices()[0].id()))
+            }
+            LimiterEdit::CutDevice => Request::DeviceClipboard {
+                project_generation: predecessor.context.project_generation,
+                revision: before.revision,
+                action: DeviceClipboardAction::Cut {
+                    owner: DeviceChainOwner::Main,
+                    selected: DeviceSelectionIds::new(&[before.project.main_devices()[0].id()])
+                        .unwrap(),
+                },
+            },
+            LimiterEdit::RemoveTrack => Request::Edit(Command::RemoveTrack(track.unwrap())),
+        };
+        h.service.submit(request).unwrap();
         let staged = h.next();
         assert!(staged.error.is_none(), "{:?}", staged.error);
-        assert!(!staged.request_complete);
-        assert_eq!(staged.state.project, imported.state.project);
+        assert!(!staged.request_complete, "edit committed before consent");
+        assert_eq!(staged.state.project, before.project);
         assert_eq!(h.render(), [[0.25; 2]; 64]);
         let offered = h.next();
         assert!(offered.error.is_none(), "{:?}", offered.error);
         let offer = offered.device_insert_confirmation.unwrap();
+        assert_eq!(
+            offer.operation(),
+            match edit {
+                LimiterEdit::Insert => GraphEditOperation::InsertDevice,
+                LimiterEdit::RemoveDevice | LimiterEdit::CutDevice =>
+                    GraphEditOperation::RemoveDevice,
+                LimiterEdit::RemoveTrack => GraphEditOperation::RemoveTrack,
+            }
+        );
         assert_eq!(
             offer.submission().output_identity,
             predecessor.output_identity
@@ -4523,9 +4683,27 @@ fn confirmed_limiter_keeps_the_same_output(frame_limit: u64, streamed: bool) {
                 terminal.device_insert_complete.unwrap().outcome,
                 DeviceInsertOutcome::Cancelled
             );
-            assert_eq!(terminal.state.project, imported.state.project);
-            assert_eq!(terminal.state.revision, imported.state.revision);
+            assert_eq!(terminal.state.project, before.project);
+            assert_eq!(terminal.state.revision, before.revision);
             assert_eq!(h.render(), [[0.25; 2]; 64]);
+            if edit == LimiterEdit::CutDevice {
+                h.service
+                    .submit(Request::DeviceClipboard {
+                        project_generation: predecessor.context.project_generation,
+                        revision: before.revision,
+                        action: DeviceClipboardAction::Paste {
+                            owner: DeviceChainOwner::Main,
+                            before: None,
+                        },
+                    })
+                    .unwrap();
+                assert!(
+                    h.next()
+                        .error
+                        .unwrap()
+                        .contains("device clipboard is empty")
+                );
+            }
         } else {
             let (submitted, resume) = h.probe_next_submitted_device_insert();
             assert!(offer.proceed());
@@ -4553,10 +4731,34 @@ fn confirmed_limiter_keeps_the_same_output(frame_limit: u64, streamed: bool) {
             let receipt = terminal.device_insert_complete.unwrap();
             assert_eq!(receipt.submission, confirmed);
             assert_eq!(receipt.outcome, DeviceInsertOutcome::Installed);
-            assert_eq!(terminal.state.project.main_devices().len(), 1);
-            assert_eq!(terminal.state.revision, imported.state.revision + 1);
+            assert_eq!(
+                terminal.state.project.main_devices().len(),
+                usize::from(!remove)
+            );
+            assert_eq!(terminal.state.revision, before.revision + 1);
             assert_eq!(status(&h).position.load(Acquire), position + 192);
             assert!(status(&h).playing.load(Acquire));
+            if let Some(track) = track {
+                assert!(terminal.state.project.track(track).is_none());
+            }
+            if edit == LimiterEdit::CutDevice {
+                h.audio
+                    .as_mut()
+                    .unwrap()
+                    .control
+                    .command(PlaybackCommand::Stop)
+                    .unwrap();
+                h.render();
+                let pasted = h.run(Request::DeviceClipboard {
+                    project_generation: predecessor.context.project_generation,
+                    revision: terminal.state.revision,
+                    action: DeviceClipboardAction::Paste {
+                        owner: DeviceChainOwner::Main,
+                        before: None,
+                    },
+                });
+                assert_eq!(pasted.state.project.main_devices()[0].state(), &limiter());
+            }
         }
     }
 }

@@ -346,9 +346,9 @@ pub struct Event {
     pub sampler_edit_complete: Option<u64>,
     /// At most two exact terminals: a refused new request and an invalidated pending one.
     pub plugin_effect_complete: Vec<PluginEffectCompletion>,
-    /// The staged insert is waiting for a one-shot decision from the editor.
+    /// The staged graph edit is waiting for a one-shot decision from the editor.
     pub device_insert_confirmation: Option<DeviceInsertConfirmation>,
-    /// Terminal for the exact audio-confirmed native or hosted device edit.
+    /// Terminal for the exact audio-confirmed graph edit.
     pub device_insert_complete: Option<DeviceInsertCompletion>,
     /// This response consumed a read-only parameter or failed-take query.
     /// Its request completion never acknowledges an editor mutation. Canonical
@@ -594,7 +594,9 @@ pub struct DeviceInsertCompletion {
     pub outcome: DeviceInsertOutcome,
 }
 
-pub use resident_audio::device_insert::{DeviceInsertConfirmation, VerifiedDeviceInsertAttempt};
+pub use resident_audio::device_insert::{
+    DeviceInsertConfirmation, GraphEditOperation, VerifiedDeviceInsertAttempt,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DeviceInsertOutcome {
@@ -6219,12 +6221,13 @@ fn run_worker(
                             {
                                 sink.finish_verified_device_insert(attempt, false);
                             }
-                            status = Some("device insertion cancelled".into());
+                            status = Some("device edit cancelled".into());
                             request_complete = true;
                             break 'device_insert;
                         };
                         let verified = pending.verified_attempt().cloned();
                         let was_offered = pending.awaiting_confirmation();
+                        let operation = pending.operation;
                         let plugin = pending.plugin.take();
                         let publish_created = plugin.as_ref().is_none_or(|plugin| {
                             !matches!(
@@ -6235,6 +6238,8 @@ fn run_worker(
                         request_complete = plugin.is_none();
                         let outcome = match terminal {
                             DeviceInsertAudioState::Installed => {
+                                let cut_devices = pending.cut_devices.take();
+                                let cut_tracks = pending.cut_tracks.take();
                                 match pending.commit(&mut session, resident_snapshot.as_ref()) {
                                     Ok((new, prepared, snapshot)) => {
                                         if publish_created {
@@ -6245,7 +6250,13 @@ fn run_worker(
                                         if let Some(snapshot) = snapshot {
                                             resident_snapshot = Some(snapshot);
                                         }
-                                        status = Some("device inserted".into());
+                                        cut_device_clipboard = cut_devices;
+                                        cut_clipboard = cut_tracks;
+                                        status = Some(match operation {
+                                            GraphEditOperation::InsertDevice => "device inserted",
+                                            GraphEditOperation::RemoveDevice => "device removed",
+                                            GraphEditOperation::RemoveTrack => "track removed",
+                                        }.into());
                                         DeviceInsertOutcome::Installed
                                     }
                                     Err(reason) => {
@@ -6256,7 +6267,11 @@ fn run_worker(
                             }
                             DeviceInsertAudioState::Refused(reason) => {
                                 if reason == hex_engine::PlaybackHandoffRejection::DeviceInsertNeedsConfirmation {
-                                    error = Some("stop playback to insert this device".into());
+                                    error = Some(match operation {
+                                        GraphEditOperation::InsertDevice => "stop playback to insert this device",
+                                        GraphEditOperation::RemoveDevice => "stop playback to remove this device",
+                                        GraphEditOperation::RemoveTrack => "stop playback to remove this track",
+                                    }.into());
                                     DeviceInsertOutcome::ConfirmationRequired
                                 } else {
                                     if error.is_none() {
@@ -6272,17 +6287,17 @@ fn run_worker(
                             }
                             DeviceInsertAudioState::Cancelled => {
                                 if was_offered {
-                                    status = Some("device insertion cancelled".into());
+                                    status = Some("device edit cancelled".into());
                                 } else {
                                     error = Some(
-                                        "device insertion cancelled before installation".into(),
+                                        "device edit cancelled before installation".into(),
                                     );
                                 }
                                 DeviceInsertOutcome::Cancelled
                             }
                             DeviceInsertAudioState::Expired => {
                                 error =
-                                    Some("device insertion timed out before installation".into());
+                                    Some("device edit timed out before installation".into());
                                 DeviceInsertOutcome::Expired
                             }
                             DeviceInsertAudioState::Pending | DeviceInsertAudioState::Applying => {
@@ -7127,7 +7142,8 @@ fn run_worker(
                 }
                 Request::Edit(command)
                     if session.audio_mode() == DocumentAudioMode::VerifiedStreaming
-                        && resident_audio::device_insert::is_insert(&command)
+                        && resident_audio::device_insert::graph_edit_operation(&command)
+                            .is_some()
                         && events
                             .resident_audio()
                             .is_some_and(|sink| sink.confirms_verified_device_inserts()) =>
@@ -7145,10 +7161,12 @@ fn run_worker(
                             )
                         });
                     match result {
-                        Ok(staged) => {
+                        Ok(mut staged) => {
+                            staged.cut_devices = cut_device_clipboard.take();
+                            staged.cut_tracks = cut_clipboard.take();
                             pending_device_insert = Some(staged);
                             request_complete = false;
-                            status = Some("device insert pending · waiting for audio".into());
+                            status = Some("device edit pending · waiting for audio".into());
                         }
                         Err(reason) => error = Some(reason.to_string()),
                     }
@@ -7175,10 +7193,16 @@ fn run_worker(
                         .resident_audio()
                         .ok_or(SessionError::Invalid("native worker unavailable"))
                         .and_then(|sink| {
-                            if resident_audio::device_insert::is_insert(&command)
+                            if let Some(operation) =
+                                resident_audio::device_insert::graph_edit_operation(&command)
                                 && sink.confirms_device_inserts()
+                                && (operation == GraphEditOperation::InsertDevice
+                                    || !matches!(
+                                        sink.resident_publication_readiness(),
+                                        ResidentPublicationReadiness::NoOutput
+                                    ))
                             {
-                                let staged = session.stage_resident_device_insert(
+                                let mut staged = session.stage_resident_device_insert(
                                     command,
                                     hex_engine::AudioSourceContext {
                                         project_generation,
@@ -7190,6 +7214,8 @@ fn run_worker(
                                     None,
                                     request_document_intent,
                                 )?;
+                                staged.cut_devices = cut_device_clipboard.take();
+                                staged.cut_tracks = cut_clipboard.take();
                                 pending_device_insert = Some(staged);
                                 return Ok(None);
                             }
@@ -7216,7 +7242,7 @@ fn run_worker(
                     match result {
                         Ok(None) => {
                             request_complete = false;
-                            status = Some("device insert pending · waiting for audio".into());
+                            status = Some("device edit pending · waiting for audio".into());
                         }
                         Ok(Some((new, snapshot))) => {
                             if failed_plugin_adoption.is_some() {

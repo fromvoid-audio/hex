@@ -112,9 +112,15 @@ impl EditorView {
             if !offer.is_pending() {
                 return;
             }
+            use hex_session::service::GraphEditOperation;
+            let title = match offer.operation() {
+                GraphEditOperation::InsertDevice => "interrupt playback to insert this device?",
+                GraphEditOperation::RemoveDevice => "interrupt playback to remove this device?",
+                GraphEditOperation::RemoveTrack => "interrupt playback to remove this track?",
+            };
             let answer = window.prompt(
                 gpui::PromptLevel::Warning,
-                &theme::text("interrupt playback to insert this device?"),
+                &theme::text(title),
                 Some(&theme::text(
                     "playback will fade out briefly and resume from the same position. \
                      held notes and effect tails may reset.",
