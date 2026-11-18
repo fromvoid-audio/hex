@@ -454,6 +454,9 @@ pub const MAX_FINITE_BOUNCE_FRAMES: u64 = hex_project::MAX_ARRANGEMENT_BOUNCE_FR
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum RenderConstruction {
     Interactive,
+    /// The resident keeps every instrument runtime and lends its source
+    /// slots for a paused render. This constructor owns downstream DSP only.
+    BorrowedPauseSources,
     LinearExport,
     LinearForeignExport,
     FiniteBounce,
@@ -1476,6 +1479,9 @@ impl SessionPlayback {
             RenderConstruction::Interactive => {
                 preroll::arrangement_runtime_storage_preflight_bytes(revision)
             }
+            RenderConstruction::BorrowedPauseSources => {
+                preroll::paused_source_runtime_storage_preflight_bytes(revision)
+            }
             RenderConstruction::LinearExport
             | RenderConstruction::LinearForeignExport
             | RenderConstruction::FiniteBounce
@@ -1486,10 +1492,14 @@ impl SessionPlayback {
         bytes
             .filter(|n| *n <= MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES)
             .ok_or(SessionPlaybackError::MutableInstrumentDiagnostic(
-                if policy == RenderConstruction::Interactive {
-                    "interactive runtime exceeds its independent runtime limit"
-                } else {
-                    "sampler export runtime exceeds its independent runtime limit"
+                match policy {
+                    RenderConstruction::Interactive => {
+                        "interactive runtime exceeds its independent runtime limit"
+                    }
+                    RenderConstruction::BorrowedPauseSources => {
+                        "paused source monitor exceeds its independent runtime limit"
+                    }
+                    _ => "sampler export runtime exceeds its independent runtime limit",
                 },
             ))
     }
@@ -1692,7 +1702,10 @@ impl SessionPlayback {
     ) -> Result<Self, SessionPlaybackError> {
         let arrangement = revision.arrangement();
         let recipes = recipe_override.unwrap_or(&arrangement.source_effects);
-        let linear_arrangement_export = policy != RenderConstruction::Interactive;
+        let linear_arrangement_export = !matches!(
+            policy,
+            RenderConstruction::Interactive | RenderConstruction::BorrowedPauseSources
+        );
         let lacks_foreign_renderer = linear_arrangement_export
             && !matches!(
                 policy,
@@ -1968,6 +1981,7 @@ impl SessionPlayback {
             let runtime = revision
                 .session()
                 .mutable_instrument_factory(id)
+                .filter(|_| policy != RenderConstruction::BorrowedPauseSources)
                 .map(|factory| {
                     MutableInstrumentTrackRuntime::new(
                         factory,
