@@ -724,7 +724,7 @@ fn actual_paused_vst3_instrument_auditions_on_its_original_worker() {
             ])
             .env(CHILD, "1")
             .env("RUST_MIN_STACK", "16777216")
-            .env("HEX_ORIGINAL_INSTANCE_VARIANT", "146")
+            .env("HEX_ORIGINAL_INSTANCE_VARIANT", "127")
             .output()
             .unwrap();
         assert!(
@@ -740,6 +740,19 @@ fn actual_paused_vst3_instrument_auditions_on_its_original_worker() {
     const QUANTUM: usize = 256;
     let _serial = serial();
     let mut f = fixture_with_authored_mode("processing", 0, QUANTUM as u16, &[], true);
+    // This fixture accepts MIDI channel 0 and pitch 60 for both authored
+    // and keyboard gates. Sustain the authored note across the Pause cut.
+    let note = f.editor.project().tracks()[0].midi_clips()[0].notes()[0].id();
+    f.editor
+        .execute(Command::UpdateMidiNote {
+            note,
+            start: hex_project::BeatTime::ZERO,
+            duration: hex_project::BeatTime::ONE,
+            pitch: 60,
+            channel: 0,
+            velocity: 127,
+        })
+        .unwrap();
     f.editor
         .execute(Command::InsertMainDevice {
             before: None,
@@ -778,7 +791,14 @@ fn actual_paused_vst3_instrument_auditions_on_its_original_worker() {
         output
     };
     f.control.command(PlaybackCommand::Play).unwrap();
-    render(&mut f);
+    let mut authored = false;
+    for _ in 0..6 {
+        authored |= render(&mut f)
+            .iter()
+            .flatten()
+            .any(|sample| sample.abs() > 0.001);
+    }
+    assert!(authored, "the arrangement note must sound before Pause");
     f.control.command(PlaybackCommand::Pause).unwrap();
     render(&mut f);
     assert!(!f.control.status.playing.load(Acquire));
@@ -788,7 +808,7 @@ fn actual_paused_vst3_instrument_auditions_on_its_original_worker() {
         render(&mut f);
     }
     assert_eq!(render(&mut f), [[0.0; 2]; QUANTUM]);
-    keys.set_key(0, Some((67, 100, 1))).unwrap();
+    keys.set_key(0, Some((60, 100, 1))).unwrap();
     let mut heard = false;
     for _ in 0..6 {
         heard |= render(&mut f)
