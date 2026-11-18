@@ -409,7 +409,8 @@ fn live_audio_follows_target_track_through_its_group() {
             gain: 0.5,
         })
         .unwrap();
-    let mut reference = SessionPlayback::new(prepare(&f).unwrap()).unwrap();
+    let revision = prepare(&f).unwrap();
+    let mut reference = SessionPlayback::new(Arc::clone(&revision)).unwrap();
     *f.media.values_mut().next().unwrap() = crate::Audio::new(48_000, vec![[0.0; 2]; 512]).unwrap();
     let mut live = SessionPlayback::new(prepare(&f).unwrap()).unwrap();
     reference.apply(SessionPlaybackCommand::Play).unwrap();
@@ -429,6 +430,23 @@ fn live_audio_follows_target_track_through_its_group() {
     .unwrap();
     assert_eq!(actual, expected);
     assert!(actual.iter().any(|frame| *frame != [0.0; 2]));
+
+    // The paused graph retains the real clips. Supply opposite-polarity
+    // input so this comparison would fail if authored PCM leaked through.
+    let stopped = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+    let mut monitor = PausedTrackMonitor::prepare_on_control(
+        revision,
+        track,
+        MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES,
+    )
+    .unwrap();
+    let input: [Frame; 256] = std::array::from_fn(|index| f.samples[index].map(|sample| -sample));
+    for (input, output) in input.chunks(17).zip(actual.chunks_mut(17)) {
+        monitor.render(&stopped, input, output).unwrap();
+    }
+    assert_eq!(actual, expected.map(|frame| frame.map(|sample| -sample)));
+    assert_eq!(stopped.performance_frame(), 0);
+    assert_eq!(stopped.arrangement_frame(), 0);
 }
 
 #[test]
