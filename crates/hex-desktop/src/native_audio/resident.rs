@@ -9,9 +9,39 @@ use hex_engine::{
     playback::Playback,
 };
 use hex_session::service::{
+    DeviceInsertAudioReceipt, DeviceInsertAudioState, ResidentGraphSubmission,
     ResidentPublicationAcceptance, ResidentPublicationMetadata, ResidentPublicationPolicy,
     ResidentPublicationReadiness, ResidentPublicationRefusal, ResidentRuntimeLoop,
 };
+
+#[derive(Debug)]
+struct InsertReceipt {
+    submission: ResidentGraphSubmission,
+    receipt: hex_audio::prepared::CancellablePublicationReceipt,
+}
+
+impl DeviceInsertAudioReceipt for InsertReceipt {
+    fn submission(&self) -> ResidentGraphSubmission {
+        self.submission
+    }
+
+    fn state(&self) -> DeviceInsertAudioState {
+        use hex_audio::prepared::PublicationReceiptState as Receipt;
+        match self.receipt.state() {
+            Receipt::Pending => DeviceInsertAudioState::Pending,
+            Receipt::Applying => DeviceInsertAudioState::Applying,
+            Receipt::Installed => DeviceInsertAudioState::Installed,
+            Receipt::Cancelled => DeviceInsertAudioState::Cancelled,
+            Receipt::Expired => DeviceInsertAudioState::Expired,
+            Receipt::Refused(reason) => DeviceInsertAudioState::Refused(reason),
+            Receipt::OutputClosed => DeviceInsertAudioState::OutputClosed,
+        }
+    }
+
+    fn cancel(&self) -> bool {
+        self.receipt.cancel() == hex_audio::prepared::FreshRuntimeCancellationResult::Cancelled
+    }
+}
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 use std::time::Instant;
 
@@ -150,6 +180,26 @@ pub(super) fn classify_publication(
 }
 
 impl NativeAudioSink {
+    pub(super) fn retain_device_insert_receipt(
+        &mut self,
+        submission: ResidentGraphSubmission,
+    ) -> Option<Box<dyn DeviceInsertAudioReceipt>> {
+        let receipt = self
+            .output
+            .as_mut()?
+            .publication
+            .control()?
+            .fresh_runtime_receipt(submission.audio_revision)?;
+        (receipt.output_identity() == submission.output_identity
+            && receipt.context() == Some(submission.context))
+        .then(|| {
+            Box::new(InsertReceipt {
+                submission,
+                receipt,
+            }) as Box<_>
+        })
+    }
+
     /// Match the exact callback terminal before committing a native edit that
     /// requires confirmation. A timed-out graph cannot later install.
     pub(super) fn confirm_resident_edit_publication(
@@ -859,7 +909,32 @@ impl NativeAudioSink {
         {
             playback.defer_hosted_paused_source_monitor_on_control();
         }
-        if let ResidentPublicationPolicy::InheritRuntimeAt(expected) = policy {
+        let inserting_device = matches!(policy, ResidentPublicationPolicy::DeviceInsert { .. });
+        let hosted_insert = if matches!(
+            policy,
+            ResidentPublicationPolicy::DeviceInsert { hosted: true, .. }
+        ) {
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            let operation = self.plugins.device_insert_control(metadata.context);
+            #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+            let operation = None::<Arc<hex_session::service::PluginEffectControl>>;
+            let Some(operation) = operation else {
+                return Err(ResidentPublicationRefusal {
+                    kind: hex_session::service::ResidentPublicationFailure::Other,
+                    playback,
+                    error: "hosted insertion lost its prepared operation".into(),
+                });
+            };
+            Some(operation)
+        } else {
+            None
+        };
+        if let ResidentPublicationPolicy::InheritRuntimeAt(expected)
+        | ResidentPublicationPolicy::DeviceInsert {
+            predecessor: expected,
+            ..
+        } = policy
+        {
             match self.current_runtime_loop(metadata.context) {
                 Ok(Some(actual)) if actual == expected && section_loop == actual.section_loop => {}
                 Ok(_) => {
@@ -959,6 +1034,25 @@ impl NativeAudioSink {
                     )
                 });
             let policy = match policy {
+                ResidentPublicationPolicy::DeviceInsert {
+                    predecessor: expected,
+                    ..
+                } => {
+                    let source = control.status.recording_source().filter(|source| {
+                        source.output_identity == expected.output_identity
+                            && source.audio_revision == expected.audio_revision
+                            && Some(source.context) == expected.source_context
+                    });
+                    let fence = control.capture_fresh_runtime_fence();
+                    let (Some(predecessor), Some(fence)) = (source, fence) else {
+                        return Err(ResidentPublicationRefusal {
+                            kind: hex_session::service::ResidentPublicationFailure::Other,
+                            playback,
+                            error: "device insert lost its installed source".into(),
+                        });
+                    };
+                    hex_audio::prepared::PublicationPolicy::DeviceInsert { predecessor, fence }
+                }
                 ResidentPublicationPolicy::ArrangementEdit => {
                     let Some(policy) = section_policy else {
                         return Err(ResidentPublicationRefusal {
@@ -1096,52 +1190,67 @@ impl NativeAudioSink {
                         error: cancellation_error.into(),
                     });
                 }
-                #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-                let published = if retained_playback.has_foreign_continuation_states() {
-                    match self.plugins.sequenced_publication_request(
-                        Some(control),
-                        self.desired.as_deref(),
-                        metadata.context,
-                        &retained_playback,
-                    ) {
-                        Ok(Some(request))
-                            if continuation_fence
-                                == Some((
-                                    request.source,
-                                    request.transport_epoch,
-                                    request.playing,
-                                )) =>
-                        {
-                            control.publish_native_parameter_continuation_on_control(
-                                retained_playback,
-                                request,
-                                |prospective| admit(&[prospective, retired, pending]),
-                            )
+                let published = match policy {
+                    hex_audio::prepared::PublicationPolicy::DeviceInsert { .. } => control
+                        .publish_device_insert_with_receipt_on_control(
+                            retained_playback,
+                            policy,
+                            metadata.context,
+                            |receipt| {
+                                if let Some(operation) = hosted_insert.as_ref() {
+                                    operation.bind_device_insert_receipt(Box::new(InsertReceipt {
+                                        submission: ResidentGraphSubmission {
+                                            output_identity: receipt.output_identity(),
+                                            audio_revision: receipt.revision(),
+                                            context: metadata.context,
+                                        },
+                                        receipt: receipt.clone(),
+                                    }));
+                                }
+                            },
+                            |prospective| admit(&[prospective, retired, pending]),
+                        ),
+                    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                    _ if retained_playback.has_foreign_continuation_states() => {
+                        match self.plugins.sequenced_publication_request(
+                            Some(control),
+                            self.desired.as_deref(),
+                            metadata.context,
+                            &retained_playback,
+                        ) {
+                            Ok(Some(request))
+                                if continuation_fence
+                                    == Some((
+                                        request.source,
+                                        request.transport_epoch,
+                                        request.playing,
+                                    )) =>
+                            {
+                                control.publish_native_parameter_continuation_on_control(
+                                    retained_playback,
+                                    request,
+                                    |prospective| admit(&[prospective, retired, pending]),
+                                )
+                            }
+                            Ok(_) => Err(hex_audio::prepared::AdmittedPublishError::Admission {
+                                reason: "vst3 continuation gesture changed".into(),
+                                playback: retained_playback,
+                            }),
+                            Err(error) => {
+                                Err(hex_audio::prepared::AdmittedPublishError::Admission {
+                                    reason: error,
+                                    playback: retained_playback,
+                                })
+                            }
                         }
-                        Ok(_) => Err(hex_audio::prepared::AdmittedPublishError::Admission {
-                            reason: "vst3 continuation gesture changed".into(),
-                            playback: retained_playback,
-                        }),
-                        Err(error) => Err(hex_audio::prepared::AdmittedPublishError::Admission {
-                            reason: error,
-                            playback: retained_playback,
-                        }),
                     }
-                } else {
-                    control.publish_with_admission_and_source_on_control(
+                    _ => control.publish_with_admission_and_source_on_control(
                         retained_playback,
                         policy,
                         metadata.context,
                         |prospective| admit(&[prospective, retired, pending]),
-                    )
+                    ),
                 };
-                #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
-                let published = control.publish_with_admission_and_source_on_control(
-                    retained_playback,
-                    policy,
-                    metadata.context,
-                    |prospective| admit(&[prospective, retired, pending]),
-                );
                 // Observe the real Root refusal, never synthesize contention,
                 // source readiness, admission or an audio acknowledgement.
                 #[cfg(all(test, feature = "allocation-probe"))]
@@ -1154,7 +1263,8 @@ impl NativeAudioSink {
                 }
                 match published {
                     Err(hex_audio::prepared::AdmittedPublishError::Publication(error))
-                        if error.reason == "native graph preparation is busy" =>
+                        if !inserting_device
+                            && error.reason == "native graph preparation is busy" =>
                     {
                         // Root has not retained sources or enqueued the graph,
                         // but the caller's admission hook may already have won.
@@ -1237,6 +1347,7 @@ impl NativeAudioSink {
         if matches!(
             policy,
             ResidentPublicationPolicy::InheritRuntimeAt(_)
+                | ResidentPublicationPolicy::DeviceInsert { .. }
                 | ResidentPublicationPolicy::FreshIfUnchanged(_)
                 | ResidentPublicationPolicy::QuantizedSeekWhenReady { .. }
         ) {

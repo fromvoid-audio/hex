@@ -982,6 +982,7 @@ impl SessionPlayback {
             }
         }
         let force_restart = restart != Restart::None;
+        let continuous_insert = self.require_continuous_insert && previous.playing;
         if self.revision.arrangement().sample_rate()
             != previous.revision.arrangement().sample_rate()
         {
@@ -1131,6 +1132,14 @@ impl SessionPlayback {
             .timing()
             .same_map(previous.revision.session().timing());
         let mapped_main_clock = same_base_timing && new_loop_region == old_loop_region;
+        if continuous_insert
+            && (force_restart
+                || !mapped_main_clock
+                || self.revision.arrangement().main_latency_frames()
+                    != previous.revision.arrangement().main_latency_frames())
+        {
+            return Err(SessionPlaybackError::DeviceInsertNeedsConfirmation);
+        }
         let donor_epoch_matches = previous.compensation.as_ref().is_none_or(|old| {
             old.delays.latest_stamp().is_none_or(|stamp| {
                 !stamp.transport_is_running
@@ -1461,6 +1470,9 @@ impl SessionPlayback {
         let relocate = (planned_transfer.is_none() || force_restart)
             && !self.current_sampler_console
             && !self.revision.requires_control_sampler_sources();
+        if continuous_insert && relocate {
+            return Err(SessionPlaybackError::DeviceInsertNeedsConfirmation);
+        }
         // An ordinary reset cannot transfer a detached Return tail. A fenced
         // bounce has already baked that audio into the successor.
         if relocate
@@ -3281,9 +3293,19 @@ impl SessionPlayback {
                             .map_err(|_| SessionPlaybackError::TempoConversion)?
                             .max(previous.performance_frame)
                     };
+                    if continuous_insert
+                        && old_route.pending.is_some_and(|old| {
+                            old.frame.max(previous.performance_frame) != pending.frame
+                        })
+                    {
+                        return Err(SessionPlaybackError::DeviceInsertNeedsConfirmation);
+                    }
                     route.pending = Some(pending);
                 }
             }
+        }
+        if continuous_insert && report.cancelled_pending_len != 0 {
+            return Err(SessionPlaybackError::DeviceInsertNeedsConfirmation);
         }
         // Source/timing edits retain the historical global-floor policy: all
         // currently active Session MIDI routes need copied voices to bridge

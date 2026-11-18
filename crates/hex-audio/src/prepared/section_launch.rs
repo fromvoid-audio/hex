@@ -30,7 +30,7 @@ impl Callback {
         let cancelled = next
             .fresh_runtime_cancellation
             .as_ref()
-            .is_some_and(PublicationReceiptOwner::cancel_requested);
+            .is_some_and(PublicationReceiptOwner::fenced_before_admission);
         let stale = old.is_none_or(|old| {
             old.revision != fence.expected_active_revision
                 || old.playback.session_route_state_generation() != fence.route_state_generation

@@ -95,6 +95,7 @@ impl SessionPlayback {
             candidate_admission_open,
             live_restart: _,
             foreign_continuation,
+            require_continuous_insert: _,
         } = self;
         // The closed owner has no source effect lease or backing quote yet.
         if !source_effects.is_empty()

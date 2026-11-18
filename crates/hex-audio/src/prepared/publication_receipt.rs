@@ -10,6 +10,7 @@ use std::sync::{
         Ordering::{AcqRel, Acquire},
     },
 };
+use std::time::Instant;
 
 const PENDING: u32 = 0;
 const APPLYING: u32 = 1;
@@ -17,6 +18,7 @@ const CANCEL_REQUESTED: u32 = 2;
 const INSTALLED: u32 = 3;
 const CANCELLED: u32 = 4;
 const OUTPUT_CLOSED: u32 = 5;
+const EXPIRED: u32 = 6;
 const REFUSED: u32 = 16;
 
 /// Control-side result of cancelling a conditionally published fresh runtime.
@@ -41,19 +43,22 @@ pub enum PublicationReceiptState {
     Applying,
     Installed,
     Cancelled,
+    Expired,
     Refused(PlaybackHandoffRejection),
     OutputClosed,
 }
 
 /// Control-side receipt for one cancellable graph. It owns no graph,
 /// endpoints or output. Installation is permanent historical evidence.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct CancellablePublicationReceipt(Arc<Decision>);
 
+#[derive(Debug)]
 struct Decision {
     output_identity: u64,
     context: Option<AudioSourceContext>,
     revision: u64,
+    deadline: Option<Instant>,
     phase: AtomicU32,
 }
 
@@ -62,11 +67,13 @@ impl CancellablePublicationReceipt {
         output_identity: u64,
         context: Option<AudioSourceContext>,
         revision: u64,
+        deadline: Option<Instant>,
     ) -> Self {
         Self(Arc::new(Decision {
             output_identity,
             context,
             revision,
+            deadline,
             phase: AtomicU32::new(PENDING),
         }))
     }
@@ -85,11 +92,13 @@ impl CancellablePublicationReceipt {
 
     pub fn state(&self) -> PublicationReceiptState {
         use PublicationReceiptState::*;
+        self.expire_if_due();
         match self.0.phase.load(Acquire) {
             PENDING => Pending,
             APPLYING => Applying,
             INSTALLED => Installed,
             CANCEL_REQUESTED | CANCELLED => Cancelled,
+            EXPIRED => Expired,
             code => code
                 .checked_sub(REFUSED)
                 .and_then(PlaybackHandoffRejection::from_code)
@@ -101,6 +110,7 @@ impl CancellablePublicationReceipt {
     /// returns the graph to control.
     pub fn cancel(&self) -> FreshRuntimeCancellationResult {
         use FreshRuntimeCancellationResult::*;
+        self.expire_if_due();
         match self
             .0
             .phase
@@ -111,6 +121,32 @@ impl CancellablePublicationReceipt {
             Err(_) => Complete,
         }
     }
+
+    /// Seal an unapplied device insert after a witnessed fault of its output.
+    /// An admitted callback still owns its exact terminal.
+    pub(super) fn close_device_insert_on_fault(&self) {
+        if self.0.deadline.is_some() {
+            let _ = self
+                .0
+                .phase
+                .compare_exchange(PENDING, OUTPUT_CLOSED, AcqRel, Acquire);
+        }
+    }
+
+    fn expire_if_due(&self) {
+        // The control owner initializes the monotonic clock when creating the
+        // deadline. Only a device insert consults it on the callback.
+        if self
+            .0
+            .deadline
+            .is_some_and(|deadline| Instant::now() >= deadline)
+        {
+            let _ = self
+                .0
+                .phase
+                .compare_exchange(PENDING, EXPIRED, AcqRel, Acquire);
+        }
+    }
 }
 
 /// The queued graph retains the writer. Control destruction closes its
@@ -118,11 +154,16 @@ impl CancellablePublicationReceipt {
 pub(super) struct PublicationReceiptOwner(pub(super) CancellablePublicationReceipt);
 
 impl PublicationReceiptOwner {
-    pub(super) fn cancel_requested(&self) -> bool {
-        self.phase().load(Acquire) == CANCEL_REQUESTED
+    pub(super) fn fenced_before_admission(&self) -> bool {
+        self.0.expire_if_due();
+        matches!(
+            self.phase().load(Acquire),
+            CANCEL_REQUESTED | EXPIRED | OUTPUT_CLOSED
+        )
     }
 
     pub(super) fn begin_apply(&self) -> bool {
+        self.0.expire_if_due();
         self.phase()
             .compare_exchange(PENDING, APPLYING, AcqRel, Acquire)
             .is_ok()
@@ -144,7 +185,7 @@ impl PublicationReceiptOwner {
     }
 
     fn finish(&self, terminal: u32) -> bool {
-        // Cancel is the only competing writer and changes Pending at most once.
+        // Cancellation or expiry can win Pending only once.
         matches!(
             self.phase()
                 .fetch_update(AcqRel, Acquire, |phase| match phase {

@@ -1176,6 +1176,16 @@ impl NativeAudioSink {
     }
 }
 impl WorkerAudioSink for NativeAudioSink {
+    fn confirms_device_inserts(&self) -> bool {
+        true
+    }
+
+    fn device_insert_receipt(
+        &mut self,
+        submission: hex_session::service::ResidentGraphSubmission,
+    ) -> Option<Box<dyn hex_session::service::DeviceInsertAudioReceipt>> {
+        self.retain_device_insert_receipt(submission)
+    }
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     fn plugin_parameter_requires_stopped_restore(
         &mut self,

@@ -305,6 +305,11 @@ impl PublicationControl {
     /// Call only on the Session worker. No mutex spans publication, allocation,
     /// graph retirement, or a potentially owning destructor.
     pub fn poll_resident_publication(&mut self) {
+        if let Some(receipt) = self.latest_fresh_runtime_cancellation.as_ref()
+            && (self.status.device_fault.load(Acquire) || self.status.render_fault.load(Acquire))
+        {
+            receipt.close_device_insert_on_fault();
+        }
         let request = self
             .resident_forwarding
             .as_ref()

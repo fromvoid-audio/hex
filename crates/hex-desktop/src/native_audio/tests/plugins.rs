@@ -1676,10 +1676,12 @@ fn native_effect_real_work_contention_returns_through_session_for_both_timing_mo
                 output_frames: 512,
             }),
             crate::native_audio::plugins::FactsGate::new(reached, resumed),
+            None,
         );
         let initial = h.next();
         assert!(initial.error.is_none());
         h.applied(0);
+        h.enable_confirmed_device_inserts();
         let input = request(&initial.state, PluginEffectDestination::Main);
         h.service
             .submit(Request::InsertPluginEffect(input.clone()))
@@ -1713,6 +1715,10 @@ fn native_effect_real_work_contention_returns_through_session_for_both_timing_mo
             &input.control
         ));
         assert!(finished.plugin_effect_complete[0].accepted);
+        assert_eq!(
+            finished.device_insert_complete.unwrap().outcome,
+            hex_session::service::DeviceInsertOutcome::Installed,
+        );
         assert!(finished.error.is_none(), "{:?}", finished.error);
         assert_eq!(finished.state.revision, initial.state.revision + 1);
         assert_eq!(finished.state.project.main_devices().len(), 1);
@@ -1937,4 +1943,120 @@ fn native_effect_metadata_hold_survives_profile_refusal_without_opening_a_device
     let retained = sink.native_sampler_hold();
     assert_eq!(retained.retained_bytes, held.retained_bytes);
     assert_eq!(retained.construction_bytes, held.construction_bytes);
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
+fn staged_vst3_cancel_and_install_compete_while_the_session_worker_is_parked() {
+    use hex_session::service::{DeviceInsertCompletion, DeviceInsertOutcome};
+
+    let _native = native_fixture();
+    for cancel_first in [true, false] {
+        let mut h = ResidentHarness::with_plugins(
+            host(),
+            Some(EffectPresentation {
+                input_frames: 0,
+                output_frames: 512,
+            }),
+        );
+        let initial = h.next();
+        assert!(initial.error.is_none(), "{:?}", initial.error);
+        h.applied(0);
+        let predecessor = h
+            .audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .recording_source()
+            .unwrap();
+        let (prepared, enqueue, _busy) = h.probe_next_native_publication();
+        let (submitted, resume) = h.probe_next_submitted_device_insert();
+        let input = request(&initial.state, PluginEffectDestination::Main);
+        h.service
+            .submit(Request::InsertPluginEffect(input.clone()))
+            .unwrap();
+        let preparing = h.next();
+        assert!(preparing.error.is_none(), "{:?}", preparing.error);
+        assert_eq!(preparing.state.project, initial.state.project);
+        // Pump the original SDK endpoint to readiness. Stop driving the real
+        // callback at the pre-enqueue gate, then park the worker on the other
+        // side of enqueue so the test alone chooses the admission ordering.
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while prepared.try_recv().is_err() {
+            h.pump();
+            h.render_worker_step();
+            if let Ok(event) = h.service.try_event() {
+                panic!(
+                    "insert completed before preparing its graph: {:?}",
+                    event.error
+                );
+            }
+            assert!(Instant::now() < deadline, "graph preparation stalled");
+            std::thread::yield_now();
+        }
+        enqueue.send(()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let submission = loop {
+            if let Ok(submission) = submitted.try_recv() {
+                break submission;
+            }
+            h.pump();
+            if let Ok(event) = h.service.try_event() {
+                panic!(
+                    "insert completed before graph submission: {:?}",
+                    event.error
+                );
+            }
+            assert!(
+                Instant::now() < deadline,
+                "graph submission stalled: {:?}",
+                *h.plugin_failure.lock().unwrap(),
+            );
+            std::thread::yield_now();
+        };
+        assert_eq!(submission.output_identity, predecessor.output_identity);
+        assert!(submission.audio_revision > predecessor.audio_revision);
+        assert!(h.service.try_event().is_err());
+
+        if cancel_first {
+            assert!(input.control.cancel());
+        }
+        assert_eq!(h.render(), [[0.0; 2]; 64]);
+        let installed = h
+            .audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .recording_source()
+            .unwrap();
+        if cancel_first {
+            assert_eq!(installed, predecessor);
+        } else {
+            assert_eq!(installed.audio_revision, submission.audio_revision);
+            assert_eq!(installed.context, submission.context);
+            assert!(!input.control.cancel());
+        }
+        resume.send(()).unwrap();
+
+        let event = terminal(&mut h);
+        assert_eq!(
+            event.device_insert_complete,
+            Some(DeviceInsertCompletion {
+                submission,
+                outcome: if cancel_first {
+                    DeviceInsertOutcome::Cancelled
+                } else {
+                    DeviceInsertOutcome::Installed
+                },
+            }),
+        );
+        assert_eq!(event.plugin_effect_complete[0].accepted, !cancel_first);
+        assert_eq!(
+            event.state.project.main_devices().len(),
+            usize::from(!cancel_first)
+        );
+        assert_eq!(event.state.can_undo, !cancel_first);
+    }
 }

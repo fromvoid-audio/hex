@@ -142,6 +142,8 @@ pub enum SessionPlaybackError {
     /// An incompatible latency history cannot be transferred while transport
     /// retains its current position and processing state.
     LatencyLayoutChanged,
+    /// An insertion cannot inherit the running clock and audio continuously.
+    DeviceInsertNeedsConfirmation,
     /// Active source history cannot be adopted by the replacement provider.
     SourceHistoryUnavailable,
     /// The active detached receiver still owns effect history that must not
@@ -204,6 +206,9 @@ impl SessionPlaybackError {
             Self::DeviceRuntime => "session playback native device runtime is unavailable",
             Self::LatencyLayoutChanged => {
                 "latency layout could not change live · previous audio continues"
+            }
+            Self::DeviceInsertNeedsConfirmation => {
+                "device insertion needs confirmation before interrupting playback"
             }
             Self::SourceHistoryUnavailable | Self::DetachedReceiverHistoryUnavailable => {
                 "source history cannot transfer live · previous audio continues"
@@ -619,6 +624,7 @@ pub struct SessionPlayback {
     current_sampler_console: bool,
     route_state_generation: u64,
     candidate_admission_open: bool,
+    pub(crate) require_continuous_insert: bool,
     pub(crate) foreign_continuation: Option<Box<crate::playback::StoredForeignContinuation>>,
     // Control-side request that the live handoff restart at the cursor rather
     // than carry voices or detached tails the candidate already represents.
@@ -1042,6 +1048,7 @@ impl SessionPlayback {
             current_sampler_console: _,
             route_state_generation: _,
             candidate_admission_open: _,
+            require_continuous_insert: _,
             foreign_continuation,
             live_restart: _,
         } = self;
@@ -2327,6 +2334,7 @@ impl SessionPlayback {
             current_sampler_console: false,
             route_state_generation: 0,
             candidate_admission_open: true,
+            require_continuous_insert: false,
             foreign_continuation: None,
             live_restart: false,
         })
