@@ -2831,7 +2831,7 @@ mod harmonic_import;
 mod paused_track_monitor;
 pub use paused_track_monitor::{
     PausedKeyboardMonitor, PausedMonitorAdmissionError, PausedMonitorForeignBinding,
-    PausedMonitorStorageHold, PausedTrackMonitor,
+    PausedMonitorStorageHold, PausedSourceMonitor, PausedTrackMonitor,
 };
 mod preroll;
 mod render;

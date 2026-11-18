@@ -214,3 +214,188 @@ fn foreign_monitor_rejects_incomplete_and_nonindependent_effect_bindings_before_
         ..row
     }]);
 }
+
+#[test]
+fn paused_keyboard_with_hosted_effect_preserves_queued_pcm_and_effect_history() {
+    use crate::computer_keyboard::ComputerKeyboardInput;
+    use crate::{PausedSourceMonitor, PlaybackCommand};
+
+    let mut f = fixture(&[&[]], 1024);
+    let track = f.tracks[0];
+    f.editor
+        .execute(Command::InsertInstrument {
+            track,
+            state: hex_project::default_instrument_state().unwrap(),
+        })
+        .unwrap();
+    let Created::Device(device) = f
+        .editor
+        .execute(Command::InsertMainDevice {
+            before: None,
+            state: state(19).unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("effect device")
+    };
+    let definition = BorrowedDefinition {
+        binding_epoch: Some(1),
+        instances: vec![(
+            ProcessorInstanceIdentity::new(ProcessorChainOwner::Main, device.value()).unwrap(),
+            3,
+        )],
+        unbounded_tail: false,
+    };
+    let prepare = || {
+        Arc::new(
+            PreparedRevision::prepare_with_registries(
+                f.editor.project(),
+                &f.media,
+                Arc::new(SineTable::new()),
+                None,
+                &NativeDeviceRegistry::new(&[&definition]).unwrap(),
+                &hex_devices::native_instrument_registry().unwrap(),
+            )
+            .unwrap(),
+        )
+    };
+    let revision = prepare();
+    let original = processor(&revision);
+    let binding = original.binding().unwrap();
+    let private = ForeignProcessorBinding {
+        epoch: 2,
+        ..binding
+    };
+    let overlay = [PausedMonitorForeignBinding {
+        original: binding,
+        replacement: original.with_binding(private).unwrap(),
+    }];
+    let rejected = PausedSourceMonitor::prepare_admitted_on_control(
+        Arc::clone(&revision),
+        None,
+        &[],
+        0,
+        |_| -> Result<(), ()> { panic!("incomplete overlay reached admission") },
+    );
+    assert!(matches!(
+        rejected,
+        Err(PausedMonitorAdmissionError::Preparation(
+            SessionPlaybackError::InvalidCommand
+        ))
+    ));
+    let denied = PausedSourceMonitor::prepare_admitted_on_control(
+        Arc::clone(&revision),
+        None,
+        &overlay,
+        0,
+        |_| Err("capacity"),
+    );
+    assert!(matches!(
+        denied,
+        Err(PausedMonitorAdmissionError::Admission("capacity"))
+    ));
+
+    for partition in [1, 257] {
+        let (mut monitor, hold) = PausedSourceMonitor::prepare_admitted_on_control(
+            Arc::clone(&revision),
+            None,
+            &overlay,
+            0,
+            |_| Ok::<_, ()>(()),
+        )
+        .unwrap();
+        assert!(monitor.foreign_effect_bindings().eq([private]));
+        let mut paused = Playback::try_from_prepared_with_session(Arc::clone(&revision)).unwrap();
+        // Equal content has distinct revision identity, so it cannot borrow
+        // the paused runtime even when it reaches the same cursor.
+        let mut oracle = Playback::try_from_prepared_with_session(prepare()).unwrap();
+        let keys = Arc::new(ComputerKeyboardInput::default());
+        paused
+            .prepare_computer_keyboard(f.editor.project(), track, Arc::clone(&keys))
+            .unwrap();
+        let make_endpoint = |binding| Endpoint {
+            binding,
+            effect: Borrowed::new(ProcessorChainOwner::Main, device.value()),
+        };
+        let mut resident = make_endpoint(binding);
+        let mut expected_effect = make_endpoint(binding);
+        let mut audition = make_endpoint(private);
+        audition.effect.initial_unstamped_frames = usize::MAX;
+        for (player, endpoint) in [
+            (&mut paused, &mut resident),
+            (&mut oracle, &mut expected_effect),
+        ] {
+            player.apply(PlaybackCommand::Play);
+            let mut prefix = [[0.0; 2]; 5];
+            player
+                .render_with_foreign_processors(&mut prefix, None, None, None, endpoint)
+                .unwrap();
+            assert_eq!(prefix, [[0.0; 2]; 5]);
+            player.apply(PlaybackCommand::Pause);
+        }
+        let assert_refused = |player: &mut Playback, monitor: &mut PausedSourceMonitor| {
+            let mut output = [[1.0; 2]; 1];
+            let mut unused = make_endpoint(private);
+            assert!(
+                player
+                    .render_paused_source_monitor_with_foreign(
+                        monitor,
+                        &mut output,
+                        None,
+                        &mut unused
+                    )
+                    .is_err()
+            );
+            assert_eq!(output, [[0.0; 2]; 1]);
+            assert_eq!(unused.effect.processed, 0);
+            assert_eq!(unused.effect.rejections, 1);
+        };
+        assert_refused(&mut oracle, &mut monitor);
+
+        keys.set_key(0, Some((60, 100, 1))).unwrap();
+        let mut press = [[0.0; 2]; 257];
+        for chunk in press.chunks_mut(partition) {
+            audition.effect.next_offset = 0;
+            paused
+                .render_paused_source_monitor_with_foreign(&mut monitor, chunk, None, &mut audition)
+                .unwrap();
+        }
+        assert!(press.iter().any(|frame| *frame != [0.0; 2]));
+        assert!(press.iter().all(|frame| frame[0] == frame[1]));
+        keys.set_key(0, None).unwrap();
+        // The Sine envelope releases in 50 ms. Render long enough to
+        // compare the resumed PCM directly, after the keyboard has gone quiet.
+        let mut released = [[0.0; 2]; 2_500];
+        for chunk in released.chunks_mut(partition) {
+            audition.effect.next_offset = 0;
+            paused
+                .render_paused_source_monitor_with_foreign(&mut monitor, chunk, None, &mut audition)
+                .unwrap();
+        }
+        assert!(released.iter().any(|frame| *frame != [0.0; 2]));
+        assert_eq!(resident.effect.processed, 5);
+        assert_eq!(paused.position(), oracle.position());
+
+        paused.apply(PlaybackCommand::Play);
+        assert_refused(&mut paused, &mut monitor);
+        oracle.apply(PlaybackCommand::Play);
+        let mut resumed = [[0.0; 2]; 19];
+        let mut expected = resumed;
+        for (player, endpoint, frames) in [
+            (&mut paused, &mut resident, &mut resumed),
+            (&mut oracle, &mut expected_effect, &mut expected),
+        ] {
+            endpoint.effect.next_offset = 0;
+            player
+                .render_with_foreign_processors(frames, None, None, None, endpoint)
+                .unwrap();
+        }
+        assert_eq!(expected[14], [0.0625, -0.125]);
+        assert_eq!(resumed, expected, "partition {partition}");
+        paused.apply(PlaybackCommand::Pause);
+        assert_refused(&mut paused, &mut monitor);
+        assert!(!hold.released_on_control());
+        drop(monitor);
+        assert!(hold.released_on_control());
+    }
+}

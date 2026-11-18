@@ -826,7 +826,7 @@ impl Playback {
         revision: &PreparedRevision,
         resources: Option<&crate::native_device_resources::PreparedDeviceResources>,
     ) -> Result<usize, Invalid> {
-        crate::PausedTrackMonitor::resident_allowance(revision, resources)
+        crate::PausedTrackMonitor::resident_allowance(revision, resources, &[])
             .map_err(|error| Invalid(error.diagnostic_message()))
     }
 
@@ -849,6 +849,7 @@ impl Playback {
         let monitor = crate::PausedTrackMonitor::prepare_resident_graph(
             Arc::clone(revision),
             resources,
+            &[],
             allowance,
         )
         .map_err(|error| Invalid(error.diagnostic_message()))?;
@@ -2734,6 +2735,35 @@ impl Playback {
         monitor
             .render_with_foreign(self.paused_monitor_runtime(output)?, input, output, foreign)
             .map_err(|error| Invalid(error.diagnostic_message()))
+    }
+
+    /// Render loaned resident notes through the private downstream graph.
+    /// The host must route instrument calls to the original worker, effect
+    /// calls to the monitor's exact workers, and accept staging only after
+    /// final output conversion. On error it retires the monitor on control.
+    /// Resume, Stop, seek (even to the same frame), and source replacement
+    /// end this activation and require fresh ownership before rendering again.
+    pub fn render_paused_source_monitor_with_foreign(
+        &mut self,
+        monitor: &mut crate::PausedSourceMonitor,
+        output: &mut [Frame],
+        observer: Option<&mut crate::NodeSignalObserver<'_>>,
+        foreign: &mut dyn hex_lattice::ForeignProcessors,
+    ) -> Result<(), Invalid> {
+        let settled = self.pending_transport_fade().is_none();
+        let result = match self.session_runtime.as_mut() {
+            Some(runtime) if settled => monitor
+                .render(runtime, output, observer, foreign)
+                .map_err(|error| Invalid(error.diagnostic_message())),
+            _ => Err(Invalid(
+                "paused source monitoring requires a settled session runtime",
+            )),
+        };
+        if result.is_err() {
+            foreign.reject_callback();
+            output.fill([0.0; 2]);
+        }
+        result
     }
 
     /// Continue the same monitor callback with zero input. The final block
