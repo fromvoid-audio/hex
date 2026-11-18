@@ -816,7 +816,9 @@ fn duplicate_and_undo_keep_row_measurements_and_scroll_anchor(cx: &mut TestAppCo
         cx.notify();
     });
     visual.run_until_parked();
-    let original_height = bounds(&mut visual, following).size.height;
+    let following_header =
+        Box::leak(format!("arrangement-track-header-{}", following.value()).into_boxed_str());
+    let original_height = visual.debug_bounds(following_header).unwrap().size.height;
     let resize = visual
         .debug_bounds(Box::leak(
             format!("track-height-resize-{}", following.value()).into_boxed_str(),
@@ -829,7 +831,7 @@ fn duplicate_and_undo_keep_row_measurements_and_scroll_anchor(cx: &mut TestAppCo
     visual.simulate_mouse_up(released, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
     let anchor_before = bounds(&mut visual, anchor);
-    let following_before = bounds(&mut visual, following);
+    let following_before = visual.debug_bounds(following_header).unwrap();
     assert_eq!(following_before.size.height, original_height + px(20.0));
     select(&mut visual, source, false);
 
@@ -849,9 +851,15 @@ fn duplicate_and_undo_keep_row_measurements_and_scroll_anchor(cx: &mut TestAppCo
             );
         });
         assert_eq!(bounds(&mut visual, anchor), anchor_before);
-        assert_eq!(bounds(&mut visual, following).size, following_before.size);
+        assert_eq!(
+            visual.debug_bounds(following_header).unwrap().size,
+            following_before.size
+        );
     }
-    assert_eq!(bounds(&mut visual, following), following_before);
+    assert_eq!(
+        visual.debug_bounds(following_header),
+        Some(following_before)
+    );
 }
 
 #[gpui::test]

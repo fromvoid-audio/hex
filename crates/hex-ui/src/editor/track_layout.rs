@@ -165,6 +165,25 @@ fn single_row_move(old: &[TrackId], new: &[TrackId]) -> Option<(usize, usize)> {
     }
 }
 
+/// A contiguous insertion or removal preserves measurements on either side.
+fn row_count_change(old: &[TrackId], new: &[TrackId]) -> Option<(std::ops::Range<usize>, usize)> {
+    let start = old
+        .iter()
+        .zip(new)
+        .take_while(|(old, new)| old == new)
+        .count();
+    if new.len() > old.len() {
+        let inserted = new.len() - old.len();
+        (old[start..] == new[start + inserted..]).then_some((start..start, inserted))
+    } else if old.len() > new.len() {
+        let removed = old.len() - new.len();
+        let end = start + removed;
+        (old[end..] == new[start..]).then_some((start..end, 0))
+    } else {
+        None
+    }
+}
+
 impl EditorView {
     /// Arrangement-only A/Shift+A/H/Q after child input. Text and capture retain ownership.
     pub(super) fn arrangement_view_key(
@@ -608,10 +627,13 @@ impl EditorView {
                 self.track_scroll.list.splice(from..from + 1, 0);
                 self.track_scroll.list.splice(to..to, 1);
                 let _ = self.track_scroll.list.clone().measure_all();
+            } else if let Some((removed, inserted)) =
+                row_count_change(&self.track_layout.tracks, &ids)
+            {
+                self.track_scroll.list.splice(removed, inserted);
+                let _ = self.track_scroll.list.clone().measure_all();
             } else {
-                // Adds/removals or other structural changes keep the existing
-                // full measurement path. Width/height invalidations remain
-                // owned by their existing layout paths.
+                // Other structural changes keep the full measurement path.
                 self.track_scroll.list.reset(ids.len());
             }
             self.track_scroll.list.scroll_to(top);
