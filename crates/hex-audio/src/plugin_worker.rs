@@ -33,6 +33,11 @@ pub use hex_plugin_host::protocol::{
 pub struct SlowPluginExchange {
     pub binding: Binding,
     pub sequence: u64,
+    /// Wall time between this worker's last empty live poll and the return of
+    /// the next accepted pickup. No empty observation means no sample. The
+    /// callback's publish timestamp is unavailable, so this interval can
+    /// include time before publication as well as receipt validation.
+    pub empty_poll_to_pickup_ns: Option<u64>,
     pub exchange_ns: u64,
     pub sdk_process_ns: u64,
     pub quantum_ns: u64,
@@ -656,6 +661,8 @@ fn transport_runner_with_setup(
             }
         }
         let mut empty_since = None;
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        let mut last_empty_poll: Option<Instant> = None;
         loop {
             let Some(state) = guard.owner_mut() else {
                 fault = Some(Fault::Protocol);
@@ -671,6 +678,11 @@ fn transport_runner_with_setup(
                     editor_scope,
                 })) => {
                     empty_since = None;
+                    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                    let empty_poll_to_pickup_ns = last_empty_poll
+                        .take()
+                        .and_then(|empty| Instant::now().checked_duration_since(empty))
+                        .and_then(|elapsed| u64::try_from(elapsed.as_nanos()).ok());
                     let dense = dense_parameter.as_ref().map(|request| request.lane());
                     let authored = authored_program.is_some() || dense.is_some();
                     #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
@@ -752,6 +764,7 @@ fn transport_runner_with_setup(
                             published.publish_slow_exchange(SlowPluginExchange {
                                 binding,
                                 sequence,
+                                empty_poll_to_pickup_ns,
                                 exchange_ns,
                                 sdk_process_ns,
                                 quantum_ns,
@@ -805,7 +818,12 @@ fn transport_runner_with_setup(
                     if published.offline.is_some() {
                         thread::park_timeout(OFFLINE_IDLE);
                     } else {
-                        thread::sleep(live_poll_wait(&mut empty_since, Instant::now()));
+                        let now = Instant::now();
+                        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                        if matches!(state.processor, Some(Processor::Native(_))) {
+                            last_empty_poll = Some(now);
+                        }
+                        thread::sleep(live_poll_wait(&mut empty_since, now));
                     }
                 }
                 Err(Fault::Revoked) => break,
@@ -1234,6 +1252,7 @@ mod tests {
                 epoch: 4,
             },
             sequence: 7,
+            empty_poll_to_pickup_ns: Some(300),
             exchange_ns: 900,
             sdk_process_ns: 400,
             quantum_ns: 800,

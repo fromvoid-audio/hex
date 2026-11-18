@@ -143,6 +143,14 @@ fn slow_native_instrument_exchange_reaches_the_session_log() {
     };
     let exchange = number("exchange_ns=");
     let sdk = number("sdk_process_ns=");
+    let pickup = line
+        .split_whitespace()
+        .find_map(|field| field.strip_prefix("empty_poll_to_pickup_ns="))
+        .unwrap();
+    assert!(
+        pickup == "unavailable" || pickup.parse::<u64>().is_ok(),
+        "{line}"
+    );
     assert_eq!(number("sequence="), 0, "{line}");
     assert!(sdk >= 15_000_000 && exchange >= sdk, "{line}");
     assert_eq!(number("quantum_ns="), 5_333_333);
