@@ -81,8 +81,132 @@ fn cold_track_add_and_remove_preserve_pcm_without_callback_allocations()
 }
 
 #[test]
+fn sounding_track_removal_preserves_other_pcm_without_callback_allocations()
+-> Result<(), Box<dyn Error>> {
+    verify_sounding_track_removal(false)
+}
+
+#[test]
+fn looped_sounding_track_removal_preserves_other_pcm_without_callback_allocations()
+-> Result<(), Box<dyn Error>> {
+    verify_sounding_track_removal(true)
+}
+
+fn verify_sounding_track_removal(looped: bool) -> Result<(), Box<dyn Error>> {
+    let mut editor = Editor::new(Project::new(RATE)?, 8)?;
+    let Created::Imported { track, asset, .. } = editor.execute(Command::ImportAudioTrack {
+        name: "source".into(),
+        path: "memory/source.wav".into(),
+        sample_rate: RATE,
+        frames: 4096,
+    })?
+    else {
+        return Err("expected source".into());
+    };
+    editor.execute(Command::InsertDevice {
+        track,
+        before: None,
+        state: hex_engine::default_native_device_state(DeviceTypeId::from_static("hex.limiter"))?,
+    })?;
+    if looped {
+        editor.execute(Command::SetLoopRegion {
+            start: 0,
+            end: 384,
+            enabled: true,
+        })?;
+    }
+    let mut media = BTreeMap::from([(asset, Audio::new(RATE, vec![[0.25, -0.125]; 4096])?)]);
+    let table = Arc::new(SineTable::new());
+    let reference = Arc::new(PreparedRevision::prepare(
+        editor.project(),
+        &media,
+        Arc::clone(&table),
+        None,
+    )?);
+    let mut oracle = Playback::try_from_prepared_with_session(reference)?;
+    oracle.apply(PlaybackCommand::Play);
+    let Created::Imported {
+        track: removed,
+        asset: removed_asset,
+        ..
+    } = editor.execute(Command::ImportAudioTrack {
+        name: "removed".into(),
+        path: "memory/removed.wav".into(),
+        sample_rate: RATE,
+        frames: 4096,
+    })?
+    else {
+        return Err("expected removed track".into());
+    };
+    media.insert(removed_asset, Audio::new(RATE, vec![[0.125; 2]; 4096])?);
+    let first = Arc::new(PreparedRevision::prepare(
+        editor.project(),
+        &media,
+        Arc::clone(&table),
+        None,
+    )?);
+    let (mut control, mut callback) = prepared::channel(RATE)?;
+    control
+        .publish(Playback::try_from_prepared_with_session(first)?)
+        .map_err(|_| "initial publication")?;
+    control.command(PlaybackCommand::Play).map_err(|_| "play")?;
+    let mut actual = [[0.0; 2]; 512];
+    let mut expected = actual;
+    measured_block(&mut callback, &mut actual);
+    oracle.render(&mut expected)?;
+    editor.execute(Command::RemoveTrack(removed))?;
+    let next = Arc::new(PreparedRevision::prepare(
+        editor.project(),
+        &media,
+        table,
+        None,
+    )?);
+    control
+        .publish(Playback::try_from_prepared_with_session(next)?)
+        .map_err(|_| "updated publication")?;
+    measured_block(&mut callback, &mut actual);
+    oracle.render(&mut expected)?;
+    assert_eq!(actual, expected);
+    assert!(actual.iter().flatten().any(|sample| *sample != 0.0));
+    control.request_shutdown();
+    measured_shutdown(&mut callback, &mut actual);
+    control.reclaim();
+    Ok(())
+}
+
+#[test]
 fn future_audio_track_add_preserves_pcm_without_callback_allocations() -> Result<(), Box<dyn Error>>
 {
+    verify_added_audio_track(AddedAudio::Future)
+}
+
+#[test]
+fn ended_audio_track_add_preserves_pcm_without_callback_allocations() -> Result<(), Box<dyn Error>>
+{
+    verify_added_audio_track(AddedAudio::Ended)
+}
+
+#[test]
+fn active_audio_track_add_preserves_pcm_without_callback_allocations() -> Result<(), Box<dyn Error>>
+{
+    verify_added_audio_track(AddedAudio::Active)
+}
+
+#[test]
+fn looped_active_audio_track_add_preserves_pcm_without_callback_allocations()
+-> Result<(), Box<dyn Error>> {
+    verify_added_audio_track(AddedAudio::LoopActive)
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AddedAudio {
+    Future,
+    Ended,
+    Active,
+    LoopActive,
+}
+
+fn verify_added_audio_track(case: AddedAudio) -> Result<(), Box<dyn Error>> {
     let mut editor = Editor::new(Project::new(RATE)?, 8)?;
     let Created::Imported { track, asset, .. } = editor.execute(Command::ImportAudioTrack {
         name: "source".into(),
@@ -98,6 +222,13 @@ fn future_audio_track_add_preserves_pcm_without_callback_allocations() -> Result
         before: None,
         state: hex_engine::default_native_device_state(DeviceTypeId::from_static("hex.limiter"))?,
     })?;
+    if case == AddedAudio::LoopActive {
+        editor.execute(Command::SetLoopRegion {
+            start: 0,
+            end: 4096,
+            enabled: true,
+        })?;
+    }
     let mut media = BTreeMap::from([(asset, Audio::new(RATE, vec![[0.25, -0.125]; 4096])?)]);
     let table = Arc::new(SineTable::new());
     let first = Arc::new(PreparedRevision::prepare(
@@ -118,6 +249,107 @@ fn future_audio_track_add_preserves_pcm_without_callback_allocations() -> Result
     measured_block(&mut callback, &mut actual);
     oracle.render(&mut expected)?;
     assert_eq!(actual, expected);
+    let frames = if case == AddedAudio::Ended { 16 } else { 1024 };
+    let Created::Imported {
+        track: added,
+        asset: added_asset,
+        clip,
+    } = editor.execute(Command::ImportAudioTrack {
+        name: "later".into(),
+        path: "memory/later.wav".into(),
+        sample_rate: RATE,
+        frames,
+    })?
+    else {
+        return Err("expected added track".into());
+    };
+    if case == AddedAudio::Future {
+        editor.execute(Command::MoveClip {
+            clip,
+            track: added,
+            start: 2048,
+        })?;
+    }
+    media.insert(
+        added_asset,
+        Audio::new(RATE, vec![[0.125; 2]; frames as usize])?,
+    );
+    let next = Arc::new(PreparedRevision::prepare(
+        editor.project(),
+        &media,
+        table,
+        None,
+    )?);
+    let latency = next.arrangement().main_latency_frames() as usize;
+    control
+        .publish(Playback::try_from_prepared_with_session(next)?)
+        .map_err(|_| "updated publication")?;
+    measured_block(&mut callback, &mut actual);
+    oracle.render(&mut expected)?;
+    if matches!(case, AddedAudio::Active | AddedAudio::LoopActive) {
+        assert!(latency > 0 && latency < actual.len());
+        for (index, (actual, expected)) in actual.iter().zip(&expected).enumerate() {
+            let added = if index < latency { 0.0 } else { 0.125 };
+            assert_eq!(
+                *actual,
+                [expected[0] + added, expected[1] + added],
+                "frame {index}"
+            );
+        }
+    } else {
+        assert_eq!(actual, expected);
+    }
+    assert!(actual.iter().flatten().any(|sample| *sample != 0.0));
+    control.request_shutdown();
+    measured_shutdown(&mut callback, &mut actual);
+    control.reclaim();
+    Ok(())
+}
+
+#[test]
+fn future_audio_track_during_loop_preserves_pcm_without_callback_allocations()
+-> Result<(), Box<dyn Error>> {
+    let mut editor = Editor::new(Project::new(RATE)?, 8)?;
+    let Created::Imported { track, asset, .. } = editor.execute(Command::ImportAudioTrack {
+        name: "source".into(),
+        path: "memory/source.wav".into(),
+        sample_rate: RATE,
+        frames: 4096,
+    })?
+    else {
+        return Err("expected source track".into());
+    };
+    editor.execute(Command::InsertDevice {
+        track,
+        before: None,
+        state: hex_engine::default_native_device_state(DeviceTypeId::from_static("hex.limiter"))?,
+    })?;
+    editor.execute(Command::SetLoopRegion {
+        start: 0,
+        end: 2048,
+        enabled: true,
+    })?;
+    let mut media = BTreeMap::from([(asset, Audio::new(RATE, vec![[0.25, -0.125]; 4096])?)]);
+    let table = Arc::new(SineTable::new());
+    let first = Arc::new(PreparedRevision::prepare(
+        editor.project(),
+        &media,
+        Arc::clone(&table),
+        None,
+    )?);
+    let mut old_oracle = Playback::try_from_prepared_with_session(Arc::clone(&first))?;
+    old_oracle.apply(PlaybackCommand::Play);
+    let (mut control, mut callback) = prepared::channel(RATE)?;
+    control
+        .publish(Playback::try_from_prepared_with_session(first)?)
+        .map_err(|_| "initial publication")?;
+    control.command(PlaybackCommand::Play).map_err(|_| "play")?;
+    let mut actual = [[0.0; 2]; 512];
+    measured_block(&mut callback, &mut actual);
+    let mut old_expected = [[0.0; 2]; 512];
+    old_oracle.render(&mut old_expected)?;
+    assert_eq!(actual, old_expected);
+
     let Created::Imported {
         track: added,
         asset: added_asset,
@@ -134,7 +366,7 @@ fn future_audio_track_add_preserves_pcm_without_callback_allocations() -> Result
     editor.execute(Command::MoveClip {
         clip,
         track: added,
-        start: 2048,
+        start: 1024,
     })?;
     media.insert(added_asset, Audio::new(RATE, vec![[0.125; 2]; 1024])?);
     let next = Arc::new(PreparedRevision::prepare(
@@ -143,13 +375,23 @@ fn future_audio_track_add_preserves_pcm_without_callback_allocations() -> Result
         table,
         None,
     )?);
+    let mut oracle = Playback::try_from_prepared_with_session(Arc::clone(&next))?;
+    oracle.apply(PlaybackCommand::Play);
+    let mut expected = [[0.0; 2]; 512];
+    oracle.render(&mut expected)?;
+    assert_eq!(actual, expected);
     control
         .publish(Playback::try_from_prepared_with_session(next)?)
         .map_err(|_| "updated publication")?;
-    measured_block(&mut callback, &mut actual);
-    oracle.render(&mut expected)?;
-    assert_eq!(actual, expected);
-    assert!(actual.iter().flatten().any(|sample| *sample != 0.0));
+    let mut added_is_audible = false;
+    for _ in 0..4 {
+        measured_block(&mut callback, &mut actual);
+        oracle.render(&mut expected)?;
+        old_oracle.render(&mut old_expected)?;
+        added_is_audible |= expected != old_expected;
+        assert_eq!(actual, expected);
+    }
+    assert!(added_is_audible, "the added track must reach the output");
     control.request_shutdown();
     measured_shutdown(&mut callback, &mut actual);
     control.reclaim();

@@ -124,6 +124,20 @@ impl<'a, 'definitions> AudioCandidateEffects<'a, 'definitions> {
             self.registry,
         )
     }
+    /// Quote a candidate containing both effects and verified derived streams.
+    pub fn quote_with_pitched_streams(
+        &self,
+        project: &Project,
+        sources: usize,
+        streams: &[crate::StreamedSourceMetadata],
+    ) -> Result<super::AudioCandidateReservationQuote, AudioStorageError> {
+        super::AudioCandidateReservationQuote::for_project_with_effects_and_streams(
+            project,
+            sources,
+            streams,
+            self.registry,
+        )
+    }
     /// Add only the armed slot/growth delta to the existing complete caller quote.
     /// Existing device row envelopes already reserve each automation vector family.
     pub fn quote_with_native_parameter_input(
@@ -473,6 +487,41 @@ impl AudioCandidatePreparation {
         }
         self.validate_collection_bytes(std::mem::size_of::<crate::StreamedSourceMetadata>())?;
         let source = crate::OwnedAudioSource::try_repitch_streamed(metadata)
+            .map_err(|refused| refused.reason)?;
+        self.sources.push((key.asset(), source));
+        Ok(())
+    }
+    /// Retain a granular stream only alongside its exact original source facts.
+    pub fn add_granular_streamed_source_on_control(
+        &mut self,
+        metadata: crate::StreamedSourceMetadata,
+    ) -> Result<(), AudioStorageError> {
+        use crate::audio_only_inputs::SourceKind;
+        self.collecting_slot()?;
+        let key = metadata.key();
+        let raw = self
+            .sources
+            .iter()
+            .find_map(|(asset, source)| {
+                if *asset != key.asset() {
+                    return None;
+                }
+                match &source.kind {
+                    SourceKind::Streamed(raw) if raw.key().is_raw() => Some(raw),
+                    _ => None,
+                }
+            })
+            .ok_or(AudioStorageError::SourceMismatch)?;
+        if !metadata.is_granular_of(raw) {
+            return Err(AudioStorageError::SourceMismatch);
+        }
+        if self.sources.iter().any(
+            |(_, source)| matches!(&source.kind, SourceKind::Streamed(old) if old.key() == key),
+        ) {
+            return Err(AudioStorageError::DuplicateAsset);
+        }
+        self.validate_collection_bytes(std::mem::size_of::<crate::StreamedSourceMetadata>())?;
+        let source = crate::OwnedAudioSource::try_granular_streamed(metadata)
             .map_err(|refused| refused.reason)?;
         self.sources.push((key.asset(), source));
         Ok(())

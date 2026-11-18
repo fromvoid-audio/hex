@@ -580,9 +580,8 @@ fn pure_sine_spectrum_matches_table_across_phases_and_interpolation_modes() {
             let actual = spectrum.sample_policy(
                 0,
                 phase,
-                1 << 54,
                 0,
-                1 << 54,
+                || panic!("pure sine sampling does not require a harmonic pitch step"),
                 table,
                 bank,
                 phase_table,

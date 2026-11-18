@@ -20,7 +20,10 @@
 //! graph replacement. Queued explicit Stop, foreign/unbound inputs and lifecycle shutdown remain
 //! terminal. Epoch transitions and note snapshots perform no callback allocation or reclamation.
 use crate::{
-    audio_diagnostics::{self, AudioDiagnosticEvent, AudioDiagnosticKind, AudioDiagnosticsFlags},
+    audio_diagnostics::{
+        self, AudioDiagnosticEvent, AudioDiagnosticKind, AudioDiagnosticsFlags,
+        PublicationWaitReason,
+    },
     processor_audition, spectrum_target,
     spectrum_worker::{SpectrumCapture, SpectrumStamp},
 };
@@ -72,6 +75,10 @@ pub use action_outcomes::{
 };
 mod admission;
 mod eligible_publication;
+#[cfg(target_os = "macos")]
+mod output_presentation;
+#[cfg(target_os = "macos")]
+pub(crate) use output_presentation::PluginOutputFence;
 mod endpoints;
 pub(crate) mod retired_scalar_receipts;
 pub use retired_scalar_receipts::{
@@ -1318,6 +1325,8 @@ pub struct Control {
 }
 /// The unique worker-side publication/return endpoint; never a UI command client.
 pub struct PublicationControl {
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    paused_notes: input_monitor::Control,
     foreign_parameter_delivery: Option<crate::foreign_parameter_delivery::Control>,
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     foreign_editor_delivery: Option<crate::foreign_parameter_delivery::editor::Control>,
@@ -1340,6 +1349,31 @@ pub struct PublicationControl {
     latest_fresh_runtime_cancellation: Option<Arc<FreshRuntimeCancellation>>,
 }
 impl PublicationControl {
+    /// Publish one private note monitor for the exact settled pause. The
+    /// caller retains its storage hold and the corresponding native sources
+    /// until this worker reclaims the monitor. Refusal returns the same owner.
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub fn publish_paused_note_monitor(
+        &mut self,
+        monitor: hex_engine::PausedSourceMonitor,
+        source: AppliedAudioSource,
+        transport_epoch: u64,
+    ) -> Result<(), hex_engine::PausedSourceMonitor> {
+        if !self.native_custody
+            || self.status.paused_note_source() != Some((source, transport_epoch))
+        {
+            return Err(monitor);
+        }
+        self.paused_notes
+            .publish_paused_source(monitor, source, transport_epoch)
+    }
+
+    /// Observe the worker's last note monitor activation or termination.
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub fn paused_note_monitor_status(&self) -> input_monitor::MonitorStatus {
+        self.paused_notes.status()
+    }
+
     /// Configure optional tracing on control. Default is off; old records may
     /// still be drained after disabling. The music/fault queues are independent.
     pub fn set_audio_diagnostics(&self, flags: AudioDiagnosticsFlags) {
@@ -1442,6 +1476,10 @@ pub struct Callback {
     action_writer: Option<action_outcomes::Writer>,
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     native_sources: crate::candidate_custody::NativeEndpointBank,
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    paused_native_sources: crate::candidate_custody::NativeEndpointBank,
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    paused_monitor_host_frames: Option<usize>,
     plugin_callback_quantum: Option<u16>,
     output_transport: Option<Box<hex_plugin_host::transport::Callback>>,
     output_transport_cancelled: bool,
@@ -1449,6 +1487,8 @@ pub struct Callback {
     sample_preview: crate::sample_preview::Callback,
     sample_recording: crate::sample_recording::Callback,
     input_monitor: input_monitor::Callback,
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    paused_notes: input_monitor::Callback,
     publications: Consumer<QueuedPublication>,
     retired: Producer<ReturnedPublication>,
     candidate_root: crate::candidate_custody::CandidateRoot,
@@ -1512,7 +1552,7 @@ pub struct Callback {
 pub(crate) fn native_endpoint_bank_storage_quote() -> Option<usize> {
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     {
-        crate::candidate_custody::NativeEndpointBank::data_quote()
+        crate::candidate_custody::NativeEndpointBank::data_quote()?.checked_mul(2)
     }
     #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
     {
@@ -1544,6 +1584,8 @@ pub(crate) fn channel_with_interface(
         return Err(Invalid("unsupported playback sample rate"));
     }
     let (input_monitor, callback_input_monitor) = input_monitor::channel(rate);
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    let (paused_notes, callback_paused_notes) = input_monitor::channel(rate);
     let (mut sample_preview, callback_preview) = crate::sample_preview::channel(rate);
     let (sample_recording, callback_recording) = crate::sample_recording::channel(rate);
     let (publications, incoming) = RingBuffer::new(1);
@@ -1591,6 +1633,8 @@ pub(crate) fn channel_with_interface(
             midi_recording,
             command_ticket: 0,
             publication: PublicationControl {
+                #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                paused_notes,
                 foreign_parameter_delivery: Some(foreign_parameter_delivery),
                 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
                 foreign_editor_delivery: Some(foreign_editor_delivery),
@@ -1618,6 +1662,11 @@ pub(crate) fn channel_with_interface(
             action_writer: None,
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             native_sources: crate::candidate_custody::NativeEndpointBank::new().map_err(Invalid)?,
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            paused_native_sources: crate::candidate_custody::NativeEndpointBank::new()
+                .map_err(Invalid)?,
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            paused_monitor_host_frames: None,
             plugin_callback_quantum: None,
             output_transport: None,
             output_transport_cancelled: false,
@@ -1625,6 +1674,8 @@ pub(crate) fn channel_with_interface(
             sample_preview: callback_preview,
             sample_recording: callback_recording,
             input_monitor: callback_input_monitor,
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            paused_notes: callback_paused_notes,
             candidate_root,
             publications: incoming,
             retired: returning,
@@ -2471,6 +2522,8 @@ impl PublicationControl {
     }
     /// Bounded reclamation on the control thread, including final PCM drops.
     pub fn reclaim(&mut self) -> usize {
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        self.paused_notes.reclaim();
         self.status.retire_stopped_edit_on_control();
         let mut count = 0;
         for _ in 0..RETIRED {
@@ -2822,6 +2875,11 @@ impl PublicationControl {
 }
 
 impl Callback {
+    fn reject_paused_monitors(&mut self, reason: input_monitor::MonitorStatus) {
+        self.input_monitor.reject_paused(reason);
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        self.paused_notes.reject_paused(reason);
+    }
     /// Construct an original whole-output transport profile before callback
     /// exposure. This does not admit a device, graph node or native worker.
     /// Native resource admission remains unavailable until device insertion
@@ -3016,7 +3074,9 @@ impl Callback {
                 shared_handles: 0,
             })?;
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-        let storage = storage.plus(self.foreign_editor_delivery.constructor_channel_storage()?)?;
+        let storage = storage
+            .plus(self.foreign_editor_delivery.constructor_channel_storage()?)?
+            .plus(self.paused_notes.constructor_channel_storage()?)?;
         Some(storage)
     }
 
@@ -3044,7 +3104,9 @@ impl Callback {
     pub(crate) fn native_endpoint_bank_data_bytes(&self) -> Option<usize> {
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         {
-            self.native_sources.data_bytes()
+            self.native_sources
+                .data_bytes()?
+                .checked_add(self.paused_native_sources.data_bytes()?)
         }
         #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
         {
@@ -3336,11 +3398,16 @@ impl Callback {
     }
     fn begin_block_inner(&mut self) {
         self.transport_setup_open = false;
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        {
+            self.paused_monitor_host_frames = None;
+        }
         self.device_fault_fenced_in_block = false;
-        self.input_monitor.begin_block(
-            self.status.closing.load(Acquire),
-            self.status.device_fault.load(Acquire),
-        );
+        let closing = self.status.closing.load(Acquire);
+        let device_fault = self.status.device_fault.load(Acquire);
+        self.input_monitor.begin_block(closing, device_fault);
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        self.paused_notes.begin_block(closing, device_fault);
         if self.status.device_fault.load(Acquire) && !self.status.closing.load(Acquire) {
             self.fence_device_fault();
             return;
@@ -3501,10 +3568,7 @@ impl Callback {
                 }
                 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
                 QueuedPublication::Native(endpoint) => {
-                    if let Err(endpoint) = self
-                        .native_sources
-                        .install(self.candidate_root.root_id(), endpoint)
-                    {
+                    if let Err(endpoint) = self.install_native_source_endpoint(endpoint) {
                         self.return_publication(ReturnedPublication::Native(endpoint));
                     }
                     self.consume_commands();
@@ -3904,6 +3968,14 @@ impl Callback {
                                 }
                             }
                         }
+                        self.trace_audio(
+                            AudioDiagnosticKind::PublicationWaiting {
+                                reason: PublicationWaitReason::PredecessorWindow,
+                            },
+                            next.revision,
+                            next.source_context,
+                            frames.unwrap_or(0),
+                        );
                         self.deferred = Some(next);
                         return;
                     }
@@ -4141,8 +4213,16 @@ impl Callback {
                         }
                     }
                     Some(Ok(None)) => {
+                        let reason = next
+                            .streams
+                            .as_mut()
+                            .and_then(|streams| streams.take_handoff_diagnostic())
+                            .map_or(
+                                PublicationWaitReason::StreamPages,
+                                PublicationWaitReason::RuntimeHandoff,
+                            );
                         self.trace_audio(
-                            AudioDiagnosticKind::PublicationWaiting,
+                            AudioDiagnosticKind::PublicationWaiting { reason },
                             next.revision,
                             next.source_context,
                             frames.unwrap_or(0),
@@ -4317,6 +4397,14 @@ impl Callback {
             match handoff {
                 Some(Err(error)) if error.is_transient() => {
                     let _promotions = promotions;
+                    self.trace_audio(
+                        AudioDiagnosticKind::PublicationWaiting {
+                            reason: PublicationWaitReason::RuntimeHandoff(error),
+                        },
+                        next.revision,
+                        next.source_context,
+                        frames.unwrap_or(0),
+                    );
                     if let Some(streams) = next.streams.as_mut() {
                         streams.cancel_install(&mut self.domain_pages);
                     }
@@ -5091,7 +5179,7 @@ impl Callback {
                 && let Ok(frame) = usize::try_from(after.saturating_sub(before))
                 && frame < output.len()
             {
-                self.native_sources.end_staging_at_pause(frame);
+                self.native_sources.end_staging_at_rendered_prefix(frame);
             }
             self.settle_transport_fade();
         }
@@ -5206,6 +5294,7 @@ impl Callback {
         // Take and live-input quanta still run so a racing take or gesture
         // receives its `OutputFailed` terminal instead of waiting on silence.
         if self.status.render_fault.load(Acquire) {
+            self.reject_paused_monitors(input_monitor::MonitorStatus::OutputFault);
             self.sample_recording
                 .end(crate::sample_recording::End::OutputFailed);
             if !output.is_empty() {
@@ -5219,6 +5308,7 @@ impl Callback {
             });
         }
         if self.output_transport.is_some() {
+            self.reject_paused_monitors(input_monitor::MonitorStatus::Unsupported);
             self.sample_recording
                 .end(crate::sample_recording::End::UnsupportedOutput);
         } else {
@@ -5260,6 +5350,7 @@ impl Callback {
         capture_offset: usize,
     ) -> Result<(), Invalid> {
         if self.native_effects_revoked() {
+            self.reject_paused_monitors(input_monitor::MonitorStatus::OutputFault);
             output.fill([0.0; 2]);
             return if self.status.playing.load(Relaxed) {
                 Err(Invalid("native effect callback is revoked"))
@@ -5269,6 +5360,11 @@ impl Callback {
         }
         self.read_sampler_keyboard();
         if let Some(ActivePublication::Candidate(active)) = self.active.as_mut() {
+            self.input_monitor
+                .reject_paused(input_monitor::MonitorStatus::Unsupported);
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            self.paused_notes
+                .reject_paused(input_monitor::MonitorStatus::Unsupported);
             if self.status.closing.load(Acquire) {
                 output.fill([0.0; 2]);
                 return Ok(());
@@ -5331,17 +5427,101 @@ impl Callback {
             self.sample_recording
                 .end(crate::sample_recording::End::SourceChanged);
         }
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        if self.input_monitor.has_paused_binding() {
+            self.paused_notes
+                .reject_paused(input_monitor::MonitorStatus::Unsupported);
+        }
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        if self.paused_notes.has_paused_source_binding() {
+            let playback = self
+                .active
+                .as_mut()
+                .and_then(ActivePublication::legacy_mut)
+                .filter(|graph| {
+                    capture_offset == 0
+                        && !self.status.closing.load(Acquire)
+                        && self.output_transport.is_none()
+                        && self.recovery_seek_pending.is_none()
+                        && self.stream_pending_play.is_none()
+                        && self.transport_fade.is_none()
+                        && graph
+                            .streams
+                            .as_ref()
+                            .is_none_or(|streams| streams.permits_paused_monitor())
+                })
+                .map(|graph| graph.playback.as_mut());
+            let stages = &mut self.spectrum_stages;
+            let mut observe = |identity, phase, offset, frames: &[Frame]| {
+                stages.observe_signal(targets, identity, phase, offset, frames)
+            };
+            let observer: Option<&mut hex_engine::NodeSignalObserver<'_>> =
+                node_observed.then_some(&mut observe);
+            if self.paused_notes.render_paused_source(
+                recording_source,
+                self.status.transport_epoch.load(Acquire),
+                playback,
+                output,
+                observer,
+                self.paused_monitor_host_frames.map(|frames| {
+                    native_effects::PausedNoteBanks::new(
+                        &mut self.native_sources,
+                        &mut self.paused_native_sources,
+                        frames,
+                    )
+                }),
+            ) {
+                self.publish_transport();
+                self.publish_active_routes(false);
+                return Ok(());
+            }
+        }
+        let active = self.active.as_ref().and_then(ActivePublication::current);
+        let resident = self
+            .active
+            .as_ref()
+            .is_some_and(|active| !active.streaming_enabled());
         let mut recording = self.sample_recording.observation();
+        if self.input_monitor.has_paused_binding() {
+            let paused_playback = self
+                .active
+                .as_ref()
+                .and_then(ActivePublication::legacy)
+                .filter(|graph| {
+                    !node_observed
+                        && !project_observed
+                        && recording.is_none()
+                        && !self.status.closing.load(Acquire)
+                        && self.recovery_seek_pending.is_none()
+                        && self.stream_pending_play.is_none()
+                        && self.transport_fade.is_none()
+                        && graph
+                            .streams
+                            .as_ref()
+                            .is_none_or(|streams| streams.permits_paused_monitor())
+                })
+                .map(|active| active.playback.as_ref());
+            if self.input_monitor.render_paused(
+                recording_source,
+                self.status.transport_epoch.load(Acquire),
+                paused_playback,
+                output,
+                #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                self.paused_monitor_host_frames
+                    .map(|frames| (&mut self.paused_native_sources, frames)),
+            ) {
+                self.publish_transport();
+                self.publish_active_routes(false);
+                return Ok(());
+            }
+        }
         let monitor_track = self.input_monitor.target();
         let monitor_supported = output.len() <= 256
+            && resident
             && !project_observed
             && recording
                 .as_ref()
                 .is_none_or(|(layout, _)| layout.timing_only)
-            && self
-                .active
-                .as_ref()
-                .is_some_and(|active| !active.streaming_enabled())
             && active.as_ref().is_some_and(|active| {
                 monitor_track.is_some_and(|target| match target {
                     hex_engine::OutputCaptureId::Track(track) => {
@@ -5492,6 +5672,7 @@ impl Callback {
             if capacity_conflict && self.yield_pending_stream_successor() {
                 outcome.readiness_refused = false;
             }
+            self.end_native_staging_at_stream_hold(capture_offset, output.len(), &outcome);
             let streaming::RecordedStreamOutcome {
                 applied_play,
                 applied_action,
@@ -5593,6 +5774,7 @@ impl Callback {
             if capacity_conflict && self.yield_pending_stream_successor() {
                 outcome.readiness_refused = false;
             }
+            self.end_native_staging_at_stream_hold(capture_offset, output.len(), &outcome);
             let streaming::RecordedStreamOutcome {
                 applied_play,
                 applied_action,
@@ -5888,6 +6070,7 @@ impl Callback {
                 .store(prior_epoch.unwrap_or_else(|epoch| epoch), Release);
         }
         if prior_epoch.is_err() {
+            self.reject_paused_monitors(input_monitor::MonitorStatus::Stopped);
             self.status.gain_recording_fault.store(true, Release);
         }
     }
@@ -6253,12 +6436,17 @@ pub(crate) fn worker_boundary_storage_quote() -> Option<usize> {
     let editor_bytes = crate::foreign_parameter_delivery::editor::constructor_storage_quote()?;
     #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
     let editor_bytes = 0;
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    let paused_note_bytes = input_monitor::constructor_storage_quote()?;
+    #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+    let paused_note_bytes = 0;
     std::mem::size_of::<Status>()
         .checked_add(action_outcomes::storage_bytes())?
         .checked_add(SESSION_ROUTE_CAPACITY.checked_mul(std::mem::size_of::<AtomicRouteSlot>())?)?
         .checked_add(crate::sample_preview::constructor_storage_quote()?)?
         .checked_add(crate::sample_recording::storage_quote()?)?
         .checked_add(input_monitor::constructor_storage_quote()?)?
+        .checked_add(paused_note_bytes)?
         .checked_add(crate::gain_recording::constructor_storage_quote()?)?
         .checked_add(crate::native_parameter_input::constructor_storage_quote()?)?
         .checked_add(crate::foreign_parameter_delivery::constructor_storage_quote()?)?
@@ -13315,6 +13503,7 @@ mod tests {
     #[test]
     fn transient_handoff_keeps_candidate_gated_retries_and_old_graph_renders() {
         let (mut control, mut callback) = channel(48_000).unwrap();
+        control.set_audio_diagnostics(AudioDiagnosticsFlags::READINESS);
         let (old, _) = graph();
         assert_eq!(
             control
@@ -13338,6 +13527,18 @@ mod tests {
         callback.test_transient_handoff_refusals = 2;
         callback.begin_block();
         assert_eq!(control.status.applied_revision.load(Acquire), 1);
+        let waiting = control.take_audio_diagnostic().unwrap();
+        assert_eq!(waiting.revision, 2);
+        assert_eq!(
+            waiting.kind,
+            AudioDiagnosticKind::PublicationWaiting {
+                reason: PublicationWaitReason::RuntimeHandoff(
+                    hex_engine::PlaybackHandoffError::Session(
+                        hex_engine::SessionPlaybackError::ReleaseBankFull,
+                    ),
+                ),
+            }
+        );
         assert!(callback.deferred.is_some());
         assert_eq!(
             control.publish(graph().0).unwrap_err().reason,

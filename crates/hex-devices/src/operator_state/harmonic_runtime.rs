@@ -1188,24 +1188,20 @@ impl MutableInstrumentRuntime for Runtime {
                                 filter_frame
                             })
                             .map(|frame| (&mut voice.filters, frame)),
-                            |operator, phase, _| {
-                                let step = steps[operator];
+                            |operator, phase, base_step| {
                                 spectrum.sample_policy(
                                     operator,
                                     phase,
-                                    if law.active() {
-                                        if quality {
-                                            step
-                                        } else {
-                                            step.saturating_mul(2)
-                                        }
-                                    } else if quality {
-                                        step / 2
-                                    } else {
-                                        step
-                                    },
                                     voice.age,
-                                    PreparedOperatorConfiguration::lfo_steps(&voice.note)[operator],
+                                    || {
+                                        let step = steps[operator];
+                                        let render_step = match (law.active(), quality) {
+                                            (true, false) => step.saturating_mul(2),
+                                            (false, true) => step / 2,
+                                            _ => step,
+                                        };
+                                        (render_step, base_step)
+                                    },
                                     self.factory.table,
                                     self.factory.bank,
                                     self.factory.phase_table,

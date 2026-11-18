@@ -4,6 +4,8 @@ use super::*;
 mod bypass_latency;
 mod delay_bypass;
 mod discrete_automation;
+mod granular_playback;
+mod granular_source_projection;
 mod limiter;
 mod limiter_bypass;
 mod manual_host_gain;
@@ -16,6 +18,7 @@ mod resident_bounce;
 mod resident_eq_creation;
 mod resident_export;
 mod resident_file_metadata;
+mod resident_granular;
 mod resident_grouping;
 mod resident_history_seek;
 mod resident_lifecycle;
@@ -428,6 +431,12 @@ impl WorkerAudioSink for ObservedSink {
                 .push((identity, kind));
         }
         accepted
+    }
+    fn verified_arrangement_gain_update(
+        &mut self,
+        update: hex_session::service::VerifiedArrangementGainUpdate,
+    ) -> bool {
+        self.inner.verified_arrangement_gain_update(update)
     }
     fn native_sampler_input(&mut self, input: hex_session::service::NativeSamplerInput<'_>) {
         self.inner.native_sampler_input(input);

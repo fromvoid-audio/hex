@@ -546,6 +546,7 @@ fn waveform_scale_is_applied_to_canonical_and_preview_paints(cx: &mut TestAppCon
     let canonical = || WaveformMapping::Clip {
         clip: clip.clone(),
         timeline_origin: 0,
+        gain: None,
         fade: None,
     };
     let preview = || WaveformMapping::Prepared {

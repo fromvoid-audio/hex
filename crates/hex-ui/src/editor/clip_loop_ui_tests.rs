@@ -340,6 +340,66 @@ fn clip_loop_outer_real_pointer_retains_released_paint_and_one_worker_history_ed
 }
 
 #[gpui::test]
+fn audio_repeat_gap_drag_retains_marker_until_the_worker_ack(cx: &mut TestAppContext) {
+    let mut f = fixture(cx, false);
+    let outer = drag(&mut f, "outer", 100.0, Modifiers::default());
+    f.visual
+        .simulate_mouse_up(outer, MouseButton::Left, Modifiers::default());
+    pump(&f.editor, &mut f.visual);
+    let before = f.editor.read_with(&f.visual, |v, _| {
+        v.state.as_ref().unwrap().project.snapshot()
+    });
+    let target = drag(&mut f, "cycle", 35.0, Modifiers::default());
+    let marker = f
+        .visual
+        .debug_bounds("clip-repeat-marker-0")
+        .expect("held repeat marker");
+    f.editor.read_with(&f.visual, |v, _| {
+        let held = v.active_trim_drag.as_ref().unwrap().preview.borrow();
+        assert!(
+            held.as_ref()
+                .unwrap()
+                .clip
+                .audio_edit()
+                .unwrap()
+                .repeat_period
+                .is_some()
+        );
+    });
+    f.visual
+        .simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+    f.visual.run_until_parked();
+    assert_eq!(f.visual.debug_bounds("clip-repeat-marker-0"), Some(marker));
+    f.editor.read_with(&f.visual, |v, _| {
+        assert!(v.pending_trim.is_some());
+        assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
+    });
+    pump(&f.editor, &mut f.visual);
+    f.editor.read_with(&f.visual, |v, _| {
+        assert!(v.error.is_none(), "{:?}", v.error);
+        assert!(v.pending_trim.is_none());
+        assert!(
+            v.state
+                .as_ref()
+                .unwrap()
+                .project
+                .clip(f.clip)
+                .unwrap()
+                .audio_edit()
+                .unwrap()
+                .repeat_period
+                .is_some()
+        );
+    });
+    assert_eq!(f.visual.debug_bounds("clip-repeat-marker-0"), Some(marker));
+    f.visual.simulate_keystrokes("cmd-z");
+    pump(&f.editor, &mut f.visual);
+    f.editor.read_with(&f.visual, |v, _| {
+        assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before)
+    });
+}
+
+#[gpui::test]
 fn clip_loop_first_boundary_keeps_outer_extent_and_escape_does_not_commit(cx: &mut TestAppContext) {
     for midi in [false, true] {
         let mut f = fixture(cx, midi);

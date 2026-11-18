@@ -1621,7 +1621,7 @@ fn delayed_origin_clock_reports_source_performance_and_transport_without_guesses
         meter: None,
         cycle_beats_raw: None,
     };
-    let clock = OriginClock(Some(source));
+    let clock = OriginClock(Some(&source));
     assert_eq!(clock.tempo_micro_bpm_at_offset(0), Some(123_000_000));
     assert_eq!(clock.tempo_micro_bpm_at_offset(1), None);
     assert_eq!(unknown.tempo_micro_bpm_at_offset(0), None);
@@ -1632,14 +1632,14 @@ fn delayed_origin_clock_reports_source_performance_and_transport_without_guesses
     assert_eq!(clock.arrangement_beat_at_offset(0), Some(1 << 32));
     assert_eq!(clock.transport_is_running(), Some(true));
     assert_eq!(clock.performance_frame_at_offset(1), None);
-    let unavailable_beat = OriginClock(Some(TransportStamp {
+    let unavailable_beat = OriginClock(Some(&TransportStamp {
         arrangement_beat_raw: None,
         ..source
     }));
     assert_eq!(unavailable_beat.arrangement_beat_at_offset(0), None);
     assert_eq!(unavailable_beat.arrangement_frame_at_offset(0), Some(12));
     assert_eq!(unavailable_beat.beat_at_offset(0), Some(5 << 32));
-    let stopped = OriginClock(Some(TransportStamp {
+    let stopped = OriginClock(Some(&TransportStamp {
         transport_is_running: false,
         ..source
     }));
@@ -2274,13 +2274,84 @@ fn group_gain_automation_tracks_delayed_content_across_render_partitions() {
     assert_eq!(whole[10], f.samples[7]);
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CompressorDestination {
+    Track,
+    Return,
+    Main,
+}
+
+fn insert_test_compressor(
+    f: &mut Fixture,
+    destination: CompressorDestination,
+) -> hex_project::DeviceId {
+    let main = f.tracks[0];
+    let state = hex_devices::compressor::COMPRESSOR_DEFINITION
+        .default_state()
+        .unwrap();
+    let insert = match destination {
+        CompressorDestination::Track => Command::InsertDevice {
+            track: main,
+            before: None,
+            state,
+        },
+        CompressorDestination::Return => {
+            let Created::ReturnTrack(return_track) = f
+                .editor
+                .execute(Command::AddReturnTrack {
+                    name: "parallel".into(),
+                })
+                .unwrap()
+            else {
+                panic!("return");
+            };
+            f.editor
+                .execute(Command::SetReturnSend {
+                    track: main,
+                    return_track,
+                    gain: 1.0,
+                })
+                .unwrap();
+            Command::InsertReturnDevice {
+                return_track,
+                before: None,
+                state,
+            }
+        }
+        CompressorDestination::Main => Command::InsertMainDevice {
+            before: None,
+            state,
+        },
+    };
+    let Created::Device(device) = f.editor.execute(insert).unwrap() else {
+        panic!("compressor");
+    };
+    device
+}
+
+fn prepare_with_compressor(f: &Fixture) -> Arc<PreparedRevision> {
+    let definitions: [&dyn NativeDeviceDefinition; 2] =
+        [&Definition, &hex_devices::compressor::COMPRESSOR_DEFINITION];
+    let effects = NativeDeviceRegistry::new(&definitions).unwrap();
+    let instruments = hex_devices::native_instrument_registry().unwrap();
+    Arc::new(
+        PreparedRevision::prepare_with_registries(
+            f.editor.project(),
+            &f.media,
+            Arc::new(SineTable::new()),
+            None,
+            &effects,
+            &instruments,
+        )
+        .unwrap(),
+    )
+}
+
 #[test]
 fn compressor_sidechain_aligns_independent_key_and_main_in_both_renderers() {
     const FRAMES: usize = 1_024;
     const DELAY: usize = 7;
-    use hex_devices::compressor::COMPRESSOR_DEFINITION;
-
-    let render = |destination: usize, key_late: bool, connected: bool| {
+    let render = |destination: CompressorDestination, key_late: bool, connected: bool| {
         let delay = [DELAY as u32];
         let mut f = if key_late {
             fixture(&[&[], &delay], FRAMES)
@@ -2296,44 +2367,7 @@ fn compressor_sidechain_aligns_independent_key_and_main_in_both_renderers() {
             let asset = f.editor.project().track(track).unwrap().clips()[0].asset();
             f.media.insert(asset, Audio::new(48_000, samples).unwrap());
         }
-        let state = COMPRESSOR_DEFINITION.default_state().unwrap();
-        let insert = match destination {
-            0 => Command::InsertDevice {
-                track: main,
-                before: None,
-                state,
-            },
-            1 => {
-                let Created::ReturnTrack(return_track) = f
-                    .editor
-                    .execute(Command::AddReturnTrack {
-                        name: "parallel".into(),
-                    })
-                    .unwrap()
-                else {
-                    panic!("return")
-                };
-                f.editor
-                    .execute(Command::SetReturnSend {
-                        track: main,
-                        return_track,
-                        gain: 1.0,
-                    })
-                    .unwrap();
-                Command::InsertReturnDevice {
-                    return_track,
-                    before: None,
-                    state,
-                }
-            }
-            _ => Command::InsertMainDevice {
-                before: None,
-                state,
-            },
-        };
-        let Created::Device(device) = f.editor.execute(insert).unwrap() else {
-            panic!("compressor")
-        };
+        let device = insert_test_compressor(&mut f, destination);
         if connected {
             f.editor
                 .execute(Command::SetSidechain {
@@ -2342,20 +2376,7 @@ fn compressor_sidechain_aligns_independent_key_and_main_in_both_renderers() {
                 })
                 .unwrap();
         }
-        let definitions: [&dyn NativeDeviceDefinition; 2] = [&Definition, &COMPRESSOR_DEFINITION];
-        let effects = NativeDeviceRegistry::new(&definitions).unwrap();
-        let instruments = hex_devices::native_instrument_registry().unwrap();
-        let revision = Arc::new(
-            PreparedRevision::prepare_with_registries(
-                f.editor.project(),
-                &f.media,
-                Arc::new(SineTable::new()),
-                None,
-                &effects,
-                &instruments,
-            )
-            .unwrap(),
-        );
+        let revision = prepare_with_compressor(&f);
         assert_eq!(revision.arrangement().main_latency_frames(), DELAY as u32);
         let expected = session(Arc::clone(&revision), FRAMES + DELAY, 17);
         assert_eq!(&expected[..DELAY], &[[0.0; 2]; DELAY]);
@@ -2368,7 +2389,7 @@ fn compressor_sidechain_aligns_independent_key_and_main_in_both_renderers() {
         renderer.play();
         renderer.render(&mut legacy).unwrap();
         assert_eq!(legacy, expected);
-        if connected && key_late && destination == 0 {
+        if connected && key_late && destination == CompressorDestination::Track {
             let seek = |warm| {
                 let mut playback = SessionPlayback::new(Arc::clone(&revision)).unwrap();
                 if warm {
@@ -2390,17 +2411,7 @@ fn compressor_sidechain_aligns_independent_key_and_main_in_both_renderers() {
                     enabled: true,
                 })
                 .unwrap();
-            let looping = Arc::new(
-                PreparedRevision::prepare_with_registries(
-                    f.editor.project(),
-                    &f.media,
-                    Arc::new(SineTable::new()),
-                    None,
-                    &effects,
-                    &instruments,
-                )
-                .unwrap(),
-            );
+            let looping = prepare_with_compressor(&f);
             assert_eq!(
                 session(Arc::clone(&looping), FRAMES, 1),
                 session(looping, FRAMES, 63)
@@ -2409,10 +2420,104 @@ fn compressor_sidechain_aligns_independent_key_and_main_in_both_renderers() {
         expected
     };
 
-    for destination in 0..3 {
+    for destination in [
+        CompressorDestination::Track,
+        CompressorDestination::Return,
+        CompressorDestination::Main,
+    ] {
         let delayed_key = render(destination, true, true);
         assert_eq!(delayed_key, render(destination, false, true));
         let internal = render(destination, true, false);
-        assert_ne!(delayed_key[900], internal[900], "destination {destination}");
+        assert_ne!(
+            delayed_key[900], internal[900],
+            "destination {destination:?}"
+        );
+    }
+}
+
+#[test]
+fn empty_track_edits_retain_compensated_sidechain_history() {
+    const CUT: usize = 768;
+    const BLOCK: usize = 257;
+    for destination in [
+        CompressorDestination::Track,
+        CompressorDestination::Return,
+        CompressorDestination::Main,
+    ] {
+        for partition in [1, BLOCK] {
+            let mut f = fixture(&[&[], &[7], &[]], 2_048);
+            let [main, key, alternate] = f.tracks.as_slice() else {
+                panic!("tracks")
+            };
+            let (main, key, alternate) = (*main, *key, *alternate);
+            for (track, frame) in [
+                (main, [0.0625, -0.03125]),
+                (key, [0.0, 0.75]),
+                (alternate, [0.0; 2]),
+            ] {
+                let asset = f.editor.project().track(track).unwrap().clips()[0].asset();
+                f.media
+                    .insert(asset, Audio::new(48_000, vec![frame; 2_048]).unwrap());
+            }
+            let device = insert_test_compressor(&mut f, destination);
+            let unkeyed = session(prepare_with_compressor(&f), CUT + 1, BLOCK);
+            f.editor
+                .execute(Command::SetSidechain {
+                    device,
+                    source: Some(key),
+                })
+                .unwrap();
+            let original = prepare_with_compressor(&f);
+            assert_eq!(original.arrangement().main_latency_frames(), 7);
+            let expected = session(Arc::clone(&original), CUT + BLOCK * 2, BLOCK);
+            assert_ne!(expected[CUT], unkeyed[CUT], "active sidechain");
+
+            let mut current = SessionPlayback::new(original).unwrap();
+            current.apply(SessionPlaybackCommand::Play).unwrap();
+            let mut warm = [[0.0; 2]; CUT];
+            current.render(&mut warm).unwrap();
+            assert_eq!(&warm, &expected[..CUT]);
+            let insert = || Command::InsertTrack {
+                name: "empty".into(),
+                before_track: Some(main),
+            };
+            let Created::Track(empty) = f.editor.execute(insert()).unwrap() else {
+                panic!("empty track");
+            };
+            for (index, expected) in expected[CUT..].chunks_exact(BLOCK).enumerate() {
+                if index == 1 {
+                    f.editor.execute(Command::RemoveTrack(empty)).unwrap();
+                }
+                let mut next = SessionPlayback::new(prepare_with_compressor(&f)).unwrap();
+                next.try_inherit_state_from(&mut current).unwrap();
+                let mut actual = [[0.0; 2]; BLOCK];
+                for chunk in actual.chunks_mut(partition) {
+                    next.render(chunk).unwrap();
+                }
+                for (frame, (actual, expected)) in actual.into_iter().zip(expected).enumerate() {
+                    assert_eq!(
+                        &actual, expected,
+                        "{destination:?}, partition {partition}, edit {index}, frame {frame}"
+                    );
+                }
+                current = next;
+            }
+
+            f.editor.execute(insert()).unwrap();
+            f.editor
+                .execute(Command::SetSidechain {
+                    device,
+                    source: Some(alternate),
+                })
+                .unwrap();
+            let mut rerouted = SessionPlayback::new(prepare_with_compressor(&f)).unwrap();
+            rerouted.try_inherit_state_from(&mut current).unwrap();
+            let mut output = [[0.0; 2]; 16];
+            for chunk in output.chunks_mut(partition) {
+                rerouted.render(chunk).unwrap();
+            }
+            assert_eq!(output[..7], [[0.0; 2]; 7]);
+            assert_ne!(output[7], [0.0; 2]);
+        }
     }
 }

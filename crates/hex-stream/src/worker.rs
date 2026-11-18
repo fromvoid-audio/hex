@@ -7,6 +7,7 @@ use crate::{
 };
 use hex_engine::{StreamResourceKey, StreamedSourceMetadata};
 use std::collections::VecDeque;
+pub(crate) mod granular;
 pub(crate) mod scalar;
 use hex_media::{ResampleKernel, ResamplePlan, ResampleVersion, VerifiedWavReader};
 use hex_warp::{PitchWindow, RepitchWindow, Resampler};
@@ -21,6 +22,10 @@ use std::{
     thread,
     time::Duration,
 };
+
+/// A child worker failure is a parent shutdown failure even if no PCM loan was
+/// active; successful pool counts alone must not erase a failed join.
+pub(crate) type WorkerExit = Result<Vec<Box<PageBuffer>>, crate::StreamRuntimeError>;
 
 pub(crate) struct WorkerQueues {
     pub(crate) requests: Consumer<PageRequest>,
@@ -110,6 +115,7 @@ pub(crate) fn preparation_data_bound(
         paths,
         paths,
         manifests.min(config.max_manifest_bytes),
+        count.checked_mul(hex_media::VerifiedWavManifest::owner_payload_bytes())?,
         kernel_count.checked_mul(ResampleKernel::owner_payload_bytes())?,
         table_reservation,
         config
@@ -295,18 +301,20 @@ impl TestWorkerHooks {
     }
 }
 
-#[cfg_attr(any(test, feature = "test-support"), allow(clippy::too_many_arguments))] // Fixed owners plus test-only gates.
+#[allow(clippy::too_many_arguments)] // Fixed source/pool owners plus test-only gates.
 pub(crate) fn run_worker(
     config: StreamConfig,
     definitions: Vec<SourceDefinition>,
     mut scalar_definitions: Vec<ScalarSourceDefinition>,
+    granular: Option<granular::PreparedGranular>,
     mut free_pages: Vec<Box<PageBuffer>>,
     mut queues: WorkerQueues,
     stop: Arc<AtomicBool>,
     catalog_result: SyncSender<Result<VerifiedCatalog, StreamFailureKind>>,
+    offline_consumer: Option<thread::Thread>,
     #[cfg(test)] test_hooks: Option<TestWorkerHooks>,
     #[cfg(feature = "test-support")] mut page_gate: Option<crate::test_support::PageGate>,
-) -> Vec<Box<PageBuffer>> {
+) -> WorkerExit {
     let mut source_scratch = Vec::new();
     let scratch_ok = source_scratch
         .try_reserve_exact(config.source_scratch_frames)
@@ -349,6 +357,17 @@ pub(crate) fn run_worker(
         Err(StreamFailureKind::DecodeFailed)
     };
     scalar_definitions.sort_unstable_by_key(|definition| definition.metadata().key());
+    if let Err(kind) = &catalog {
+        let _ = catalog_result.send(Err(*kind));
+        return Ok(free_pages);
+    }
+    let mut granular = match granular.map(|prepared| prepared.start(&stop)).transpose() {
+        Ok(routing) => routing,
+        Err(kind) => {
+            let _ = catalog_result.send(Err(kind));
+            return Ok(free_pages);
+        }
+    };
     let catalog_message = catalog.as_ref().map_or_else(
         |error| Err(*error),
         |(sources, footprint, data)| {
@@ -368,22 +387,37 @@ pub(crate) fn run_worker(
             };
             data.scalar_source_slots =
                 crate::AllocationData::of::<ScalarSourceDefinition>(scalar_definitions.capacity());
-            verified_membership(sources, &scalar_definitions, *footprint, data)
+            let mut catalog = verified_membership(
+                sources,
+                &scalar_definitions,
+                granular.as_ref().map_or(&[], |routing| routing.metadata()),
+                *footprint,
+                data,
+            )?;
+            if let Some(routing) = &granular {
+                catalog.data.granular = Some(routing.data());
+                catalog.footprint.sources += routing.metadata().len();
+                catalog.footprint.granular_data_bytes = routing
+                    .data()
+                    .bytes()
+                    .ok_or(StreamFailureKind::CapacityExhausted)?;
+            }
+            Ok(catalog)
         },
     );
     if catalog_result.send(catalog_message).is_err() {
-        return free_pages;
+        return Ok(free_pages);
     }
     let (mut sources, _footprint, _data) = match catalog {
         Ok(sources) => sources,
-        Err(_) => return free_pages,
+        Err(_) => return Ok(free_pages),
     };
     #[cfg(test)]
     if test_hooks
         .as_ref()
         .is_some_and(|hooks| !hooks.wait_for_release(&stop))
     {
-        return free_pages;
+        return Ok(free_pages);
     }
     let mut scalar_job: Option<ScalarJob> = None;
     loop {
@@ -393,8 +427,49 @@ pub(crate) fn run_worker(
             };
             free_pages.push(page);
         }
+        if let Some(routing) = &mut granular {
+            for _ in 0..config.page_buffers {
+                let Some((mut page, status)) = routing.poll() else {
+                    break;
+                };
+                match status {
+                    Ok(()) => {
+                        if let Err(PushError::Full(page)) = queues.ready.push(page) {
+                            held_pages.push(page);
+                        }
+                    }
+                    Err(kind) => {
+                        if let Some(key) = page.key {
+                            hold_failure(
+                                StreamFailure {
+                                    key: key.source,
+                                    page_index: key.page_index,
+                                    kind,
+                                },
+                                &mut held_failures,
+                                &mut queues.failures,
+                            );
+                        }
+                        page.key = None;
+                        page.valid_frames = 0;
+                        free_pages.push(page);
+                    }
+                }
+            }
+            if routing.faulted() {
+                break;
+            }
+        }
         flush_held_pages(&mut held_pages, &mut queues.ready);
         flush_held_failures(&mut held_failures, &mut queues.failures);
+        if let Some(consumer) = &offline_consumer
+            && (queues.ready.slots() < config.ready_capacity
+                || queues.failures.slots() < config.failure_capacity)
+        {
+            // A park token also covers a reply published just before the
+            // control owner starts waiting. Live paths never register a waiter.
+            consumer.unpark();
+        }
         if stop.load(Ordering::Acquire) {
             while let Ok(page) = queues.returns.pop() {
                 free_pages.push(page);
@@ -489,9 +564,9 @@ pub(crate) fn run_worker(
             }
             continue;
         }
-        let Some(mut page) = free_pages.pop() else {
-            // No source buffer is available until the endpoint returns an
-            // evicted/stale page. Preserve the request without an allocation.
+        // A fast consumer can send a returned buffer and its next request
+        // after the loop's first drain. Recheck after acquiring the request.
+        let Some(mut page) = free_pages.pop().or_else(|| queues.returns.pop().ok()) else {
             let failure = StreamFailure {
                 key: key.source,
                 page_index: key.page_index,
@@ -539,6 +614,23 @@ pub(crate) fn run_worker(
         let StreamResourceKey::Audio(audio_key) = key.source else {
             continue;
         };
+        if let Some(routing) = &mut granular
+            && routing.contains(audio_key)
+        {
+            if let Err(page) = routing.submit(key, page) {
+                free_pages.push(page);
+                hold_failure(
+                    StreamFailure {
+                        key: key.source,
+                        page_index: key.page_index,
+                        kind: StreamFailureKind::CapacityExhausted,
+                    },
+                    &mut held_failures,
+                    &mut queues.failures,
+                );
+            }
+            continue;
+        }
         let Some(source_index) = sources
             .binary_search_by_key(&audio_key, |source| source.definition.key)
             .ok()
@@ -618,27 +710,37 @@ pub(crate) fn run_worker(
     if let Some(job) = scalar_job.take() {
         free_pages.push(job.page);
     }
+    if let Some(routing) = granular {
+        routing.stop_into(&mut free_pages)?;
+    }
     free_pages.append(&mut held_pages);
     drop(sources);
     drop(source_scratch);
-    free_pages
+    Ok(free_pages)
 }
 
 fn verified_membership(
     sources: &[Source],
     scalar_sources: &[ScalarSourceDefinition],
+    granular_sources: &[StreamedSourceMetadata],
     mut footprint: CatalogFootprint,
     mut data: crate::WorkerData,
 ) -> Result<VerifiedCatalog, StreamFailureKind> {
     let mut members = Vec::new();
     members
-        .try_reserve_exact(sources.len())
+        .try_reserve_exact(
+            sources
+                .len()
+                .checked_add(granular_sources.len())
+                .ok_or(StreamFailureKind::CapacityExhausted)?,
+        )
         .map_err(|_| StreamFailureKind::CapacityExhausted)?;
     members.extend(
         sources
             .iter()
             .map(|source| source.definition.metadata.clone()),
     );
+    members.extend_from_slice(granular_sources);
     members.sort_unstable_by_key(StreamedSourceMetadata::key);
     data.membership = crate::AllocationData::of::<StreamedSourceMetadata>(members.capacity());
     data.catalog_object = std::mem::size_of::<VerifiedCatalog>();
@@ -820,11 +922,13 @@ fn build_catalog(
         // mtime are unchanged; every page served later is still digest-verified.
         // If that identity changed, re-hash in full: the fingerprint check below
         // then accepts a touched-but-identical file and refuses a changed one.
-        let reused = definition.verified_manifest.as_ref().map(|manifest| {
+        // Move the supplied handle into the reader. A failed identity reuse
+        // must not retain an unused old manifest beside the replacement reader.
+        let reused = definition.verified_manifest.take().map(|manifest| {
             VerifiedWavReader::open_verified_with_cancel(
                 &definition.path,
                 reader_limits,
-                manifest.clone(),
+                manifest,
                 cancelled,
             )
         });
@@ -1007,6 +1111,7 @@ fn build_catalog(
     data.construction_kernel_cache =
         crate::AllocationData::of::<(u32, u32, ResampleKernel)>(kernels.capacity());
     data.kernel_handles = sources.len();
+    data.manifest_handles = sources.len();
     let mut kernel_coverage_known = true;
     for source in &sources {
         let Source {
@@ -1041,12 +1146,14 @@ fn build_catalog(
             .ok_or(StreamFailureKind::CapacityExhausted)?;
         data.manifests = data
             .manifests
-            .checked_add(
-                layout
-                    .manifest_capacity
-                    .checked_mul(layout.manifest_element_bytes)
-                    .ok_or(StreamFailureKind::CapacityExhausted)?,
-            )
+            .checked_add(layout.manifest_owner_payload_bytes)
+            .and_then(|bytes| {
+                bytes.checked_add(
+                    layout
+                        .manifest_capacity
+                        .checked_mul(layout.manifest_element_bytes)?,
+                )
+            })
             .ok_or(StreamFailureKind::CapacityExhausted)?;
     }
     for (index, (_, _, kernel)) in kernels.iter().enumerate() {
@@ -1076,6 +1183,7 @@ fn build_catalog(
     Ok((
         sources,
         CatalogFootprint {
+            granular_data_bytes: 0,
             sources: source_count,
             catalog_path_bytes,
             manifest_bytes,
@@ -1120,7 +1228,7 @@ fn max_source_window(
         .map_err(|_| StreamFailureKind::CapacityExhausted)
 }
 
-fn validate_finite_source(
+pub(crate) fn validate_finite_source(
     reader: &mut VerifiedWavReader,
     scratch: &mut [[f32; 2]],
     stop: &AtomicBool,
@@ -1316,7 +1424,7 @@ fn map_pitch_error(error: hex_warp::Error) -> StreamFailureKind {
     }
 }
 
-fn map_import_error(error: hex_media::ImportError) -> StreamFailureKind {
+pub(crate) fn map_import_error(error: hex_media::ImportError) -> StreamFailureKind {
     match error {
         hex_media::ImportError::SourceChanged => StreamFailureKind::SourceChanged,
         hex_media::ImportError::Cancelled => StreamFailureKind::Cancelled,
@@ -1493,7 +1601,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn catalog_refuses_repitch_key_before_opening_a_raw_file() {
+    fn catalog_refuses_unadmitted_derived_sources_before_opening_a_raw_file() {
         let mut editor = Editor::new(Project::new(48_000).unwrap(), 2).unwrap();
         let Created::Asset(asset) = editor
             .execute(Command::AddAsset {
@@ -1530,6 +1638,16 @@ pub(crate) mod tests {
             WavReaderLimits::new(1024 * 1024, 4096, 128, 8192),
             1024 * 1024,
         );
+        let region = hex_warp::SourceRegion::new(4096, 0, 4096, 0, false, vec![]).unwrap();
+        let granular = raw
+            .with_granular(
+                &region,
+                &map,
+                hex_warp::Mode::Tones { grain_ms: 30 },
+                0,
+                Resampler::V2,
+            )
+            .unwrap();
         let mut definition = SourceDefinition::new("missing.wav".into(), raw, limits);
         definition.key = StreamSourceKey::repitch(identity);
         let config = StreamConfig::initial();
@@ -1544,11 +1662,27 @@ pub(crate) mod tests {
             ),
             Err(StreamFailureKind::UnknownSource)
         ));
+        let granular_definition = SourceDefinition::new("missing.wav".into(), granular, limits);
+        assert!(matches!(
+            build_catalog(
+                &config,
+                vec![granular_definition],
+                &mut scratch,
+                0,
+                &AtomicBool::new(false)
+            ),
+            Err(StreamFailureKind::UnknownSource)
+        ));
     }
 
     #[test]
     fn repitch_pages_match_resident_with_converted_source_and_distinct_extent() {
-        for project_rate in [48_000, 44_100] {
+        for (project_rate, segmented) in [
+            (48_000, false),
+            (44_100, false),
+            (48_000, true),
+            (44_100, true),
+        ] {
             let fixture = Fixture::pcm16();
             let limits = VerifiedWavReaderLimits::new(
                 WavReaderLimits::new(1024 * 1024, 4096, 128, 8192),
@@ -1584,16 +1718,40 @@ pub(crate) mod tests {
             )
             .unwrap();
             let output_frames = input_frames * 2;
-            let map = hex_warp::TimeMap::new(
+            let segments = if segmented {
+                let a = output_frames / 4;
+                let b = output_frames / 2;
+                let first = i128::from(input_frames) * (1_i128 << 32) / 4;
+                let second = i128::from(input_frames) * 5 * (1_i128 << 32) / 8;
+                vec![
+                    hex_warp::MapSegment {
+                        output_start: 0,
+                        output_end: a,
+                        source_start_q32: 0,
+                        source_end_q32: first,
+                    },
+                    hex_warp::MapSegment {
+                        output_start: a,
+                        output_end: b,
+                        source_start_q32: first,
+                        source_end_q32: second,
+                    },
+                    hex_warp::MapSegment {
+                        output_start: b,
+                        output_end: output_frames,
+                        source_start_q32: second,
+                        source_end_q32: i128::from(input_frames) << 32,
+                    },
+                ]
+            } else {
                 vec![hex_warp::MapSegment {
                     output_start: 0,
                     output_end: output_frames,
                     source_start_q32: 0,
                     source_end_q32: i128::from(input_frames) << 32,
-                }],
-                output_frames as usize,
-            )
-            .unwrap();
+                }]
+            };
+            let map = hex_warp::TimeMap::new(segments, output_frames as usize).unwrap();
             let definition = SourceDefinition::new(fixture.0.clone(), raw, limits)
                 .with_repitch(map.clone(), Resampler::V2)
                 .unwrap();
@@ -2001,13 +2159,51 @@ pub(crate) mod tests {
         let config = StreamConfig::initial();
         let mut scratch = vec![[0.0; 2]; config.source_scratch_frames];
         let stop = AtomicBool::new(false);
-        let (sources, _, _) =
+        let (sources, _, data) =
             build_catalog(&config, vec![definition()], &mut scratch, 0, &stop).expect("rebuild");
+        let manifest_data =
+            verified.page_manifest_bytes() + hex_media::VerifiedWavManifest::owner_payload_bytes();
+        assert_eq!(data.manifests, manifest_data);
         assert_eq!(
             sources[0].reader.raw_page_reads(),
             1,
             "an unchanged pre-verified source reads only its header page"
         );
+        // Two readers may share immutable manifest DATA; reserve it per reader
+        // rather than omitting the sized owner or inferring exclusive custody.
+        let mut second = definition();
+        second.metadata = StreamedSourceMetadata::new(
+            StreamSourceKey::new(96, asset),
+            48_000,
+            48_000,
+            u64::from(FRAMES),
+            u64::from(FRAMES),
+            IDENTITY_CONVERSION,
+            *verified.fingerprint(),
+        )
+        .unwrap();
+        second.key = second.metadata.key();
+        let definitions = vec![definition(), second];
+        let mut shared_config = config;
+        shared_config.max_manifest_bytes = 2 * verified.page_manifest_bytes();
+        let mut short = shared_config;
+        short.max_manifest_bytes -= 1;
+        assert!(matches!(
+            build_catalog(&short, definitions.clone(), &mut scratch, 0, &stop),
+            Err(StreamFailureKind::CapacityExhausted)
+        ));
+        let (bound, _) =
+            preparation_data_bound(shared_config, &definitions, definitions.capacity()).unwrap();
+        let (shared, footprint, data) =
+            build_catalog(&shared_config, definitions, &mut scratch, 0, &stop).unwrap();
+        assert_eq!(data.manifests, 2 * manifest_data);
+        assert_eq!(footprint.manifest_bytes, 2 * verified.page_manifest_bytes());
+        assert!(std::ptr::eq(
+            shared[0].reader.page_digests().as_ptr(),
+            shared[1].reader.page_digests().as_ptr(),
+        ));
+        assert!(data.bytes().unwrap() <= bound);
+        drop(shared);
         // Without a manifest the same rebuild hashes every page.
         let (sources, _, _) = build_catalog(
             &config,

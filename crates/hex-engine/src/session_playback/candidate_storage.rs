@@ -14,6 +14,8 @@ impl SessionPlayback {
         let Self {
             live_expression,
             computer_keyboard,
+            paused_source_monitor,
+            defer_paused_source_monitor: _,
             current_sampler_keyboards,
             current_sampler_keyboard_epoch: _,
             current_sampler_keyboard_revoked: _,
@@ -67,6 +69,7 @@ impl SessionPlayback {
             tail_suffix_matrices,
             tail_output_active: _,
             tail_output_scratch: _,
+            detached_tail_group_limit: _,
             releases,
             release_scratch,
             retained_contexts,
@@ -85,6 +88,7 @@ impl SessionPlayback {
             arrangement_loop_pass: _,
             playing: _,
             monitor_source_releases: _,
+            stopped_input: _,
             linear_arrangement_export,
             current_sampler_console: _,
             route_state_generation: _,
@@ -98,6 +102,7 @@ impl SessionPlayback {
             || midi_admission.is_some()
             || live_expression.is_some()
             || computer_keyboard.is_some()
+            || paused_source_monitor.is_some()
             || *linear_arrangement_export
             || !candidate_admission_open
             || foreign_continuation.is_some()

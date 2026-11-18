@@ -273,8 +273,12 @@ pub struct AudioProcessingProjection {
 /// With an outer placement, the retained projection also owns its full repeat/
 /// directed read clock. Live musical endpoints plus residuals remain validated
 /// independently; translating a saved frame clock never re-quantizes its seams.
+/// A longer `repeat_period` adds silence after the audible crop. It is valid
+/// only for an undirected frame-clock repeat; the retained source is unchanged.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AudioClipEdit {
+    /// Complete frame-clock repeat period when longer than the retained audible span.
+    pub repeat_period: Option<u64>,
     /// Directed finite outer read law; source processing and editable settings stay live.
     pub content_view: Option<AudioContentView>,
     /// Complete source processing retained after structural song relocation.
@@ -465,6 +469,16 @@ impl AudioClipEdit {
     /// Reconstruct an exact V2 plain-pitch edit from a plain clip. This does not
     /// establish asset extent or source custody; normal project validation does.
     pub fn reconstruct_plain_pitch(clip: &Clip, cents: i16) -> Result<Self, Invalid> {
+        if !clip.fade.is_neutral() {
+            return Err(Invalid(
+                "plain pitch reconstruction requires a neutral fade",
+            ));
+        }
+        Self::reconstruct_faded_pitch(clip, cents)
+    }
+
+    /// Reconstruct the full-source frame-clock pitch and retained fade from a plain clip.
+    pub fn reconstruct_faded_pitch(clip: &Clip, cents: i16) -> Result<Self, Invalid> {
         if clip.audio_edit().is_some() || cents == 0 || !(-4_800..=4_800).contains(&cents) {
             return Err(Invalid("invalid plain pitch reconstruction"));
         }
@@ -472,7 +486,9 @@ impl AudioClipEdit {
         let domain = Arc::make_mut(&mut edit.domain);
         domain.pitch_cents = cents;
         domain.warp_resampler = WarpResampler::V2;
-        if !edit.is_plain_pitch_capture(clip) {
+        let mut projected = clip.clone();
+        projected.fade = ClipFade::neutral(clip.duration)?;
+        if !edit.is_plain_pitch_capture(&projected) {
             return Err(Invalid(
                 "plain pitch requires a complete neutral frame clip",
             ));
@@ -480,7 +496,7 @@ impl AudioClipEdit {
         Ok(edit)
     }
 
-    /// Exact V2 full-frame plain pitch captured from a neutral, unlooped clip.
+    /// Exact V2 full-frame pitch and frame-clock fade captured from an unlooped clip.
     /// Callers must also establish that the clip covers the complete asset.
     pub fn is_plain_pitch_capture(&self, clip: &Clip) -> bool {
         if self.domain.pitch_cents == 0
@@ -489,6 +505,7 @@ impl AudioClipEdit {
             || clip.looping
             || clip.source_phase != 0
             || !clip.fade.is_neutral()
+            || self.domain.fade.validate_segment(clip.duration).is_err()
         {
             return false;
         }
@@ -496,6 +513,7 @@ impl AudioClipEdit {
         let domain = Arc::make_mut(&mut expected.domain);
         domain.pitch_cents = self.domain.pitch_cents;
         domain.warp_resampler = WarpResampler::V2;
+        domain.fade = self.domain.fade;
         self == &expected
     }
 
@@ -706,6 +724,7 @@ impl AudioClipEdit {
     }
     pub(crate) fn capture(clip: &Clip) -> Self {
         Self {
+            repeat_period: None,
             content_view: None,
             processing_projection: None,
             placement_start_offset: 0,
@@ -981,6 +1000,61 @@ impl AudioClipEdit {
             && self.placement.is_none()
     }
 
+    /// Shape supported by bounded Tones/Texture source workers. This grants no
+    /// resident expansion or file/page custody; consumers validate the exact map,
+    /// source extent and rendering identity independently.
+    pub fn is_streamed_granular_root(&self) -> bool {
+        let domain = &self.domain;
+        domain.source_length > 0
+            && domain.source_length <= MAX_SPARSE_AUDIO_TIMELINE_FRAMES
+            && domain.fade.is_neutral()
+            && domain.events.is_none()
+            && domain.musical_event_source.is_none()
+            && domain.source_gain.len() <= MAX_AUDIO_POINTS
+            && domain.warp_enabled
+            && domain.warp.as_ref().is_some_and(|warp| {
+                matches!(warp.mode, WarpMode::Tones { .. } | WarpMode::Texture { .. })
+            })
+            && self.content_view.is_none()
+            && self.placement.is_none()
+            && self.repeat_period.is_none()
+    }
+
+    /// A full-view inactive Warp edit whose audio can read directly from the
+    /// original source at unity speed. The musical placement still owns the
+    /// clip extent. Retained mode and markers participate only when enabled.
+    /// Supply the projected domain length; a validated full-view clip has the
+    /// same duration. Asset identity and full-file extent are checked separately.
+    pub fn is_long_inactive_warp_root(&self, length: u64) -> bool {
+        let domain = &self.domain;
+        length > MAX_AUDIO_DOMAIN_FRAMES
+            && length <= MAX_SPARSE_AUDIO_TIMELINE_FRAMES
+            && !domain.warp_enabled
+            && domain.warp.as_ref().is_some_and(|warp| {
+                matches!(
+                    warp.mode,
+                    WarpMode::RePitch | WarpMode::Tones { .. } | WarpMode::Texture { .. }
+                )
+            })
+            && matches!(domain.clock, AudioDomainClock::Beats(_))
+            && matches!(self.timing, AudioClipTiming::Musical(_))
+            && self.view_start == 0
+            && self.view_end == domain.clock.length()
+            && self.repeat_period.is_none()
+            && self.placement.is_none()
+            && self.content_view.is_none()
+            && self.processing_projection.is_none()
+            && domain.source_offset == 0
+            && (1..=MAX_SPARSE_AUDIO_TIMELINE_FRAMES).contains(&domain.source_length)
+            && domain.source_phase == 0
+            && !domain.looping
+            && domain.pitch_cents == 0
+            && domain.events.is_none()
+            && domain.musical_event_source.is_none()
+            && domain.source_gain.is_empty()
+            && domain.fade.is_neutral()
+    }
+
     pub(crate) fn accepts_projected_extent(&self, length: u64, clip: &Clip) -> bool {
         if length <= MAX_AUDIO_DOMAIN_FRAMES {
             return true;
@@ -989,6 +1063,8 @@ impl AudioClipEdit {
             && (self.is_plain_reversed_capture(clip)
                 || self.is_plain_pitch_capture(clip)
                 || self.is_streamed_repitch_root()
+                || self.is_streamed_granular_root()
+                || self.is_long_inactive_warp_root(length)
                 || (self.plain_frame_event_root()
                     && self.domain.events.as_ref().is_some_and(|events| {
                         events
@@ -1008,6 +1084,26 @@ impl AudioClipEdit {
         tempo: &TempoMap,
         asset_frames: u64,
     ) -> Result<(), Invalid> {
+        if let Some(period) = self.repeat_period
+            && (self
+                .view_end
+                .checked_sub(self.view_start)
+                .is_none_or(|span| period <= span)
+                || !matches!(self.domain.clock, AudioDomainClock::Frames(_))
+                || !matches!(self.timing, AudioClipTiming::Frames)
+                || self.content_view.is_some()
+                || self.processing_projection.is_some()
+                || self.placement.is_none_or(|placement| {
+                    placement.mode != AudioViewMode::Repeat
+                        || period
+                            .checked_sub(placement.cycle_phase)
+                            .is_none_or(|first| {
+                                first == 0 || first >= placement.outer_length.length()
+                            })
+                }))
+        {
+            return Err(Invalid("invalid silent audio repeat period"));
+        }
         if let Some(view) = self.content_view {
             view.validate(self)?;
         }
@@ -1169,6 +1265,11 @@ impl AudioClipEdit {
             && clip.source_length != asset_frames
         {
             return Err(Invalid("long repitch requires the complete audio source"));
+        }
+        if self.is_long_inactive_warp_root(length) && clip.source_length != asset_frames {
+            return Err(Invalid(
+                "long inactive warp requires the complete audio source",
+            ));
         }
         if length == 0 || view_start >= view_end {
             return Err(EMPTY_DOMAIN_CROP);
@@ -1561,8 +1662,8 @@ mod commands;
 pub use commands::default_audio_warp;
 mod view;
 pub(crate) use commands::{
-    apply, move_clip, project_clip, reset_region, set_clip_fade_envelope, set_fade_envelope,
-    set_fades, source_policy, trim_view, validate_clip,
+    DEFAULT_WARP_MODE, apply, initial_audio_warp, move_clip, project_clip, reset_region,
+    set_clip_fade_envelope, set_fade_envelope, set_fades, source_policy, trim_view, validate_clip,
 };
 pub(crate) use view::resize_view;
 pub use view::{
@@ -1617,3 +1718,6 @@ pub(crate) use aliases::rebase_alias_content;
 
 #[cfg(test)]
 mod long_pitch_tests;
+
+#[cfg(test)]
+mod long_granular_tests;

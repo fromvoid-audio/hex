@@ -196,6 +196,12 @@ fn fingerprint_matches_independent_sha256_and_decoded_pcm_matches_resident_impor
     assert_eq!(reader.page_digests().len(), 1);
     assert_eq!(reader.page_digests()[0], *reader.fingerprint());
     assert_eq!(reader.page_manifest_bytes(), 32);
+    let data = reader.control_data_layout();
+    assert_eq!(
+        data.manifest_owner_payload_bytes,
+        crate::VerifiedWavManifest::owner_payload_bytes()
+    );
+    assert!(data.manifest_owner_payload_bytes >= std::mem::size_of::<Vec<[u8; 32]>>());
 }
 
 #[test]

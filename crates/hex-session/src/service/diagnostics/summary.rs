@@ -1722,6 +1722,9 @@ pub(super) fn request(value: &Request) -> Description {
         } => {
             describe!("arm_native_parameter_recording"; ["project_generation" => project_generation, "revision" => revision, "armed" => target.is_some()]; omitted="")
         }
+        Request::PreparePausedInputMonitor { request, .. } => {
+            describe!("prepare_paused_input_monitor"; ["project_generation" => request.source.context.project_generation, "revision" => request.source.context.editor_revision, "audio_revision" => request.source.audio_revision, "transport_epoch" => request.transport_epoch, "track" => request.track.value()]; omitted="reply channel")
+        }
         Request::ArmGainRecording {
             project_generation,
             revision,

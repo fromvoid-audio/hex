@@ -838,6 +838,7 @@ pub(super) struct EditorView {
     route_follow: Option<u64>,
     /// Vst3 devices the current output reports as degraded.
     degraded_plugins: crate::editor_backend::DegradedDevices,
+    plugin_editor_windows: Vec<u64>,
     pending_audio_result: Option<PendingEditorAudioResult>,
     pending_publication_observation: Option<PendingEditorPublicationObservation>,
     document_audio_mode: hex_session::DocumentAudioMode,
@@ -1653,6 +1654,7 @@ impl EditorView {
             pending_recovery_generation: None,
             route_follow: None,
             degraded_plugins: Default::default(),
+            plugin_editor_windows: Vec::new(),
             pending_audio_result: None,
             pending_publication_observation: None,
             document_audio_mode: hex_session::DocumentAudioMode::Resident,
@@ -2066,14 +2068,13 @@ impl EditorView {
                 .is_some_and(|status| status.playing.load(std::sync::atomic::Ordering::Acquire))
         });
         let start_frame = self.playback_start_frame();
-        if !self.desired_playing(device_playing) && self.recover_degraded_play_at(start_frame) {
-            return;
-        }
         let command = match self.play_toggle_action(device_playing, start_frame) {
             arrangement_seek::ToggleAction::Pause => PlaybackCommand::Pause,
             arrangement_seek::ToggleAction::PlayFrom(frame) => PlaybackCommand::PlayFrom(frame),
             arrangement_seek::ToggleAction::Unavailable => {
-                self.error = Some("playback source is unavailable · cannot seek safely".into());
+                if !self.recover_degraded_play_at(start_frame) {
+                    self.error = Some("playback source is unavailable · cannot seek safely".into());
+                }
                 return;
             }
         };
@@ -2345,11 +2346,7 @@ impl EditorView {
             return false;
         }
         self.advance_selection_intent();
-        self.duplicate_intent.cancel_chain();
-        self.retire_clip_detail_state_for(clip);
-        self.detail_context = None;
-        self.selected_track = Some(track);
-        self.arrangement_focus.observe_active_track(Some(track));
+        self.select_arrangement_clip(track, clip);
         if !self.track_selection.contains(track)
             && let Some(state) = self.state.as_ref()
         {
@@ -2357,10 +2354,19 @@ impl EditorView {
                 .select(&state.project, track, false, false);
             self.update_track_selection_status();
         }
-        self.selected_clip = Some(clip);
-        self.clip_selection.only(track, clip);
         self.focus.focus(window);
         true
+    }
+
+    /// Change the clip subject without switching panes or taking keyboard focus.
+    pub(super) fn select_arrangement_clip(&mut self, track: TrackId, clip: ClipId) {
+        self.duplicate_intent.cancel_chain();
+        self.retire_clip_detail_state_for(clip);
+        self.detail_context = None;
+        self.selected_track = Some(track);
+        self.arrangement_focus.observe_active_track(Some(track));
+        self.selected_clip = Some(clip);
+        self.clip_selection.only(track, clip);
     }
 
     /// Reset clip-local editor state when the clip editor's subject changes.

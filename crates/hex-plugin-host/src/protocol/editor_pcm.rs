@@ -7,6 +7,7 @@ use std::io::Read;
 pub(crate) const EDITOR_PCM_BIT: u16 = 0x4000;
 pub(crate) const EDITOR_TOUCH_BIT: u16 = 0x2000;
 pub(crate) const EDITOR_GROUP_TOUCH_BIT: u16 = 0x1000;
+pub(crate) const SDK_TIMING_BIT: u16 = 0x0400;
 const EDITOR_RESTORE_BYTES: usize = 24;
 const EDITOR_POINT_BYTES: usize = 32;
 
@@ -16,10 +17,14 @@ struct Layout {
     editor: bool,
     touch: u16,
     restore: usize,
+    sdk_timing: bool,
 }
 impl Layout {
     fn extent(&self) -> usize {
-        self.pcm_end + self.len * EDITOR_POINT_BYTES + self.restore * EDITOR_RESTORE_BYTES
+        self.pcm_end
+            + self.len * EDITOR_POINT_BYTES
+            + self.restore * EDITOR_RESTORE_BYTES
+            + usize::from(self.sdk_timing) * 8
     }
 }
 
@@ -29,6 +34,7 @@ fn layout(header: &[u8; HEADER_BYTES]) -> Result<Layout> {
     let frames = usize::from(u16::from_le_bytes([header[6], header[7]]));
     let wire_version = u16::from_le_bytes([header[4], header[5]]);
     let editor = wire_version & EDITOR_PCM_BIT != 0;
+    let sdk_timing = wire_version & SDK_TIMING_BIT != 0;
     let touch = wire_version & (EDITOR_TOUCH_BIT | EDITOR_GROUP_TOUCH_BIT);
     let restore = usize::from(header[13]);
     let limit = match touch {
@@ -37,7 +43,8 @@ fn layout(header: &[u8; HEADER_BYTES]) -> Result<Layout> {
         EDITOR_GROUP_TOUCH_BIT => MAX_PARAMETER_EDITS,
         _ => return Err(Error::Protocol("conflicting editor touch modes")),
     };
-    let version = wire_version & !(EDITOR_PCM_BIT | EDITOR_TOUCH_BIT | EDITOR_GROUP_TOUCH_BIT);
+    let version = wire_version
+        & !(EDITOR_PCM_BIT | EDITOR_TOUCH_BIT | EDITOR_GROUP_TOUCH_BIT | SDK_TIMING_BIT);
     let parameters = usize::from(u16::from_le_bytes([header[10], header[11]]));
     let len = usize::from(header[12]);
     if !(pcm || terminal)
@@ -51,6 +58,7 @@ fn layout(header: &[u8; HEADER_BYTES]) -> Result<Layout> {
         || (touch != 0 && !editor)
         || (parameters != 0 && (frames == 0 || !pcm))
         || (editor && (!pcm || frames == 0))
+        || (sdk_timing && (!pcm || frames == 0))
         || len > MAX_PARAMETER_EDITS
         || (!editor && len != 0)
     {
@@ -62,7 +70,42 @@ fn layout(header: &[u8; HEADER_BYTES]) -> Result<Layout> {
         editor,
         touch,
         restore,
+        sdk_timing,
     })
+}
+
+#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
+pub(crate) fn timed_pcm(
+    bytes: &[u8],
+    config: &Configuration,
+    sequence: u64,
+) -> Result<(Block, Option<u64>)> {
+    let (header, payload) = bytes
+        .split_first_chunk::<HEADER_BYTES>()
+        .ok_or(Error::Protocol("missing instance PCM header"))?;
+    let layout = layout(header)?;
+    if layout.editor || bytes.len() != layout.extent() {
+        return Err(Error::Protocol("instance PCM extent or opt-in differs"));
+    }
+    let mut ordinary = *header;
+    ordinary[5] &= !((SDK_TIMING_BIT >> 8) as u8);
+    let block = read_pcm(
+        ordinary
+            .as_slice()
+            .chain(&payload[..layout.pcm_end - HEADER_BYTES]),
+        config,
+        sequence,
+    )?;
+    let duration = if layout.sdk_timing {
+        Some(u64::from_le_bytes(
+            bytes[layout.pcm_end..]
+                .try_into()
+                .map_err(|_| Error::Protocol("invalid SDK timing"))?,
+        ))
+    } else {
+        None
+    };
+    Ok((block, duration))
 }
 
 pub(crate) fn pcm_packet_extent(header: &[u8]) -> Result<usize> {
@@ -148,7 +191,8 @@ fn decode(
     }
     // Pass the unchanged ordinary PCM payload through the same strict decoder.
     let mut ordinary = *header;
-    ordinary[5] &= !(((EDITOR_PCM_BIT | EDITOR_TOUCH_BIT | EDITOR_GROUP_TOUCH_BIT) >> 8) as u8);
+    ordinary[5] &= !(((EDITOR_PCM_BIT | EDITOR_TOUCH_BIT | EDITOR_GROUP_TOUCH_BIT | SDK_TIMING_BIT)
+        >> 8) as u8);
     ordinary[12] = 0;
     ordinary[13] = 0;
     let ordinary_reader = ordinary
@@ -210,11 +254,17 @@ fn decode(
         })?;
         previous_restoration = sequence;
     }
+    let sdk_process_ns = if layout.sdk_timing {
+        Some(u64::from_le_bytes(reader.array()?))
+    } else {
+        None
+    };
     reader.end()?;
     Ok(EditorPcm {
         block,
         performs,
         restorations,
+        sdk_process_ns,
     })
 }
 
@@ -246,6 +296,31 @@ mod tests {
             bytes.extend([0; 4]);
         }
         bytes
+    }
+
+    #[test]
+    fn sdk_timing_is_bound_to_the_validated_pcm_and_editor_reply() {
+        let config = super::super::tests::config();
+        let mut bytes = packet(&config, 4, &[]);
+        bytes[5] |= (SDK_TIMING_BIT >> 8) as u8;
+        bytes.extend(123_456_u64.to_le_bytes());
+        assert_eq!(
+            pcm_packet_extent(&bytes[..HEADER_BYTES]).unwrap(),
+            bytes.len()
+        );
+        let decoded = editor_pcm(&bytes, &config, 4, 0).unwrap();
+        assert_eq!(decoded.block.binding, config.binding);
+        assert_eq!(decoded.block.sequence, 4);
+        assert_eq!(decoded.sdk_process_ns, Some(123_456));
+        assert!(editor_pcm(&bytes[..bytes.len() - 1], &config, 4, 0).is_err());
+        assert!(editor_pcm(&bytes, &config, 5, 0).is_err());
+        bytes[5] &= !((EDITOR_PCM_BIT >> 8) as u8);
+        let (block, duration) = timed_pcm(&bytes, &config, 4).unwrap();
+        assert_eq!(block.binding, config.binding);
+        assert_eq!(duration, Some(123_456));
+        assert!(timed_pcm(&bytes[..bytes.len() - 1], &config, 4).is_err());
+        bytes.push(0);
+        assert!(timed_pcm(&bytes, &config, 4).is_err());
     }
 
     #[test]

@@ -12541,6 +12541,46 @@ fn arrangement_preroll_held_mutable_source_and_return_send_follow_seek_law() {
 }
 
 #[test]
+fn ordinary_preroll_refuses_stopped_pcm_and_preserves_held_instrument_history() {
+    let prepared = mutable_feedback_with_stateful_track_and_return();
+    let track = prepared.arrangement().tracks()[0]
+        .canonical_track_id()
+        .unwrap();
+    let caller = SessionPlayback::new(prepared).unwrap();
+    let prepare = || {
+        caller
+            .prepare_arrangement_preroll(512, 512, false, &AtomicBool::new(false))
+            .unwrap()
+    };
+    let mut candidate = prepare();
+    let mut reference = prepare();
+    let mut output = [[1.0; 2]; 64];
+    assert_eq!(
+        candidate.render_paused_pcm(
+            track,
+            &[[0.5; 2]; 64],
+            &mut output,
+            &mut hex_lattice::RefuseForeign
+        ),
+        Err(SessionPlaybackError::InvalidCommand)
+    );
+    assert_eq!(output, [[0.0; 2]; 64]);
+    candidate.render(&mut output).unwrap();
+    assert_eq!(output, [[0.0; 2]; 64]);
+    assert_eq!(candidate.performance_frame(), 512);
+    let mut expected = output;
+    for (runtime, frames) in [
+        (&mut candidate, &mut output),
+        (&mut reference, &mut expected),
+    ] {
+        runtime.apply(SessionPlaybackCommand::Play).unwrap();
+        runtime.render(frames).unwrap();
+    }
+    assert!(expected.iter().any(|frame| *frame != [0.0; 2]));
+    assert_eq!(output, expected);
+}
+
+#[test]
 fn interactive_arrangement_preroll_released_mutable_source_and_return_start_empty() {
     let prepared = mutable_feedback_with_stateful_track_and_return();
     assert!(prepared.arrangement_seek_requires_preroll());

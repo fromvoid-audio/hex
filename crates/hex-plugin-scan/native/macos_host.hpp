@@ -609,9 +609,9 @@ public:
         if(flags & kLatencyChanged) pending_latency_restart.store(ordinal,std::memory_order_release);
         return kResultOk;
     }
-    // At most one request and 128 info/value reads per call. A complete staged
-    // snapshot publishes once on main; malformed/reentrant reads keep the prior
-    // accepted snapshot. Stable ParamIDs cannot be silently remapped by a refresh.
+    // At most one request and HOST_PARAMETER_COUNT value reads per call.
+    // Only descriptor invalidations also query parameter info. A malformed or
+    // reentrant read keeps the last accepted snapshot and stable ParamIDs.
     HostDispatch dispatch(IEditController* controller) {
         HostDispatch result{}; result.metadata_revision=metadata.revision;
         if (![NSThread isMainThread]) { refuse(WrongThread); result.disposition=HostDisposition::WrongThread; return result; }
@@ -656,13 +656,36 @@ public:
         return refresh_controller_on_control(controller,result);
     }
 private:
+    HostDispatch refresh_values_on_control(IEditController& controller,HostDispatch result) {
+        // A value invalidation uses the admitted IDs and leaves the processing
+        // descriptors intact. Validate the entire observation before publishing.
+        std::array<ParamValue,HOST_PARAMETER_COUNT> values;
+        for(uint32 n=0;n<metadata.count;++n) {
+            const auto value=controller.getParamNormalized(metadata.parameters[n].info.id);
+            if(recursive) {result.disposition=HostDisposition::Recursive;return result;}
+            if(!std::isfinite(value) || value<0 || value>1) {
+                refuse(InvalidMetadata);result.disposition=HostDisposition::InvalidMetadata;return result;
+            }
+            values[n]=value;
+        }
+        for(uint32 n=0;n<metadata.count;++n) metadata.parameters[n].value=values[n];
+        result.metadata_revision=++metadata.revision;
+        result.disposition=HostDisposition::Refreshed;
+        return result;
+    }
+
     HostDispatch refresh_controller_on_control(IEditController* controller,HostDispatch result) {
         if (![NSThread isMainThread]) { refuse(WrongThread);result.disposition=HostDisposition::WrongThread;return result; }
         if (!accepting) { result.disposition=HostDisposition::Retiring;return result; }
         if (dispatching) { recursive=true;refuse(RecursiveRestart);result.disposition=HostDisposition::Recursive;return result; }
         if (!controller) { refuse(UnsupportedCapability); result.disposition=HostDisposition::NoController; return result; }
+        if (metadata.revision==std::numeric_limits<uint64>::max()) {
+            refuse(MetadataCapacity); result.disposition=HostDisposition::Capacity; return result;
+        }
         dispatching=true; recursive=false;
         struct Leave { bool& flag; ~Leave() { flag=false; } } leave{dispatching};
+        if(result.flags==kParamValuesChanged && metadata.revision)
+            return refresh_values_on_control(*controller,result);
         ParameterSnapshot staged{};
         const auto total=controller->getParameterCount();
         if (total>static_cast<int32>(HOST_PARAMETER_COUNT)) {
@@ -709,9 +732,6 @@ private:
         if (metadata.revision && staged.count!=metadata.count) valid=false;
         if (recursive) { result.disposition=HostDisposition::Recursive; return result; }
         if (!valid) { refuse(InvalidMetadata); result.disposition=HostDisposition::InvalidMetadata; return result; }
-        if (metadata.revision==std::numeric_limits<uint64>::max()) {
-            refuse(MetadataCapacity); result.disposition=HostDisposition::Capacity; return result;
-        }
         staged.revision=metadata.revision+1;
         const auto next=compact(staged);
         const auto same_id=[](const auto& left,const auto& right) { return left.id==right.id; };
@@ -789,15 +809,20 @@ public:
             uint32 index=0;
             while(index<metadata.count && metadata.parameters[index].info.id!=value.id) ++index;
             if(index==metadata.count) {refuse(FeedbackParameterMissing);return false;}
-            // DSP can finish long after the controller has moved
-            // on to a newer drag position. Its DSP receipt remains valid.
+            // During a drag, only the exact latest native input can mirror
+            // back to its controller. A deferred controller still needs this
+            // value even when the processor finishes before End.
+            const auto& parameter=metadata.parameters[index];
+            const bool current_native=value.editor_input && parameter.editor_sequence==value.editor_sequence;
             bool editing=false;
             for(size_t i=0;i<active_tokens.size();++i)
                 if(active_tokens[i] && active_ids[i]==value.id) {editing=true;break;}
-            if(editing || metadata.parameters[index].editor_sequence>value.editor_sequence ||
-                (metadata.parameters[index].feedback_floor>value.editor_sequence &&
-                    !(value.editor_input && metadata.parameters[index].editor_sequence==value.editor_sequence))) continue;
-            auto normalized=value.editor_sequence?controller->getParamNormalized(value.id):-1.0;
+            if(!current_native && (editing || parameter.editor_sequence>value.editor_sequence ||
+                parameter.feedback_floor>value.editor_sequence)) continue;
+            // Even before the first editor gesture, an equal value needs no
+            // setter. Setters can repaint or notify the vendor's editor.
+            auto normalized=controller->getParamNormalized(value.id);
+            if(recursive) return false;
             if(normalized!=value.normalized) {
                 applying_feedback=true;
                 const auto updated=controller->setParamNormalized(value.id,value.normalized);

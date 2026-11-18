@@ -172,6 +172,14 @@ impl<'a> ResidentEffectPreparation<'a> {
     pub fn restoring_plugin_state(&self) -> bool {
         self.restoring_plugin_state
     }
+    /// Canonical bypass state of one exact plugin visited by this preparation.
+    /// This copied display/control fact grants no native source or admission.
+    pub fn plugin_device_bypassed(&self, id: u64) -> Option<bool> {
+        self.project
+            .automation_devices()
+            .find(|device| device.id().value() == id && is_plugin_effect(device))
+            .map(|device| device.bypassed())
+    }
     /// Whether the saved document needs the fixed-quantum plugin output profile.
     pub fn requires_plugin_profile(&self) -> bool {
         requires_plugin_profile(self.project)
@@ -339,8 +347,15 @@ impl<'a> ResidentEffectPreparation<'a> {
 
 /// One private native bounce owner. It supplies exact compile facts before
 /// rendering and is dropped before Session adopts any of the output media.
-pub trait OfflineBounceSource: hex_export::ForeignBounceRenderer {
+pub trait OfflineBounceSource: hex_export::ForeignBounceRenderer + Send {
     fn retained_data_bytes(&self) -> usize;
+    /// Finalize this private source against the one compiled graph before any
+    /// render or publication. Failure aborts the export/bounce without adoption.
+    fn finalize_on_control(
+        &mut self,
+        revision: &hex_engine::PreparedRevision,
+        control: &hex_export::ExportControl,
+    ) -> Result<(), String>;
     fn prepare(
         &self,
         compile: &mut dyn FnMut(
@@ -381,6 +396,7 @@ pub enum ResidentSourceOrigin {
     ClipMovePreview,
     ClipStretchPreview,
     ClipPlayStartPreview,
+    ClipGainPreview,
 }
 
 /// Scalar identity for one worker-private ordinary resident graph. Neither preview correlation
@@ -523,6 +539,22 @@ pub struct ResidentGraphSubmission {
     pub output_identity: u64,
     pub audio_revision: u64,
     pub context: hex_engine::AudioSourceContext,
+}
+/// Bind a control preparation to the client's observed resident graph and
+/// stopped transport. The output callback checks these facts again at activation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PausedInputMonitorRequest {
+    pub source: ResidentGraphSubmission,
+    pub transport_epoch: u64,
+    pub track: hex_project::TrackId,
+}
+/// Exact resident graph and reservation inputs for one automatic note-monitor
+/// poll. Only the output worker can observe or advance the installed pause.
+pub struct PausedNoteGraph<'a> {
+    pub source: ResidentGraphSubmission,
+    pub revision: &'a Arc<PreparedRevision>,
+    pub resources: &'a hex_engine::native_device_resources::PreparedDeviceResources,
+    pub cancellation: &'a super::RequestCancellation,
 }
 impl ResidentGraphSubmission {
     /// Compare with the callback's correlated publication observation. A pending
@@ -912,6 +944,30 @@ pub trait WorkerAudioSink: Send {
     ) -> [hex_engine::native_device_resources::DeviceResourceAdmission<'_>; 3] {
         [hex_engine::native_device_resources::DeviceResourceAdmission::default(); 3]
     }
+    /// Prepare one control-owned monitor under the existing resident union.
+    /// The sink retains its corresponding storage hold until retirement.
+    fn prepare_paused_input_monitor(
+        &mut self,
+        _request: PausedInputMonitorRequest,
+        _revision: &Arc<PreparedRevision>,
+        _resources: &hex_engine::native_device_resources::PreparedDeviceResources,
+        _admit: &mut dyn FnMut(
+            &[hex_engine::native_device_resources::DeviceResourceAdmission<'_>],
+        ) -> Result<(), String>,
+    ) -> Result<hex_engine::PausedTrackMonitor, String> {
+        Err("paused input monitor output is unavailable".into())
+    }
+    /// Advance a bounded preparation step. No output ownership survives the
+    /// call except in the sink's own pending state. Return true while busy.
+    fn poll_paused_note_monitor(
+        &mut self,
+        _graph: Option<PausedNoteGraph<'_>>,
+        _admit: &mut dyn FnMut(
+            &[hex_engine::native_device_resources::DeviceResourceAdmission<'_>],
+        ) -> Result<(), String>,
+    ) -> bool {
+        false
+    }
     /// Final fallible prepared-transition operation. An active output must refuse queue/resource
     /// pressure unchanged; explicit unavailable/opening state may accept one admitted latest owner
     /// privately with no submitted/applied revision. Cancellation checks precede this call.
@@ -1005,6 +1061,11 @@ pub trait WorkerAudioSink: Send {
     /// Accept source-bound clip intent on control. This is not graph admission
     /// or callback acknowledgement; false retains no worker-side delivery claim.
     fn verified_clip_move_update(&mut self, _update: VerifiedClipMoveUpdate) -> bool {
+        false
+    }
+    /// Replace or retire temporary Arrangement gain metadata. Acceptance is
+    /// a bounded control handoff, independent of callback application.
+    fn verified_arrangement_gain_update(&mut self, _update: VerifiedArrangementGainUpdate) -> bool {
         false
     }
     /// Synchronous private canonical/original PCM input; no borrow may survive.
