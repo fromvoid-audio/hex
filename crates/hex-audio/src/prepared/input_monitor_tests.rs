@@ -70,7 +70,23 @@ fn render_paused_fixture_block(callback: &mut Callback) -> [Frame; 64] {
 
 #[test]
 fn paused_source_render_preserves_callback_allocation_budget() {
-    check_paused_source_allocation(hex_project::default_instrument_state().unwrap());
+    check_paused_source_allocation(hex_project::default_instrument_state().unwrap(), None);
+}
+
+#[test]
+fn paused_source_reverb_preserves_callback_allocation_budget() {
+    use hex_engine::NativeDeviceClass;
+    use hex_lattice_contract::DeviceTypeId;
+
+    let effect = hex_engine::default_native_device_state_for_class(
+        NativeDeviceClass::Effect,
+        DeviceTypeId::from_static("hex.reverb"),
+    )
+    .unwrap();
+    check_paused_source_allocation(
+        hex_project::default_instrument_state().unwrap(),
+        Some(effect),
+    );
 }
 
 #[test]
@@ -91,10 +107,13 @@ fn paused_mutable_source_render_preserves_callback_allocation_budget() {
         ParameterValue::Bool(true),
     )
     .unwrap();
-    check_paused_source_allocation(state);
+    check_paused_source_allocation(state, None);
 }
 
-fn check_paused_source_allocation(state: hex_lattice_contract::NativeDeviceState) {
+fn check_paused_source_allocation(
+    state: hex_lattice_contract::NativeDeviceState,
+    source_effect: Option<hex_lattice_contract::NativeDeviceState>,
+) {
     use hex_engine::NativeDeviceClass;
     use hex_engine::computer_keyboard::ComputerKeyboardInput;
     use hex_lattice_contract::DeviceTypeId;
@@ -112,6 +131,30 @@ fn check_paused_source_allocation(state: hex_lattice_contract::NativeDeviceState
     editor
         .execute(Command::InsertInstrument { track, state })
         .unwrap();
+    if let Some(state) = source_effect {
+        let source = editor.project().track(track).unwrap().source_id().unwrap();
+        let parent = editor
+            .project()
+            .native_source(source)
+            .unwrap()
+            .instrument()
+            .id();
+        editor
+            .execute(Command::BindTrackSource {
+                track,
+                source: None,
+            })
+            .unwrap();
+        editor
+            .execute(Command::InsertNestedDevice { parent, state })
+            .unwrap();
+        editor
+            .execute(Command::BindTrackSource {
+                track,
+                source: Some(source),
+            })
+            .unwrap();
+    }
     editor
         .execute(Command::InsertDevice {
             track,

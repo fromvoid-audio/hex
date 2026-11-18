@@ -699,7 +699,6 @@ impl SessionPlayback {
                 && self.transient_loop.is_none()
                 && self.current_sampler_keyboards.is_empty()
                 && self.foreign_arrangement.is_empty()
-                && !self.source_effects.has_monitor_tail()
                 && self
                     .mutable_instruments
                     .iter()

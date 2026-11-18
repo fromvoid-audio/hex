@@ -69,6 +69,9 @@ impl PausedTrackMonitor {
         resources: Option<&PreparedDeviceResources>,
         allowance: usize,
     ) -> Result<Self, SessionPlaybackError> {
+        // The prepared revision supplies the native receiver recipes as well
+        // as the Track, Return, and Main chains. Construct fresh state for all
+        // of them; only the resident's instrument voices are loaned.
         let track =
             Self::resident_source_track(&revision).ok_or(SessionPlaybackError::UnknownTrack)?;
         let playback = SessionPlayback::new_with_render_policy_and_source_effects(
@@ -448,6 +451,7 @@ impl PausedTrackMonitor {
             .any(|row| row.canonical_track_id() == Some(track))
             || revision.session().has_mutable_instruments()
             || tracks.iter().any(crate::Track::has_mutable_instrument)
+            || !revision.arrangement().source_effects.is_empty()
             || !Self::accepts_effect_graph(revision, resources, bindings)
         {
             return Err(SessionPlaybackError::InvalidCommand);
@@ -468,7 +472,6 @@ impl PausedTrackMonitor {
             && revision.device_resource_scope == resources.map(PreparedDeviceResources::id)
             && revision.scalar_automation.is_none()
             && revision.foreign_automation.is_empty()
-            && arrangement.source_effects.is_empty()
             && arrangement
                 .tracks()
                 .iter()
