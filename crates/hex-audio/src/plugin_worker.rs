@@ -109,12 +109,28 @@ const LIVE_IDLE_POLL: Duration = Duration::from_millis(1);
 // Keep fast polling during ordinary PCM delivery. A stopped instance still
 // checks revocation, input and control work every millisecond without a
 // callback wake or another handoff.
-fn live_poll_wait(empty_since: &mut Option<Instant>, now: Instant) -> Duration {
+fn live_poll_wait(
+    empty_since: &mut Option<Instant>,
+    now: Instant,
+    active_poll: Duration,
+) -> Duration {
     if now.saturating_duration_since(*empty_since.get_or_insert(now)) >= QUIET_TRANSPORT {
         LIVE_IDLE_POLL
     } else {
-        LIVE_POLL
+        active_poll
     }
+}
+
+// Poll within roughly one thirty-second of an admitted native quantum,
+// retaining the original slice for fast or small quanta. This executes once
+// on the transport worker and never schedules from the callback.
+#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
+fn native_active_poll(quantum: u16, sample_rate: f64) -> Duration {
+    if !sample_rate.is_finite() || sample_rate <= 0.0 {
+        return LIVE_POLL;
+    }
+    let micros = f64::from(quantum) * (1_000_000.0 / 32.0) / sample_rate;
+    Duration::from_micros(micros.clamp(50.0, 250.0) as u64)
 }
 
 impl Signal {
@@ -324,6 +340,15 @@ struct State {
     editor_lost: Option<std::num::NonZeroU64>,
 }
 impl State {
+    fn active_poll(&self) -> Duration {
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        if let Some(Processor::Native(instance)) = &self.processor {
+            let configuration = instance.configuration();
+            return native_active_poll(configuration.quantum, configuration.sample_rate);
+        }
+        LIVE_POLL
+    }
+
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     fn report_native_failure(
         &self,
@@ -648,18 +673,19 @@ fn transport_runner_with_setup(
 ) -> impl FnOnce() -> Completion + Send + 'static {
     move || {
         let mut fault = None;
-        match guard.owner_mut() {
+        let active_poll = match guard.owner_mut() {
             Some(state) => {
                 if let Err(error) = setup(state) {
                     return Completion { fault: Some(error) };
                 }
+                state.active_poll()
             }
             None => {
                 return Completion {
                     fault: Some(Fault::Protocol),
                 };
             }
-        }
+        };
         let mut empty_since = None;
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         let mut last_empty_poll: Option<Instant> = None;
@@ -823,7 +849,7 @@ fn transport_runner_with_setup(
                         if matches!(state.processor, Some(Processor::Native(_))) {
                             last_empty_poll = Some(now);
                         }
-                        thread::sleep(live_poll_wait(&mut empty_since, now));
+                        thread::sleep(live_poll_wait(&mut empty_since, now, active_poll));
                     }
                 }
                 Err(Fault::Revoked) => break,
@@ -1344,21 +1370,39 @@ mod tests {
     }
 
     #[test]
+    fn native_active_poll_tracks_the_admitted_quantum_with_bounded_waits() {
+        assert_eq!(
+            native_active_poll(256, 44_100.0),
+            Duration::from_micros(181)
+        );
+        assert_eq!(native_active_poll(256, 96_000.0), Duration::from_micros(83));
+        assert_eq!(native_active_poll(64, 96_000.0), LIVE_POLL);
+        assert_eq!(native_active_poll(256, 8_000.0), Duration::from_micros(250));
+    }
+
+    #[test]
     fn live_worker_backs_off_only_after_a_quiet_request_window() {
         let start = Instant::now();
         let mut empty_since = None;
-        assert_eq!(live_poll_wait(&mut empty_since, start), LIVE_POLL);
         assert_eq!(
-            live_poll_wait(&mut empty_since, start + QUIET_TRANSPORT - LIVE_POLL),
+            live_poll_wait(&mut empty_since, start, LIVE_POLL),
             LIVE_POLL
         );
         assert_eq!(
-            live_poll_wait(&mut empty_since, start + QUIET_TRANSPORT),
+            live_poll_wait(
+                &mut empty_since,
+                start + QUIET_TRANSPORT - LIVE_POLL,
+                LIVE_POLL
+            ),
+            LIVE_POLL
+        );
+        assert_eq!(
+            live_poll_wait(&mut empty_since, start + QUIET_TRANSPORT, LIVE_POLL),
             LIVE_IDLE_POLL
         );
         empty_since = None; // A new PCM request resets the quiet window.
         assert_eq!(
-            live_poll_wait(&mut empty_since, start + QUIET_TRANSPORT),
+            live_poll_wait(&mut empty_since, start + QUIET_TRANSPORT, LIVE_POLL),
             LIVE_POLL
         );
     }
