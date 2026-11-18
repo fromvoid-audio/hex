@@ -1,5 +1,5 @@
 use super::*;
-use gpui::{Modifiers, MouseButton, TestAppContext, VisualTestContext, point};
+use gpui::{Modifiers, MouseButton, TestAppContext, VisualTestContext, point, px};
 
 #[gpui::test]
 fn draw_order_queries_match_independent_scan(cx: &mut TestAppContext) {
@@ -92,6 +92,83 @@ fn held_pan_reuses_current_scene_and_release_keeps_first_clip_drag(cx: &mut Test
     editor.read_with(&visual, |view, _| {
         assert_eq!(view.state.as_ref().unwrap().project.as_ref(), &before)
     });
+}
+
+#[gpui::test]
+fn held_device_drag_updates_the_receiver_and_reuses_clip_paint(cx: &mut TestAppContext) {
+    let (project, source, target, clip) = super::super::clip_drag_ui_test::audio_project();
+    let before = project.clone();
+    let (handle, editor) =
+        super::super::clip_drag_ui_test::editor_window(cx, project, Arc::default());
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    editor.update(&mut visual, |view, cx| {
+        view.browser.section = super::super::browser::BrowserSection::Instruments;
+        view.device_panel_active = true;
+        view.clip_view_open = true;
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let content = editor.read_with(&visual, |view, _| {
+        view.clip_content_cache.entries[&source].clone()
+    });
+    let device = visual
+        .debug_bounds("browser-device-effect-hex.utility")
+        .expect("catalog effect")
+        .center();
+    let lane = Box::leak(format!("arrangement-lane-{}", target.value()).into_boxed_str());
+    let landing = visual.debug_bounds(lane).expect("target lane").center();
+    visual.simulate_mouse_down(device, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(
+        point(device.x + px(12.0), device.y),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    visual.simulate_mouse_move(landing, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    assert!(
+        visual
+            .debug_bounds("arrangement-device-drop-preview")
+            .is_some()
+    );
+    visual.simulate_mouse_move(
+        point(landing.x + px(14.0), landing.y),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    visual.run_until_parked();
+    // Activating the drag can invalidate the current window and receiver.
+    // An unchanged held preview can reuse the canonical lane's clip paint.
+    let builds = content.read_with(&visual, |view, _| view.builds);
+    for _ in 0..4 {
+        visual.update(|window, cx| {
+            editor.update(cx, |_, cx| cx.notify());
+            window.draw(cx).clear();
+        });
+    }
+    assert!(content.read_with(&visual, |view, _| view.builds) - builds < 4);
+
+    visual.simulate_keystrokes("escape");
+    visual.simulate_mouse_up(landing, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    assert!(
+        visual
+            .debug_bounds("arrangement-device-drop-preview")
+            .is_none()
+    );
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(view.state.as_ref().unwrap().project.as_ref(), &before);
+    });
+    let clip = Box::leak(format!("clip-drag-surface-{}", clip.value()).into_boxed_str());
+    let start = visual.debug_bounds(clip).expect("clip restored").center();
+    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(
+        point(start.x + px(12.0), start.y),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    assert!(cx.update(|app| app.has_active_drag()));
+    visual.simulate_keystrokes("escape");
+    visual.simulate_mouse_up(start, MouseButton::Left, Modifiers::default());
 }
 
 fn publish_snapshot(view: &mut EditorView, project: Arc<hex_project::Project>, revision: u64) {
