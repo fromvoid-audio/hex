@@ -5,6 +5,132 @@ use hex_session::service::{PausedInputMonitorRequest, ResidentGraphSubmission};
 
 #[test]
 #[ignore = "explicit original SDK helper and source fixtures required"]
+fn session_automatically_auditions_notes_after_pause_without_physical_input() {
+    use hex_engine::{PlaybackCommand, computer_keyboard::ComputerKeyboardInput};
+
+    let _native = native_fixture();
+    let files = Files::new();
+    let mut h = ResidentHarness::with_plugins(
+        host(),
+        Some(EffectPresentation {
+            input_frames: 0,
+            output_frames: 512,
+        }),
+    );
+    assert!(h.next().error.is_none());
+    let (applied, _) = h.applied(0);
+    let imported = h.run(Request::Import(files.wav(48_000, 4096)));
+    assert!(imported.error.is_none());
+    let (applied, _) = h.applied(applied);
+    let added = h.run(Request::Edit(Command::AddMidiTrack {
+        name: "keys".into(),
+    }));
+    let Some(Created::Track(track)) = added.created else {
+        panic!("midi track")
+    };
+    let (applied, _) = h.applied(applied);
+    let instrument = h.run(Request::Edit(Command::InsertInstrument {
+        track,
+        state: hex_project::default_instrument_state().unwrap(),
+    }));
+    assert!(instrument.error.is_none(), "{:?}", instrument.error);
+    let (applied, _) = h.applied(applied);
+    h.service
+        .submit(Request::InsertPluginEffect(request(
+            &instrument.state,
+            PluginEffectDestination::Main,
+        )))
+        .unwrap();
+    let effect = terminal(&mut h);
+    assert!(
+        effect.error.is_none() && effect.plugin_effect_complete[0].accepted,
+        "{:?}",
+        effect.error
+    );
+    let (applied, _) = h.applied(applied);
+    let keys = Arc::new(ComputerKeyboardInput::default());
+    let keyboard = h.run(Request::PrepareComputerKeyboard {
+        project_generation: 0,
+        revision: effect.state.revision,
+        request_id: 1,
+        track,
+        input: Arc::clone(&keys),
+    });
+    assert!(keyboard.error.is_none(), "{:?}", keyboard.error);
+    h.applied(applied);
+    fn status(h: &ResidentHarness) -> &hex_audio::prepared::Status {
+        h.audio.as_ref().unwrap().status().unwrap()
+    }
+
+    let render = |h: &mut ResidentHarness| {
+        h.pump();
+        wait(|| {
+            h.callback
+                .lock()
+                .unwrap()
+                .as_mut()
+                .unwrap()
+                .native_workers_idle_on_control()
+                == Some(true)
+        });
+        h.render_plugin_block()
+    };
+    let command = |h: &mut ResidentHarness, command| {
+        h.audio.as_mut().unwrap().control.command(command).unwrap();
+    };
+    command(&mut h, PlaybackCommand::Play);
+    assert!((0..5).any(|_| render(&mut h).iter().any(|frame| *frame != [0.0; 2])));
+    command(&mut h, PlaybackCommand::Pause);
+    render(&mut h);
+    let first_scope = status(&h).paused_note_source().unwrap();
+    let first_position = status(&h).position.load(Acquire);
+    command(&mut h, PlaybackCommand::Play);
+    render(&mut h);
+    assert!(status(&h).position.load(Acquire) > first_position);
+    assert!(status(&h).paused_note_source().is_none());
+
+    command(&mut h, PlaybackCommand::Pause);
+    render(&mut h);
+    let scope = status(&h).paused_note_source().unwrap();
+    assert_ne!(scope, first_scope);
+    let position = status(&h).position.load(Acquire);
+    assert_eq!(render(&mut h), [[0.0; 2]; 256]);
+    keys.set_key(0, Some((60, 127, 1))).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        if render(&mut h).iter().any(|frame| frame[0].abs() > 0.001) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "paused note never reached the private worker"
+        );
+        std::thread::yield_now();
+    }
+    assert_eq!(status(&h).position.load(Acquire), position);
+    assert_eq!(status(&h).paused_note_source(), Some(scope));
+    assert_eq!(
+        h.audio
+            .as_mut()
+            .unwrap()
+            .control
+            .input_monitor()
+            .unwrap()
+            .status(),
+        MonitorStatus::Idle
+    );
+    keys.set_key(0, None).unwrap();
+    for _ in 0..16 {
+        render(&mut h);
+    }
+    assert_eq!(render(&mut h), [[0.0; 2]; 256]);
+    command(&mut h, PlaybackCommand::Play);
+    assert!((0..5).any(|_| render(&mut h).iter().any(|frame| *frame != [0.0; 2])));
+    assert!(status(&h).position.load(Acquire) > position);
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
 fn session_rearms_stopped_vst3_monitor_with_fresh_private_workers() {
     let _native = native_fixture();
     let mut h = ResidentHarness::with_plugins(

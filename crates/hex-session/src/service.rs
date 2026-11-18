@@ -92,7 +92,7 @@ mod sampler_parameter;
 use audio_sink::WorkerEvents;
 pub use audio_sink::{
     ArrangementEditPosition, NativeSamplerInput, NativeSamplerReservationHold,
-    NativeSamplerRetryFacts, OfflineBounceSource, PausedInputMonitorRequest,
+    NativeSamplerRetryFacts, OfflineBounceSource, PausedInputMonitorRequest, PausedNoteGraph,
     PluginEditorRecordingInput, PluginParameterCapture, PluginParameterDelivery,
     PluginParameterGestureError, PluginParameterGestureInput, PluginParameterGestureResult,
     PluginParameterObservation, PluginParameterOverride, ResidentEffectPreparation,
@@ -3235,7 +3235,7 @@ fn run_worker(
                         sink,
                         verified_available,
                     );
-                    clip_audition_lane.drive(
+                    let clip_pending = clip_audition_lane.drive(
                         &clip_audition,
                         &session,
                         context,
@@ -3253,8 +3253,35 @@ fn run_worker(
                             None,
                         ),
                         available,
-                    ) || verified_pending
-                        || verified_gain_pending
+                    );
+                    let pause_snapshot = resident_snapshot.as_ref().filter(|snapshot| {
+                        available
+                            && resident_preview.is_none()
+                            && snapshot
+                                .submission
+                                .is_some_and(|source| source.context == context)
+                    });
+                    let cancellation = RequestCancellation::new(
+                        Arc::clone(&session.shutdown),
+                        Arc::clone(&document_intent),
+                        document_intent.load(Ordering::Acquire),
+                    );
+                    let notes_pending = session.poll_resident_paused_notes(
+                        pause_snapshot,
+                        sink,
+                        export_lane.admission_with_resident_owners(
+                            compiled.as_ref().map(|(_, prepared)| {
+                                hex_engine::native_device_resources::ControlSamplerSelection {
+                                    sources: current_sources.as_ref(),
+                                    prepared: Some(prepared),
+                                }
+                            }),
+                            resident_seek.as_ref(),
+                            resident_preview.as_ref(),
+                        ),
+                        &cancellation,
+                    );
+                    clip_pending || verified_pending || verified_gain_pending || notes_pending
                 });
                 // Cancelling a preview can prepare a new canonical audio owner.
                 if let Some(snapshot) = resident_snapshot.as_ref()

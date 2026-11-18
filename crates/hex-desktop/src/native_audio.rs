@@ -1846,6 +1846,16 @@ impl WorkerAudioSink for NativeAudioSink {
     ) -> Result<hex_engine::PausedTrackMonitor, String> {
         self.prepare_resident_paused_monitor(request, revision, resources, admit)
     }
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn poll_paused_note_monitor(
+        &mut self,
+        graph: Option<hex_session::service::PausedNoteGraph<'_>>,
+        admit: &mut dyn FnMut(
+            &[hex_engine::native_device_resources::DeviceResourceAdmission<'_>],
+        ) -> Result<(), String>,
+    ) -> bool {
+        self.poll_resident_paused_notes(graph, admit)
+    }
     #[allow(clippy::result_large_err)] // Preserve the exact graph owner on refusal.
     fn publish_resident(
         &mut self,
@@ -2222,6 +2232,11 @@ impl WorkerAudioSink for NativeAudioSink {
                 }
                 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
                 if self.resident.paused_monitor.is_none()
+                    && self
+                        .resident
+                        .pending_paused_notes
+                        .as_ref()
+                        .is_none_or(|pending| pending.effects.is_none())
                     && let Some(control) = output.publication.control()
                 {
                     self.plugins.reap_paused_monitor(control);

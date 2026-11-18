@@ -2034,6 +2034,13 @@ impl WorkerAudioSink for ResidentSink {
         self.inner
             .prepare_paused_input_monitor(request, revision, resources, admit)
     }
+    fn poll_paused_note_monitor(
+        &mut self,
+        graph: Option<hex_session::service::PausedNoteGraph<'_>>,
+        admit: &mut dyn FnMut(&[DeviceResourceAdmission<'_>]) -> Result<(), String>,
+    ) -> bool {
+        self.inner.poll_paused_note_monitor(graph, admit)
+    }
     #[allow(clippy::too_many_arguments, clippy::result_large_err)] // Mirror the exact production ownership boundary.
     fn publish_resident(
         &mut self,
