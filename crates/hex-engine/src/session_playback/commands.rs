@@ -71,6 +71,11 @@ impl SessionPlayback {
         match command {
             SessionPlaybackCommand::Play => {
                 if !self.playing
+                    && let Some(monitor) = &mut self.paused_keyboard_monitor
+                {
+                    monitor.end_resident_interval();
+                }
+                if !self.playing
                     && let Some(keyboard) = &mut self.computer_keyboard
                     && self.revision.arrangement().tracks().iter().any(|track| {
                         track.canonical_track_id() == Some(keyboard.track())
@@ -179,7 +184,7 @@ impl SessionPlayback {
         Ok(())
     }
 
-    fn stop_transport(&mut self) -> bool {
+    pub(super) fn stop_transport(&mut self) -> bool {
         self.browser_audition.voices = Default::default();
         self.foreign_arrangement.cut();
         let mut changed = self.performance_frame != 0;

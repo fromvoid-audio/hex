@@ -70,8 +70,8 @@ fn render_paused_fixture_block(callback: &mut Callback) -> [Frame; 64] {
 
 #[test]
 fn paused_keyboard_render_preserves_callback_allocation_budget() {
+    use hex_engine::NativeDeviceClass;
     use hex_engine::computer_keyboard::ComputerKeyboardInput;
-    use hex_engine::{NativeDeviceClass, PausedKeyboardMonitor};
     use hex_lattice_contract::DeviceTypeId;
 
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
@@ -112,17 +112,10 @@ fn paused_keyboard_render_preserves_callback_allocation_budget() {
     let latency = revision.arrangement().main_latency_frames() as usize;
     assert_ne!(latency, 0);
     let input = Arc::new(ComputerKeyboardInput::default());
-    let mut playback = Playback::try_from_prepared_with_session(Arc::clone(&revision)).unwrap();
-    let (mut monitor, hold) = PausedKeyboardMonitor::prepare_admitted_on_control(
-        revision,
-        None,
-        editor.project(),
-        track,
-        Arc::clone(&input),
-        0,
-        |_| Ok::<_, ()>(()),
-    )
-    .unwrap();
+    let mut playback = Playback::try_from_prepared_with_session(revision).unwrap();
+    playback
+        .prepare_resident_computer_keyboard(editor.project(), None, track, Arc::clone(&input))
+        .unwrap();
     playback.apply(hex_engine::PlaybackCommand::Play);
     playback.render(&mut [[0.0; 2]; 4]).unwrap();
     playback.apply(hex_engine::PlaybackCommand::Pause);
@@ -131,9 +124,7 @@ fn paused_keyboard_render_preserves_callback_allocation_budget() {
     let mut render = |output: &mut [Frame]| {
         let mut render = || {
             for block in output.chunks_mut(257) {
-                playback
-                    .render_paused_keyboard_monitor(&mut monitor, block)
-                    .unwrap();
+                playback.render(block).unwrap();
             }
         };
         #[cfg(feature = "allocation-probe")]
@@ -162,9 +153,6 @@ fn paused_keyboard_render_preserves_callback_allocation_budget() {
     render(&mut released);
     assert!(released[latency..].iter().any(|frame| *frame != [0.0; 2]));
     assert_eq!(playback.position(), frozen);
-    assert!(!hold.released_on_control());
-    drop(monitor);
-    assert!(hold.released_on_control());
 }
 
 #[test]
