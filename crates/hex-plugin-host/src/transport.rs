@@ -1344,7 +1344,6 @@ impl Callback {
         origins: EffectSegmentOrigins<'_>,
         reply: Option<&mut SegmentReply>,
     ) -> Result<Option<(usize, usize)>, Fault> {
-        output.fill([0.0; 2]);
         let result = self.stage_segment_inner(
             frame_offset,
             input,
@@ -1444,10 +1443,10 @@ impl Callback {
         let mut event_index = 0;
         let mut parameter_index = 0;
         let mut input_parameters = parameters.len();
+        let mut offset = initial_offset;
+        let mut sequence = stage.state.position / q;
         for (index, (source, destination)) in input.iter().zip(output).enumerate() {
             let position = stage.state.position;
-            let offset = (position % q) as usize;
-            let sequence = position / q;
             let origin = authored
                 .as_ref()
                 .and_then(|segment| (segment.origin)(index));
@@ -1593,6 +1592,8 @@ impl Callback {
                         })?;
                     }
                 }
+            } else {
+                *destination = [0.0; 2];
             }
             if authored.is_some() {
                 self.authored_origins.frames[offset] = origin;
@@ -1623,6 +1624,11 @@ impl Callback {
                     manual_origin: stage.state.input_manual_origin,
                     editor_scope: stage.state.input_editor_scope,
                 });
+                // A checked new position already exists beyond this boundary.
+                sequence += 1;
+                offset = 0;
+            } else {
+                offset += 1;
             }
         }
         if output_events > MAX_EVENTS - stage.output_events {
