@@ -107,11 +107,10 @@ fn nested_group_plates_and_poles_join_follow_selection_and_close_at_visible_ends
                 f64::from(corners.bottom_left),
                 if last { 2.0 * f64::from(scale) } else { 0.0 }
             );
-            let plate = visual.rendered_path_triangles(selector("track-name-plate", group));
-            assert!(!plate.is_empty(), "the group plate is painted");
+            let plate = visual.rendered_background(selector("track-name-plate", group));
             let pole = visual.rendered_background(key).expect("group pole fill");
             assert!(
-                plate.iter().all(|triangle| triangle.color == pole),
+                plate == Some(pole),
                 "the group plate and its entire pole use the same selected/unselected fill"
             );
         };
@@ -131,9 +130,9 @@ fn nested_group_plates_and_poles_join_follow_selection_and_close_at_visible_ends
         assert_eq!(plate.top(), own_rail.top());
         assert!(
             !visual
-                .rendered_path_triangles(selector("track-name-plate", track))
-                .is_empty(),
-            "group name plate is painted as a shaped path"
+                .rendered_background(selector("track-name-plate", track))
+                .is_none(),
+            "group name plate is painted"
         );
     }
     // Resizing a group grows only its plate, keeping the working controls
@@ -155,7 +154,7 @@ fn nested_group_plates_and_poles_join_follow_selection_and_close_at_visible_ends
     let grown = visual
         .debug_bounds(selector("arrangement-track-header", outer))
         .unwrap();
-    assert_eq!(grown.size.height, original_height + px(80.0));
+    assert_eq!(grown.size.height, original_height + px(88.0));
     let name = visual.debug_bounds(selector("track-name", outer)).unwrap();
     assert!(
         name.top() - grown.top() <= px(4.0),
@@ -832,7 +831,7 @@ fn duplicate_and_undo_keep_row_measurements_and_scroll_anchor(cx: &mut TestAppCo
     visual.run_until_parked();
     let anchor_before = bounds(&mut visual, anchor);
     let following_before = visual.debug_bounds(following_header).unwrap();
-    assert_eq!(following_before.size.height, original_height + px(20.0));
+    assert_eq!(following_before.size.height, original_height + px(22.0));
     select(&mut visual, source, false);
 
     for (shortcut, count, following_index) in [("cmd-d", 101, 4), ("cmd-z", 100, 3)] {

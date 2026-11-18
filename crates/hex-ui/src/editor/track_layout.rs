@@ -1,10 +1,11 @@
 //! Arrangement-only layout state; resizing never edits the project or audio.
 //! Header overview has a separate transient height map: temporary resizing never
-//! overwrites normal custom heights. Option-wheel changes only the hovered row
-//! through the same height map and limits; nested controls and held input retain
-//! ownership. Main shares the row-height and rollback map;
-//! its top resize edge preserves the pinned bottom. Stable track IDs survive topology changes;
-//! project replacement clears both layouts. Plain H belongs to this workspace
+//! overwrites normal custom heights. Drag and Option-wheel use whole multiples
+//! of the compact height. Option-wheel changes only the hovered row, after
+//! nested controls have had a chance to consume the event. Main shares the
+//! row-height and rollback map. Its top resize edge preserves the pinned bottom.
+//! Stable track IDs survive topology changes. Project replacement clears both layouts.
+//! Plain H belongs to this workspace
 //! only while the computer MIDI keyboard is disabled. Command-H resets track
 //! heights and exits overview without changing the pinned main row. Held sizing uses the shared
 //! Window pointer lease; its local snapshot owns complete cancellation rollback.
@@ -19,12 +20,17 @@ use gpui::{
 use hex_project::TrackId;
 use std::collections::BTreeMap;
 
-// Reuse the browser/workspace split's room budget. Default-height controls
-// still fit at the minimum header width; shorter rows render only their title.
+// Reuse the browser/workspace split's room budget. Mixer controls still fit
+// at the minimum header width.
 const MAX_HEADER_WIDTH: f32 = super::browser::DEFAULT_WIDTH;
 const MIN_LANE_WIDTH: f32 = super::browser::MIN_WORKSPACE_WIDTH - TRACK_HEADER_WIDTH;
-// Name line + separate 3px resize gutter, bottom border and centering room.
-pub(super) const HEADER_ONLY_HEIGHT: f32 = super::track_header::NAME_HEIGHT + 5.0;
+// Name and primary controls + separate 3px resize gutter and bottom border.
+pub(super) const HEADER_ONLY_HEIGHT: f32 = super::track_header::NAME_HEIGHT + 4.0;
+
+fn stepped_height(height: f32, maximum: f32) -> f32 {
+    let max_steps = (maximum / HEADER_ONLY_HEIGHT).floor().max(1.0);
+    (height / HEADER_ONLY_HEIGHT).round().clamp(1.0, max_steps) * HEADER_ONLY_HEIGHT
+}
 
 /// The pinned output row has layout identity without inventing a project TrackId.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -48,6 +54,7 @@ pub(super) struct TrackLayout {
     heights: BTreeMap<Row, f32>,
     overview: Option<BTreeMap<Row, f32>>,
     drag: Option<ResizeDrag>,
+    wheel_remainder: Option<(Row, f32)>,
     generation: u64,
     tracks: Vec<TrackId>,
     revision: Option<u64>,
@@ -84,6 +91,7 @@ struct ResizeDrag {
     previous_width: Option<f32>,
     previous_heights: Option<BTreeMap<Row, f32>>,
     maximum: f32,
+    moved: bool,
 }
 
 /// Keep pan/autoscroll's pixel interface while GPUI owns variable-row layout.
@@ -219,6 +227,7 @@ impl EditorView {
             return false;
         }
         if reset {
+            self.track_layout.wheel_remainder = None;
             self.track_layout.heights.retain(|row, _| *row == Row::Main);
             self.track_layout.overview = None;
             self.track_scroll.remeasure();
@@ -236,6 +245,7 @@ impl EditorView {
             cx.notify();
             return true;
         }
+        self.track_layout.wheel_remainder = None;
         if self.track_layout.overview.take().is_none() {
             self.track_layout.overview = Some(BTreeMap::new());
         }
@@ -466,18 +476,50 @@ impl EditorView {
         {
             return;
         }
-        // Physical upward motion grows the row regardless of natural-scroll
-        // preference. One wheel line = 16px; pixel deltas stay continuous and
-        // each event is bounded to 32px, including accelerated trackpads.
-        let delta = f32::from(event.physical_delta().pixel_delta(px(64.)).y) * 0.25;
+        if !matches!(event.touch_phase, gpui::TouchPhase::Moved) {
+            self.track_layout.wheel_remainder = None;
+        }
+        // One physical wheel tick is one height step. Collect small trackpad
+        // deltas on the hovered row before applying a step.
+        const WHEEL_PIXELS_PER_STEP: f32 = 64.0;
+        let delta = event.physical_wheel_ticks().map_or_else(
+            || {
+                f32::from(
+                    event
+                        .physical_delta()
+                        .pixel_delta(px(WHEEL_PIXELS_PER_STEP))
+                        .y,
+                ) / WHEEL_PIXELS_PER_STEP
+            },
+            |ticks| ticks.y,
+        );
         if !delta.is_finite() || delta == 0. {
             return;
         }
         cx.stop_propagation();
+        if event.is_momentum
+            || matches!(
+                event.touch_phase,
+                gpui::TouchPhase::Ended | gpui::TouchPhase::Cancelled
+            )
+        {
+            return;
+        }
         let row = track.map_or(Row::Main, Row::Track);
+        let remainder = self
+            .track_layout
+            .wheel_remainder
+            .filter(|(owner, _)| *owner == row)
+            .map_or(0.0, |(_, remainder)| remainder);
+        let units = remainder + delta.clamp(-2.0, 2.0);
+        let steps = units.trunc();
+        self.track_layout.wheel_remainder = Some((row, units - steps));
+        if steps == 0.0 {
+            return;
+        }
         let (original, maximum) = self.row_resize_geometry(row);
-        let height = (original + delta.clamp(-32., 32.)).clamp(HEADER_ONLY_HEIGHT, maximum);
-        if height == original {
+        let height = stepped_height(original + steps * HEADER_ONLY_HEIGHT, maximum);
+        if (height - original) * steps <= 0.0 {
             return;
         }
         self.track_layout.active_heights_mut().insert(row, height);
@@ -582,6 +624,7 @@ impl EditorView {
             self.track_layout.heights.clear();
             self.track_layout.overview = None;
             self.track_layout.drag = None;
+            self.track_layout.wheel_remainder = None;
             self.track_layout.generation = self.project_generation;
             self.track_layout.tracks.clear();
             self.track_scroll.list.reset(0);
@@ -771,6 +814,7 @@ impl EditorView {
         if !self.capture_track_resize(track, revision, window, cx) {
             return;
         }
+        self.track_layout.wheel_remainder = None;
         self.track_layout.drag = Some(ResizeDrag {
             track,
             pointer,
@@ -782,6 +826,7 @@ impl EditorView {
             // once so all live updates have one complete cancellation owner.
             previous_heights: track.map(|_| self.track_layout.active_heights().clone()),
             maximum,
+            moved: false,
         });
         self.focus.focus(window);
         cx.notify();
@@ -821,19 +866,24 @@ impl EditorView {
         }
         let target = drag.track;
         if let Some(track) = target {
-            let height = (drag.original
-                + if track == Row::Main {
-                    drag.pointer - pointer
-                } else {
-                    pointer - drag.pointer
-                })
-            .clamp(HEADER_ONLY_HEIGHT, drag.maximum);
+            if pointer == drag.pointer && !drag.moved {
+                return;
+            }
+            let delta = if track == Row::Main {
+                drag.pointer - pointer
+            } else {
+                pointer - drag.pointer
+            };
+            let height = stepped_height(drag.original + delta, drag.maximum);
+            if let Some(drag) = self.track_layout.drag.as_mut() {
+                drag.moved = true;
+            }
             if all_tracks {
                 if self
                     .track_layout
                     .tracks
                     .iter()
-                    .all(|id| self.track_height(*id) == height)
+                    .all(|id| self.track_body_height(*id) == height)
                     && self.main_track_height() == height
                 {
                     return;

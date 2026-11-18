@@ -1416,7 +1416,7 @@ fn compact_resize_refuses_to_hide_an_unfinished_header_gain_draft(cx: &mut TestA
         bounds(&mut visual, "arrangement-track-header", track)
             .size
             .height,
-        px(23.0)
+        px(22.0)
     );
     assert!(visual.debug_bounds(selector).is_none());
 }
