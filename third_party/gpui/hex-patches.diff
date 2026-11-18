@@ -598,6 +598,9 @@ diff --git a/src/app/test_context.rs b/src/app/test_context.rs
 diff --git a/src/bounds_tree.rs b/src/bounds_tree.rs
 --- a/src/bounds_tree.rs
 +++ b/src/bounds_tree.rs
+@@ -1 +1 @@
+-use crate::{Bounds, Half};
++use crate::{Bounds, Half, Point};
 @@ -35,0 +36,15 @@
 +        self.insert_with_order(new_bounds, None)
 +    }
@@ -620,26 +623,50 @@ diff --git a/src/bounds_tree.rs b/src/bounds_tree.rs
 +        let Some(root) = self.root else {
 +            let order = reserved.unwrap_or(1);
 +            let new_node = self.push_leaf(new_bounds, order);
-@@ -40,2 +56,2 @@
+@@ -40,2 +56,6 @@
 -            return 1;
 -        }
 +            return order;
 +        };
-@@ -44,2 +60 @@
++
++        // The incoming edges are constant through placement and ordering.
++        let new_origin = &new_bounds.origin;
++        let new_end = new_bounds.bottom_right();
+@@ -44,2 +64 @@
 -        let mut max_intersecting_ordering = 0;
 -        let mut index = self.root.unwrap();
 +        let mut index = root;
-@@ -60,2 +75 @@
+@@ -55 +74,4 @@
+-            *node_bounds = node_bounds.union(&new_bounds);
++            *node_bounds = Bounds::from_corners(
++                node_bounds.origin.min(new_origin),
++                node_bounds.bottom_right().max(&new_end),
++            );
+@@ -60,6 +82,11 @@
 -            // in terms of surface area. If there is an intersection with the other child,
 -            // add its keys to the intersections vector.
+-            let left_cost = new_bounds.union(self.nodes[left].bounds()).half_perimeter();
+-            let right_cost = new_bounds
+-                .union(self.nodes[right].bounds())
+-                .half_perimeter();
 +            // in terms of surface area. Draw order is resolved after descent.
-@@ -67,2 +80,0 @@
++            let fit = |node: &Node<U>| {
++                let bounds = node.bounds();
++                Bounds::from_corners(
++                    new_origin.min(&bounds.origin),
++                    new_end.max(&bounds.bottom_right()),
++                )
++                .half_perimeter()
++            };
++            let left_cost = fit(&self.nodes[left]);
++            let right_cost = fit(&self.nodes[right]);
+@@ -67,2 +93,0 @@
 -                max_intersecting_ordering =
 -                    self.find_max_ordering(right, &new_bounds, max_intersecting_ordering);
-@@ -71,2 +82,0 @@
+@@ -71,2 +95,0 @@
 -                max_intersecting_ordering =
 -                    self.find_max_ordering(left, &new_bounds, max_intersecting_ordering);
-@@ -81,25 +91,40 @@
+@@ -81,25 +104,44 @@
 -        // Check for collision with the located leaf node
 -        let Node::Leaf {
 -            bounds: sibling_bounds,
@@ -671,13 +698,17 @@ diff --git a/src/bounds_tree.rs b/src/bounds_tree.rs
 +        // origin + size representation may round a union edge inward.
 +        let mut max_intersecting_ordering = 0;
 +        if reserved.is_none() {
-+            max_intersecting_ordering = self.find_max_ordering(sibling, &new_bounds, 0);
++            max_intersecting_ordering = self.find_max_ordering(sibling, new_origin, &new_end, 0);
 +            let mut child = sibling;
 +            for &parent in self.stack.iter().rev() {
 +                if let Node::Internal { left, right, .. } = &self.nodes[parent] {
 +                    let other = if *left == child { *right } else { *left };
-+                    max_intersecting_ordering =
-+                        self.find_max_ordering(other, &new_bounds, max_intersecting_ordering);
++                    max_intersecting_ordering = self.find_max_ordering(
++                        other,
++                        new_origin,
++                        &new_end,
++                        max_intersecting_ordering,
++                    );
 +                }
 +                child = parent;
 +            }
@@ -705,7 +736,7 @@ diff --git a/src/bounds_tree.rs b/src/bounds_tree.rs
 +                } else {
 +                    *right = new_parent;
 +                }
-@@ -107,5 +132,3 @@
+@@ -107,5 +149,3 @@
 -                *right = new_parent;
 -            }
 -        } else {
@@ -714,20 +745,47 @@ diff --git a/src/bounds_tree.rs b/src/bounds_tree.rs
 +                // If the old parent was the root, the new parent is the new root.
 +                self.root = Some(new_parent);
 +            }
-@@ -151,0 +175,2 @@
+@@ -131 +171,14 @@
+-    fn find_max_ordering(&self, index: usize, bounds: &Bounds<U>, mut max_ordering: u32) -> u32 {
++    fn find_max_ordering(
++        &self,
++        index: usize,
++        origin: &Point<U>,
++        end: &Point<U>,
++        mut max_ordering: u32,
++    ) -> u32 {
++        let intersects = |bounds: &Bounds<U>| {
++            let node_end = bounds.bottom_right();
++            origin.x < node_end.x
++                && end.x > bounds.origin.x
++                && origin.y < node_end.y
++                && end.y > bounds.origin.y
++        };
+@@ -138 +191 @@
+-                if bounds.intersects(node_bounds) {
++                if intersects(node_bounds) {
+@@ -149 +202 @@
+-                if bounds.intersects(node_bounds) && max_ordering < *node_max_ordering {
++                if intersects(node_bounds) && max_ordering < *node_max_ordering {
+@@ -151,0 +205,2 @@
 +                    // The first result can satisfy the other child's already
 +                    // loaded upper bound, avoiding another recursive query.
-@@ -154 +179,3 @@
--                        max_ordering = self.find_max_ordering(*right, bounds, max_ordering);
-+                        if max_ordering < right_max_ordering {
-+                            max_ordering = self.find_max_ordering(*right, bounds, max_ordering);
-+                        }
-@@ -157 +184,3 @@
+@@ -153,2 +208,5 @@
 -                        max_ordering = self.find_max_ordering(*left, bounds, max_ordering);
-+                        if max_ordering < left_max_ordering {
-+                            max_ordering = self.find_max_ordering(*left, bounds, max_ordering);
+-                        max_ordering = self.find_max_ordering(*right, bounds, max_ordering);
++                        max_ordering = self.find_max_ordering(*left, origin, end, max_ordering);
++                        if max_ordering < right_max_ordering {
++                            max_ordering =
++                                self.find_max_ordering(*right, origin, end, max_ordering);
 +                        }
-@@ -238,0 +268,166 @@
+@@ -156,2 +214,4 @@
+-                        max_ordering = self.find_max_ordering(*right, bounds, max_ordering);
+-                        max_ordering = self.find_max_ordering(*left, bounds, max_ordering);
++                        max_ordering = self.find_max_ordering(*right, origin, end, max_ordering);
++                        if max_ordering < left_max_ordering {
++                            max_ordering = self.find_max_ordering(*left, origin, end, max_ordering);
++                        }
+@@ -238,0 +299,167 @@
 +#[cfg(any(test, feature = "test-support"))]
 +pub(crate) fn verify_ordering() -> Result<(), String> {
 +    ordering_verification::verify()
@@ -780,7 +838,8 @@ diff --git a/src/bounds_tree.rs b/src/bounds_tree.rs
 +                        .map(|(_, order)| *order)
 +                        .fold(initial, cmp::max);
 +                    require(
-+                        tree.find_max_ordering(root, &query, initial) == expected,
++                        tree.find_max_ordering(root, &query.origin, &query.bottom_right(), initial)
++                            == expected,
 +                        "sibling maxima query differs from independent leaf scan",
 +                    )?;
 +                }

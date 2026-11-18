@@ -196,7 +196,7 @@
   },
   "patched_files": {
     "src/app/test_context.rs": "246687f7ac8268f177d99a343c6b725aef68d3d3518832fe0bb255bb98220843",
-    "src/bounds_tree.rs": "0dd04e4205051c30c905db44218aa02f292b1f18514dd58621d4f6a327746814",
+    "src/bounds_tree.rs": "3ff28210715c36d53b9c70941dc3fb896db35558c502dcce680bcb50f411bb5f",
     "src/elements/div.rs": "aaecbdac6dacf1c48f4127cd700f87113d01fbf0717484881d7acfcec026eff3",
     "src/gpui.rs": "b26a450e27b580824e68b48cbceb200e39fa03ea8f8c39599d30e41784adc2f8",
     "src/interactive.rs": "dd5fdbffdd9c7c50af965163ba2380c4868708396a5cd82e4f529bdf99b9710a",

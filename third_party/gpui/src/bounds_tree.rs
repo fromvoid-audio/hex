@@ -1,4 +1,4 @@
-use crate::{Bounds, Half};
+use crate::{Bounds, Half, Point};
 use std::{
     cmp,
     fmt::Debug,
@@ -56,6 +56,10 @@ where
             return order;
         };
 
+        // The incoming edges are constant through placement and ordering.
+        let new_origin = &new_bounds.origin;
+        let new_end = new_bounds.bottom_right();
+
         // Search for the best place to add the new leaf based on heuristics.
         let mut index = root;
         while let Node::Internal {
@@ -67,16 +71,25 @@ where
         {
             let left = *left;
             let right = *right;
-            *node_bounds = node_bounds.union(&new_bounds);
+            *node_bounds = Bounds::from_corners(
+                node_bounds.origin.min(new_origin),
+                node_bounds.bottom_right().max(&new_end),
+            );
             self.stack.push(index);
 
             // Descend to the best-fit child, based on which one would increase
             // the surface area the least. This attempts to keep the tree balanced
             // in terms of surface area. Draw order is resolved after descent.
-            let left_cost = new_bounds.union(self.nodes[left].bounds()).half_perimeter();
-            let right_cost = new_bounds
-                .union(self.nodes[right].bounds())
-                .half_perimeter();
+            let fit = |node: &Node<U>| {
+                let bounds = node.bounds();
+                Bounds::from_corners(
+                    new_origin.min(&bounds.origin),
+                    new_end.max(&bounds.bottom_right()),
+                )
+                .half_perimeter()
+            };
+            let left_cost = fit(&self.nodes[left]);
+            let right_cost = fit(&self.nodes[right]);
             if left_cost < right_cost {
                 index = left;
             } else {
@@ -94,13 +107,17 @@ where
         // origin + size representation may round a union edge inward.
         let mut max_intersecting_ordering = 0;
         if reserved.is_none() {
-            max_intersecting_ordering = self.find_max_ordering(sibling, &new_bounds, 0);
+            max_intersecting_ordering = self.find_max_ordering(sibling, new_origin, &new_end, 0);
             let mut child = sibling;
             for &parent in self.stack.iter().rev() {
                 if let Node::Internal { left, right, .. } = &self.nodes[parent] {
                     let other = if *left == child { *right } else { *left };
-                    max_intersecting_ordering =
-                        self.find_max_ordering(other, &new_bounds, max_intersecting_ordering);
+                    max_intersecting_ordering = self.find_max_ordering(
+                        other,
+                        new_origin,
+                        &new_end,
+                        max_intersecting_ordering,
+                    );
                 }
                 child = parent;
             }
@@ -151,14 +168,27 @@ where
         ordering
     }
 
-    fn find_max_ordering(&self, index: usize, bounds: &Bounds<U>, mut max_ordering: u32) -> u32 {
+    fn find_max_ordering(
+        &self,
+        index: usize,
+        origin: &Point<U>,
+        end: &Point<U>,
+        mut max_ordering: u32,
+    ) -> u32 {
+        let intersects = |bounds: &Bounds<U>| {
+            let node_end = bounds.bottom_right();
+            origin.x < node_end.x
+                && end.x > bounds.origin.x
+                && origin.y < node_end.y
+                && end.y > bounds.origin.y
+        };
         match &self.nodes[index] {
             Node::Leaf {
                 bounds: node_bounds,
                 order: ordering,
                 ..
             } => {
-                if bounds.intersects(node_bounds) {
+                if intersects(node_bounds) {
                     max_ordering = cmp::max(*ordering, max_ordering);
                 }
             }
@@ -169,20 +199,21 @@ where
                 max_order: node_max_ordering,
                 ..
             } => {
-                if bounds.intersects(node_bounds) && max_ordering < *node_max_ordering {
+                if intersects(node_bounds) && max_ordering < *node_max_ordering {
                     let left_max_ordering = self.nodes[*left].max_ordering();
                     let right_max_ordering = self.nodes[*right].max_ordering();
                     // The first result can satisfy the other child's already
                     // loaded upper bound, avoiding another recursive query.
                     if left_max_ordering > right_max_ordering {
-                        max_ordering = self.find_max_ordering(*left, bounds, max_ordering);
+                        max_ordering = self.find_max_ordering(*left, origin, end, max_ordering);
                         if max_ordering < right_max_ordering {
-                            max_ordering = self.find_max_ordering(*right, bounds, max_ordering);
+                            max_ordering =
+                                self.find_max_ordering(*right, origin, end, max_ordering);
                         }
                     } else {
-                        max_ordering = self.find_max_ordering(*right, bounds, max_ordering);
+                        max_ordering = self.find_max_ordering(*right, origin, end, max_ordering);
                         if max_ordering < left_max_ordering {
-                            max_ordering = self.find_max_ordering(*left, bounds, max_ordering);
+                            max_ordering = self.find_max_ordering(*left, origin, end, max_ordering);
                         }
                     }
                 }
@@ -317,7 +348,8 @@ mod ordering_verification {
                         .map(|(_, order)| *order)
                         .fold(initial, cmp::max);
                     require(
-                        tree.find_max_ordering(root, &query, initial) == expected,
+                        tree.find_max_ordering(root, &query.origin, &query.bottom_right(), initial)
+                            == expected,
                         "sibling maxima query differs from independent leaf scan",
                     )?;
                 }

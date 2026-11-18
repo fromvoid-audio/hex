@@ -114,6 +114,11 @@ and propagate the maximum along the usual ancestor path. Every primitive
 keeps its own assigned order and every future overlap has the same maximum.
 The locked verifier covers repeated overlap, reservation and disjoint reuse.
 
+The draw-order tree computes the incoming rectangle's far corner once per
+insertion. Placement keeps its original union reconstruction, half perimeter
+and tie breaking. Recursive overlap queries receive the original edges and
+keep the existing strict overlap, ordering and rounding behavior.
+
 11 October compiler compatibility: explicitly type the grid repeat helper's
 zero minimum and one-fraction literals as f32. Pinned Taffy 0.9.0's `length`
 and `fr` helpers accept `Into<f32>`; this preserves the same values/layout and
