@@ -377,10 +377,11 @@ fn isolated_latency_insert_keeps_unchanged_group_and_return_tails() {
         let (main, group, bus, affected) = render(&mut candidate);
         let (old_main, old_group, old_bus, _) = render(&mut uninterrupted);
         let (_, _, _, fresh_affected) = render(&mut fresh);
-        assert_eq!(main, old_main);
-        assert_eq!(group, old_group);
-        assert_eq!(bus, old_bus);
-        assert_eq!(affected, fresh_affected);
+        let bits = |pcm: [[f32; 2]; 512]| pcm.map(|frame| frame.map(f32::to_bits));
+        assert_eq!(bits(main), bits(old_main));
+        assert_eq!(bits(group), bits(old_group));
+        assert_eq!(bits(bus), bits(old_bus));
+        assert_eq!(bits(affected), bits(fresh_affected));
         for tail in [group, bus] {
             assert!(tail.iter().flatten().any(|sample| sample.abs() > 1e-7));
         }
