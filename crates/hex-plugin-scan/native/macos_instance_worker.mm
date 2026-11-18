@@ -1174,6 +1174,7 @@ int main(int argc,char** argv) {
             // on turns that do not visit the editor's AppKit event pump.
             auto next_message_report=std::chrono::steady_clock::time_point::min();
             constexpr auto quiet_pcm_window=std::chrono::milliseconds(40);
+            constexpr double quiet_main_wait=0.008;
             const double pcm_only_wait=std::clamp(config->maximum/config->rate/3.0,0.001,0.002);
             auto active_pcm_until=std::chrono::steady_clock::now()+quiet_pcm_window;
             std::optional<std::chrono::steady_clock::time_point> retirement_deadline;
@@ -1460,7 +1461,8 @@ int main(int argc,char** argv) {
                     const bool busy=editor.is_open() || stage!=Idle ||
                         page_stage.load(std::memory_order_acquire)!=PageIdle ||
                         live_stage.load(std::memory_order_acquire)!=LiveIdle;
-                    const double wait=busy ? 0.001 : (now<active_pcm_until ? pcm_only_wait : 0.004);
+                    const double wait=busy ? 0.001 :
+                        (now<active_pcm_until ? pcm_only_wait : quiet_main_wait);
                     CFRunLoopRunInMode(kCFRunLoopDefaultMode,wait,true);
                 } catch(...) { control_failure(Unexpected); }
             }
