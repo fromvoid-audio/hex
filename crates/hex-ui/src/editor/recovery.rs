@@ -7,6 +7,7 @@ use super::{
 };
 use hex_engine::playback::{PlaybackAction, PlaybackCommand};
 use hex_engine::{AudioSourceContext, NativeDeviceClass};
+use hex_project::{AudioViewResizeOperation, ClipId, Command};
 use hex_session::service::{NativeDeviceDropSource, Request};
 use std::sync::atomic::Ordering::{Acquire, Relaxed};
 
@@ -14,11 +15,13 @@ use std::sync::atomic::Ordering::{Acquire, Relaxed};
 #[path = "recovery_tests.rs"]
 pub(in crate::editor) mod tests;
 
-/// Drop the released preview only if it still belongs to the deferred import.
+/// Retire a released preview still owned by the aborted recovery.
 pub(super) fn clear_recovery(
     recovery: &mut RecoveryState,
     sample_drop: &mut Option<PendingSampleDrop>,
     time_move: &mut Option<super::time_selection::PendingTimeRangeMove>,
+    pending_loop: &mut Option<super::loop_rail::PendingLoop>,
+    clip_loop: &mut super::clip_loop::State,
 ) {
     if recovery
         .deferred_edit
@@ -34,7 +37,23 @@ pub(super) fn clear_recovery(
     {
         *time_move = None;
     }
+    if recovery.holds_loop_region() {
+        *pending_loop = None;
+    }
+    if recovery.holds_clip_play_start() {
+        clip_loop.retire_deferred_play_start();
+    }
     recovery.fail();
+}
+
+fn clip_play_start(request: &Request) -> Option<ClipId> {
+    match request {
+        Request::Edit(Command::ResizeAudioClipView {
+            clip,
+            operation: AudioViewResizeOperation::PlayStart { .. },
+        }) => Some(*clip),
+        _ => None,
+    }
 }
 
 impl EditorView {
@@ -65,11 +84,20 @@ impl EditorView {
     }
 
     pub(super) fn recoverable_graph_edit(&self, request: &Request) -> Option<DeferredEditKind> {
+        if clip_play_start(request).is_some()
+            && self.pending_clip_loop_matches(request)
+            && self.has_degraded_vst3_output()
+        {
+            return Some(DeferredEditKind::ClipPlayStart);
+        }
         if !self.has_degraded_vst3_output() && self.recovery.deferred_edit.is_none() {
             return None;
         }
         if self.pending_time_duplicate_matches(request) {
             return Some(DeferredEditKind::TimeDuplicate);
+        }
+        if self.pending_loop_matches(request) {
+            return Some(DeferredEditKind::LoopRegion);
         }
         if matches!(
             self.sample_drop_target(),
@@ -100,6 +128,23 @@ impl EditorView {
         .then_some(DeferredEditKind::NativeEffect)
     }
 
+    pub(super) fn recovering_clip_play_start(&self, clip: ClipId) -> bool {
+        self.state.as_ref().is_some_and(|state| {
+            self.recovery.admits_clip_play_start(
+                AudioSourceContext {
+                    project_generation: self.project_generation,
+                    editor_revision: state.revision,
+                },
+                clip,
+            )
+        })
+    }
+
+    pub(super) fn recovering_clip_play_start_request(&self, request: &Request) -> bool {
+        clip_play_start(request).is_some_and(|clip| self.recovering_clip_play_start(clip))
+            && self.pending_clip_loop_matches(request)
+    }
+
     /// Hold one admitted edit through the fresh graph and cursor. The sample
     /// request already carries the policy captured at its original drop.
     pub(super) fn recover_before_graph_edit(
@@ -107,11 +152,16 @@ impl EditorView {
         kind: DeferredEditKind,
         request: Request,
     ) -> bool {
-        if self.recovery.generation().is_some() {
+        let continuing_play_start = kind == DeferredEditKind::ClipPlayStart
+            && clip_play_start(&request).is_some_and(|clip| self.recovering_clip_play_start(clip));
+        if self.recovery.generation().is_some()
+            && (!continuing_play_start || self.recovery.deferred_edit.is_some())
+        {
             self.error = Some("audio recovery pending · wait before editing".into());
             return false;
         }
-        if self.edit_pending() || self.pending_restart_request.is_some() {
+        if !continuing_play_start && (self.edit_pending() || self.pending_restart_request.is_some())
+        {
             self.error = Some("finish the current edit before restarting audio".into());
             return false;
         }
@@ -140,6 +190,8 @@ impl EditorView {
             _ => match kind {
                 DeferredEditKind::SampleDrop => self.pending_sample_drop_matches(&request),
                 DeferredEditKind::TimeDuplicate => self.pending_time_duplicate_matches(&request),
+                DeferredEditKind::LoopRegion => self.pending_loop_matches(&request),
+                DeferredEditKind::ClipPlayStart => self.pending_clip_loop_matches(&request),
                 DeferredEditKind::NativeEffect => false,
             },
         };
@@ -148,29 +200,35 @@ impl EditorView {
             return false;
         }
 
-        let playing = self
-            .audio_status()
-            .is_some_and(|status| status.playing.load(Acquire));
-        self.recover_audio();
-        if self.recovery.generation().is_none() {
-            return false;
-        }
-        if kind == DeferredEditKind::TimeDuplicate {
-            self.mark_time_duplicate_recovery_started();
+        if !continuing_play_start {
+            let playing = self
+                .audio_status()
+                .is_some_and(|status| status.playing.load(Acquire));
+            self.recover_audio();
+            if self.recovery.generation().is_none() {
+                return false;
+            }
+            if kind == DeferredEditKind::TimeDuplicate {
+                self.mark_time_duplicate_recovery_started();
+            }
+            if playing {
+                self.defer_play_until_audio_recovers();
+            }
         }
         self.recovery.deferred_edit = Some(DeferredGraphEdit {
             kind,
             context,
             request: Box::new(request),
         });
-        if playing {
-            self.defer_play_until_audio_recovers();
-        }
         self.status = match kind {
             DeferredEditKind::NativeEffect => "restarting audio · device will be added when ready",
             DeferredEditKind::SampleDrop => "restarting audio · sample will be imported when ready",
             DeferredEditKind::TimeDuplicate => {
                 "restarting audio · time will be duplicated when ready"
+            }
+            DeferredEditKind::LoopRegion => "restarting audio · loop will change when ready",
+            DeferredEditKind::ClipPlayStart => {
+                "restarting audio · play start will change when ready"
             }
         }
         .into();
@@ -183,8 +241,12 @@ impl EditorView {
         };
         let sample_drop = pending.kind == DeferredEditKind::SampleDrop;
         let time_duplicate = pending.kind == DeferredEditKind::TimeDuplicate;
+        let loop_region = pending.kind == DeferredEditKind::LoopRegion;
+        let clip_play_start = pending.kind == DeferredEditKind::ClipPlayStart;
         if (sample_drop && !self.pending_sample_drop_matches(&pending.request))
             || (time_duplicate && !self.pending_time_duplicate_matches(&pending.request))
+            || (loop_region && !self.pending_loop_matches(&pending.request))
+            || (clip_play_start && !self.pending_clip_loop_matches(&pending.request))
         {
             return;
         }
@@ -200,7 +262,9 @@ impl EditorView {
         {
             self.error = Some("edit canceled · project changed during audio recovery".into());
             false
-        } else if (sample_drop || time_duplicate) && self.edit_pending() {
+        } else if (sample_drop || time_duplicate || loop_region || clip_play_start)
+            && self.edit_pending()
+        {
             // A worker edit without an installed reply can already have
             // changed the captured revision for these unversioned requests.
             self.error = Some("edit canceled · project work pending during audio recovery".into());
@@ -216,6 +280,10 @@ impl EditorView {
                 "importing sample to arrangement".into()
             } else if time_duplicate {
                 "duplicating time".into()
+            } else if loop_region {
+                "applying loop".into()
+            } else if clip_play_start {
+                "applying play start".into()
             } else {
                 "adding device".into()
             };
@@ -223,6 +291,10 @@ impl EditorView {
             self.pending_sample_drop = None;
         } else if time_duplicate {
             self.pending_time_range_move = None;
+        } else if loop_region {
+            self.loop_state_installed(false);
+        } else if clip_play_start {
+            self.retire_pending_clip_loop();
         }
     }
 
@@ -235,9 +307,18 @@ impl EditorView {
         self.status = "restarting audio output · playback starts when ready".into();
     }
 
-    /// Use the requested start as the restored cursor before admitting Play.
+    /// A contained VST3 worker fault leaves the applied graph playable. Only
+    /// recover on Play when the output itself cannot serve the start.
     pub(super) fn recover_degraded_play_at(&mut self, frame: u64) -> bool {
-        if self.recovery.generation().is_some() || !self.has_degraded_vst3_output() {
+        if self.recovery.generation().is_some()
+            || !self.has_degraded_vst3_output()
+            || self.audio_status().is_some_and(|status| {
+                status.applied_revision.load(Acquire) != 0
+                    && !status.device_fault.load(Acquire)
+                    && !status.render_fault.load(Acquire)
+                    && !status.shutdown_complete.load(Acquire)
+            })
+        {
             return false;
         }
         self.recover_audio_at(frame);
@@ -287,6 +368,8 @@ impl EditorView {
                 &mut self.recovery,
                 &mut self.pending_sample_drop,
                 &mut self.pending_time_range_move,
+                &mut self.pending_loop,
+                &mut self.clip_loop,
             );
             return;
         }
@@ -469,6 +552,8 @@ impl EditorView {
             &mut self.recovery,
             &mut self.pending_sample_drop,
             &mut self.pending_time_range_move,
+            &mut self.pending_loop,
+            &mut self.clip_loop,
         );
         self.retire_audio_preserving_gain_take();
         self.pending_recovery_generation = None;

@@ -1,5 +1,7 @@
 //! Shared fixture for Verified-streaming native worker, publication and callback tests.
 use super::*;
+mod arrangement;
+mod effects;
 mod group;
 
 pub(in crate::native_audio) fn actual_native_harness() -> Harness {

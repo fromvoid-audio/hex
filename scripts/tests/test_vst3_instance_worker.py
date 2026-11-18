@@ -1406,9 +1406,12 @@ class NativeInstanceTests(unittest.TestCase):
             bad = base.copy()
             struct.pack_into("<QQ", bad, 48, graph, epoch)
             cases.append(bytes(bad))
-        bad = base.copy()
-        bad[10] = 3
-        cases.append(bytes(bad))
+        for mode in (3, 4, 5):
+            bad = base.copy()
+            # Mixed modes require the unknown word to remain reserved zero;
+            # this 77/91 payload is malformed for either. Mode5 is unsupported.
+            bad[10] = mode
+            cases.append(bytes(bad))
         for packet in cases:
             with self.subTest(packet=packet.hex()):
                 session = self.session()

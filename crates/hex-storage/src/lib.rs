@@ -84,7 +84,16 @@ pub const RETAINED_RECEIVER_SCHEMA_VERSION: u32 = 68;
 /// Schema69 stores the Compressor's authored stereo sidechain source.
 pub const SIDECHAIN_SCHEMA_VERSION: u32 = 69;
 /// Newest schema this build opens; anything above it is refused as newer.
-pub const NEWEST_SCHEMA_VERSION: u32 = LONG_PITCH_SCHEMA_VERSION;
+pub const NEWEST_SCHEMA_VERSION: u32 = LONG_INACTIVE_WARP_SCHEMA_VERSION;
+/// Schema121 stores long raw clips with retained inactive Warp settings.
+pub const LONG_INACTIVE_WARP_SCHEMA_VERSION: u32 = 121;
+/// Schema120 stores bounded long Tones/Texture roots over a valid prior document.
+/// Older readers refuse this extension; see `schema::long_granular`.
+pub const LONG_GRANULAR_SCHEMA_VERSION: u32 = 120;
+/// Full-source long pitch with its retained frame-clock fade.
+pub const LONG_PITCH_FADE_SCHEMA_VERSION: u32 = 119;
+/// Independent frame-clock audio repeat periods containing silence.
+pub const SILENT_REPEAT_SCHEMA_VERSION: u32 = 118;
 /// Exact plain pitch of full frame domains beyond the resident transform cap.
 pub const LONG_PITCH_SCHEMA_VERSION: u32 = 117;
 /// Exact plain reversals of frame domains beyond the resident transform cap.
@@ -257,11 +266,27 @@ fn contains_extended_frame_events(project: &Project) -> bool {
 /// Free-running Steps uses schema107, or schema108 alongside those touches.
 /// Arrangement Steps uses schema109, or schema110 alongside those touches.
 /// Mutable Operator banks use schema111, or schema112 alongside those touches.
+/// Schema120 wraps a valid prior document and restores complete long granular edits.
+/// Schema119 wraps a prior document for full-source long pitch with a fade.
+/// Schema118 wraps the appropriate prior document for independent audio repeat periods.
 /// Schema117 wraps the appropriate prior document for exact full-source long pitch.
 /// Schema116 wraps the appropriate prior document for exact long plain reversals.
 /// Schema115 wraps the appropriate prior document only when an authored device
 /// lane has two points at one beat. Projects with unique beats retain their format.
 pub fn schema_version_for(project: &Project) -> u32 {
+    use schema::long_granular::{self, LongWarpSchema};
+    if long_granular::contains(project, LongWarpSchema::Inactive) {
+        return LONG_INACTIVE_WARP_SCHEMA_VERSION;
+    }
+    if long_granular::contains(project, LongWarpSchema::Granular) {
+        return LONG_GRANULAR_SCHEMA_VERSION;
+    }
+    if schema::long_pitch_fade::contains(project) {
+        return LONG_PITCH_FADE_SCHEMA_VERSION;
+    }
+    if schema::silent_repeat::contains(project) {
+        return SILENT_REPEAT_SCHEMA_VERSION;
+    }
     if schema::long_pitch::contains(project) {
         return LONG_PITCH_SCHEMA_VERSION;
     }
@@ -537,6 +562,19 @@ impl From<serde_json::Error> for StorageError {
 /// but the codec materializes metadata and is not a streaming or OOM-proof reader.
 /// Nonempty serial units use schema80; flat projects retain their prior layout.
 pub fn encode(project: &Project) -> Result<Vec<u8>, StorageError> {
+    use schema::long_granular::{self, LongWarpSchema};
+    if long_granular::contains(project, LongWarpSchema::Inactive) {
+        return long_granular::encode(project, LongWarpSchema::Inactive);
+    }
+    if long_granular::contains(project, LongWarpSchema::Granular) {
+        return long_granular::encode(project, LongWarpSchema::Granular);
+    }
+    if schema::long_pitch_fade::contains(project) {
+        return schema::long_pitch_fade::encode(project);
+    }
+    if schema::silent_repeat::contains(project) {
+        return schema::silent_repeat::encode(project);
+    }
     if schema::long_pitch::contains(project) {
         return schema::long_pitch::encode(project);
     }
@@ -552,14 +590,13 @@ pub fn encode(project: &Project) -> Result<Vec<u8>, StorageError> {
     if schema::s_curve_fades::contains(project) {
         return schema::s_curve_fades::encode(project);
     }
-    encode_prior(project)
+    encode_document(&encode_prior(project)?)
 }
 
-fn encode_prior(project: &Project) -> Result<Vec<u8>, StorageError> {
+/// Build the existing JSON object before an outer envelope is serialized.
+fn encode_prior(project: &Project) -> Result<serde_json::Value, StorageError> {
     if schema::device_automation_touch::contains_native_source_effect(project) {
-        return encode_document(
-            &schema::device_automation_touch::encode_native_source_effect(project)?,
-        );
+        return schema::device_automation_touch::encode_native_source_effect(project);
     }
     if schema::device_modulation::contains_operator_modulation(project)
         || schema::device_modulation::contains_steps(project)
@@ -574,72 +611,74 @@ fn encode_prior(project: &Project) -> Result<Vec<u8>, StorageError> {
         || schema::device_modulation::contains_macro_four(project)
         || schema::device_modulation::contains_instrument_modulation(project)
     {
-        return encode_document(&schema::device_modulation::encode(project)?);
+        return schema::device_modulation::encode(project);
     }
     if schema::device_automation_touch::contains_extended(project) {
-        return encode_document(&schema::device_automation_touch::encode_extended(project)?);
+        return schema::device_automation_touch::encode_extended(project);
     }
     if schema::device_automation_touch::contains_native_instrument(project) {
-        return encode_document(&schema::device_automation_touch::encode_native_instrument(
-            project,
-        )?);
+        return schema::device_automation_touch::encode_native_instrument(project);
     }
     if schema::device_modulation::contains_audio_rate(project)
         || schema::device_modulation::lfo_rate_route_schema(project).is_some()
         || schema::device_modulation::contains_newer_lfo(project)
     {
-        encode_document(&schema::device_modulation::encode(project)?)
+        schema::device_modulation::encode(project)
     } else if schema::bound_source_effects::contains(project) {
-        encode_document(&schema::bound_source_effects::encode(project)?)
+        schema::bound_source_effects::encode(project)
     } else {
-        encode_base(project)
+        encode_base_value(project)
     }
 }
 
 /// Encode an existing layer without adding the bound-source envelope again.
 fn encode_base(project: &Project) -> Result<Vec<u8>, StorageError> {
+    encode_document(&encode_base_value(project)?)
+}
+
+fn encode_base_value(project: &Project) -> Result<serde_json::Value, StorageError> {
     if schema::device_modulation::contains(project) {
-        encode_document(&schema::device_modulation::encode(project)?)
+        schema::device_modulation::encode(project)
     } else if schema::serial_units::contains(project) {
-        encode_document(&schema::serial_units::encode(project)?)
+        schema::serial_units::encode(project)
     } else if schema::device_automation_touch::contains(project) {
-        encode_document(&schema::device_automation_touch::encode(project)?)
+        schema::device_automation_touch::encode(project)
     } else if schema::vst3_automation::contains(project) {
-        encode_document(&schema::vst3_automation::encode(project)?)
+        schema::vst3_automation::encode(project)
     } else if schema::sample_rate_mode::contains(project) {
-        encode_document(&schema::sample_rate_mode::encode(project)?)
+        schema::sample_rate_mode::encode(project)
     } else if contains_larger_device_state(project) {
         let mut value = schema::group_output_mute::encode(project)?;
         value["version"] = VST3_STATE_SIZE_SCHEMA_VERSION.into();
-        encode_document(&value)
+        Ok(value)
     } else if schema::group_output_mute::contains(project) {
-        encode_document(&schema::group_output_mute::encode(project)?)
+        schema::group_output_mute::encode(project)
     } else if contains_leading_audio_once(project) {
         let mut value = schema::track_tags::encode(project)?;
         value["version"] = LEADING_AUDIO_ONCE_SCHEMA_VERSION.into();
-        encode_document(&value)
+        Ok(value)
     } else if schema::track_tags::contains(project) {
-        encode_document(&schema::track_tags::encode(project)?)
+        schema::track_tags::encode(project)
     } else if contains_extended_frame_events(project) {
         let mut value = schema::musical_event_source::encode(project)?;
         value["version"] = EXTENDED_FRAME_EVENTS_SCHEMA_VERSION.into();
-        encode_document(&value)
+        Ok(value)
     } else if schema::musical_event_source::contains(project) {
-        encode_document(&schema::musical_event_source::encode(project)?)
+        schema::musical_event_source::encode(project)
     } else if !project.sidechains().is_empty() {
-        encode_document(&schema::sidechain::encode(project)?)
+        schema::sidechain::encode(project)
     } else if schema::retained_receiver::contains(project) {
-        encode_document(&schema::retained_receiver::encode(project)?)
+        schema::retained_receiver::encode(project)
     } else if schema::sampler_crossfade::contains_newer_states(project) {
-        encode_document(&schema::sampler_crossfade::encode(project)?)
+        schema::sampler_crossfade::encode(project)
     } else if schema::content_view_resampler::contains_explicit(project) {
-        encode_document(&schema::content_view_resampler::encode(project)?)
+        schema::content_view_resampler::encode(project)
     } else if schema::warp_resampler::contains_explicit(project) {
-        encode_document(&schema::warp_resampler::encode(project)?)
+        schema::warp_resampler::encode(project)
     } else if schema::conversion_v2::contains_v2(project) {
-        encode_document(&schema::conversion_v2::encode(project)?)
+        schema::conversion_v2::encode(project)
     } else {
-        encode_document(&schema::track_name_origin::encode(project)?)
+        schema::track_name_origin::encode(project)
     }
 }
 
@@ -869,6 +908,7 @@ fn decode_base(bytes: &[u8]) -> Result<Project, StorageError> {
 }
 
 fn decode_impl(bytes: &[u8], inside_envelope: bool) -> Result<Project, StorageError> {
+    use schema::long_granular::{self, LongWarpSchema};
     #[derive(serde::Deserialize)]
     struct CurrentHeader<'a> {
         format: &'a str,
@@ -877,6 +917,18 @@ fn decode_impl(bytes: &[u8], inside_envelope: bool) -> Result<Project, StorageEr
     let header: CurrentHeader<'_> = serde_json::from_slice(bytes)?;
     if header.format != "hex-project" {
         return Err(StorageError::Invalid("unsupported project format"));
+    }
+    if header.version == LONG_INACTIVE_WARP_SCHEMA_VERSION && !inside_envelope {
+        return long_granular::decode(bytes, LongWarpSchema::Inactive);
+    }
+    if header.version == LONG_GRANULAR_SCHEMA_VERSION && !inside_envelope {
+        return long_granular::decode(bytes, LongWarpSchema::Granular);
+    }
+    if header.version == LONG_PITCH_FADE_SCHEMA_VERSION && !inside_envelope {
+        return schema::long_pitch_fade::decode(bytes);
+    }
+    if header.version == SILENT_REPEAT_SCHEMA_VERSION && !inside_envelope {
+        return schema::silent_repeat::decode(bytes);
     }
     if header.version == LONG_PITCH_SCHEMA_VERSION && !inside_envelope {
         return schema::long_pitch::decode(bytes);
@@ -1000,6 +1052,21 @@ fn decode_impl(bytes: &[u8], inside_envelope: bool) -> Result<Project, StorageEr
             "unsupported older project schema; open a copy with the hex build that saved it and retain the original for recovery",
         )),
     }?;
+    if long_granular::contains(&project, LongWarpSchema::Inactive) {
+        return Err(StorageError::Invalid(
+            "long inactive warp roots require their current project schema",
+        ));
+    }
+    if long_granular::contains(&project, LongWarpSchema::Granular) {
+        return Err(StorageError::Invalid(
+            "long granular roots require their current project schema",
+        ));
+    }
+    if schema::long_pitch_fade::contains(&project) {
+        return Err(StorageError::Invalid(
+            "long pitch with fade requires its current project schema",
+        ));
+    }
     if schema::long_pitch::contains(&project) {
         return Err(StorageError::Invalid(
             "long plain pitch requires its current project schema",

@@ -9,6 +9,163 @@ mod section_recovery;
 mod track_duplicate;
 
 #[test]
+#[ignore = "requires explicit source-bound SDK receipts"]
+fn slow_native_instrument_exchange_reaches_the_session_log() {
+    const CHILD: &str = "HEX_SLOW_EXCHANGE_LOG_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let gate = Files::new();
+        let test = std::thread::current().name().unwrap().to_owned();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", &test, "--ignored", "--nocapture"])
+            .env(CHILD, "1")
+            .env("HEX_ORIGINAL_INSTANCE_VARIANT", "127")
+            .env("HEX_ORIGINAL_SDK_TIMING_GATE", "1")
+            .env("HEX_ORIGINAL_INSTANCE_TRACE", gate.0.join("trace"))
+            .env("HEX_ORIGINAL_INSTANCE_RELEASE", gate.0.join("release"))
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    let _native = native_fixture();
+    let files = Files::new();
+    let trace = PathBuf::from(std::env::var_os("HEX_ORIGINAL_INSTANCE_TRACE").unwrap());
+    let release = PathBuf::from(std::env::var_os("HEX_ORIGINAL_INSTANCE_RELEASE").unwrap());
+    let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
+    let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
+    let gate = std::thread::spawn(move || {
+        let until = Instant::now() + Duration::from_secs(5);
+        loop {
+            if fs::read(&trace).ok().and_then(|bytes| {
+                bytes
+                    .get(..4)
+                    .and_then(|b| b.try_into().ok())
+                    .map(i32::from_le_bytes)
+            }) == Some(9)
+            {
+                break;
+            }
+            assert!(Instant::now() < until, "SDK process gate did not open");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        ready_tx.send(()).unwrap();
+        std::thread::sleep(Duration::from_millis(15));
+        release_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+        fs::write(release, b"release").unwrap();
+    });
+    let selected = selection();
+    hex_ui::write_plugin_effect_test_catalog(&files.0, &selected, "Instrument|Synth", 0).unwrap();
+    let catalog = files.0.canonicalize().unwrap().join("plugin-catalog.json");
+    let mut log = hex_diagnostics::SessionLog::start(files.0.join("logs")).unwrap();
+    let log_path = log.path();
+    let mut harness = ResidentHarness::with_plugins_catalog_and_diagnostics(
+        host(),
+        Some(EffectPresentation {
+            input_frames: 0,
+            output_frames: 512,
+        }),
+        catalog,
+        log.handle(),
+    );
+    assert!(harness.next().error.is_none());
+    let (applied, _) = harness.applied(0);
+    let added = harness.run(Request::Edit(Command::AddMidiTrack {
+        name: "synth".into(),
+    }));
+    let Some(Created::Track(track)) = added.created else {
+        panic!("midi track")
+    };
+    let (applied, _) = harness.applied(applied);
+    let insertion = request(&added.state, PluginEffectDestination::Instrument(track));
+    harness
+        .service
+        .submit(Request::InsertPluginEffect(insertion))
+        .unwrap();
+    let accepted = terminal(&mut harness);
+    assert!(accepted.error.is_none(), "{:?}", accepted.error);
+    let _ = harness.applied(applied);
+    let binding = harness.plugin_progress.lock().unwrap().binding.unwrap();
+    harness
+        .audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    harness.render_plugin_block();
+    ready_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+    harness.render_plugin_block();
+    harness.render_plugin_block();
+    release_tx.send(()).unwrap();
+    gate.join().unwrap();
+    let until = Instant::now() + Duration::from_secs(5);
+    let (line, gap) = loop {
+        harness.pump();
+        let text = fs::read_to_string(&log_path).unwrap_or_default();
+        let slow = text
+            .lines()
+            .find(|line| line.contains("stage=slow_exchange"));
+        let gap = text
+            .lines()
+            .find(|line| line.contains("stage=concealed_output"));
+        if let (Some(slow), Some(gap)) = (slow, gap) {
+            break (slow.to_owned(), gap.to_owned());
+        }
+        assert!(
+            Instant::now() < until,
+            "no real exchange sample in session log: {text}"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    };
+    assert!(line.contains(&format!("binding={binding:?}")), "{line}");
+    for field in [
+        "sequence=",
+        "exchange_ns=",
+        "sdk_process_ns=",
+        "quantum_ns=",
+        "dropped=",
+        "queue_ns=unavailable",
+    ] {
+        assert!(line.contains(field), "{line}");
+    }
+    let number = |name: &str| -> u64 {
+        line.split_whitespace()
+            .rev()
+            .find_map(|field| field.strip_prefix(name))
+            .unwrap()
+            .parse()
+            .unwrap()
+    };
+    let exchange = number("exchange_ns=");
+    let sdk = number("sdk_process_ns=");
+    let pickup = line
+        .trim_end_matches('"')
+        .split_whitespace()
+        .find_map(|field| field.strip_prefix("empty_poll_to_pickup_ns="))
+        .unwrap();
+    assert!(
+        pickup == "unavailable" || pickup.parse::<u64>().is_ok(),
+        "{line}"
+    );
+    assert_eq!(number("sequence="), 0, "{line}");
+    assert!(sdk >= 15_000_000 && exchange >= sdk, "{line}");
+    assert_eq!(number("quantum_ns="), 5_333_333);
+    assert!(gap.contains(&format!("binding={binding:?}")), "{gap}");
+    assert!(
+        gap.contains("reply_sequence=0") && gap.contains("worker_phase=Processing"),
+        "{gap}"
+    );
+    assert!(gap.contains("overflowed="), "{gap}");
+    drop(harness);
+    log.shutdown().unwrap();
+}
+
+#[test]
 #[ignore = "requires explicit source-bound SDK receipts and optional installed catalog"]
 fn native_vst3_instrument_bounces_to_new_track_and_in_place() {
     const CHILD: &str = "HEX_DESKTOP_TEST_INSTRUMENT_BOUNCE_CHILD";
@@ -816,6 +973,12 @@ fn paced_five_instruments_with_automation_and_polling() {
 }
 
 #[test]
+#[ignore = "requires an installed VST3 instrument, its catalog and a source-bound helper"]
+fn paced_five_instruments_with_automation_undo_and_redo() {
+    instrument_entrypoint(InstrumentWorkflow::PacedFiveHistory);
+}
+
+#[test]
 #[ignore = "requires explicit source-bound SDK receipts and optional installed catalog"]
 fn shared_instrument_lane_authoring_undo_read_controls_and_pcm() {
     instrument_entrypoint(InstrumentWorkflow::Authoring);
@@ -1037,6 +1200,7 @@ enum InstrumentWorkflow {
     PacedAuthoring,
     PacedMonitoring,
     PacedFive,
+    PacedFiveHistory,
     Takeover,
 }
 
@@ -1056,10 +1220,13 @@ fn instrument_entrypoint(workflow: InstrumentWorkflow) {
         InstrumentWorkflow::PacedAuthoring
             | InstrumentWorkflow::PacedMonitoring
             | InstrumentWorkflow::PacedFive
+            | InstrumentWorkflow::PacedFiveHistory
     );
     let monitor = matches!(
         workflow,
-        InstrumentWorkflow::PacedMonitoring | InstrumentWorkflow::PacedFive
+        InstrumentWorkflow::PacedMonitoring
+            | InstrumentWorkflow::PacedFive
+            | InstrumentWorkflow::PacedFiveHistory
     );
     let name = std::thread::current().name().unwrap().to_owned();
     const CHILD: &str = "HEX_DESKTOP_TEST_INSTRUMENT_CHILD";
@@ -1308,7 +1475,10 @@ fn instrument_entrypoint(workflow: InstrumentWorkflow) {
     assert_eq!(accepted.state.project.sample_rate(), rate);
     (applied, _) = harness.applied(applied);
     let instrument = project_track.instrument().unwrap().id();
-    if matches!(workflow, InstrumentWorkflow::PacedFive) {
+    if matches!(
+        workflow,
+        InstrumentWorkflow::PacedFive | InstrumentWorkflow::PacedFiveHistory
+    ) {
         for index in 1..5 {
             let added = harness.run(Request::Edit(Command::AddMidiTrack {
                 name: format!("synth {index}"),
@@ -1380,7 +1550,13 @@ fn instrument_entrypoint(workflow: InstrumentWorkflow) {
         return;
     }
     if paced {
-        verify_paced_instrument_authoring(&mut harness, instrument, applied, monitor);
+        verify_paced_instrument_authoring(
+            &mut harness,
+            instrument,
+            applied,
+            monitor,
+            matches!(workflow, InstrumentWorkflow::PacedFiveHistory),
+        );
         return;
     }
     if shared_authoring {
@@ -2241,6 +2417,7 @@ fn verify_paced_instrument_authoring(
     device: hex_project::DeviceId,
     mut applied: u64,
     monitor: bool,
+    history: bool,
 ) {
     use hex_project::{
         AutomationInterpolation, AutomationPoint, AutomationValue, DeviceAutomationTarget,
@@ -2366,7 +2543,9 @@ fn verify_paced_instrument_authoring(
             query_sent += 1;
             query_pending = Some(request_id);
         }
-        if !pending && sent < 3 && block >= 50 + sent * 125 {
+        let edit_count = if history { 5 } else { 3 };
+        let spacing = if history { 100 } else { 125 };
+        if !pending && sent < edit_count && block >= 50 + sent * spacing {
             let points = [
                 (BeatTime::ZERO, 0.4),
                 (BeatTime::from_ratio(1 + u64::from(sent), 8).unwrap(), 0.7),
@@ -2377,17 +2556,21 @@ fn verify_paced_instrument_authoring(
                 outgoing: AutomationInterpolation::Step,
             })
             .to_vec();
-            harness
-                .service
-                .submit(Request::DeviceAutomation {
+            let request = if sent == 3 {
+                Request::Undo
+            } else if sent == 4 {
+                Request::Redo
+            } else {
+                Request::DeviceAutomation {
                     project_generation: context.project_generation,
                     revision,
                     device,
                     target,
                     vst3_class: Some(class),
                     points,
-                })
-                .unwrap();
+                }
+            };
+            harness.service.submit(request).unwrap();
             sent += 1;
             pending = true;
         }
@@ -2423,6 +2606,22 @@ fn verify_paced_instrument_authoring(
                 query_pending = None;
             } else if event.state.revision > revision {
                 assert!(pending, "unexpected project revision during polling");
+                if history && completed >= 3 {
+                    let points = &event
+                        .state
+                        .project
+                        .device(device)
+                        .unwrap()
+                        .automation_target(target)
+                        .unwrap()
+                        .points;
+                    let expected_beat = if completed == 3 { 2 } else { 3 };
+                    assert_eq!(points.len(), 2);
+                    assert_eq!(
+                        points[1].beat,
+                        BeatTime::from_ratio(expected_beat, 8).unwrap()
+                    );
+                }
                 revision = event.state.revision;
                 pending = false;
                 completed += 1;
@@ -2456,7 +2655,11 @@ fn verify_paced_instrument_authoring(
         "vst endpoint degraded: {:?}",
         harness.degraded_devices
     );
-    assert_eq!((sent, completed, pending), (3, 3, false));
+    let expected_edits = if history { 5 } else { 3 };
+    assert_eq!(
+        (sent, completed, pending),
+        (expected_edits, expected_edits, false)
+    );
     if monitor {
         assert!(
             query_completed >= 5,
@@ -4127,4 +4330,2005 @@ fn verify_instrument_takeover(
         assert!((peak(h) - baseline * 2.0).abs() < 0.0001);
     }
     println!("instrument takeover {case} passed");
+}
+
+#[test]
+#[ignore = "requires exact source-bound native helpers and original VST3 fixtures"]
+fn native_vst3_instrument_and_streamed_audio_export() {
+    const CHILD: &str = "HEX_DESKTOP_INSTRUMENT_EXPORT_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let name = std::thread::current().name().unwrap().to_owned();
+        let child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", &name, "--ignored", "--nocapture"])
+            .env(CHILD, "1")
+            .env("HEX_ORIGINAL_INSTANCE_VARIANT", "127")
+            .env("HEX_ORIGINAL_INSTRUMENT_LIVE_PRESET", "1")
+            .output()
+            .unwrap();
+        assert!(
+            child.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&child.stdout),
+            String::from_utf8_lossy(&child.stderr)
+        );
+        return;
+    }
+    use hex_session::service::{ExportControl, ExportSignal};
+    let _native = native_fixture();
+    let files = Files::new();
+    let mut selected = selection();
+    let module = files.0.canonicalize().unwrap().join("original.vst3");
+    super::ui::copy_original_module(&selected.module, &module);
+    selected.module = module;
+    hex_ui::write_plugin_effect_test_catalog(&files.0, &selected, "Instrument|Synth", 0).unwrap();
+    let recovery = files.0.join("recovery");
+    fs::create_dir(&recovery).unwrap();
+    let mut h = ResidentHarness::with_plugins_at_rate_and_catalog_recovery(
+        host(),
+        None,
+        48_000,
+        8_192,
+        files.0.canonicalize().unwrap().join("plugin-catalog.json"),
+        recovery.join("instrument-export.hex-journal"),
+    );
+    assert!(h.next().error.is_none());
+    let (applied, _) = h.applied(0);
+    let source = files.wav(48_000, 16_384);
+    let imported = h.run(Request::ImportToNewTrack {
+        path: source.clone(),
+        before_track: None,
+        start: 0,
+    });
+    let (applied, _) = h.applied(applied);
+    let added = h.run(Request::Edit(Command::AddMidiTrack {
+        name: "instrument".into(),
+    }));
+    let Some(Created::Track(track)) = added.created else {
+        panic!("midi track")
+    };
+    let (applied, _) = h.applied(applied);
+    let placed = h.run(Request::Edit(Command::PlaceMidiClip {
+        track,
+        start: BeatTime::ZERO,
+        length: BeatTime::ONE,
+    }));
+    let Some(Created::Clip(clip)) = placed.created else {
+        panic!("midi clip")
+    };
+    let (applied, _) = h.applied(applied);
+    let note = h.run(Request::Edit(Command::AddMidiNote {
+        clip,
+        start: BeatTime::ZERO,
+        duration: BeatTime::from_ratio(1, 2).unwrap(),
+        pitch: 60,
+        channel: 0,
+        velocity: 100,
+    }));
+    let (applied, _) = h.applied(applied);
+    let mut insertion = request(&note.state, PluginEffectDestination::Instrument(track));
+    insertion.selection = selected;
+    h.service
+        .submit(Request::InsertPluginEffect(insertion))
+        .unwrap();
+    let inserted = terminal(&mut h);
+    assert!(inserted.error.is_none(), "{:?}", inserted.error);
+    h.applied(applied);
+    assert!(
+        imported
+            .state
+            .canonical_audio_source
+            .as_ref()
+            .unwrap()
+            .sources()
+            .values()
+            .any(|source| matches!(source, hex_session::AudioSourceBinding::VerifiedFile(_)))
+    );
+    let before = Arc::clone(&inserted.state.project);
+    let live = h.plugin_progress.lock().unwrap().binding;
+    let path = files.0.join("instrument-export.wav");
+    let queued = super::super::resident_sections::run_callback(
+        &mut h,
+        Request::ExportRange {
+            path: path.clone(),
+            start: 0,
+            frames: Some(1024),
+            signal: ExportSignal::Main,
+            control: ExportControl::default(),
+            format: hex_export::ExportFormat::Pcm16,
+            overwrite: false,
+        },
+    );
+    assert!(queued.error.is_none(), "{:?}", queued.error);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let completed = loop {
+        h.pump();
+        h.render();
+        if let Ok(event) = h.service.try_export_event() {
+            break event;
+        }
+        assert!(Instant::now() < deadline, "instrument export timed out");
+        std::thread::yield_now();
+    };
+    assert_eq!(completed.result.expect("instrument export").frames, 1024);
+    let wav = fs::read(path).unwrap();
+    let pcm: Vec<_> = wav[44..]
+        .chunks_exact(4)
+        .map(|frame| i16::from_le_bytes([frame[0], frame[1]]))
+        .collect();
+    assert!(
+        pcm.iter().any(|sample| i32::from(*sample) > 8194),
+        "instrument must add audible PCM"
+    );
+    assert_eq!(queued.state.project, before);
+    assert_eq!(h.plugin_progress.lock().unwrap().binding, live);
+    assert_eq!(fs::read(source).unwrap().len(), 44 + 16_384 * 2);
+}
+
+#[test]
+#[ignore = "requires an explicitly selected installed instrument, catalog and native helper"]
+fn installed_instrument_and_effect_export_with_streamed_audio() {
+    use hex_session::service::{ExportControl, ExportSignal};
+    let _native = native_fixture();
+    let probe = std::env::var_os("HEX_TEST_EXPORT_PROBE").is_some();
+    let complete = std::env::var_os("HEX_TEST_EXPORT_COMPLETE").is_some();
+    let full_playthrough = std::env::var_os("HEX_TEST_FULL_MIXED_PLAYTHROUGH").is_some();
+    let hosted_mode = std::env::var("HEX_TEST_FULL_MIXED_HOSTED_INSERT").ok();
+    assert!(matches!(
+        hosted_mode.as_deref(),
+        None | Some("focused" | "full")
+    ));
+    let hosted_insert = hosted_mode.is_some();
+    let hosted_focused = hosted_mode.as_deref() == Some("focused");
+    let review_output = std::env::var_os("HEX_TEST_MIXED_REVIEW_OUTPUT").map(PathBuf::from);
+    assert!(!hosted_insert || full_playthrough);
+    assert!(
+        review_output.is_none() || (full_playthrough && hosted_mode.as_deref() == Some("full")),
+        "retaining a review project requires the full hosted Arrangement case"
+    );
+    assert!(
+        !full_playthrough || (complete && !probe),
+        "full playthrough requires a complete export"
+    );
+    let review_tools = review_output.as_ref().map(|_| {
+        hex_plugin_catalog::worker::available_app().expect("source-bound VST3 discovery tools")
+    });
+    let temporary = Files::new();
+    let scratch = temporary.0.canonicalize().unwrap();
+    let root = if let Some(path) = &review_output {
+        assert!(path.is_absolute(), "review destination must be absolute");
+        fs::create_dir(path)
+            .unwrap_or_else(|error| panic!("fresh review destination {}: {error}", path.display()));
+        path.canonicalize().unwrap()
+    } else {
+        scratch.clone()
+    };
+    let retain_source = |path: PathBuf| {
+        if review_output.is_some() {
+            let destination = root.join(path.file_name().unwrap());
+            fs::copy(&path, &destination).unwrap();
+            destination
+        } else {
+            path
+        }
+    };
+    let bundle = std::env::var("HEX_TEST_VST3_INSTRUMENT_BUNDLE").unwrap();
+    let original_catalog =
+        PathBuf::from(std::env::var_os("HEX_TEST_VST3_INSTRUMENT_CATALOG").unwrap());
+    let instrument = installed_selection(
+        &original_catalog,
+        &bundle,
+        hex_plugin_catalog::PluginRole::Instrument,
+    );
+    let catalog = root.join("plugin-catalog.json");
+    let effect_root = if let Some(tools) = &review_tools {
+        scan_mixed_review_plugin(
+            tools,
+            &catalog,
+            &instrument,
+            hex_plugin_catalog::PluginRole::Instrument,
+        );
+        let plugins = root.join("plugins");
+        fs::create_dir(&plugins).unwrap();
+        plugins
+    } else {
+        fs::copy(&original_catalog, &catalog).unwrap();
+        root.clone()
+    };
+    let register_effect = |effect: &PluginEffectSelection| {
+        if let Some(tools) = &review_tools {
+            scan_mixed_review_plugin(
+                tools,
+                &catalog,
+                effect,
+                hex_plugin_catalog::PluginRole::Effect,
+            );
+        } else {
+            hex_ui::write_plugin_effect_test_catalog(&root, effect, "Fx", 0).unwrap();
+        }
+    };
+    let mut effect = selection();
+    let module = effect_root.join("original-effect.vst3");
+    super::ui::copy_original_module(&effect.module, &module);
+    effect.module = module;
+    register_effect(&effect);
+    let recovery = scratch.join("recovery");
+    fs::create_dir(&recovery).unwrap();
+    let hosted_effect = hosted_insert.then(|| {
+        assert_eq!(
+            std::env::var("HEX_ORIGINAL_TAIL_INSTANCE_VARIANT").as_deref(),
+            Ok("144")
+        );
+        let mut selection = signed_effect_selection("tail");
+        let module = effect_root.join("signed-main-tail.vst3");
+        super::ui::copy_original_module(&selection.module, &module);
+        selection.module = module;
+        register_effect(&selection);
+        selection
+    });
+    let witness_frames = if hosted_insert {
+        24_576
+    } else {
+        MIXED_WITNESS_FRAMES
+    };
+    let mut h = ResidentHarness::with_plugins_at_rate_and_catalog_recovery(
+        host(),
+        None,
+        48_000,
+        u64::from(witness_frames),
+        catalog,
+        recovery.join("mixed-export.hex-journal"),
+    );
+    assert!(h.next().error.is_none());
+    let (applied, _) = h.applied(0);
+    let live_playback =
+        full_playthrough || std::env::var_os("HEX_TEST_EXPORT_LIVE_PLAYBACK").is_some();
+    let verify_live_state =
+        full_playthrough || std::env::var_os("HEX_TEST_EXPORT_LIVE_STATE").is_some();
+    let live_edit = full_playthrough || std::env::var_os("HEX_TEST_EXPORT_LIVE_EDIT").is_some();
+    assert!(
+        !live_edit || live_playback,
+        "live edit requires mixed playback"
+    );
+    // The fixture uses the project default of 120 BPM at 48 kHz.
+    const FRAMES_PER_QUARTER: usize = 24_000;
+    const PHRASE_QUARTERS: usize = 8;
+    const SECOND_NOTE_QUARTER: usize = 4;
+    const PHRASE_LENGTH: usize = PHRASE_QUARTERS * FRAMES_PER_QUARTER;
+    const SECOND_NOTE: usize = SECOND_NOTE_QUARTER * FRAMES_PER_QUARTER;
+    // Leave room for the installed instrument's natural release on each note.
+    const PHRASE_WINDOWS: [(usize, usize); 4] = [
+        (4096, 8192),
+        (81920, 90112),
+        (SECOND_NOTE + 4096, SECOND_NOTE + 8192),
+        (180224, 188416),
+    ];
+    let late_phrases: &[(usize, u8)] = if full_playthrough {
+        &[(64, 48), (192, 55), (320, 53)]
+    } else {
+        &[]
+    };
+    let check_phrase = |context: &str, beat: usize, peaks: [f32; 4]| {
+        let [first, gap, second, release] = peaks;
+        assert!(
+            first > 0.01 && gap < 0.005 && second > 0.01 && release < 0.005,
+            "{context} phrase at quarter {beat}: {peaks:?}"
+        );
+    };
+    let source_frames = if probe || complete { 8_000_001 } else { 16_384 };
+    let source =
+        retain_source(temporary.constant_wav("mixed-rate.wav", 48_000, source_frames, &[8192]));
+    // The original quiet markers catch shifted source pages. Separate rests
+    // isolate the later instrument phrases from the otherwise audible stream.
+    let markers = [(4_000_000usize, 8192usize), (7_950_000, 8192)];
+    if complete {
+        let mut marked = fs::read(&source).unwrap();
+        for (start, length) in markers {
+            marked[44 + start * 2..44 + (start + length) * 2].fill(0);
+        }
+        for &(beat, _) in late_phrases {
+            let start = beat * FRAMES_PER_QUARTER;
+            marked[44 + (start - 2048) * 2..44 + (start + PHRASE_LENGTH) * 2].fill(0);
+        }
+        fs::write(&source, marked).unwrap();
+    }
+    let source_bytes = fs::read(&source).unwrap();
+    let imported = h.run(Request::ImportToNewTrack {
+        path: source.clone(),
+        before_track: None,
+        start: 0,
+    });
+    let (applied, _) = h.applied(applied);
+    let audio_track = imported.state.project.tracks()[0].id();
+    let (imported, applied) = if full_playthrough {
+        let marker = retain_source(temporary.constant_wav(
+            "insert-witness.wav",
+            48_000,
+            witness_frames,
+            &[0, 0],
+        ));
+        let mut bytes = fs::read(&marker).unwrap();
+        for (index, frame) in bytes[44..].chunks_exact_mut(4).enumerate() {
+            frame[..2].copy_from_slice(&mixed_witness_sample(index as u64).to_le_bytes());
+        }
+        fs::write(&marker, bytes).unwrap();
+        let event = h.run(Request::ImportToNewTrack {
+            path: marker,
+            before_track: None,
+            start: 0,
+        });
+        let mut resident = false;
+        let mut file_backed = false;
+        for (_, source) in event
+            .state
+            .canonical_audio_source
+            .as_ref()
+            .unwrap()
+            .required_sources()
+        {
+            match source {
+                hex_session::AudioSourceBinding::Resident(_) => resident = true,
+                hex_session::AudioSourceBinding::VerifiedFile(_) => file_backed = true,
+            }
+        }
+        assert!(
+            resident && file_backed,
+            "edit qualification needs both source kinds"
+        );
+        (event, h.applied(applied).0)
+    } else {
+        (imported, applied)
+    };
+    let mut insertion = request(&imported.state, PluginEffectDestination::Track(audio_track));
+    insertion.selection = effect;
+    h.service
+        .submit(Request::InsertPluginEffect(insertion))
+        .unwrap();
+    let effected = terminal(&mut h);
+    assert!(effected.error.is_none(), "{:?}", effected.error);
+    let (applied, _) = h.applied(applied);
+    let added = h.run(Request::Edit(Command::AddMidiTrack {
+        name: "instrument".into(),
+    }));
+    let Some(Created::Track(track)) = added.created else {
+        panic!("midi track")
+    };
+    let (applied, _) = h.applied(applied);
+    let placed = h.run(Request::Edit(Command::PlaceMidiClip {
+        track,
+        start: BeatTime::ZERO,
+        length: BeatTime::ONE,
+    }));
+    let Some(Created::Clip(clip)) = placed.created else {
+        panic!("midi clip")
+    };
+    let (applied, _) = h.applied(applied);
+    let mut note = h.run(Request::Edit(Command::AddMidiNote {
+        clip,
+        start: BeatTime::ZERO,
+        duration: if hosted_insert {
+            BeatTime::ONE
+        } else {
+            BeatTime::from_ratio(1, 2).unwrap()
+        },
+        pitch: 60,
+        channel: 0,
+        velocity: 100,
+    }));
+    let (mut applied, _) = h.applied(applied);
+    let second_track = hosted_insert.then(|| {
+        let added = h.run(Request::Edit(Command::AddMidiTrack {
+            name: "second instrument".into(),
+        }));
+        let Some(Created::Track(track)) = added.created else {
+            panic!("second MIDI track");
+        };
+        (applied, _) = h.applied(applied);
+        h.run(Request::Edit(Command::Balance {
+            track,
+            balance: 1.0,
+        }));
+        (applied, _) = h.applied(applied);
+        track
+    });
+    for &(beat, pitch) in late_phrases {
+        // Only the live-inserted instrument owns the middle phrase.
+        let track = if beat == 192 {
+            second_track.unwrap_or(track)
+        } else {
+            track
+        };
+        let placed = h.run(Request::Edit(Command::PlaceMidiClip {
+            track,
+            start: BeatTime::from_quarters(beat as u64).unwrap(),
+            length: BeatTime::from_quarters(PHRASE_QUARTERS as u64).unwrap(),
+        }));
+        let Some(Created::Clip(clip)) = placed.created else {
+            panic!("late midi clip");
+        };
+        (applied, _) = h.applied(applied);
+        for (quarter, pitch) in [(0, pitch), (SECOND_NOTE_QUARTER as u64, pitch + 7)] {
+            note = h.run(Request::Edit(Command::AddMidiNote {
+                clip,
+                start: BeatTime::from_quarters(quarter).unwrap(),
+                duration: BeatTime::from_ratio(1, 2).unwrap(),
+                pitch,
+                channel: 0,
+                velocity: 100,
+            }));
+            (applied, _) = h.applied(applied);
+        }
+    }
+    let instrument_destination = if full_playthrough {
+        // Leave the left channel as an independent streamed-source witness
+        // even if the installed synth has a sub-audible residual on the right.
+        let balanced = h.run(Request::Edit(Command::Balance {
+            track,
+            balance: 1.0,
+        }));
+        (applied, _) = h.applied(applied);
+        balanced
+    } else {
+        note
+    };
+    let mut insertion = request(
+        &instrument_destination.state,
+        PluginEffectDestination::Instrument(track),
+    );
+    insertion.selection = instrument.clone();
+    h.service
+        .submit(Request::InsertPluginEffect(insertion))
+        .unwrap();
+    let mut inserted = terminal(&mut h);
+    assert!(inserted.error.is_none(), "{:?}", inserted.error);
+    let (mut applied, _) = h.applied(applied);
+    let starting_path = review_output.as_ref().map(|_| {
+        let path = root.join("before-inserts.hex");
+        // Keep the review copy outside the active document's recovery chain.
+        hex_storage::save_new(&path, &inserted.state.project).unwrap();
+        let starting_project = hex_storage::load(&path).unwrap();
+        assert!(starting_project.main_devices().is_empty());
+        assert!(
+            starting_project
+                .track(track)
+                .unwrap()
+                .instrument()
+                .is_some()
+        );
+        assert!(
+            starting_project
+                .track(second_track.unwrap())
+                .unwrap()
+                .instrument()
+                .is_none()
+        );
+        assert_retained_mixed_sources(&root, &starting_project);
+        path
+    });
+    let mut expected_revision = inserted.state.revision;
+    let mut expected_can_undo = inserted.state.can_undo;
+    let mut expected_can_redo = inserted.state.can_redo;
+    let mut insert_history = Vec::new();
+    if live_playback {
+        assert!(
+            complete,
+            "live mixed qualification requires the full streamed fixture"
+        );
+        // The default effect fixture serializes its processing counter in a
+        // field it refuses to restore after playback. Variant 37 retains the
+        // normal processing law while serializing restorable latency state.
+        assert!(
+            matches!(
+                std::env::var("HEX_ORIGINAL_INSTANCE_VARIANT").as_deref(),
+                Ok("37")
+            ),
+            "live mixed qualification requires the restorable effect fixture"
+        );
+        h.audio
+            .as_mut()
+            .unwrap()
+            .control
+            .command(PlaybackCommand::Play)
+            .unwrap();
+        let mut pcm = Vec::new();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while pcm.len() < 4096 {
+            let block = render_completed_block(&h);
+            let status = h.audio.as_ref().unwrap().status().unwrap();
+            if status.stream_buffering.load(Acquire) {
+                assert_eq!(block, [[0.0; 2]; 256]);
+                assert!(Instant::now() < deadline, "mixed stream did not start");
+            } else {
+                pcm.extend(block);
+            }
+        }
+        assert!(pcm.iter().flatten().any(|sample| sample.abs() > 0.001));
+        assert!(
+            pcm.iter().enumerate().skip(512).any(|(index, frame)| {
+                let dry = 0.25 * (0.5 + ((index - 512) / 256) as f32 * 0.125);
+                (frame[0] - dry).abs() > 1e-4 || (frame[1] - dry).abs() > 1e-4
+            }),
+            "live mix did not differ from the controlled effect alone"
+        );
+        if full_playthrough {
+            insert_history.push(Arc::clone(&inserted.state.project));
+            inserted = exercise_mixed_native_insert(&mut h, &inserted.state);
+            if let Some(track) = second_track {
+                insert_history.push(Arc::clone(&inserted.state.project));
+                inserted =
+                    exercise_mixed_seamless_instrument(&mut h, &inserted.state, track, &instrument);
+            }
+            insert_history.push(Arc::clone(&inserted.state.project));
+            (inserted, applied) = exercise_mixed_limiter_consent(&mut h, &inserted.state);
+            if let Some(selection) = &hosted_effect {
+                insert_history.push(Arc::clone(&inserted.state.project));
+                (inserted, applied) =
+                    exercise_mixed_hosted_consent(&mut h, &inserted.state, selection);
+            }
+            expected_revision = inserted.state.revision;
+            expected_can_undo = inserted.state.can_undo;
+            expected_can_redo = inserted.state.can_redo;
+        }
+        if full_playthrough && !hosted_focused {
+            let callback_period = std::env::var("HEX_TEST_FULL_MIXED_CALLBACK_PERIOD_US")
+                .ok()
+                .map(|value| Duration::from_micros(value.parse().expect("callback period in us")))
+                .unwrap_or_default();
+            let status = h.audio.as_ref().unwrap().status().unwrap();
+            let initial_starvation = status.stream_starved_callbacks.load(Acquire);
+            let started = Instant::now();
+            let mut quiet_markers = [0usize; 2];
+            let mut phrase_peaks = [[0.0_f32; 4]; 3];
+            let mut audible_blocks = 0usize;
+            let mut buffering_blocks = 0usize;
+            let mut consecutive_holds = 0usize;
+            let mut longest_hold = 0usize;
+            let mut hold_started = None;
+            let mut total_hold = Duration::ZERO;
+            let mut longest_hold_time = Duration::ZERO;
+            let mut held_positions = 0usize;
+            let mut page_boundaries = 0usize;
+            let mut readiness_refusals = 0usize;
+            let mut previous = status.position.load(Acquire);
+            while previous < u64::from(source_frames) {
+                let callback_started = Instant::now();
+                let block = h.render_plugin_block();
+                // This phase has no edit/retirement acknowledgement in flight.
+                // Wait for every native DSP prefix, while allowing the existing
+                // control owner to poll independently rather than gating each block.
+                let deadline = Instant::now() + Duration::from_millis(800);
+                while h
+                    .callback
+                    .lock()
+                    .unwrap()
+                    .as_mut()
+                    .unwrap()
+                    .native_workers_idle_on_control()
+                    != Some(true)
+                {
+                    assert!(Instant::now() < deadline);
+                    std::thread::yield_now();
+                }
+                assert!(status.playing.load(Acquire), "mixed playback stopped early");
+                assert!(
+                    status.render_fault_snapshot().is_none(),
+                    "full-song render fault"
+                );
+                assert!(
+                    status.rejected_action().is_none(),
+                    "full-song action rejected"
+                );
+                let position = status.position.load(Acquire);
+                assert!(position >= previous, "full-song cursor moved backwards");
+                assert!(block.iter().flatten().all(|sample| sample.is_finite()));
+                if status.stream_buffering.load(Acquire) {
+                    buffering_blocks += 1;
+                    if hold_started.is_none() {
+                        hold_started = Some(callback_started);
+                        held_positions += 1;
+                        page_boundaries += usize::from(
+                            position.is_multiple_of(hex_engine::STREAM_PAGE_FRAMES as u64),
+                        );
+                    }
+                    readiness_refusals +=
+                        usize::from(status.stream_readiness_refused.load(Acquire));
+                    consecutive_holds += 1;
+                    longest_hold = longest_hold.max(consecutive_holds);
+                    assert_eq!(position, previous, "buffering advanced the cursor");
+                    assert_eq!(block, [[0.0; 2]; 256]);
+                } else if position > previous {
+                    if let Some(hold) = hold_started.take() {
+                        let elapsed = callback_started.duration_since(hold);
+                        total_hold += elapsed;
+                        longest_hold_time = longest_hold_time.max(elapsed);
+                    }
+                    consecutive_holds = 0;
+                    assert_eq!(position - previous, 256, "full-song cursor skipped frames");
+                    let peak = block
+                        .iter()
+                        .flatten()
+                        .fold(0.0f32, |peak, sample| peak.max(sample.abs()));
+                    if let Some(index) = markers.iter().position(|(start, length)| {
+                        position >= (start + 2048) as u64
+                            && position < (start + length - 2048) as u64
+                    }) {
+                        assert!(
+                            block.iter().all(|frame| frame[0].abs() < 0.005),
+                            "streamed source marker {index} was not quiet"
+                        );
+                        quiet_markers[index] += 1;
+                    } else if let Some((index, &(beat, _))) =
+                        late_phrases.iter().enumerate().find(|(_, (beat, _))| {
+                            let start = beat * FRAMES_PER_QUARTER;
+                            position >= (start - 4096) as u64
+                                && position < (start + PHRASE_LENGTH + 2048) as u64
+                        })
+                    {
+                        let start = beat * FRAMES_PER_QUARTER;
+                        for ((from, to), measured) in
+                            PHRASE_WINDOWS.into_iter().zip(&mut phrase_peaks[index])
+                        {
+                            if position >= (start + from + 256) as u64
+                                && position <= (start + to) as u64
+                            {
+                                *measured = measured.max(peak);
+                            }
+                        }
+                    } else if position < u64::from(source_frames)
+                        && !markers.iter().any(|(start, length)| {
+                            position >= (start - 2048) as u64
+                                && position < (start + length + 2048) as u64
+                        })
+                    {
+                        assert!(peak > 0.001, "missing audio at position {position}");
+                        audible_blocks += 1;
+                    }
+                }
+                previous = position;
+                assert!(
+                    started.elapsed() < Duration::from_secs(25),
+                    "full-song test exceeded the issue boundary budget"
+                );
+                let remaining = callback_period.saturating_sub(callback_started.elapsed());
+                if !remaining.is_zero() {
+                    std::thread::sleep(remaining);
+                }
+            }
+            assert!(quiet_markers.into_iter().all(|blocks| blocks >= 8));
+            assert!(audible_blocks > (source_frames as usize / 256) * 9 / 10);
+            for (&(beat, _), peaks) in late_phrases.iter().zip(phrase_peaks) {
+                check_phrase("live", beat, peaks);
+            }
+            println!(
+                "full_live frames={source_frames} elapsed_ms={} audible_blocks={audible_blocks} buffering_blocks={buffering_blocks} longest_hold={longest_hold} quiet_markers={quiet_markers:?} phrase_peaks={phrase_peaks:?}",
+                started.elapsed().as_millis()
+            );
+            println!(
+                "full_live_readiness callback_period_us={} held_positions={held_positions} page_boundaries={page_boundaries} readiness_refusals={readiness_refusals} starved_callbacks={} hold_wall_us={} longest_hold_wall_us={}",
+                callback_period.as_micros(),
+                status.stream_starved_callbacks.load(Acquire) - initial_starvation,
+                total_hold.as_micros(),
+                longest_hold_time.as_micros(),
+            );
+        }
+        h.audio
+            .as_mut()
+            .unwrap()
+            .control
+            .command(PlaybackCommand::Seek(4_000_000))
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            render_completed_block(&h);
+            h.pump();
+            let status = h.audio.as_ref().unwrap().status().unwrap();
+            assert!(
+                status.render_fault_snapshot().is_none(),
+                "mixed seek render fault"
+            );
+            assert!(
+                status.rejected_action().is_none(),
+                "mixed seek rejected: {:?}",
+                status.rejected_action()
+            );
+            if status.position.load(Acquire) >= 4_000_000 {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "mixed streamed seek did not complete"
+            );
+        }
+        let mut heard_after_marker = false;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            let block = render_completed_block(&h);
+            let status = h.audio.as_ref().unwrap().status().unwrap();
+            assert!(
+                status.render_fault_snapshot().is_none(),
+                "mixed playback fault after seek"
+            );
+            if status.position.load(Acquire) >= 4_009_216
+                && !status.stream_buffering.load(Acquire)
+                && block.iter().flatten().any(|sample| sample.abs() > 0.01)
+            {
+                heard_after_marker = true;
+                break;
+            }
+        }
+        assert!(
+            heard_after_marker,
+            "mixed playback did not resume after the streamed marker"
+        );
+        if live_edit {
+            applied = exercise_mixed_streamed_loop(&mut h, applied, markers[0]);
+            let cleared = super::automation::edit_with_running_callback(&mut h, Request::Undo);
+            assert!(
+                cleared.error.is_none(),
+                "mixed loop undo: {:?}",
+                cleared.error
+            );
+            assert_eq!(cleared.state.project, inserted.state.project);
+            (applied, _) = h.applied(applied);
+
+            let position_before = h
+                .audio
+                .as_ref()
+                .unwrap()
+                .status()
+                .unwrap()
+                .position
+                .load(Acquire);
+            let muted = super::automation::edit_with_running_callback(
+                &mut h,
+                Request::Edit(Command::Mute {
+                    track: audio_track,
+                    muted: true,
+                }),
+            );
+            assert!(muted.error.is_none(), "mixed mute: {:?}", muted.error);
+            (applied, _) = h.applied(applied);
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let mut quiet_blocks = 0;
+            loop {
+                let block = render_completed_block(&h);
+                let status = h.audio.as_ref().unwrap().status().unwrap();
+                assert!(status.playing.load(Acquire), "playback stopped during mute");
+                assert!(
+                    status.render_fault_snapshot().is_none(),
+                    "mute render fault"
+                );
+                // Other active sources may retain a quiet tail after seek;
+                // the audible streamed track is above 0.01 here.
+                if !status.stream_buffering.load(Acquire)
+                    && block.iter().flatten().all(|sample| sample.abs() < 0.005)
+                {
+                    quiet_blocks += 1;
+                    if quiet_blocks == 8 {
+                        break;
+                    }
+                } else {
+                    quiet_blocks = 0;
+                }
+                assert!(Instant::now() < deadline, "mixed mute did not reach output");
+            }
+            let undone = super::automation::edit_with_running_callback(&mut h, Request::Undo);
+            assert!(undone.error.is_none(), "mixed undo: {:?}", undone.error);
+            assert_eq!(undone.state.project, inserted.state.project);
+            (applied, _) = h.applied(applied);
+            expected_revision = undone.state.revision;
+            expected_can_undo = undone.state.can_undo;
+            expected_can_redo = undone.state.can_redo;
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                let block = render_completed_block(&h);
+                let status = h.audio.as_ref().unwrap().status().unwrap();
+                assert!(status.playing.load(Acquire), "playback stopped during undo");
+                assert!(
+                    status.render_fault_snapshot().is_none(),
+                    "undo render fault"
+                );
+                if !status.stream_buffering.load(Acquire)
+                    && block.iter().flatten().any(|sample| sample.abs() > 0.01)
+                {
+                    break;
+                }
+                assert!(Instant::now() < deadline, "mixed undo did not reach output");
+            }
+            assert!(
+                h.audio
+                    .as_ref()
+                    .unwrap()
+                    .status()
+                    .unwrap()
+                    .position
+                    .load(Acquire)
+                    > position_before,
+                "mixed playback did not advance across edit and undo"
+            );
+        }
+        h.audio
+            .as_mut()
+            .unwrap()
+            .control
+            .command(PlaybackCommand::Stop)
+            .unwrap();
+        h.render_plugin_block();
+        assert!(
+            !h.audio
+                .as_ref()
+                .unwrap()
+                .status()
+                .unwrap()
+                .playing
+                .load(Acquire)
+        );
+        h.service.submit(Request::RestoreStoppedPlayback).unwrap();
+        let restored = restored_terminal(&mut h);
+        assert!(
+            restored.error.is_none(),
+            "mixed restore: {:?}",
+            restored.error
+        );
+        assert_eq!(restored.state.project, inserted.state.project);
+        (applied, _) = h.applied(applied);
+        if !insert_history.is_empty() {
+            for project in insert_history.iter().rev() {
+                let undone = h.run(Request::Undo);
+                let mut expected = project.snapshot();
+                // Undo retires devices without reusing their identities.
+                expected.next_id = inserted.state.project.next_identity();
+                assert!(
+                    undone.error.is_none() && undone.state.project.snapshot() == expected,
+                    "undo changed more than the last installed device"
+                );
+                (applied, _) = h.applied(applied);
+            }
+            for project in insert_history
+                .iter()
+                .skip(1)
+                .chain([&inserted.state.project])
+            {
+                let redone = h.run(Request::Redo);
+                let mut expected = project.snapshot();
+                expected.next_id = inserted.state.project.next_identity();
+                assert!(
+                    redone.error.is_none() && redone.state.project.snapshot() == expected,
+                    "redo did not restore the installed device"
+                );
+                (applied, _) = h.applied(applied);
+                expected_revision = redone.state.revision;
+                expected_can_undo = redone.state.can_undo;
+                expected_can_redo = redone.state.can_redo;
+            }
+        }
+    }
+    let before = Arc::clone(&inserted.state.project);
+    let live_binding = h.plugin_progress.lock().unwrap().binding;
+    let saved_path = scratch.join("live-state.hex");
+    let retained_saved_path = review_output.as_ref().map(|_| root.join("live-state.hex"));
+    let captured_before = if verify_live_state {
+        let saved = h.run(Request::SaveNew(saved_path.clone()));
+        assert!(saved.save_complete);
+        assert_eq!(saved.state.project, before);
+        assert_eq!(saved.state.revision, expected_revision);
+        let captured = hex_storage::load(&saved_path).unwrap();
+        assert_eq!(captured.main_devices(), before.main_devices());
+        Some(captured)
+    } else {
+        None
+    };
+    let path = root.join("mixed.wav");
+    let control = ExportControl::default();
+    // The focused case uses the same long Arrangement and samples the
+    // verified file via seek/loop and an early bounce. The full case checks
+    // every callback and the full export window, including all late markers.
+    let export_frames = if hosted_focused {
+        65_536
+    } else if probe || complete {
+        u64::from(source_frames)
+    } else {
+        1024
+    };
+    let queued = super::super::resident_sections::run_callback(
+        &mut h,
+        Request::ExportRange {
+            path: path.clone(),
+            start: 0,
+            frames: Some(export_frames),
+            signal: ExportSignal::Main,
+            control: control.clone(),
+            format: hex_export::ExportFormat::Pcm16,
+            overwrite: false,
+        },
+    );
+    assert!(queued.error.is_none(), "{:?}", queued.error);
+    let started = Instant::now();
+    let until = started
+        + Duration::from_secs(if probe {
+            3
+        } else if complete {
+            27
+        } else {
+            10
+        });
+    let result = loop {
+        h.pump();
+        if !probe && !complete {
+            h.render();
+        }
+        if let Ok(event) = h.service.try_export_event() {
+            break event.result;
+        }
+        let now = Instant::now();
+        if probe && now >= until {
+            let progress = control.progress();
+            let elapsed = started.elapsed();
+            assert!(control.cancel());
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                h.pump();
+                if let Ok(event) = h.service.try_export_event() {
+                    assert!(event.result.is_err());
+                    break;
+                }
+                assert!(Instant::now() < deadline, "cancelled probe did not stop");
+                std::thread::yield_now();
+            }
+            assert!(!path.exists());
+            println!(
+                "export_probe elapsed_ns={} processed_frames={} total_frames={}",
+                elapsed.as_nanos(),
+                progress.processed_frames,
+                progress.total_frames
+            );
+            return;
+        }
+        assert!(
+            now < until,
+            "mixed export timed out: {:?}",
+            control.progress()
+        );
+        if complete {
+            // The full export owns its offline workers. Poll completion at
+            // control cadence instead of competing with them for a CPU.
+            std::thread::sleep(Duration::from_millis(1));
+        } else {
+            std::thread::yield_now();
+        }
+    };
+    let report = result.expect("mixed VST export");
+    let wav = fs::read(path).unwrap();
+    assert_eq!(report.frames, export_frames);
+    assert_eq!(wav.len() as u64, 44 + export_frames * 4);
+    if complete && !hosted_focused {
+        use sha2::{Digest, Sha256};
+        let hash = |bytes: &[u8]| {
+            Sha256::digest(bytes)
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        };
+        assert!(wav[44..44 + 4096].iter().any(|byte| *byte != 0));
+        assert!(wav[wav.len() - 4096..].iter().any(|byte| *byte != 0));
+        for (start, length) in markers {
+            let channel_bytes = if full_playthrough { 2 } else { 4 };
+            let silent = |frame: usize| {
+                let offset = 44 + frame * 4;
+                wav[offset..offset + channel_bytes]
+                    .iter()
+                    .all(|byte| *byte == 0)
+            };
+            let observed_start = (start - 2048..start + 2048)
+                .find(|frame| silent(*frame))
+                .expect("late-song silence begins near its source marker");
+            let observed_end = (start + length - 2048..start + length + 2048)
+                .find(|frame| !silent(*frame))
+                .expect("late-song audio resumes near its source marker");
+            // The signed Main effect has an intentional three-frame FIR
+            // tail. The first new audio frame remains on the source origin.
+            let tail = if hosted_insert { 3 } else { 0 };
+            assert_eq!(
+                (observed_start, observed_end),
+                (start + tail, start + length),
+                "source marker must be sample-aligned"
+            );
+            assert!((observed_start..observed_end).all(silent));
+            println!("source_marker={start} output_marker={observed_start} length={length}");
+        }
+        for &(beat, _) in late_phrases {
+            let start = beat * FRAMES_PER_QUARTER;
+            let peaks = PHRASE_WINDOWS.map(|(from, to)| {
+                wav[44 + (start + from) * 4..44 + (start + to) * 4]
+                    .chunks_exact(2)
+                    .map(|bytes| {
+                        f32::from(i16::from_le_bytes([bytes[0], bytes[1]])).abs() / 32768.0
+                    })
+                    .fold(0.0_f32, f32::max)
+            });
+            check_phrase("export", beat, peaks);
+            println!("export_phrase quarter={beat} peaks={peaks:?}");
+        }
+        println!(
+            "complete_export elapsed_ns={} frames={} output_sha256={} source_sha256={}",
+            started.elapsed().as_nanos(),
+            report.frames,
+            hash(&wav),
+            hash(&source_bytes)
+        );
+    }
+    assert!(
+        wav[44..]
+            .chunks_exact(4)
+            .any(|frame| i16::from_le_bytes([frame[0], frame[1]]) != 0)
+    );
+    assert_eq!(queued.state.project, before);
+    assert_eq!(h.plugin_progress.lock().unwrap().binding, live_binding);
+    assert_eq!(fs::read(&source).unwrap(), source_bytes);
+    if let Some(captured_before) = captured_before {
+        let saved = h.run(Request::SaveCurrent);
+        assert!(saved.save_complete);
+        assert_eq!(saved.state.project, before);
+        assert_eq!(saved.state.revision, expected_revision);
+        assert_eq!(saved.state.can_undo, expected_can_undo);
+        assert_eq!(saved.state.can_redo, expected_can_redo);
+        let captured_after = hex_storage::load(&saved_path).unwrap();
+        for instrument_track in std::iter::once(track).chain(second_track) {
+            let instrument_state = |project: &hex_project::Project| {
+                project
+                    .track(instrument_track)
+                    .unwrap()
+                    .instrument()
+                    .unwrap()
+                    .state()
+                    .clone()
+            };
+            assert_eq!(
+                instrument_state(&captured_before),
+                instrument_state(&captured_after)
+            );
+        }
+        let effect_state = |project: &hex_project::Project| {
+            project.track(audio_track).unwrap().devices()[0]
+                .state()
+                .clone()
+        };
+        assert_eq!(
+            effect_state(&captured_before),
+            effect_state(&captured_after)
+        );
+        if let Some(path) = &retained_saved_path {
+            assert_retained_mixed_sources(&root, &captured_after);
+            assert_eq!(captured_after.main_devices().len(), 3);
+            assert!(
+                [track, second_track.unwrap()]
+                    .into_iter()
+                    .all(|track| { captured_after.track(track).unwrap().instrument().is_some() })
+            );
+            hex_storage::save_new(path, &captured_after).unwrap();
+            assert_eq!(fs::read(path).unwrap(), fs::read(&saved_path).unwrap());
+        }
+    }
+    let muted = h.run(Request::Edit(Command::Mute { track, muted: true }));
+    h.applied(applied);
+    let silent_instrument_path = scratch.join("muted-instrument.wav");
+    let muted_queued = super::super::resident_sections::run_callback(
+        &mut h,
+        Request::ExportRange {
+            path: silent_instrument_path.clone(),
+            start: 0,
+            frames: Some(1024),
+            signal: ExportSignal::Main,
+            control: ExportControl::default(),
+            format: hex_export::ExportFormat::Pcm16,
+            overwrite: false,
+        },
+    );
+    assert!(muted_queued.error.is_none(), "{:?}", muted_queued.error);
+    let until = Instant::now() + Duration::from_secs(10);
+    let result = loop {
+        h.pump();
+        h.render();
+        if let Ok(event) = h.service.try_export_event() {
+            break event.result;
+        }
+        assert!(Instant::now() < until, "muted export timed out");
+        std::thread::yield_now();
+    };
+    assert_eq!(result.expect("muted export").frames, 1024);
+    let without_instrument = fs::read(silent_instrument_path).unwrap();
+    assert!(
+        without_instrument[44..]
+            .chunks_exact(4)
+            .any(|frame| (1000..=7000).contains(&i16::from_le_bytes([frame[0], frame[1]]))),
+        "effect must audibly process the streamed source"
+    );
+    assert_ne!(
+        &wav[44..44 + 1024 * 4],
+        &without_instrument[44..],
+        "instrument must change the rendered mix"
+    );
+    assert_eq!(muted_queued.state.project, muted.state.project);
+    if complete {
+        if full_playthrough || std::env::var_os("HEX_TEST_EXPORT_REOPEN").is_some() {
+            assert!(verify_live_state, "reopen requires the saved mixed project");
+            let final_path = retained_saved_path.unwrap_or(saved_path);
+            for path in std::iter::once(final_path).chain(starting_path) {
+                assert_mixed_project_reopens(&mut h, path);
+            }
+            assert_eq!(fs::read(&source).unwrap(), source_bytes);
+        }
+        if review_output.is_some() {
+            println!("retained_mixed_review={}", root.display());
+        }
+        return;
+    }
+    for changed in [false, true] {
+        if changed {
+            let mut altered = source_bytes.clone();
+            altered[48] ^= 1;
+            fs::write(&source, altered).unwrap();
+        }
+        let destination = root.join("existing.wav");
+        fs::write(&destination, b"preserve existing").unwrap();
+        let control = ExportControl::default();
+        if !changed {
+            assert!(control.cancel());
+        }
+        let refused = super::super::resident_sections::run_callback(
+            &mut h,
+            Request::ExportRange {
+                path: destination.clone(),
+                start: 0,
+                frames: Some(1024),
+                signal: ExportSignal::Main,
+                control,
+                format: hex_export::ExportFormat::Pcm16,
+                overwrite: true,
+            },
+        );
+        assert_eq!(refused.state.project, muted.state.project);
+        let until = Instant::now() + Duration::from_secs(10);
+        let result = loop {
+            h.pump();
+            h.render();
+            if let Ok(event) = h.service.try_export_event() {
+                break event.result;
+            }
+            assert!(Instant::now() < until, "refused export timed out");
+            std::thread::yield_now();
+        };
+        assert!(result.is_err());
+        assert_eq!(fs::read(destination).unwrap(), b"preserve existing");
+        if changed {
+            fs::write(&source, &source_bytes).unwrap();
+        }
+    }
+    assert_eq!(fs::read(source).unwrap(), source_bytes);
+}
+
+const MIXED_WITNESS_FRAMES: u32 = 8192;
+
+fn scan_mixed_review_plugin(
+    tools: &std::path::Path,
+    catalog: &std::path::Path,
+    selection: &PluginEffectSelection,
+    role: hex_plugin_catalog::PluginRole,
+) {
+    use hex_plugin_catalog::worker::{self, Cancellation};
+
+    let module = selection.module.canonicalize().unwrap();
+    let cancellation = Cancellation::default();
+    let update = worker::scan(catalog, tools, module.clone(), cancellation.token());
+    let discovered = update
+        .catalog
+        .unwrap_or_else(|| panic!("review scan of {}: {}", module.display(), update.status));
+    let selected = if role == hex_plugin_catalog::PluginRole::Effect {
+        discovered.select_effect(&module, selection.cid)
+    } else {
+        discovered.select_plugin(&module, selection.cid)
+    }
+    .unwrap();
+    assert_eq!(selected.role, role);
+    assert_eq!(selected.executable_relative_path, selection.executable);
+    assert_eq!(selected.executable_sha256, selection.executable_sha256);
+    assert_eq!(selected.info_sha256, selection.info_sha256);
+}
+
+fn assert_mixed_project_reopens(h: &mut ResidentHarness, path: PathBuf) {
+    let saved = hex_storage::load(&path).unwrap();
+    let old_output = h.audio.as_ref().unwrap().control.output_identity().unwrap();
+    h.service.submit(Request::Open(path.clone())).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let reopened = loop {
+        let event = h.next();
+        if event.open_complete {
+            assert!(
+                event.error.is_none() && event.project_replaced,
+                "reopen {}: {:?}",
+                path.display(),
+                event.error
+            );
+            break event;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "reopen {} timed out",
+            path.display()
+        );
+    };
+    assert_eq!(reopened.state.project.snapshot(), saved.snapshot());
+    assert!(!reopened.state.unsaved);
+    super::super::resident_lifecycle::finish_replacement(h, &reopened, old_output);
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    let mut pcm = Vec::new();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while pcm.len() < 4096 {
+        let block = render_completed_block(h);
+        let status = h.audio.as_ref().unwrap().status().unwrap();
+        assert!(
+            status.render_fault_snapshot().is_none(),
+            "reopened render fault"
+        );
+        if !status.stream_buffering.load(Acquire) {
+            pcm.extend(block);
+        }
+        assert!(Instant::now() < deadline, "reopened stream did not start");
+    }
+    assert!(pcm.iter().flatten().any(|sample| sample.abs() > 0.001));
+    assert!(
+        pcm.iter().enumerate().skip(512).any(|(index, frame)| {
+            let dry = 0.25 * (0.5 + ((index - 512) / 256) as f32 * 0.125);
+            (frame[0] - dry).abs() > 1e-4 || (frame[1] - dry).abs() > 1e-4
+        }),
+        "reopened mix did not differ from the controlled effect alone"
+    );
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Stop)
+        .unwrap();
+    h.render_plugin_block();
+    println!("reopened_playable={}", path.display());
+}
+
+fn assert_retained_mixed_sources(root: &std::path::Path, project: &hex_project::Project) {
+    let mut paths: Vec<_> = project
+        .assets()
+        .map(|asset| root.join(asset.path()).canonicalize().unwrap())
+        .collect();
+    paths.sort();
+    assert_eq!(
+        paths,
+        [root.join("insert-witness.wav"), root.join("mixed-rate.wav")]
+    );
+}
+
+fn mixed_witness_sample(frame: u64) -> i16 {
+    (((frame * 73) ^ ((frame >> 3) * 17)) & 1023) as i16 - 512
+}
+
+fn assert_mixed_insert_pcm(block: &[hex_engine::Frame; 256], start: u64) {
+    let baseline = block[0][0] - f32::from(mixed_witness_sample(start)) / 32768.0;
+    assert!(
+        baseline > 0.01,
+        "streamed tone is absent from the marker block"
+    );
+    // The SDK effect changes its constant output level between processing
+    // quanta. Adjacent pairs distinguish the resident samples from that level.
+    for (offset, pair) in block.chunks_exact(2).enumerate() {
+        let frame = start + 2 * offset as u64;
+        let expected =
+            f32::from(mixed_witness_sample(frame + 1) - mixed_witness_sample(frame)) / 32768.0;
+        let actual = pair[1][0] - pair[0][0];
+        assert!(
+            (actual - expected).abs() < 2e-5,
+            "resident marker in block at {start}, frame {frame}: {actual} != {expected}"
+        );
+    }
+    let (low, high) = block
+        .iter()
+        .map(|frame| frame[1])
+        .fold((f32::INFINITY, f32::NEG_INFINITY), |(low, high), sample| {
+            (low.min(sample), high.max(sample))
+        });
+    assert!(
+        high - low > 0.01,
+        "expected a held Diva note in the right channel"
+    );
+}
+
+fn exercise_mixed_native_insert(
+    h: &mut ResidentHarness,
+    before: &hex_session::service::ViewState,
+) -> Event {
+    use hex_session::service::DeviceInsertOutcome;
+
+    h.enable_confirmed_device_inserts();
+    let status = h.audio.as_ref().unwrap().status().unwrap();
+    let predecessor = status.recording_source().unwrap();
+    let previous_start = status.audible_position.load(Acquire);
+    assert_mixed_insert_pcm(&render_completed_block(h), previous_start);
+    let (submitted, resume) = h.probe_next_submitted_device_insert();
+    let state = hex_engine::default_native_device_state(hex_engine::DeviceTypeId::from_static(
+        "hex.utility",
+    ))
+    .unwrap();
+    h.service
+        .submit(Request::Edit(Command::InsertMainDevice {
+            before: None,
+            state,
+        }))
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let next = loop {
+        if let Ok(next) = submitted.try_recv() {
+            break next;
+        }
+        h.pump();
+        if let Ok(event) = h.service.try_event() {
+            assert!(
+                event.error.is_none(),
+                "mixed Utility staging: {:?}",
+                event.error
+            );
+            assert_eq!(event.state.project, before.project);
+        }
+        assert!(
+            Instant::now() < deadline,
+            "mixed Utility submission stalled"
+        );
+        std::thread::yield_now();
+    };
+    let status = h.audio.as_ref().unwrap().status().unwrap();
+    let position = status.position.load(Acquire);
+    let start = status.audible_position.load(Acquire);
+    assert_eq!(start, previous_start + 256);
+    assert_eq!(status.recording_source(), Some(predecessor));
+    // The Session worker is parked after enqueue; this block owns admission.
+    let output = h.render_plugin_block();
+    let installed = status.recording_source().unwrap();
+    assert_eq!(installed.context, next.context);
+    assert_eq!(installed.audio_revision, next.audio_revision);
+    assert_eq!(installed.output_identity, predecessor.output_identity);
+    assert_eq!(status.position.load(Acquire), position + 256);
+    assert_mixed_insert_pcm(&output, start);
+    println!(
+        "seamless_utility output={} predecessor_revision={} installed_revision={} marked_start={previous_start}..{}",
+        installed.output_identity,
+        predecessor.audio_revision,
+        installed.audio_revision,
+        start + 256
+    );
+    resume.send(()).unwrap();
+    loop {
+        let event = h.next();
+        assert!(
+            event.error.is_none(),
+            "mixed Utility install: {:?}",
+            event.error
+        );
+        assert!(event.device_insert_confirmation.is_none());
+        if let Some(receipt) = event.device_insert_complete {
+            assert_eq!(receipt.submission, next);
+            assert_eq!(receipt.outcome, DeviceInsertOutcome::Installed);
+            assert_eq!(event.state.revision, before.revision + 1);
+            assert_eq!(event.state.project.main_devices().len(), 1);
+            assert_eq!(
+                event.state.project.main_devices()[0].state().type_id(),
+                hex_engine::DeviceTypeId::from_static("hex.utility")
+            );
+            return event;
+        }
+        assert_eq!(event.state.project, before.project);
+    }
+}
+
+fn exercise_mixed_seamless_instrument(
+    h: &mut ResidentHarness,
+    before: &hex_session::service::ViewState,
+    track: hex_project::TrackId,
+    instrument: &PluginEffectSelection,
+) -> Event {
+    use hex_session::service::DeviceInsertOutcome;
+
+    fn status(h: &ResidentHarness) -> &hex_audio::prepared::Status {
+        h.audio.as_ref().unwrap().status().unwrap()
+    }
+
+    let predecessor = status(h).recording_source().unwrap();
+    let retained_sources = |h: &ResidentHarness| {
+        h.plugin_progress
+            .lock()
+            .unwrap()
+            .source_bindings
+            .map(|source| source.map(|(id, binding, _)| (id, binding)))
+    };
+    let retained = retained_sources(h);
+    assert!(retained.iter().all(Option::is_some));
+    assert!(before.project.track(track).unwrap().instrument().is_none());
+    let mut input = request(before, PluginEffectDestination::Instrument(track));
+    input.selection = instrument.clone();
+    let operation = Arc::clone(&input.control);
+    let (prepared, enqueue, _busy) = h.probe_next_native_publication();
+    let (submitted, resume) = h.probe_next_submitted_device_insert();
+    h.service
+        .submit(Request::InsertPluginEffect(input))
+        .unwrap();
+    let pending = h.next();
+    assert!(
+        pending.error.is_none(),
+        "second Diva preparation: {:?}",
+        pending.error
+    );
+    assert!(pending.state.project == before.project);
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while prepared.try_recv().is_err() {
+        h.pump();
+        if let Ok(event) = h.service.try_event() {
+            panic!("second Diva finished before publication: {:?}", event.error);
+        }
+        h.render_worker_step();
+        assert!(
+            Instant::now() < deadline,
+            "second Diva never prepared: {:?}",
+            *h.plugin_failure.lock().unwrap()
+        );
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    let render = |h: &ResidentHarness| {
+        let position = status(h).position.load(Acquire);
+        let start = status(h).audible_position.load(Acquire);
+        let pcm = h.render_plugin_block();
+        assert_eq!(status(h).position.load(Acquire), position + 256);
+        assert_eq!(status(h).audible_position.load(Acquire), start + 256);
+        assert!(status(h).playing.load(Acquire));
+        assert_mixed_insert_pcm(&pcm, start);
+        assert!(
+            pcm.chunks_exact(2)
+                .filter(|pair| (pair[1][1] - pair[0][1]).abs() > 0.0002)
+                .count()
+                > 16,
+            "original Diva lost its held signal"
+        );
+        wait(|| {
+            h.callback
+                .lock()
+                .unwrap()
+                .as_mut()
+                .unwrap()
+                .native_workers_idle_on_control()
+                == Some(true)
+        });
+        start
+    };
+    let previous_start = render(h);
+    assert_eq!(status(h).recording_source(), Some(predecessor));
+    enqueue.send(()).unwrap();
+    let submitted = submitted.recv_timeout(Duration::from_secs(2)).unwrap();
+    assert_eq!(submitted.output_identity, predecessor.output_identity);
+    let deadline = Instant::now() + Duration::from_secs(1);
+    let installed_source = loop {
+        render(h);
+        let source = status(h).recording_source().unwrap();
+        if source.audio_revision == submitted.audio_revision {
+            break source;
+        }
+        assert_eq!(source, predecessor);
+        assert!(
+            status(h)
+                .rejected_revision()
+                .is_none_or(|(revision, _)| revision != submitted.audio_revision),
+            "second Diva callback refusal: {:?}",
+            status(h).rejected_revision()
+        );
+        assert!(Instant::now() < deadline, "second Diva receipt timed out");
+    };
+    assert_eq!(installed_source.context, submitted.context);
+    assert_eq!(
+        installed_source.output_identity,
+        predecessor.output_identity
+    );
+    assert!(h.service.try_event().is_err());
+    resume.send(()).unwrap();
+    let event = loop {
+        let event = h.next();
+        assert!(
+            event.error.is_none(),
+            "second Diva install: {:?}",
+            event.error
+        );
+        assert!(event.device_insert_confirmation.is_none());
+        if let Some(receipt) = event.device_insert_complete {
+            assert_eq!(receipt.submission, submitted);
+            assert_eq!(receipt.outcome, DeviceInsertOutcome::Installed);
+            break event;
+        }
+        assert!(event.state.project == before.project);
+    };
+    assert_eq!(event.state.revision, before.revision + 1);
+    let completion = &event.plugin_effect_complete[0];
+    assert!(completion.accepted && Arc::ptr_eq(&completion.control, &operation));
+    let device = event
+        .state
+        .project
+        .track(track)
+        .unwrap()
+        .instrument()
+        .unwrap();
+    assert_eq!(device.id().value(), before.project.next_identity());
+    assert_eq!(
+        device.state().type_id(),
+        hex_engine::DeviceTypeId::from_static("hex.vst3")
+    );
+    assert_eq!(
+        h.submitted_observation()
+            .unwrap()
+            .foreign_processor(device.id().value(), device.state().type_id()),
+        Some(true)
+    );
+    assert_eq!(retained_sources(h), retained);
+    println!(
+        "seamless_second_diva output={} predecessor_revision={} installed_revision={} marked_start={previous_start}..{}",
+        installed_source.output_identity,
+        predecessor.audio_revision,
+        installed_source.audio_revision,
+        status(h).audible_position.load(Acquire)
+    );
+    event
+}
+
+fn exercise_mixed_limiter_consent(
+    h: &mut ResidentHarness,
+    before: &hex_session::service::ViewState,
+) -> (Event, u64) {
+    use hex_session::service::{DeviceInsertOutcome, GraphEditOperation};
+
+    fn status(h: &ResidentHarness) -> &hex_audio::prepared::Status {
+        h.audio.as_ref().unwrap().status().unwrap()
+    }
+
+    let predecessor = status(h).recording_source().unwrap();
+    let limiter = hex_engine::DeviceTypeId::from_static("hex.limiter");
+    let play_uninterrupted = |h: &ResidentHarness| {
+        let start = status(h).audible_position.load(Acquire);
+        let position = status(h).position.load(Acquire);
+        assert_mixed_insert_pcm(&render_completed_block(h), start);
+        assert_eq!(status(h).position.load(Acquire), position + 256);
+        assert_eq!(status(h).recording_source(), Some(predecessor));
+    };
+    let offer = |h: &mut ResidentHarness| {
+        let state = hex_engine::default_native_device_state(limiter).unwrap();
+        h.service
+            .submit(Request::Edit(Command::InsertMainDevice {
+                before: None,
+                state,
+            }))
+            .unwrap();
+        let staged = h.next();
+        assert!(staged.error.is_none(), "mixed Limiter: {:?}", staged.error);
+        assert!(!staged.request_complete);
+        assert!(staged.state.project == before.project);
+        play_uninterrupted(h);
+        let offered = h.next();
+        assert!(
+            offered.error.is_none(),
+            "mixed Limiter: {:?}",
+            offered.error
+        );
+        assert!(offered.state.project == before.project);
+        let offer = offered.device_insert_confirmation.unwrap();
+        assert_eq!(offer.operation(), GraphEditOperation::InsertDevice);
+        assert_eq!(
+            offer.submission().output_identity,
+            predecessor.output_identity
+        );
+        offer
+    };
+    let cancelled = offer(h);
+    play_uninterrupted(h);
+    assert!(cancelled.cancel());
+    let terminal = h.next();
+    let receipt = terminal.device_insert_complete.unwrap();
+    assert_eq!(receipt.submission, cancelled.submission());
+    assert_eq!(receipt.outcome, DeviceInsertOutcome::Cancelled);
+    assert_eq!(terminal.state.revision, before.revision);
+    assert!(terminal.state.project == before.project);
+    play_uninterrupted(h);
+
+    let approved = offer(h);
+    play_uninterrupted(h);
+    let (submitted, resume) = h.probe_next_submitted_device_insert();
+    assert!(approved.proceed());
+    let confirmed = submitted.recv_timeout(Duration::from_secs(2)).unwrap();
+    assert_eq!(confirmed.context, approved.submission().context);
+    assert_eq!(confirmed.output_identity, predecessor.output_identity);
+    assert_ne!(
+        confirmed.audio_revision,
+        approved.submission().audio_revision
+    );
+
+    resume.send(()).unwrap();
+    // A verified file-backed graph may need another callback to pin both
+    // sides of the cut. It must keep playing the predecessor in the meantime.
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let (position, faded) = loop {
+        let position = status(h).position.load(Acquire);
+        let start = status(h).audible_position.load(Acquire);
+        let output = render_completed_block(h);
+        if let Ok(event) = h.service.try_event() {
+            panic!(
+                "mixed Limiter finished before the fade: error={:?}, receipt={:?}",
+                event.error, event.device_insert_complete
+            );
+        }
+        if let Some((_, reason)) = status(h)
+            .rejected_revision()
+            .filter(|(revision, _)| *revision == confirmed.audio_revision)
+        {
+            panic!("mixed Limiter callback refused before the fade: {reason:?}");
+        }
+        assert_eq!(status(h).recording_source(), Some(predecessor));
+        if status(h).position.load(Acquire) == position + 128 {
+            break (position, output);
+        }
+        assert_eq!(status(h).position.load(Acquire), position + 256);
+        assert!(
+            Instant::now() < deadline,
+            "mixed Limiter did not reach its fade"
+        );
+        assert_mixed_insert_pcm(&output, start);
+    };
+    assert!(
+        faded[..127]
+            .iter()
+            .flatten()
+            .any(|sample| sample.abs() > 0.001)
+    );
+    assert!(faded[127..].iter().all(|frame| *frame == [0.0; 2]));
+    assert!(h.service.try_event().is_err());
+
+    let resumed = render_completed_block(h);
+    let installed = h.next();
+    assert!(
+        installed.error.is_none(),
+        "mixed Limiter: {:?}",
+        installed.error
+    );
+    let receipt = installed.device_insert_complete.unwrap();
+    assert_eq!(receipt.submission, confirmed);
+    assert_eq!(receipt.outcome, DeviceInsertOutcome::Installed);
+    assert_eq!(installed.state.revision, before.revision + 1);
+    assert_eq!(installed.state.project.main_devices().len(), 2);
+    assert_eq!(
+        installed.state.project.main_devices()[1].state().type_id(),
+        limiter
+    );
+    let current = status(h).recording_source().unwrap();
+    assert_eq!(current.context, confirmed.context);
+    assert_eq!(current.audio_revision, confirmed.audio_revision);
+    assert_eq!(current.output_identity, predecessor.output_identity);
+    assert_eq!(status(h).position.load(Acquire), position + 128 + 256);
+    assert!(status(h).playing.load(Acquire));
+    assert!(status(h).render_fault_snapshot().is_none());
+    assert!(resumed.iter().flatten().any(|sample| sample.abs() > 0.001));
+    // The new Limiter's local lookahead refills after the cut. A steady
+    // effect quantum cannot imitate the held instrument's adjacent motion.
+    render_completed_block(h);
+    let held = render_completed_block(h);
+    assert!(
+        held.chunks_exact(2)
+            .filter(|pair| (pair[1][1] - pair[0][1]).abs() > 0.0002)
+            .count()
+            > 16,
+        "held Diva note did not continue through the Limiter"
+    );
+    println!(
+        "confirmed_limiter output={} predecessor_revision={} installed_revision={} fade_start={position}",
+        current.output_identity, predecessor.audio_revision, current.audio_revision
+    );
+    (installed, current.audio_revision)
+}
+
+fn exercise_mixed_hosted_consent(
+    h: &mut ResidentHarness,
+    before: &hex_session::service::ViewState,
+    selection: &PluginEffectSelection,
+) -> (Event, u64) {
+    use hex_session::service::{DeviceInsertOutcome, GraphEditOperation};
+
+    fn status(h: &ResidentHarness) -> &hex_audio::prepared::Status {
+        h.audio.as_ref().unwrap().status().unwrap()
+    }
+
+    let predecessor = status(h).recording_source().unwrap();
+    let device_id = before.project.next_identity();
+    let mut cancelled_binding = None;
+    let play = |h: &ResidentHarness| {
+        let position = status(h).position.load(Acquire);
+        let pcm = render_completed_block(h);
+        assert_eq!(status(h).position.load(Acquire), position + 256);
+        assert_eq!(status(h).recording_source(), Some(predecessor));
+        assert!(pcm.iter().any(|frame| frame[0].abs() > 0.01));
+        assert!(
+            pcm.chunks_exact(2)
+                .filter(|pair| (pair[1][1] - pair[0][1]).abs() > 0.0002)
+                .count()
+                > 16,
+            "held Diva note vanished before the hosted edit"
+        );
+    };
+    for proceed in [false, true] {
+        let mut input = request(before, PluginEffectDestination::Main);
+        input.selection = selection.clone();
+        let operation = Arc::clone(&input.control);
+        let (submitted, resume) = h.probe_next_submitted_device_insert();
+        h.service
+            .submit(Request::InsertPluginEffect(input))
+            .unwrap();
+        let pending = h.next();
+        assert!(
+            pending.error.is_none(),
+            "hosted preparation: {:?}",
+            pending.error
+        );
+        assert!(pending.state.project == before.project);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let first = loop {
+            if let Ok(first) = submitted.try_recv() {
+                break first;
+            }
+            h.pump();
+            if let Ok(event) = h.service.try_event() {
+                assert!(
+                    event.error.is_none(),
+                    "hosted preparation: {:?}",
+                    event.error
+                );
+                assert!(event.state.project == before.project);
+                assert!(event.device_insert_complete.is_none());
+                assert!(event.plugin_effect_complete.is_empty());
+            }
+            h.render_worker_step();
+            assert!(
+                Instant::now() < deadline,
+                "hosted worker never submitted: {:?}",
+                *h.plugin_failure.lock().unwrap()
+            );
+            std::thread::sleep(Duration::from_millis(2));
+        };
+        assert_eq!(first.output_identity, predecessor.output_identity);
+        assert!(h.service.try_event().is_err());
+        h.render_plugin_block();
+        resume.send(()).unwrap();
+        let offer = loop {
+            let event = h.next();
+            assert!(event.error.is_none(), "hosted staging: {:?}", event.error);
+            assert!(event.state.project == before.project);
+            if let Some(offer) = event.device_insert_confirmation {
+                break offer;
+            }
+            assert!(
+                event.device_insert_complete.is_none(),
+                "{:?}",
+                event.device_insert_complete
+            );
+        };
+        assert_eq!(offer.submission(), first);
+        assert_eq!(offer.operation(), GraphEditOperation::InsertDevice);
+        let mut prepared = None;
+        wait(|| {
+            prepared = h.plugin_progress.lock().unwrap().newest_source.and_then(
+                |(id, binding, accepted)| {
+                    (id == device_id && !accepted && Some(binding) != cancelled_binding)
+                        .then_some(binding)
+                },
+            );
+            prepared.is_some()
+        });
+        let prepared = prepared.unwrap();
+        play(h);
+        if !proceed {
+            assert!(offer.cancel());
+            let cancelled = h.next();
+            assert_eq!(
+                cancelled.device_insert_complete.unwrap().outcome,
+                DeviceInsertOutcome::Cancelled
+            );
+            assert_eq!(cancelled.state.revision, before.revision);
+            assert!(cancelled.state.project == before.project);
+            cancelled_binding = Some(prepared);
+            play(h);
+            continue;
+        }
+
+        let (submitted, resume) = h.probe_next_submitted_device_insert();
+        assert!(offer.proceed());
+        let confirmed = submitted.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(confirmed.context, first.context);
+        assert_eq!(confirmed.output_identity, first.output_identity);
+        assert_ne!(confirmed.audio_revision, first.audio_revision);
+        resume.send(()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let fade_start = loop {
+            let position = status(h).position.load(Acquire);
+            let output = render_completed_block(h);
+            assert_eq!(status(h).recording_source(), Some(predecessor));
+            if let Some((_, reason)) = status(h)
+                .rejected_revision()
+                .filter(|(revision, _)| *revision == confirmed.audio_revision)
+            {
+                panic!("confirmed hosted graph refused: {reason:?}");
+            }
+            if status(h).position.load(Acquire) == position + 128 {
+                assert!(output[127..].iter().all(|frame| *frame == [0.0; 2]));
+                break position;
+            }
+            assert_eq!(status(h).position.load(Acquire), position + 256);
+            assert!(Instant::now() < deadline, "hosted fade never began");
+        };
+        assert!(h.service.try_event().is_err());
+
+        render_completed_block(h);
+        let installed = h.next();
+        assert!(
+            installed.error.is_none(),
+            "hosted install: {:?}",
+            installed.error
+        );
+        let receipt = installed.device_insert_complete.unwrap();
+        assert_eq!(receipt.submission, confirmed);
+        assert_eq!(receipt.outcome, DeviceInsertOutcome::Installed);
+        let completion = &installed.plugin_effect_complete[0];
+        assert!(completion.accepted && Arc::ptr_eq(&completion.control, &operation));
+        assert_eq!(installed.state.revision, before.revision + 1);
+        assert_eq!(
+            installed.state.project.main_devices().len(),
+            before.project.main_devices().len() + 1
+        );
+        let device = installed.state.project.main_devices().last().unwrap();
+        assert_eq!(device.id().value(), device_id);
+        assert_eq!(
+            device.state().type_id(),
+            hex_engine::DeviceTypeId::from_static("hex.vst3")
+        );
+        let current = status(h).recording_source().unwrap();
+        assert_eq!(current.context, confirmed.context);
+        assert_eq!(current.audio_revision, confirmed.audio_revision);
+        assert_eq!(current.output_identity, predecessor.output_identity);
+        wait(|| {
+            h.plugin_progress.lock().unwrap().newest_source == Some((device_id, prepared, true))
+        });
+        assert_eq!(status(h).position.load(Acquire), fade_start + 128 + 256);
+        assert!(status(h).playing.load(Acquire));
+        assert_eq!(
+            h.submitted_observation()
+                .unwrap()
+                .foreign_processor(device.id().value(), device.state().type_id()),
+            Some(true)
+        );
+        let mut heard_held = false;
+        for _ in 0..6 {
+            let pcm = render_completed_block(h);
+            if pcm
+                .chunks_exact(2)
+                .filter(|pair| (pair[1][1] - pair[0][1]).abs() > 0.0002)
+                .count()
+                > 16
+            {
+                heard_held = true;
+                break;
+            }
+        }
+        assert!(
+            heard_held,
+            "held Diva note did not continue through the hosted Main effect"
+        );
+        println!(
+            "confirmed_hosted output={} installed_revision={} fade_start={fade_start}",
+            current.output_identity, current.audio_revision
+        );
+        return (installed, current.audio_revision);
+    }
+    unreachable!("the second offer proceeds")
+}
+
+fn exercise_mixed_streamed_loop(
+    h: &mut ResidentHarness,
+    applied: u64,
+    (marker, marker_length): (usize, usize),
+) -> u64 {
+    let marker = marker as u64;
+    let marker_end = marker + marker_length as u64;
+    let start = marker - 4096;
+    // Playhead movement during edit admission is in 64-frame steps. Force
+    // the loop end to split a physical block at any of those alignments.
+    let end = marker_end + 4096 + 17;
+    let edited = super::automation::edit_with_running_callback(
+        h,
+        Request::Edit(Command::SetLoopRegion {
+            start,
+            end,
+            enabled: true,
+        }),
+    );
+    assert!(edited.error.is_none(), "mixed loop: {:?}", edited.error);
+    let (revision, metadata) = h.applied(applied);
+    assert_eq!(metadata.context.editor_revision, edited.state.revision);
+    let status = h.audio.as_ref().unwrap().status().unwrap();
+    let mut previous = status.position.load(Acquire);
+    assert!((start..end).contains(&previous), "loop cursor {previous}");
+    let mut complete_passes = 0;
+    let mut started_pass = false;
+    let mut quiet_peak = 0.0_f32;
+    let mut resumed_peak = 0.0_f32;
+    let mut quiet_blocks = 0;
+    let mut partial_holds = 0;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while complete_passes < 2 {
+        let block = render_completed_block(h);
+        assert!(status.playing.load(Acquire), "mixed loop stopped playing");
+        assert!(
+            status.render_fault_snapshot().is_none(),
+            "mixed loop render fault"
+        );
+        assert!(
+            status.rejected_action().is_none(),
+            "mixed loop action refused"
+        );
+        let position = status.position.load(Acquire);
+        let advanced = if status.stream_buffering.load(Acquire) {
+            let committed = usize::try_from(status.stream_committed_frames.load(Acquire)).unwrap();
+            assert!(committed < block.len());
+            assert!(block[committed..].iter().all(|frame| *frame == [0.0; 2]));
+            partial_holds += usize::from(committed != 0);
+            committed
+        } else {
+            block.len()
+        };
+        assert_eq!(
+            position,
+            start + (previous - start + advanced as u64) % (end - start),
+            "loop cursor must advance only by rendered frames"
+        );
+        if position < previous {
+            if started_pass {
+                assert!(quiet_blocks >= 8, "loop skipped the streamed marker");
+                assert!(
+                    resumed_peak > 0.01 && quiet_peak < resumed_peak * 0.05,
+                    "stream marker did not repeat: quiet={quiet_peak}, resumed={resumed_peak}"
+                );
+                complete_passes += 1;
+            }
+            started_pass = true;
+            quiet_peak = 0.0;
+            resumed_peak = 0.0;
+            quiet_blocks = 0;
+        } else if started_pass && advanced == block.len() {
+            assert!(block.iter().flatten().all(|sample| sample.is_finite()));
+            let peak = block
+                .iter()
+                .flatten()
+                .fold(0.0f32, |peak, sample| peak.max(sample.abs()));
+            if (marker + 2048..marker_end - 2048).contains(&position) {
+                quiet_blocks += 1;
+                quiet_peak = quiet_peak.max(peak);
+            } else if position >= marker_end + 2048 {
+                assert!(peak > 0.01, "stream did not resume at {position}: {peak}");
+                resumed_peak = resumed_peak.max(peak);
+            }
+        }
+        previous = position;
+        assert!(
+            Instant::now() < deadline,
+            "mixed loop did not complete two passes"
+        );
+    }
+    println!("mixed loop {start}..{end} passes={complete_passes} partial_holds={partial_holds}");
+    revision
 }

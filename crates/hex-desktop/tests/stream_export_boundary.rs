@@ -7,6 +7,11 @@
 #[path = "../src/audio_policy.rs"]
 mod audio_policy;
 #[allow(dead_code)]
+#[path = "../src/granular_sources.rs"]
+mod granular_sources;
+#[path = "stream_export_boundary/long_stretch.rs"]
+mod long_stretch;
+#[allow(dead_code)]
 #[path = "../src/streamed_export.rs"]
 mod streamed_export;
 use audio_policy::AudioPolicy;
@@ -76,6 +81,9 @@ impl WorkerAudioSink for OfflineSink {
     fn close(&mut self) {}
     fn streamed_exporter(&self) -> Option<hex_session::service::StreamedExporter> {
         Some(self.render)
+    }
+    fn streamed_bouncer(&self) -> Option<hex_session::StreamedBouncer> {
+        Some(streamed_export::bounce)
     }
 }
 fn offline(rate: u32, render: hex_session::service::StreamedExporter) -> Service {
@@ -450,4 +458,265 @@ fn assert_verified_export_matches_resident(rate: u32, grouped: bool, signal_inde
     }
     assert_eq!(fs::read(a).unwrap(), bytes[0]);
     assert_eq!(fs::read(b).unwrap(), bytes[1]);
+}
+
+use hex_stream::StreamConfig;
+fn tiny(
+    request: &hex_session::service::StreamedExportRequest<'_>,
+) -> Result<hex_export::ExportReport, hex_session::service::ExportFailure> {
+    crate::streamed_export::render_with_config(request, StreamConfig::with_pool_pages(3))
+        .map_err(Into::into)
+}
+
+struct OfflinePassthrough {
+    fail: bool,
+    frames: usize,
+}
+impl hex_export::ForeignBounceRenderer for OfflinePassthrough {
+    fn max_block_frames(&self) -> usize {
+        64
+    }
+    fn render_block(
+        &mut self,
+        playback: &mut hex_engine::SessionPlayback,
+        output: &mut [hex_engine::Frame],
+        pages: Option<&mut dyn hex_engine::MediaPages>,
+        _: &hex_export::ExportControl,
+    ) -> Result<(), hex_export::ExportError> {
+        assert!(output.len() <= 64);
+        self.frames += output.len();
+        if self.fail {
+            return Err(hex_export::ExportError::Invalid("test processor failed"));
+        }
+        playback
+            .render_with_pages_and_post_node_observer(
+                output,
+                pages.ok_or(hex_export::ExportError::Invalid("missing pages"))?,
+                None,
+            )
+            .map_err(hex_export::ExportError::SessionRender)
+    }
+    fn finish(&mut self, _: &hex_export::ExportControl) -> Result<(), hex_export::ExportError> {
+        assert!(self.frames > 0);
+        Ok(())
+    }
+}
+fn foreign_export(
+    request: &hex_session::service::StreamedExportRequest<'_>,
+) -> Result<hex_export::ExportReport, hex_session::service::ExportFailure> {
+    crate::streamed_export::render_with_config_and_foreign(
+        request,
+        StreamConfig::with_pool_pages(3),
+        Some(&mut OfflinePassthrough {
+            fail: false,
+            frames: 0,
+        }),
+    )
+    .map_err(Into::into)
+}
+fn failing_foreign_export(
+    request: &hex_session::service::StreamedExportRequest<'_>,
+) -> Result<hex_export::ExportReport, hex_session::service::ExportFailure> {
+    crate::streamed_export::render_with_config_and_foreign(
+        request,
+        StreamConfig::with_pool_pages(3),
+        Some(&mut OfflinePassthrough {
+            fail: true,
+            frames: 0,
+        }),
+    )
+    .map_err(Into::into)
+}
+
+#[test]
+fn verified_pages_feed_offline_processor_and_failures_preserve_existing_output() {
+    use hex_session::service::{ExportControl, ExportSignal};
+    let files = Files::new();
+    let source = varied(&files, "foreign-source.wav", 48000, 12288);
+    let original = fs::read(&source).unwrap();
+    let foreign = offline(48000, foreign_export);
+    let imported = run(&foreign, Request::Import(source.clone()));
+    let track = imported.state.project.tracks()[0].id();
+    let output = files.0.join("foreign.wav");
+    run(&foreign, Request::Export(output.clone()));
+    assert!(exported(&foreign).result.is_ok());
+    let ordinary = offline(48000, tiny);
+    run(&ordinary, Request::Import(source.clone()));
+    let reference = files.0.join("ordinary.wav");
+    run(&ordinary, Request::Export(reference.clone()));
+    assert!(exported(&ordinary).result.is_ok());
+    assert_eq!(fs::read(&output).unwrap(), fs::read(reference).unwrap());
+    let existing = files.0.join("existing-foreign.wav");
+    let failing = offline(48000, failing_foreign_export);
+    run(&failing, Request::Import(source.clone()));
+    fs::write(&existing, b"keep existing").unwrap();
+    let request = || Request::ExportRange {
+        path: existing.clone(),
+        start: 0,
+        frames: None,
+        signal: ExportSignal::Main,
+        control: ExportControl::default(),
+        format: hex_export::ExportFormat::Pcm16,
+        overwrite: true,
+    };
+    run(&failing, request());
+    assert!(exported(&failing).result.is_err());
+    assert_eq!(fs::read(&existing).unwrap(), b"keep existing");
+    let mut changed = original.clone();
+    changed[48] ^= 1;
+    fs::write(&source, changed).unwrap();
+    run(&foreign, request());
+    assert!(exported(&foreign).result.is_err());
+    assert_eq!(fs::read(&existing).unwrap(), b"keep existing");
+    fs::remove_file(&source).unwrap();
+    run(&foreign, request());
+    assert!(exported(&foreign).result.is_err());
+    assert_eq!(fs::read(&existing).unwrap(), b"keep existing");
+    fs::write(&source, &original).unwrap();
+    run(
+        &foreign,
+        Request::ExportRange {
+            path: existing.clone(),
+            start: 0,
+            frames: None,
+            signal: ExportSignal::CapturedMix(vec![hex_engine::OutputCaptureId::Track(track)]),
+            control: ExportControl::default(),
+            format: hex_export::ExportFormat::Pcm16,
+            overwrite: true,
+        },
+    );
+    let error = exported(&foreign).result.unwrap_err();
+    assert!(error.message().contains("supports main only"), "{error}");
+    assert_eq!(fs::read(existing).unwrap(), b"keep existing");
+}
+
+#[test]
+fn granular_tones_export_matches_converted_stereo_resident_pcm() {
+    granular_export(hex_project::WarpMode::Tones { grain_ms: 32 });
+}
+#[test]
+fn granular_texture_export_matches_converted_stereo_resident_pcm() {
+    granular_export(hex_project::WarpMode::Texture {
+        grain_ms: 32,
+        fluctuation: 35,
+        seed: 42,
+    });
+}
+fn granular_export(mode: hex_project::WarpMode) {
+    let files = Files::new();
+    let original = files.0.join("stereo-granular.wav");
+    let mut frame = 0usize;
+    hex_export::write_float_wav_new(&original, 24_000, 8192, &AtomicBool::new(false), |output| {
+        for dst in output {
+            let x = (frame as f32 * 0.071).sin() * 0.2;
+            *dst = [x, x * -1.7];
+            frame += 1;
+        }
+        Ok(())
+    })
+    .unwrap();
+    let bytes = fs::read(&original).unwrap();
+    fn small(
+        request: &hex_session::service::StreamedExportRequest<'_>,
+    ) -> Result<hex_export::ExportReport, hex_session::service::ExportFailure> {
+        streamed_export::render_with_config(request, hex_stream::StreamConfig::with_pool_pages(4))
+            .map_err(Into::into)
+    }
+    let streamed = offline(48_000, small);
+    let resident = Service::new(48_000, 16, 65_536).unwrap();
+    event(&resident);
+    for service in [&streamed, &resident] {
+        let imported = run(service, Request::Import(original.clone()));
+        let clip = imported.state.project.tracks()[0].clips()[0].id();
+        let neutral = run(
+            service,
+            Request::Edit(hex_project::Command::SetClipFades {
+                clip,
+                fade_in: 0,
+                fade_out: 0,
+            }),
+        );
+        let warp = hex_project::default_audio_warp(
+            neutral.state.project.clip(clip).unwrap(),
+            neutral.state.project.tempo_map(),
+            mode,
+        )
+        .unwrap();
+        run(
+            service,
+            Request::Edit(hex_project::Command::SetAudioClipWarp {
+                clip,
+                settings: Some(warp),
+            }),
+        );
+        run(
+            service,
+            Request::Edit(hex_project::Command::SetProjectTempo {
+                tempo: hex_project::Tempo::new(180_000_000).unwrap(),
+            }),
+        );
+    }
+    let actual = files.0.join("granular-streamed.wav");
+    let expected = files.0.join("granular-resident.wav");
+    for (service, path) in [(&streamed, &actual), (&resident, &expected)] {
+        run(
+            service,
+            Request::ExportRange {
+                path: path.clone(),
+                start: 31,
+                frames: Some(8192),
+                overwrite: false,
+                signal: hex_export::ExportSignal::Main,
+                format: hex_export::ExportFormat::Pcm16,
+                control: hex_export::ExportControl::default(),
+            },
+        );
+        let finished = exported(service);
+        assert!(finished.result.is_ok(), "{:?}", finished.result);
+    }
+    let decode = |path: &std::path::Path| {
+        hex_media::decode_wav_file(path, hex_media::Limits::new(1 << 20, 65_536))
+            .unwrap()
+            .audio()
+            .frames()
+            .to_vec()
+    };
+    let actual = decode(&actual);
+    let expected = decode(&expected);
+    assert_eq!(actual.len(), 8192);
+    assert_eq!(actual.len(), expected.len());
+    assert!(expected.iter().flatten().any(|x| x.abs() > 0.01));
+    let error = actual
+        .iter()
+        .flatten()
+        .zip(expected.iter().flatten())
+        .map(|(a, b)| (a - b).abs())
+        .fold(0.0f32, f32::max);
+    assert!(
+        error <= 1.0 / 32768.0,
+        "granular export PCM difference {error}"
+    );
+    assert_eq!(fs::read(&original).unwrap(), bytes);
+    let mut changed = bytes;
+    *changed.last_mut().unwrap() ^= 1;
+    fs::write(&original, &changed).unwrap();
+    let refused = files.0.join("refused-granular.wav");
+    run(
+        &streamed,
+        Request::ExportRange {
+            path: refused.clone(),
+            start: 31,
+            frames: Some(8192),
+            overwrite: false,
+            signal: hex_export::ExportSignal::Main,
+            format: hex_export::ExportFormat::Pcm16,
+            control: hex_export::ExportControl::default(),
+        },
+    );
+    assert!(exported(&streamed).result.is_err());
+    assert!(
+        !refused.exists(),
+        "changed granular media must not publish output"
+    );
+    assert_eq!(fs::read(&original).unwrap(), changed);
 }

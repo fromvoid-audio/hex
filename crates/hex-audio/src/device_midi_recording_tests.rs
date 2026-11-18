@@ -701,7 +701,20 @@ fn midi_recording_unknown_source_and_mutual_publication_gain_admission_refuse() 
 
 #[test]
 fn midi_recording_rejects_delayed_output_transport_before_engine_arm() {
+    assert_delayed_output_rejected(recording_target());
+}
+
+// Keep the two real callback fixtures in separate test frames. Each fixture
+// remains large enough that reserving both in one debug frame overflows the
+// default test-thread stack before the refusal can be exercised.
+#[inline(never)]
+fn recording_target() -> Target {
     let (_, _, _, target) = fixture(48_000);
+    target
+}
+
+#[inline(never)]
+fn assert_delayed_output_rejected(target: Target) {
     let (mut control, mut callback) = prepared::channel(48_000).unwrap();
     let (_transport, _worker) = callback
         .prepare_output_transport_on_control(1, 1, 1, 64)

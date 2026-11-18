@@ -241,11 +241,14 @@ fn every_chain_owner_retains_exact_predecessors_and_prunes_only_at_received_fron
 #[test]
 fn bounded_history_refuses_without_mutating_the_published_predecessor_and_recovers_by_pruning() {
     let mut previous = revision(1, 1);
+    assert!(!revision(2, 1).needs_foreign_history_pruning_from(&previous));
     for key in 2..=9 {
         previous = revision(key, 1)
             .with_foreign_program_history_from(&previous, |_| ForeignProgramFrontier::Unknown)
             .unwrap();
     }
+    assert!(revision(10, 1).needs_foreign_history_pruning_from(&previous));
+    assert!(!revision(10, 2).needs_foreign_history_pruning_from(&previous));
     assert!(
         revision(10, 1)
             .with_foreign_program_history_from(&previous, |_| ForeignProgramFrontier::Unknown)
@@ -258,6 +261,7 @@ fn bounded_history_refuses_without_mutating_the_published_predecessor_and_recove
         })
         .unwrap();
     keys(&next, &[8, 9, 10], &[1, 7]);
+    assert!(!revision(11, 1).needs_foreign_history_pruning_from(&next));
 }
 #[test]
 fn ambiguous_keys_frontiers_profiles_and_shared_candidates_refuse_while_new_sources_stay_independent()
@@ -374,4 +378,119 @@ fn malformed_profiles_bindings_identity_missing_programs_and_unknown_constructor
             .is_err()
     );
     keys(&previous, &[1], &[2]);
+}
+
+#[test]
+fn stopped_fence_keeps_open_quantum_and_immediate_predecessor_across_64_edits() {
+    let initial = revision(1, 1);
+    let first_owners: Vec<_> = nodes(&initial.arrangement)
+        .map(|node| {
+            Arc::clone(
+                node.automation
+                    .foreign()
+                    .unwrap()
+                    .storage_owners()
+                    .next()
+                    .unwrap()
+                    .0,
+            )
+        })
+        .collect();
+    let mut previous = initial;
+    for key in 2..=65 {
+        let next = revision(key, 1)
+            .with_foreign_program_history_from(&previous, |_| ForeignProgramFrontier::Stopped {
+                open_quantum: Some(NonZeroU64::MIN),
+                worker_empty: false,
+            })
+            .unwrap();
+        keys(&next, &[1, key - 1, key], &[]);
+        if key > 3 {
+            keys(&next, &[], &[key - 2]);
+        }
+        for (node, owner) in nodes(&next.arrangement).zip(&first_owners) {
+            let program = node.automation.foreign().unwrap();
+            assert!(
+                program
+                    .storage_owners()
+                    .any(|(actual, _)| Arc::ptr_eq(actual, owner))
+            );
+            assert!(program.storage_owners().count() <= 3);
+        }
+        previous = next;
+    }
+    let closed = revision(66, 1)
+        .with_foreign_program_history_from(&previous, |_| ForeignProgramFrontier::Stopped {
+            open_quantum: None,
+            worker_empty: false,
+        })
+        .unwrap();
+    keys(&closed, &[65, 66], &[1, 64]);
+    keys(&previous, &[1, 64, 65], &[63, 66]);
+}
+
+#[test]
+fn stopped_fence_refuses_missing_key_and_requires_real_empty_receipt_for_first_program() {
+    let previous = revision(1, 1);
+    assert!(
+        revision(2, 1)
+            .with_foreign_program_history_from(&previous, |_| {
+                ForeignProgramFrontier::Stopped {
+                    open_quantum: NonZeroU64::new(99),
+                    worker_empty: false,
+                }
+            })
+            .is_err()
+    );
+    keys(&previous, &[1], &[2]);
+    let shared_candidate = revision(2, 1);
+    let shared = Arc::clone(shared_candidate.arrangement());
+    assert!(
+        shared_candidate
+            .with_foreign_program_history_from(&previous, |_| {
+                ForeignProgramFrontier::Stopped {
+                    open_quantum: None,
+                    worker_empty: false,
+                }
+            })
+            .is_err()
+    );
+    drop(shared);
+    let mut wrong_profile = graph(2, 1);
+    wrong_profile.tracks[0]
+        .foreign_instrument
+        .as_mut()
+        .unwrap()
+        .owner = ProcessorChainOwner::Main;
+    assert!(
+        wrap(wrong_profile)
+            .with_foreign_program_history_from(&previous, |_| {
+                ForeignProgramFrontier::Stopped {
+                    open_quantum: None,
+                    worker_empty: false,
+                }
+            })
+            .is_err()
+    );
+    keys(&previous, &[1], &[2]);
+    let empty = empty_revision();
+    for (open_quantum, worker_empty) in [(None, false), (Some(NonZeroU64::MIN), true)] {
+        assert!(
+            revision(2, 1)
+                .with_foreign_program_history_from(&empty, |_| {
+                    ForeignProgramFrontier::Stopped {
+                        open_quantum,
+                        worker_empty,
+                    }
+                })
+                .is_err()
+        );
+    }
+    let first = revision(2, 1)
+        .with_foreign_program_history_from(&empty, |_| ForeignProgramFrontier::Stopped {
+            open_quantum: None,
+            worker_empty: true,
+        })
+        .unwrap();
+    keys(&first, &[2], &[1]);
 }

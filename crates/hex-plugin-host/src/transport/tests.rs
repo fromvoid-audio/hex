@@ -8,6 +8,77 @@ const BINDING: Binding = Binding {
 };
 
 #[test]
+fn accepted_concealment_reports_exact_pair_and_bounded_overflow() {
+    let (control, mut callback, mut worker) =
+        native_pcm_channel_from_completed_prefix(BINDING, 8, 0).unwrap();
+    let counts = allocation_counter::measure(|| {
+        for _ in 0..2 {
+            callback
+                .stage(&[[0.0; 2]; 8], &[], &mut [[0.0; 2]; 8])
+                .unwrap();
+            callback.finish(true).unwrap();
+            assert!(
+                control.take_concealed_output().is_none(),
+                "pipeline warmup is not a miss"
+            );
+        }
+        // The first request is in flight when its output is needed.
+        assert_eq!(worker.receive().unwrap().unwrap().sequence, 0);
+        callback
+            .stage(&[[0.0; 2]; 8], &[], &mut [[0.0; 2]; 8])
+            .unwrap();
+        assert!(
+            control.take_concealed_output().is_none(),
+            "staged output is not yet accepted"
+        );
+        callback.finish(true).unwrap();
+        callback
+            .stage(&[[0.0; 2]; 8], &[], &mut [[0.0; 2]; 8])
+            .unwrap();
+        callback.finish(true).unwrap();
+        control.revoke();
+        assert_eq!(
+            control.take_concealed_output(),
+            Some(ConcealedOutput {
+                binding: BINDING,
+                miss: DeadlineMiss {
+                    reply_sequence: 0,
+                    worker_phase: DeadlineWorkerPhase::Processing
+                },
+                overflowed: true,
+            })
+        );
+        assert!(control.take_concealed_output().is_none());
+    });
+    assert_eq!(
+        (
+            counts.count_total,
+            counts.bytes_total,
+            counts.count_current,
+            counts.bytes_current
+        ),
+        (0, 0, 0, 0)
+    );
+}
+
+#[test]
+fn rejected_physical_callback_never_reports_a_concealed_output() {
+    let (control, mut callback, _worker) =
+        native_pcm_channel_from_completed_prefix(BINDING, 8, 0).unwrap();
+    for _ in 0..2 {
+        callback
+            .stage(&[[0.0; 2]; 8], &[], &mut [[0.0; 2]; 8])
+            .unwrap();
+        callback.finish(true).unwrap();
+    }
+    callback
+        .stage(&[[0.0; 2]; 8], &[], &mut [[0.0; 2]; 8])
+        .unwrap();
+    assert!(callback.finish(false).is_err());
+    assert!(control.take_concealed_output().is_none());
+}
+
+#[test]
 fn parameter_input_reservation_serializes_admission_and_callback() {
     use std::num::NonZeroU64;
     let ordinal = |n| NonZeroU64::new(n).unwrap();
@@ -594,16 +665,23 @@ fn native_concealment_covers_adjacent_gaps_across_a_partial_callback() {
     }
     for (frames, expected) in [(4, (0, 4)), (8, (0, 8)), (4, (0, 4))] {
         callback.begin_physical_callback(frames).unwrap();
-        let reply = callback
-            .stage_segment_with_parameters(
+        let mut output = [[-1.0; 2]; 8];
+        let concealed = callback
+            .stage_effect_pcm_segment(
                 0,
                 &[[1.0; 2]; 8][..frames],
                 &[],
                 &[],
-                &mut [[0.0; 2]; 8][..frames],
+                &mut output[..frames],
+                SegmentTiming {
+                    playing: None,
+                    at: |_| None,
+                },
+                EffectSegmentOrigins::default(),
             )
             .unwrap();
-        assert_eq!(reply.concealed_output, Some(expected));
+        assert_eq!(concealed, Some(expected));
+        assert_eq!(output[..frames], [[0.0; 2]; 8][..frames]);
         callback.finish(true).unwrap();
     }
 }
@@ -1092,7 +1170,7 @@ fn pause_accepts_only_the_exact_staged_prefix_and_keeps_partial_input() {
         callback
             .stage_segment(0, &[[0.25; 2]; 4], &[], &mut [[0.0; 2]; 4])
             .unwrap();
-        callback.end_staging_at_pause(pause_cut);
+        callback.end_staging_at_rendered_prefix(pause_cut);
         if pause_cut != 4 {
             assert_eq!(callback.finish(true), Err(Fault::Protocol));
             assert!(control.is_revoked());
@@ -1643,6 +1721,45 @@ fn received_program_snapshot_is_coherent_during_worker_slot_reuse() {
 }
 
 #[test]
+fn untouched_quantum_witness_refuses_a_started_or_revoked_callback() {
+    let (control, mut callback, _worker) = channel(BINDING, 8).unwrap();
+    assert_eq!(control.committed_quantum(), None);
+    assert_eq!(
+        control.quantum_observation(),
+        Some(QuantumObservation::Untouched(BINDING))
+    );
+    let mut output = [[0.0; 2]; 8];
+    callback
+        .stage(&[[0.0; 2]; 3], &[], &mut output[..3])
+        .unwrap();
+    assert_eq!(
+        control.quantum_observation(),
+        Some(QuantumObservation::Untouched(BINDING))
+    );
+    callback.finish(true).unwrap();
+    assert_eq!(
+        control.quantum_observation(),
+        Some(QuantumObservation::Committed(CommittedQuantum {
+            binding: BINDING,
+            state: CommittedQuantumState::OpenUnprogrammed,
+        }))
+    );
+    control.revoke();
+    assert_eq!(control.quantum_observation(), None);
+    let (in_progress, _, _) = channel(BINDING, 8).unwrap();
+    in_progress
+        .revoked
+        .quantum_serial
+        .store(1, std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(in_progress.quantum_observation(), None);
+    in_progress
+        .revoked
+        .quantum_serial
+        .store(u64::MAX, std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(in_progress.quantum_observation(), None);
+}
+
+#[test]
 fn committed_quantum_is_published_only_after_accepted_callback() {
     let (control, mut callback, _worker) = channel(BINDING, 8).unwrap();
     let (other, _, _) = channel(BINDING, 8).unwrap();
@@ -1739,6 +1856,12 @@ fn committed_quantum_snapshot_is_bounded_and_coherent() {
         );
         barrier.wait();
         while !finished.load(Acquire) {
+            if let Some(observation) = control.quantum_observation() {
+                assert!(
+                    matches!(observation, QuantumObservation::Committed(_)),
+                    "a callback with published quanta cannot become untouched"
+                );
+            }
             if let Some(snapshot) = control.committed_quantum() {
                 assert_eq!(snapshot.binding, BINDING);
                 assert!(matches!(

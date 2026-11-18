@@ -30,6 +30,11 @@ fn fenced_quantum_requires_its_current_uninterrupted_graph_fence() {
             .try_fenced_native_quantum_on_control(source, fence, f.binding)
             .is_err()
     );
+    assert!(
+        f.control
+            .try_fenced_native_program_frontier_on_control(source, fence, f.binding)
+            .is_err()
+    );
     allocation_free(|| {
         f.data
             .owner_mut()
@@ -39,6 +44,56 @@ fn fenced_quantum_requires_its_current_uninterrupted_graph_fence() {
     assert_eq!(
         f.control.stopped_edit_fence_state(fence),
         StoppedEditFenceState::Ready
+    );
+    let frontier = f
+        .control
+        .try_fenced_native_program_frontier_on_control(source, fence, f.binding)
+        .unwrap();
+    let observed = f
+        .control
+        .try_fenced_native_quantum_on_control(source, fence, f.binding)
+        .unwrap()
+        .unwrap()
+        .observation();
+    let expected_key = match observed.state {
+        crate::plugin_worker::CommittedQuantumState::OpenProgram(key) => Some(key),
+        crate::plugin_worker::CommittedQuantumState::Closed
+        | crate::plugin_worker::CommittedQuantumState::OpenUnprogrammed => None,
+    };
+    let worker = f
+        .control
+        .try_native_source_program_frontier_on_control(f.binding)
+        .unwrap();
+    assert_eq!(
+        frontier,
+        hex_engine::ForeignProgramFrontier::Stopped {
+            open_quantum: expected_key,
+            worker_empty: worker == hex_engine::ForeignProgramFrontier::Empty,
+        }
+    );
+    assert!(
+        f.control
+            .try_fenced_native_program_frontier_on_control(
+                AppliedAudioSource {
+                    audio_revision: source.audio_revision + 1,
+                    ..source
+                },
+                fence,
+                f.binding
+            )
+            .is_err()
+    );
+    assert!(
+        f.control
+            .try_fenced_native_program_frontier_on_control(
+                source,
+                fence,
+                Binding {
+                    epoch: f.binding.epoch + 1,
+                    ..f.binding
+                }
+            )
+            .is_err()
     );
     let checkpoint = f
         .control
@@ -56,6 +111,11 @@ fn fenced_quantum_requires_its_current_uninterrupted_graph_fence() {
                     .try_fenced_native_quantum_on_control(source, fence, f.binding),
                 Err("native preparation is busy")
             );
+            assert_eq!(
+                f.control
+                    .try_fenced_native_program_frontier_on_control(source, fence, f.binding),
+                Err("native preparation is busy")
+            );
         })
         .unwrap();
     f.control.status.closing.store(true, Release);
@@ -65,6 +125,11 @@ fn fenced_quantum_requires_its_current_uninterrupted_graph_fence() {
             .is_err()
     );
     assert!(!f.control.fenced_native_quantum_fence_is_ready(checkpoint));
+    assert!(
+        f.control
+            .try_fenced_native_program_frontier_on_control(source, fence, f.binding)
+            .is_err()
+    );
     f.control.status.closing.store(false, Release);
     assert!(
         f.control
@@ -103,6 +168,11 @@ fn fenced_quantum_requires_its_current_uninterrupted_graph_fence() {
     );
     assert!(f.control.fenced_native_quantum_fence_is_ready(checkpoint));
     f.control.stop();
+    assert!(
+        f.control
+            .try_fenced_native_program_frontier_on_control(source, fence, f.binding)
+            .is_err()
+    );
     assert!(!f.control.fenced_native_quantum_fence_is_ready(checkpoint));
     assert!(
         f.control
@@ -111,11 +181,104 @@ fn fenced_quantum_requires_its_current_uninterrupted_graph_fence() {
     );
     f.control.release_stopped_edit_fence(fence);
     assert!(!f.control.fenced_native_quantum_fence_is_ready(checkpoint));
+    assert!(
+        f.control
+            .try_fenced_native_program_frontier_on_control(source, fence, f.binding)
+            .is_err()
+    );
     let returned = dispose(f);
     assert!(
         matches!(returned.disposal, native::PreparationDisposal::Reaped(retired)
         if retired.status.success() && retired.terminal.is_some())
     );
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn stopped_frontier_observes_the_untouched_original_callback() {
+    let _serial = serial();
+    let mut f = fixture_with_authored("processing", 0, 256, &[7]);
+    let playback = compile(&f, true);
+    publish(&mut f.control, playback, PublicationPolicy::InheritRuntime);
+    physical_block::<8>(&mut f);
+    let source = f.control.status.native_effect_source().unwrap();
+    let fence = f.control.request_native_epoch_fence(source).unwrap();
+    allocation_free(|| {
+        f.data
+            .owner_mut()
+            .unwrap()
+            .run(|callback, _| callback.begin_block())
+    });
+    assert_eq!(
+        f.control.stopped_edit_fence_state(fence),
+        StoppedEditFenceState::Ready
+    );
+    assert_eq!(
+        f.control
+            .try_fenced_native_quantum_on_control(source, fence, f.binding),
+        Ok(None),
+        "the existing API must still report no committed observation"
+    );
+    assert!(matches!(
+        f.control
+            .try_fenced_native_program_frontier_on_control(source, fence, f.binding),
+        Ok(hex_engine::ForeignProgramFrontier::Stopped {
+            open_quantum: None,
+            ..
+        })
+    ));
+    f.control.release_stopped_edit_fence(fence);
+    dispose(f);
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn stopped_frontier_keeps_a_real_partial_programmed_quantum() {
+    let _serial = serial();
+    let mut f = fixture_with_authored("processing", 0, 256, &[7]);
+    let playback = compile(&f, true);
+    publish(&mut f.control, playback, PublicationPolicy::InheritRuntime);
+    f.control.command(PlaybackCommand::Play).unwrap();
+    physical_block::<64>(&mut f);
+    f.control.command(PlaybackCommand::Pause).unwrap();
+    for _ in 0..32 {
+        physical_block::<8>(&mut f);
+        if !f.control.status.playing.load(Acquire) {
+            break;
+        }
+    }
+    assert!(!f.control.status.playing.load(Acquire));
+    let source = f.control.status.native_effect_source().unwrap();
+    let fence = f.control.request_native_epoch_fence(source).unwrap();
+    allocation_free(|| {
+        f.data
+            .owner_mut()
+            .unwrap()
+            .run(|callback, _| callback.begin_block())
+    });
+    assert_eq!(
+        f.control.stopped_edit_fence_state(fence),
+        StoppedEditFenceState::Ready
+    );
+    let checkpoint = f
+        .control
+        .try_fenced_native_quantum_on_control(source, fence, f.binding)
+        .unwrap()
+        .unwrap();
+    let crate::plugin_worker::CommittedQuantumState::OpenProgram(key) =
+        checkpoint.observation().state
+    else {
+        panic!(
+            "expected a real partially staged programmed quantum: {:?}",
+            checkpoint.observation()
+        );
+    };
+    assert!(
+        matches!(f.control.try_fenced_native_program_frontier_on_control(source, fence, f.binding),
+        Ok(hex_engine::ForeignProgramFrontier::Stopped { open_quantum: Some(actual), .. }) if actual == key)
+    );
+    f.control.release_stopped_edit_fence(fence);
+    dispose(f);
 }
 
 #[test]

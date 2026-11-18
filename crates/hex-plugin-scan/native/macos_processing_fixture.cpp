@@ -1014,7 +1014,8 @@ public:
         }
         ++observed.blocks; // count attempted foreign DSP, including a refusal
         if (fault==140) fault_hang(27); // controlled in-flight host-input barrier
-        if (fault==28) fault_hang(9);
+        if (fault==28 || (fault==127 && std::getenv("HEX_ORIGINAL_SDK_TIMING_GATE"))) fault_hang(9);
+        if (fault==127 && std::getenv("HEX_ORIGINAL_SDK_TIMING_GATE")) ::usleep(5000);
         if (fault==31) fault_crash(9);
         if (fault==10) return kResultFalse;
         const float scale=(fault==127 || held_parameter_input(fault))?1.0f:0.5f+static_cast<float>(block)*0.125f;
@@ -1104,12 +1105,16 @@ public:
         }
         // Emit an old processor observation one quantum after the edit that
         // caused it, with no parameter input in that second quantum.
-        if(point_count || fault==83 || fault==84 || (fault==135 && block==1)) {
+        if(point_count || fault==83 || fault==84 || fault==stopped_editor_echo_variant || (fault==135 && block==1)) {
             gain.store(static_cast<float>(current_gain));
             if(data.outputParameterChanges && fault!=78) {
                 int32 index=-1;const ParamID id=parameter_id(fault);
                 auto* queue=data.outputParameterChanges->addParameterData(id,index);
-                if(!queue || queue->addPoint(fault==79 || fault==83 || fault==84?0:data.numSamples-1,fault==79?0.25:current_gain/4.0,index)!=kResultOk) return kResultFalse;
+                // A processor can report its previous/smoothed value while
+                // accepting the editor's new target. Keep the PCM at that target.
+                const auto feedback_value=fault==79 || (fault==stopped_editor_echo_variant &&
+                    (current_gain==3.0 || current_gain==3.5))?0.25:current_gain/4.0;
+                if(!queue || queue->addPoint(fault==79 || fault==83 || fault==84?0:data.numSamples-1,feedback_value,index)!=kResultOk) return kResultFalse;
             }
         }
         if (output) data.outputs[0].silenceFlags=silent || fault==9?((uint64(1)<<outputs)-1):0;
@@ -1119,14 +1124,24 @@ public:
     }
 };
 
-class ProcessingFactory final : public IPluginFactory {
+class ProcessingFactory final : public IPluginFactory2 {
     std::atomic<uint32> refs{0};
 public:
     uint32 count() const { return refs.load(); }
     tresult PLUGIN_API queryInterface(const TUID iid,void** out) override {
         if (!out) return kInvalidArgument;*out=nullptr;
-        if (!same(iid,INLINE_UID_OF(FUnknown)) && !same(iid,INLINE_UID_OF(IPluginFactory))) return kNoInterface;
-        *out=static_cast<IPluginFactory*>(this);addRef();return kResultOk;
+        if (same(iid, INLINE_UID_OF(IPluginFactory2))) {
+            // Discovery starts with a clean environment; the controlled
+            // fault and instrument variants keep their factory surface.
+            if (next_fault != 0) return kNoInterface;
+            *out = static_cast<IPluginFactory2*>(this);
+        } else {
+            if (!same(iid, INLINE_UID_OF(FUnknown))
+                && !same(iid, INLINE_UID_OF(IPluginFactory))) return kNoInterface;
+            *out = static_cast<IPluginFactory*>(this);
+        }
+        addRef();
+        return kResultOk;
     }
     uint32 PLUGIN_API addRef() override { return ++refs; }
     uint32 PLUGIN_API release() override { return --refs; }
@@ -1146,7 +1161,19 @@ public:
             return kResultOk;
         }
         if(index==1) {*out=PClassInfo(restore_controller_id,PClassInfo::kManyInstances,"Component Controller Class","hex original restore controller");return kResultOk;}
-        *out=PClassInfo(processing_id,PClassInfo::kManyInstances,"Audio Module Class","hex original processing fixture");return kResultOk;
+        const char* name = HEX_FIXTURE_RESIDUAL_ECHO ? "hex original tail fixture"
+            : HEX_FIXTURE_INFINITE_TAIL ? "hex original infinite tail fixture"
+            : "hex original processing fixture";
+        *out = PClassInfo(processing_id, PClassInfo::kManyInstances, "Audio Module Class", name);
+        return kResultOk;
+    }
+    tresult PLUGIN_API getClassInfo2(int32 index, PClassInfo2* out) override {
+        PClassInfo basic{};
+        if (!out || next_fault != 0 || getClassInfo(index, &basic) != kResultOk)
+            return kInvalidArgument;
+        *out = PClassInfo2(basic.cid, basic.cardinality, basic.category, basic.name,
+            0, "Fx", "hex original fixtures", "1", "VST 3.8");
+        return kResultOk;
     }
     tresult PLUGIN_API createInstance(FIDString cid,FIDString iid,void** out) override {
         if (!out) return kInvalidArgument;*out=nullptr;
@@ -1177,6 +1204,11 @@ extern "C" __attribute__((visibility("default"))) bool bundleEntry(CFBundleRef) 
     // Supported fault control belongs only to this original SDK fixture.
     // The production helper never reads this environment variable.
     const auto* selected=std::getenv("HEX_ORIGINAL_INSTANCE_VARIANT");
+#if HEX_FIXTURE_RESIDUAL_ECHO
+    // Allow the signed tail effect and a signed instrument variant to share
+    // one host-test process while keeping their SDK bus layouts independent.
+    if (const auto* tail=std::getenv("HEX_ORIGINAL_TAIL_INSTANCE_VARIANT")) selected=tail;
+#endif
     if (selected) {
         const auto length=std::strlen(selected);if (!length || length>3) return false;
         int value=0;for (size_t n=0;n<length;++n) { if (selected[n]<'0' || selected[n]>'9') return false;value=value*10+selected[n]-'0'; }

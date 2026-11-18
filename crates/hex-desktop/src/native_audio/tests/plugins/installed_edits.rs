@@ -239,6 +239,253 @@ fn fourth_installed_instrument_lane_accepts_repeated_arrangement_edits() {
 }
 
 #[test]
+#[ignore = "requires an installed Diva catalog and source-bound native helper"]
+fn stopped_diva_automation_undo_redo_retains_the_original_source() {
+    stopped_diva_history_case(None);
+}
+
+#[test]
+#[ignore = "requires an installed Diva catalog and source-bound native helper"]
+fn stopped_diva_history_refuses_a_priority_stop_before_publication() {
+    stopped_diva_history_case(Some(false));
+}
+
+#[test]
+#[ignore = "requires an installed Diva catalog and source-bound native helper"]
+fn stopped_diva_history_cancels_before_document_replacement() {
+    stopped_diva_history_case(Some(true));
+}
+
+fn stopped_diva_history_case(interrupt: Option<bool>) {
+    use super::automation::edit_with_running_callback;
+    use hex_project::{
+        AutomationInterpolation, AutomationPoint, AutomationValue, BeatTime, DeviceAutomationTarget,
+    };
+    let _native = native_fixture();
+    let catalog = PathBuf::from(std::env::var_os("HEX_TEST_VST3_INSTRUMENT_CATALOG").unwrap());
+    let selected = installed_selection(
+        &catalog,
+        "Diva.vst3",
+        hex_plugin_catalog::PluginRole::Instrument,
+    );
+    let class = selected.cid;
+    println!(
+        "Diva class={class:?} executable_sha256={}",
+        selected.executable_sha256
+    );
+    let mut h = ResidentHarness::with_plugins_at_rate_and_catalog(
+        host(),
+        Some(EffectPresentation {
+            input_frames: 0,
+            output_frames: 512,
+        }),
+        44_100,
+        catalog,
+        20_000_000,
+    );
+    assert!(h.next().error.is_none());
+    let (applied, _) = h.applied(0);
+    let added = h.run(Request::Edit(Command::AddMidiTrack {
+        name: "keys".into(),
+    }));
+    let Some(Created::Track(track)) = added.created else {
+        panic!("track")
+    };
+    let (applied, _) = h.applied(applied);
+    let mut insert = request(&added.state, PluginEffectDestination::Instrument(track));
+    insert.selection = selected;
+    h.service
+        .submit(Request::InsertPluginEffect(insert))
+        .unwrap();
+    let inserted = terminal(&mut h);
+    assert!(inserted.error.is_none(), "{:?}", inserted.error);
+    let device = inserted
+        .state
+        .project
+        .track(track)
+        .unwrap()
+        .instrument()
+        .unwrap()
+        .id();
+    let (applied, metadata) = h.applied(applied);
+    let points = vec![AutomationPoint {
+        beat: BeatTime::ZERO,
+        value: AutomationValue::new(0.25).unwrap(),
+        outgoing: AutomationInterpolation::Linear,
+    }];
+    let event = edit_with_running_callback(
+        &mut h,
+        Request::DeviceAutomation {
+            project_generation: metadata.context.project_generation,
+            revision: inserted.state.revision,
+            device,
+            target: DeviceAutomationTarget::Vst3 { parameter: 97 },
+            vst3_class: Some(class),
+            points,
+        },
+    );
+    assert!(event.error.is_none(), "{:?}", event.error);
+    let (mut applied, _) = h.applied(applied);
+    let edited = Arc::clone(&event.state.project);
+    let mut state = event.state;
+    let before = Arc::clone(&inserted.state.project);
+    let original = h
+        .plugin_progress
+        .lock()
+        .unwrap()
+        .binding
+        .expect("original binding");
+    let mut bindings = Vec::new();
+    for cycle in 0..10 {
+        if cycle == 4
+            && let Some(replace_document) = interrupt
+        {
+            let (entered, resume, _) = h.probe_next_native_publication();
+            h.service.submit(Request::Undo).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while entered.try_recv().is_err() {
+                h.pump();
+                h.render_worker_step();
+                assert!(
+                    Instant::now() < deadline,
+                    "fenced history did not reach publication"
+                );
+                std::thread::yield_now();
+            }
+            if replace_document {
+                h.service
+                    .submit(Request::NewWithAudioMode {
+                        mode: hex_session::DocumentAudioMode::Resident,
+                        reservation: None,
+                    })
+                    .unwrap();
+            } else {
+                h.audio.as_ref().unwrap().control.stop();
+                h.render_worker_step();
+            }
+            resume.send(()).unwrap();
+            let terminal = loop {
+                h.pump();
+                h.render_worker_step();
+                if let Ok(event) = h.service.try_event() {
+                    break event;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "interrupted history did not finish"
+                );
+                std::thread::yield_now();
+            };
+            assert!(
+                terminal.error.is_some(),
+                "priority Stop must refuse the fenced edit"
+            );
+            assert_eq!(terminal.state.project, edited);
+            if !replace_document {
+                for _ in 0..4 {
+                    h.render_worker_step();
+                }
+                assert_eq!(
+                    h.audio
+                        .as_ref()
+                        .unwrap()
+                        .status()
+                        .unwrap()
+                        .applied_revision
+                        .load(Acquire),
+                    applied
+                );
+            }
+            return;
+        }
+        if cycle == 4 {
+            h.refuse.store(true, std::sync::atomic::Ordering::Release);
+            let refused = edit_with_running_callback(&mut h, Request::Undo);
+            assert!(
+                refused
+                    .error
+                    .as_deref()
+                    .is_some_and(|error| error.contains("admission refusal")),
+                "{:?}",
+                refused.error
+            );
+            assert_eq!(refused.state.project, edited);
+            h.refuse.store(false, std::sync::atomic::Ordering::Release);
+        }
+        for (request, expected) in [(Request::Undo, &before), (Request::Redo, &edited)] {
+            let started = Instant::now();
+            let terminal = edit_with_running_callback(&mut h, request);
+            assert!(
+                terminal.error.is_none(),
+                "cycle {cycle}: {:?}",
+                terminal.error
+            );
+            assert_eq!(&terminal.state.project, expected);
+            (applied, _) = h.applied(applied);
+            let binding = h
+                .plugin_progress
+                .lock()
+                .unwrap()
+                .binding
+                .expect("installed source");
+            println!(
+                "cycle={cycle} elapsed_ms={:.3} binding={binding:?}",
+                started.elapsed().as_secs_f64() * 1000.0
+            );
+            bindings.push(binding);
+            state = terminal.state;
+        }
+    }
+    for index in 0..10 {
+        let points = vec![AutomationPoint {
+            beat: BeatTime::ZERO,
+            value: AutomationValue::new(if index % 2 == 0 { 0.35 } else { 0.65 }).unwrap(),
+            outgoing: AutomationInterpolation::Linear,
+        }];
+        let terminal = edit_with_running_callback(
+            &mut h,
+            Request::DeviceAutomation {
+                project_generation: metadata.context.project_generation,
+                revision: state.revision,
+                device,
+                target: DeviceAutomationTarget::Vst3 { parameter: 97 },
+                vst3_class: Some(class),
+                points: points.clone(),
+            },
+        );
+        assert!(
+            terminal.error.is_none(),
+            "edit {index}: {:?}",
+            terminal.error
+        );
+        assert_eq!(
+            terminal
+                .state
+                .project
+                .device(device)
+                .unwrap()
+                .automation_target(DeviceAutomationTarget::Vst3 { parameter: 97 })
+                .unwrap()
+                .points,
+            points
+        );
+        (applied, _) = h.applied(applied);
+        bindings.push(
+            h.plugin_progress
+                .lock()
+                .unwrap()
+                .binding
+                .expect("installed source"),
+        );
+        state = terminal.state;
+    }
+    assert!(
+        bindings.iter().all(|binding| *binding == original),
+        "stopped undo replaced original source: original={original:?}, observed={bindings:?}"
+    );
+}
+
+#[test]
 #[ignore = "requires explicit installed instrument/catalog/parameter IDs and source-bound native helper"]
 fn distinct_instrument_parameters_commit_and_read_back_while_playing() {
     let _native = native_fixture();

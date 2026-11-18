@@ -8,6 +8,130 @@ use hex_project::{BeatTime, Command, Created, Editor};
 use std::{collections::BTreeMap, sync::Arc};
 
 #[test]
+fn paused_native_sampler_keeps_its_resident_source_lease() {
+    use crate::computer_keyboard::ComputerKeyboardInput;
+    use crate::playback::{Playback, PlaybackCommand};
+    use hex_lattice_contract::DeviceTypeId;
+
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+    let Created::Asset(asset) = editor
+        .execute(Command::ImportDeviceAsset {
+            path: "monitor-source.wav".into(),
+            sample_rate: 48_000,
+            frames: 512,
+        })
+        .unwrap()
+    else {
+        panic!("asset")
+    };
+    let Created::Track(track) = editor
+        .execute(Command::InsertTrackWithDevice {
+            name: "sampler".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: crate::native_device_resources::current_sampler_fixture::one_shot_state(
+                512, asset,
+            )
+            .unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("sampler track")
+    };
+    editor
+        .execute(Command::InsertDevice {
+            track,
+            before: None,
+            state: crate::default_native_device_state_for_class(
+                crate::NativeDeviceClass::Effect,
+                DeviceTypeId::from_static("hex.limiter"),
+            )
+            .unwrap(),
+        })
+        .unwrap();
+    let cancel = AtomicBool::new(false);
+    let mut store = ResidentDeviceAssets::default();
+    store
+        .insert_on_control(
+            (
+                asset,
+                crate::OwnedAudioSource::try_resident(48_000, vec![[0.25, -0.125]; 512])
+                    .ok()
+                    .unwrap(),
+            ),
+            0,
+            AudioStorageLedgerReservation {
+                data_rows: 256,
+                handle_rows: 64,
+                root_rows: 32,
+                max_retained_bytes: 20_000_000,
+                max_construction_peak_bytes: 20_000_000,
+            },
+            512,
+            &cancel,
+            || Ok::<_, ResourcePreparationError>(()),
+        )
+        .unwrap();
+    let resources =
+        PreparedDeviceResources::prepare_on_control(&store, editor.project(), 20_000_000, &cancel)
+            .unwrap();
+    let revision = Arc::new(
+        PreparedRevision::prepare_with_device_resources(
+            editor.project(),
+            &BTreeMap::new(),
+            Arc::new(SineTable::new()),
+            None,
+            &crate::audio_transform::AudioTransformPreparation::default(),
+            &resources,
+            4096,
+            &cancel,
+        )
+        .unwrap(),
+    );
+    let latency = revision.arrangement().main_latency_frames() as usize;
+    assert!(latency > 0);
+    assert!(
+        Playback::paused_source_monitor_allowance_on_control(&revision, Some(&resources)).unwrap()
+            > 0
+    );
+    let mut playback =
+        Playback::try_from_prepared_with_device_resources(revision, &resources).unwrap();
+    let lease_id = {
+        let mut leases = playback.device_resource_leases();
+        let id = leases.next().unwrap().id;
+        assert!(leases.next().is_none());
+        id
+    };
+    let keys = Arc::new(ComputerKeyboardInput::default());
+    playback
+        .prepare_computer_keyboard(editor.project(), track, Arc::clone(&keys))
+        .unwrap();
+    playback
+        .prepare_resident_paused_source_monitor(Some(&resources))
+        .unwrap();
+    playback.apply(PlaybackCommand::Play);
+    playback.render(&mut [[0.0; 2]; 4]).unwrap();
+    playback.apply(PlaybackCommand::Pause);
+    keys.set_key(0, Some((60, 100, 1))).unwrap();
+    let mut output = vec![[0.0; 2]; latency + 64];
+    playback.render(&mut output).unwrap();
+    assert!(output[..latency].iter().all(|frame| *frame == [0.0; 2]));
+    assert!(
+        output[latency..]
+            .iter()
+            .any(|frame| frame[0] > 0.0 && frame[1] < 0.0)
+    );
+    assert_eq!(playback.position(), 4);
+    playback.apply(PlaybackCommand::Stop);
+    assert!(
+        playback
+            .device_resource_leases()
+            .map(|lease| lease.id)
+            .eq([lease_id])
+    );
+}
+
+#[test]
 fn registered_sampler_mixes_original_pcm_with_vector_and_same_asset_project_rate_audio() {
     // Match the existing bounded production seek-worker stack, including debug-build temporaries.
     let run = registered_sampler_mixes_original_pcm_with_vector_and_same_asset_project_rate_audio_on_control;
@@ -233,6 +357,14 @@ fn registered_sampler_fixture(streamed: bool, shared: bool) {
         24
     );
     let revision = Arc::new(prepare(&resources, 24).unwrap());
+    assert!(matches!(
+        crate::PausedTrackMonitor::resident_runtime_allowance_on_control(
+            &revision,
+            &resources,
+            audio_track,
+        ),
+        Err(crate::SessionPlaybackError::InvalidCommand)
+    ));
     if let Some(contributor) = shared_contributor {
         let receiver = editor.project().tracks()[0].id();
         let source = editor
@@ -896,6 +1028,117 @@ fn pcm_union_counts_capacity_once_across_original_and_unpublished_aliases() {
         capacity + distinct.pcm_capacity_frames() as u64
     );
 }
+
+#[test]
+fn paused_monitor_retains_deduplicated_pcm_and_budget_through_owner_destruction() {
+    use crate::{PausedMonitorAdmissionError, PausedTrackMonitor, playback::Playback};
+
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+    let Created::Imported { track, asset, .. } = editor
+        .execute(Command::ImportAudioTrack {
+            name: "audio".into(),
+            path: "monitor.wav".into(),
+            sample_rate: 48_000,
+            frames: 4,
+        })
+        .unwrap()
+    else {
+        panic!("audio track")
+    };
+    let cancel = AtomicBool::new(false);
+    let resources = PreparedDeviceResources::prepare_on_control(
+        &ResidentDeviceAssets::default(),
+        editor.project(),
+        4096,
+        &cancel,
+    )
+    .unwrap();
+    let media = BTreeMap::from([(asset, Audio::new(48_000, vec![[0.25; 2]; 4]).unwrap())]);
+    let revision = Arc::new(
+        PreparedRevision::prepare_with_device_resources(
+            editor.project(),
+            &media,
+            Arc::new(SineTable::new()),
+            None,
+            &crate::audio_transform::AudioTransformPreparation::default(),
+            &resources,
+            0,
+            &cancel,
+        )
+        .unwrap(),
+    );
+    let graph =
+        Playback::try_from_prepared_with_device_resources(Arc::clone(&revision), &resources)
+            .unwrap();
+    let frames = graph.resident_pcm_capacity_frames().unwrap();
+    assert!(frames >= 4);
+    let pcm = Arc::downgrade(&graph.resident_pcm_sources().next().unwrap().frames);
+    let graph_view = DeviceResourceAdmission::unpublished_on_control(&graph, Some(&resources));
+    let inspect = |registered: &[DeviceResourceAdmission<'_>], limits| {
+        let phase = DeviceResourcePhase {
+            stores: &[],
+            registered,
+            selections: &[],
+            outbound: &[],
+            legacy: &[],
+            checked_runtime_bytes: 0,
+            construction_bytes: 0,
+        };
+        inspect_device_resource_union(&phase, &phase, limits)
+    };
+    const PREPARED_METADATA: usize = 1024;
+    let refused = PausedTrackMonitor::prepare_admitted_resident_on_control(
+        Arc::clone(&revision),
+        &resources,
+        track,
+        PREPARED_METADATA,
+        |monitor_view| inspect(&[graph_view, monitor_view], pcm_limits()).map(|_| ()),
+    );
+    assert!(matches!(
+        refused,
+        Err(PausedMonitorAdmissionError::Admission(_))
+    ));
+    let limits = AudioStorageLedgerReservation {
+        max_retained_bytes: 256 * 1024 * 1024,
+        max_construction_peak_bytes: 256 * 1024 * 1024,
+        ..pcm_limits()
+    };
+    let before = inspect(&[graph_view], limits).unwrap();
+    let runtime =
+        PausedTrackMonitor::resident_runtime_allowance_on_control(&revision, &resources, track)
+            .unwrap();
+    let (monitor, hold) = PausedTrackMonitor::prepare_admitted_resident_on_control(
+        revision,
+        &resources,
+        track,
+        PREPARED_METADATA,
+        |monitor_view| {
+            let both = inspect(&[graph_view, monitor_view], limits)?;
+            assert_eq!(both.retained_frames, frames);
+            assert!(
+                both.retained.data_bytes
+                    >= before.retained.data_bytes + runtime + PREPARED_METADATA
+            );
+            Ok::<_, ResourcePreparationError>(())
+        },
+    )
+    .unwrap();
+    drop(graph);
+    drop(media);
+    drop(resources);
+    let view = DeviceResourceAdmission::default().with_paused_monitor(&hold);
+    assert!(!hold.released_on_control());
+    assert_eq!(inspect(&[view], limits).unwrap().retained_frames, frames);
+    drop(monitor);
+    assert!(hold.released_on_control());
+    // The inventory stays conservative until its holder actually releases it.
+    assert_eq!(inspect(&[view], limits).unwrap().retained_frames, frames);
+    assert!(pcm.upgrade().is_some());
+    drop(hold);
+    assert_eq!(inspect(&[], limits).unwrap().retained_frames, 0);
+    assert!(pcm.upgrade().is_none());
+}
+
 #[test]
 fn pcm_publication_refusal_retirement_and_output_custody_keep_exact_backing_union() {
     let audio = Audio::new(48_000, vec![[0.25; 2]; 4]).unwrap();

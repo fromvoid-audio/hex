@@ -473,6 +473,14 @@ impl NativeEffectReference<'_> {
             Self::Loaned(control) => control.worker.program_frontier_on_control(),
         }
     }
+    pub(crate) fn quantum_observation_on_control(
+        &self,
+    ) -> Option<hex_plugin_host::transport::QuantumObservation> {
+        match self {
+            Self::Unsplit(effect) => effect.worker.quantum_observation_on_control(),
+            Self::Loaned(control) => control.worker.quantum_observation_on_control(),
+        }
+    }
     pub(crate) fn committed_quantum_on_control(
         &self,
     ) -> Option<crate::plugin_worker::CommittedQuantum> {
@@ -512,6 +520,23 @@ impl NativeEffectReference<'_> {
         match self {
             Self::Unsplit(effect) => effect.worker.take_failure_diagnostic_on_control(),
             Self::Loaned(control) => control.worker.take_failure_diagnostic_on_control(),
+        }
+    }
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub(crate) fn take_slow_exchange_on_control(
+        &self,
+    ) -> Option<crate::plugin_worker::SlowPluginExchange> {
+        match self {
+            Self::Unsplit(effect) => effect.worker.take_slow_exchange_on_control(),
+            Self::Loaned(control) => control.worker.take_slow_exchange_on_control(),
+        }
+    }
+    pub(crate) fn take_concealed_output_on_control(
+        &self,
+    ) -> Option<hex_plugin_host::transport::ConcealedOutput> {
+        match self {
+            Self::Unsplit(effect) => effect.worker.take_concealed_output_on_control(),
+            Self::Loaned(control) => control.worker.take_concealed_output_on_control(),
         }
     }
     pub(crate) fn matches_prepared(&self, node: &hex_lattice::PreparedRuntimeInstance) -> bool {

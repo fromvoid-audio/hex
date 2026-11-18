@@ -31,21 +31,57 @@ pub fn monitored_input() -> Result<(InputCapture, InputMonitor, InputObserver), 
         channels: 1,
     };
     let (output, input) = RingBuffer::new(PACKETS);
-    let (monitor_output, monitor_input) = RingBuffer::new(PACKETS);
-    let overrun = Arc::new(AtomicBool::new(false));
-    let shared = Arc::new(Shared {
-        phase: AtomicU8::new(READY),
-        stop: AtomicBool::new(false),
-        fault: AtomicU8::new(NO_FAULT),
-        terminal: AtomicU8::new(0),
-    });
+    let shared = Shared::opening();
+    let (monitor_writer, monitor) = InputMonitor::channel(id.clone(), config, &shared, false);
+    let (worker, observer) = fixture_worker(
+        shared,
+        WriterOutput::Recording {
+            output,
+            monitor: Some(monitor_writer),
+        },
+    )?;
+    Ok((
+        InputCapture {
+            worker,
+            id,
+            config,
+            input,
+            prefetched: None,
+            preroll_frames: 0,
+            recording_ready: None,
+        },
+        monitor,
+        observer,
+    ))
+}
+
+/// A synthetic monitor-only device with the same feed and control lifecycle.
+pub fn monitor_only_input()
+-> Result<(MonitorCapture, InputMonitor, InputObserver), InputCaptureError> {
+    let id: InputDeviceId = format!("{}:fixture-monitor", cpal::default_host().id())
+        .parse()
+        .map_err(|_| InputCaptureError::InvalidConfiguration)?;
+    let config = InputConfig {
+        sample_rate: 48_000,
+        channels: 1,
+    };
+    let shared = Shared::opening();
+    let (writer, monitor) = InputMonitor::channel(id, config, &shared, true);
+    let (worker, observer) = fixture_worker(shared, WriterOutput::Monitoring(writer))?;
+    Ok((MonitorCapture { worker }, monitor, observer))
+}
+
+fn fixture_worker(
+    shared: Arc<Shared>,
+    output: WriterOutput<cpal::StreamInstant>,
+) -> Result<(CaptureWorker, InputObserver), InputCaptureError> {
+    shared.phase.store(READY, Release);
     let started = Arc::new(AtomicBool::new(false));
     let worker_started = Arc::clone(&started);
     let capture_frame = Arc::new(std::sync::atomic::AtomicU32::new(0));
     let worker_capture_frame = Arc::clone(&capture_frame);
     let worker_state = Arc::clone(&shared);
-    let monitor_overrun = Arc::clone(&overrun);
-    let worker = thread::Builder::new()
+    let handle = thread::Builder::new()
         .name("hex-fixture-input".into())
         .spawn(move || {
             let mut writer = Writer {
@@ -54,10 +90,6 @@ pub fn monitored_input() -> Result<(InputCapture, InputMonitor, InputObserver), 
                 channels: 1,
                 sequence: 0,
                 previous: None,
-                monitor: Some(MonitorWriter {
-                    output: monitor_output,
-                    overrun: monitor_overrun,
-                }),
             };
             while worker_state.phase.load(Acquire) != STARTING && !worker_state.stop.load(Acquire) {
                 thread::park();
@@ -72,7 +104,7 @@ pub fn monitored_input() -> Result<(InputCapture, InputMonitor, InputObserver), 
                 );
                 writer.submit(&[0.25; 1024], stamp);
                 while !worker_state.stop.load(Acquire) {
-                    thread::park();
+                    thread::park_timeout(Duration::from_millis(5));
                 }
             }
             drop(writer);
@@ -84,23 +116,10 @@ pub fn monitored_input() -> Result<(InputCapture, InputMonitor, InputObserver), 
         .map_err(InputCaptureError::Spawn)?;
     let (_, error) = mpsc::sync_channel(1);
     Ok((
-        InputCapture {
-            id: id.clone(),
-            config,
-            input,
-            shared: Arc::clone(&shared),
-            worker,
-            error,
-            prefetched: None,
-            preroll_frames: 0,
-            recording_ready: None,
-        },
-        InputMonitor {
-            input: monitor_input,
-            overrun,
+        CaptureWorker {
             shared,
-            id,
-            config,
+            handle,
+            error,
         },
         InputObserver {
             started,

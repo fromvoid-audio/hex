@@ -80,6 +80,7 @@ impl Identity {
             Self::Clip(clip_audition::Target::PlayStart(_)) => {
                 ResidentSourceOrigin::ClipPlayStartPreview
             }
+            Self::Clip(clip_audition::Target::Gain(_)) => ResidentSourceOrigin::ClipGainPreview,
         }
     }
 }
@@ -384,7 +385,7 @@ pub(super) fn publish_inputs(
         .prepared
         .arrangement_seek_requires_preroll();
     metadata.gain_recording_track = overlay.snapshot.prepared.gain_recording_track();
-    let (hint, accepted) = session.prepare_resident_runtime_inputs(
+    let (hint, accepted, submission) = session.prepare_resident_runtime_inputs(
         &overlay.snapshot,
         &overlay.project,
         sink,
@@ -399,6 +400,9 @@ pub(super) fn publish_inputs(
         required,
     )?;
     drop(registered);
+    overlay
+        .snapshot
+        .record_submission(metadata.context, submission);
     accepted.cancel_retired_from(&canonical.inputs);
     canonical.inputs = accepted.clone();
     overlay.snapshot.inputs = accepted;

@@ -2,11 +2,39 @@
 use super::*;
 #[test]
 fn real_first_play_buffers_without_ack_clock_or_samples_then_installs_exact_worker_pages() {
-    first_play(false, false);
+    first_play(false, false, false, false, false, false);
 }
 #[test]
 fn grouped_closed_constructor_buffers_and_renders_verified_worker_pages() {
-    first_play(true, false);
+    first_play(true, false, false, false, false, false);
+}
+#[test]
+fn track_limiter_closed_stream_buffers_then_renders_without_callback_allocations() {
+    first_play(false, false, true, false, false, false);
+}
+#[test]
+fn group_limiter_closed_stream_buffers_then_renders_without_callback_allocations() {
+    first_play(true, false, true, false, false, false);
+}
+#[test]
+fn fed_track_limiter_buffers_and_handoffs_without_callback_allocations() {
+    first_play(false, false, true, true, false, false);
+}
+#[test]
+fn fed_group_limiter_buffers_and_handoffs_without_callback_allocations() {
+    first_play(true, false, true, true, false, false);
+}
+#[test]
+fn return_feed_limiter_buffers_and_handoffs_without_callback_allocations() {
+    first_play(false, false, true, false, true, false);
+}
+#[test]
+fn grouped_return_feed_buffers_and_handoffs_without_callback_allocations() {
+    first_play(true, false, true, false, true, false);
+}
+#[test]
+fn return_send_limiter_buffers_and_handoffs_without_callback_allocations() {
+    first_play(false, false, true, false, false, true);
 }
 #[test]
 fn priority_stop_revokes_buffered_play_before_installation() {
@@ -14,14 +42,26 @@ fn priority_stop_revokes_buffered_play_before_installation() {
         hex_engine::audio_storage_constructor_layout_supported(),
         "this regression requires the real sealed-source constructor"
     );
-    first_play(false, true);
+    first_play(false, true, false, false, false, false);
 }
-fn first_play(grouped: bool, stop_pending: bool) {
+fn first_play(
+    grouped: bool,
+    stop_pending: bool,
+    limiter: bool,
+    feed: bool,
+    return_feed: bool,
+    return_send: bool,
+) {
     let _serial = serial();
     if !hex_engine::audio_storage_constructor_layout_supported() {
         return;
     }
     let (project, _) = utility_fixture::project();
+    let project = if limiter {
+        project_with_frames(1024)
+    } else {
+        project
+    };
     let mut snapshot = project.snapshot();
     snapshot.tracks[0].devices.clear();
     let project = hex_project::Project::from_snapshot(snapshot).unwrap();
@@ -43,14 +83,113 @@ fn first_play(grouped: bool, stop_pending: bool) {
                 gain: 0.5,
             })
             .unwrap();
+        if limiter {
+            let state = hex_engine::default_native_device_state(
+                hex_engine::DeviceTypeId::from_static("hex.limiter"),
+            )
+            .unwrap();
+            editor
+                .execute(hex_project::Command::InsertDevice {
+                    track: group,
+                    before: None,
+                    state,
+                })
+                .unwrap();
+        }
+        editor.project().clone()
+    } else if limiter {
+        let mut editor = hex_project::Editor::new(project, 8).unwrap();
+        let track = editor.project().tracks()[0].id();
+        let state = hex_engine::default_native_device_state(hex_engine::DeviceTypeId::from_static(
+            "hex.limiter",
+        ))
+        .unwrap();
+        editor
+            .execute(hex_project::Command::InsertDevice {
+                track,
+                before: None,
+                state,
+            })
+            .unwrap();
+        if feed {
+            let hex_project::Created::Track(receiver) = editor
+                .execute(hex_project::Command::InsertTrackWithDevice {
+                    name: "receiver".into(),
+                    before_track: None,
+                    slot: hex_project::TrackDeviceSlot::Instrument,
+                    state: hex_project::default_instrument_state().unwrap(),
+                })
+                .unwrap()
+            else {
+                panic!("receiver")
+            };
+            editor
+                .execute(hex_project::Command::RemoveInstrument { track: receiver })
+                .unwrap();
+            editor
+                .execute(hex_project::Command::SetAudioFeed {
+                    source: hex_project::RoutingOwner::Track(track),
+                    destination: receiver,
+                    gain: 0.5,
+                })
+                .unwrap();
+        }
         editor.project().clone()
     } else {
         project
     };
+    let project = if grouped && feed {
+        let mut editor = hex_project::Editor::new(project, 8).unwrap();
+        let group = editor
+            .project()
+            .tracks()
+            .iter()
+            .find(|track| track.is_group())
+            .unwrap()
+            .id();
+        let hex_project::Created::Track(receiver) = editor
+            .execute(hex_project::Command::InsertTrackWithDevice {
+                name: "receiver".into(),
+                before_track: None,
+                slot: hex_project::TrackDeviceSlot::Instrument,
+                state: hex_project::default_instrument_state().unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("receiver")
+        };
+        editor
+            .execute(hex_project::Command::RemoveInstrument { track: receiver })
+            .unwrap();
+        editor
+            .execute(hex_project::Command::SetAudioFeed {
+                source: hex_project::RoutingOwner::Track(group),
+                destination: receiver,
+                gain: 0.5,
+            })
+            .unwrap();
+        editor.project().clone()
+    } else {
+        project
+    };
+    let project = if return_feed || return_send {
+        stream_fixture::project_with_return_feed(project, return_feed)
+    } else {
+        project
+    };
     let asset = project.assets().next().unwrap().id();
-    let wav = stream_fixture::Wav::new();
+    let wav = if limiter {
+        stream_fixture::Wav::with_frames(1024)
+    } else {
+        stream_fixture::Wav::new()
+    };
     let definition = wav.definition(asset, 11);
-    let mut owner = stream_fixture::owner_with_context(
+    let make_owner = if limiter {
+        stream_fixture::owner_with_effects
+    } else {
+        stream_fixture::owner_with_context
+    };
+    let mut owner = make_owner(
         &project,
         definition.metadata.clone(),
         Some(hex_engine::AudioSourceContext {
@@ -222,16 +361,46 @@ fn first_play(grouped: bool, stop_pending: bool) {
             std::thread::yield_now();
         }
     }
-    assert_eq!(output, [[if grouped { 0.125 } else { 0.25 }; 2]; 8]);
-    assert_eq!(control.status.position.load(Acquire), 8);
-    assert_eq!(control.status.performance_frame.load(Acquire), 8);
+    if limiter {
+        while output.iter().all(|frame| frame[0] == 0.0) {
+            let measured = allocation_counter::measure(|| {
+                data.owner_mut().unwrap().run(|callback, _| {
+                    callback.begin_block();
+                    callback.render(&mut output).unwrap();
+                });
+            });
+            assert_eq!(
+                (
+                    measured.count_total,
+                    measured.bytes_total,
+                    measured.count_current,
+                    measured.bytes_current
+                ),
+                (0, 0, 0, 0)
+            );
+            assert!(control.status.position.load(Acquire) < 1024);
+        }
+        assert!(output.iter().all(|frame| frame[0] >= 0.0
+            && frame[0]
+                <= if return_feed || return_send {
+                    0.5
+                } else if feed {
+                    0.375
+                } else {
+                    0.25
+                }));
+    } else {
+        assert_eq!(output, [[if grouped { 0.125 } else { 0.25 }; 2]; 8]);
+        assert_eq!(control.status.position.load(Acquire), 8);
+        assert_eq!(control.status.performance_frame.load(Acquire), 8);
+    }
     assert_eq!(
         control.status.stream_applied_command_prefix.load(Acquire),
         play
     );
     assert!(!control.status.stream_buffering.load(Acquire));
-    if grouped {
-        let successor = stream_fixture::owner_with_context(
+    if grouped || limiter {
+        let successor = make_owner(
             &project,
             wav.definition(asset, 11).metadata,
             Some(hex_engine::AudioSourceContext {
@@ -269,6 +438,12 @@ fn first_play(grouped: bool, stop_pending: bool) {
             assert!(std::time::Instant::now() < deadline);
             std::thread::yield_now();
         }
+        if limiter {
+            assert!(
+                output.iter().any(|frame| frame[0] > 0.0),
+                "handoff retains Limiter history"
+            );
+        }
         control.reclaim();
         let retired = recover(&mut control, &ticket);
         assert_eq!(retired.disposed.identity(), id);
@@ -298,7 +473,9 @@ fn first_play(grouped: bool, stop_pending: bool) {
             assert!(std::time::Instant::now() < deadline);
             std::thread::yield_now();
         }
-        assert_eq!(output, [[0.125; 2]; 8]);
+        if !limiter {
+            assert_eq!(output, [[0.125; 2]; 8]);
+        }
     }
     let mut retirement = std::thread::spawn(move || {
         let mut backend = Some(());
@@ -752,6 +929,8 @@ fn ready_candidate_group_retry_case(cross_page: bool) {
     };
     let a_def = a_wav.definition(a_asset, 11);
     let b_def = b_wav.definition(b_asset, 11);
+    #[cfg(feature = "stream-test-support")]
+    let b_key = b_def.metadata.key();
     let context = Some(hex_engine::AudioSourceContext {
         project_generation: 0,
         editor_revision: 20,
@@ -840,29 +1019,67 @@ fn ready_candidate_group_retry_case(cross_page: bool) {
     );
     assert!(observed.into_iter().flatten().all(|seen| seen));
     if cross_page {
-        control.command(PlaybackCommand::Seek(3840)).unwrap();
+        // Render on each predecessor page before staging the successor. The
+        // fixture exercises contention between already-resident current demand
+        // and the candidate at the boundary, so worker delivery of the second
+        // current page must finish before the measured handoff.
+        let boundary = u64::try_from(hex_engine::STREAM_PAGE_FRAMES).unwrap();
+        let half_window = output.len() / 2;
+        let half_window_frames = u64::try_from(half_window).unwrap();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-        while control.status.position.load(Acquire) != 3968 {
-            let measured = allocation_counter::measure(|| {
+        for start in [boundary, boundary - 2 * half_window_frames] {
+            control.command(PlaybackCommand::Seek(start)).unwrap();
+            while control.status.position.load(Acquire) != start + half_window_frames {
+                let measured = allocation_counter::measure(|| {
+                    data.owner_mut().unwrap().run(|c, _| {
+                        c.begin_block();
+                        c.render(&mut output[..half_window]).unwrap();
+                    })
+                });
+                assert_eq!(
+                    (
+                        measured.count_total,
+                        measured.bytes_total,
+                        measured.count_current,
+                        measured.bytes_current
+                    ),
+                    (0, 0, 0, 0)
+                );
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "render the predecessor page at {start}"
+                );
+                std::thread::yield_now();
+            }
+        }
+
+        #[cfg(feature = "stream-test-support")]
+        {
+            // The first full quantum needs both resident predecessor pages.
+            // The worker can finish B1 in the turnover buffer while both are
+            // resident. The real callback decides when it can admit that page.
+            let key = hex_stream::ResourcePageKey {
+                source: b_key.into(),
+                page_index: 1,
+            };
+            loop {
+                let mut ready = false;
                 data.owner_mut().unwrap().run(|c, _| {
-                    c.begin_block();
-                    c.render(&mut output[..128]).unwrap();
-                })
-            });
-            assert_eq!(
-                (
-                    measured.count_total,
-                    measured.bytes_total,
-                    measured.count_current,
-                    measured.bytes_current
-                ),
-                (0, 0, 0, 0)
-            );
-            assert!(
-                std::time::Instant::now() < deadline,
-                "seek to candidate boundary"
-            );
-            std::thread::yield_now();
+                    let loan = c
+                        .domain_pages
+                        .iter_mut()
+                        .flatten()
+                        .find_map(|pages| pages.test_page_loan(domain))
+                        .unwrap();
+                    loan.test_prefetch_audio_page(b_key, key.page_index);
+                    ready = loan.test_ready_page(key);
+                });
+                if ready {
+                    break;
+                }
+                assert!(std::time::Instant::now() < deadline, "successor page ready");
+                std::thread::yield_now();
+            }
         }
     }
     let b_ticket = control
@@ -871,7 +1088,9 @@ fn ready_candidate_group_retry_case(cross_page: bool) {
         .unwrap();
     if cross_page {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        let mut previous_position = 0;
         while control.status.applied_revision.load(Acquire) != 2 {
+            previous_position = control.status.position.load(Acquire);
             let measured = allocation_counter::measure(|| {
                 data.owner_mut().unwrap().run(|c, _| {
                     c.begin_block();
@@ -895,11 +1114,14 @@ fn ready_candidate_group_retry_case(cross_page: bool) {
             );
             std::thread::yield_now();
         }
-        assert!(
-            output
-                .iter()
-                .all(|frame| frame[0].is_finite() && frame[0] > 0.0 && frame[0] == frame[1])
-        );
+        for (offset, frame) in output.iter().enumerate() {
+            assert!(
+                frame[0].is_finite() && frame[0] > 0.0 && frame[0] == frame[1],
+                "invalid frame {offset}: {frame:?}, callback started at {previous_position}, now at {}, committed {}",
+                control.status.position.load(Acquire),
+                control.status.stream_committed_frames.load(Acquire)
+            );
+        }
         // The predecessor's retained Utility tail overlaps the louder successor.
         // Require audible successor contribution without discarding that tail.
         assert!(output.iter().any(|frame| frame[0] > 0.30));

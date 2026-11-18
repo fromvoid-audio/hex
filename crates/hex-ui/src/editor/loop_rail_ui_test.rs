@@ -265,7 +265,18 @@ fn loop_rail_drag_continues_outside_rail_without_starting_lane_selection(cx: &mu
             "lane selection stays idle"
         );
     });
-    visual.simulate_mouse_up(outside, MouseButton::Left, Modifiers::default());
+    let prior_range = visual.debug_bounds("loop-rail-range").expect("held range");
+    let prior_builds = editor.read_with(&visual, |view, _| view.track_row_builds);
+    let vertical = outside + point(px(0.), px(18.));
+    visual.simulate_mouse_move(vertical, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    assert_eq!(visual.debug_bounds("loop-rail-range"), Some(prior_range));
+    editor.read_with(&visual, |view, _| {
+        assert!(view.loop_rail_gesture.is_some());
+        assert!(view.time_selection_gesture.is_none());
+        assert_eq!(view.track_row_builds, prior_builds);
+    });
+    visual.simulate_mouse_up(vertical, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
     wait_for_loop(cx, handle, &editor, Some((96_000, 384_000, false)));
 }

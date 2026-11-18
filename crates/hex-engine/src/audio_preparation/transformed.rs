@@ -8,6 +8,26 @@ use crate::{
 };
 use hex_project::{AudioDomainClock, AudioViewProjection, MAX_AUDIO_DOMAIN_FRAMES};
 
+/// A plain reverse changes the read direction of a verified raw region.
+/// Both the caller quote and native source selection require the same region.
+pub(crate) fn streamed_reverse_region(
+    project: &hex_project::Project,
+    clip: &hex_project::Clip,
+    raw: &crate::StreamedSourceMetadata,
+) -> Option<(u64, u64)> {
+    let (offset, length) = clip.audio_edit()?.plain_reversed_source(clip)?;
+    let asset = project.asset(clip.asset())?;
+    (raw.key().is_raw()
+        && raw.key().asset() == asset.id()
+        && raw.project_rate() == project.sample_rate()
+        && raw.playback_frames() == asset.playback_frames()
+        && raw.source_rate() == asset.source_sample_rate()
+        && raw.source_frames() == asset.source_frames()
+        && raw.conversion_version() == asset.conversion_version()
+        && offset.checked_add(length)? <= raw.playback_frames())
+    .then_some((offset, length))
+}
+
 pub(crate) fn matching_streamed_pitch(
     project: &hex_project::Project,
     clip: &hex_project::Clip,
@@ -86,6 +106,57 @@ pub(super) fn repitch_source_index(
         && matches!(&source.kind, SourceKind::Streamed(derived) if matching_streamed_repitch(project, clip, raw, derived)))
 }
 
+/// Match the same canonical map and verified source used by semantic compilation.
+pub(crate) fn matching_streamed_granular(
+    project: &hex_project::Project,
+    clip: &hex_project::Clip,
+    raw: &crate::StreamedSourceMetadata,
+    derived: &crate::StreamedSourceMetadata,
+) -> bool {
+    let Some(asset) = project.asset(clip.asset()) else {
+        return false;
+    };
+    let Some(edit) = clip.audio_edit() else {
+        return false;
+    };
+    if derived.key().granular_identity().is_none()
+        || !raw.key().is_raw()
+        || raw.key().asset() != asset.id()
+        || raw.project_rate() != project.sample_rate()
+        || raw.playback_frames() != asset.playback_frames()
+        || raw.source_rate() != asset.source_sample_rate()
+        || raw.source_frames() != asset.source_frames()
+        || raw.conversion_version() != asset.conversion_version()
+    {
+        return false;
+    }
+    crate::audio_transform::streamed_granular_root(
+        raw,
+        edit,
+        project.tempo_map(),
+        &std::sync::atomic::AtomicBool::new(false),
+    )
+    .is_ok_and(|root| root.metadata() == derived)
+}
+
+pub(super) fn granular_source_index(
+    project: &hex_project::Project,
+    bank: &OwnedAudioInputs,
+    clip: &hex_project::Clip,
+) -> Option<usize> {
+    let raw = bank.sources.iter().find_map(|(asset, source)| {
+        if *asset != clip.asset() {
+            return None;
+        }
+        match &source.kind {
+            SourceKind::Streamed(metadata) if metadata.key().is_raw() => Some(metadata),
+            _ => None,
+        }
+    })?;
+    bank.sources.iter().position(|(asset, source)| *asset == clip.asset()
+        && matches!(&source.kind, SourceKind::Streamed(derived) if matching_streamed_granular(project, clip, raw, derived)))
+}
+
 pub(super) fn pitched_source_index(
     project: &hex_project::Project,
     bank: &OwnedAudioInputs,
@@ -113,12 +184,17 @@ pub(super) fn pitched_source_index(
     })
 }
 
+pub(super) fn requires_transformed_origin(clip: &hex_project::Clip) -> bool {
+    clip.audio_edit()
+        .is_some_and(|edit| !edit.is_long_inactive_warp_root(clip.duration()))
+}
+
 pub(crate) fn transformed_count(project: &hex_project::Project) -> usize {
     project
         .tracks()
         .iter()
         .flat_map(|track| track.clips())
-        .filter(|clip| clip.audio_edit().is_some())
+        .filter(|clip| requires_transformed_origin(clip))
         .count()
 }
 
@@ -169,6 +245,9 @@ fn clip_quote(
     let Some(edit) = clip.audio_edit() else {
         return Ok((0, 0, 0));
     };
+    if edit.is_long_inactive_warp_root(clip.duration()) {
+        return Ok((0, 0, 0));
+    }
     let grouped = edit
         .domain
         .events
@@ -228,14 +307,14 @@ pub(crate) fn prepared_pcm_frames(
 
 pub(crate) fn prepared_pcm_frames_for(
     project: &hex_project::Project,
-    streamed_derived: &impl Fn(&hex_project::Clip) -> bool,
+    streamed_origin: &impl Fn(&hex_project::Clip) -> bool,
 ) -> Result<u64, AudioStorageError> {
     project
         .tracks()
         .iter()
         .flat_map(|track| track.clips())
         .try_fold(0u64, |n, clip| {
-            let frames = if streamed_derived(clip) {
+            let frames = if streamed_origin(clip) {
                 0
             } else {
                 clip_quote(clip, project.tempo_map())?.0
@@ -263,13 +342,13 @@ pub(crate) fn transformed_audio_quote(
 
 pub(crate) fn transformed_audio_quote_for(
     project: &hex_project::Project,
-    streamed_derived: &impl Fn(&hex_project::Clip) -> bool,
+    streamed_origin: &impl Fn(&hex_project::Clip) -> bool,
 ) -> Result<(usize, usize), AudioStorageError> {
-    prepared_pcm_frames_for(project, streamed_derived)?;
+    prepared_pcm_frames_for(project, streamed_origin)?;
     let mut retained = 0usize;
     let mut workspace = 0usize;
     for clip in project.tracks().iter().flat_map(|track| track.clips()) {
-        if streamed_derived(clip) {
+        if streamed_origin(clip) {
             if clip
                 .audio_edit()
                 .is_some_and(|edit| edit.domain.warp_enabled)
@@ -382,7 +461,7 @@ pub(super) fn validate_sources(
         {
             return Err(AudioStorageError::SourceMismatch);
         }
-        if clip.audio_edit().is_some() && !matches!(source.kind, SourceKind::Resident(_)) {
+        if requires_transformed_origin(clip) && !matches!(source.kind, SourceKind::Resident(_)) {
             return Err(AudioStorageError::UnsupportedGraph);
         }
     }

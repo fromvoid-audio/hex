@@ -47,14 +47,14 @@ fn width_preview(automated_balance: bool, dc_remove: bool) {
     ));
     h.applied(h.context.unwrap());
     let track = imported.state.project.tracks()[0].id();
-    let inserted = h.run(Request::Edit(hex_project::Command::InsertDevice {
+    let inserted = h.run_verified_device_insert(hex_project::Command::InsertDevice {
         track,
         before: None,
         state: hex_engine::default_native_device_state(hex_engine::DeviceTypeId::from_static(
             "hex.utility",
         ))
         .unwrap(),
-    }));
+    });
     let Some(hex_project::Created::Device(device)) = inserted.created else {
         panic!("utility")
     };
