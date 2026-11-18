@@ -144,6 +144,7 @@ fn slow_native_instrument_exchange_reaches_the_session_log() {
     let exchange = number("exchange_ns=");
     let sdk = number("sdk_process_ns=");
     let pickup = line
+        .trim_end_matches('"')
         .split_whitespace()
         .find_map(|field| field.strip_prefix("empty_poll_to_pickup_ns="))
         .unwrap();
