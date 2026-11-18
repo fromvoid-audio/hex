@@ -426,8 +426,18 @@ int main(int argc,char** argv) {
                 page_stage.store(PageComplete,std::memory_order_release);
                 return true;
             };
-            hex_instance::ModalEditorObservation modal_editor_observation(observe_editor_visibility);
-            if(!modal_editor_observation) { failure=HostControl;throw Refusal{}; }
+            auto service_modal_editor_request=[&] {
+                if(observe_editor_visibility()) return;
+                const auto stage=page_stage.load(std::memory_order_acquire);
+                if((stage==PageRequested || stage==PageFeedbackPending) &&
+                   hex_instance::closes_open_editor(page_query.kind) && editor.is_open()) {
+                    // Leave the request pending. The existing turn owns the
+                    // detach and its ACK after AppKit and foreign code return.
+                    hex_instance::ModalEditorRequest::cancel_file_picker(NSApp);
+                }
+            };
+            hex_instance::ModalEditorRequest modal_editor_request(service_modal_editor_request);
+            if(!modal_editor_request) { failure=HostControl;throw Refusal{}; }
             std::thread worker([&] {
                 bool started=false;
                 try {
@@ -694,16 +704,14 @@ int main(int argc,char** argv) {
                                 request.capture_operation!=page_operation+1) return false;
                             page_query=request.parameter_query;
                             ++page_operation;
-                            if(page_query.kind==hex_instance::EDITOR_VISIBILITY) {
-                                // Visibility reads only the AppKit window, so it can
-                                // complete before pending SDK parameter feedback.
-                                page_stage.store(PageRequested,std::memory_order_release);
-                                modal_editor_observation.notify();
-                            } else {
-                                // Publish any preceding PCM feedback before asking
-                                // the original controller to service a query.
-                                page_stage.store(parameter_feedback.count?PageFeedbackPending:PageRequested,std::memory_order_release);
-                            }
+                            // Only visibility can finish before preceding PCM
+                            // feedback is published. Cancellation may unblock
+                            // that publication but does not complete a close.
+                            const bool visibility=page_query.kind==hex_instance::EDITOR_VISIBILITY;
+                            const bool needs_feedback=!visibility && parameter_feedback.count;
+                            page_stage.store(needs_feedback?PageFeedbackPending:PageRequested,std::memory_order_release);
+                            if(visibility || hex_instance::closes_open_editor(page_query.kind))
+                                modal_editor_request.notify();
                         } else if(state==PageIdle || request.capture_operation!=page_operation ||
                                   !(request.parameter_query==page_query)) return false;
                         if(state==PageFailed) {worker_failure.store(page_failure);return false;}

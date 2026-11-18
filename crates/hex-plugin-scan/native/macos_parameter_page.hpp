@@ -14,8 +14,11 @@ inline constexpr uint8 REOPEN_EDITOR=12;
 inline constexpr uint8 SEAL_EDITOR_EDITS=13;
 inline constexpr uint8 DETACH_EDITOR_WHEN_IDLE=14;
 inline constexpr uint8 EDITOR_VISIBILITY=15;
+inline bool closes_open_editor(uint8 kind) {
+    return kind==TOGGLE_EDITOR || kind==CLOSE_EDITOR || kind==DETACH_EDITOR;
+}
 inline bool editor_request(uint8 kind) {
-    return kind==TOGGLE_EDITOR || kind==CLOSE_EDITOR || kind==DETACH_EDITOR ||
+    return closes_open_editor(kind) ||
         kind==REOPEN_EDITOR || kind==SEAL_EDITOR_EDITS || kind==DETACH_EDITOR_WHEN_IDLE ||
         kind==EDITOR_VISIBILITY;
 }

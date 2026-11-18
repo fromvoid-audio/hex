@@ -315,24 +315,24 @@ private:
 @end
 
 namespace hex_instance {
-// A file picker can suspend the worker's outer main loop. This source may
-// deliver a read-only editor observation on that same lane while AppKit waits
-// for the dialog. Its handler must outlive it and must not enter the SDK.
-class ModalEditorObservation {
+// A file picker can suspend the worker's outer main loop. This source runs on
+// the same lane inside AppKit's modal panel mode. Its handler must outlive it
+// and leave SDK calls, including editor detach, to the outer main loop.
+class ModalEditorRequest {
     CFRunLoopSourceRef source;
 public:
-    template<class Observe>
-    explicit ModalEditorObservation(Observe& observe) {
+    template<class Handle>
+    explicit ModalEditorRequest(Handle& handle) {
         CFRunLoopSourceContext context{};
-        context.info=&observe;
-        context.perform=[](void* info) { (*static_cast<Observe*>(info))(); };
+        context.info=&handle;
+        context.perform=[](void* info) { (*static_cast<Handle*>(info))(); };
         source=CFRunLoopSourceCreate(kCFAllocatorDefault,0,&context);
         if(source)
             CFRunLoopAddSource(CFRunLoopGetMain(),source,(CFStringRef)NSModalPanelRunLoopMode);
     }
-    ModalEditorObservation(const ModalEditorObservation&)=delete;
-    ModalEditorObservation& operator=(const ModalEditorObservation&)=delete;
-    ~ModalEditorObservation() {
+    ModalEditorRequest(const ModalEditorRequest&)=delete;
+    ModalEditorRequest& operator=(const ModalEditorRequest&)=delete;
+    ~ModalEditorRequest() {
         if(source) {
             CFRunLoopSourceInvalidate(source);
             CFRelease(source);
@@ -342,6 +342,12 @@ public:
     void notify() const {
         CFRunLoopSourceSignal(source);
         CFRunLoopWakeUp(CFRunLoopGetMain());
+    }
+    static void cancel_file_picker(NSApplication* app) {
+        // NSOpenPanel inherits NSSavePanel. Leave sheets and custom dialogs
+        // with their owners. AppKit returns Cancel to the SDK's caller.
+        if([[app modalWindow] isKindOfClass:[NSSavePanel class]])
+            [app stopModalWithCode:NSModalResponseCancel];
     }
 };
 

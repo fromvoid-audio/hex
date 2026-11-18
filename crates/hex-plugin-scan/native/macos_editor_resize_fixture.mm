@@ -1,5 +1,6 @@
 // Exercise the SDK frame against a real AppKit content view without showing a window.
 #include "macos_editor.hpp"
+#include "macos_parameter_page.hpp"
 #include "pluginterfaces/base/keycodes.h"
 #include <cassert>
 #include <thread>
@@ -20,6 +21,50 @@ using namespace hex_instance;
 - (void)orderFrontRegardless { test_visible=YES;++shows; }
 @end
 
+// Report the actual panel types without displaying either modal window.
+@interface HexFixtureApp : NSApplication {
+@public
+    NSWindow* fixture_modal;
+    int cancelled;
+}
+@end
+@implementation HexFixtureApp
+- (NSWindow*)modalWindow { return fixture_modal ?: [super modalWindow]; }
+- (void)stopModalWithCode:(NSModalResponse)response {
+    if(!fixture_modal) {
+        [super stopModalWithCode:response];
+        return;
+    }
+    assert(response==NSModalResponseCancel);
+    ++cancelled;
+}
+@end
+
+static void check_modal_file_picker_cancellation() {
+    auto* app=(HexFixtureApp*)NSApp;
+    NSWindow* panels[]={[NSOpenPanel openPanel],[NSSavePanel savePanel]};
+    for(auto* panel:panels) {
+        assert(panel && ![panel isVisible]);
+        app->fixture_modal=panel;
+        const auto before=app->cancelled;
+        for(auto kind:{TOGGLE_EDITOR,CLOSE_EDITOR,DETACH_EDITOR}) {
+            assert(closes_open_editor(kind));
+            ModalEditorRequest::cancel_file_picker(app);
+        }
+        assert(app->cancelled==before+3);
+    }
+    for(auto kind:{REOPEN_EDITOR,SEAL_EDITOR_EDITS,DETACH_EDITOR_WHEN_IDLE,EDITOR_VISIBILITY,SELECTED_PARAMETERS})
+        assert(!closes_open_editor(kind));
+    auto* other=[[NSPanel alloc] initWithContentRect:NSMakeRect(0,0,200,150)
+        styleMask:NSWindowStyleMaskTitled backing:NSBackingStoreBuffered defer:NO];
+    assert(other && ![other isVisible]);
+    app->fixture_modal=other;
+    ModalEditorRequest::cancel_file_picker(app);
+    assert(app->cancelled==6);
+    app->fixture_modal=nil;
+    [other release];
+}
+
 static void check_modal_editor_observation() {
     std::atomic<bool> entered=false;
     int answered=0;
@@ -28,9 +73,10 @@ static void check_modal_editor_observation() {
         auto mode=CFRunLoopCopyCurrentMode(CFRunLoopGetMain());
         assert(mode && CFEqual(mode,(CFStringRef)NSModalPanelRunLoopMode));
         CFRelease(mode);
+        check_modal_file_picker_cancellation();
         ++answered;
     };
-    ModalEditorObservation observation(observe);
+    ModalEditorRequest observation(observe);
     assert(observation);
     auto* entered_ptr=&entered;
     auto enter=CFRunLoopObserverCreateWithHandler(kCFAllocatorDefault,kCFRunLoopEntry,false,0,
@@ -483,7 +529,7 @@ static void check_reentrant_keys() {
 
 int main() {
     @autoreleasepool {
-        [NSApplication sharedApplication];
+        [HexFixtureApp sharedApplication];
         check_modal_editor_observation();
         check_floating_panel();
         check_editor_placement();
