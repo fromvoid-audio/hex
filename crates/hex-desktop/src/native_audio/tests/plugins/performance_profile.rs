@@ -277,7 +277,8 @@ fn profile(plugins: usize, rate: u32, minimum_callback_spacing: bool) {
             line.contains("stage=slow_exchange")
                 || line.contains("stage=concealed_output")
                 || line.contains("stage=worker_failure")
-                || line.contains("log_dropped")
+                || line.starts_with("diagnostics_loss")
+                || line.starts_with("session_finished")
         }) {
             println!("{line}");
         }
