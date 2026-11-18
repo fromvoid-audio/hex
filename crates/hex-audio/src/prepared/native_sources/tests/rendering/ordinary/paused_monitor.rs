@@ -100,6 +100,9 @@ fn paused_notes_use_original_generator_and_private_effect_after_host_acceptance(
         .unwrap();
     assert!(playback.defer_hosted_paused_source_monitor_on_control());
     publish(&mut f.control, playback, PublicationPolicy::InheritRuntime);
+    assert_eq!(physical_block::<Q>(&mut f), [[0.0; 2]; Q]);
+    assert!(f.control.status.paused_input_source().is_some());
+    assert!(f.control.status.paused_note_source().is_none());
     let root = f.control.native_candidate_root();
     let committed = |f: &mut OrdinaryFixture, binding| {
         let mut result = None;
@@ -133,7 +136,7 @@ fn paused_notes_use_original_generator_and_private_effect_after_host_acceptance(
     for _ in 0..4 {
         render(&mut f, None);
     }
-    let (source, epoch) = f.control.status.paused_input_source().unwrap();
+    let (source, epoch) = f.control.status.paused_note_source().unwrap();
     let position = f.control.status.position.load(Acquire);
     let frozen_effect = committed(&mut f, original);
     assert!(position > 0 && frozen_effect > 0);
@@ -160,26 +163,37 @@ fn paused_notes_use_original_generator_and_private_effect_after_host_acceptance(
         .unwrap()
     };
     let (missing, missing_hold) = prepare_monitor(&f.resources);
+    let missing = f
+        .control
+        .publish_paused_note_monitor(missing, source, epoch + 1)
+        .expect_err("a stale transport epoch returns the owner");
+    assert!(!missing_hold.released_on_control());
     assert!(
         f.control
-            .input_monitor
-            .publish_paused_source(missing, source, epoch)
+            .publish_paused_note_monitor(missing, source, epoch)
             .is_ok()
     );
+    let (monitor, hold) = prepare_monitor(&f.resources);
+    let monitor = f
+        .control
+        .publish_paused_note_monitor(monitor, source, epoch)
+        .expect_err("the bounded worker queue returns a second owner");
+    assert!(!hold.released_on_control());
     assert_eq!(render(&mut f, None), [[0.0; 2]; Q]);
-    assert_eq!(f.control.input_monitor.status(), MonitorStatus::Unsupported);
+    assert_eq!(
+        f.control.paused_note_monitor_status(),
+        MonitorStatus::Unsupported
+    );
     render(&mut f, None);
-    f.control.input_monitor.reclaim();
+    f.control.reclaim();
     assert!(missing_hold.released_on_control());
 
-    let (monitor, hold) = prepare_monitor(&f.resources);
     f.control
         .publish_paused_monitor_native_source_endpoint(private, source, epoch)
         .unwrap();
     assert!(
         f.control
-            .input_monitor
-            .publish_paused_source(monitor, source, epoch)
+            .publish_paused_note_monitor(monitor, source, epoch)
             .is_ok()
     );
     let generator_before = committed(&mut f, original_instrument);
@@ -198,7 +212,11 @@ fn paused_notes_use_original_generator_and_private_effect_after_host_acceptance(
             .iter()
             .any(|frame| frame[0].abs() > 0.001)
     }));
-    assert_eq!(f.control.input_monitor.status(), MonitorStatus::Running);
+    assert_eq!(
+        f.control.paused_note_monitor_status(),
+        MonitorStatus::Running
+    );
+    assert_eq!(f.control.input_monitor.status(), MonitorStatus::Idle);
     assert_eq!(f.control.status.position.load(Acquire), position);
     assert_eq!(committed(&mut f, original), frozen_effect);
     assert!(committed(&mut f, original_instrument) > generator_before);
@@ -229,7 +247,10 @@ fn paused_notes_use_original_generator_and_private_effect_after_host_acceptance(
         assert_eq!(host, [0.0; Q * 2]);
         assert_eq!(committed(&mut f, original_instrument), generator);
         assert_eq!(committed(&mut f, private), private_before);
-        assert_eq!(f.control.input_monitor.status(), MonitorStatus::OutputFault);
+        assert_eq!(
+            f.control.paused_note_monitor_status(),
+            MonitorStatus::OutputFault
+        );
     } else {
         for _ in 0..8 {
             render(&mut f, Some(private));
@@ -244,8 +265,19 @@ fn paused_notes_use_original_generator_and_private_effect_after_host_acceptance(
         assert!(committed(&mut f, original) > frozen_effect);
     }
     physical_block::<Q>(&mut f);
-    f.control.input_monitor.reclaim();
+    f.control.reclaim();
     assert!(hold.released_on_control());
+
+    let (closing, closing_hold) = prepare_monitor(&f.resources);
+    f.control.request_shutdown();
+    assert!(f.control.status.paused_note_source().is_none());
+    let closing = f
+        .control
+        .publish_paused_note_monitor(closing, source, epoch)
+        .expect_err("a closed output returns the monitor owner");
+    assert!(!closing_hold.released_on_control());
+    drop(closing);
+    assert!(closing_hold.released_on_control());
     let OrdinaryFixture {
         mut control,
         data,
