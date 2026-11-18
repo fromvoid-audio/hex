@@ -773,6 +773,17 @@ impl SessionPlayback {
             }
             return Ok(());
         }
+        // A handoff can occupy a sparse set of slots. Rendering may drain
+        // them, but only a handoff can install a new detached owner.
+        self.detached_tail_group_limit = self
+            .tail_groups
+            .iter()
+            .zip(&self.tail_mutable_instruments)
+            .zip(&self.tail_output_active)
+            .rposition(|((chain, instrument), active)| {
+                chain.is_some() || instrument.is_some() || *active
+            })
+            .map_or(0, |index| index + 1);
         let selected = self
             .live_expression
             .as_ref()
@@ -2464,6 +2475,15 @@ impl SessionPlayback {
         mut routed_sends: Option<&mut [Frame]>,
         foreign: &mut dyn hex_lattice::ForeignProcessors,
     ) -> Result<(), SessionPlaybackError> {
+        let track_count = self.revision.arrangement().tracks().len();
+        if self.detached_tail_group_limit == 0
+            && self
+                .release_scratch
+                .last()
+                .is_none_or(|release| release.location.track_index() < track_count)
+        {
+            return Ok(());
+        }
         let timing = timing_view_for(self.revision.session(), self.periodic_tempo(), self.anchor);
         let table = self.revision.session().sine_table().as_ref();
         let graph = routed
@@ -2473,9 +2493,9 @@ impl SessionPlayback {
         // tails are grouped by their captured old runtime chain and old mix.
         let mut rendered_mutable_tails = [false; SESSION_TAIL_GROUP_CAPACITY];
         let mut rendered_tail_suffixes = [false; SESSION_TAIL_GROUP_CAPACITY];
-        let mut tail_cursor = self.release_scratch.partition_point(|entry| {
-            entry.location.track_index() < self.revision.arrangement().tracks().len()
-        });
+        let mut tail_cursor = self
+            .release_scratch
+            .partition_point(|entry| entry.location.track_index() < track_count);
         while tail_cursor < self.release_scratch.len() {
             let release = self
                 .release_scratch
@@ -2644,7 +2664,7 @@ impl SessionPlayback {
                 self.tail_route_sends[group_index],
             )?;
         }
-        for group_index in 0..self.tail_mutable_instruments.len() {
+        for group_index in 0..self.detached_tail_group_limit {
             if rendered_mutable_tails
                 .get(group_index)
                 .copied()
@@ -2740,7 +2760,7 @@ impl SessionPlayback {
         // Once an old source has stopped, its committed effect history still
         // owns output. Advance that suffix exactly once per render chunk using
         // real zero input, then keep its captured matrix and mix in the path.
-        for group_index in 0..self.tail_groups.len() {
+        for group_index in 0..self.detached_tail_group_limit {
             if rendered_tail_suffixes
                 .get(group_index)
                 .copied()
