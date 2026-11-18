@@ -2777,7 +2777,7 @@ impl Playback {
         if self
             .prepared_revision
             .as_deref()
-            .is_some_and(crate::PausedSourceMonitor::can_defer_on_control)
+            .is_some_and(crate::PausedSourceMonitor::supports_revision_on_control)
             && let Some(runtime) = self.session_runtime.as_mut()
         {
             runtime.defer_paused_source_monitor = true;

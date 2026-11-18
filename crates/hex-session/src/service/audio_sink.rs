@@ -548,6 +548,14 @@ pub struct PausedInputMonitorRequest {
     pub transport_epoch: u64,
     pub track: hex_project::TrackId,
 }
+/// Exact resident graph and reservation inputs for one automatic note-monitor
+/// poll. Only the output worker can observe or advance the installed pause.
+pub struct PausedNoteGraph<'a> {
+    pub source: ResidentGraphSubmission,
+    pub revision: &'a Arc<PreparedRevision>,
+    pub resources: &'a hex_engine::native_device_resources::PreparedDeviceResources,
+    pub cancellation: &'a super::RequestCancellation,
+}
 impl ResidentGraphSubmission {
     /// Compare with the callback's correlated publication observation. A pending
     /// successor is not a stable source for a stopped edit. The caller must still
@@ -948,6 +956,17 @@ pub trait WorkerAudioSink: Send {
         ) -> Result<(), String>,
     ) -> Result<hex_engine::PausedTrackMonitor, String> {
         Err("paused input monitor output is unavailable".into())
+    }
+    /// Advance a bounded preparation step. No output ownership survives the
+    /// call except in the sink's own pending state. Return true while busy.
+    fn poll_paused_note_monitor(
+        &mut self,
+        _graph: Option<PausedNoteGraph<'_>>,
+        _admit: &mut dyn FnMut(
+            &[hex_engine::native_device_resources::DeviceResourceAdmission<'_>],
+        ) -> Result<(), String>,
+    ) -> bool {
+        false
     }
     /// Final fallible prepared-transition operation. An active output must refuse queue/resource
     /// pressure unchanged; explicit unavailable/opening state may accept one admitted latest owner
