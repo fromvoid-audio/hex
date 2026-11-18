@@ -1288,7 +1288,8 @@ impl WorkerAudioSink for Sink {
         let output_identity = control.output_identity().unwrap();
         let policy = match policy {
             ResidentPublicationPolicy::InheritRuntime => PublicationPolicy::InheritRuntime,
-            ResidentPublicationPolicy::InheritRuntimeAt(_) => {
+            ResidentPublicationPolicy::InheritRuntimeAt(_)
+            | ResidentPublicationPolicy::DeviceInsert { .. } => {
                 return Err(ResidentPublicationRefusal {
                     kind: hex_session::service::ResidentPublicationFailure::Other,
                     playback,
