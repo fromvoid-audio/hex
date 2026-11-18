@@ -4732,8 +4732,9 @@ fn installed_instrument_and_effect_export_with_streamed_audio() {
                     if hold_started.is_none() {
                         hold_started = Some(callback_started);
                         held_positions += 1;
-                        page_boundaries +=
-                            usize::from(position % hex_engine::STREAM_PAGE_FRAMES as u64 == 0);
+                        page_boundaries += usize::from(
+                            position.is_multiple_of(hex_engine::STREAM_PAGE_FRAMES as u64),
+                        );
                     }
                     readiness_refusals +=
                         usize::from(status.stream_readiness_refused.load(Acquire));
