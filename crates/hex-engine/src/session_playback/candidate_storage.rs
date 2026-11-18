@@ -67,6 +67,7 @@ impl SessionPlayback {
             tail_suffix_matrices,
             tail_output_active: _,
             tail_output_scratch: _,
+            detached_tail_group_limit: _,
             releases,
             release_scratch,
             retained_contexts,
