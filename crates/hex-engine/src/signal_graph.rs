@@ -38,8 +38,8 @@ impl NodeId {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum FreshHistory {
     Track(TrackId),
-    /// An inserted or removed track with no source or devices. Its outgoing
-    /// Return sends may be excluded only when their delay rings are silent.
+    /// An inserted or removed track with no source or devices. Its group
+    /// output and Return sends may be excluded only when their rings are silent.
     ColdTrack(TrackId),
     /// A removed isolated source; its pre-Main PCM is cut at handoff.
     RemovedTrack(TrackId),
@@ -1317,28 +1317,42 @@ impl SignalGraph {
             .is_some_and(|(from, to)| owner.contains(from) || owner.contains(to))
     }
 
-    /// A cold track can also connect to Returns if its send history is
-    /// silent. Incoming feeds, group routes and sidechains need their own proof.
-    fn is_independent_main_track(&self, id: TrackId, allow_return_sends: bool) -> bool {
-        if let Some(track) = self.tracks.iter().find(|track| track.id == Some(id))
-            && (!track.devices.is_empty() || !matches!(track.output, TrackOutput::Main { .. }))
+    /// A cold track can leave silent history at its declared group output
+    /// and Return sends. Incoming routes, authored feeds and keys still need
+    /// their own proof.
+    fn is_independent_track(&self, id: TrackId, cold: bool) -> bool {
+        let group_edge = if let Some(track) = self.tracks.iter().find(|track| track.id == Some(id))
         {
-            return false;
-        }
-        self.pre_main_edges.iter().enumerate().all(|(index, _)| {
-            let Some((from, to)) = self.pre_main_endpoints(index) else {
+            if !track.devices.is_empty() {
                 return false;
-            };
-            match (from.belongs_to_track(id), to.belongs_to_track(id)) {
-                (true, false) => {
-                    from == NodeId::Fader(id.value())
-                        && (to == NodeId::Main
-                            || (allow_return_sends && matches!(to, NodeId::ReturnInput(_))))
-                }
-                (false, true) => false,
-                _ => true,
             }
-        })
+            match track.output {
+                TrackOutput::Main { .. } => None,
+                TrackOutput::Group { edge, .. } if cold => Some(edge),
+                TrackOutput::Group { .. } => return false,
+            }
+        } else {
+            None
+        };
+        self.pre_main_edges
+            .iter()
+            .enumerate()
+            .all(|(index, &edge)| {
+                let Some((from, to)) = self.pre_main_endpoints(index) else {
+                    return false;
+                };
+                match (from.belongs_to_track(id), to.belongs_to_track(id)) {
+                    (true, false) => {
+                        from == NodeId::Fader(id.value())
+                            && (to == NodeId::Main
+                                || (cold && matches!(to, NodeId::ReturnInput(_)))
+                                || (group_edge == Some(edge)
+                                    && matches!(to, NodeId::TrackInput(_))))
+                    }
+                    (false, true) => false,
+                    _ => true,
+                }
+            })
     }
 
     /// A changed track may own local device nodes, but no edge may feed
@@ -1459,15 +1473,15 @@ impl SignalGraph {
                 self.main_latency() != other.main_latency()
                     || match owner {
                         FreshHistory::Track(track) | FreshHistory::ColdTrack(track) => {
-                            let allow_return_sends = matches!(owner, FreshHistory::ColdTrack(_));
-                            !self.is_independent_main_track(track, allow_return_sends)
-                                || !other.is_independent_main_track(track, allow_return_sends)
+                            let cold = matches!(owner, FreshHistory::ColdTrack(_));
+                            !self.is_independent_track(track, cold)
+                                || !other.is_independent_track(track, cold)
                         }
                         FreshHistory::RemovedTrack(track) => {
                             self.tracks.iter().any(|entry| entry.id == Some(track))
                                 || !other.tracks.iter().any(|entry| entry.id == Some(track))
-                                || !self.is_independent_main_track(track, false)
-                                || !other.is_independent_main_track(track, false)
+                                || !self.is_independent_track(track, false)
+                                || !other.is_independent_track(track, false)
                         }
                         FreshHistory::ChangedTrack(track, device) => {
                             self.tracks.len() != other.tracks.len()
@@ -1524,7 +1538,11 @@ impl SignalGraph {
                     target: tb,
                     edge: b,
                 },
-            ) => ta == tb && same_edge(a, b),
+            ) => {
+                // A cold child can shift the target's runtime index. The
+                // matched edge still has to name the same canonical group.
+                (ta == tb || matches!(fresh, Some(FreshHistory::ColdTrack(_)))) && same_edge(a, b)
+            }
             _ => false,
         };
         let retained = |track: &&TrackPlan| !matches!(fresh, Some(FreshHistory::Track(id) | FreshHistory::ColdTrack(id) | FreshHistory::RemovedTrack(id) | FreshHistory::ChangedTrack(id, _)) if track.id == Some(id));

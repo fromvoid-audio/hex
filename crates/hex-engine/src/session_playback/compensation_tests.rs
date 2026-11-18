@@ -1467,9 +1467,9 @@ fn removing_an_empty_track_keeps_compensated_pcm_continuous() {
 }
 
 #[test]
-fn adding_and_removing_an_empty_track_with_a_send_keeps_compensated_pcm_continuous() {
-    use hex_project::{Command, Created};
-    for partition in [1, 257] {
+fn adding_and_removing_a_silent_routed_track_keeps_compensated_pcm_continuous() {
+    use hex_project::{Command, Created, TrackDestination, TrackSelectionIds};
+    for (partition, grouped) in [(1, false), (257, false), (1, true), (257, true)] {
         let mut f = fixture(&[&[7], &[]], 1024);
         for audio in f.media.values_mut() {
             let frames = (0..1024)
@@ -1491,6 +1491,26 @@ fn adding_and_removing_an_empty_track_with_a_send_keeps_compensated_pcm_continuo
                 gain: 0.5,
             })
             .unwrap();
+        let group = grouped.then(|| {
+            // Inserting into the first group shifts the index of the second
+            // group while the existing child-to-parent route stays identical.
+            let mut groups = f.tracks.iter().map(|&track| {
+                let Created::Track(group) = f
+                    .editor
+                    .execute(Command::GroupTracks {
+                        tracks: TrackSelectionIds::new(&[track]).unwrap(),
+                        name: "group".into(),
+                    })
+                    .unwrap()
+                else {
+                    panic!("group");
+                };
+                group
+            });
+            let first = groups.next().unwrap();
+            groups.next().unwrap();
+            first
+        });
         let revision = prepare(&f).unwrap();
         let mut old = SessionPlayback::new(Arc::clone(&revision)).unwrap();
         let mut reference = SessionPlayback::new(revision).unwrap();
@@ -1507,13 +1527,22 @@ fn adding_and_removing_an_empty_track_with_a_send_keeps_compensated_pcm_continuo
         else {
             panic!("track");
         };
-        f.editor
-            .execute(Command::SetReturnSend {
+        let route = if let Some(group) = group {
+            Command::ReparentTracks {
+                tracks: TrackSelectionIds::new(&[empty]).unwrap(),
+                destination: TrackDestination {
+                    parent_group: Some(group),
+                    before: None,
+                },
+            }
+        } else {
+            Command::SetReturnSend {
                 track: empty,
                 return_track: bus,
                 gain: 0.75,
-            })
-            .unwrap();
+            }
+        };
+        f.editor.execute(route).unwrap();
         for removed in [false, true] {
             if removed {
                 f.editor.execute(Command::RemoveTrack(empty)).unwrap();
@@ -1532,7 +1561,7 @@ fn adding_and_removing_an_empty_track_with_a_send_keeps_compensated_pcm_continuo
             for (frame, (actual, expected)) in actual.into_iter().zip(expected).enumerate() {
                 assert_eq!(
                     actual, expected,
-                    "frame {frame}, partition {partition}, removed {removed}"
+                    "frame {frame}, partition {partition}, grouped {grouped}, removed {removed}"
                 );
             }
             old = next;
