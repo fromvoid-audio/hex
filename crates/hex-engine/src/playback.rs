@@ -2657,6 +2657,17 @@ impl Playback {
             .map_err(|error| Invalid(error.diagnostic_message()))
     }
 
+    /// Render an independent keyboard audition over a settled paused graph.
+    pub fn render_paused_keyboard_monitor(
+        &self,
+        monitor: &mut crate::PausedKeyboardMonitor,
+        output: &mut [Frame],
+    ) -> Result<(), Invalid> {
+        monitor
+            .render(self.paused_monitor_runtime(output)?, output)
+            .map_err(|error| Invalid(error.diagnostic_message()))
+    }
+
     /// Advance only the paused monitor's retained audio after input removal.
     /// `false` means this was the final block, which can still contain output.
     pub fn drain_paused_track_monitor(

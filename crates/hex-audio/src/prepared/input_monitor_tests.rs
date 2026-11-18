@@ -69,6 +69,104 @@ fn render_paused_fixture_block(callback: &mut Callback) -> [Frame; 64] {
 }
 
 #[test]
+fn paused_keyboard_render_preserves_callback_allocation_budget() {
+    use hex_engine::{ComputerKeyboardInput, NativeDeviceClass, PausedKeyboardMonitor};
+    use hex_lattice_contract::DeviceTypeId;
+
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+    let Created::Track(track) = editor
+        .execute(Command::AddTrack {
+            name: "keyboard".into(),
+        })
+        .unwrap()
+    else {
+        panic!("track")
+    };
+    editor
+        .execute(Command::InsertInstrument {
+            track,
+            state: hex_project::default_instrument_state().unwrap(),
+        })
+        .unwrap();
+    editor
+        .execute(Command::InsertDevice {
+            track,
+            before: None,
+            state: hex_engine::default_native_device_state_for_class(
+                NativeDeviceClass::Effect,
+                DeviceTypeId::from_static("hex.effect.limiter"),
+            )
+            .unwrap(),
+        })
+        .unwrap();
+    let revision = Arc::new(
+        hex_engine::PreparedRevision::prepare(
+            editor.project(),
+            &BTreeMap::new(),
+            Arc::new(hex_engine::SineTable::new()),
+            None,
+        )
+        .unwrap(),
+    );
+    let latency = revision.arrangement().main_latency_frames() as usize;
+    assert_ne!(latency, 0);
+    let input = Arc::new(ComputerKeyboardInput::default());
+    let mut playback = Playback::try_from_prepared_with_session(Arc::clone(&revision)).unwrap();
+    let (mut monitor, hold) = PausedKeyboardMonitor::prepare_admitted_on_control(
+        revision,
+        None,
+        editor.project(),
+        track,
+        Arc::clone(&input),
+        0,
+        |_| Ok::<_, ()>(()),
+    )
+    .unwrap();
+    playback.apply(hex_engine::PlaybackCommand::Play);
+    playback.render(&mut [[0.0; 2]; 4]).unwrap();
+    playback.apply(hex_engine::PlaybackCommand::Pause);
+    let frozen = playback.position();
+
+    let mut render = |output: &mut [Frame]| {
+        let mut render = || {
+            for block in output.chunks_mut(257) {
+                playback
+                    .render_paused_keyboard_monitor(&mut monitor, block)
+                    .unwrap();
+            }
+        };
+        #[cfg(feature = "allocation-probe")]
+        {
+            let counts = allocation_counter::measure(&mut render);
+            assert_eq!(
+                (
+                    counts.count_total,
+                    counts.bytes_total,
+                    counts.count_current,
+                    counts.bytes_current,
+                ),
+                (0, 0, 0, 0)
+            );
+        }
+        #[cfg(not(feature = "allocation-probe"))]
+        render();
+    };
+    let mut pressed = vec![[0.0; 2]; latency + 257];
+    input.set_key(0, Some((60, 100, 1))).unwrap();
+    render(&mut pressed);
+    assert!(pressed[..latency].iter().all(|frame| *frame == [0.0; 2]));
+    assert!(pressed[latency..].iter().any(|frame| *frame != [0.0; 2]));
+    let mut released = vec![[0.0; 2]; latency + 257];
+    input.set_key(0, None).unwrap();
+    render(&mut released);
+    assert!(released[latency..].iter().any(|frame| *frame != [0.0; 2]));
+    assert_eq!(playback.position(), frozen);
+    assert!(!hold.released_on_control());
+    drop(monitor);
+    assert!(hold.released_on_control());
+}
+
+#[test]
 fn paused_monitor_accepts_the_exact_accounted_resident_graph() {
     use super::candidate_tests::{anchored, finish, serial};
     use hex_engine::native_device_resources::{PreparedDeviceResources, ResidentDeviceAssets};
