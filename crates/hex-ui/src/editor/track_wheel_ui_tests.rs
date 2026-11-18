@@ -307,16 +307,22 @@ fn option_wheel_centers_track_taller_than_viewport(cx: &mut TestAppContext) {
         "fixture needs a taller row: {row:?} {viewport:?}"
     );
     let previous_height = row.size.height;
-    let name = bounds(&mut visual, "track-name-area", track);
-    assert!(name.center().y >= viewport.top() && name.center().y < viewport.bottom());
-    wheel(&mut visual, name.center(), line(-1.0), option());
+    // The full-height name plate can extend under an adjacent pane after a
+    // window shrink. Use the visible title's hit position for the wheel input.
+    let at = bounds(&mut visual, "track-name", track).center();
+    assert!(
+        visual
+            .debug_bounds("arrangement-content")
+            .unwrap()
+            .contains(&at)
+    );
+    wheel(&mut visual, at, line(-1.0), option());
     let viewport = editor.read_with(&visual, |view, _| view.track_scroll.list.viewport_bounds());
     let row = bounds(&mut visual, "arrangement-track-header", track);
     // The existing height limit can clamp the row to the smaller viewport.
     assert!(
         row.size.height < previous_height,
-        "row {row:?} did not shrink from {previous_height:?} at {:?}",
-        name.center()
+        "row {row:?} did not shrink from {previous_height:?} at {at:?}"
     );
     assert!(
         (f32::from(row.center().y - viewport.center().y)).abs() <= 1.0,
