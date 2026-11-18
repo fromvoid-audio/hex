@@ -557,20 +557,37 @@ fn earlier_unused_return_remove_and_undo_preserve_pcm_without_callback_allocatio
 #[test]
 fn silent_track_latency_addition_preserves_other_reverb_without_callback_allocations()
 -> Result<(), Box<dyn Error>> {
-    verify_silent_track_latency_addition(false)
+    verify_silent_track_latency_addition(SilentLatencyRouting::TrackReverb)
 }
 
 #[test]
 fn isolated_latency_insert_preserves_group_and_return_without_callback_allocations()
 -> Result<(), Box<dyn Error>> {
-    verify_silent_track_latency_addition(true)
+    verify_silent_track_latency_addition(SilentLatencyRouting::GroupAndReturn)
 }
 
-fn verify_silent_track_latency_addition(group_and_return: bool) -> Result<(), Box<dyn Error>> {
+#[test]
+fn isolated_latency_insert_preserves_held_operator_without_callback_allocations()
+-> Result<(), Box<dyn Error>> {
+    verify_silent_track_latency_addition(SilentLatencyRouting::HeldOperator)
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SilentLatencyRouting {
+    TrackReverb,
+    GroupAndReturn,
+    HeldOperator,
+}
+
+fn verify_silent_track_latency_addition(
+    routing: SilentLatencyRouting,
+) -> Result<(), Box<dyn Error>> {
+    use hex_project::BeatTime;
+
     let mut editor = Editor::new(Project::new(RATE)?, 16)?;
     let mut media = BTreeMap::new();
     let mut tracks = Vec::new();
-    let names = if group_and_return {
+    let names = if routing == SilentLatencyRouting::GroupAndReturn {
         &["muted", "limiter", "sibling"][..]
     } else {
         &["muted", "reverb"][..]
@@ -586,7 +603,9 @@ fn verify_silent_track_latency_addition(group_and_return: bool) -> Result<(), Bo
             return Err("expected source".into());
         };
         let mut samples = vec![[0.0; 2]; 12_000];
-        samples[..512].fill([0.25, -0.125]);
+        if routing != SilentLatencyRouting::HeldOperator {
+            samples[..512].fill([0.25, -0.125]);
+        }
         media.insert(asset, Audio::new(RATE, samples)?);
         tracks.push(track);
     }
@@ -604,7 +623,7 @@ fn verify_silent_track_latency_addition(group_and_return: bool) -> Result<(), Bo
         ParameterId::from_static(2),
         ParameterValue::Float(100.0),
     )?;
-    if group_and_return {
+    if routing == SilentLatencyRouting::GroupAndReturn {
         let Created::Track(group) = editor.execute(Command::GroupTracks {
             tracks: hex_project::TrackSelectionIds::new(&tracks[1..])?,
             name: "group".into(),
@@ -633,11 +652,35 @@ fn verify_silent_track_latency_addition(group_and_return: bool) -> Result<(), Bo
             before: None,
             state: reverb,
         })?;
-    } else {
+    } else if routing == SilentLatencyRouting::TrackReverb {
         editor.execute(Command::InsertDevice {
             track: tracks[1],
             before: None,
             state: reverb,
+        })?;
+    } else {
+        editor.execute(Command::InsertInstrument {
+            track: tracks[1],
+            state: hex_engine::default_native_device_state_for_class(
+                hex_engine::NativeDeviceClass::Instrument,
+                DeviceTypeId::from_static("hex.instrument.operator"),
+            )?,
+        })?;
+        let Created::Clip(clip) = editor.execute(Command::PlaceMidiClip {
+            track: tracks[1],
+            start: BeatTime::ZERO,
+            length: BeatTime::from_quarters(1)?,
+        })?
+        else {
+            return Err("expected operator clip".into());
+        };
+        editor.execute(Command::AddMidiNote {
+            clip,
+            start: BeatTime::ZERO,
+            duration: BeatTime::from_ratio(17, 64)?,
+            pitch: 60,
+            channel: 0,
+            velocity: 100,
         })?;
     }
     let table = Arc::new(SineTable::new());
