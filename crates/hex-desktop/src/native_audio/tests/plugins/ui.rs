@@ -313,13 +313,39 @@ fn arrangement_bounce_to_new_track_preserves_vst3_controls_and_reports_failure(
         );
         return;
     }
+    rendered_vst3_bounce(
+        cx,
+        selection(),
+        Some(PathBuf::from(std::env::var_os(RELEASE).unwrap())),
+    );
+}
+
+#[gpui::test]
+#[ignore = "requires signed SDK receipts and an explicit installed effect catalog entry"]
+fn arrangement_bounce_while_playing_keeps_the_installed_vst3_panel(cx: &mut TestAppContext) {
+    let bundle = std::env::var("HEX_TEST_VST3_EFFECT_BUNDLE").unwrap();
+    let catalog = PathBuf::from(std::env::var_os("HEX_TEST_VST3_EFFECT_CATALOG").unwrap());
+    rendered_vst3_bounce(
+        cx,
+        installed_selection(&catalog, &bundle, hex_plugin_catalog::PluginRole::Effect),
+        None,
+    );
+}
+
+fn rendered_vst3_bounce(
+    cx: &mut TestAppContext,
+    mut selected: PluginEffectSelection,
+    release: Option<PathBuf>,
+) {
     let _native = native_fixture();
     let files = Files::new();
     let root = files.0.canonicalize().unwrap();
-    let mut selected = selection();
-    let module = root.join("original.vst3");
-    copy_original_module(&selected.module, &module);
-    selected.module = module;
+    let playing_bounce = release.is_none();
+    if !playing_bounce {
+        let module = root.join("original.vst3");
+        copy_original_module(&selected.module, &module);
+        selected.module = module;
+    }
     hex_ui::write_plugin_effect_test_catalog(&root, &selected, "Fx", 0).unwrap();
     let mut h = ResidentHarness::with_plugins_at_rate_and_catalog_recovery(
         host(),
@@ -333,10 +359,22 @@ fn arrangement_bounce_to_new_track_preserves_vst3_controls_and_reports_failure(
     let (applied, _) = h.applied(0);
     let imported = h.run(Request::Import(files.wav(44_100, 4096)));
     assert!(imported.error.is_none(), "{:?}", imported.error);
-    let (applied, _) = h.applied(applied);
+    let (mut applied, _) = h.applied(applied);
     let track = imported.state.project.tracks()[0].id();
     let clip = imported.state.project.track(track).unwrap().clips()[0].id();
-    let mut insertion = request(&imported.state, PluginEffectDestination::Track(track));
+    let state = if playing_bounce {
+        let looped = h.run(Request::Edit(Command::SetLoopRegion {
+            start: 0,
+            end: 4096,
+            enabled: true,
+        }));
+        assert!(looped.error.is_none(), "{:?}", looped.error);
+        (applied, _) = h.applied(applied);
+        looped.state
+    } else {
+        imported.state
+    };
+    let mut insertion = request(&state, PluginEffectDestination::Track(track));
     insertion.selection = selected;
     h.service
         .submit(Request::InsertPluginEffect(insertion))
@@ -379,18 +417,39 @@ fn arrangement_bounce_to_new_track_preserves_vst3_controls_and_reports_failure(
         &mut visual,
         Box::leak(format!("clip-drag-surface-{}", clip.value()).into_boxed_str()),
     );
-    visual.simulate_keystrokes("b");
-    let bounced_revision = original.revision + 1;
+    let next_callback = std::cell::Cell::new(Instant::now());
+    let callback_interval = Duration::from_secs_f64(256.0 / 44_100.0);
     let step = |cx: &mut TestAppContext, visual: &mut VisualTestContext| {
+        if playing_bounce {
+            // Give the real hosted worker one output period between callbacks.
+            std::thread::sleep(
+                next_callback
+                    .get()
+                    .saturating_duration_since(Instant::now()),
+            );
+            next_callback.set(Instant::now() + callback_interval);
+        }
+        let mut pcm = [[0.0; 2]; 256];
         callback
             .lock()
             .unwrap()
             .as_mut()
             .unwrap()
-            .render_native_direct(&mut [[0.0; 2]; 256], &mut [0.0; 512])
+            .render_native_direct(&mut pcm, &mut [0.0; 512])
             .unwrap();
         repaint(cx, visual);
+        pcm.iter().flatten().any(|sample| sample.abs() > 0.001)
     };
+    if playing_bounce {
+        visual.simulate_keystrokes("space");
+        until(
+            "the installed effect renders audible output before bounce",
+            || step(cx, &mut visual) && view(cx).transport.is_some_and(|(_, playing)| playing),
+        );
+    }
+    let previous_output = view(cx).applied.unwrap().output_identity;
+    visual.simulate_keystrokes("b");
+    let bounced_revision = original.revision + 1;
     until("applied bounce to new track", || {
         step(cx, &mut visual);
         let view = view(cx);
@@ -401,7 +460,15 @@ fn arrangement_bounce_to_new_track_preserves_vst3_controls_and_reports_failure(
                 .state
                 .is_some_and(|state| state.revision == bounced_revision)
     });
-    let bounced = view(cx).state.unwrap();
+    let bounced_view = view(cx);
+    assert_eq!(
+        bounced_view.applied.unwrap().output_identity,
+        previous_output
+    );
+    if playing_bounce {
+        assert!(bounced_view.transport.is_some_and(|(_, playing)| playing));
+    }
+    let bounced = bounced_view.state.unwrap();
     assert_eq!(
         bounced.project.tracks().len(),
         original.project.tracks().len() + 1
@@ -428,24 +495,29 @@ fn arrangement_bounce_to_new_track_preserves_vst3_controls_and_reports_failure(
     }
     assert!(visual.debug_bounds("vst3-parameter-search-input").is_some());
 
-    let release = PathBuf::from(std::env::var_os(RELEASE).unwrap());
-    fs::remove_file(&release).unwrap();
-    visual.simulate_keystrokes("space");
-    let degraded = Box::leak(format!("device-vst3-degraded-{device}").into_boxed_str());
-    until("live VST3 deadline failure is displayed", || {
-        step(cx, &mut visual);
-        visual.debug_bounds(degraded).is_some()
-    });
-    fs::write(release, []).unwrap();
+    if let Some(release) = &release {
+        fs::remove_file(release).unwrap();
+        visual.simulate_keystrokes("space");
+        let degraded = Box::leak(format!("device-vst3-degraded-{device}").into_boxed_str());
+        until("live VST3 deadline failure is displayed", || {
+            step(cx, &mut visual);
+            visual.debug_bounds(degraded).is_some()
+        });
+        fs::write(release, []).unwrap();
+        assert!(visual.debug_bounds(active).is_none());
+        assert!(visual.debug_bounds(pending).is_none());
+    }
     let fault = callback
         .lock()
         .unwrap()
         .as_mut()
         .unwrap()
         .native_source_fault_on_control(binding);
-    assert!(format!("{fault:?}").contains("MissingOutput"), "{fault:?}");
-    assert!(visual.debug_bounds(active).is_none());
-    assert!(visual.debug_bounds(pending).is_none());
+    if release.is_some() {
+        assert!(format!("{fault:?}").contains("MissingOutput"), "{fault:?}");
+    } else {
+        assert!(fault.is_none(), "{fault:?}");
+    }
     assert_eq!(view(cx).state.unwrap().project, bounced.project);
     visual.update(|window, _| window.remove_window());
     visual.run_until_parked();

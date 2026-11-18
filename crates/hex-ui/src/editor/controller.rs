@@ -1148,6 +1148,7 @@ impl EditorView {
                     query_bytes,
                     self.time_selection_key_held
                 );
+                super::device_panel::trace_vst3_track_panel(self, snapshot);
             });
         }
         crate::diagnostics::record_audio(cx, self.audio.as_mut());
