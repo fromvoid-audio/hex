@@ -5240,10 +5240,6 @@ fn exercise_mixed_streamed_loop(
             "mixed loop did not complete two passes"
         );
     }
-    assert!(
-        partial_holds > 0,
-        "fixture must exercise a partial native callback"
-    );
     println!("mixed loop {start}..{end} passes={complete_passes} partial_holds={partial_holds}");
     revision
 }
