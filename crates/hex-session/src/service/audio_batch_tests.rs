@@ -103,7 +103,8 @@ fn new_tracks() -> AudioBatchDestination {
 }
 
 #[test]
-fn recorded_take_uses_captured_project_and_preserves_one_undo() {
+fn recorded_take_uses_captured_project_and_survives_undo_redo_and_reopen() {
+    use hex_engine::playback::PlaybackCommand;
     let files = Files::new();
     let first = files.recorded_wav("first.wav", &[[0.125, 0.25]; 8]);
     let take = files.recorded_wav("take.wav", &[[0.5, 0.25]; 8]);
@@ -152,8 +153,8 @@ fn recorded_take_uses_captured_project_and_preserves_one_undo() {
     );
     let after = committed.state.project.snapshot();
     let mut playback = committed.playback.take().unwrap();
-    playback.apply(hex_engine::playback::PlaybackCommand::Seek(16));
-    playback.apply(hex_engine::playback::PlaybackCommand::Play);
+    playback.apply(PlaybackCommand::Seek(16));
+    playback.apply(PlaybackCommand::Play);
     let mut out = [[0.0; 2]; 8];
     playback.render(&mut out).unwrap();
     assert!(out.iter().any(|frame| frame[0] > 0.0 && frame[1] > 0.0));
@@ -165,6 +166,32 @@ fn recorded_take_uses_captured_project_and_preserves_one_undo() {
     assert_eq!(restored, snapshot);
     s.submit(Request::Redo).unwrap();
     assert_eq!(event(&s).state.project.snapshot(), after);
+
+    let document = files.0.join("recorded-take.hex");
+    s.submit(Request::SaveNew(document.clone())).unwrap();
+    let saved = event(&s);
+    assert!(
+        saved.save_complete && saved.error.is_none(),
+        "{:?}",
+        saved.error
+    );
+    drop(s);
+
+    let (reopened_service, _) = service();
+    reopened_service.submit(Request::Open(document)).unwrap();
+    let mut reopened = event(&reopened_service);
+    assert!(
+        reopened.open_complete && reopened.error.is_none(),
+        "{:?}",
+        reopened.error
+    );
+    assert_eq!(reopened.state.project.snapshot(), after);
+    let mut playback = reopened.playback.take().unwrap();
+    playback.apply(PlaybackCommand::Seek(16));
+    playback.apply(PlaybackCommand::Play);
+    let mut reopened_pcm = [[0.0; 2]; 8];
+    playback.render(&mut reopened_pcm).unwrap();
+    assert_eq!(reopened_pcm, out);
     assert!(take.exists());
 }
 
