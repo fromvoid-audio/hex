@@ -4,7 +4,7 @@
 //! application-only completion witness; no CPAL/OS stop success is asserted.
 use crate::native_callback_owner::{ErrorCallbackOwner, Guard, NativeCallbackOwner};
 
-pub use crate::input_capture::fixture::{InputObserver, monitored_input};
+pub use crate::input_capture::fixture::{InputObserver, monitor_only_input, monitored_input};
 
 pub struct HeadlessBackend {
     data: Option<Guard<NativeCallbackOwner>>,
