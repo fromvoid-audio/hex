@@ -141,6 +141,90 @@ fn paused_keyboard_audition_preserves_queued_arrangement_pcm() {
 }
 
 #[test]
+fn resident_keyboard_pause_resumes_with_the_arrangement_history() {
+    use crate::computer_keyboard::ComputerKeyboardInput;
+    use crate::playback::{Playback, PlaybackCommand};
+    use hex_project::Command;
+
+    for track_index in [0, 1] {
+        let mut f = fixture(&[&[7], &[]], 1024);
+        let track = f.tracks[track_index];
+        f.editor
+            .execute(Command::InsertInstrument {
+                track,
+                state: hex_project::default_instrument_state().unwrap(),
+            })
+            .unwrap();
+        let revision = prepare(&f).unwrap();
+        for partition in [1, 257] {
+            let mut playback = Playback::from_prepared(Arc::clone(&revision));
+            let mut oracle = Playback::from_prepared(Arc::clone(&revision));
+            let keys = Arc::new(ComputerKeyboardInput::default());
+            playback
+                .prepare_resident_computer_keyboard(
+                    f.editor.project(),
+                    None,
+                    track,
+                    Arc::clone(&keys),
+                )
+                .unwrap();
+            for player in [&mut playback, &mut oracle] {
+                player.apply(PlaybackCommand::Play);
+                player.render(&mut [[0.0; 2]; 4]).unwrap();
+            }
+            playback.apply(PlaybackCommand::Pause);
+            keys.set_key(0, Some((60, 100, 1))).unwrap();
+            let mut press = [[0.0; 2]; 257];
+            for block in press.chunks_mut(partition) {
+                playback.render(block).unwrap();
+            }
+            assert_eq!(press[..7], [[0.0; 2]; 7]);
+            assert!(press.iter().any(|frame| *frame != [0.0; 2]));
+            keys.set_key(0, None).unwrap();
+            let mut release = [[0.0; 2]; 257];
+            for block in release.chunks_mut(partition) {
+                playback.render(block).unwrap();
+            }
+            assert!(release.iter().any(|frame| *frame != [0.0; 2]));
+            // Let the released keyboard note finish before comparing bare
+            // Arrangement PCM, including the impulse waiting at Pause.
+            let mut tail = [[0.0; 2]; 512];
+            for _ in 0..16 {
+                playback.render(&mut tail).unwrap();
+            }
+            assert_eq!(tail, [[0.0; 2]; 512]);
+            assert_eq!(playback.position(), oracle.position());
+            playback.apply(PlaybackCommand::Play);
+            let mut resumed = [[0.0; 2]; 32];
+            let mut expected = resumed;
+            playback.render(&mut resumed).unwrap();
+            oracle.render(&mut expected).unwrap();
+            assert_eq!(expected[3], [0.5, -1.0]);
+            assert_eq!(
+                resumed, expected,
+                "track {track_index}, partition {partition}"
+            );
+
+            playback.apply(PlaybackCommand::Pause);
+            keys.set_key(1, Some((67, 100, 2))).unwrap();
+            playback.render(&mut press).unwrap();
+            assert!(press.iter().any(|frame| *frame != [0.0; 2]));
+            playback.apply(PlaybackCommand::Play);
+            playback.render(&mut press).unwrap();
+            assert!(press[7..].iter().any(|frame| *frame != [0.0; 2]));
+            playback.apply(PlaybackCommand::Pause);
+            playback.render(&mut press).unwrap();
+            assert!(press[7..].iter().any(|frame| *frame != [0.0; 2]));
+            playback.apply(PlaybackCommand::Stop);
+            assert!(keys.is_cancelled());
+            let mut stopped = [[9.0; 2]; 257];
+            playback.render(&mut stopped).unwrap();
+            assert_eq!(stopped, [[0.0; 2]; 257]);
+        }
+    }
+}
+
+#[test]
 fn paused_keyboard_monitor_checks_admission_and_exact_revision() {
     use crate::computer_keyboard::ComputerKeyboardInput;
     use crate::{PausedKeyboardMonitor, PausedMonitorAdmissionError};

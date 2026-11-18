@@ -695,7 +695,7 @@ impl Inputs<'_> {
                     .map_or_else(RuntimeInputs::default, |current| current.inputs.clone())
             },
         };
-        let runtime = runtime_allowance(&snapshot.prepared, snapshot.inputs.allowance()?)?;
+        let runtime = runtime_allowance(&snapshot.prepared, snapshot.inputs.allowance(&snapshot)?)?;
         self.admit_with_requirements(
             &snapshot.resources,
             Some(&snapshot.prepared),
@@ -794,7 +794,7 @@ impl Inputs<'_> {
         }
         let previous = snapshot.inputs.clone();
         let mut selected = previous.clone();
-        selected.attach(project, &mut playback)?;
+        selected.attach(project, &mut playback, &snapshot.resources)?;
         selected.selected_after(&previous)?;
         let accepted = self.publish_runtime(
             snapshot,
@@ -813,7 +813,7 @@ impl Inputs<'_> {
                 requires_preroll: snapshot.prepared.arrangement_seek_requires_preroll(),
             },
             ResidentPublicationPolicy::ArrangementEdit,
-            selected.allowance()?,
+            selected.allowance(snapshot)?,
         )?;
         snapshot.record_submission(context, accepted);
         selected.cancel_retired_from(&previous);
@@ -911,10 +911,10 @@ impl Inputs<'_> {
     ) -> Result<ResidentPublicationAcceptance, SessionError> {
         let previous = snapshot.inputs.clone();
         let mut selected = previous.clone();
-        selected.attach(project, &mut playback)?;
+        selected.attach(project, &mut playback, &snapshot.resources)?;
         selected.selected_after(&previous)?;
         let additional_bytes = selected
-            .allowance()?
+            .allowance(snapshot)?
             .checked_add(
                 playback
                     .browser_audition_retained_bytes_on_control()
@@ -1945,9 +1945,9 @@ impl Session {
         cancelled: &AtomicBool,
     ) -> Result<ResidentPublicationAcceptance, SessionError> {
         let mut selected = snapshot.inputs.clone();
-        let extra = selected.allowance()?;
+        let extra = selected.allowance(snapshot)?;
         self.admit_resident_seek(current, sink, admission, extra)?;
-        selected.attach(project, &mut playback)?;
+        selected.attach(project, &mut playback, &snapshot.resources)?;
         selected.selected_after(&current.inputs)?;
         let accepted = self
             .resident_seek_inputs(admission, Some(current), Some(cancelled))?
@@ -2009,8 +2009,11 @@ impl Session {
     > {
         let inputs = self.resident_seek_inputs(admission, None, None)?;
         let (policy, section_loop) = inherited_runtime(sink, metadata.context, policy)?;
-        let quote =
-            runtime_allowance_with_loop(&snapshot.prepared, selected.allowance()?, section_loop)?;
+        let quote = runtime_allowance_with_loop(
+            &snapshot.prepared,
+            selected.allowance(snapshot)?,
+            section_loop,
+        )?;
         inputs.admit(
             &snapshot.resources,
             Some(&snapshot.prepared),
@@ -2023,7 +2026,7 @@ impl Session {
         )?;
         let mut playback = playback_with_loop(snapshot, section_loop)?;
         let requested = selected.clone();
-        selected.attach(project, &mut playback)?;
+        selected.attach(project, &mut playback, &snapshot.resources)?;
         if let Some(required) = required
             && !selected.satisfies(&requested, required)
         {
@@ -2039,7 +2042,7 @@ impl Session {
             sink,
             metadata,
             policy,
-            selected.allowance()?,
+            selected.allowance(snapshot)?,
         )?;
         Ok((hint, selected, accepted))
     }

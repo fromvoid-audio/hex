@@ -14,6 +14,7 @@ impl SessionPlayback {
         let Self {
             live_expression,
             computer_keyboard,
+            paused_keyboard_monitor,
             current_sampler_keyboards,
             current_sampler_keyboard_epoch: _,
             current_sampler_keyboard_revoked: _,
@@ -99,6 +100,7 @@ impl SessionPlayback {
             || midi_admission.is_some()
             || live_expression.is_some()
             || computer_keyboard.is_some()
+            || paused_keyboard_monitor.is_some()
             || *linear_arrangement_export
             || !candidate_admission_open
             || foreign_continuation.is_some()

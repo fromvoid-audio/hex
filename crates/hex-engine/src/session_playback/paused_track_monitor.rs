@@ -32,6 +32,95 @@ pub struct PausedTrackMonitor {
 pub struct PausedKeyboardMonitor(PausedTrackMonitor);
 
 impl PausedKeyboardMonitor {
+    pub(crate) fn resident_allowance(
+        revision: &PreparedRevision,
+        resources: Option<&PreparedDeviceResources>,
+        track: TrackId,
+    ) -> Result<usize, SessionPlaybackError> {
+        let arrangement = revision.arrangement();
+        if arrangement.main_latency_frames() == 0
+            || !arrangement.tracks().iter().enumerate().any(|(index, row)| {
+                row.canonical_track_id() == Some(track)
+                    && row.instrument_state.is_some()
+                    && !row.instrument_bypassed
+                    && !revision.source_routing().is_shared(index)
+            })
+        {
+            return Ok(0);
+        }
+        match PausedTrackMonitor::runtime_allowance(revision, track, resources, &[]) {
+            Err(SessionPlaybackError::InvalidCommand) => Ok(0),
+            result => result,
+        }
+    }
+
+    pub(crate) fn prepare_resident_graph(
+        revision: Arc<PreparedRevision>,
+        resources: Option<&PreparedDeviceResources>,
+        track: TrackId,
+        allowance: usize,
+    ) -> Result<Self, SessionPlaybackError> {
+        PausedTrackMonitor::construct(revision, resources, track, &[], allowance).map(Self)
+    }
+
+    pub(super) fn runtime_storage_bytes(&self) -> Option<usize> {
+        self.0
+            .playback
+            .accounted_runtime_storage_bytes()?
+            .checked_add(size_of::<Self>())
+    }
+
+    // The resident uses one keyboard owner in both modes. Loan the complete
+    // scheduler, including committed voices, to the private callback and
+    // return it before the ordinary runtime can process another command.
+    pub(super) fn render_resident(
+        &mut self,
+        arrangement: &mut SessionPlayback,
+        output: &mut [Frame],
+        observer: Option<&mut crate::NodeSignalObserver<'_>>,
+        capture: Option<&mut dyn super::capture::CaptureSink>,
+    ) -> Result<(), SessionPlaybackError> {
+        if !Arc::ptr_eq(&self.0.playback.revision, &arrangement.revision)
+            || arrangement
+                .computer_keyboard
+                .as_ref()
+                .is_none_or(|keys| keys.track() != self.0.track)
+        {
+            output.fill([0.0; 2]);
+            return Err(SessionPlaybackError::InvalidCommand);
+        }
+        let cursor = Cursor::of(arrangement);
+        if self.0.cursor != Some(cursor) {
+            self.end_resident_interval();
+            self.0.set_cursor_on_private_playback(cursor);
+            self.0.playback.track_faders = arrangement.track_faders;
+            self.0.cursor = Some(cursor);
+        }
+        self.0.playback.computer_keyboard = arrangement.computer_keyboard.take();
+        self.0.playback.live_expression = arrangement.live_expression.take();
+        std::mem::swap(
+            &mut self.0.playback.render_work,
+            &mut arrangement.render_work,
+        );
+        let result = self
+            .0
+            .playback
+            .render_resident_keyboard_block(output, observer, capture);
+        arrangement.computer_keyboard = self.0.playback.computer_keyboard.take();
+        arrangement.live_expression = self.0.playback.live_expression.take();
+        std::mem::swap(
+            &mut self.0.playback.render_work,
+            &mut arrangement.render_work,
+        );
+        result
+    }
+
+    pub(super) fn end_resident_interval(&mut self) {
+        if self.0.cursor.take().is_some() {
+            self.0.playback.stop_transport();
+        }
+    }
+
     /// Prepare a private built-in keyboard route from the exact compiled
     /// instrument, tuning, and graph. Only ordinary, unshared native analytic
     /// sources and owned effects are supported. The caller admits the private
@@ -168,6 +257,18 @@ struct Cursor {
     loop_pass: u64,
     routes: u64,
     capture_epoch: u64,
+}
+
+impl Cursor {
+    fn of(playback: &SessionPlayback) -> Self {
+        Self {
+            performance: playback.performance_frame,
+            arrangement: playback.arrangement_frame,
+            loop_pass: playback.arrangement_loop_pass,
+            routes: playback.route_state_generation,
+            capture_epoch: playback.capture_epoch,
+        }
+    }
 }
 
 impl PausedTrackMonitor {
@@ -530,13 +631,7 @@ impl PausedTrackMonitor {
         arrangement: &SessionPlayback,
         output: &mut [Frame],
     ) -> Result<Cursor, SessionPlaybackError> {
-        let cursor = Cursor {
-            performance: arrangement.performance_frame,
-            arrangement: arrangement.arrangement_frame,
-            loop_pass: arrangement.arrangement_loop_pass,
-            routes: arrangement.route_state_generation,
-            capture_epoch: arrangement.capture_epoch,
-        };
+        let cursor = Cursor::of(arrangement);
         if !Arc::ptr_eq(&self.playback.revision, &arrangement.revision)
             || !arrangement.renders_no_device_chains()
             || arrangement.linear_arrangement_export
