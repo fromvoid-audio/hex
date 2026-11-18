@@ -772,12 +772,14 @@ mod tests {
         let (started, signal) = mpsc::sync_channel(1);
         let worker = thread::spawn(move || {
             let mut writer = Writer {
-                output: producer,
+                output: input_capture::WriterOutput::Recording {
+                    output: producer,
+                    monitor: None,
+                },
                 shared: Arc::clone(&state),
                 channels: 1,
                 sequence: 0,
                 previous: None,
-                monitor: None,
             };
             while state.phase.load(Acquire) != input_capture::STARTING && !state.stop.load(Acquire)
             {
@@ -801,6 +803,11 @@ mod tests {
         let (_, error) = mpsc::sync_channel(1);
         (
             InputCapture {
+                worker: input_capture::CaptureWorker {
+                    shared,
+                    handle: worker,
+                    error,
+                },
                 id: format!("{}:test-input", cpal::default_host().id())
                     .parse()
                     .unwrap(),
@@ -809,9 +816,6 @@ mod tests {
                     channels: 1,
                 },
                 input,
-                shared,
-                worker,
-                error,
                 prefetched: None,
                 preroll_frames: 0,
                 recording_ready: None,
@@ -831,12 +835,14 @@ mod tests {
         let (started, signal) = mpsc::sync_channel(1);
         let worker = thread::spawn(move || {
             let mut writer = Writer {
-                output: producer,
+                output: input_capture::WriterOutput::Recording {
+                    output: producer,
+                    monitor: None,
+                },
                 shared: Arc::clone(&state),
                 channels: 1,
                 sequence: 0,
                 previous: None,
-                monitor: None,
             };
             while state.phase.load(Acquire) != input_capture::STARTING && !state.stop.load(Acquire)
             {
@@ -858,6 +864,11 @@ mod tests {
         let (_, error) = mpsc::sync_channel(1);
         (
             InputCapture {
+                worker: input_capture::CaptureWorker {
+                    shared,
+                    handle: worker,
+                    error,
+                },
                 id: format!("{}:test-input", cpal::default_host().id())
                     .parse()
                     .unwrap(),
@@ -866,9 +877,6 @@ mod tests {
                     channels: 1,
                 },
                 input,
-                shared,
-                worker,
-                error,
                 prefetched: None,
                 preroll_frames: 0,
                 recording_ready: None,
@@ -1649,10 +1657,10 @@ mod tests {
     fn input_open_failure_is_reported_even_before_output_timing_arrives() {
         let temp = Temp::new();
         let (mut input, _) = mock_input(false);
-        let state = Arc::clone(&input.shared);
-        let worker = input.worker.thread().clone();
+        let state = Arc::clone(&input.worker.shared);
+        let worker = input.worker.handle.thread().clone();
         let (error_sender, error_receiver) = mpsc::sync_channel(1);
-        input.error = error_receiver;
+        input.worker.error = error_receiver;
         let (_control, _callback, reader, _map) = output();
         let mut job = spawn(input, reader, &temp.0);
         error_sender
