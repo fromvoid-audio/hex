@@ -17,19 +17,19 @@ const PLUGIN_QUANTUM: usize = 256;
 #[test]
 #[ignore = "opt-in optimized playback measurement with a fixed callback cadence"]
 fn dense_native_serial_baseline() {
-    profile(0, DEFAULT_RATE);
+    profile(0, DEFAULT_RATE, false);
 }
 
 #[test]
 #[ignore = "opt-in optimized playback measurement with controlled native VST3 receipts"]
 fn dense_mixed_serial_baseline() {
-    profile(MIXED_PLUGINS, DEFAULT_RATE);
+    profile(MIXED_PLUGINS, DEFAULT_RATE, false);
 }
 
 #[test]
 #[ignore = "opt-in optimized timing reproduction with twelve original SDK instances"]
 fn dense_twelve_vst3_deadline_profile() {
-    profile(12, 44_100);
+    profile(12, 44_100, true);
 }
 
 fn fixture(files: &Files, rate: u32) -> PathBuf {
@@ -102,7 +102,7 @@ fn fixture(files: &Files, rate: u32) -> PathBuf {
     path
 }
 
-fn profile(plugins: usize, rate: u32) {
+fn profile(plugins: usize, rate: u32, minimum_callback_spacing: bool) {
     let _native = native_fixture();
     require_release();
     let block: usize = std::env::var("HEX_PLAYBACK_PROFILE_BLOCK")
@@ -181,9 +181,8 @@ fn profile(plugins: usize, rate: u32) {
     let output_carrier = Arc::clone(&harness.callback);
     let mut slot = output_carrier.lock().unwrap();
     let callback = slot.as_mut().unwrap();
-    let start = Instant::now();
+    let mut target = Instant::now();
     for index in 0..WARMUP + SAMPLES {
-        let target = start + budget * index;
         if let Some(until) = target.checked_duration_since(Instant::now()) {
             std::thread::sleep(until);
         }
@@ -216,6 +215,12 @@ fn profile(plugins: usize, rate: u32) {
             }
         }
         harness.pump();
+        target += budget;
+        if minimum_callback_spacing {
+            // A late headless wake must not consume the next worker deadline
+            // early by feeding several nominal blocks back to back.
+            target = target.max(begin + budget);
+        }
     }
     let status = callback.status().unwrap();
     assert!(status.playing.load(Acquire));
@@ -251,6 +256,9 @@ fn profile(plugins: usize, rate: u32) {
         max_start_lateness.as_nanos(),
         harness.degraded_devices,
     );
+    if let Some(failure) = harness.plugin_failure.lock().unwrap().as_ref() {
+        println!("dense_playback worker_failure={failure}");
+    }
     // The callback and native workers retire through the harness after the
     // profiling borrow ends. No worker is waited on during timed rendering.
     drop(slot);
