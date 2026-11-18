@@ -423,7 +423,7 @@ pub(super) fn midi_trim_note_shapes(
     .collect()
 }
 
-pub(super) const TRACK_ROW_HEIGHT: f32 = 44.0;
+pub(super) const TRACK_ROW_HEIGHT: f32 = 2.0 * super::track_layout::HEADER_ONLY_HEIGHT;
 /// Reserve a readable label beside the compact mixer and meter, even at the
 /// minimum header width. The remaining workspace stays available to the lane.
 pub(super) const TRACK_HEADER_WIDTH: f32 = 256.0;
@@ -1750,314 +1750,148 @@ impl EditorView {
                 })
                 .into()
             });
-        let group_plate =
-            is_group && self.document_audio_mode == hex_session::DocumentAudioMode::Resident;
-        let group_expanded = group_plate && self.track_body_height(track_id) > TRACK_ROW_HEIGHT;
+        let header_height = self.track_body_height(track_id);
         let name_area = div()
             .id(("track-name-area", track_id.value()))
             .cursor_pointer()
             .debug_selector(move || format!("track-name-area-{}", track_id.value()))
+            .h_full()
             .min_w_0()
-            .flex()
-            .flex_col()
+            .flex_1()
             .relative()
-            .px(px(2.))
+            .px(px(2.0))
             .when(is_group, |plate| plate.ml(px(hierarchy_indent)))
             .children([super::track_header::name_plate(
                 format!("track-name-plate-{}", track_id.value()),
                 name_fill,
             )])
-            .text_color(rgb(name_text))
-            .when(group_plate, |plate| plate.h_full().justify_center())
-            .when(group_expanded, |plate| plate.justify_start());
+            .child(track_name_view);
         let sample_source =
             super::sample_recorder::Arm::Output(hex_engine::OutputCaptureId::Track(track_id));
         let resident_layout = self.document_audio_mode == hex_session::DocumentAudioMode::Resident;
         let (muted, soloed) = self.displayed_track_switches(track);
-        // Empty header gutters bubble to the shared selection/focus owner.
-        // Only actual control hit regions stop clicks; row-wide stops make the
-        // lower header background unreachable for ordinary/modifier selection.
-        let header_content = if self.track_body_height(track_id) < TRACK_ROW_HEIGHT {
-            // A compact header must not mount hidden numeric controls or their
-            // hit targets beneath its readable title and resize gutter.
-            div()
-                .id(("compact-track-title", track_id.value()))
-                .w_full()
-                .flex()
-                .items_center()
-                .children([name_area.child(track_name_view).flex_1().min_w_0()])
-                .child(self.sample_arm_button(sample_source, cx))
-                .children(
-                    (resident_layout && !is_group)
-                        .then(|| self.audio_arm_button(track_id, true, cx)),
-                )
-        } else if resident_layout {
-            let (active_background, active_text) = super::track_gain::activator_colors(!muted);
-            let (solo_background, solo_text) = super::track_gain::activator_colors(soloed);
-            let utilities = div()
-                .id(("track-header-utilities", track_id.value()))
-                .w_full()
-                .min_w_0()
-                .flex()
-                .gap(px(2.0))
-                .child(
-                    button(
-                        "a",
-                        "show track gain automation",
-                        ("gain-lane", track_id.value()),
-                    )
-                    .h(px(18.0))
-                    .flex_shrink()
-                    .min_w(px(14.0))
-                    .debug_selector(move || format!("gain-lane-show-{}", track_id.value()))
-                    .on_click(cx.listener(move |view, _, window, cx| {
-                        cx.stop_propagation();
-                        view.show_gain_lane(track_id, window, cx)
-                    })),
-                )
-                .child(
-                    button(
-                        "↗",
-                        "edit return sends",
-                        ("track-return-sends", track_id.value()),
-                    )
-                    .h(px(18.0))
-                    .flex_shrink()
-                    .min_w(px(14.0))
-                    .debug_selector(move || format!("track-return-sends-{}", track_id.value()))
-                    .on_click(cx.listener(move |view, _, _, cx| {
-                        cx.stop_propagation();
-                        let next = if view.send_menu_track == Some(track_id) {
-                            None
-                        } else {
-                            Some(track_id)
-                        };
-                        if next != view.send_menu_track
-                            && !super::device_panel::finalize_controls(view, cx)
-                        {
-                            cx.notify();
-                            return;
-                        }
-                        view.send_menu_track = next;
-                        cx.notify();
-                    })),
-                );
-            let activator = toggle_button_with_style(
-                "",
-                if muted {
-                    "activate track"
-                } else {
-                    "deactivate track"
-                },
-                ("track-mute", track_id.value()),
-                theme::action_style().with_state_colors(active_background, active_text),
-            )
-            .debug_selector(move || format!("track-mute-{}", track_id.value()))
-            .flex_1()
-            .min_w_0()
-            .h(px(14.0))
-            .text_size(px(10.0))
-            .border_1()
-            .border_color(rgb(theme::control_style().border))
-            .child(theme::text((track_index + 1).to_string()))
-            .on_click(cx.listener(move |view, _, _, cx| {
-                cx.stop_propagation();
-                view.toggle_mute(track_id);
+        let (active_background, active_text) = super::track_gain::activator_colors(!muted);
+        let (solo_background, solo_text) = super::track_gain::activator_colors(soloed);
+        let activator = toggle_button_with_style(
+            "",
+            if muted {
+                "activate track"
+            } else {
+                "deactivate track"
+            },
+            ("track-mute", track_id.value()),
+            theme::action_style().with_state_colors(active_background, active_text),
+        )
+        .debug_selector(move || format!("track-mute-{}", track_id.value()))
+        .w(px(34.0))
+        .flex_shrink_0()
+        .h(px(14.0))
+        .text_size(px(10.0))
+        .border_1()
+        .border_color(rgb(theme::control_style().border))
+        .child(theme::text((track_index + 1).to_string()))
+        .on_click(cx.listener(move |view, _, _, cx| {
+            cx.stop_propagation();
+            view.toggle_mute(track_id);
+            cx.notify();
+        }));
+        let solo = toggle_button_with_style(
+            "s",
+            "solo track · s · cmd+click additive",
+            ("track-solo", track_id.value()),
+            theme::action_style().with_state_colors(solo_background, solo_text),
+        )
+        .debug_selector(move || format!("track-solo-{}", track_id.value()))
+        .w(px(16.0))
+        .h(px(14.0))
+        .text_size(px(10.0))
+        .border_1()
+        .border_color(rgb(theme::control_style().border))
+        .on_click(cx.listener(move |view, event: &gpui::ClickEvent, _, cx| {
+            cx.stop_propagation();
+            view.toggle_solo(track_id, !event.modifiers().platform);
+            cx.notify();
+        }));
+        let gain_lane = button(
+            "a",
+            "show track gain automation",
+            ("gain-lane", track_id.value()),
+        )
+        .w(px(14.0))
+        .h(px(14.0))
+        .px_0()
+        .debug_selector(move || format!("gain-lane-show-{}", track_id.value()))
+        .on_click(cx.listener(move |view, _, window, cx| {
+            cx.stop_propagation();
+            view.show_gain_lane(track_id, window, cx);
+        }));
+        let sends = button(
+            "↗",
+            "edit return sends",
+            ("track-return-sends", track_id.value()),
+        )
+        .w(px(14.0))
+        .h(px(14.0))
+        .px_0()
+        .debug_selector(move || format!("track-return-sends-{}", track_id.value()))
+        .on_click(cx.listener(move |view, _, _, cx| {
+            cx.stop_propagation();
+            let next = if view.send_menu_track == Some(track_id) {
+                None
+            } else {
+                Some(track_id)
+            };
+            if next != view.send_menu_track && !super::device_panel::finalize_controls(view, cx) {
                 cx.notify();
-            }));
-            let solo = toggle_button_with_style(
-                "s",
-                "solo track · s · cmd+click additive",
-                ("track-solo", track_id.value()),
-                theme::action_style().with_state_colors(solo_background, solo_text),
+                return;
+            }
+            view.send_menu_track = next;
+            cx.notify();
+        }));
+        // Keep the working switches above the resize gutter, with numeric
+        // controls taking the second line only when they fit.
+        let header_controls = div()
+            .id(("arrangement-track-controls", track_id.value()))
+            .debug_selector(move || format!("track-controls-{}", track_id.value()))
+            .w(px(122.0))
+            .flex_shrink_0()
+            .flex()
+            .flex_col()
+            .gap(px(2.0))
+            .child(
+                div()
+                    .w_full()
+                    .h(px(super::track_header::NAME_HEIGHT))
+                    .flex()
+                    .items_center()
+                    .gap(px(2.0))
+                    .child(activator)
+                    .children([gain_lane, sends])
+                    .child(div().flex_1())
+                    .child(self.sample_arm_button(sample_source, cx))
+                    .child(solo)
+                    .children(
+                        resident_layout.then(|| self.audio_arm_button(track_id, !is_group, cx)),
+                    ),
             )
-            .debug_selector(move || format!("track-solo-{}", track_id.value()))
-            .w(px(16.0))
-            .h(px(14.0))
-            .text_size(px(10.0))
-            .border_1()
-            .border_color(rgb(theme::control_style().border))
-            .on_click(cx.listener(move |view, event: &gpui::ClickEvent, _, cx| {
-                cx.stop_propagation();
-                view.toggle_solo(track_id, !event.modifiers().platform);
-                cx.notify();
+            .children((header_height >= TRACK_ROW_HEIGHT).then(|| {
+                div()
+                    .w_full()
+                    .flex()
+                    .gap(px(2.0))
+                    .child(
+                        self.track_volume(track, cx)
+                            .id(("track-volume-hit", track_id.value()))
+                            .on_click(|_, _, cx| cx.stop_propagation()),
+                    )
+                    .children(resident_layout.then(|| {
+                        self.track_pan(track, cx)
+                            .id(("track-pan-hit", track_id.value()))
+                            .on_click(|_, _, cx| cx.stop_propagation())
+                    }))
             }));
-            let arm = self.audio_arm_button(track_id, !is_group, cx);
-            div()
-                .id(("arrangement-track-controls", track_id.value()))
-                .when(group_plate, |controls| controls.h_full())
-                .debug_selector(move || format!("track-controls-{}", track_id.value()))
-                .w_full()
-                .flex()
-                .items_center()
-                .when(group_expanded, |controls| controls.items_start())
-                .gap(px(2.0))
-                .children([name_area.flex_1().child(
-                    div()
-                        .w_full()
-                        .flex()
-                        .flex_col()
-                        .gap(px(2.0))
-                        .when(group_plate, |content| {
-                            content
-                                .h(px(TRACK_ROW_HEIGHT - 4.0))
-                                .flex_shrink_0()
-                                .justify_center()
-                        })
-                        .child(track_name_view)
-                        .child(utilities),
-                )])
-                .child(
-                    div()
-                        .id(("track-header-mixer", track_id.value()))
-                        .when(group_plate, |mixer| {
-                            mixer.h(px(TRACK_ROW_HEIGHT - 4.0)).justify_center()
-                        })
-                        // Two existing 60-point numeric minima and their gap.
-                        .w(px(122.0))
-                        .flex_shrink_0()
-                        .flex()
-                        .flex_col()
-                        .gap(px(2.0))
-                        .child(
-                            div()
-                                .w_full()
-                                .flex()
-                                .gap(px(2.0))
-                                .child(activator)
-                                .child(self.sample_arm_button(sample_source, cx))
-                                .child(solo)
-                                .child(arm),
-                        )
-                        .child(
-                            div()
-                                .w_full()
-                                .flex()
-                                .gap(px(2.0))
-                                .child(
-                                    self.track_volume(track, cx)
-                                        .id(("track-volume-hit", track_id.value()))
-                                        .on_click(|_, _, cx| cx.stop_propagation()),
-                                )
-                                .child(
-                                    self.track_pan(track, cx)
-                                        .id(("track-pan-hit", track_id.value()))
-                                        .on_click(|_, _, cx| cx.stop_propagation()),
-                                ),
-                        ),
-                )
-        } else {
-            let track_controls = div()
-                .id(("arrangement-track-controls", track_id.value()))
-                .debug_selector(move || format!("track-controls-{}", track_id.value()))
-                .flex()
-                .items_center()
-                .w_full()
-                .gap(px(1.0))
-                .child(
-                    button(
-                        "a",
-                        "show track gain automation",
-                        ("gain-lane", track_id.value()),
-                    )
-                    .debug_selector(move || format!("gain-lane-show-{}", track_id.value()))
-                    .on_click(cx.listener(move |view, _, window, cx| {
-                        cx.stop_propagation();
-                        view.show_gain_lane(track_id, window, cx);
-                    })),
-                )
-                .child(self.track_volume(track, cx))
-                .child(
-                    toggle_button_with_style(
-                        "",
-                        if muted { "unmute track" } else { "mute track" },
-                        ("track-mute", track_id.value()),
-                        {
-                            let (background, text) = super::track_gain::activator_colors(!muted);
-                            theme::action_style().with_state_colors(background, text)
-                        },
-                    )
-                    .w(px(20.0))
-                    .h(px(14.0))
-                    .text_size(px(10.0))
-                    .border_1()
-                    .border_color(rgb(theme::control_style().border))
-                    .child(theme::text((track_index + 1).to_string()))
-                    .debug_selector(move || format!("track-mute-{}", track_id.value()))
-                    .on_click(cx.listener(move |view, _, _, cx| {
-                        cx.stop_propagation();
-                        view.toggle_mute(track_id);
-                        cx.notify();
-                    })),
-                )
-                .child(
-                    toggle_button_with_style(
-                        "s",
-                        "solo track · s · cmd+click additive",
-                        ("track-solo", track_id.value()),
-                        {
-                            let (background, text) = super::track_gain::activator_colors(soloed);
-                            theme::action_style().with_state_colors(background, text)
-                        },
-                    )
-                    .w(px(16.0))
-                    .h(px(14.0))
-                    .text_size(px(10.0))
-                    .border_1()
-                    .border_color(rgb(theme::control_style().border))
-                    .debug_selector(move || format!("track-solo-{}", track_id.value()))
-                    .on_click(cx.listener(
-                        move |view, event: &gpui::ClickEvent, _, cx| {
-                            cx.stop_propagation();
-                            view.toggle_solo(track_id, !event.modifiers().platform);
-                            cx.notify();
-                        },
-                    )),
-                )
-                .child(
-                    button(
-                        "↗",
-                        "edit return sends",
-                        ("track-return-sends", track_id.value()),
-                    )
-                    .debug_selector(move || format!("track-return-sends-{}", track_id.value()))
-                    .text_color(rgb(theme::color(
-                        if self.send_menu_track == Some(track_id) {
-                            theme::PaletteRole::Secondary
-                        } else {
-                            theme::PaletteRole::Muted
-                        },
-                    )))
-                    .on_click(cx.listener(move |view, _, _, cx| {
-                        cx.stop_propagation();
-                        let next = if view.send_menu_track == Some(track_id) {
-                            None
-                        } else {
-                            Some(track_id)
-                        };
-                        if next != view.send_menu_track
-                            && !super::device_panel::finalize_controls(view, cx)
-                        {
-                            cx.notify();
-                            return;
-                        }
-                        view.send_menu_track = next;
-                        cx.notify();
-                    })),
-                )
-                .child(self.sample_arm_button(sample_source, cx));
-            div()
-                .id(("streaming-track-controls", track_id.value()))
-                .w_full()
-                .flex()
-                .flex_col()
-                .children([name_area.child(track_name_view).w_full()])
-                .child(track_controls)
-        };
         let header_focus = self.track_header_focus(track_id, cx);
         let click_focus = header_focus.clone();
-        let header_height = self.track_body_height(track_id);
-        let expanded_header = header_height > TRACK_ROW_HEIGHT;
         let next_ancestors = self
             .arrangement_row_index(track_index)
             .and_then(|row| self.arrangement_track_index(row + 1))
@@ -2101,11 +1935,10 @@ impl EditorView {
             selected,
             None,
         )
-        .when(expanded_header, |header| header.justify_start())
+        .pb_0()
         .when(is_group || hierarchy_indent > 0.0, |header| {
             header.border_b_0()
         })
-        .when(group_plate, |header| header.pb_0())
         .debug_selector(move || format!("arrangement-track-header-{}", track_id.value()))
         .track_focus(&header_focus)
         .key_context("hex_track_header")
@@ -2119,25 +1952,21 @@ impl EditorView {
         .child(
             div()
                 .w_full()
-                // Keep the compact content slot, excluding its bottom inset
-                // and border, anchored to the top when the row grows.
-                .when(expanded_header, |row| row.h(px(TRACK_ROW_HEIGHT - 4.0)))
-                .when(group_plate, |row| row.h_full())
+                .h_full()
                 .flex()
-                .items_center()
-                .when(group_expanded, |row| row.items_start())
+                .items_start()
                 .gap(px(2.0))
-                .children([header_content.flex_1().min_w_0()])
+                .children([name_area, header_controls])
                 .children(
                     self.track_performance_indicator(hex_engine::OutputCaptureId::Track(track_id)),
                 )
                 .children(
                     self.track_latency_indicator(super::track_latency::Owner::Track(track_id)),
                 )
-                .children([super::track_meters::render(
+                .children([super::track_meters::render_arrangement(
                     track_id,
                     self.track_meters.level(track_id),
-                    header_height.min(TRACK_ROW_HEIGHT),
+                    header_height,
                 )]),
         )
         .children(self.track_resize_handles(track_id, cx))
