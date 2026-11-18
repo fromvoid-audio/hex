@@ -6,6 +6,7 @@
 #include "macos_instance.hpp"
 #include "macos_instance_wire.hpp"
 #include "pluginterfaces/base/iplugincompatibility.h"
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -1173,6 +1174,7 @@ int main(int argc,char** argv) {
             // on turns that do not visit the editor's AppKit event pump.
             auto next_message_report=std::chrono::steady_clock::time_point::min();
             constexpr auto quiet_pcm_window=std::chrono::milliseconds(40);
+            const double pcm_only_wait=std::clamp(config->maximum/config->rate/3.0,0.001,0.002);
             auto active_pcm_until=std::chrono::steady_clock::now()+quiet_pcm_window;
             std::optional<std::chrono::steady_clock::time_point> retirement_deadline;
             const auto may_cancel_closed_peer=[&] {
@@ -1449,16 +1451,17 @@ int main(int argc,char** argv) {
                         editor.quarantine();
                         control_failure(Unexpected);
                     }
-                    // Keep AppKit and active PCM/control on the existing cadence.
-                    // A closed, quiet helper still services SDK timers and checks
-                    // new control mail within one bounded run-loop wait.
+                    // AppKit and admitted control work use the fast cadence.
+                    // With PCM only, bound the main-lane wait relative to the
+                    // admitted quantum. The worker still receives PCM directly.
                     const auto now=std::chrono::steady_clock::now();
                     if(pcm_since_main_pump.exchange(false,std::memory_order_relaxed))
                         active_pcm_until=now+quiet_pcm_window;
-                    const bool busy=now<active_pcm_until || editor.is_open() || stage!=Idle ||
+                    const bool busy=editor.is_open() || stage!=Idle ||
                         page_stage.load(std::memory_order_acquire)!=PageIdle ||
                         live_stage.load(std::memory_order_acquire)!=LiveIdle;
-                    CFRunLoopRunInMode(kCFRunLoopDefaultMode,busy?0.001:0.004,true);
+                    const double wait=busy ? 0.001 : (now<active_pcm_until ? pcm_only_wait : 0.004);
+                    CFRunLoopRunInMode(kCFRunLoopDefaultMode,wait,true);
                 } catch(...) { control_failure(Unexpected); }
             }
             worker.join();failure=worker_failure.load()&0xFF;
