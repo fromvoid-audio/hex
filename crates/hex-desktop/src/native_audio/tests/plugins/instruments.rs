@@ -4491,26 +4491,57 @@ fn installed_instrument_and_effect_export_with_streamed_audio() {
     let (applied, _) = h.applied(0);
     let probe = std::env::var_os("HEX_TEST_EXPORT_PROBE").is_some();
     let complete = std::env::var_os("HEX_TEST_EXPORT_COMPLETE").is_some();
-    let verify_live_state = std::env::var_os("HEX_TEST_EXPORT_LIVE_STATE").is_some();
-    let live_edit = std::env::var_os("HEX_TEST_EXPORT_LIVE_EDIT").is_some();
     let full_playthrough = std::env::var_os("HEX_TEST_FULL_MIXED_PLAYTHROUGH").is_some();
+    let live_playback = std::env::var_os("HEX_TEST_EXPORT_LIVE_PLAYBACK").is_some();
+    let verify_live_state =
+        full_playthrough || std::env::var_os("HEX_TEST_EXPORT_LIVE_STATE").is_some();
+    let live_edit = full_playthrough || std::env::var_os("HEX_TEST_EXPORT_LIVE_EDIT").is_some();
     assert!(
-        !live_edit || std::env::var_os("HEX_TEST_EXPORT_LIVE_PLAYBACK").is_some(),
+        !live_edit || live_playback,
         "live edit requires mixed playback"
     );
     assert!(
-        !full_playthrough || std::env::var_os("HEX_TEST_EXPORT_LIVE_PLAYBACK").is_some(),
-        "full playthrough requires mixed playback"
+        !full_playthrough || (complete && !probe),
+        "full playthrough requires a complete export"
     );
+    // The fixture uses the project default of 120 BPM at 48 kHz.
+    const FRAMES_PER_QUARTER: usize = 24_000;
+    const PHRASE_QUARTERS: usize = 8;
+    const SECOND_NOTE_QUARTER: usize = 4;
+    const PHRASE_LENGTH: usize = PHRASE_QUARTERS * FRAMES_PER_QUARTER;
+    const SECOND_NOTE: usize = SECOND_NOTE_QUARTER * FRAMES_PER_QUARTER;
+    // Leave room for the installed instrument's natural release on each note.
+    const PHRASE_WINDOWS: [(usize, usize); 4] = [
+        (4096, 8192),
+        (81920, 90112),
+        (SECOND_NOTE + 4096, SECOND_NOTE + 8192),
+        (180224, 188416),
+    ];
+    let late_phrases: &[(usize, u8)] = if full_playthrough {
+        &[(64, 48), (192, 55), (320, 53)]
+    } else {
+        &[]
+    };
+    let check_phrase = |context: &str, beat: usize, peaks: [f32; 4]| {
+        let [first, gap, second, release] = peaks;
+        assert!(
+            first > 0.01 && gap < 0.005 && second > 0.01 && release < 0.005,
+            "{context} phrase at quarter {beat}: {peaks:?}"
+        );
+    };
     let source_frames = if probe || complete { 8_000_001 } else { 16_384 };
     let source = files.wav(48_000, source_frames);
-    // Distinct long silent sections reveal stale, skipped, or shifted streamed
-    // pages well after the instrument's short initial note has finished.
+    // The original quiet markers catch shifted source pages. Separate rests
+    // isolate the later instrument phrases from the otherwise audible stream.
     let markers = [(4_000_000usize, 8192usize), (7_950_000, 8192)];
     if complete {
         let mut marked = fs::read(&source).unwrap();
         for (start, length) in markers {
             marked[44 + start * 2..44 + (start + length) * 2].fill(0);
+        }
+        for &(beat, _) in late_phrases {
+            let start = beat * FRAMES_PER_QUARTER;
+            marked[44 + (start - 2048) * 2..44 + (start + PHRASE_LENGTH) * 2].fill(0);
         }
         fs::write(&source, marked).unwrap();
     }
@@ -4546,7 +4577,7 @@ fn installed_instrument_and_effect_export_with_streamed_audio() {
         panic!("midi clip")
     };
     let (applied, _) = h.applied(applied);
-    let note = h.run(Request::Edit(Command::AddMidiNote {
+    let mut note = h.run(Request::Edit(Command::AddMidiNote {
         clip,
         start: BeatTime::ZERO,
         duration: BeatTime::from_ratio(1, 2).unwrap(),
@@ -4554,8 +4585,45 @@ fn installed_instrument_and_effect_export_with_streamed_audio() {
         channel: 0,
         velocity: 100,
     }));
-    let (applied, _) = h.applied(applied);
-    let mut insertion = request(&note.state, PluginEffectDestination::Instrument(track));
+    let (mut applied, _) = h.applied(applied);
+    for &(beat, pitch) in late_phrases {
+        let placed = h.run(Request::Edit(Command::PlaceMidiClip {
+            track,
+            start: BeatTime::from_quarters(beat as u64).unwrap(),
+            length: BeatTime::from_quarters(PHRASE_QUARTERS as u64).unwrap(),
+        }));
+        let Some(Created::Clip(clip)) = placed.created else {
+            panic!("late midi clip");
+        };
+        (applied, _) = h.applied(applied);
+        for (quarter, pitch) in [(0, pitch), (SECOND_NOTE_QUARTER as u64, pitch + 7)] {
+            note = h.run(Request::Edit(Command::AddMidiNote {
+                clip,
+                start: BeatTime::from_quarters(quarter).unwrap(),
+                duration: BeatTime::from_ratio(1, 2).unwrap(),
+                pitch,
+                channel: 0,
+                velocity: 100,
+            }));
+            (applied, _) = h.applied(applied);
+        }
+    }
+    let instrument_destination = if full_playthrough {
+        // Leave the left channel as an independent streamed-source witness
+        // even if the installed synth has a sub-audible residual on the right.
+        let balanced = h.run(Request::Edit(Command::Balance {
+            track,
+            balance: 1.0,
+        }));
+        (applied, _) = h.applied(applied);
+        balanced
+    } else {
+        note
+    };
+    let mut insertion = request(
+        &instrument_destination.state,
+        PluginEffectDestination::Instrument(track),
+    );
     insertion.selection = instrument;
     h.service
         .submit(Request::InsertPluginEffect(insertion))
@@ -4566,7 +4634,7 @@ fn installed_instrument_and_effect_export_with_streamed_audio() {
     let mut expected_revision = inserted.state.revision;
     let mut expected_can_undo = inserted.state.can_undo;
     let mut expected_can_redo = inserted.state.can_redo;
-    if std::env::var_os("HEX_TEST_EXPORT_LIVE_PLAYBACK").is_some() {
+    if live_playback {
         assert!(
             complete,
             "live mixed qualification requires the full streamed fixture"
@@ -4610,8 +4678,11 @@ fn installed_instrument_and_effect_export_with_streamed_audio() {
         if full_playthrough {
             let started = Instant::now();
             let mut quiet_markers = [0usize; 2];
+            let mut phrase_peaks = [[0.0_f32; 4]; 3];
             let mut audible_blocks = 0usize;
             let mut buffering_blocks = 0usize;
+            let mut consecutive_holds = 0usize;
+            let mut longest_hold = 0usize;
             let mut previous = h
                 .audio
                 .as_ref()
@@ -4653,9 +4724,13 @@ fn installed_instrument_and_effect_export_with_streamed_audio() {
                 assert!(block.iter().flatten().all(|sample| sample.is_finite()));
                 if status.stream_buffering.load(Acquire) {
                     buffering_blocks += 1;
+                    consecutive_holds += 1;
+                    longest_hold = longest_hold.max(consecutive_holds);
                     assert_eq!(position, previous, "buffering advanced the cursor");
                     assert_eq!(block, [[0.0; 2]; 256]);
                 } else if position > previous {
+                    consecutive_holds = 0;
+                    assert_eq!(position - previous, 256, "full-song cursor skipped frames");
                     let peak = block
                         .iter()
                         .flatten()
@@ -4664,8 +4739,28 @@ fn installed_instrument_and_effect_export_with_streamed_audio() {
                         position >= (start + 2048) as u64
                             && position < (start + length - 2048) as u64
                     }) {
-                        assert!(peak < 0.005, "source marker {index} was not quiet: {peak}");
+                        assert!(
+                            block.iter().all(|frame| frame[0].abs() < 0.005),
+                            "streamed source marker {index} was not quiet"
+                        );
                         quiet_markers[index] += 1;
+                    } else if let Some((index, &(beat, _))) =
+                        late_phrases.iter().enumerate().find(|(_, (beat, _))| {
+                            let start = beat * FRAMES_PER_QUARTER;
+                            position >= (start - 4096) as u64
+                                && position < (start + PHRASE_LENGTH + 2048) as u64
+                        })
+                    {
+                        let start = beat * FRAMES_PER_QUARTER;
+                        for ((from, to), measured) in
+                            PHRASE_WINDOWS.into_iter().zip(&mut phrase_peaks[index])
+                        {
+                            if position >= (start + from + 256) as u64
+                                && position <= (start + to) as u64
+                            {
+                                *measured = measured.max(peak);
+                            }
+                        }
                     } else if position < u64::from(source_frames)
                         && !markers.iter().any(|(start, length)| {
                             position >= (start - 2048) as u64
@@ -4683,28 +4778,14 @@ fn installed_instrument_and_effect_export_with_streamed_audio() {
                 );
             }
             assert!(quiet_markers.into_iter().all(|blocks| blocks >= 8));
-            assert!(audible_blocks > 30_000);
+            assert!(audible_blocks > (source_frames as usize / 256) * 9 / 10);
+            for (&(beat, _), peaks) in late_phrases.iter().zip(phrase_peaks) {
+                check_phrase("live", beat, peaks);
+            }
             println!(
-                "full_live frames={source_frames} elapsed_ms={} audible_blocks={audible_blocks} buffering_blocks={buffering_blocks} quiet_markers={quiet_markers:?}",
+                "full_live frames={source_frames} elapsed_ms={} audible_blocks={audible_blocks} buffering_blocks={buffering_blocks} longest_hold={longest_hold} quiet_markers={quiet_markers:?} phrase_peaks={phrase_peaks:?}",
                 started.elapsed().as_millis()
             );
-            h.audio
-                .as_mut()
-                .unwrap()
-                .control
-                .command(PlaybackCommand::Stop)
-                .unwrap();
-            h.render_plugin_block();
-            h.service.submit(Request::RestoreStoppedPlayback).unwrap();
-            let restored = restored_terminal(&mut h);
-            assert!(
-                restored.error.is_none(),
-                "full-song restore: {:?}",
-                restored.error
-            );
-            assert_eq!(restored.state.project, inserted.state.project);
-            assert_eq!(fs::read(&source).unwrap(), source_bytes);
-            return;
         }
         h.audio
             .as_mut()
@@ -4962,17 +5043,39 @@ fn installed_instrument_and_effect_export_with_streamed_audio() {
         assert!(wav[44..44 + 4096].iter().any(|byte| *byte != 0));
         assert!(wav[wav.len() - 4096..].iter().any(|byte| *byte != 0));
         for (start, length) in markers {
-            let silent = |frame: usize| wav[44 + frame * 4..44 + (frame + 1) * 4] == [0; 4];
+            let channel_bytes = if full_playthrough { 2 } else { 4 };
+            let silent = |frame: usize| {
+                let offset = 44 + frame * 4;
+                wav[offset..offset + channel_bytes]
+                    .iter()
+                    .all(|byte| *byte == 0)
+            };
             let observed_start = (start - 2048..start + 2048)
                 .find(|frame| silent(*frame))
                 .expect("late-song silence begins near its source marker");
             let observed_end = (start + length - 2048..start + length + 2048)
                 .find(|frame| !silent(*frame))
                 .expect("late-song audio resumes near its source marker");
-            assert_eq!(observed_end - observed_start, length);
-            assert_eq!(observed_start, start, "marker must be sample-aligned");
+            assert_eq!(
+                (observed_start, observed_end),
+                (start, start + length),
+                "source marker must be sample-aligned"
+            );
             assert!((observed_start..observed_end).all(silent));
             println!("source_marker={start} output_marker={observed_start} length={length}");
+        }
+        for &(beat, _) in late_phrases {
+            let start = beat * FRAMES_PER_QUARTER;
+            let peaks = PHRASE_WINDOWS.map(|(from, to)| {
+                wav[44 + (start + from) * 4..44 + (start + to) * 4]
+                    .chunks_exact(2)
+                    .map(|bytes| {
+                        f32::from(i16::from_le_bytes([bytes[0], bytes[1]])).abs() / 32768.0
+                    })
+                    .fold(0.0_f32, f32::max)
+            });
+            check_phrase("export", beat, peaks);
+            println!("export_phrase quarter={beat} peaks={peaks:?}");
         }
         println!(
             "complete_export elapsed_ns={} frames={} output_sha256={} source_sha256={}",
@@ -5065,7 +5168,7 @@ fn installed_instrument_and_effect_export_with_streamed_audio() {
     );
     assert_eq!(muted_queued.state.project, muted.state.project);
     if complete {
-        if std::env::var_os("HEX_TEST_EXPORT_REOPEN").is_some() {
+        if full_playthrough || std::env::var_os("HEX_TEST_EXPORT_REOPEN").is_some() {
             assert!(verify_live_state, "reopen requires the saved mixed project");
             let saved_project = hex_storage::load(&saved_path).unwrap();
             let old_output = h.audio.as_ref().unwrap().control.output_identity().unwrap();
