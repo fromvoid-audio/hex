@@ -224,7 +224,7 @@ impl SessionPlayback {
         output: &mut [Frame],
         foreign: &mut dyn hex_lattice::ForeignProcessors,
     ) -> Result<(), SessionPlaybackError> {
-        if self.playing || !self.stopped_input.is_some_and(|scope| scope.track == track) {
+        if self.playing || self.stopped_input.is_none_or(|scope| scope.track != track) {
             output.fill([0.0; 2]);
             return Err(SessionPlaybackError::InvalidCommand);
         }
