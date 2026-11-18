@@ -12,13 +12,26 @@ mod state;
 use state::decode;
 pub use state::{STATE_VERSION, TYPE_ID, parameter};
 mod runtime;
-pub use runtime::structural::PreparedStructuralLimiter;
+pub use runtime::structural::{PreparedStructuralLimiter, Runtime as StructuralLimiterRuntime};
+pub use runtime::{Factory as PreparedLimiter, Runtime as LimiterRuntime};
 #[cfg(test)]
 mod tests;
 
 pub struct LimiterDefinition;
 pub static DEFINITION: LimiterDefinition = LimiterDefinition;
 impl LimiterDefinition {
+    /// Prepare the original fixed-layout owned transaction without creating a runtime.
+    /// Empty parameters select the default factory; otherwise IDs must be sorted,
+    /// unique value controls. Structural controls require
+    /// `prepare_owned_structural_for_parameters`. The host remains responsible
+    /// for source admission and retains the returned factory and runtime.
+    pub fn prepare_owned(
+        state: &NativeDeviceState,
+        rate: u32,
+        parameters: &[hex_lattice_contract::ParameterId],
+    ) -> Result<PreparedLimiter, DeviceContractError> {
+        automation::prepare_fixed_factory(state, rate, parameters)
+    }
     /// Prepare an exact owned lookahead/routing/mode union at fixed maximum latency.
     /// Requires at least one structural target plus optional value controls.
     /// Native metadata grants all three selectors; preparation transfers no

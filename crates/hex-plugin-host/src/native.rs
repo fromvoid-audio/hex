@@ -26,7 +26,7 @@ use hex_plugin_scan::macos::{
 };
 use hex_plugin_state::{BinaryIdentity, ClassId, Identity};
 use std::{
-    io::Cursor,
+    io::{Cursor, Read},
     os::{fd::OwnedFd, unix::net::UnixStream},
     path::Path,
     process::{Child, Command, ExitStatus, Stdio},
@@ -43,6 +43,7 @@ pub struct Source {
     executable: Executable,
     identity: Identity,
     grouped_editor_callbacks: bool,
+    transport_space: bool,
 }
 impl Source {
     pub fn inspect_on_control(path: &Path, executable: &str, class: ClassId) -> Result<Self> {
@@ -60,12 +61,17 @@ impl Source {
             executable,
             identity,
             grouped_editor_callbacks: false,
+            transport_space: false,
         })
     }
     /// Explicit opt-in on the exact inspected source before the SDK creates
     /// its component handler. This enables callbacks, not recording custody.
     pub fn with_grouped_editor_callbacks(mut self) -> Self {
         self.grouped_editor_callbacks = true;
+        self
+    }
+    pub fn with_transport_space(mut self) -> Self {
+        self.transport_space = true;
         self
     }
     pub fn identity(&self) -> Identity {
@@ -141,6 +147,9 @@ pub struct PreparationCancellation {
 impl PreparationCancellation {
     pub fn new_on_control() -> Result<Self> {
         let (sender, receiver) = UnixStream::pair().map_err(Error::Io)?;
+        // Only the parent reads shortcuts and shuts down its write half. The
+        // helper's distinct socket still blocks in its cancellation guardian.
+        sender.set_nonblocking(true).map_err(Error::Io)?;
         Ok(Self {
             token: Cancellation {
                 stream: Arc::new(sender),
@@ -159,6 +168,14 @@ pub struct Cancellation {
     cancelled: Arc<AtomicBool>,
 }
 impl Cancellation {
+    /// One editor Space token on the helper-to-parent half of this exact
+    /// source's socket. The parent-to-helper half remains cancellation only.
+    pub fn take_transport_space_on_control(&self) -> bool {
+        let mut token = [0];
+        !self.cancelled.load(Ordering::Acquire)
+            && self.stream.as_ref().read(&mut token).ok() == Some(1)
+            && token == [1]
+    }
     /// Test-only lifetime observation; never resource provenance or admission.
     /// A weak observer cannot keep the descriptor payload alive.
     #[cfg(feature = "test-support")]
@@ -423,6 +440,10 @@ impl Pending {
         let mut command = Command::new(build.helper());
         command
             .arg("--supervised")
+            .env(
+                "HEX_VST3_TRANSPORT_SPACE",
+                if source.transport_space { "1" } else { "0" },
+            )
             .stdin(Stdio::from(OwnedFd::from(child_data)))
             .stdout(Stdio::from(OwnedFd::from(child_cancel)))
             .stderr(Stdio::null());
@@ -692,6 +713,11 @@ impl Prepared {
             .map(|reply| reply.block)
     }
 
+    /// Return the original PCM reply and its helper-side diagnostic timing.
+    pub fn exchange_timed_on_worker(&mut self, block: Block) -> Result<protocol::EditorPcm> {
+        self.exchange_on_worker_with_metadata(block, None, None, false, None, None)
+    }
+
     /// Opt this exchange into facts about the effective editor input. This
     /// does not drain or acknowledge the ordered editor receipt reader.
     pub fn exchange_editor_on_worker(&mut self, block: Block) -> Result<protocol::EditorPcm> {
@@ -840,6 +866,15 @@ impl Prepared {
         manual_parameter: Option<crate::transport::ParameterPoint>,
     ) -> Result<protocol::EditorPcm> {
         self.exchange_armed_with_mode(block, manual_parameter, true, None)
+    }
+
+    /// Return the original authored PCM reply and its helper-side diagnostic timing.
+    pub fn exchange_armed_authored_timed_on_worker(
+        &mut self,
+        block: Block,
+        manual: Option<crate::transport::ParameterPoint>,
+    ) -> Result<protocol::EditorPcm> {
+        self.exchange_armed_with_mode(block, manual, false, None)
     }
 
     /// A scoped editor gesture may temporarily replace one authored parameter.
@@ -1010,9 +1045,11 @@ impl Prepared {
             .sequence
             .checked_add(1)
             .ok_or(Error::Protocol("instance sequence exhausted"))?;
-        let mut bytes = [0; crate::transport::wire::MAX_DENSE_PACKET_BYTES
-            + protocol::EditorTouchPlanSet::WIRE_BYTES];
-        let mut cursor = Cursor::new(bytes.as_mut_slice());
+        let bytes = self.packet.request_buffer(
+            crate::transport::wire::MAX_DENSE_PACKET_BYTES
+                + protocol::EditorTouchPlanSet::WIRE_BYTES,
+        )?;
+        let mut cursor = Cursor::new(&mut *bytes);
         match (metadata, dense) {
             (Some(metadata), Some(dense)) => crate::transport::wire::write_dense_authored(
                 &mut cursor,
@@ -1055,6 +1092,7 @@ impl Prepared {
         if observe_editor {
             bytes[5] |= (protocol::EDITOR_PCM_BIT >> 8) as u8;
         }
+        bytes[5] |= (protocol::SDK_TIMING_BIT >> 8) as u8;
         let until = end_after(self.limits.exchange)?;
         let token = self.lease.cancellation.clone();
         self.lease
@@ -1095,12 +1133,18 @@ impl Prepared {
                 self.last_pcm_edit_sequence,
             )?
         } else {
+            let (block, sdk_process_ns) =
+                protocol::timed_pcm(self.packet.data(), &self.config, self.sequence)?;
             protocol::EditorPcm {
-                block: protocol::pcm(self.packet.data(), &self.config, self.sequence)?,
+                block,
                 performs: protocol::EditorPerforms::default(),
                 restorations: Default::default(),
+                sdk_process_ns,
             }
         };
+        if output.sdk_process_ns.is_none() {
+            return Err(Error::Protocol("missing requested SDK processing timing"));
+        }
         token.check()?;
         if let Some(last) = output.performs.as_slice().last() {
             self.last_pcm_edit_sequence = last.sequence;

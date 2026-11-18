@@ -4,7 +4,7 @@
 //! Release freezes the ordinary clip-property scope: selected audio clips retain
 //! their relative gains in one EditClips command; a single audio clip
 //! uses its typed gain command.
-//! No pointer update prepares audio.
+//! Pointer updates replace the worker's latest audition target.
 use super::{
     EditorView, ViewState,
     drag::LaneBounds,
@@ -17,13 +17,14 @@ use gpui::{
     rgb,
 };
 use hex_project::{Clip, ClipGain, ClipId, Command, TrackId};
-use hex_session::service::{Event, Request};
+use hex_session::service::{ArrangementGainAudition, Event, GainEdit, Request};
 use std::rc::Rc;
 
 #[derive(Default)]
 pub(super) struct State {
     held: Option<Drag>,
     pending: Option<Pending>,
+    audition_held: bool,
 }
 struct Drag {
     generation: u64,
@@ -106,8 +107,60 @@ impl State {
     }
 }
 impl EditorView {
+    pub(super) fn set_held_gain_audition(&mut self, edit: Option<GainEdit>) {
+        let target = edit.and_then(|edit| {
+            let state = self.state.as_ref()?;
+            self.audio_status()
+                .filter(|status| status.playing.load(std::sync::atomic::Ordering::Acquire))?;
+            Some(ArrangementGainAudition {
+                context: hex_engine::AudioSourceContext {
+                    project_generation: self.project_generation,
+                    editor_revision: state.revision,
+                },
+                edit,
+            })
+        });
+        if self.clip_gain.audition_held || target.is_some() {
+            self.clip_gain.audition_held = target.is_some();
+            self.service.audition_arrangement_gain(target);
+        }
+    }
+    pub(super) fn finish_gain_audition(&mut self) {
+        if std::mem::take(&mut self.clip_gain.audition_held) {
+            self.service.finish_arrangement_gain_audition();
+        }
+    }
+    pub(super) fn reconcile_gain_audition(&mut self) {
+        if self.clip_gain.audition_held
+            && !self.clip_gain.held()
+            && self.audio_clip_controls.gain_preview(self).is_none()
+            && !self.event_gain_held()
+        {
+            self.set_held_gain_audition(None);
+        }
+    }
+    pub(super) fn clip_gain_audition_edit(
+        &self,
+        clip: ClipId,
+        original: ClipGain,
+        gain: ClipGain,
+    ) -> Option<GainEdit> {
+        if original == gain {
+            return None;
+        }
+        let selected = self.selected_clip_ids();
+        Some(if selected.len() > 1 && selected.contains(&clip) {
+            GainEdit::Selection {
+                clips: selected.into(),
+                millidb: gain.millidb() - original.millidb(),
+            }
+        } else {
+            GainEdit::Clip { clip, gain }
+        })
+    }
     pub(super) fn cancel_clip_gain(&mut self, cx: &mut Context<Self>) {
         if self.clip_gain.held.take().is_some() {
+            self.set_held_gain_audition(None);
             cx.notify();
         }
     }
@@ -119,6 +172,7 @@ impl EditorView {
             .is_some_and(|g| !g.current(self))
         {
             self.clip_gain.held = None;
+            self.set_held_gain_audition(None);
         }
     }
     pub(super) fn clip_gain_key_down(
@@ -147,6 +201,36 @@ impl EditorView {
             })
             .filter(|d| d.clip.id() == clip)
             .map(|d| d.preview)
+    }
+    pub(super) fn waveform_clip_gain(&self, clip: &Clip) -> Option<ClipGain> {
+        let id = clip.id();
+        if let Some(gain) = self.displayed_clip_gain(id) {
+            return Some(gain);
+        }
+        if let Some(drag) = self.clip_gain.held.as_ref().filter(|d| d.current(self))
+            && self.clip_is_selected(drag.clip.id())
+            && self.clip_is_selected(id)
+        {
+            return relative_gain(clip.gain(), drag.clip.gain(), drag.preview);
+        }
+        if let Some(pending) = self.clip_gain.pending.as_ref()
+            && pending.drag.source_current(self)
+            && let Command::EditClips {
+                clips,
+                edit: hex_project::ClipEdit::GainBy { millidb },
+            } = &pending.command
+            && clips.contains(&id)
+        {
+            return ClipGain::new(clip.gain().millidb() + millidb).ok();
+        }
+        let (anchor, original, gain) = self.audio_clip_controls.gain_preview(self)?;
+        if anchor == id {
+            Some(gain)
+        } else if self.clip_is_selected(id) && self.clip_is_selected(anchor) {
+            relative_gain(clip.gain(), original, gain)
+        } else {
+            None
+        }
     }
     fn update_clip_gain(
         &mut self,
@@ -183,8 +267,16 @@ impl EditorView {
             } else {
                 drag.value.round() as i32
             };
-            if let Ok(gain) = ClipGain::new(value) {
+            let audition = if let Ok(gain) = ClipGain::new(value)
+                && gain != drag.preview
+            {
                 drag.preview = gain;
+                Some((drag.clip.id(), drag.clip.gain(), gain))
+            } else {
+                None
+            };
+            if let Some((clip, original, gain)) = audition {
+                self.set_held_gain_audition(self.clip_gain_audition_edit(clip, original, gain));
             }
             cx.notify();
         }
@@ -211,9 +303,12 @@ impl EditorView {
                 drag,
                 receipt: Receipt::new(self.project_generation),
             });
+            self.finish_gain_audition();
             if !self.enqueue(Request::Edit(command)) {
                 self.retire_clip_gain();
             }
+        } else {
+            self.set_held_gain_audition(None);
         }
         cx.notify();
     }
@@ -420,7 +515,11 @@ impl EditorView {
         }
     }
     pub(super) fn retire_clip_gain(&mut self) -> bool {
-        self.clip_gain.pending.take().is_some()
+        let retired = self.clip_gain.pending.take().is_some();
+        if retired {
+            self.service.retire_arrangement_gain_audition();
+        }
+        retired
     }
     pub(super) fn retire_abandoned_clip_gain(&mut self) -> bool {
         let abandoned = self.clip_gain.pending.as_ref().is_some_and(|p| {
@@ -437,4 +536,8 @@ impl EditorView {
         });
         abandoned && self.retire_clip_gain()
     }
+}
+
+fn relative_gain(gain: ClipGain, original: ClipGain, preview: ClipGain) -> Option<ClipGain> {
+    ClipGain::new(gain.millidb() + preview.millidb() - original.millidb()).ok()
 }

@@ -48,6 +48,46 @@ impl SessionPlayback {
             && !self.foreign_arrangement.has_keyboard()
     }
 
+    /// At Pause, an idle owned graph can leave its latency buffers for the
+    /// next Play. Fixed buffering can hold upcoming Arrangement PCM even
+    /// where the processor declares no residual tail. Keep the existing
+    /// monitor path for live input, releases, residual tails and foreign
+    /// sources. The stopped origin retains its existing handoff policy.
+    pub(super) fn can_freeze_idle_latency_history(&self) -> bool {
+        (self.performance_frame != 0 || self.arrangement_frame != 0)
+            && self.revision.arrangement().main_latency_frames() != 0
+            && self.computer_keyboard.is_none()
+            && self.current_sampler_keyboards.is_empty()
+            && self.foreign_arrangement.is_empty()
+            && !self.has_analytic_release_output()
+            && !self.source_effects.has_monitor_tail()
+            && self
+                .mutable_instruments
+                .iter()
+                .flatten()
+                .all(|runtime| runtime.committed_is_quiescent())
+            && self.tail_groups.iter().all(Option::is_none)
+            && self.tail_mutable_instruments.iter().all(Option::is_none)
+            && self
+                .return_effect_tails
+                .slots()
+                .iter()
+                .flatten()
+                .all(|tail| !tail.output_active)
+            && self
+                .device_chains
+                .iter()
+                .chain(&self.return_chains)
+                .chain(std::iter::once(&self.main_chain))
+                .all(|chain| {
+                    let range = 0..chain.len();
+                    chain.foreign_bindings().next().is_none()
+                        && (chain.output_tail_for_range(range.clone())
+                            == Some(hex_lattice::OutputTail::Finite { max_tail_frames: 0 })
+                            || chain.committed_range_is_quiescent(range))
+                })
+    }
+
     /// Render a complete block transactionally. A refusal after any chunk
     /// silences the requested block and leaves committed route/clock state as-is.
     pub fn render(&mut self, output: &mut [Frame]) -> Result<(), SessionPlaybackError> {
@@ -166,6 +206,30 @@ impl SessionPlayback {
             return Err(SessionPlaybackError::InvalidCommand);
         }
         Ok(())
+    }
+
+    /// Only the separate paused input owner calls this after binding and
+    /// validating the borrowed quantum. The ordinary live track entry stays
+    /// restricted to the playing Arrangement runtime.
+    pub(super) fn render_paused_pcm(
+        &mut self,
+        track: TrackId,
+        input: &[Frame],
+        output: &mut [Frame],
+        foreign: &mut dyn hex_lattice::ForeignProcessors,
+    ) -> Result<(), SessionPlaybackError> {
+        self.render_internal_with_live_audio::<dyn MediaPages>(
+            output,
+            None,
+            None,
+            None,
+            None,
+            foreign,
+            Some(LiveTrackAudio {
+                track,
+                frames: input,
+            }),
+        )
     }
 
     /// Render using borrowed, already admitted foreign endpoints. This stages
@@ -561,7 +625,7 @@ impl SessionPlayback {
             let revision = Arc::clone(&self.revision);
             let mut cells = std::mem::take(&mut self.meter_cells);
             let mut meter = super::meter_capture::MeterCapture::new(&revision, &mut cells, capture);
-            let result = self.render_internal_borrowed(
+            let result = self.render_on_active_route(
                 output,
                 pages,
                 observer,
@@ -576,7 +640,7 @@ impl SessionPlayback {
             self.meter_cells = cells;
             result
         } else {
-            self.render_internal_borrowed(
+            self.render_on_active_route(
                 output, pages, observer, capture, sources, foreign, live_audio,
             )
         };
@@ -589,6 +653,95 @@ impl SessionPlayback {
         result
     }
 
+    /// Render only the loaned source and its private downstream history. The
+    /// normal meter and capture transactions still belong to the caller.
+    pub(super) fn render_resident_source_block(
+        &mut self,
+        output: &mut [Frame],
+        observer: Option<&mut crate::NodeSignalObserver<'_>>,
+        capture: Option<&mut dyn CaptureSink>,
+        foreign: &mut dyn hex_lattice::ForeignProcessors,
+    ) -> Result<(), SessionPlaybackError> {
+        self.monitor_source_releases = true;
+        let pending_monitor_pcm = self
+            .compensation
+            .as_ref()
+            .is_some_and(|runtime| !runtime.delays.pcm_history_is_silent());
+        self.render_internal_borrowed::<dyn MediaPages>(
+            output,
+            None,
+            observer,
+            capture,
+            None,
+            foreign,
+            None,
+            pending_monitor_pcm,
+        )
+    }
+
+    pub(super) fn permits_resident_pause_source_monitor(&self) -> bool {
+        !self.playing
+            && !self.linear_arrangement_export
+            && (self.performance_frame != 0 || self.arrangement_frame != 0)
+            && self.anchor.is_none()
+            && self.transient_loop.is_none()
+            && self.current_sampler_keyboards.is_empty()
+            && self
+                .mutable_instruments
+                .iter()
+                .flatten()
+                .all(MutableInstrumentTrackRuntime::is_source_owner)
+            && !self.midi_capture_active()
+            && self.tail_groups.iter().all(Option::is_none)
+            && self.tail_mutable_instruments.iter().all(Option::is_none)
+            && self.releases.iter().all(|release| {
+                release.location.tail_group().is_none()
+                    && release.location.track_index() < self.routes.len()
+            })
+            && !self.stopped_edit_tails()
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn render_on_active_route<P: MediaPages + ?Sized>(
+        &mut self,
+        output: &mut [Frame],
+        pages: Option<&mut P>,
+        observer: Option<&mut crate::NodeSignalObserver<'_>>,
+        capture: Option<&mut dyn CaptureSink>,
+        sources: Option<crate::native_device_resources::SamplerSourcesRef<'_>>,
+        foreign: &mut dyn hex_lattice::ForeignProcessors,
+        live_audio: Option<LiveTrackAudio<'_>>,
+    ) -> Result<(), SessionPlaybackError> {
+        if self.defer_paused_source_monitor
+            && !self.playing
+            && (self.performance_frame != 0 || self.arrangement_frame != 0)
+            && live_audio.is_none()
+        {
+            // Includes the suffix of a callback that just completed a Pause
+            // fade. Never spend original graph history while the host waits
+            // for private effects or after their activation is refused.
+            output.fill([0.0; 2]);
+            if let Some(capture) = capture {
+                capture.commit(output.len());
+            }
+            return Ok(());
+        }
+        if !output.is_empty()
+            && let Some(mut monitor) = self.paused_source_monitor.take()
+        {
+            if live_audio.is_none() && self.permits_resident_pause_source_monitor() {
+                let result = monitor.render_resident(self, output, observer, capture, foreign);
+                self.paused_source_monitor = Some(monitor);
+                return result;
+            }
+            monitor.end_resident_interval();
+            self.paused_source_monitor = Some(monitor);
+        }
+        self.render_internal_borrowed(
+            output, pages, observer, capture, sources, foreign, live_audio, false,
+        )
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn render_internal_borrowed<P: MediaPages + ?Sized>(
         &mut self,
@@ -599,6 +752,7 @@ impl SessionPlayback {
         sources: Option<crate::native_device_resources::SamplerSourcesRef<'_>>,
         foreign: &mut dyn hex_lattice::ForeignProcessors,
         live_audio: Option<LiveTrackAudio<'_>>,
+        pending_monitor_pcm: bool,
     ) -> Result<(), SessionPlaybackError> {
         if let Some(state) = self.native_parameter_state.as_deref_mut() {
             state.application = None;
@@ -622,8 +776,10 @@ impl SessionPlayback {
         output.fill([0.0; 2]);
         let stopped_edit_tails = self.stopped_edit_tails();
         if output.is_empty()
-            || self.renders_no_device_chains()
+            || (live_audio.is_none() && self.renders_no_device_chains())
             || (!self.playing
+                && live_audio.is_none()
+                && !pending_monitor_pcm
                 && !self.foreign_arrangement.has_started()
                 && !self.foreign_arrangement.has_keyboard()
                 && self.computer_keyboard.is_none()
@@ -664,6 +820,17 @@ impl SessionPlayback {
             }
             return Ok(());
         }
+        // A handoff can occupy a sparse set of slots. Rendering may drain
+        // them, but only a handoff can install a new detached owner.
+        self.detached_tail_group_limit = self
+            .tail_groups
+            .iter()
+            .zip(&self.tail_mutable_instruments)
+            .zip(&self.tail_output_active)
+            .rposition(|((chain, instrument), active)| {
+                chain.is_some() || instrument.is_some() || *active
+            })
+            .map_or(0, |index| index + 1);
         let selected = self
             .live_expression
             .as_ref()
@@ -725,6 +892,7 @@ impl SessionPlayback {
         }
         self.foreign_arrangement.begin();
         let main_tails_only = !self.playing
+            && live_audio.is_none()
             && !self.foreign_arrangement.has_started()
             && !self.foreign_arrangement.has_keyboard()
             && stopped_edit_tails
@@ -760,7 +928,14 @@ impl SessionPlayback {
             // plugin's DSP clock by feeding it invented monitoring callbacks.
             self.render_stopped_main_tails(output, foreign)
         } else {
-            self.render_keyboard_monitor(output, &mut observer, &mut capture, sources, foreign)
+            self.render_keyboard_monitor(
+                output,
+                &mut observer,
+                &mut capture,
+                sources,
+                foreign,
+                live_audio,
+            )
         };
         if result.is_err() {
             self.browser_audition.voices = audition_before;
@@ -2347,6 +2522,15 @@ impl SessionPlayback {
         mut routed_sends: Option<&mut [Frame]>,
         foreign: &mut dyn hex_lattice::ForeignProcessors,
     ) -> Result<(), SessionPlaybackError> {
+        let track_count = self.revision.arrangement().tracks().len();
+        if self.detached_tail_group_limit == 0
+            && self
+                .release_scratch
+                .last()
+                .is_none_or(|release| release.location.track_index() < track_count)
+        {
+            return Ok(());
+        }
         let timing = timing_view_for(self.revision.session(), self.periodic_tempo(), self.anchor);
         let table = self.revision.session().sine_table().as_ref();
         let graph = routed
@@ -2356,9 +2540,9 @@ impl SessionPlayback {
         // tails are grouped by their captured old runtime chain and old mix.
         let mut rendered_mutable_tails = [false; SESSION_TAIL_GROUP_CAPACITY];
         let mut rendered_tail_suffixes = [false; SESSION_TAIL_GROUP_CAPACITY];
-        let mut tail_cursor = self.release_scratch.partition_point(|entry| {
-            entry.location.track_index() < self.revision.arrangement().tracks().len()
-        });
+        let mut tail_cursor = self
+            .release_scratch
+            .partition_point(|entry| entry.location.track_index() < track_count);
         while tail_cursor < self.release_scratch.len() {
             let release = self
                 .release_scratch
@@ -2527,7 +2711,7 @@ impl SessionPlayback {
                 self.tail_route_sends[group_index],
             )?;
         }
-        for group_index in 0..self.tail_mutable_instruments.len() {
+        for group_index in 0..self.detached_tail_group_limit {
             if rendered_mutable_tails
                 .get(group_index)
                 .copied()
@@ -2623,7 +2807,7 @@ impl SessionPlayback {
         // Once an old source has stopped, its committed effect history still
         // owns output. Advance that suffix exactly once per render chunk using
         // real zero input, then keep its captured matrix and mix in the path.
-        for group_index in 0..self.tail_groups.len() {
+        for group_index in 0..self.detached_tail_group_limit {
             if rendered_tail_suffixes
                 .get(group_index)
                 .copied()

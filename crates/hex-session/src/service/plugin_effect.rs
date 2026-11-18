@@ -109,7 +109,7 @@ impl PluginEffectDestination {
     }
 }
 
-/// Per-request cancellation only, following the existing export/import atomic
+/// Per-request intent and cancellation, following the existing export/import atomic
 /// admission pattern. It owns no native token, descriptor, source or endpoint.
 /// Cancellation can win until final publication admission begins.
 #[derive(Debug, Default)]
@@ -117,8 +117,20 @@ pub struct PluginEffectControl {
     // 0 preparing, 1 cancelled, 2 admitting, 3 finished, 4 finished after cancellation.
     phase: AtomicU8,
     claimed: AtomicBool,
+    open_editor: bool,
 }
 impl PluginEffectControl {
+    pub fn opening_editor() -> Self {
+        Self {
+            open_editor: true,
+            ..Self::default()
+        }
+    }
+
+    pub fn opens_editor(&self) -> bool {
+        self.open_editor
+    }
+
     pub fn cancel(&self) -> bool {
         matches!(
             self.phase

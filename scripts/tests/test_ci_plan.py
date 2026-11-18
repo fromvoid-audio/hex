@@ -157,8 +157,14 @@ class ScopeTests(unittest.TestCase):
             exclusions.write_text("extra.rs\n")
             configured = Path(directory) / "configured-git"
             configured.write_text(f"[core]\n\texcludesfile = {exclusions}\n")
-            default_env = {**os.environ, "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": str(empty),
-                           "HEX_VST3_SDK_DIR": ""}
+            # The host may have present or future native qualification inputs.
+            # Seed both kinds so this fixture tests isolation on every machine.
+            ambient = {**os.environ, "HEX_VST3_FUTURE_FIXTURE": "ambient",
+                       "HEX_TEST_SIGNING_IDENTITY": "ambient"}
+            default_env = {key: value for key, value in ambient.items()
+                           if not key.startswith("HEX_VST3_") and key != "HEX_TEST_SIGNING_IDENTITY"}
+            default_env.update({"GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": str(empty),
+                                "HEX_VST3_SDK_DIR": ""})
             selected_env = {**default_env, "GIT_CONFIG_GLOBAL": str(configured),
                             "HEX_VST3_SDK_DIR": "explicit-fixture"}
             def git(*args):
@@ -1151,9 +1157,9 @@ class ScopeTests(unittest.TestCase):
             run(selected)
             run(selection("unknown.input"), passed=False)
 
-    @patch.dict(os.environ, {}, clear=True)
-    def test_prose_continuation_requires_complete_original_runtime_certificate(self):
-        with tempfile.TemporaryDirectory() as directory:
+    @contextmanager
+    def runtime_certificate_fixture(self):
+        with patch.dict(os.environ, {}, clear=True), tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             install_delivery_source_fixture(root)
             def git(*args):
@@ -1176,6 +1182,7 @@ class ScopeTests(unittest.TestCase):
             metadata = {"workspace_members": ["fixture"], "packages": [dict(
                 id="fixture", name="fixture", manifest_path=str(root / "Cargo.toml"),
                 features={}, targets=[], dependencies=[])]}
+            scoped = plan.resolve(root, profile="merge", base=base, source=previous, metadata=metadata)
             # Deliberately fabricated unit-test data exercises schema/refusal;
             # these counts are never claimed as executed product tests.
             tree = {"commit": previous, "dirty": False, "dirty_files": [], "content_sha256": "fixture"}
@@ -1194,9 +1201,13 @@ class ScopeTests(unittest.TestCase):
             report = root / "artifacts/report.json"
             report.parent.mkdir()
             report.write_text(json.dumps(evidence))
+            yield root, resolved, report, evidence, scoped, metadata
+
+    def test_prose_continuation_requires_complete_original_runtime_certificate(self):
+        with self.runtime_certificate_fixture() as (root, resolved, report, evidence, scoped, metadata):
             reused = ci.reusable_plan(root, resolved, report)
             self.assertEqual([s.step_id for s in ci.planned_steps(reused)], ["metadata-continuation"])
-            self.assertEqual(reused["reuse"]["source"], previous)
+            self.assertEqual(reused["reuse"]["source"], evidence["commit"])
             self.assertIs(reused["reuse"]["native_acceptance_opt_in"], False)
             complete_bytes = report.read_bytes()
             incomplete_bytes = json.dumps({**evidence, "steps": [{"status": "passed"}]}).encode()
@@ -1231,9 +1242,14 @@ class ScopeTests(unittest.TestCase):
                 with self.subTest(check=check.__name__), self.assertRaisesRegex(ValueError, "must be an object"):
                     check(root, resolved, report, env={})
             report.write_bytes(original_report)
+
+    def test_runtime_reuse_preserves_native_acceptance_exclusions(self):
+        with self.runtime_certificate_fixture() as (root, resolved, report, evidence, scoped, metadata):
+            original_report = report.read_bytes()
+            original_plan = json.dumps(resolved, sort_keys=True)
             # Full reports without a plan and scoped reports must both carry an
             # explicit false observation. Missing historical state is unknown.
-            for old_plan in (None, {"scope": "tooling", "qualifies_merge": True}):
+            for old_plan in (None, scoped):
                 candidate = {**evidence, "plan": old_plan,
                              "mode": "full" if old_plan is None else "merge",
                              "steps": [{"step_id": s.step_id, "argv": list(s.argv), "status": "passed",
@@ -1269,20 +1285,24 @@ class ScopeTests(unittest.TestCase):
                         plan.reuse_checks(root, resolved, report, env={})
                     self.assertEqual(report.read_bytes(), native_report)
                 self.assertEqual(json.dumps(resolved, sort_keys=True), original_plan)
-            report.write_bytes(original_report)
+
+    def test_runtime_reuse_refuses_invalid_certificates_and_executable_changes(self):
+        with self.runtime_certificate_fixture() as (root, resolved, report, evidence, scoped, metadata):
+            original_report = report.read_bytes()
             (root / "linked-runtime.rs").symlink_to(root / "runtime.rs")
             with self.assertRaisesRegex(ValueError, "symlink"):
-                plan.resolve(root, profile="merge", base=base, source=current, metadata=metadata)
+                plan.resolve(root, profile="merge", base=resolved["base"], source=resolved["source"], metadata=metadata)
             (root / "linked-runtime.rs").unlink()
             for field, value in (("steps", evidence["steps"][:-1]), ("status", "failed"),
                                  ("mode", "edit"), ("schema_version", 1),
-                                 ("runtime_inputs", {"sha256": "changed"}), ("target_cache", {})):
+                                 ("runtime_inputs", {"sha256": "changed"}), ("runtime_inputs", []),
+                                 ("target_cache", {}), ("target_cache", [])):
                 report.write_text(json.dumps({**evidence, field: value}))
                 with self.subTest(field=field), self.assertRaises(ValueError):
                     ci.reusable_plan(root, resolved, report)
             report.write_text(json.dumps(evidence))
             (root / "runtime.rs").write_text("uncommitted executable change")
-            changed = plan.resolve(root, profile="merge", base=base, source=current, metadata=metadata)
+            changed = plan.resolve(root, profile="merge", base=resolved["base"], source=resolved["source"], metadata=metadata)
             with self.assertRaises(ValueError):
                 ci.reusable_plan(root, changed, report)
             runner = ci.LocalCiRunner(root, mode="merge", plan=changed, min_free_bytes=0)
@@ -1533,6 +1553,11 @@ class SingleRunFeatureTests(unittest.TestCase):
             ui_source.write_text('#[cfg(all(test, feature = "ui-unit-tier"))]\nmod tests {}\n')
             self.assertEqual(plan.single_run_packages(root, ["hex-ui", "hex-session"], inventory),
                              {"hex-ui": "ui-test-support"})
+            ui_source.write_text('#[cfg(all(test, any(feature = "ui-unit-tier", feature = "ui-test-support")))]\nmod tests {}\n')
+            self.assertEqual(plan.single_run_packages(root, ["hex-ui", "hex-session"], inventory),
+                             {"hex-ui": "ui-test-support"})
+            ui_source.write_text('#[cfg(any(feature = "ui-unit-tier", feature = "ui-test-support"))]\nfn runtime() {}\n')
+            self.assertEqual(plan.single_run_packages(root, ["hex-ui", "hex-session"], inventory), {})
             ui_source.write_text('#[cfg(feature = "ui-unit-tier")]\nfn runtime() {}\n')
             self.assertEqual(plan.single_run_packages(root, ["hex-ui", "hex-session"], inventory), {})
             ui_source.write_text("")
@@ -1888,7 +1913,7 @@ class BaseAdvanceCarryTests(unittest.TestCase):
         for name in ("core", "ui"):
             (root / f"crates/{name}/src").mkdir(parents=True)
             (root / f"crates/{name}/Cargo.toml").write_text(f"[package]\nname='{name}'\n")
-            (root / f"crates/{name}/src/lib.rs").write_text("// base\n")
+            (root / f"crates/{name}/src/lib.rs").write_text("mod a;\n" if name == "ui" else "// base\n")
         git("add", ".")
         git("commit", "-qm", "base")
         return git
@@ -1904,9 +1929,11 @@ class BaseAdvanceCarryTests(unittest.TestCase):
         return {"schema_version": 2, "mode": "merge", "status": "passed", "exit_code": 0,
                 "commit": resolved["source"], "dirty": False, "stale": False,
                 "native_acceptance_opt_in": False, "start_tree": tree, "end_tree": tree,
+                "runtime_inputs": resolved["runtime_inputs"],
                 "plan": resolved, "target_cache": {"dependency_inputs": {"version": 1}},
-                "steps": [{"step_id": "affected-tests", "argv": ["cargo", "test", "-p", "ui"], "status": "passed",
-                           "test_results": {"rust_passed_by_binary": [1]}}]}
+                "steps": [{"step_id": step.step_id, "argv": list(step.argv), "status": "passed",
+                           "test_results": {"rust_passed_by_binary": [1], "python_executions": [1]}}
+                          for step in ci.planned_steps(resolved)]}
 
     @contextmanager
     def carry_fixture(self):
@@ -1915,14 +1942,14 @@ class BaseAdvanceCarryTests(unittest.TestCase):
             git = self.repository(root)
             base = git("rev-parse", "HEAD")
             git("checkout", "-qb", "pr")
-            (root / "crates/ui/src/a.rs").write_text("// pr\n")
+            (root / "crates/ui/src/a.rs").write_text("#[test] fn original() {}\n")
             git("add", ".")
             git("commit", "-qm", "pr")
             evidence = self.evidence(root, plan.resolve(root, profile="merge", base=base,
                                                         source=git("rev-parse", "HEAD"), metadata=self.metadata(root)))
             candidate = git("rev-parse", "HEAD")
 
-            def advance(paths, *, then=None):
+            def advance(paths, *, then=None, checker=None):
                 git("checkout", "-q", "--detach", base)
                 for path, text in paths.items():
                     (root / path).parent.mkdir(parents=True, exist_ok=True)
@@ -1938,7 +1965,7 @@ class BaseAdvanceCarryTests(unittest.TestCase):
                     git("commit", "-qm", "extra")
                 resolved = plan.resolve(root, profile="merge", base=advanced,
                                         source=git("rev-parse", "HEAD"), metadata=self.metadata(root))
-                return plan.carry_basis(root, resolved, evidence, env={})
+                return (checker or plan.carry_basis)(root, resolved, evidence, env={})
 
             yield root, base, candidate, evidence, advance
 
@@ -1947,6 +1974,54 @@ class BaseAdvanceCarryTests(unittest.TestCase):
             basis = advance({"crates/core/src/lib.rs": "// advanced\n", "docs/a.md": "prose"})
             self.assertEqual(basis["delta_owners"], ["core"])
             self.assertEqual(basis["report_commit"], candidate)
+
+    def test_carry_refuses_rehashed_historical_selection(self):
+        with self.carry_fixture() as (_, _, _, evidence, advance):
+            old = evidence["plan"]
+            old["python_tests"]["forged"] = True
+            old.pop("plan_sha256")
+            old["plan_sha256"] = hashlib.sha256(json.dumps(old, sort_keys=True).encode()).hexdigest()
+            with self.assertRaisesRegex(ValueError, "historical"):
+                advance({"crates/core/src/lib.rs": "// advanced\n"})
+
+    def test_carry_reconstructs_selector_relevant_old_source(self):
+        with self.carry_fixture() as (_, _, _, evidence, advance):
+            self.assertEqual(evidence["plan"]["boundary"]["module_filters"], {"ui": ["a::"]})
+            basis = advance({"crates/ui/src/lib.rs": "#[cfg(test)]\nmod a;\n"})
+            self.assertEqual(basis["delta_owners"], ["ui"])
+
+    def test_carry_git_uses_explicit_environment(self):
+        def check(root, current, evidence, **_):
+            env = {**os.environ, "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull}
+            with patch.dict(os.environ, {"GIT_DIR": str(root / "missing")}):
+                return plan.carry_basis(root, current, evidence, env=env)
+        with self.carry_fixture() as (_, _, _, _, advance):
+            self.assertEqual(advance({"crates/core/src/lib.rs": "// advanced\n"}, checker=check)["delta_owners"], ["core"])
+
+    def test_runner_refuses_incomplete_carried_report_before_inheritance(self):
+        def check(root, current, evidence, **_):
+            report = root / "artifacts/old.json"
+            report.parent.mkdir()
+            report.write_text(json.dumps(evidence))
+            runner = ci.LocalCiRunner(root, mode="merge", plan=current, carry_report=report)
+            runner._prepare_carry()
+            self.assertIsNotNone(runner._carry)
+            cache = evidence["target_cache"]
+            evidence["target_cache"] = []
+            report.write_text(json.dumps(evidence))
+            runner._prepare_carry()
+            self.assertIsNone(runner._carry)
+            self.assertIn("guarded target identity", runner.summary["carry"]["refused"])
+            evidence["target_cache"] = cache
+            evidence["steps"].pop()
+            raw = json.dumps(evidence).encode()
+            report.write_bytes(raw)
+            runner._prepare_carry()
+            self.assertIsNone(runner._carry)
+            self.assertIn("every step runs fresh", runner.summary["carry"]["refused"])
+            self.assertEqual(report.read_bytes(), raw)
+        with self.carry_fixture() as (_, _, _, _, advance):
+            advance({"crates/core/src/lib.rs": "// advanced\n"}, checker=check)
 
     def assert_carry_advance_refused(self, paths, then, message):
         with self.carry_fixture() as (_, _, _, _, advance):
@@ -1980,6 +2055,8 @@ class BaseAdvanceCarryTests(unittest.TestCase):
                     plan.carry_basis(root, current, {**evidence, field: value}, env={})
             with self.assertRaisesRegex(ValueError, "native/external"):
                 plan.carry_basis(root, current, evidence, env={"HEX_VST3_SDK_DIR": "x"})
+            with self.assertRaisesRegex(ValueError, "not a complete passed"):
+                plan.carry_basis(root, current, {**evidence, "start_tree": "bad", "end_tree": "bad"}, env={})
             # A report whose base is newer than the current base cannot carry.
             newer = {**evidence["plan"], "base": candidate}
             with self.assertRaisesRegex(ValueError, "not an ancestor"):
@@ -1998,7 +2075,7 @@ class BaseAdvanceCarryTests(unittest.TestCase):
             runner.output_dir.mkdir(parents=True)  # run() creates it before any step.
             basis = {"report_commit": "c0", "delta_paths": ["crates/core/src/lib.rs"],
                      "delta_owners": ["core"], "python_tests": {"mode": "none", "reasons": []}}
-            with patch.object(ci.ci_plan, "carry_basis", return_value=basis):
+            with patch.object(ci, "validate_report_steps"), patch.object(ci.ci_plan, "carry_basis", return_value=basis):
                 runner._prepare_carry()
             self.assertEqual(runner.summary["carry"]["decisions"][0]["action"], "carry")
             runner._record_carried(step, 1, runner._carry[0])
@@ -2007,12 +2084,16 @@ class BaseAdvanceCarryTests(unittest.TestCase):
             self.assertEqual(carried["carried_from"], {"report": str(report.resolve()), "commit": "c0", "log": "old.log"})
             # A chained carry keeps the run that actually executed the step.
             self.assertEqual(runner._carry_origin({"carried_from": {"report": "first.json"}}), {"report": "first.json"})
+            with patch.object(ci, "validate_report_steps", side_effect=ValueError("report changed")):
+                runner._prepare_carry()
+            self.assertIsNone(runner._carry)
+            self.assertIsNone(runner._carry_dependency_inputs)
             runner._drop_carry("toolchain changed")
             self.assertIsNone(runner._carry)
             self.assertIn("run fresh", runner.summary["carry"]["refused"])
             refused = ci.LocalCiRunner(root, mode="merge", plan=resolved, min_free_bytes=0,
                                        steps=(step,), carry_report=report)
-            with patch.object(ci.ci_plan, "carry_basis", side_effect=ValueError("own path changed")):
+            with patch.object(ci, "validate_report_steps"), patch.object(ci.ci_plan, "carry_basis", side_effect=ValueError("own path changed")):
                 refused._prepare_carry()
             self.assertIsNone(refused._carry)
             self.assertIn("every step runs fresh", refused.summary["carry"]["refused"])

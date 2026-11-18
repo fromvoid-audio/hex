@@ -5,7 +5,10 @@ mod editor_recording;
 mod first_effect_take;
 mod installed_edits;
 mod instruments;
+mod latency_restart;
+mod live_stream;
 mod offline_bounce;
+mod paused_monitor;
 mod performance_profile;
 mod state;
 mod ui;
@@ -1661,7 +1664,7 @@ fn admitted_parameter_conversion_survives_output_close() {
 
 #[test]
 #[ignore = "explicit original SDK helper and source fixtures required"]
-fn native_effect_real_work_contention_waits_then_keeps_exact_accept_or_refusal() {
+fn native_effect_real_work_contention_returns_through_session_for_both_timing_modes() {
     let _native = native_fixture();
     for known_presentation in [false, true] {
         let (reached, facts) = mpsc::sync_channel(1);
@@ -1689,6 +1692,10 @@ fn native_effect_real_work_contention_waits_then_keeps_exact_accept_or_refusal()
         let before_attempt = h.plugin_progress.lock().unwrap().attempts;
         resume.send(()).unwrap();
         wait(|| h.plugin_progress.lock().unwrap().attempts > before_attempt);
+        assert!(
+            h.plugin_progress.lock().unwrap().facts_attempt_from_session,
+            "Facts must retry through the matching Session continuation"
+        );
         let pending = h.next();
         release.send(()).unwrap();
         holder.join().unwrap();
@@ -1705,30 +1712,38 @@ fn native_effect_real_work_contention_waits_then_keeps_exact_accept_or_refusal()
             &finished.plugin_effect_complete[0].control,
             &input.control
         ));
-        assert_eq!(
-            finished.plugin_effect_complete[0].accepted,
-            known_presentation
-        );
-        if known_presentation {
-            assert!(finished.error.is_none(), "{:?}", finished.error);
-            assert_eq!(finished.state.revision, initial.state.revision + 1);
-            assert_eq!(finished.state.project.main_devices().len(), 1);
-        } else {
-            assert!(
-                finished.error.as_ref().unwrap().contains("presentation"),
-                "{:?}",
-                finished.error
-            );
-            assert_eq!(finished.state.project, initial.state.project);
-            assert_eq!(finished.state.revision, initial.state.revision);
-            assert!(!finished.state.can_undo);
-        }
+        assert!(finished.plugin_effect_complete[0].accepted);
+        assert!(finished.error.is_none(), "{:?}", finished.error);
+        assert_eq!(finished.state.revision, initial.state.revision + 1);
+        assert_eq!(finished.state.project.main_devices().len(), 1);
     }
 }
 
 #[test]
 #[ignore = "explicit original SDK helper and source fixtures required"]
-fn native_effect_coordinator_refuses_unknown_presentation_without_canonical_or_history_edit() {
+fn native_effect_coordinator_preserves_history_when_plugin_refuses_presentation() {
+    const CHILD: &str = "HEX_DESKTOP_PRESENTATION_REFUSAL_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                std::thread::current().name().unwrap(),
+                "--ignored",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .env("HEX_ORIGINAL_INSTANCE_VARIANT", "17")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+        return;
+    }
     let _native = native_fixture();
     let mut h = ResidentHarness::with_plugins(host(), None);
     let initial = h.next();
@@ -1922,120 +1937,4 @@ fn native_effect_metadata_hold_survives_profile_refusal_without_opening_a_device
     let retained = sink.native_sampler_hold();
     assert_eq!(retained.retained_bytes, held.retained_bytes);
     assert_eq!(retained.construction_bytes, held.construction_bytes);
-}
-
-#[test]
-#[ignore = "run with source-bound SDK receipts and variant 105 plus its release path"]
-fn native_latency_restart_rebuilds_compensation_on_the_original_source() {
-    let _native = native_fixture();
-    assert_eq!(
-        std::env::var("HEX_ORIGINAL_INSTANCE_VARIANT").as_deref(),
-        Ok("105")
-    );
-    let release = PathBuf::from(std::env::var_os("HEX_ORIGINAL_INSTANCE_RELEASE").unwrap());
-    assert!(!release.exists());
-    let mut h = ResidentHarness::with_plugins(
-        host(),
-        Some(EffectPresentation {
-            input_frames: 0,
-            output_frames: 512,
-        }),
-    );
-    assert!(h.next().error.is_none());
-    let (applied, _) = h.applied(0);
-    let files = Files::new();
-    let path = files.wav(48_000, 4096);
-    let mut wav = fs::read(&path).unwrap();
-    wav[44..].fill(0);
-    wav[44 + 256 * 2..44 + 257 * 2].copy_from_slice(&8192i16.to_le_bytes());
-    fs::write(&path, wav).unwrap();
-    h.run(Request::Import(path.clone()));
-    let (applied, _) = h.applied(applied);
-    let state = h.run(Request::Import(path)).state;
-    let (applied, _) = h.applied(applied);
-    assert_eq!(state.project.tracks().len(), 2);
-    let track = state.project.tracks()[0].id();
-    h.service
-        .submit(Request::InsertPluginEffect(request(
-            &state,
-            PluginEffectDestination::Track(track),
-        )))
-        .unwrap();
-    assert!(h.next().error.is_none());
-    let accepted = terminal(&mut h);
-    assert!(accepted.error.is_none(), "{:?}", accepted.error);
-    assert!(accepted.plugin_effect_complete[0].accepted);
-    let (applied, _) = h.applied(applied);
-    let audio = h.audio.as_mut().unwrap();
-    let before = audio.status().unwrap().native_effect_source().unwrap();
-    audio.control.command(PlaybackCommand::Play).unwrap();
-    h.render_plugin_block();
-    wait(|| h.plugin_completed.load(Acquire) == 1);
-    wait(|| h.plugin_progress.lock().unwrap().observed_latency_receipt);
-    let binding = h.plugin_progress.lock().unwrap().binding.unwrap();
-
-    fs::write(release, b"request latency restart").unwrap();
-    wait(|| {
-        h.pump();
-        h.latency_restart == Some(before)
-    });
-    let audio = h.audio.as_mut().unwrap();
-    assert!(audio.status().unwrap().playing.load(Acquire));
-    audio.control.command(PlaybackCommand::Stop).unwrap();
-    h.render_plugin_block();
-    assert!(
-        !h.audio
-            .as_ref()
-            .unwrap()
-            .status()
-            .unwrap()
-            .playing
-            .load(Acquire)
-    );
-    h.service.submit(Request::RestoreStoppedPlayback).unwrap();
-    let restored = restored_terminal(&mut h);
-    assert!(restored.error.is_none(), "{:?}", restored.error);
-    assert_eq!(restored.state.revision, accepted.state.revision);
-    assert_eq!(restored.state.project, accepted.state.project);
-    let (fresh, metadata) = h.applied(applied);
-    assert!(metadata.stopped_restore);
-    let audio = h.audio.as_mut().unwrap();
-    let after = audio.status().unwrap().native_effect_source().unwrap();
-    assert_eq!(after.audio_revision, fresh);
-    assert_eq!(after.context, before.context);
-    assert_eq!(after.output_identity, before.output_identity);
-    wait(|| {
-        h.plugin_progress
-            .lock()
-            .unwrap()
-            .binding
-            .is_some_and(|updated| {
-                updated.instance == binding.instance && updated.epoch > binding.epoch
-            })
-            && h.plugin_completed.load(Acquire) == 0
-    });
-    // Actual callback installation can precede the worker's fence release.
-    wait(|| {
-        h.audio
-            .as_mut()
-            .unwrap()
-            .control
-            .command(PlaybackCommand::PlayFrom(0))
-            .is_ok()
-    });
-    let mut pcm = Vec::new();
-    for block in 0..4 {
-        pcm.extend(h.render_plugin_block());
-        wait(|| h.plugin_completed.load(Acquire) > block);
-    }
-    let nonzero: Vec<_> = pcm
-        .iter()
-        .enumerate()
-        .filter(|(_, frame)| **frame != [0.0; 2])
-        .collect();
-    // Both tracks have the same input impulse. The fixture's additional
-    // seven frames must shift both paths, and neither path may disappear.
-    assert_eq!(nonzero.len(), 1, "{nonzero:?}");
-    assert_eq!(nonzero[0].0, 256 + 512 + 7);
-    assert!(nonzero[0].1[0] > 0.25);
 }

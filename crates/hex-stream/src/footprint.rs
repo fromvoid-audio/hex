@@ -79,14 +79,18 @@ impl TransportData {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct WorkerData {
     pub constructor_complete: bool,
+    pub granular: Option<crate::GranularRuntimeData>,
     pub source_slots: AllocationData,
     pub definition_paths: usize,
     pub reader_paths: usize,
+    /// Digest backing plus sized manifest owner DATA, conservatively charged
+    /// per reader even when immutable owners are shared. Excludes Arc metadata.
     pub manifests: usize,
     pub kernel_objects: usize,
     pub kernel_weights: usize,
     pub pitch_filter_weights: usize,
     pub kernel_handles: usize,
+    pub manifest_handles: usize,
     pub source_scratch: AllocationData,
     pub pitch_scratch: AllocationData,
     pub free_page_handles: AllocationData,
@@ -113,6 +117,8 @@ impl WorkerData {
     pub fn bytes(self) -> Option<usize> {
         self.constructor_complete.then_some(())?;
         sum([
+            self.granular
+                .map_or(Some(0), crate::GranularRuntimeData::bytes)?,
             self.source_slots.bytes()?,
             self.definition_paths,
             self.reader_paths,

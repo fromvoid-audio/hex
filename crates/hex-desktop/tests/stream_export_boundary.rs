@@ -7,6 +7,11 @@
 #[path = "../src/audio_policy.rs"]
 mod audio_policy;
 #[allow(dead_code)]
+#[path = "../src/granular_sources.rs"]
+mod granular_sources;
+#[path = "stream_export_boundary/long_stretch.rs"]
+mod long_stretch;
+#[allow(dead_code)]
 #[path = "../src/streamed_export.rs"]
 mod streamed_export;
 use audio_policy::AudioPolicy;
@@ -76,6 +81,9 @@ impl WorkerAudioSink for OfflineSink {
     fn close(&mut self) {}
     fn streamed_exporter(&self) -> Option<hex_session::service::StreamedExporter> {
         Some(self.render)
+    }
+    fn streamed_bouncer(&self) -> Option<hex_session::StreamedBouncer> {
+        Some(streamed_export::bounce)
     }
 }
 fn offline(rate: u32, render: hex_session::service::StreamedExporter) -> Service {
@@ -580,4 +588,135 @@ fn verified_pages_feed_offline_processor_and_failures_preserve_existing_output()
     let error = exported(&foreign).result.unwrap_err();
     assert!(error.message().contains("supports main only"), "{error}");
     assert_eq!(fs::read(existing).unwrap(), b"keep existing");
+}
+
+#[test]
+fn granular_tones_export_matches_converted_stereo_resident_pcm() {
+    granular_export(hex_project::WarpMode::Tones { grain_ms: 32 });
+}
+#[test]
+fn granular_texture_export_matches_converted_stereo_resident_pcm() {
+    granular_export(hex_project::WarpMode::Texture {
+        grain_ms: 32,
+        fluctuation: 35,
+        seed: 42,
+    });
+}
+fn granular_export(mode: hex_project::WarpMode) {
+    let files = Files::new();
+    let original = files.0.join("stereo-granular.wav");
+    let mut frame = 0usize;
+    hex_export::write_float_wav_new(&original, 24_000, 8192, &AtomicBool::new(false), |output| {
+        for dst in output {
+            let x = (frame as f32 * 0.071).sin() * 0.2;
+            *dst = [x, x * -1.7];
+            frame += 1;
+        }
+        Ok(())
+    })
+    .unwrap();
+    let bytes = fs::read(&original).unwrap();
+    fn small(
+        request: &hex_session::service::StreamedExportRequest<'_>,
+    ) -> Result<hex_export::ExportReport, hex_session::service::ExportFailure> {
+        streamed_export::render_with_config(request, hex_stream::StreamConfig::with_pool_pages(4))
+            .map_err(Into::into)
+    }
+    let streamed = offline(48_000, small);
+    let resident = Service::new(48_000, 16, 65_536).unwrap();
+    event(&resident);
+    for service in [&streamed, &resident] {
+        let imported = run(service, Request::Import(original.clone()));
+        let clip = imported.state.project.tracks()[0].clips()[0].id();
+        let neutral = run(
+            service,
+            Request::Edit(hex_project::Command::SetClipFades {
+                clip,
+                fade_in: 0,
+                fade_out: 0,
+            }),
+        );
+        let warp = hex_project::default_audio_warp(
+            neutral.state.project.clip(clip).unwrap(),
+            neutral.state.project.tempo_map(),
+            mode,
+        )
+        .unwrap();
+        run(
+            service,
+            Request::Edit(hex_project::Command::SetAudioClipWarp {
+                clip,
+                settings: Some(warp),
+            }),
+        );
+        run(
+            service,
+            Request::Edit(hex_project::Command::SetProjectTempo {
+                tempo: hex_project::Tempo::new(180_000_000).unwrap(),
+            }),
+        );
+    }
+    let actual = files.0.join("granular-streamed.wav");
+    let expected = files.0.join("granular-resident.wav");
+    for (service, path) in [(&streamed, &actual), (&resident, &expected)] {
+        run(
+            service,
+            Request::ExportRange {
+                path: path.clone(),
+                start: 31,
+                frames: Some(8192),
+                overwrite: false,
+                signal: hex_export::ExportSignal::Main,
+                format: hex_export::ExportFormat::Pcm16,
+                control: hex_export::ExportControl::default(),
+            },
+        );
+        let finished = exported(service);
+        assert!(finished.result.is_ok(), "{:?}", finished.result);
+    }
+    let decode = |path: &std::path::Path| {
+        hex_media::decode_wav_file(path, hex_media::Limits::new(1 << 20, 65_536))
+            .unwrap()
+            .audio()
+            .frames()
+            .to_vec()
+    };
+    let actual = decode(&actual);
+    let expected = decode(&expected);
+    assert_eq!(actual.len(), 8192);
+    assert_eq!(actual.len(), expected.len());
+    assert!(expected.iter().flatten().any(|x| x.abs() > 0.01));
+    let error = actual
+        .iter()
+        .flatten()
+        .zip(expected.iter().flatten())
+        .map(|(a, b)| (a - b).abs())
+        .fold(0.0f32, f32::max);
+    assert!(
+        error <= 1.0 / 32768.0,
+        "granular export PCM difference {error}"
+    );
+    assert_eq!(fs::read(&original).unwrap(), bytes);
+    let mut changed = bytes;
+    *changed.last_mut().unwrap() ^= 1;
+    fs::write(&original, &changed).unwrap();
+    let refused = files.0.join("refused-granular.wav");
+    run(
+        &streamed,
+        Request::ExportRange {
+            path: refused.clone(),
+            start: 31,
+            frames: Some(8192),
+            overwrite: false,
+            signal: hex_export::ExportSignal::Main,
+            format: hex_export::ExportFormat::Pcm16,
+            control: hex_export::ExportControl::default(),
+        },
+    );
+    assert!(exported(&streamed).result.is_err());
+    assert!(
+        !refused.exists(),
+        "changed granular media must not publish output"
+    );
+    assert_eq!(fs::read(&original).unwrap(), changed);
 }

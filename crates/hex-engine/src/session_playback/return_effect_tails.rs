@@ -241,12 +241,14 @@ impl ReturnEffectTailBank {
                     if frames.len() != 1 {
                         return Err(SessionPlaybackError::DeviceRuntime);
                     }
-                    let origin = crate::signal_graph::OriginClock(
-                        compensation.delays.stamp_at_delay(arrival),
-                    );
-                    let output_origin = crate::signal_graph::OriginClock(
-                        compensation.delays.stamp_at_delay(output_arrival),
-                    );
+                    let input_stamp = compensation.delays.stamp_at_delay_ref(arrival);
+                    let origin = crate::signal_graph::OriginClock(input_stamp);
+                    let output_origin =
+                        crate::signal_graph::OriginClock(if arrival == output_arrival {
+                            input_stamp
+                        } else {
+                            compensation.delays.stamp_at_delay_ref(output_arrival)
+                        });
                     tail.chain.process_range_with_foreign(
                         entry..entry + 1,
                         frames,

@@ -288,7 +288,7 @@ impl ArrangementClips {
                 target.metadata = Some(Box::new(ClipMetadata {
                     gain: s.gain,
                     source_phase: s.phase,
-                    reversed: false,
+                    reversed: s.reversed,
                     fade,
                     streamed: None,
                     sparse: None,
@@ -407,7 +407,7 @@ impl ArrangementClips {
                         || m.sparse.is_some()
                         || m.gain != s.gain
                         || m.source_phase != s.phase
-                        || m.reversed
+                        || m.reversed != s.reversed
                         || m.fade != (!s.fade.is_neutral()).then_some(s.fade)
                 })
                 || s.disposal != Disposal::Unstarted

@@ -70,6 +70,9 @@ impl SessionPlayback {
     ) -> Result<(), SessionPlaybackError> {
         match command {
             SessionPlaybackCommand::Play => {
+                if !self.playing {
+                    self.end_paused_source_interval();
+                }
                 if !self.playing
                     && let Some(keyboard) = &mut self.computer_keyboard
                     && self.revision.arrangement().tracks().iter().any(|track| {
@@ -97,10 +100,14 @@ impl SessionPlayback {
                     self.foreign_arrangement.cut();
                     // A removed receiver may already own a detached release.
                     // Only explicit discontinuities reset admitted monitoring.
-                    self.monitor_source_releases |=
-                        self.revision.arrangement().tracks().iter().any(|track| {
+                    if !self.monitor_source_releases
+                        && self.revision.arrangement().tracks().iter().any(|track| {
                             track.source_id().is_some() && track.receives_source_audio()
-                        });
+                        })
+                        && !self.can_freeze_idle_latency_history()
+                    {
+                        self.monitor_source_releases = true;
+                    }
                     for runtime in self
                         .mutable_instruments
                         .iter_mut()
@@ -119,6 +126,7 @@ impl SessionPlayback {
                 self.browser_audition.voices = Default::default();
             }
             SessionPlaybackCommand::Stop => {
+                self.end_paused_source_interval();
                 self.clear_gain_recording_override();
                 self.invalidate_native_parameter_input();
                 if self.stop_transport() {
@@ -175,7 +183,13 @@ impl SessionPlayback {
         Ok(())
     }
 
-    fn stop_transport(&mut self) -> bool {
+    fn end_paused_source_interval(&mut self) {
+        if let Some(monitor) = &mut self.paused_source_monitor {
+            monitor.end_resident_interval();
+        }
+    }
+
+    pub(super) fn stop_transport(&mut self) -> bool {
         self.browser_audition.voices = Default::default();
         self.foreign_arrangement.cut();
         let mut changed = self.performance_frame != 0;
@@ -321,6 +335,7 @@ impl SessionPlayback {
     }
 
     pub(super) fn install_seek(&mut self, frame: u64, beat: BeatTime) {
+        self.end_paused_source_interval();
         self.browser_audition.voices = Default::default();
         self.monitor_source_releases = false;
         let mut changed = self.performance_frame != frame;

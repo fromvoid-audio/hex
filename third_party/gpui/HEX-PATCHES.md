@@ -104,6 +104,12 @@ scan over deterministic mixed geometry at 1×/2× and a rounded-ancestor case,
 alongside the mixed-primitive replay oracle. No balancing, primitive/layer
 grouping, native API, allocation or dependency is added.
 
+Live ordering can reuse the nearest leaf when its clipped bounds exactly match
+the new rectangle. After the usual query, keep the largest order in the leaf
+and propagate the maximum along the usual ancestor path. Every primitive
+keeps its own assigned order and every future overlap has the same maximum.
+The locked verifier covers repeated overlap, reservation and disjoint reuse.
+
 11 October compiler compatibility: explicitly type the grid repeat helper's
 zero minimum and one-fraction literals as f32. Pinned Taffy 0.9.0's `length`
 and `fr` helpers accept `Into<f32>`; this preserves the same values/layout and

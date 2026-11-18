@@ -298,7 +298,7 @@ impl Plugins {
             closed: false,
             drained: false,
         })));
-        self.latency_poll_at = None;
+        self.parameter_poll.request_ordinary_poll();
         Ok(())
     }
 

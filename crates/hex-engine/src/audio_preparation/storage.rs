@@ -52,6 +52,7 @@ impl AudioPreparationCustody {
             phase: _,
             gain: _,
             looping: _,
+            reversed: _,
             fade: _,
             owner,
             prepared_origin,

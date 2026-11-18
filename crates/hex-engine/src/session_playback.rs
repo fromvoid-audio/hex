@@ -151,6 +151,9 @@ pub enum SessionPlaybackError {
     /// publication owner may retry pure handoff planning after real rendering
     /// advances that tail; it must not duplicate, reset or substitute the source.
     ForeignTailSourceBusy,
+    /// The predecessor currently renders no device chains, so retrying the
+    /// streamed handoff cannot advance the outgoing foreign effect tail.
+    ForeignTailSourcePaused,
     /// The retained group path is still processing an outgoing tail. The
     /// publication owner can retry once the predecessor drains or stops.
     GroupTailRoutingBusy,
@@ -207,6 +210,9 @@ impl SessionPlaybackError {
             }
             Self::ForeignTailSourceBusy => {
                 "native effect endpoint is still owned by an outgoing tail"
+            }
+            Self::ForeignTailSourcePaused => {
+                "native effect tail is paused · resume playback, then retry"
             }
             Self::GroupTailRoutingBusy => {
                 "group routing change is waiting for an outgoing tail · stop or wait for it to finish"
@@ -448,6 +454,9 @@ pub const MAX_FINITE_BOUNCE_FRAMES: u64 = hex_project::MAX_ARRANGEMENT_BOUNCE_FR
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum RenderConstruction {
     Interactive,
+    /// The resident keeps every instrument runtime and lends its source
+    /// slots for a paused render. This constructor owns downstream DSP only.
+    BorrowedPauseSources,
     LinearExport,
     LinearForeignExport,
     FiniteBounce,
@@ -505,6 +514,8 @@ struct PendingSharedLive {
 pub struct SessionPlayback {
     pub(crate) live_expression: Option<Arc<crate::live_expression::LiveExpressionInput>>,
     pub(crate) computer_keyboard: Option<Box<crate::computer_keyboard::ComputerKeyboardRuntime>>,
+    pub(crate) paused_source_monitor: Option<Box<PausedTrackMonitor>>,
+    pub(crate) defer_paused_source_monitor: bool,
     pub(crate) current_sampler_keyboard_epoch: u64,
     pub(crate) current_sampler_keyboard_revoked: u64,
     // Nontransferable constructor-owned pairs; no UI input/source owners.
@@ -572,6 +583,8 @@ pub struct SessionPlayback {
     tail_suffix_matrices: Vec<Option<hex_lattice::StereoMatrix>>,
     tail_output_active: [bool; SESSION_TAIL_GROUP_CAPACITY],
     tail_output_scratch: [bool; SESSION_TAIL_GROUP_CAPACITY],
+    // Occupied tail prefix for the current render transaction.
+    detached_tail_group_limit: usize,
     releases: Vec<ReleaseEntry>,
     release_scratch: Vec<ReleaseEntry>,
     retained_contexts: Vec<Option<Arc<crate::shared_analytic::SharedContextOwner>>>,
@@ -947,6 +960,8 @@ impl SessionPlayback {
         let Self {
             live_expression,
             computer_keyboard,
+            paused_source_monitor: _,
+            defer_paused_source_monitor: _,
             current_sampler_keyboards: _,
             current_sampler_keyboard_epoch: _,
             current_sampler_keyboard_revoked: _,
@@ -1000,6 +1015,7 @@ impl SessionPlayback {
             tail_suffix_matrices: _,
             tail_output_active: _,
             tail_output_scratch: _,
+            detached_tail_group_limit: _,
             releases: _,
             release_scratch: _,
             retained_contexts,
@@ -1465,6 +1481,9 @@ impl SessionPlayback {
             RenderConstruction::Interactive => {
                 preroll::arrangement_runtime_storage_preflight_bytes(revision)
             }
+            RenderConstruction::BorrowedPauseSources => {
+                preroll::paused_source_runtime_storage_preflight_bytes(revision)
+            }
             RenderConstruction::LinearExport
             | RenderConstruction::LinearForeignExport
             | RenderConstruction::FiniteBounce
@@ -1475,10 +1494,14 @@ impl SessionPlayback {
         bytes
             .filter(|n| *n <= MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES)
             .ok_or(SessionPlaybackError::MutableInstrumentDiagnostic(
-                if policy == RenderConstruction::Interactive {
-                    "interactive runtime exceeds its independent runtime limit"
-                } else {
-                    "sampler export runtime exceeds its independent runtime limit"
+                match policy {
+                    RenderConstruction::Interactive => {
+                        "interactive runtime exceeds its independent runtime limit"
+                    }
+                    RenderConstruction::BorrowedPauseSources => {
+                        "paused source monitor exceeds its independent runtime limit"
+                    }
+                    _ => "sampler export runtime exceeds its independent runtime limit",
                 },
             ))
     }
@@ -1652,6 +1675,7 @@ impl SessionPlayback {
             resources,
             transient_loop,
             None,
+            &[],
         )
     }
 
@@ -1666,6 +1690,7 @@ impl SessionPlayback {
             None,
             None,
             Some(recipes),
+            &[],
         )
     }
 
@@ -1675,10 +1700,14 @@ impl SessionPlayback {
         resources: Option<&crate::native_device_resources::PreparedDeviceResources>,
         transient_loop: Option<hex_project::LoopRegion>,
         recipe_override: Option<&[crate::source_effect_stage::PreparedSourceEffects]>,
+        monitor_effects: &[PausedMonitorForeignBinding],
     ) -> Result<Self, SessionPlaybackError> {
         let arrangement = revision.arrangement();
         let recipes = recipe_override.unwrap_or(&arrangement.source_effects);
-        let linear_arrangement_export = policy != RenderConstruction::Interactive;
+        let linear_arrangement_export = !matches!(
+            policy,
+            RenderConstruction::Interactive | RenderConstruction::BorrowedPauseSources
+        );
         let lacks_foreign_renderer = linear_arrangement_export
             && !matches!(
                 policy,
@@ -1715,7 +1744,11 @@ impl SessionPlayback {
                 "audition loop exceeds the prepared vst3 automation capacity",
             ));
         }
-        let foreign_arrangement = foreign_arrangement::ForeignArrangement::prepare(&revision)?;
+        let foreign_arrangement = if policy == RenderConstruction::BorrowedPauseSources {
+            foreign_arrangement::ForeignArrangement::default()
+        } else {
+            foreign_arrangement::ForeignArrangement::prepare(&revision)?
+        };
         if lacks_foreign_renderer && !foreign_arrangement.is_empty() {
             return Err(SessionPlaybackError::MutableInstrumentDiagnostic(
                 "vst3 instruments require interactive arrangement playback",
@@ -1954,6 +1987,7 @@ impl SessionPlayback {
             let runtime = revision
                 .session()
                 .mutable_instrument_factory(id)
+                .filter(|_| policy != RenderConstruction::BorrowedPauseSources)
                 .map(|factory| {
                     MutableInstrumentTrackRuntime::new(
                         factory,
@@ -1997,11 +2031,14 @@ impl SessionPlayback {
             .try_reserve_exact(arrangement_tracks.len())
             .map_err(|_| SessionPlaybackError::Allocation)?;
         for track in arrangement_tracks {
-            device_chains.push(
+            let chain = if monitor_effects.is_empty() {
                 track
                     .new_device_runtime()
-                    .map_err(|_| SessionPlaybackError::DeviceRuntime)?,
-            );
+                    .map_err(|_| SessionPlaybackError::DeviceRuntime)?
+            } else {
+                paused_track_monitor::build_monitor_chain(&track.device_chain, monitor_effects)?
+            };
+            device_chains.push(chain);
         }
         let return_buses = revision.arrangement().return_buses();
         let mut return_chains = Vec::new();
@@ -2031,21 +2068,23 @@ impl SessionPlayback {
             .try_reserve_exact(return_buses.len())
             .map_err(|_| SessionPlaybackError::Allocation)?;
         for bus in return_buses {
-            let mut instances = Vec::new();
-            instances
-                .try_reserve_exact(bus.device_chain.len())
-                .map_err(|_| SessionPlaybackError::Allocation)?;
-            instances.extend(bus.device_chain.iter().cloned());
-            return_chains.push(
-                hex_lattice::NativeRuntimeChain::new_prepared(instances)
-                    .map_err(|_| SessionPlaybackError::DeviceRuntime)?,
-            );
+            return_chains.push(paused_track_monitor::build_monitor_chain(
+                &bus.device_chain,
+                monitor_effects,
+            )?);
             return_scratch.push([[0.0; 2]; 256]);
         }
-        let main_chain = revision
-            .arrangement()
-            .new_main_device_runtime()
-            .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
+        let main_chain = if monitor_effects.is_empty() {
+            revision
+                .arrangement()
+                .new_main_device_runtime()
+                .map_err(|_| SessionPlaybackError::DeviceRuntime)?
+        } else {
+            paused_track_monitor::build_monitor_chain(
+                &revision.arrangement().main_device_chain,
+                monitor_effects,
+            )?
+        };
         let return_effect_tails = ReturnEffectTailBank::new()?;
         let mut tail_groups = Vec::new();
         tail_groups
@@ -2205,6 +2244,8 @@ impl SessionPlayback {
         Ok(Self {
             live_expression: None,
             computer_keyboard: None,
+            paused_source_monitor: None,
+            defer_paused_source_monitor: false,
             current_sampler_keyboards,
             current_sampler_keyboard_epoch: 0,
             current_sampler_keyboard_revoked: 0,
@@ -2258,6 +2299,7 @@ impl SessionPlayback {
             tail_suffix_matrices,
             tail_output_active: [false; SESSION_TAIL_GROUP_CAPACITY],
             tail_output_scratch: [false; SESSION_TAIL_GROUP_CAPACITY],
+            detached_tail_group_limit: 0,
             releases,
             release_scratch,
             retained_contexts,
@@ -2789,6 +2831,11 @@ mod current_sampler_routes;
 mod handoff;
 pub use handoff::PreparedTempoAnchor;
 mod harmonic_import;
+mod paused_track_monitor;
+pub use paused_track_monitor::{
+    PausedKeyboardMonitor, PausedMonitorAdmissionError, PausedMonitorForeignBinding,
+    PausedMonitorStorageHold, PausedSourceMonitor, PausedTrackMonitor,
+};
 mod preroll;
 mod render;
 mod stream_actions;

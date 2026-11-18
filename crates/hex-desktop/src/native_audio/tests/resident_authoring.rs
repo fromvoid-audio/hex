@@ -1371,14 +1371,36 @@ fn running_tempo_edit_with_latency_keeps_the_audio_graph_playing() {
 
 #[test]
 fn running_tempo_edit_with_streamed_audio_and_latency_preserves_position() {
+    check_streamed_tempo_edit(false);
+}
+
+#[test]
+fn running_looped_tempo_edit_reanchors_streamed_audio_with_latency() {
+    check_streamed_tempo_edit(true);
+}
+
+fn check_streamed_tempo_edit(looped: bool) {
+    const PAGE: u64 = hex_engine::STREAM_PAGE_FRAMES as u64;
+    const OLD_START: u64 = 6015;
+    const OLD_END: u64 = 6207;
     let _native = native_fixture();
     for partition in [1, 257] {
         let files = Files::new();
         // Force this ordinary document's import through its file-backed source path.
-        let mut h = ResidentHarness::with_frame_limit(4);
+        let mut h = ResidentHarness::with_frame_limit_at_rate(4, 48_000);
         assert!(h.next().error.is_none());
         let (mut applied, _) = h.applied(0);
-        let imported = h.run(Request::Import(files.wav(48_000, 32_768)));
+        let path = files.wav(48_000, 32_768);
+        if looped {
+            let mut wav = fs::read(&path).unwrap();
+            // The old loop stays in page 1. After 120 -> 90 BPM its new
+            // range straddles page 2, whose sign distinguishes real render.
+            for sample in wav[44 + (2 * PAGE) as usize * 2..].chunks_exact_mut(2) {
+                sample.copy_from_slice(&(-8192_i16).to_le_bytes());
+            }
+            fs::write(&path, wav).unwrap();
+        }
+        let imported = h.run(Request::Import(path));
         (applied, _) = h.applied(applied);
         assert!(
             imported
@@ -1398,6 +1420,14 @@ fn running_tempo_edit_with_streamed_audio_and_latency_preserves_position() {
             before: None,
         });
         (applied, _) = h.applied(applied);
+        if looped {
+            h.run(Request::Edit(Command::SetLoopRegion {
+                start: OLD_START,
+                end: OLD_END,
+                enabled: true,
+            }));
+            (applied, _) = h.applied(applied);
+        }
         assert!(
             h.submitted_observation()
                 .unwrap()
@@ -1410,7 +1440,11 @@ fn running_tempo_edit_with_streamed_audio_and_latency_preserves_position() {
             .as_mut()
             .unwrap()
             .control
-            .command(PlaybackCommand::Play)
+            .command(if looped {
+                PlaybackCommand::PlayFrom(OLD_START)
+            } else {
+                PlaybackCommand::Play
+            })
             .unwrap();
         let ready = Instant::now() + Duration::from_secs(2);
         while !h.render().iter().flatten().any(|sample| *sample != 0.0) {
@@ -1466,14 +1500,24 @@ fn running_tempo_edit_with_streamed_audio_and_latency_preserves_position() {
         }
         let (before, after) = cut.unwrap();
         let beat = old_tempo.frame_to_beat(before).unwrap();
-        let relocated = edited
-            .unwrap()
-            .state
-            .project
-            .tempo_map()
-            .beat_to_frame(beat)
-            .unwrap();
-        assert_eq!(after, relocated + partition as u64, "partition={partition}");
+        let project = &edited.unwrap().state.project;
+        let relocated = project.tempo_map().beat_to_frame(beat).unwrap();
+        let advanced = relocated + partition as u64;
+        let expected = if looped {
+            let region = project.loop_region().unwrap();
+            assert!(region.enabled());
+            assert_eq!(region.start()..region.end(), 8020..8276);
+            assert!((OLD_START..OLD_END).contains(&before));
+            assert!((region.start()..region.end()).contains(&relocated));
+            assert_eq!(region.start() / PAGE + 1, (region.end() - 1) / PAGE);
+            if partition == 257 {
+                assert!(advanced >= region.end(), "publication block must wrap");
+            }
+            region.start() + (advanced - region.start()) % (region.end() - region.start())
+        } else {
+            advanced
+        };
+        assert_eq!(after, expected, "partition={partition} looped={looped}");
         let status = h.audio.as_ref().unwrap().status().unwrap();
         assert!(status.playing.load(Acquire));
         assert!(status.rejected_revision().is_none());
@@ -1483,7 +1527,13 @@ fn running_tempo_edit_with_streamed_audio_and_latency_preserves_position() {
             h.render();
         }
         let ready = Instant::now() + Duration::from_secs(2);
-        while !h.render().iter().flatten().any(|sample| *sample != 0.0) {
+        let mut positive = false;
+        let mut negative = false;
+        while !positive || (looped && !negative) {
+            for sample in h.render().iter().flatten() {
+                positive |= *sample > 0.05;
+                negative |= *sample < -0.05;
+            }
             assert!(Instant::now() < ready, "streamed audio did not resume");
             std::thread::sleep(Duration::from_millis(1));
         }

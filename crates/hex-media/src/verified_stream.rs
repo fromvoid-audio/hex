@@ -36,7 +36,7 @@ impl VerifiedWavReaderLimits {
 /// Immutable result of one complete verification: the whole-file fingerprint,
 /// ordered page digests and the file length/modification time they were
 /// captured under. Clones share one digest allocation, so a holder that already
-/// accounts for [`Self::manifest_bytes`] can hand it to another reader without
+/// accounts for the owner DATA and [`Self::manifest_bytes`] can hand it to another reader without
 /// a second copy.
 #[derive(Clone, Debug)]
 pub struct VerifiedWavManifest {
@@ -59,6 +59,13 @@ impl PartialEq for VerifiedWavManifest {
 impl Eq for VerifiedWavManifest {}
 
 impl VerifiedWavManifest {
+    /// Sized DATA in the shared manifest owner, excluding its digest backing
+    /// and opaque Arc/allocator metadata. Count each actual owner or charge a
+    /// conservative reservation per retained reader handle.
+    pub const fn owner_payload_bytes() -> usize {
+        std::mem::size_of::<ManifestFacts>()
+    }
+
     pub fn fingerprint(&self) -> &[u8; DIGEST_BYTES] {
         &self.facts.fingerprint
     }
@@ -856,6 +863,7 @@ fn map_verified_error(error: ImportError) -> ImportError {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct VerifiedReaderDataLayout {
     pub path_capacity: usize,
+    pub manifest_owner_payload_bytes: usize,
     pub manifest_capacity: usize,
     pub manifest_element_bytes: usize,
 }
@@ -875,6 +883,7 @@ impl VerifiedWavReader {
         } = self;
         VerifiedReaderDataLayout {
             path_capacity: path.capacity(),
+            manifest_owner_payload_bytes: VerifiedWavManifest::owner_payload_bytes(),
             manifest_capacity: manifest.manifest_bytes() / DIGEST_BYTES,
             manifest_element_bytes: std::mem::size_of::<[u8; DIGEST_BYTES]>(),
         }

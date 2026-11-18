@@ -1064,6 +1064,56 @@ fn seek_pause_stop_case(grouped: bool) {
 
 #[test]
 fn real_immediate_scene_waits_before_route_and_play_then_restarts_actual_clip() {
+    real_immediate_scene(false, false, false, false, false, false);
+}
+
+#[test]
+fn main_latency_session_scene_waits_for_pages_and_renders_without_allocations() {
+    real_immediate_scene(true, false, false, false, false, false);
+}
+
+#[test]
+fn upstream_latency_session_scene_waits_for_pages_and_renders_without_allocations() {
+    real_immediate_scene(true, true, false, false, false, false);
+}
+
+#[test]
+fn grouped_latency_session_scene_waits_for_pages_and_renders_without_allocations() {
+    real_immediate_scene(true, true, true, false, false, false);
+}
+
+#[test]
+fn fed_track_session_scene_waits_for_pages_and_renders_without_allocations() {
+    real_immediate_scene(true, true, false, true, false, false);
+}
+
+#[test]
+fn grouped_fed_track_session_scene_waits_for_pages_and_renders_without_allocations() {
+    real_immediate_scene(true, true, true, true, false, false);
+}
+
+#[test]
+fn return_feed_session_scene_waits_for_pages_and_renders_without_allocations() {
+    real_immediate_scene(true, true, false, false, true, false);
+}
+#[test]
+fn grouped_return_feed_session_waits_for_pages_and_renders_without_allocations() {
+    real_immediate_scene(true, true, true, false, true, false);
+}
+
+#[test]
+fn return_send_session_waits_for_pages_and_renders_without_allocations() {
+    real_immediate_scene(true, true, false, false, false, true);
+}
+
+fn real_immediate_scene(
+    with_latency: bool,
+    upstream: bool,
+    grouped: bool,
+    feed: bool,
+    return_feed: bool,
+    return_send: bool,
+) {
     let _serial = serial();
     if !hex_engine::audio_storage_constructor_layout_supported() {
         return;
@@ -1100,17 +1150,97 @@ fn real_immediate_scene_waits_before_route_and_play_then_restarts_actual_clip() 
             ),
         });
     let project = hex_project::Project::from_snapshot(snapshot).unwrap();
+    let project = if with_latency {
+        let mut editor = hex_project::Editor::new(project, 8).unwrap();
+        let source_track = editor.project().tracks()[0].id();
+        let destination = if grouped {
+            let hex_project::Created::Track(group) = editor
+                .execute(hex_project::Command::GroupTracks {
+                    tracks: hex_project::TrackSelectionIds::new(&[source_track]).unwrap(),
+                    name: "group".into(),
+                })
+                .unwrap()
+            else {
+                panic!("group")
+            };
+            group
+        } else {
+            source_track
+        };
+        let state = hex_engine::default_native_device_state(hex_engine::DeviceTypeId::from_static(
+            if upstream {
+                "hex.limiter"
+            } else {
+                "hex.saturator"
+            },
+        ))
+        .unwrap();
+        let command = if upstream {
+            hex_project::Command::InsertDevice {
+                track: destination,
+                before: None,
+                state,
+            }
+        } else {
+            hex_project::Command::InsertMainDevice {
+                before: None,
+                state,
+            }
+        };
+        editor.execute(command).unwrap();
+        if feed {
+            let hex_project::Created::Track(receiver) = editor
+                .execute(hex_project::Command::InsertTrackWithDevice {
+                    name: "receiver".into(),
+                    before_track: None,
+                    slot: hex_project::TrackDeviceSlot::Instrument,
+                    state: hex_project::default_instrument_state().unwrap(),
+                })
+                .unwrap()
+            else {
+                panic!("receiver")
+            };
+            editor
+                .execute(hex_project::Command::RemoveInstrument { track: receiver })
+                .unwrap();
+            editor
+                .execute(hex_project::Command::SetAudioFeed {
+                    source: hex_project::RoutingOwner::Track(source_track),
+                    destination: receiver,
+                    gain: 0.5,
+                })
+                .unwrap();
+        }
+        editor.project().clone()
+    } else {
+        project
+    };
+    let project = if return_feed || return_send {
+        stream_fixture::project_with_return_feed(project, return_feed)
+    } else {
+        project
+    };
     let asset = project.assets().next().unwrap().id();
     let scene = project.scenes()[0].id();
     let hex_project::SessionCellContent::Audio(audio) = project.session_cells()[0].content() else {
         panic!("audio fixture")
     };
     let clip = audio.id();
+    let track_index = project
+        .tracks()
+        .iter()
+        .position(|track| track.id() == project.session_cells()[0].track())
+        .unwrap();
     let wav = stream_fixture::Wav::with_rate_and_samples(4096, 24_000, |f| {
         if f < 2048 { 8192 } else { 16384 }
     });
     let definition = wav.definition(asset, 11);
-    let mut owner = stream_fixture::owner_with_context(
+    let make_owner = if with_latency {
+        stream_fixture::owner_with_effects
+    } else {
+        stream_fixture::owner_with_context
+    };
+    let mut owner = make_owner(
         &project,
         definition.metadata.clone(),
         Some(hex_engine::AudioSourceContext {
@@ -1172,7 +1302,7 @@ fn real_immediate_scene_waits_before_route_and_play_then_restarts_actual_clip() 
                 .current()
                 .unwrap()
                 .playback
-                .session_route_status(0)
+                .session_route_status(track_index)
                 .unwrap()
                 .owner,
             hex_engine::SessionPlaybackOwner::Arrangement
@@ -1189,7 +1319,9 @@ fn real_immediate_scene_waits_before_route_and_play_then_restarts_actual_clip() 
         assert!(std::time::Instant::now() < deadline);
         std::thread::yield_now();
     }
-    assert_eq!(output, [[0.5; 2]; 8]);
+    if !with_latency {
+        assert_eq!(output, [[0.5; 2]; 8]);
+    }
     assert_eq!(control.status.performance_frame.load(Acquire), 8);
     assert_eq!(
         control.status.stream_applied_command_prefix.load(Acquire),
@@ -1203,12 +1335,23 @@ fn real_immediate_scene_waits_before_route_and_play_then_restarts_actual_clip() 
                 .current()
                 .unwrap()
                 .playback
-                .session_route_status(0)
+                .session_route_status(track_index)
                 .unwrap()
                 .owner,
             hex_engine::SessionPlaybackOwner::Session { clip }
         )
     });
+    if with_latency {
+        while output.iter().all(|frame| frame[0] == 0.0) {
+            zero(allocation_counter::measure(|| {
+                data.owner_mut().unwrap().run(|c, _| {
+                    c.begin_block();
+                    c.render(&mut output).unwrap();
+                })
+            }));
+            assert!(control.status.performance_frame.load(Acquire) < 1024);
+        }
+    }
     let restart = control
         .session_command_with_ticket(hex_engine::SessionPlaybackCommand::LaunchClip {
             clip,
@@ -1226,7 +1369,11 @@ fn real_immediate_scene_waits_before_route_and_play_then_restarts_actual_clip() 
     let restarted: Vec<_> = (0..8)
         .map(|frame| [0.5 + 0.5 * (128 - frame) as f32 / 128.0; 2])
         .collect();
-    assert_eq!(output.as_slice(), restarted.as_slice());
+    if with_latency {
+        assert!(output.iter().flatten().any(|sample| *sample != 0.0));
+    } else {
+        assert_eq!(output.as_slice(), restarted.as_slice());
+    }
     assert_eq!(
         control.status.stream_applied_command_prefix.load(Acquire),
         restart

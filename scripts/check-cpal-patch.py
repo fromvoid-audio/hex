@@ -21,11 +21,13 @@ def main() -> int:
         print(f"cpal file inventory differs: {sorted(actual ^ (set(expected) | metadata))}", file=sys.stderr)
         return 1
     errors = []
+    allowed_delta = {"src/host/coreaudio/macos/device.rs", "src/host/coreaudio/macos/mod.rs",
+                     "src/host/coreaudio/mod.rs", "src/platform/mod.rs"}
     for name, digests in expected.items():
         digest = hashlib.sha256((root / name).read_bytes()).hexdigest()
         if digest != digests["current"]:
             errors.append(name)
-        if name != "src/host/coreaudio/macos/device.rs" and digests["original"] != digests["current"]:
+        if name not in allowed_delta and digests["original"] != digests["current"]:
             errors.append(f"unexpected declared delta: {name}")
     patch = hashlib.sha256((root / "hex-patches.diff").read_bytes()).hexdigest()
     if patch != manifest["patch_sha256"]:
@@ -33,7 +35,8 @@ def main() -> int:
     if errors:
         print(f"cpal provenance mismatch: {errors}", file=sys.stderr)
         return 1
-    print(f"cpal 0.17.3 provenance verified: {len(expected)} files, one source delta")
+    changed = sum(d["original"] != d["current"] for d in expected.values())
+    print(f"cpal 0.17.3 provenance verified: {len(expected)} files, {changed} source deltas")
     return 0
 
 

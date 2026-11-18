@@ -172,6 +172,38 @@ impl CanonicalAudioSourceSnapshot {
                 Ok((file, raw.with_repitch(&map, law)?))
             })
     }
+    /// Exact Tones/Texture roots for verified Arrangement clips in this snapshot.
+    /// Repeated clips may yield identical roots. Unsupported granular shapes and
+    /// mismatched file/asset facts yield errors rather than disappearing from the
+    /// requirements. The generation belongs to the caller's catalog, not the
+    /// document. These immutable facts never open files or grant worker/page leases.
+    pub fn required_granular_roots(
+        &self,
+        generation: u64,
+    ) -> impl Iterator<
+        Item = Result<
+            (
+                &crate::VerifiedAudioFile,
+                hex_engine::audio_transform::StreamedGranularRoot,
+            ),
+            hex_engine::Invalid,
+        >,
+    > {
+        self.project
+            .tracks()
+            .iter()
+            .flat_map(|track| track.clips())
+            .filter_map(move |clip| {
+                let crate::AudioSourceBinding::VerifiedFile(file) =
+                    self.sources.get(&clip.asset())?
+                else {
+                    return None;
+                };
+                crate::audio_sources::granular_source_root(&self.project, clip, file, generation)
+                    .transpose()
+                    .map(|root| root.map(|root| (file, root)))
+            })
+    }
     pub fn sample_rate(&self) -> u32 {
         self.project.sample_rate()
     }
@@ -185,6 +217,13 @@ impl CanonicalAudioSourceSnapshot {
     pub(super) fn candidate_reservation_quote_for(
         &self,
         project: &Project,
+    ) -> Result<hex_engine::AudioCandidateReservationQuote, hex_engine::AudioStorageError> {
+        self.candidate_reservation_quote_for_effects(project, None)
+    }
+    pub(super) fn candidate_reservation_quote_for_effects(
+        &self,
+        project: &Project,
+        effects: Option<&hex_engine::AudioCandidateEffects<'_, '_>>,
     ) -> Result<hex_engine::AudioCandidateReservationQuote, hex_engine::AudioStorageError> {
         use hex_engine::AudioStorageError;
         if hex_engine::native_device_resources::requires_private_sampler_sources(project) {
@@ -227,11 +266,19 @@ impl CanonicalAudioSourceSnapshot {
             else {
                 continue;
             };
-            let Some(metadata) =
-                crate::audio_sources::repitch_source_metadata(project, clip, file, 1)
-                    .map_err(|_| AudioStorageError::SourceMismatch)?
-            else {
-                continue;
+            let metadata = match crate::audio_sources::granular_source_root(project, clip, file, 1)
+                .map_err(|_| AudioStorageError::SourceMismatch)?
+            {
+                Some(root) => root.metadata().clone(),
+                None => {
+                    let Some(metadata) =
+                        crate::audio_sources::repitch_source_metadata(project, clip, file, 1)
+                            .map_err(|_| AudioStorageError::SourceMismatch)?
+                    else {
+                        continue;
+                    };
+                    metadata
+                }
             };
             if streams.insert(metadata.key(), metadata).is_none() {
                 derived_count = derived_count
@@ -245,9 +292,12 @@ impl CanonicalAudioSourceSnapshot {
             .checked_add(derived_count)
             .ok_or(AudioStorageError::Overflow)?;
         let streams: Vec<_> = streams.into_values().collect();
-        hex_engine::AudioCandidateReservationQuote::for_project_with_pitched_streams(
-            project, sources, &streams,
-        )
+        match effects {
+            Some(effects) => effects.quote_with_pitched_streams(project, sources, &streams),
+            None => hex_engine::AudioCandidateReservationQuote::for_project_with_pitched_streams(
+                project, sources, &streams,
+            ),
+        }
     }
     pub fn context(&self) -> hex_engine::AudioSourceContext {
         self.context
@@ -291,10 +341,7 @@ impl CanonicalAudioSourceSnapshot {
         &self,
         effects: &hex_engine::AudioCandidateEffects<'_, '_>,
     ) -> Result<hex_engine::AudioCandidateReservationQuote, hex_engine::AudioStorageError> {
-        if hex_engine::native_device_resources::requires_private_sampler_sources(&self.project) {
-            return Err(hex_engine::AudioStorageError::UnsupportedGraph);
-        }
-        effects.quote(&self.project, self.required_sources().count())
+        self.candidate_reservation_quote_for_effects(&self.project, Some(effects))
     }
     /// Keep a host's already-rooted input bank in place during all fallible
     /// preparation. Native custody still comes only from the actual constructor.
@@ -323,6 +370,9 @@ impl CanonicalAudioSourceSnapshot {
             .with_source_context(self.context)
     }
 }
+
+#[cfg(test)]
+mod granular_tests;
 
 #[cfg(test)]
 mod tests {

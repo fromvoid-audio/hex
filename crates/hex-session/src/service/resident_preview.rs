@@ -80,6 +80,7 @@ impl Identity {
             Self::Clip(clip_audition::Target::PlayStart(_)) => {
                 ResidentSourceOrigin::ClipPlayStartPreview
             }
+            Self::Clip(clip_audition::Target::Gain(_)) => ResidentSourceOrigin::ClipGainPreview,
         }
     }
 }

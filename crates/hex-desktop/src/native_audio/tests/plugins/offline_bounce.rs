@@ -169,10 +169,40 @@ fn bounced_pcm(
 fn native_vst3_streamed_main_export_uses_private_worker() {
     let _native = native_fixture();
     for limit in [8_192, 32_768] {
-        native_effect_export_case(limit);
+        native_effect_export_case(limit, false);
     }
 }
-fn native_effect_export_case(limit: u64) {
+
+#[test]
+#[ignore = "requires exact source-bound native helpers and original VST3 fixtures"]
+fn native_vst3_export_refuses_changed_final_latency_without_publishing() {
+    const CHILD: &str = "HEX_OFFLINE_FINAL_LATENCY_REFUSAL_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                std::thread::current().name().unwrap(),
+                "--ignored",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .env("HEX_ORIGINAL_INSTANCE_VARIANT", "68")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+        return;
+    }
+    let _native = native_fixture();
+    native_effect_export_case(8_192, true);
+}
+
+fn native_effect_export_case(limit: u64, refuse_final_latency: bool) {
     use hex_session::service::{ExportControl, ExportSignal};
     let files = Files::new();
     let mut selected = selection();
@@ -223,6 +253,10 @@ fn native_effect_export_case(limit: u64) {
     let before = Arc::clone(&inserted.state.project);
     let live = h.plugin_progress.lock().unwrap().binding;
     let path = files.0.join("private-export.wav");
+    let existing = b"previous completed export";
+    if refuse_final_latency {
+        fs::write(&path, existing).unwrap();
+    }
     let queued = super::super::resident_sections::run_callback(
         &mut h,
         Request::ExportRange {
@@ -232,7 +266,7 @@ fn native_effect_export_case(limit: u64) {
             signal: ExportSignal::Main,
             control: ExportControl::default(),
             format: hex_export::ExportFormat::Pcm16,
-            overwrite: false,
+            overwrite: refuse_final_latency,
         },
     );
     assert!(queued.error.is_none(), "{:?}", queued.error);
@@ -246,6 +280,23 @@ fn native_effect_export_case(limit: u64) {
         assert!(Instant::now() < deadline, "private export timed out");
         std::thread::yield_now();
     };
+    if refuse_final_latency {
+        let error = completed
+            .result
+            .expect_err("final presentation must refuse");
+        assert!(
+            error
+                .message()
+                .contains("presentation latency refused (worker code 5)"),
+            "{error}"
+        );
+        assert_eq!(fs::read(path).unwrap(), existing);
+        assert_eq!(h.plugin_progress.lock().unwrap().binding, live);
+        assert_eq!(queued.state.project, before);
+        assert_eq!(queued.state.revision, inserted.state.revision);
+        assert_eq!(fs::read(&original).unwrap(), original_bytes);
+        return;
+    }
     let report = completed.result.expect("private native export");
     assert_eq!(report.frames, 1024);
     let wav = fs::read(path).unwrap();

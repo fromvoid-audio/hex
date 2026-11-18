@@ -307,6 +307,20 @@ impl OrdinaryStreams {
             .as_ref()
             .is_some_and(|w| w.pending_action.is_some())
     }
+
+    /// The source-free ordinary workspace has no page loans or action stages
+    /// to service while a separately owned paused monitor renders.
+    pub(crate) fn permits_paused_monitor(&self) -> bool {
+        self.refs.iter().all(Option::is_none)
+            && self.workspace.as_ref().is_some_and(|workspace| {
+                workspace.valid()
+                    && workspace.pending_action.is_none()
+                    && workspace.scheduled.is_none()
+                    && !workspace.source_changed
+                    && !workspace.read_failed
+                    && !workspace.capacity_conflict
+            })
+    }
 }
 impl Custody {
     pub(in crate::candidate_custody) fn configure_ordinary_streams(

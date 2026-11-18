@@ -255,6 +255,7 @@ impl StateView<'_> {
                         // deferred carrier and let the predecessor drain before
                         // replanning; this is not a page-readiness rejection.
                         workspace.cancel_pending(refs, request.domains);
+                        workspace.handoff_diagnostic = Some(error);
                         return Ok(None);
                     }
                     Err(error) => {

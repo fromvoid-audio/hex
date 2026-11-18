@@ -116,8 +116,17 @@ impl Source for InputCapture {
             }
         }
         if let Some(ready) = &self.recording_ready
-            && self.shared.phase.load(std::sync::atomic::Ordering::Acquire) == super::CAPTURING
-            && !self.shared.stop.load(std::sync::atomic::Ordering::Acquire)
+            && self
+                .worker
+                .shared
+                .phase
+                .load(std::sync::atomic::Ordering::Acquire)
+                == super::CAPTURING
+            && !self
+                .worker
+                .shared
+                .stop
+                .load(std::sync::atomic::Ordering::Acquire)
         {
             let _ = ready.compare_exchange(
                 0,
@@ -534,6 +543,11 @@ mod tests {
         let (sender, error) = mpsc::sync_channel(1);
         sender.send("microphone unavailable".into()).unwrap();
         let capture = InputCapture {
+            worker: super::super::CaptureWorker {
+                shared,
+                handle: thread::spawn(|| {}),
+                error,
+            },
             id: format!("{}:test-input", cpal::default_host().id())
                 .parse()
                 .unwrap(),
@@ -542,9 +556,6 @@ mod tests {
                 channels: 1,
             },
             input,
-            shared,
-            worker: thread::spawn(|| {}),
-            error,
             prefetched: None,
             preroll_frames: 0,
             recording_ready: None,

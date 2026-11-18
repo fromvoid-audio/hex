@@ -15,6 +15,7 @@ mod manual_preroll;
 mod parameter_extension;
 mod parameter_pressure;
 mod parameter_publication;
+mod paused_monitor;
 mod pressure;
 #[cfg(not(debug_assertions))]
 mod profile;
@@ -272,15 +273,21 @@ fn fixture_with_authored_mode_and_capacity(
     }
 }
 fn compile(f: &OrdinaryFixture, with_native: bool) -> Playback {
+    compile_with_bindings(
+        f,
+        if with_native {
+            std::slice::from_ref(&f.binding)
+        } else {
+            &[]
+        },
+    )
+}
+fn compile_with_bindings(f: &OrdinaryFixture, bindings: &[Binding]) -> Playback {
     let deadline = Instant::now() + Duration::from_secs(3);
     loop {
         let result = crate::plugin_effects::Hosting::prepare_on_control(
             &f.control,
-            if with_native {
-                std::slice::from_ref(&f.binding)
-            } else {
-                &[]
-            },
+            bindings,
             &[],
             &mut |effects| {
                 effects.prepare_registered_revision(
@@ -368,6 +375,119 @@ fn retained_foreign_track_tail_and_successor_use_distinct_original_workers() {
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn retained_foreign_track_tail_routes_through_unchanged_compensated_group() {
     retained_foreign_track_tail(true, false, false, false);
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn silent_group_child_edits_keep_the_original_instrument_worker_and_gate() {
+    const CHILD: &str = "HEX_COLD_GROUP_CHILD_SDK_DRIVER";
+    if std::env::var_os(CHILD).is_none() {
+        let result = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                std::thread::current().name().unwrap(),
+                "--ignored",
+            ])
+            .env(CHILD, "1")
+            .env("RUST_MIN_STACK", "16777216")
+            .env("HEX_ORIGINAL_INSTANCE_VARIANT", "146")
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success() && String::from_utf8_lossy(&result.stdout).contains("1 passed"),
+            "{}\n{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+        return;
+    }
+    let _serial = serial();
+    let mut edited = fixture_with_authored_mode("processing", 0, 8, &[], true);
+    let mut reference = fixture_with_authored_mode("processing", 0, 8, &[], true);
+    let track = edited.editor.project().tracks()[0].id();
+    for f in [&mut edited, &mut reference] {
+        f.editor
+            .execute(Command::GroupTracks {
+                tracks: hex_project::TrackSelectionIds::new(&[track]).unwrap(),
+                name: "group".into(),
+            })
+            .unwrap();
+        let playback = compile(f, true);
+        assert!(playback.main_output_latency_frames() > 0);
+        publish(&mut f.control, playback, PublicationPolicy::InheritRuntime);
+        f.control.command(PlaybackCommand::Play).unwrap();
+    }
+    let render = |f: &mut OrdinaryFixture| {
+        let output = block(f);
+        let mut frames = None;
+        f.data.owner_mut().unwrap().run(|callback, _| {
+            frames = callback.native_sources.test_committed_frames(f.binding);
+        });
+        replacement::wait_for_blocks(
+            &f.control.native_candidate_root(),
+            f.binding,
+            frames.unwrap() / 8,
+        );
+        output
+    };
+    let mut pcm = [[0.0; 2]; 80];
+    let mut empty = None;
+    for (index, chunk) in pcm.chunks_exact_mut(8).enumerate() {
+        let edit = match index {
+            3 => {
+                let Created::Track(track) = edited
+                    .editor
+                    .execute(Command::InsertTrack {
+                        name: "empty".into(),
+                        before_track: Some(track),
+                    })
+                    .unwrap()
+                else {
+                    panic!("inserted track");
+                };
+                empty = Some(track);
+                true
+            }
+            4 => {
+                edited
+                    .editor
+                    .execute(Command::RemoveTrack(empty.unwrap()))
+                    .unwrap();
+                true
+            }
+            _ => false,
+        };
+        let revision = edit.then(|| {
+            let playback = compile(&edited, true);
+            publish(
+                &mut edited.control,
+                playback,
+                PublicationPolicy::InheritRuntime,
+            )
+        });
+        chunk.copy_from_slice(&render(&mut edited));
+        assert_eq!(
+            chunk,
+            render(&mut reference),
+            "original SDK quantum {index}"
+        );
+        if let Some(revision) = revision {
+            assert_eq!(
+                edited.control.status.applied_revision.load(Acquire),
+                revision
+            );
+        }
+        assert!(edited.control.status.rejected_revision().is_none());
+        assert!(edited.control.status.render_fault_snapshot().is_none());
+        assert!(edited.control.status.playing.load(Acquire));
+    }
+    assert!(pcm[24..40].iter().all(|frame| frame[0].abs() > 0.001));
+    assert!(pcm[64..].iter().all(|frame| *frame == [0.0; 2]));
+    for f in [edited, reference] {
+        assert!(
+            matches!(dispose(f).disposal, native::PreparationDisposal::Reaped(retired) if retired.status.success())
+        );
+    }
 }
 
 #[test]
@@ -595,6 +715,134 @@ fn physical_block<const FRAMES: usize>(f: &mut OrdinaryFixture) -> [Frame; FRAME
         })
     });
     output
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn actual_paused_vst3_instrument_auditions_on_its_original_worker() {
+    const CHILD: &str = "HEX_PAUSED_VST3_INSTRUMENT_SDK_DRIVER";
+    if std::env::var_os(CHILD).is_none() {
+        let result = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                std::thread::current().name().unwrap(),
+                "--ignored",
+            ])
+            .env(CHILD, "1")
+            .env("RUST_MIN_STACK", "16777216")
+            .env("HEX_ORIGINAL_INSTANCE_VARIANT", "127")
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success() && String::from_utf8_lossy(&result.stdout).contains("1 passed"),
+            "{}\n{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+        return;
+    }
+    use hex_engine::computer_keyboard::ComputerKeyboardInput;
+    use hex_lattice_contract::DeviceTypeId;
+    const QUANTUM: usize = 256;
+    let _serial = serial();
+    let mut f = fixture_with_authored_mode("processing", 0, QUANTUM as u16, &[], true);
+    // This fixture accepts MIDI channel 0 and pitch 60 for both authored
+    // and keyboard gates. Sustain the authored note across the Pause cut.
+    let note = f.editor.project().tracks()[0].midi_clips()[0].notes()[0].id();
+    f.editor
+        .execute(Command::UpdateMidiNote {
+            note,
+            start: hex_project::BeatTime::ZERO,
+            duration: hex_project::BeatTime::ONE,
+            pitch: 60,
+            channel: 0,
+            velocity: 127,
+        })
+        .unwrap();
+    f.editor
+        .execute(Command::InsertMainDevice {
+            before: None,
+            state: hex_engine::default_native_device_state(DeviceTypeId::from_static(
+                "hex.limiter",
+            ))
+            .unwrap(),
+        })
+        .unwrap();
+    let keys = Arc::new(ComputerKeyboardInput::default());
+    let mut playback = compile(&f, true);
+    let track = f.editor.project().tracks()[0].id();
+    playback
+        .prepare_computer_keyboard(f.editor.project(), track, Arc::clone(&keys))
+        .unwrap();
+    assert!(
+        Playback::paused_source_monitor_allowance_on_control(
+            playback.prepared_revision().unwrap(),
+            Some(&f.resources),
+        )
+        .unwrap()
+            > 0
+    );
+    playback
+        .prepare_resident_paused_source_monitor(Some(&f.resources))
+        .unwrap();
+    publish(&mut f.control, playback, PublicationPolicy::InheritRuntime);
+    let root = f.control.native_candidate_root();
+    let render = |f: &mut OrdinaryFixture| {
+        let output = physical_block::<QUANTUM>(f);
+        let mut committed = None;
+        f.data.owner_mut().unwrap().run(|callback, _| {
+            committed = callback.native_sources.test_committed_frames(f.binding);
+        });
+        replacement::wait_for_blocks(&root, f.binding, committed.unwrap() / QUANTUM as u64);
+        output
+    };
+    f.control.command(PlaybackCommand::Play).unwrap();
+    let mut authored = false;
+    for _ in 0..6 {
+        authored |= render(&mut f)
+            .iter()
+            .flatten()
+            .any(|sample| sample.abs() > 0.001);
+    }
+    assert!(authored, "the arrangement note must sound before Pause");
+    f.control.command(PlaybackCommand::Pause).unwrap();
+    render(&mut f);
+    assert!(!f.control.status.playing.load(Acquire));
+    let frozen = f.control.status.position.load(Acquire);
+    assert!(frozen > 0);
+    for _ in 0..5 {
+        render(&mut f);
+    }
+    assert_eq!(render(&mut f), [[0.0; 2]; QUANTUM]);
+    keys.set_key(0, Some((60, 100, 1))).unwrap();
+    let mut heard = false;
+    for _ in 0..6 {
+        heard |= render(&mut f)
+            .iter()
+            .flatten()
+            .any(|sample| sample.abs() > 0.001);
+    }
+    assert!(heard, "the original worker must render the paused key");
+    assert_eq!(f.control.status.position.load(Acquire), frozen);
+    assert_eq!(
+        f.control.native_source_endpoint_status(f.binding),
+        Some((true, true))
+    );
+    keys.set_key(0, None).unwrap();
+    for _ in 0..5 {
+        render(&mut f);
+    }
+    assert_eq!(render(&mut f), [[0.0; 2]; QUANTUM]);
+    f.control.command(PlaybackCommand::Play).unwrap();
+    render(&mut f);
+    assert!(f.control.status.playing.load(Acquire));
+    f.control.command(PlaybackCommand::Stop).unwrap();
+    render(&mut f);
+    assert_eq!(f.control.status.position.load(Acquire), 0);
+    let returned = dispose(f);
+    assert!(
+        matches!(returned.disposal, native::PreparationDisposal::Reaped(retired) if retired.status.success())
+    );
 }
 
 #[test]

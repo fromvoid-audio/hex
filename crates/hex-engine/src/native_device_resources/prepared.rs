@@ -710,7 +710,9 @@ pub struct DeviceResourceAdmission<'a> {
     playback: Option<&'a crate::playback::Playback>,
     playback_resources: Option<&'a PreparedDeviceResources>,
     batch: Option<&'a DeviceResourcePublicationBatch>,
+    paused_monitor: Option<&'a crate::PausedMonitorStorageHold>,
     repitch_requirements: Option<&'a crate::audio_transform::StreamedRepitchRequirements>,
+    granular_requirements: Option<&'a crate::audio_transform::StreamedGranularRequirements>,
 }
 impl<'a> DeviceResourceAdmission<'a> {
     pub fn new(
@@ -727,7 +729,9 @@ impl<'a> DeviceResourceAdmission<'a> {
             playback: None,
             playback_resources: None,
             batch: None,
+            paused_monitor: None,
             repitch_requirements: None,
+            granular_requirements: None,
         }
     }
     /// Borrow actual unpublished worker-owned runtime leases while an output is unavailable or
@@ -749,6 +753,12 @@ impl<'a> DeviceResourceAdmission<'a> {
         self.revisions = revisions;
         self
     }
+    /// Retain a paused monitor's actual prepared PCM and bounded private
+    /// storage. The monitor creates no original-source lease.
+    pub fn with_paused_monitor(mut self, hold: &'a crate::PausedMonitorStorageHold) -> Self {
+        self.paused_monitor = Some(hold);
+        self
+    }
     /// Include a control-owned requirement set in the same native storage ledger.
     /// Repeated shared maps are counted once; this grants no publication authority.
     pub fn with_repitch_requirements(
@@ -756,6 +766,15 @@ impl<'a> DeviceResourceAdmission<'a> {
         requirements: &'a crate::audio_transform::StreamedRepitchRequirements,
     ) -> Self {
         self.repitch_requirements = Some(requirements);
+        self
+    }
+    /// Include complete control-owned granular roots in the existing storage
+    /// ledger. Shared aliases count once; no worker or publication lease is granted.
+    pub fn with_granular_requirements(
+        mut self,
+        requirements: &'a crate::audio_transform::StreamedGranularRequirements,
+    ) -> Self {
+        self.granular_requirements = Some(requirements);
         self
     }
     /// One actual captured set and its exact compiled revision, suitable for a bounded worker
@@ -775,6 +794,7 @@ impl<'a> DeviceResourceAdmission<'a> {
             .iter()
             .copied()
             .chain(self.revision)
+            .chain(self.paused_monitor.map(|hold| hold.revision.as_ref()))
             .flat_map(|revision| {
                 revision
                     .arrangement()
@@ -810,6 +830,17 @@ impl<'a> DeviceResourceAdmission<'a> {
         let mut frames = 0u64;
         if let Some(requirements) = self.repitch_requirements {
             requirements.visit(ledger)?;
+        }
+        if let Some(requirements) = self.granular_requirements {
+            requirements.visit(ledger)?;
+        }
+        if let Some(hold) = self.paused_monitor {
+            ledger.root(hold, crate::AudioStorageRole::Caller)?;
+            ledger.bytes(
+                crate::audio_storage::Owner::exclusive(hold),
+                crate::audio_storage::Location("paused-monitor-storage", 0),
+                hold.allowance_bytes,
+            )?;
         }
         for set in self.sets.iter().copied().chain(self.set) {
             frames = frames
