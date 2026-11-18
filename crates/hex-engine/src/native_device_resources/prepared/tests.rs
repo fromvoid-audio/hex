@@ -904,6 +904,117 @@ fn pcm_union_counts_capacity_once_across_original_and_unpublished_aliases() {
         capacity + distinct.pcm_capacity_frames() as u64
     );
 }
+
+#[test]
+fn paused_monitor_retains_deduplicated_pcm_and_budget_through_owner_destruction() {
+    use crate::{PausedMonitorAdmissionError, PausedTrackMonitor, playback::Playback};
+
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+    let Created::Imported { track, asset, .. } = editor
+        .execute(Command::ImportAudioTrack {
+            name: "audio".into(),
+            path: "monitor.wav".into(),
+            sample_rate: 48_000,
+            frames: 4,
+        })
+        .unwrap()
+    else {
+        panic!("audio track")
+    };
+    let cancel = AtomicBool::new(false);
+    let resources = PreparedDeviceResources::prepare_on_control(
+        &ResidentDeviceAssets::default(),
+        editor.project(),
+        4096,
+        &cancel,
+    )
+    .unwrap();
+    let media = BTreeMap::from([(asset, Audio::new(48_000, vec![[0.25; 2]; 4]).unwrap())]);
+    let revision = Arc::new(
+        PreparedRevision::prepare_with_device_resources(
+            editor.project(),
+            &media,
+            Arc::new(SineTable::new()),
+            None,
+            &crate::audio_transform::AudioTransformPreparation::default(),
+            &resources,
+            0,
+            &cancel,
+        )
+        .unwrap(),
+    );
+    let graph =
+        Playback::try_from_prepared_with_device_resources(Arc::clone(&revision), &resources)
+            .unwrap();
+    let frames = graph.resident_pcm_capacity_frames().unwrap();
+    assert!(frames >= 4);
+    let pcm = Arc::downgrade(&graph.resident_pcm_sources().next().unwrap().frames);
+    let graph_view = DeviceResourceAdmission::unpublished_on_control(&graph, Some(&resources));
+    let inspect = |registered: &[DeviceResourceAdmission<'_>], limits| {
+        let phase = DeviceResourcePhase {
+            stores: &[],
+            registered,
+            selections: &[],
+            outbound: &[],
+            legacy: &[],
+            checked_runtime_bytes: 0,
+            construction_bytes: 0,
+        };
+        inspect_device_resource_union(&phase, &phase, limits)
+    };
+    const PREPARED_METADATA: usize = 1024;
+    let refused = PausedTrackMonitor::prepare_admitted_resident_on_control(
+        Arc::clone(&revision),
+        &resources,
+        track,
+        PREPARED_METADATA,
+        |monitor_view| inspect(&[graph_view, monitor_view], pcm_limits()).map(|_| ()),
+    );
+    assert!(matches!(
+        refused,
+        Err(PausedMonitorAdmissionError::Admission(_))
+    ));
+    let limits = AudioStorageLedgerReservation {
+        max_retained_bytes: 256 * 1024 * 1024,
+        max_construction_peak_bytes: 256 * 1024 * 1024,
+        ..pcm_limits()
+    };
+    let before = inspect(&[graph_view], limits).unwrap();
+    let runtime =
+        PausedTrackMonitor::resident_runtime_allowance_on_control(&revision, &resources, track)
+            .unwrap();
+    let (monitor, hold) = PausedTrackMonitor::prepare_admitted_resident_on_control(
+        revision,
+        &resources,
+        track,
+        PREPARED_METADATA,
+        |monitor_view| {
+            let both = inspect(&[graph_view, monitor_view], limits)?;
+            assert_eq!(both.retained_frames, frames);
+            assert!(
+                both.retained.data_bytes
+                    >= before.retained.data_bytes + runtime + PREPARED_METADATA
+            );
+            Ok::<_, ResourcePreparationError>(())
+        },
+    )
+    .unwrap();
+    drop(graph);
+    drop(media);
+    drop(resources);
+    let view = DeviceResourceAdmission::default().with_paused_monitor(&hold);
+    assert!(!hold.released_on_control());
+    assert_eq!(inspect(&[view], limits).unwrap().retained_frames, frames);
+    drop(monitor);
+    assert!(hold.released_on_control());
+    // The inventory stays conservative until its holder actually releases it.
+    assert_eq!(inspect(&[view], limits).unwrap().retained_frames, frames);
+    assert!(pcm.upgrade().is_some());
+    drop(hold);
+    assert_eq!(inspect(&[], limits).unwrap().retained_frames, 0);
+    assert!(pcm.upgrade().is_none());
+}
+
 #[test]
 fn pcm_publication_refusal_retirement_and_output_custody_keep_exact_backing_union() {
     let audio = Audio::new(48_000, vec![[0.25; 2]; 4]).unwrap();

@@ -3,7 +3,7 @@ use super::{
     Frame, MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES, PreparedRevision, SessionPlayback,
     SessionPlaybackError, TrackId, preroll::arrangement_runtime_storage_preflight_bytes,
 };
-use crate::native_device_resources::PreparedDeviceResources;
+use crate::native_device_resources::{DeviceResourceAdmission, PreparedDeviceResources};
 use std::sync::Arc;
 
 /// A separate, owned monitor for one prepared revision and one track. The
@@ -14,6 +14,29 @@ pub struct PausedTrackMonitor {
     playback: Box<SessionPlayback>,
     track: TrackId,
     cursor: Option<Cursor>,
+    // Drop after the private playback releases its prepared revision and buffers.
+    _admission_lifetime: Option<Arc<()>>,
+}
+
+/// Control-side storage obligation for an admitted paused monitor. Keep this
+/// in the ordinary resource inventory across replacement and output teardown
+/// until the matching monitor has actually been destroyed on control.
+pub struct PausedMonitorStorageHold {
+    pub(crate) revision: Arc<PreparedRevision>,
+    pub(crate) allowance_bytes: usize,
+    lifetime: Arc<()>,
+}
+impl PausedMonitorStorageHold {
+    /// A terminal or return-queue message alone cannot release this hold.
+    pub fn released_on_control(&self) -> bool {
+        Arc::strong_count(&self.lifetime) == 1
+    }
+}
+
+#[derive(Debug)]
+pub enum PausedMonitorAdmissionError<E> {
+    Preparation(SessionPlaybackError),
+    Admission(E),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -59,6 +82,38 @@ impl PausedTrackMonitor {
         max_runtime_bytes: usize,
     ) -> Result<Self, SessionPlaybackError> {
         Self::prepare(revision, track, Some(resources), max_runtime_bytes)
+    }
+
+    /// Admit the exact PCM leaves and the private runtime allowance before
+    /// constructing the monitor. The caller supplies the ordinary immutable
+    /// graph metadata allowance and checks its whole resource union in
+    /// `admit`. Keep the returned hold in that union until its monitor releases.
+    pub fn prepare_admitted_resident_on_control<E>(
+        revision: Arc<PreparedRevision>,
+        resources: &PreparedDeviceResources,
+        track: TrackId,
+        prepared_metadata_bytes: usize,
+        admit: impl FnOnce(DeviceResourceAdmission<'_>) -> Result<(), E>,
+    ) -> Result<(Self, PausedMonitorStorageHold), PausedMonitorAdmissionError<E>> {
+        use PausedMonitorAdmissionError::{Admission, Preparation};
+
+        let runtime = Self::resident_runtime_allowance_on_control(&revision, resources, track)
+            .map_err(Preparation)?;
+        let allowance_bytes = runtime
+            .checked_add(prepared_metadata_bytes)
+            .and_then(|bytes| bytes.checked_add(size_of::<PausedMonitorStorageHold>()))
+            .and_then(|bytes| bytes.checked_add(2 * size_of::<usize>()))
+            .ok_or(Preparation(SessionPlaybackError::Allocation))?;
+        let hold = PausedMonitorStorageHold {
+            revision: Arc::clone(&revision),
+            allowance_bytes,
+            lifetime: Arc::new(()),
+        };
+        admit(DeviceResourceAdmission::default().with_paused_monitor(&hold)).map_err(Admission)?;
+        let mut monitor = Self::prepare_resident_on_control(revision, resources, track, runtime)
+            .map_err(Preparation)?;
+        monitor._admission_lifetime = Some(Arc::clone(&hold.lifetime));
+        Ok((monitor, hold))
     }
 
     fn runtime_allowance(
@@ -131,6 +186,7 @@ impl PausedTrackMonitor {
             playback: Box::new(playback),
             track,
             cursor: None,
+            _admission_lifetime: None,
         })
     }
 
