@@ -372,6 +372,119 @@ fn retained_foreign_track_tail_routes_through_unchanged_compensated_group() {
 
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn silent_group_child_edits_keep_the_original_instrument_worker_and_gate() {
+    const CHILD: &str = "HEX_COLD_GROUP_CHILD_SDK_DRIVER";
+    if std::env::var_os(CHILD).is_none() {
+        let result = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                std::thread::current().name().unwrap(),
+                "--ignored",
+            ])
+            .env(CHILD, "1")
+            .env("RUST_MIN_STACK", "16777216")
+            .env("HEX_ORIGINAL_INSTANCE_VARIANT", "146")
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success() && String::from_utf8_lossy(&result.stdout).contains("1 passed"),
+            "{}\n{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+        return;
+    }
+    let _serial = serial();
+    let mut edited = fixture_with_authored_mode("processing", 0, 8, &[], true);
+    let mut reference = fixture_with_authored_mode("processing", 0, 8, &[], true);
+    let track = edited.editor.project().tracks()[0].id();
+    for f in [&mut edited, &mut reference] {
+        f.editor
+            .execute(Command::GroupTracks {
+                tracks: hex_project::TrackSelectionIds::new(&[track]).unwrap(),
+                name: "group".into(),
+            })
+            .unwrap();
+        let playback = compile(f, true);
+        assert!(playback.main_output_latency_frames() > 0);
+        publish(&mut f.control, playback, PublicationPolicy::InheritRuntime);
+        f.control.command(PlaybackCommand::Play).unwrap();
+    }
+    let render = |f: &mut OrdinaryFixture| {
+        let output = block(f);
+        let mut frames = None;
+        f.data.owner_mut().unwrap().run(|callback, _| {
+            frames = callback.native_sources.test_committed_frames(f.binding);
+        });
+        replacement::wait_for_blocks(
+            &f.control.native_candidate_root(),
+            f.binding,
+            frames.unwrap() / 8,
+        );
+        output
+    };
+    let mut pcm = [[0.0; 2]; 80];
+    let mut empty = None;
+    for (index, chunk) in pcm.chunks_exact_mut(8).enumerate() {
+        let edit = match index {
+            3 => {
+                let Created::Track(track) = edited
+                    .editor
+                    .execute(Command::InsertTrack {
+                        name: "empty".into(),
+                        before_track: Some(track),
+                    })
+                    .unwrap()
+                else {
+                    panic!("inserted track");
+                };
+                empty = Some(track);
+                true
+            }
+            4 => {
+                edited
+                    .editor
+                    .execute(Command::RemoveTrack(empty.unwrap()))
+                    .unwrap();
+                true
+            }
+            _ => false,
+        };
+        let revision = edit.then(|| {
+            let playback = compile(&edited, true);
+            publish(
+                &mut edited.control,
+                playback,
+                PublicationPolicy::InheritRuntime,
+            )
+        });
+        chunk.copy_from_slice(&render(&mut edited));
+        assert_eq!(
+            chunk,
+            render(&mut reference),
+            "original SDK quantum {index}"
+        );
+        if let Some(revision) = revision {
+            assert_eq!(
+                edited.control.status.applied_revision.load(Acquire),
+                revision
+            );
+        }
+        assert!(edited.control.status.rejected_revision().is_none());
+        assert!(edited.control.status.render_fault_snapshot().is_none());
+        assert!(edited.control.status.playing.load(Acquire));
+    }
+    assert!(pcm[24..40].iter().all(|frame| frame[0].abs() > 0.001));
+    assert!(pcm[64..].iter().all(|frame| *frame == [0.0; 2]));
+    for f in [edited, reference] {
+        assert!(
+            matches!(dispose(f).disposal, native::PreparationDisposal::Reaped(retired) if retired.status.success())
+        );
+    }
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn retained_foreign_track_tail_preserves_direct_send_through_group() {
     retained_foreign_track_tail(true, true, false, false);
 }
