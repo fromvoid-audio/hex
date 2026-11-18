@@ -1570,6 +1570,122 @@ fn adding_and_removing_a_silent_routed_track_keeps_compensated_pcm_continuous() 
 }
 
 #[test]
+fn changing_an_empty_track_preserves_existing_audio_feed_history() {
+    use hex_project::{Command, Created, RoutingOwner};
+    for (partition, from_return) in [(1, false), (257, false), (1, true), (257, true)] {
+        let mut f = fixture(&[&[7]], 1024);
+        for audio in f.media.values_mut() {
+            *audio = Audio::new(48_000, vec![[1.0, -0.5]; 1024]).unwrap();
+        }
+        let [destination, alternate] = ["destination", "alternate"].map(|name| {
+            let Created::Track(track) = f
+                .editor
+                .execute(Command::AddTrack { name: name.into() })
+                .unwrap()
+            else {
+                panic!("track");
+            };
+            track
+        });
+        f.editor
+            .execute(Command::Gain {
+                track: alternate,
+                gain: 0.25,
+            })
+            .unwrap();
+        let (source, sounding) = if from_return {
+            let Created::ReturnTrack(bus) = f
+                .editor
+                .execute(Command::AddReturnTrack { name: "bus".into() })
+                .unwrap()
+            else {
+                panic!("return");
+            };
+            f.editor
+                .execute(Command::SetReturnSend {
+                    track: f.tracks[0],
+                    return_track: bus,
+                    gain: 0.5,
+                })
+                .unwrap();
+            (RoutingOwner::Return(bus), [1.75, -0.875])
+        } else {
+            (RoutingOwner::Track(f.tracks[0]), [1.5, -0.75])
+        };
+        f.editor
+            .execute(Command::SetAudioFeed {
+                source,
+                destination,
+                gain: 0.5,
+            })
+            .unwrap();
+        let revision = prepare(&f).unwrap();
+        let mut current = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+        let mut reference = SessionPlayback::new(revision).unwrap();
+        for runtime in [&mut current, &mut reference] {
+            runtime.apply(SessionPlaybackCommand::Play).unwrap();
+            let mut warm = [[0.0; 2]; 32];
+            runtime.render(&mut warm).unwrap();
+            assert_eq!(warm[31], sounding);
+        }
+        let insert = || Command::InsertTrack {
+            name: "empty".into(),
+            before_track: Some(destination),
+        };
+        let Created::Track(empty) = f.editor.execute(insert()).unwrap() else {
+            panic!("empty track");
+        };
+        for removed in [false, true] {
+            if removed {
+                f.editor.execute(Command::RemoveTrack(empty)).unwrap();
+            }
+            let mut next = SessionPlayback::new(prepare(&f).unwrap()).unwrap();
+            next.try_inherit_state_from(&mut current).unwrap();
+            let mut actual = [[0.0; 2]; 257];
+            let mut expected = actual;
+            for (actual, expected) in actual
+                .chunks_mut(partition)
+                .zip(expected.chunks_mut(partition))
+            {
+                next.render(actual).unwrap();
+                reference.render(expected).unwrap();
+                assert_eq!(
+                    actual, expected,
+                    "partition {partition}, source {source:?}, removed {removed}"
+                );
+            }
+            current = next;
+        }
+
+        f.editor.execute(insert()).unwrap();
+        for (destination, gain) in [(destination, 0.0), (alternate, 0.5)] {
+            f.editor
+                .execute(Command::SetAudioFeed {
+                    source,
+                    destination,
+                    gain,
+                })
+                .unwrap();
+        }
+        let mut rerouted = SessionPlayback::new(prepare(&f).unwrap()).unwrap();
+        rerouted.try_inherit_state_from(&mut current).unwrap();
+        let mut output = [[0.0; 2]; 16];
+        for chunk in output.chunks_mut(partition) {
+            rerouted.render(chunk).unwrap();
+        }
+        assert_eq!(&output[..7], &[[0.0; 2]; 7]);
+        assert_eq!(
+            output[7],
+            if from_return {
+                [1.5625, -0.78125]
+            } else {
+                [1.125, -0.5625]
+            }
+        );
+    }
+}
+
+#[test]
 fn adding_an_empty_track_with_an_incoming_feed_keeps_the_conservative_restart() {
     use hex_project::{Command, Created};
     let mut f = fixture(&[&[7]], 1024);

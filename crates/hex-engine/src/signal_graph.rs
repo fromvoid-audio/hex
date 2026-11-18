@@ -1518,14 +1518,18 @@ impl SignalGraph {
             self.pre_main_endpoints(a)
                 .is_some_and(|ends| other.pre_main_endpoints(b) == Some(ends))
         };
-        let same_sends = |a: &[Send], b: &[Send]| {
+        let track_indices_can_shift = matches!(fresh, Some(FreshHistory::ColdTrack(_)));
+        let return_indices_can_shift = matches!(fresh, Some(FreshHistory::Return(_)));
+        let same_sends = |a: &[Send], b: &[Send], indices_can_shift| {
             a.len() == b.len()
                 && a.iter().zip(b).all(|(a, b)| {
-                    // Return insertion/removal shifts runtime indices;
-                    // the typed endpoints still identify the same route.
-                    (matches!(fresh, Some(FreshHistory::Return(_))) || a.target == b.target)
-                        && same_edge(a.edge, b.edge)
+                    // The typed edge still has to identify the same route
+                    // when its local destination index shifts.
+                    (indices_can_shift || a.target == b.target) && same_edge(a.edge, b.edge)
                 })
+        };
+        let same_audio_feeds = |a: &[Send], b: &[Send]| {
+            same_sends(a, b, track_indices_can_shift || return_indices_can_shift)
         };
         let same_output = |a: TrackOutput, b: TrackOutput| match (a, b) {
             (TrackOutput::Main { edge: a }, TrackOutput::Main { edge: b }) => same_edge(a, b),
@@ -1541,7 +1545,7 @@ impl SignalGraph {
             ) => {
                 // A cold child can shift the target's runtime index. The
                 // matched edge still has to name the same canonical group.
-                (ta == tb || matches!(fresh, Some(FreshHistory::ColdTrack(_)))) && same_edge(a, b)
+                (ta == tb || track_indices_can_shift) && same_edge(a, b)
             }
             _ => false,
         };
@@ -1556,8 +1560,8 @@ impl SignalGraph {
             .all(|(a, b)| {
                 a.id == b.id
                     && same_output(a.output, b.output)
-                    && same_sends(&a.sends, &b.sends)
-                    && same_sends(&a.audio_feeds, &b.audio_feeds)
+                    && same_sends(&a.sends, &b.sends, return_indices_can_shift)
+                    && same_audio_feeds(&a.audio_feeds, &b.audio_feeds)
             })
             || !self
                 .returns
@@ -1567,8 +1571,8 @@ impl SignalGraph {
                 .all(|(a, b)| {
                     a.id == b.id
                         && same_edge(a.main, b.main)
-                        && same_sends(&a.feeds, &b.feeds)
-                        && same_sends(&a.audio_feeds, &b.audio_feeds)
+                        && same_sends(&a.feeds, &b.feeds, return_indices_can_shift)
+                        && same_audio_feeds(&a.audio_feeds, &b.audio_feeds)
                 })
         {
             return false;
