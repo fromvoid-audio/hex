@@ -873,18 +873,18 @@ fn held_audio_play_start_changes_only_its_clip_during_arrangement_playback() {
     let (initial, _) = h.applied(0);
     let slip_frames = 48_000_u32;
     let source = files.constant_wav("slipped.wav", 48_000, slip_frames * 2, &[8192]);
-    // Use a quieter second half so shifting the source is audible, and keep
-    // the other track at 0.25 to distinguish a slip from muting the target.
+    // Use a quieter second half so slipping one instance changes its audio
+    // while the other instance keeps playing the first half.
     let mut wav = fs::OpenOptions::new().write(true).open(&source).unwrap();
     let tail_bytes = i64::from(slip_frames) * size_of::<i16>() as i64;
     wav.seek(SeekFrom::End(-tail_bytes)).unwrap();
     wav.write_all(&4096_i16.to_le_bytes().repeat(slip_frames as usize))
         .unwrap();
     drop(wav);
-    let imported = h.run(Request::Import(source));
+    let imported = h.run(Request::Import(source.clone()));
     let clip = imported.state.project.tracks()[0].clips()[0].id();
     let (applied, _) = h.applied(initial);
-    let mixed = h.run(Request::Import(files.wav(48_000, slip_frames * 2)));
+    let mixed = h.run(Request::Import(source));
     let (applied, metadata) = h.applied(applied);
     assert_eq!(mixed.state.project.tracks().len(), 2);
     let original = mixed.state.project.snapshot();
@@ -928,7 +928,8 @@ fn held_audio_play_start_changes_only_its_clip_during_arrangement_playback() {
             }
             assert!(
                 Instant::now() < deadline,
-                "play-start preview did not apply"
+                "play-start publication did not apply after {previous}, refusals={:?}",
+                h.publication_refusals
             );
             std::thread::sleep(Duration::from_millis(1));
         }
