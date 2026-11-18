@@ -2,6 +2,7 @@
 //! identities; native streams, file writing, alignment and project edits retain
 //! their existing audio and Session owners.
 use super::{EditorMode, EditorView};
+mod paused_input;
 use hex_audio::{
     input_capture::{
         CoordinatedJob, CoordinatedOutcome, InputCapture, InputConfig, MonitorStream,
@@ -12,6 +13,7 @@ use hex_audio::{
     sample_recording::Reader,
 };
 use hex_session::{import_batch_decode::AudioBatchContext, service::Request};
+use paused_input::PausedInput;
 use std::{
     path::PathBuf,
     sync::{
@@ -99,6 +101,8 @@ enum Stage {
 #[derive(Default)]
 pub(super) struct Recorder {
     stage: Stage,
+    paused_input: PausedInput,
+    record_after_monitor: Option<Binding>,
     stop_transport_after: bool,
     retiring_monitor_output: Option<u64>,
     pub(super) pending_commit_path: Option<PathBuf>,
@@ -109,13 +113,16 @@ pub(super) struct Recorder {
 }
 impl Recorder {
     pub(super) fn blocks_edits(&self) -> bool {
-        !matches!(self.stage, Stage::Idle)
+        !matches!(self.stage, Stage::Idle) || self.record_after_monitor.is_some()
     }
     pub(super) fn needs_poll(&self) -> bool {
-        self.blocks_edits() || self.retiring_monitor_output.is_some()
+        self.blocks_edits() || self.retiring_monitor_output.is_some() || self.paused_input.pending()
     }
     pub(super) fn label(&self) -> &'static str {
         match self.stage {
+            Stage::Idle if self.record_after_monitor.is_some() => {
+                "cancel audio recording preparation"
+            }
             Stage::Idle if self.armed_track.is_some() => {
                 "record armed track from chosen audio input"
             }
@@ -179,17 +186,13 @@ impl Recorder {
     }
 }
 
-fn open_selected_take(
-    reader: Reader,
+fn selected_input_config(
     rate: u32,
-    document: Option<PathBuf>,
-    cancel: &AtomicBool,
-    selected: Option<InputDeviceId>,
-    software_monitor: bool,
-) -> Result<PreparedTake, String> {
+    selected: Option<&InputDeviceId>,
+) -> Result<(InputDeviceId, InputConfig), String> {
     let inputs = input_devices_on_control().map_err(|error| error.to_string())?;
     let device = inputs
-        .resolve_requested(selected.as_ref())
+        .resolve_requested(selected)
         .map_err(|error| error.to_string())?;
     let id = device.id.clone();
     let channels = [2, 1]
@@ -201,13 +204,27 @@ fn open_selected_take(
                 .any(|format| format.supports_recording(rate, *channels))
         })
         .ok_or("selected audio input does not support f32 at the project sample rate")?;
+    Ok((
+        id,
+        InputConfig {
+            sample_rate: rate,
+            channels,
+        },
+    ))
+}
+
+fn open_selected_take(
+    reader: Reader,
+    rate: u32,
+    document: Option<PathBuf>,
+    cancel: &AtomicBool,
+    selected: Option<InputDeviceId>,
+    software_monitor: bool,
+) -> Result<PreparedTake, String> {
+    let (id, config) = selected_input_config(rate, selected.as_ref())?;
     if cancel.load(Acquire) {
         return Err("audio recording canceled".into());
     }
-    let config = InputConfig {
-        sample_rate: rate,
-        channels,
-    };
     let (input, monitor) = if software_monitor {
         let (input, monitor) = InputCapture::open_with_monitor_on_control(id, config)
             .map_err(|error| error.to_string())?;
@@ -270,12 +287,14 @@ impl EditorView {
         } else {
             Some((self.project_generation, track))
         };
+        self.audio_recorder.paused_input.user_changed_target();
         self.status = if self.audio_recorder.armed_track.is_some() {
             "track armed for audio recording"
         } else {
             "track disarmed for audio recording"
         }
         .into();
+        self.wake_poll();
     }
 
     pub(super) fn open_audio_input_menu(
@@ -388,11 +407,13 @@ impl EditorView {
             return;
         }
         self.audio_recorder.input = id.map(|id| (id, name.clone()));
+        self.audio_recorder.paused_input.user_changed_target();
         self.error = None;
         self.status = format!(
             "audio input · {}",
             hex_session::service::text::verbatim(&name)
         );
+        self.wake_poll();
     }
 
     pub(super) fn toggle_software_monitor(&mut self) {
@@ -401,16 +422,22 @@ impl EditorView {
             return;
         }
         self.audio_recorder.software_monitor = !self.audio_recorder.software_monitor;
+        self.audio_recorder.paused_input.user_changed_target();
         self.status = if self.audio_recorder.software_monitor {
-            "software monitoring during recording"
+            "software monitoring enabled"
         } else {
             "hardware monitoring during recording"
         }
         .into();
+        self.wake_poll();
     }
 
     pub(super) fn toggle_audio_recording(&mut self) {
         self.wake_poll();
+        if self.audio_recorder.record_after_monitor.take().is_some() {
+            self.status = "audio recording canceled".into();
+            return;
+        }
         match &mut self.audio_recorder.stage {
             Stage::Opening {
                 binding, cancel, ..
@@ -441,7 +468,9 @@ impl EditorView {
             }
             Stage::Idle => {}
         }
-        if self.audio_recorder.retiring_monitor_output.is_some() {
+        if self.audio_recorder.retiring_monitor_output.is_some()
+            && !self.audio_recorder.paused_input.pending()
+        {
             self.error = Some("wait for software monitoring to finish stopping".into());
             return;
         }
@@ -504,6 +533,17 @@ impl EditorView {
             self.error = Some("wait for the current project audio before recording".into());
             return;
         };
+        let binding = Binding {
+            source,
+            track,
+            context,
+        };
+        if self.audio_recorder.paused_input.pending() {
+            self.audio_recorder.record_after_monitor = Some(binding);
+            self.error = None;
+            self.status = "releasing input monitor before recording".into();
+            return;
+        }
         let rate = audio.sample_rate;
         let reader = match audio.control.start_bound_output_recording(source) {
             Ok(reader) => reader,
@@ -511,11 +551,6 @@ impl EditorView {
                 self.error = Some(error.to_string().into());
                 return;
             }
-        };
-        let binding = Binding {
-            source,
-            track,
-            context,
         };
         let cancel = Arc::new(AtomicBool::new(false));
         let worker_cancel = Arc::clone(&cancel);
@@ -551,6 +586,7 @@ impl EditorView {
 
     /// Defer a transport Stop only while a running input take is being drained.
     pub(super) fn finish_audio_recording_before_stop(&mut self) -> bool {
+        self.audio_recorder.record_after_monitor = None;
         match &mut self.audio_recorder.stage {
             Stage::Opening {
                 binding, cancel, ..
@@ -581,16 +617,16 @@ impl EditorView {
         }
     }
 
-    fn stop_recording_monitor(&mut self, binding: Binding) {
+    fn stop_recording_monitor(&mut self, output_identity: u64) {
         if let Some(control) = self
             .audio
             .as_mut()
-            .filter(|audio| audio.control.output_identity() == Some(binding.source.output_identity))
+            .filter(|audio| audio.control.output_identity() == Some(output_identity))
             .and_then(|audio| audio.control.input_monitor())
         {
             control.stop();
             if control.reclaim().is_none() {
-                self.audio_recorder.retiring_monitor_output = Some(binding.source.output_identity);
+                self.audio_recorder.retiring_monitor_output = Some(output_identity);
             }
         }
     }
@@ -619,9 +655,21 @@ impl EditorView {
                 self.audio_recorder.retiring_monitor_output = None;
             }
         }
+        let paused_changed = self.tick_paused_input();
+        if !self.audio_recorder.paused_input.pending()
+            && self.audio_recorder.retiring_monitor_output.is_none()
+            && let Some(binding) = self.audio_recorder.record_after_monitor.take()
+        {
+            if self.record_target_is_current(binding) {
+                self.toggle_audio_recording();
+            } else {
+                self.error = Some("audio recording canceled · input target changed".into());
+            }
+            return true;
+        }
         let stage = std::mem::take(&mut self.audio_recorder.stage);
         match stage {
-            Stage::Idle => false,
+            Stage::Idle => paused_changed,
             Stage::Opening {
                 binding,
                 cancel,
@@ -833,7 +881,7 @@ impl EditorView {
                     }
                     Ok(Some(outcome)) => {
                         if monitor_installed {
-                            self.stop_recording_monitor(binding);
+                            self.stop_recording_monitor(binding.source.output_identity);
                         }
                         if let Some(audio) = self.audio.as_mut().filter(|audio| {
                             audio.control.output_identity() == Some(binding.source.output_identity)
@@ -860,7 +908,7 @@ impl EditorView {
                     }
                     Err(_) => {
                         if monitor_installed {
-                            self.stop_recording_monitor(binding);
+                            self.stop_recording_monitor(binding.source.output_identity);
                         }
                         if let Some(audio) = self.audio.as_mut().filter(|audio| {
                             audio.control.output_identity() == Some(binding.source.output_identity)
@@ -883,6 +931,24 @@ impl EditorView {
                 }
             }
         }
+    }
+
+    fn record_target_is_current(&self, binding: Binding) -> bool {
+        self.project_generation == binding.context.project_generation
+            && self.state.as_ref().is_some_and(|state| {
+                state.revision == binding.context.revision
+                    && self.audio_recorder.target_track(
+                        self.project_generation,
+                        &state.project,
+                        self.selected_track,
+                    ) == Some(binding.track)
+            })
+            && self
+                .audio
+                .as_ref()
+                .and_then(|audio| audio.control.status())
+                .and_then(|status| status.recording_source())
+                == Some(binding.source)
     }
 
     fn finish_audio_take(
