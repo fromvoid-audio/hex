@@ -1014,13 +1014,6 @@ def validate_ci(report: Path, runner, candidate: str, *, allow_dev_profile: bool
     plan = evidence.get("plan")
     if plan is not None and not isinstance(plan, dict):
         raise DeliveryError("invalid scoped verification plan")
-    try:
-        required = ci.qualification_steps(
-            evidence.get("mode"), plan, native_acceptance_opt_in=evidence.get("native_acceptance_opt_in"),
-            sharded_full_python=evidence.get("sharded_full_python", False),
-        )
-    except (KeyError, TypeError, ValueError) as error:
-        raise DeliveryError(f"invalid verification configuration: {error}") from error
     allowed_mode = evidence.get("mode") == "full"
     if plan is not None:
         if not allow_dev_profile and (plan.get("scope") != "full" or plan.get("reuse")):
@@ -1044,11 +1037,18 @@ def validate_ci(report: Path, runner, candidate: str, *, allow_dev_profile: bool
         _require_delivery_sources(runner)
         if resolved != plan:
             raise DeliveryError("recorded scope differs from the current source/dependency plan")
-        # Full Rust scope can use reduced Python coverage for ordinary merges.
-        # Qualified delivery still requires the complete freshly resolved audit.
-        if not allow_dev_profile and required != ci.planned_steps({"scope": "full"}):
-            raise DeliveryError("beta/stable/native qualified delivery requires the full audit, not scoped dev checks")
         allowed_mode = evidence.get("mode") == plan["profile"]
+    try:
+        required = ci.qualification_steps(
+            evidence.get("mode"), plan, native_acceptance_opt_in=evidence.get("native_acceptance_opt_in"),
+            sharded_full_python=evidence.get("sharded_full_python", False),
+        )
+    except (KeyError, TypeError, ValueError) as error:
+        raise DeliveryError(f"invalid verification configuration: {error}") from error
+    # Full Rust scope can use reduced Python coverage for ordinary merges.
+    # Qualified delivery still requires the complete freshly resolved audit.
+    if plan is not None and not allow_dev_profile and required != ci.planned_steps({"scope": "full"}):
+        raise DeliveryError("beta/stable/native qualified delivery requires the full audit, not scoped dev checks")
     if evidence.get("schema_version") == 2:
         for step, recorded in zip(required, evidence.get("steps", [])):
             counts = recorded.get("test_results", {})
