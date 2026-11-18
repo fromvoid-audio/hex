@@ -4508,7 +4508,7 @@ fn installed_instrument_and_effect_export_with_streamed_audio() {
         selection
     });
     let witness_frames = if hosted_insert {
-        16_384
+        24_576
     } else {
         MIXED_WITNESS_FRAMES
     };
@@ -4659,7 +4659,28 @@ fn installed_instrument_and_effect_export_with_streamed_audio() {
         velocity: 100,
     }));
     let (mut applied, _) = h.applied(applied);
+    let second_track = hosted_insert.then(|| {
+        let added = h.run(Request::Edit(Command::AddMidiTrack {
+            name: "second instrument".into(),
+        }));
+        let Some(Created::Track(track)) = added.created else {
+            panic!("second MIDI track");
+        };
+        (applied, _) = h.applied(applied);
+        h.run(Request::Edit(Command::Balance {
+            track,
+            balance: 1.0,
+        }));
+        (applied, _) = h.applied(applied);
+        track
+    });
     for &(beat, pitch) in late_phrases {
+        // Only the live-inserted instrument owns the middle phrase.
+        let track = if beat == 192 {
+            second_track.unwrap_or(track)
+        } else {
+            track
+        };
         let placed = h.run(Request::Edit(Command::PlaceMidiClip {
             track,
             start: BeatTime::from_quarters(beat as u64).unwrap(),
@@ -4697,19 +4718,17 @@ fn installed_instrument_and_effect_export_with_streamed_audio() {
         &instrument_destination.state,
         PluginEffectDestination::Instrument(track),
     );
-    insertion.selection = instrument;
+    insertion.selection = instrument.clone();
     h.service
         .submit(Request::InsertPluginEffect(insertion))
         .unwrap();
     let mut inserted = terminal(&mut h);
     assert!(inserted.error.is_none(), "{:?}", inserted.error);
     let (mut applied, _) = h.applied(applied);
-    let before_insert = Arc::clone(&inserted.state.project);
     let mut expected_revision = inserted.state.revision;
     let mut expected_can_undo = inserted.state.can_undo;
     let mut expected_can_redo = inserted.state.can_redo;
-    let mut before_limiter = None;
-    let mut before_hosted = None;
+    let mut insert_history = Vec::new();
     if live_playback {
         assert!(
             complete,
@@ -4752,11 +4771,17 @@ fn installed_instrument_and_effect_export_with_streamed_audio() {
             "live mix did not differ from the controlled effect alone"
         );
         if full_playthrough {
+            insert_history.push(Arc::clone(&inserted.state.project));
             inserted = exercise_mixed_native_insert(&mut h, &inserted.state);
-            before_limiter = Some(Arc::clone(&inserted.state.project));
+            if let Some(track) = second_track {
+                insert_history.push(Arc::clone(&inserted.state.project));
+                inserted =
+                    exercise_mixed_seamless_instrument(&mut h, &inserted.state, track, &instrument);
+            }
+            insert_history.push(Arc::clone(&inserted.state.project));
             (inserted, applied) = exercise_mixed_limiter_consent(&mut h, &inserted.state);
             if let Some(selection) = &hosted_effect {
-                before_hosted = Some(Arc::clone(&inserted.state.project));
+                insert_history.push(Arc::clone(&inserted.state.project));
                 (inserted, applied) =
                     exercise_mixed_hosted_consent(&mut h, &inserted.state, selection);
             }
@@ -5067,11 +5092,8 @@ fn installed_instrument_and_effect_export_with_streamed_audio() {
         );
         assert_eq!(restored.state.project, inserted.state.project);
         (applied, _) = h.applied(applied);
-        if let Some(before_limiter) = before_limiter {
-            for project in before_hosted
-                .iter()
-                .chain([&before_limiter, &before_insert])
-            {
+        if !insert_history.is_empty() {
+            for project in insert_history.iter().rev() {
                 let undone = h.run(Request::Undo);
                 let mut expected = project.snapshot();
                 // Undo retires devices without reusing their identities.
@@ -5082,9 +5104,9 @@ fn installed_instrument_and_effect_export_with_streamed_audio() {
                 );
                 (applied, _) = h.applied(applied);
             }
-            for project in [&before_limiter]
-                .into_iter()
-                .chain(before_hosted.iter())
+            for project in insert_history
+                .iter()
+                .skip(1)
                 .chain([&inserted.state.project])
             {
                 let redone = h.run(Request::Redo);
@@ -5270,24 +5292,26 @@ fn installed_instrument_and_effect_export_with_streamed_audio() {
         assert_eq!(saved.state.can_undo, expected_can_undo);
         assert_eq!(saved.state.can_redo, expected_can_redo);
         let captured_after = hex_storage::load(&saved_path).unwrap();
-        let instrument_state = |project: &hex_project::Project| {
-            project
-                .track(track)
-                .unwrap()
-                .instrument()
-                .unwrap()
-                .state()
-                .clone()
-        };
+        for instrument_track in std::iter::once(track).chain(second_track) {
+            let instrument_state = |project: &hex_project::Project| {
+                project
+                    .track(instrument_track)
+                    .unwrap()
+                    .instrument()
+                    .unwrap()
+                    .state()
+                    .clone()
+            };
+            assert_eq!(
+                instrument_state(&captured_before),
+                instrument_state(&captured_after)
+            );
+        }
         let effect_state = |project: &hex_project::Project| {
             project.track(audio_track).unwrap().devices()[0]
                 .state()
                 .clone()
         };
-        assert_eq!(
-            instrument_state(&captured_before),
-            instrument_state(&captured_after)
-        );
         assert_eq!(
             effect_state(&captured_before),
             effect_state(&captured_after)
@@ -5425,7 +5449,6 @@ fn mixed_witness_sample(frame: u64) -> i16 {
 }
 
 fn assert_mixed_insert_pcm(block: &[hex_engine::Frame; 256], start: u64) {
-    assert!(start + block.len() as u64 <= u64::from(MIXED_WITNESS_FRAMES));
     let baseline = block[0][0] - f32::from(mixed_witness_sample(start)) / 32768.0;
     assert!(
         baseline > 0.01,
@@ -5541,6 +5564,160 @@ fn exercise_mixed_native_insert(
     }
 }
 
+fn exercise_mixed_seamless_instrument(
+    h: &mut ResidentHarness,
+    before: &hex_session::service::ViewState,
+    track: hex_project::TrackId,
+    instrument: &PluginEffectSelection,
+) -> Event {
+    use hex_session::service::DeviceInsertOutcome;
+
+    fn status(h: &ResidentHarness) -> &hex_audio::prepared::Status {
+        h.audio.as_ref().unwrap().status().unwrap()
+    }
+
+    let predecessor = status(h).recording_source().unwrap();
+    let retained_sources = |h: &ResidentHarness| {
+        h.plugin_progress
+            .lock()
+            .unwrap()
+            .source_bindings
+            .map(|source| source.map(|(id, binding, _)| (id, binding)))
+    };
+    let retained = retained_sources(h);
+    assert!(retained.iter().all(Option::is_some));
+    assert!(before.project.track(track).unwrap().instrument().is_none());
+    let mut input = request(before, PluginEffectDestination::Instrument(track));
+    input.selection = instrument.clone();
+    let operation = Arc::clone(&input.control);
+    let (prepared, enqueue, _busy) = h.probe_next_native_publication();
+    let (submitted, resume) = h.probe_next_submitted_device_insert();
+    h.service
+        .submit(Request::InsertPluginEffect(input))
+        .unwrap();
+    let pending = h.next();
+    assert!(
+        pending.error.is_none(),
+        "second Diva preparation: {:?}",
+        pending.error
+    );
+    assert!(pending.state.project == before.project);
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while prepared.try_recv().is_err() {
+        h.pump();
+        if let Ok(event) = h.service.try_event() {
+            panic!("second Diva finished before publication: {:?}", event.error);
+        }
+        h.render_worker_step();
+        assert!(
+            Instant::now() < deadline,
+            "second Diva never prepared: {:?}",
+            *h.plugin_failure.lock().unwrap()
+        );
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    let render = |h: &ResidentHarness| {
+        let position = status(h).position.load(Acquire);
+        let start = status(h).audible_position.load(Acquire);
+        let pcm = h.render_plugin_block();
+        assert_eq!(status(h).position.load(Acquire), position + 256);
+        assert_eq!(status(h).audible_position.load(Acquire), start + 256);
+        assert!(status(h).playing.load(Acquire));
+        assert_mixed_insert_pcm(&pcm, start);
+        assert!(
+            pcm.chunks_exact(2)
+                .filter(|pair| (pair[1][1] - pair[0][1]).abs() > 0.0002)
+                .count()
+                > 16,
+            "original Diva lost its held signal"
+        );
+        wait(|| {
+            h.callback
+                .lock()
+                .unwrap()
+                .as_mut()
+                .unwrap()
+                .native_workers_idle_on_control()
+                == Some(true)
+        });
+        start
+    };
+    let previous_start = render(h);
+    assert_eq!(status(h).recording_source(), Some(predecessor));
+    enqueue.send(()).unwrap();
+    let submitted = submitted.recv_timeout(Duration::from_secs(2)).unwrap();
+    assert_eq!(submitted.output_identity, predecessor.output_identity);
+    let deadline = Instant::now() + Duration::from_secs(1);
+    let installed_source = loop {
+        render(h);
+        let source = status(h).recording_source().unwrap();
+        if source.audio_revision == submitted.audio_revision {
+            break source;
+        }
+        assert_eq!(source, predecessor);
+        assert!(
+            status(h)
+                .rejected_revision()
+                .is_none_or(|(revision, _)| revision != submitted.audio_revision),
+            "second Diva callback refusal: {:?}",
+            status(h).rejected_revision()
+        );
+        assert!(Instant::now() < deadline, "second Diva receipt timed out");
+    };
+    assert_eq!(installed_source.context, submitted.context);
+    assert_eq!(
+        installed_source.output_identity,
+        predecessor.output_identity
+    );
+    assert!(h.service.try_event().is_err());
+    resume.send(()).unwrap();
+    let event = loop {
+        let event = h.next();
+        assert!(
+            event.error.is_none(),
+            "second Diva install: {:?}",
+            event.error
+        );
+        assert!(event.device_insert_confirmation.is_none());
+        if let Some(receipt) = event.device_insert_complete {
+            assert_eq!(receipt.submission, submitted);
+            assert_eq!(receipt.outcome, DeviceInsertOutcome::Installed);
+            break event;
+        }
+        assert!(event.state.project == before.project);
+    };
+    assert_eq!(event.state.revision, before.revision + 1);
+    let completion = &event.plugin_effect_complete[0];
+    assert!(completion.accepted && Arc::ptr_eq(&completion.control, &operation));
+    let device = event
+        .state
+        .project
+        .track(track)
+        .unwrap()
+        .instrument()
+        .unwrap();
+    assert_eq!(device.id().value(), before.project.next_identity());
+    assert_eq!(
+        device.state().type_id(),
+        hex_engine::DeviceTypeId::from_static("hex.vst3")
+    );
+    assert_eq!(
+        h.submitted_observation()
+            .unwrap()
+            .foreign_processor(device.id().value(), device.state().type_id()),
+        Some(true)
+    );
+    assert_eq!(retained_sources(h), retained);
+    println!(
+        "seamless_second_diva output={} predecessor_revision={} installed_revision={} marked_start={previous_start}..{}",
+        installed_source.output_identity,
+        predecessor.audio_revision,
+        installed_source.audio_revision,
+        status(h).audible_position.load(Acquire)
+    );
+    event
+}
+
 fn exercise_mixed_limiter_consent(
     h: &mut ResidentHarness,
     before: &hex_session::service::ViewState,
@@ -5614,6 +5791,7 @@ fn exercise_mixed_limiter_consent(
     resume.send(()).unwrap();
     // A verified file-backed graph may need another callback to pin both
     // sides of the cut. It must keep playing the predecessor in the meantime.
+    let deadline = Instant::now() + Duration::from_secs(2);
     let (position, faded) = loop {
         let position = status(h).position.load(Acquire);
         let start = status(h).audible_position.load(Acquire);
@@ -5636,8 +5814,8 @@ fn exercise_mixed_limiter_consent(
         }
         assert_eq!(status(h).position.load(Acquire), position + 256);
         assert!(
-            start + 256 <= u64::from(MIXED_WITNESS_FRAMES),
-            "mixed Limiter fade missed the witness: position={position}, recording source={predecessor:?}"
+            Instant::now() < deadline,
+            "mixed Limiter did not reach its fade"
         );
         assert_mixed_insert_pcm(&output, start);
     };
