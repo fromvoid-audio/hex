@@ -216,6 +216,7 @@ impl SessionPlayback {
         track: TrackId,
         input: &[Frame],
         output: &mut [Frame],
+        foreign: &mut dyn hex_lattice::ForeignProcessors,
     ) -> Result<(), SessionPlaybackError> {
         self.render_internal_with_live_audio::<dyn MediaPages>(
             output,
@@ -223,7 +224,7 @@ impl SessionPlayback {
             None,
             None,
             None,
-            &mut hex_lattice::RefuseForeign,
+            foreign,
             Some(LiveTrackAudio {
                 track,
                 frames: input,

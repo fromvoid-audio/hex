@@ -1658,6 +1658,7 @@ impl SessionPlayback {
             resources,
             transient_loop,
             None,
+            &[],
         )
     }
 
@@ -1672,6 +1673,7 @@ impl SessionPlayback {
             None,
             None,
             Some(recipes),
+            &[],
         )
     }
 
@@ -1681,6 +1683,7 @@ impl SessionPlayback {
         resources: Option<&crate::native_device_resources::PreparedDeviceResources>,
         transient_loop: Option<hex_project::LoopRegion>,
         recipe_override: Option<&[crate::source_effect_stage::PreparedSourceEffects]>,
+        monitor_effects: &[PausedMonitorForeignBinding],
     ) -> Result<Self, SessionPlaybackError> {
         let arrangement = revision.arrangement();
         let recipes = recipe_override.unwrap_or(&arrangement.source_effects);
@@ -2003,11 +2006,14 @@ impl SessionPlayback {
             .try_reserve_exact(arrangement_tracks.len())
             .map_err(|_| SessionPlaybackError::Allocation)?;
         for track in arrangement_tracks {
-            device_chains.push(
+            let chain = if monitor_effects.is_empty() {
                 track
                     .new_device_runtime()
-                    .map_err(|_| SessionPlaybackError::DeviceRuntime)?,
-            );
+                    .map_err(|_| SessionPlaybackError::DeviceRuntime)?
+            } else {
+                paused_track_monitor::build_monitor_chain(&track.device_chain, monitor_effects)?
+            };
+            device_chains.push(chain);
         }
         let return_buses = revision.arrangement().return_buses();
         let mut return_chains = Vec::new();
@@ -2037,21 +2043,23 @@ impl SessionPlayback {
             .try_reserve_exact(return_buses.len())
             .map_err(|_| SessionPlaybackError::Allocation)?;
         for bus in return_buses {
-            let mut instances = Vec::new();
-            instances
-                .try_reserve_exact(bus.device_chain.len())
-                .map_err(|_| SessionPlaybackError::Allocation)?;
-            instances.extend(bus.device_chain.iter().cloned());
-            return_chains.push(
-                hex_lattice::NativeRuntimeChain::new_prepared(instances)
-                    .map_err(|_| SessionPlaybackError::DeviceRuntime)?,
-            );
+            return_chains.push(paused_track_monitor::build_monitor_chain(
+                &bus.device_chain,
+                monitor_effects,
+            )?);
             return_scratch.push([[0.0; 2]; 256]);
         }
-        let main_chain = revision
-            .arrangement()
-            .new_main_device_runtime()
-            .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
+        let main_chain = if monitor_effects.is_empty() {
+            revision
+                .arrangement()
+                .new_main_device_runtime()
+                .map_err(|_| SessionPlaybackError::DeviceRuntime)?
+        } else {
+            paused_track_monitor::build_monitor_chain(
+                &revision.arrangement().main_device_chain,
+                monitor_effects,
+            )?
+        };
         let return_effect_tails = ReturnEffectTailBank::new()?;
         let mut tail_groups = Vec::new();
         tail_groups
@@ -2797,7 +2805,8 @@ pub use handoff::PreparedTempoAnchor;
 mod harmonic_import;
 mod paused_track_monitor;
 pub use paused_track_monitor::{
-    PausedMonitorAdmissionError, PausedMonitorStorageHold, PausedTrackMonitor,
+    PausedMonitorAdmissionError, PausedMonitorForeignBinding, PausedMonitorStorageHold,
+    PausedTrackMonitor,
 };
 mod preroll;
 mod render;

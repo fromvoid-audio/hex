@@ -2652,17 +2652,9 @@ impl Playback {
         input: &[Frame],
         output: &mut [Frame],
     ) -> Result<(), Invalid> {
-        if let Some(runtime) = self.session_runtime.as_ref()
-            && self.pending_transport_fade().is_none()
-        {
-            return monitor
-                .render(runtime, input, output)
-                .map_err(|error| Invalid(error.diagnostic_message()));
-        }
-        output.fill([0.0; 2]);
-        Err(Invalid(
-            "paused track monitoring requires a settled session runtime",
-        ))
+        monitor
+            .render(self.paused_monitor_runtime(output)?, input, output)
+            .map_err(|error| Invalid(error.diagnostic_message()))
     }
 
     /// Advance only the paused monitor's retained audio after input removal.
@@ -2672,12 +2664,44 @@ impl Playback {
         monitor: &mut crate::session_playback::PausedTrackMonitor,
         output: &mut [Frame],
     ) -> Result<bool, Invalid> {
+        monitor
+            .drain(self.paused_monitor_runtime(output)?, output)
+            .map_err(|error| Invalid(error.diagnostic_message()))
+    }
+
+    /// Render the paused graph through its separately admitted foreign effect
+    /// endpoints. The supplied callback view must belong to the monitor and
+    /// preserve the host's ordinary final-format acceptance frontier.
+    pub fn render_paused_track_monitor_with_foreign(
+        &self,
+        monitor: &mut crate::PausedTrackMonitor,
+        input: &[Frame],
+        output: &mut [Frame],
+        foreign: &mut dyn hex_lattice::ForeignProcessors,
+    ) -> Result<(), Invalid> {
+        monitor
+            .render_with_foreign(self.paused_monitor_runtime(output)?, input, output, foreign)
+            .map_err(|error| Invalid(error.diagnostic_message()))
+    }
+
+    /// Continue the same monitor callback with zero input. The final block
+    /// can contain audio even when the engine reports no remaining tail.
+    pub fn drain_paused_track_monitor_with_foreign(
+        &self,
+        monitor: &mut crate::PausedTrackMonitor,
+        output: &mut [Frame],
+        foreign: &mut dyn hex_lattice::ForeignProcessors,
+    ) -> Result<bool, Invalid> {
+        monitor
+            .drain_with_foreign(self.paused_monitor_runtime(output)?, output, foreign)
+            .map_err(|error| Invalid(error.diagnostic_message()))
+    }
+
+    fn paused_monitor_runtime(&self, output: &mut [Frame]) -> Result<&SessionPlayback, Invalid> {
         if let Some(runtime) = self.session_runtime.as_ref()
             && self.pending_transport_fade().is_none()
         {
-            return monitor
-                .drain(runtime, output)
-                .map_err(|error| Invalid(error.diagnostic_message()));
+            return Ok(runtime);
         }
         output.fill([0.0; 2]);
         Err(Invalid(

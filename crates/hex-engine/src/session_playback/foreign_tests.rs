@@ -13,6 +13,8 @@ use hex_lattice_contract::{
 };
 use hex_project::{Command, Created};
 
+mod paused_monitor;
+
 struct BorrowedDefinition {
     binding_epoch: Option<u64>,
     instances: Vec<(ProcessorInstanceIdentity, u32)>,
