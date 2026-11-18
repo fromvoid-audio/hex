@@ -127,7 +127,8 @@ fn audio_start_recovery(cx: &mut TestAppContext, released: bool, failed: bool) {
     let _serial = status_fixture_guard();
     let service = Service::with_audio_sink(32, 8_000_000, None, Box::new(RestartSink)).unwrap();
     let fixture = upper_rail_fixture_with_service(cx, service);
-    let (_files, mut visual, editor, clip) = super::super::workflow_tests::open_fixture(cx, fixture);
+    let (_files, mut visual, editor, clip) =
+        super::super::workflow_tests::open_fixture(cx, fixture);
     let (mut old, old_backend) = headless_status_output();
     let control = old.take_client().unwrap();
     control.status().unwrap().playing.store(true, Release);
