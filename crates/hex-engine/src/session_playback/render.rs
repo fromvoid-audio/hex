@@ -679,6 +679,28 @@ impl SessionPlayback {
         )
     }
 
+    pub(super) fn permits_resident_pause_source_monitor(&self) -> bool {
+        !self.playing
+            && !self.linear_arrangement_export
+            && (self.performance_frame != 0 || self.arrangement_frame != 0)
+            && self.anchor.is_none()
+            && self.transient_loop.is_none()
+            && self.current_sampler_keyboards.is_empty()
+            && self
+                .mutable_instruments
+                .iter()
+                .flatten()
+                .all(MutableInstrumentTrackRuntime::is_source_owner)
+            && !self.midi_capture_active()
+            && self.tail_groups.iter().all(Option::is_none)
+            && self.tail_mutable_instruments.iter().all(Option::is_none)
+            && self.releases.iter().all(|release| {
+                release.location.tail_group().is_none()
+                    && release.location.track_index() < self.routes.len()
+            })
+            && !self.stopped_edit_tails()
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn render_on_active_route<P: MediaPages + ?Sized>(
         &mut self,
@@ -693,26 +715,7 @@ impl SessionPlayback {
         if !output.is_empty()
             && let Some(mut monitor) = self.paused_source_monitor.take()
         {
-            let isolated = !self.playing
-                && (self.performance_frame != 0 || self.arrangement_frame != 0)
-                && live_audio.is_none()
-                && self.anchor.is_none()
-                && self.transient_loop.is_none()
-                && self.current_sampler_keyboards.is_empty()
-                && self
-                    .mutable_instruments
-                    .iter()
-                    .flatten()
-                    .all(MutableInstrumentTrackRuntime::is_source_owner)
-                && !self.midi_capture_active()
-                && self.tail_groups.iter().all(Option::is_none)
-                && self.tail_mutable_instruments.iter().all(Option::is_none)
-                && self.releases.iter().all(|release| {
-                    release.location.tail_group().is_none()
-                        && release.location.track_index() < self.routes.len()
-                })
-                && !self.stopped_edit_tails();
-            if isolated {
+            if live_audio.is_none() && self.permits_resident_pause_source_monitor() {
                 let result = monitor.render_resident(self, output, observer, capture, foreign);
                 self.paused_source_monitor = Some(monitor);
                 return result;

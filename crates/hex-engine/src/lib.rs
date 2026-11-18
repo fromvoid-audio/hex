@@ -4379,10 +4379,10 @@ pub use session_playback::{
     MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES, MAX_OUTPUT_CAPTURE_FRAMES, MAX_OUTPUT_CAPTURES,
     OutputCapture, OutputCaptureError, OutputCaptureId, OutputCapturePlan, PausedKeyboardMonitor,
     PausedMonitorAdmissionError, PausedMonitorForeignBinding, PausedMonitorStorageHold,
-    PausedTrackMonitor, PreparedPrerollPages, PreparedStreamAction, ProjectOutputTap,
-    ProjectSignal, ProjectSignalObserver, SessionHandoffReport, SessionPendingRouteStatus,
-    SessionPlayback, SessionPlaybackCommand, SessionPlaybackError, SessionPlaybackOwner,
-    SessionRouteStatus, SessionRouteTarget,
+    PausedSourceMonitor, PausedTrackMonitor, PreparedPrerollPages, PreparedStreamAction,
+    ProjectOutputTap, ProjectSignal, ProjectSignalObserver, SessionHandoffReport,
+    SessionPendingRouteStatus, SessionPlayback, SessionPlaybackCommand, SessionPlaybackError,
+    SessionPlaybackOwner, SessionRouteStatus, SessionRouteTarget,
 };
 
 #[cfg(test)]

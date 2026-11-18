@@ -31,13 +31,18 @@ pub struct PausedTrackMonitor {
 /// lease and retires it on resume, Stop, seek, or source replacement.
 pub struct PausedKeyboardMonitor(PausedTrackMonitor);
 
+/// One paused interval's private effects and compensation for resident
+/// instruments. The original playback still owns all note and voice state.
+pub struct PausedSourceMonitor(PausedTrackMonitor);
+
 impl PausedTrackMonitor {
     pub(crate) fn resident_allowance(
         revision: &PreparedRevision,
         resources: Option<&PreparedDeviceResources>,
+        bindings: &[PausedMonitorForeignBinding],
     ) -> Result<usize, SessionPlaybackError> {
         if Self::resident_source_track(revision).is_none()
-            || !Self::accepts_effect_graph(revision, resources, &[])
+            || !Self::accepts_effect_graph(revision, resources, bindings)
             || revision
                 .arrangement()
                 .tracks()
@@ -78,6 +83,7 @@ impl PausedTrackMonitor {
     pub(crate) fn prepare_resident_graph(
         revision: Arc<PreparedRevision>,
         resources: Option<&PreparedDeviceResources>,
+        bindings: &[PausedMonitorForeignBinding],
         allowance: usize,
     ) -> Result<Self, SessionPlaybackError> {
         // The prepared revision supplies the native receiver recipes as well
@@ -91,7 +97,7 @@ impl PausedTrackMonitor {
             resources,
             None,
             None,
-            &[],
+            bindings,
         )?;
         Self::from_runtime(playback, track, allowance)
     }
@@ -137,6 +143,65 @@ impl PausedTrackMonitor {
         if self.cursor.take().is_some() {
             self.playback.stop_transport();
         }
+    }
+}
+
+impl PausedSourceMonitor {
+    /// Admit private engine state for a complete, independently owned hosted
+    /// effect overlay. The caller authenticates and retains the native workers
+    /// and holds the engine reservation until control destroys this monitor.
+    pub fn prepare_admitted_on_control<E>(
+        revision: Arc<PreparedRevision>,
+        resources: Option<&PreparedDeviceResources>,
+        bindings: &[PausedMonitorForeignBinding],
+        prepared_metadata_bytes: usize,
+        admit: impl FnOnce(DeviceResourceAdmission<'_>) -> Result<(), E>,
+    ) -> Result<(Self, PausedMonitorStorageHold), PausedMonitorAdmissionError<E>> {
+        use PausedMonitorAdmissionError::{Admission, Preparation};
+
+        let runtime = PausedTrackMonitor::resident_allowance(&revision, resources, bindings)
+            .map_err(Preparation)?;
+        if runtime == 0 || bindings.is_empty() {
+            return Err(Preparation(SessionPlaybackError::InvalidCommand));
+        }
+        let hold = PausedMonitorStorageHold::new(&revision, runtime, prepared_metadata_bytes)
+            .map_err(Preparation)?;
+        admit(DeviceResourceAdmission::default().with_paused_monitor(&hold)).map_err(Admission)?;
+        let mut monitor =
+            PausedTrackMonitor::prepare_resident_graph(revision, resources, bindings, runtime)
+                .map_err(Preparation)?;
+        monitor._admission_lifetime = Some(Arc::clone(&hold.lifetime));
+        Ok((Self(monitor), hold))
+    }
+
+    /// The private effect bindings installed in the actual monitor graph.
+    /// Hosted instruments continue to render on their original endpoints.
+    pub fn foreign_effect_bindings(&self) -> impl Iterator<Item = ForeignProcessorBinding> + '_ {
+        self.0.foreign_effect_bindings()
+    }
+
+    pub(crate) fn render(
+        &mut self,
+        arrangement: &mut SessionPlayback,
+        output: &mut [Frame],
+        observer: Option<&mut crate::NodeSignalObserver<'_>>,
+        foreign: &mut dyn ForeignProcessors,
+    ) -> Result<(), SessionPlaybackError> {
+        if output.len() > super::MAX_OUTPUT_CAPTURE_FRAMES
+            || !Arc::ptr_eq(&self.0.playback.revision, &arrangement.revision)
+            || !arrangement.permits_resident_pause_source_monitor()
+            || self
+                .0
+                .cursor
+                .is_some_and(|bound| bound != Cursor::of(arrangement))
+        {
+            return Err(SessionPlaybackError::InvalidCommand);
+        }
+        if output.is_empty() {
+            return Ok(());
+        }
+        self.0
+            .render_resident(arrangement, output, observer, None, foreign)
     }
 }
 
