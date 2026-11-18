@@ -78,6 +78,10 @@ live order of headroom, precedes any mutation. Source order differences and ties
 are translated without collapsing them; typed buffers and paint operations share
 the original append logic and paths receive fresh IDs. Contained Start/End
 operations remain in the stream. Refusal uses the unchanged per-operation replay.
+The scene records the outermost layer boundaries for both live and bulk-replayed
+paint operations. Replay tests for an enclosing layer at the requested start
+with a binary search. An unmatched earlier end still forces per-operation replay.
+
 No whole-row layer shortcut, native calls, unsafe code or new dependency is added.
 
 The implementation is confined to `src/scene.rs` and `src/bounds_tree.rs`;
