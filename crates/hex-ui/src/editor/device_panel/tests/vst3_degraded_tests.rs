@@ -93,6 +93,17 @@ fn only_the_current_documents_degraded_vst3_devices_show_the_marker(cx: &mut Tes
     for device in [healthy, faulted] {
         assert!(visual.debug_bounds(selector("pending", device)).is_some());
     }
+    let trace = |visual: &mut VisualTestContext| {
+        view.update(visual, |view, _| {
+            let mut trace = String::new();
+            trace_vst3_track_panel(view, &mut trace);
+            trace
+        })
+    };
+    view.update(&mut visual, |view, _| {
+        view.device_panel.selected_device = Some(faulted);
+    });
+    assert!(trace(&mut visual).contains("vst3_panel=pending vst3_wait=AppliedGraphMissing"));
     let button = selector("editor", healthy);
     let button_color = |open| {
         let role = if open {
@@ -154,6 +165,7 @@ fn only_the_current_documents_degraded_vst3_devices_show_the_marker(cx: &mut Tes
     );
     assert!(visual.debug_bounds(selector("degraded", faulted)).is_some());
     assert!(visual.debug_bounds(selector("pending", faulted)).is_none());
+    assert!(trace(&mut visual).contains("vst3_panel=degraded"));
     assert!(visual.debug_bounds(selector("degraded", healthy)).is_none());
     assert!(visual.debug_bounds(selector("pending", healthy)).is_some());
     // An empty set clears the marker.
