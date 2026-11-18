@@ -2698,18 +2698,15 @@ impl ResidentHarness {
         );
         event
     }
+    #[track_caller]
     pub(super) fn wait_constructor_applied(&mut self, context: AudioSourceContext) {
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
             self.pump();
             self.render();
-            if let Some(applied) = self
-                .audio
-                .as_ref()
-                .unwrap()
-                .status()
-                .unwrap()
-                .applied_audio_source()
+            let status = self.audio.as_ref().unwrap().status().unwrap();
+            let applied = status.applied_audio_source();
+            if let Some(applied) = applied
                 && applied.context == context
                 && Some((applied.audio_revision, context)) == self.constructor_submitted
             {
@@ -2717,7 +2714,13 @@ impl ResidentHarness {
             }
             assert!(
                 Instant::now() < deadline,
-                "verified constructor did not apply its exact context"
+                "verified constructor for {context:?} did not apply its exact context: \
+                 submitted={:?}, applied={applied:?}, rejected={:?}, refusals={:?}",
+                self.constructor_submitted,
+                status
+                    .rejected_revision()
+                    .map(|(revision, reason)| (revision, reason.message())),
+                self.publication_refusals,
             );
             std::thread::yield_now();
         }

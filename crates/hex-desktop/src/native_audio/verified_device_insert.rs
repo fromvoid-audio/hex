@@ -2,13 +2,14 @@
 //! queue as other verified graphs. The Session owns the exact editor commit.
 use super::*;
 use hex_audio::prepared::{AppliedAudioSource, DeviceInsertConsent};
-use hex_session::service::VerifiedDeviceInsertAttempt;
+use hex_session::service::{RequestCancellation, VerifiedDeviceInsertAttempt};
 
 #[derive(Clone)]
 pub(super) struct Insert {
     pub(super) attempt: VerifiedDeviceInsertAttempt,
     pub(super) predecessor: AppliedAudioSource,
     pub(super) approval: Option<DeviceInsertConsent>,
+    pub(super) cancellation: Option<RequestCancellation>,
 }
 
 impl NativeAudioSink {
@@ -65,6 +66,7 @@ impl NativeAudioSink {
             attempt,
             predecessor,
             approval,
+            cancellation: self.request_cancellation.clone(),
         });
         Ok(())
     }
