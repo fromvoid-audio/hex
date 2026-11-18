@@ -634,6 +634,21 @@ fn changing_a_silent_routed_track_preserves_compensated_callback_audio() {
             else {
                 panic!("group");
             };
+            let Created::Track(destination) = editor
+                .execute(Command::AddTrack {
+                    name: "feed".into(),
+                })
+                .unwrap()
+            else {
+                panic!("feed destination");
+            };
+            editor
+                .execute(Command::SetAudioFeed {
+                    source: hex_project::RoutingOwner::Track(track),
+                    destination,
+                    gain: 0.25,
+                })
+                .unwrap();
             group
         });
         let (mut control, mut callback) = channel(48_000).unwrap();
