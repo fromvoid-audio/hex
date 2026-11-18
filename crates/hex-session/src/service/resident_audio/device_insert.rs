@@ -104,6 +104,7 @@ pub struct VerifiedDeviceInsertAttempt(Arc<VerifiedAttempt>);
 struct VerifiedAttempt {
     source: Arc<CanonicalAudioSourceSnapshot>,
     predecessor: hex_engine::AudioSourceContext,
+    retiring_gain: Option<DevicePreviewIdentity>,
     confirmation: Option<ResidentGraphSubmission>,
     prepare_until: Instant,
     state: std::sync::Mutex<VerifiedState>,
@@ -120,11 +121,13 @@ impl VerifiedDeviceInsertAttempt {
     fn new(
         source: Arc<CanonicalAudioSourceSnapshot>,
         predecessor: hex_engine::AudioSourceContext,
+        retiring_gain: Option<DevicePreviewIdentity>,
         confirmation: Option<ResidentGraphSubmission>,
     ) -> Self {
         Self(Arc::new(VerifiedAttempt {
             source,
             predecessor,
+            retiring_gain,
             confirmation,
             prepare_until: Instant::now() + std::time::Duration::from_secs(10),
             state: std::sync::Mutex::new(VerifiedState::Preparing),
@@ -136,6 +139,10 @@ impl VerifiedDeviceInsertAttempt {
     }
     pub fn predecessor(&self) -> hex_engine::AudioSourceContext {
         self.0.predecessor
+    }
+    /// The exact track gain preview invalidated by this staged removal.
+    pub fn retiring_gain(&self) -> Option<DevicePreviewIdentity> {
+        self.0.retiring_gain
     }
     pub fn confirmation(&self) -> Option<ResidentGraphSubmission> {
         self.0.confirmation
@@ -326,6 +333,7 @@ impl Pending {
                 let retry = VerifiedDeviceInsertAttempt::new(
                     Arc::clone(attempt.source()),
                     attempt.predecessor(),
+                    attempt.retiring_gain(),
                     Some(refused),
                 );
                 sink.begin_verified_device_insert(retry.clone())
@@ -420,6 +428,7 @@ impl Session {
         previous: Option<&hex_engine::PreparedRevision>,
         sink: &mut dyn WorkerAudioSink,
         document_intent: u64,
+        gesture: Option<&crate::device_gesture::GestureSnapshot>,
     ) -> Result<Pending, SessionError> {
         crate::validate_command_media(&command)?;
         let predecessor = state
@@ -443,6 +452,24 @@ impl Session {
         let operation = graph_edit_operation(&command)
             .ok_or(SessionError::Invalid("unsupported staged graph edit"))?;
         let edit = self.editor.stage_edit(command)?;
+        let retiring_gain = gesture
+            .filter(|active| {
+                operation == GraphEditOperation::RemoveTrack
+                    && active.target.track_gain_anchor().is_some_and(|track| {
+                        edit.project().track(track).is_none()
+                            || active.track_gains.as_ref().is_some_and(|group| {
+                                group
+                                    .entries()
+                                    .any(|(member, _)| edit.project().track(member).is_none())
+                            })
+                    })
+            })
+            .map(|active| DevicePreviewIdentity {
+                project_generation: predecessor.project_generation,
+                key: active.key,
+                sequence: active.sequence,
+                canonical_revision: state.revision,
+            });
         let prepared = crate::prepare_with_waveforms(
             edit.project(),
             &self.media_bank(),
@@ -464,7 +491,7 @@ impl Session {
             next,
             self,
         ));
-        let attempt = VerifiedDeviceInsertAttempt::new(source, predecessor, None);
+        let attempt = VerifiedDeviceInsertAttempt::new(source, predecessor, retiring_gain, None);
         sink.begin_verified_device_insert(attempt.clone())
             .map_err(SessionError::NativeAudio)?;
         Ok(Pending {

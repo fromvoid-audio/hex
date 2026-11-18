@@ -16,13 +16,25 @@ impl NativeAudioSink {
         &mut self,
         attempt: VerifiedDeviceInsertAttempt,
     ) -> Result<(), String> {
-        if self.verified_preview.is_some()
-            || self.sampler.is_some()
-            || self.desired.as_ref().is_none_or(|source| {
-                source.context() != attempt.predecessor()
-                    || source.audio_mode() != DocumentAudioMode::VerifiedStreaming
+        let canonical = self
+            .desired
+            .as_ref()
+            .filter(|source| {
+                source.context() == attempt.predecessor()
+                    && source.audio_mode() == DocumentAudioMode::VerifiedStreaming
             })
-        {
+            .ok_or("verified device insert needs the installed canonical source")?;
+        // Retain the owned gain preview until the removal actually installs.
+        // A refused graph edit leaves that preview and its gesture intact.
+        let preview_blocks_edit = match self.verified_preview.as_ref() {
+            None => false,
+            Some(VerifiedSource::Gain(gain)) => !attempt.retiring_gain().is_some_and(|identity| {
+                gain.preview_identity() == Some(identity)
+                    && Arc::ptr_eq(gain.canonical(), canonical)
+            }),
+            Some(_) => true,
+        };
+        if self.sampler.is_some() || preview_blocks_edit {
             return Err("verified device insert needs the installed canonical source".into());
         }
         let control = self

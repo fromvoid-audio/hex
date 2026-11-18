@@ -754,7 +754,7 @@ impl Harness {
         self.next_event(false)
     }
 
-    fn next_with_audio(&mut self) -> Event {
+    pub(super) fn next_with_audio(&mut self) -> Event {
         self.next_event(true)
     }
 
