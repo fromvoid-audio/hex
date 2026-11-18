@@ -4608,7 +4608,22 @@ fn installed_instrument_and_effect_export_with_streamed_audio() {
             (applied, _) = h.applied(applied);
         }
     }
-    let mut insertion = request(&note.state, PluginEffectDestination::Instrument(track));
+    let instrument_destination = if full_playthrough {
+        // Leave the left channel as an independent streamed-source witness
+        // even if the installed synth has a sub-audible residual on the right.
+        let balanced = h.run(Request::Edit(Command::Balance {
+            track,
+            balance: 1.0,
+        }));
+        (applied, _) = h.applied(applied);
+        balanced
+    } else {
+        note
+    };
+    let mut insertion = request(
+        &instrument_destination.state,
+        PluginEffectDestination::Instrument(track),
+    );
     insertion.selection = instrument;
     h.service
         .submit(Request::InsertPluginEffect(insertion))
@@ -4666,6 +4681,8 @@ fn installed_instrument_and_effect_export_with_streamed_audio() {
             let mut phrase_peaks = [[0.0_f32; 4]; 3];
             let mut audible_blocks = 0usize;
             let mut buffering_blocks = 0usize;
+            let mut consecutive_holds = 0usize;
+            let mut longest_hold = 0usize;
             let mut previous = h
                 .audio
                 .as_ref()
@@ -4707,9 +4724,12 @@ fn installed_instrument_and_effect_export_with_streamed_audio() {
                 assert!(block.iter().flatten().all(|sample| sample.is_finite()));
                 if status.stream_buffering.load(Acquire) {
                     buffering_blocks += 1;
+                    consecutive_holds += 1;
+                    longest_hold = longest_hold.max(consecutive_holds);
                     assert_eq!(position, previous, "buffering advanced the cursor");
                     assert_eq!(block, [[0.0; 2]; 256]);
                 } else if position > previous {
+                    consecutive_holds = 0;
                     assert_eq!(position - previous, 256, "full-song cursor skipped frames");
                     let peak = block
                         .iter()
@@ -4719,7 +4739,10 @@ fn installed_instrument_and_effect_export_with_streamed_audio() {
                         position >= (start + 2048) as u64
                             && position < (start + length - 2048) as u64
                     }) {
-                        assert!(peak < 0.005, "source marker {index} was not quiet: {peak}");
+                        assert!(
+                            block.iter().all(|frame| frame[0].abs() < 0.005),
+                            "streamed source marker {index} was not quiet"
+                        );
                         quiet_markers[index] += 1;
                     } else if let Some((index, &(beat, _))) =
                         late_phrases.iter().enumerate().find(|(_, (beat, _))| {
@@ -4760,7 +4783,7 @@ fn installed_instrument_and_effect_export_with_streamed_audio() {
                 check_phrase("live", beat, peaks);
             }
             println!(
-                "full_live frames={source_frames} elapsed_ms={} audible_blocks={audible_blocks} buffering_blocks={buffering_blocks} quiet_markers={quiet_markers:?} phrase_peaks={phrase_peaks:?}",
+                "full_live frames={source_frames} elapsed_ms={} audible_blocks={audible_blocks} buffering_blocks={buffering_blocks} longest_hold={longest_hold} quiet_markers={quiet_markers:?} phrase_peaks={phrase_peaks:?}",
                 started.elapsed().as_millis()
             );
         }
@@ -5020,15 +5043,24 @@ fn installed_instrument_and_effect_export_with_streamed_audio() {
         assert!(wav[44..44 + 4096].iter().any(|byte| *byte != 0));
         assert!(wav[wav.len() - 4096..].iter().any(|byte| *byte != 0));
         for (start, length) in markers {
-            let silent = |frame: usize| wav[44 + frame * 4..44 + (frame + 1) * 4] == [0; 4];
+            let channel_bytes = if full_playthrough { 2 } else { 4 };
+            let silent = |frame: usize| {
+                let offset = 44 + frame * 4;
+                wav[offset..offset + channel_bytes]
+                    .iter()
+                    .all(|byte| *byte == 0)
+            };
             let observed_start = (start - 2048..start + 2048)
                 .find(|frame| silent(*frame))
                 .expect("late-song silence begins near its source marker");
             let observed_end = (start + length - 2048..start + length + 2048)
                 .find(|frame| !silent(*frame))
                 .expect("late-song audio resumes near its source marker");
-            assert_eq!(observed_end - observed_start, length);
-            assert_eq!(observed_start, start, "marker must be sample-aligned");
+            assert_eq!(
+                (observed_start, observed_end),
+                (start, start + length),
+                "source marker must be sample-aligned"
+            );
             assert!((observed_start..observed_end).all(silent));
             println!("source_marker={start} output_marker={observed_start} length={length}");
         }
