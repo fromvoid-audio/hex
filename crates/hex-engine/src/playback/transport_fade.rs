@@ -187,6 +187,13 @@ impl TransportFade {
         self.device_insert_cut == Some(DeviceInsertCut::Held)
     }
 
+    pub(crate) fn device_insert_cut_pending(&self) -> bool {
+        matches!(
+            self.device_insert_cut,
+            Some(DeviceInsertCut::FadingOut(_) | DeviceInsertCut::Held)
+        )
+    }
+
     /// Release the hold, or reverse an incomplete fade from its current gain.
     pub(crate) fn release_device_insert_cut(&mut self, frames: u32) -> bool {
         let (remaining, held) = match self.device_insert_cut {

@@ -1967,6 +1967,11 @@ impl Playback {
         self.transport_fade.device_insert_held()
     }
 
+    /// The callback still owns a fade out or a silent cut for this insert.
+    pub fn device_insert_cut_pending(&self) -> bool {
+        self.transport_fade.device_insert_cut_pending()
+    }
+
     /// Restore the predecessor after a refusal, or resume the successor after
     /// it has inherited the silent cut. The full output ramps up from the
     /// current gain, without issuing a transport command or resetting history.

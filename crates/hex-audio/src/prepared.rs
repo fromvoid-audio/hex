@@ -96,8 +96,8 @@ pub use hex_lattice::ProcessorInstanceIdentity as NativeProcessorIdentity;
 pub use native_sources::NativeParameterContinuationRequest;
 mod device_insert_consent;
 mod publication_receipt;
-use device_insert_consent::DeviceInsertBasis;
 pub use device_insert_consent::DeviceInsertConsent;
+use device_insert_consent::{DeviceInsertAdmission, DeviceInsertBasis};
 use publication_receipt::PublicationReceiptOwner;
 pub use publication_receipt::{
     CancellablePublicationReceipt, FreshRuntimeCancellationResult, PublicationReceiptState,
@@ -2081,7 +2081,10 @@ impl PublicationControl {
             policy,
             source_context.project_generation,
             Some(source_context),
-            Some(&mut bind_receipt),
+            Some(DeviceInsertAdmission {
+                bind: &mut bind_receipt,
+                approved: None,
+            }),
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             None,
             admit,
@@ -2095,7 +2098,7 @@ impl PublicationControl {
         policy: PublicationPolicy,
         control_context_generation: u64,
         source_context: Option<hex_engine::AudioSourceContext>,
-        bind_receipt: Option<&mut dyn FnMut(&CancellablePublicationReceipt)>,
+        insert: Option<DeviceInsertAdmission<'_>>,
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))] native_continuation: Option<
             hex_plugin_host::transport::ParameterInputSource,
         >,
@@ -2125,7 +2128,7 @@ impl PublicationControl {
                     true,
                     false,
                     source_context,
-                    bind_receipt,
+                    insert,
                     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
                     native_continuation,
                 )
@@ -2270,11 +2273,22 @@ impl PublicationControl {
         explicit_control_context: bool,
         forwarded_pcm: bool,
         source_context: Option<hex_engine::AudioSourceContext>,
-        bind_receipt: Option<&mut dyn FnMut(&CancellablePublicationReceipt)>,
+        insert: Option<DeviceInsertAdmission<'_>>,
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))] native_continuation: Option<
             hex_plugin_host::transport::ParameterInputSource,
         >,
     ) -> Result<u64, PublishError> {
+        let approved = insert.as_ref().and_then(|insert| insert.approved);
+        if approved
+            .as_ref()
+            .is_some_and(|consent| !self.device_insert_consent_is_current(consent))
+        {
+            return Err(PublishError {
+                kind: PublishErrorKind::Other,
+                reason: "device insert confirmation is no longer current",
+                playback,
+            });
+        }
         let native_epoch = match policy {
             PublicationPolicy::InstallUnderNativeEpoch(token)
             | PublicationPolicy::InheritUnderStoppedNative { fence: token, .. } => Some(token),
@@ -2456,9 +2470,9 @@ impl PublicationControl {
         };
         let cancellation = policy.fresh_fence().is_some().then(|| {
             let device_insert = match policy {
-                PublicationPolicy::DeviceInsert { predecessor, fence } => {
-                    Some(DeviceInsertBasis::new(predecessor, fence, &self.status))
-                }
+                PublicationPolicy::DeviceInsert { predecessor, fence } => Some(
+                    DeviceInsertBasis::new(predecessor, fence, &self.status, approved),
+                ),
                 _ => None,
             };
             CancellablePublicationReceipt::new(
@@ -2485,8 +2499,8 @@ impl PublicationControl {
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             native_references,
         };
-        if let (Some(bind), Some(receipt)) = (bind_receipt, cancellation.as_ref()) {
-            bind(receipt);
+        if let (Some(insert), Some(receipt)) = (insert, cancellation.as_ref()) {
+            (insert.bind)(receipt);
         }
         if let Err(mut publication) = enqueue_legacy(&mut self.publications, publication) {
             publication.release_streams_on_control(&self.candidate_root);
@@ -3370,6 +3384,7 @@ impl Callback {
     }
 
     fn return_graph(&mut self, publication: Publication) {
+        self.release_refused_device_insert_cut(&publication);
         if let Some(receipt) = publication.fresh_runtime_cancellation.as_ref() {
             // The callback is the sole writer of these refusal fields. A
             // refused graph is returned in the same callback branch that
@@ -3460,6 +3475,7 @@ impl Callback {
         if let Some(publication) = self.held_retirement.take() {
             self.return_publication(publication);
             if self.held_retirement.is_some() {
+                self.abort_blocked_device_insert();
                 // Ownership backpressure must not delay the independent Stop
                 // path. Keep the graph retained while consuming bounded control.
                 if self.status.closing.load(Acquire) {
@@ -3763,7 +3779,15 @@ impl Callback {
     }
 
     fn advance_legacy_publication(&mut self, frames: Option<usize>) {
+        let confirmed_insert = self
+            .deferred
+            .as_ref()
+            .is_some_and(|next| next.approved_device_insert().is_some());
+        if confirmed_insert && frames.is_some() {
+            return;
+        }
         if frames.is_none()
+            && !confirmed_insert
             && self
                 .deferred
                 .as_ref()
@@ -3790,6 +3814,10 @@ impl Callback {
             return;
         }
         if !self.quantized_seek_publication_due() {
+            return;
+        }
+        if confirmed_insert && self.retired.is_full() {
+            self.abort_blocked_device_insert();
             return;
         }
         // A candidate with a transient release-capacity refusal remains owned
@@ -3819,6 +3847,21 @@ impl Callback {
                 self.return_graph(next);
                 self.status.publication_pending.store(false, Release);
                 return;
+            }
+            if let Some(basis) = next.approved_device_insert() {
+                match self.advance_confirmed_device_insert(&next, basis) {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        self.deferred = Some(next);
+                        return;
+                    }
+                    Err(reason) => {
+                        self.reject_publication(next.revision, reason);
+                        self.return_graph(next);
+                        self.status.publication_pending.store(false, Release);
+                        return;
+                    }
+                }
             }
             // Do not overtake an accepted transport command or cancel a
             // streamed action while deciding a gesture-bound successor.
@@ -3948,6 +3991,15 @@ impl Callback {
                     .input_monitor
                     .blocks_graph_replacement(previous, epoch, &next.playback)
             {
+                if confirmed_insert {
+                    self.reject_publication(
+                        next.revision,
+                        PlaybackHandoffRejection::RuntimeFenceChanged,
+                    );
+                    self.return_graph(next);
+                    self.status.publication_pending.store(false, Release);
+                    return;
+                }
                 // The live branch must render its committed transition
                 // before publication can try again. The pending candidate
                 // stays in the existing publication slot.
@@ -3967,13 +4019,17 @@ impl Callback {
                 barrier.wait();
             }
             let inserting = matches!(next.policy, PublicationPolicy::DeviceInsert { .. });
-            if inserting {
+            if inserting && !confirmed_insert {
                 // The candidate owns this law so stream preflight and final
                 // inheritance both reject the same unproven interruption.
                 next.playback.require_continuous_device_insert();
             }
             let mut promotions = None;
-            if !forced_refusal && stale_fence.is_none() && next.streams.is_some() {
+            if !forced_refusal
+                && !confirmed_insert
+                && stale_fence.is_none()
+                && next.streams.is_some()
+            {
                 let pending_window = self
                     .active
                     .as_mut()
@@ -4351,7 +4407,13 @@ impl Callback {
             }
             next.playback
                 .bind_browser_audition_transport(self.status.transport_epoch.load(Acquire));
-            let insert_refusal = if let PublicationPolicy::DeviceInsert { fence, .. } = next.policy
+            let insert_refusal = if confirmed_insert && stale_fence.is_none() {
+                let active = self.active.as_ref().and_then(ActivePublication::legacy);
+                next.approved_device_insert()
+                    .is_none_or(|basis| !basis.cut_is_current(&self.status, active))
+                    .then_some(hex_engine::PlaybackHandoffError::RuntimeFenceChanged)
+            } else if let PublicationPolicy::DeviceInsert { fence, .. } = next.policy
+                && !confirmed_insert
                 && stale_fence.is_none()
                 && !forced_refusal
             {
@@ -4677,6 +4739,9 @@ impl Callback {
                     if let Some((previous, successor, epoch)) = monitor_handoff {
                         self.input_monitor
                             .preserve_graph_release(previous, successor, epoch);
+                    }
+                    if confirmed_insert {
+                        next.playback.release_device_insert_cut();
                     }
                     let previous = self.active.replace(ActivePublication::Legacy(next));
                     if reset_audible {
@@ -5177,6 +5242,12 @@ impl Callback {
     }
     /// Stop immediately after a render fault; does not dispose graph ownership.
     pub fn stop_after_fault(&mut self) {
+        if let Some(next) = self.deferred.as_ref()
+            && next.approved_device_insert().is_some()
+            && let Some(receipt) = next.fresh_runtime_cancellation.as_ref()
+        {
+            receipt.returned(None);
+        }
         // The fault Stop below revokes every transport effect immediately.
         self.transport_fade = None;
         self.recovery_position_frozen = true;
@@ -5266,6 +5337,20 @@ impl Callback {
         let block = self.scheduled_transport();
         let result = self.render_inner(output, block);
         self.release_current_quantum_pins();
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        if result.is_ok()
+            && let Some((_, before, true)) = block
+            && let Some((_, after, false)) = self.scheduled_transport()
+            && let Ok(frame) = usize::try_from(after.saturating_sub(before))
+            && frame < output.len()
+            && self
+                .active
+                .as_ref()
+                .and_then(ActivePublication::legacy)
+                .is_some_and(|active| active.playback.device_insert_held())
+        {
+            self.native_sources.end_staging_at_rendered_prefix(frame);
+        }
         if self.transport_fade.is_some() && !self.transport_fade_pending() {
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             if result.is_ok()

@@ -77,6 +77,20 @@ pub(super) fn begin_insert(
     AppliedAudioSource,
     CancellablePublicationReceipt,
 ) {
+    begin_insert_with_pending_track(old, next, Some(track), position)
+}
+
+pub(super) fn begin_insert_with_pending_track(
+    old: Arc<hex_engine::PreparedRevision>,
+    next: Arc<hex_engine::PreparedRevision>,
+    track: Option<hex_project::TrackId>,
+    position: usize,
+) -> (
+    Control,
+    Callback,
+    AppliedAudioSource,
+    CancellablePublicationReceipt,
+) {
     let initial = hex_engine::AudioSourceContext {
         project_generation: 5,
         editor_revision: 7,
@@ -95,14 +109,16 @@ pub(super) fn begin_insert(
     control.command(PlaybackCommand::Play).unwrap();
     callback.begin_block();
     callback.render(&mut vec![[0.0; 2]; position]).unwrap();
-    let ticket = control
-        .action_with_ticket(PlaybackAction::Session(SessionPlaybackCommand::StopTrack {
-            track,
-            quantization: LaunchQuantization::ThirtySecond,
-        }))
-        .unwrap();
-    callback.begin_block();
-    assert_eq!(control.status.consumed_command.load(Acquire), ticket);
+    if let Some(track) = track {
+        let ticket = control
+            .action_with_ticket(PlaybackAction::Session(SessionPlaybackCommand::StopTrack {
+                track,
+                quantization: LaunchQuantization::ThirtySecond,
+            }))
+            .unwrap();
+        callback.begin_block();
+        assert_eq!(control.status.consumed_command.load(Acquire), ticket);
+    }
     let predecessor = control.status.recording_source().unwrap();
     let fence = control.capture_fresh_runtime_fence().unwrap();
     let revision = control
@@ -253,7 +269,7 @@ fn ordinary_workspace_uses_the_same_insert_continuity_law_during_preflight() {
     let fence = control.capture_fresh_runtime_fence().unwrap();
     let revision = control
         .publish_with_admission_and_source_on_control(
-            Playback::try_from_prepared_with_session(next).unwrap(),
+            Playback::try_from_prepared_with_session(Arc::clone(&next)).unwrap(),
             PublicationPolicy::DeviceInsert { predecessor, fence },
             hex_engine::AudioSourceContext {
                 editor_revision: 4,
@@ -269,6 +285,61 @@ fn ordinary_workspace_uses_the_same_insert_continuity_law_during_preflight() {
         PublicationReceiptState::Refused(PlaybackHandoffRejection::DeviceInsertNeedsConfirmation)
     );
     assert_eq!(control.status.recording_source(), Some(predecessor));
+
+    let consent = control.offer_device_insert_consent(&receipt).unwrap();
+    let position = control.status.position.load(Acquire);
+    control.reclaim();
+    let mut approved_receipt = None;
+    let approved = control
+        .publish_confirmed_device_insert_with_receipt_on_control(
+            Playback::try_from_prepared_with_session(next).unwrap(),
+            consent,
+            |receipt| approved_receipt = Some(receipt.clone()),
+            |_| Ok::<_, ()>(()),
+        )
+        .unwrap();
+    let approved_receipt = approved_receipt.unwrap();
+    assert_eq!(approved_receipt.revision(), approved);
+    let check_fade = || {
+        let first = render();
+        assert_eq!(first[0], [SIGNAL[0] * 127.0 / 128.0; 2]);
+        assert_eq!(first[63], [SIGNAL[0] / 2.0; 2]);
+        assert_eq!(approved_receipt.state(), PublicationReceiptState::Applying);
+        let second = render();
+        assert_eq!(second[63], [0.0; 2]);
+        assert_eq!(control.status.position.load(Acquire), position + 128);
+        assert_eq!(control.status.recording_source(), Some(predecessor));
+        render();
+        assert_eq!(approved_receipt.state(), PublicationReceiptState::Installed);
+        assert_eq!(control.status.position.load(Acquire), position + 192);
+        assert_eq!(
+            control.status.recording_source(),
+            Some(AppliedAudioSource {
+                context: consent.candidate_context(),
+                audio_revision: approved,
+                ..predecessor
+            }),
+        );
+        assert!(control.status.playing.load(Acquire));
+    };
+    #[cfg(feature = "allocation-probe")]
+    {
+        let counts = allocation_counter::measure(check_fade);
+        assert_eq!(
+            (
+                counts.count_total,
+                counts.bytes_total,
+                counts.count_current,
+                counts.bytes_current,
+            ),
+            (0, 0, 0, 0),
+        );
+    }
+    #[cfg(not(feature = "allocation-probe"))]
+    {
+        let mut check_fade = check_fade;
+        check_fade();
+    }
     control.request_shutdown();
     render();
     control.reclaim();
