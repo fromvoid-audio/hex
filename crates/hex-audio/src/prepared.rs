@@ -4409,9 +4409,22 @@ impl Callback {
                 .bind_browser_audition_transport(self.status.transport_epoch.load(Acquire));
             let insert_refusal = if confirmed_insert && stale_fence.is_none() {
                 let active = self.active.as_ref().and_then(ActivePublication::legacy);
-                next.approved_device_insert()
-                    .is_none_or(|basis| !basis.cut_is_current(&self.status, active))
-                    .then_some(hex_engine::PlaybackHandoffError::RuntimeFenceChanged)
+                let cut_is_current = || {
+                    next.approved_device_insert()
+                        .is_some_and(|basis| basis.cut_is_current(&self.status, active))
+                };
+                if !cut_is_current() {
+                    Some(hex_engine::PlaybackHandoffError::RuntimeFenceChanged)
+                } else if !next
+                    .fresh_runtime_cancellation
+                    .as_ref()
+                    .is_some_and(PublicationReceiptOwner::begin_confirmed_apply)
+                {
+                    Some(hex_engine::PlaybackHandoffError::FreshRuntimeCancelled)
+                } else {
+                    (!cut_is_current())
+                        .then_some(hex_engine::PlaybackHandoffError::RuntimeFenceChanged)
+                }
             } else if let PublicationPolicy::DeviceInsert { fence, .. } = next.policy
                 && !confirmed_insert
                 && stale_fence.is_none()

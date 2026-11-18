@@ -97,6 +97,44 @@ impl Drop for PendingPluginEffect {
 }
 
 impl EditorView {
+    pub(super) fn reconcile_device_insert_confirmation(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.opening_project || self.close_prompt_open || self.save_dialog_open {
+            return;
+        }
+        let Some(offer) = self.device_insert_confirmation.take() else {
+            return;
+        };
+        cx.defer_in(window, move |_, window, cx| {
+            if !offer.is_pending() {
+                return;
+            }
+            let answer = window.prompt(
+                gpui::PromptLevel::Warning,
+                &theme::text("interrupt playback to insert this device?"),
+                Some(&theme::text(
+                    "playback will fade out briefly and resume from the same position. +                     held notes and effect tails may reset.",
+                )),
+                &[
+                    gpui::PromptButton::cancel(theme::text("cancel")),
+                    gpui::PromptButton::new(theme::text("proceed")),
+                ],
+                cx,
+            );
+            cx.spawn(async move |_, _| {
+                if answer.await.ok() == Some(1) {
+                    offer.proceed();
+                } else {
+                    offer.cancel();
+                }
+            })
+            .detach();
+        });
+    }
+
     pub(super) fn cancel_plugin_effect(&self) {
         if let Some(pending) = &self.pending_plugin_effect {
             pending.control.cancel();

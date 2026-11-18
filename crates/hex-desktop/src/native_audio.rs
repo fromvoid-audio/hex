@@ -1186,6 +1186,12 @@ impl WorkerAudioSink for NativeAudioSink {
     ) -> Option<Box<dyn hex_session::service::DeviceInsertAudioReceipt>> {
         self.retain_device_insert_receipt(submission)
     }
+    fn offer_device_insert_consent(
+        &mut self,
+        submission: hex_session::service::ResidentGraphSubmission,
+    ) -> Option<std::time::Instant> {
+        self.offer_resident_device_insert_consent(submission)
+    }
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     fn plugin_parameter_requires_stopped_restore(
         &mut self,

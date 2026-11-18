@@ -1853,6 +1853,7 @@ fn pending_time_move_preview_survives_until_worker_failure_then_restores_source(
         sampler_load_complete: None,
         sampler_edit_complete: None,
         plugin_effect_complete: Vec::new(),
+        device_insert_confirmation: None,
         device_insert_complete: None,
         plugin_parameter_observation: false,
         plugin_parameters: None,

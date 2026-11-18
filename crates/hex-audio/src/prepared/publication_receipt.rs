@@ -20,6 +20,7 @@ const INSTALLED: u32 = 3;
 const CANCELLED: u32 = 4;
 const OUTPUT_CLOSED: u32 = 5;
 const EXPIRED: u32 = 6;
+const FADING: u32 = 7;
 const REFUSED: u32 = 16;
 
 /// Control-side result of cancelling a conditionally published fresh runtime.
@@ -27,7 +28,7 @@ const REFUSED: u32 = 16;
 pub enum FreshRuntimeCancellationResult {
     /// Cancellation won before the callback began installing the candidate.
     Cancelled,
-    /// The callback had already crossed its final installation decision.
+    /// The callback began a confirmed fade or crossed the installation decision.
     Applying,
     /// The callback has already returned or installed this candidate.
     Complete,
@@ -104,7 +105,7 @@ impl CancellablePublicationReceipt {
         self.expire_if_due();
         match self.0.phase.load(Acquire) {
             PENDING => Pending,
-            APPLYING => Applying,
+            FADING | APPLYING => Applying,
             INSTALLED => Installed,
             CANCEL_REQUESTED | CANCELLED => Cancelled,
             EXPIRED => Expired,
@@ -126,7 +127,7 @@ impl CancellablePublicationReceipt {
             .compare_exchange(PENDING, CANCEL_REQUESTED, AcqRel, Acquire)
         {
             Ok(_) | Err(CANCEL_REQUESTED) => Cancelled,
-            Err(APPLYING) => Applying,
+            Err(FADING | APPLYING) => Applying,
             Err(_) => Complete,
         }
     }
@@ -135,10 +136,7 @@ impl CancellablePublicationReceipt {
     /// An admitted callback still owns its exact terminal.
     pub(super) fn close_device_insert_on_fault(&self) {
         if self.0.device_insert.is_some() {
-            let _ = self
-                .0
-                .phase
-                .compare_exchange(PENDING, OUTPUT_CLOSED, AcqRel, Acquire);
+            self.fence_unapplied_insert(OUTPUT_CLOSED);
         }
     }
 
@@ -151,11 +149,14 @@ impl CancellablePublicationReceipt {
             .as_ref()
             .is_some_and(|basis| Instant::now() >= basis.install_deadline)
         {
-            let _ = self
-                .0
-                .phase
-                .compare_exchange(PENDING, EXPIRED, AcqRel, Acquire);
+            self.fence_unapplied_insert(EXPIRED);
         }
+    }
+
+    fn fence_unapplied_insert(&self, terminal: u32) {
+        let _ = self.0.phase.fetch_update(AcqRel, Acquire, |phase| {
+            matches!(phase, PENDING | FADING).then_some(terminal)
+        });
     }
 }
 
@@ -179,6 +180,20 @@ impl PublicationReceiptOwner {
             .is_ok()
     }
 
+    pub(super) fn begin_confirmed_fade(&self) -> bool {
+        self.0.expire_if_due();
+        self.phase()
+            .compare_exchange(PENDING, FADING, AcqRel, Acquire)
+            .is_ok()
+    }
+
+    pub(super) fn begin_confirmed_apply(&self) -> bool {
+        self.0.expire_if_due();
+        self.phase()
+            .compare_exchange(FADING, APPLYING, AcqRel, Acquire)
+            .is_ok()
+    }
+
     pub(super) fn installed(&self) {
         let _ = self
             .phase()
@@ -199,7 +214,7 @@ impl PublicationReceiptOwner {
         matches!(
             self.phase()
                 .fetch_update(AcqRel, Acquire, |phase| match phase {
-                    PENDING | APPLYING => Some(terminal),
+                    PENDING | FADING | APPLYING => Some(terminal),
                     CANCEL_REQUESTED => Some(CANCELLED),
                     _ => None,
                 }),

@@ -100,6 +100,29 @@ impl DeviceInsertConsent {
 }
 
 impl PublicationControl {
+    /// Offer only when the observed source can use the resident Arrangement
+    /// cut. The callback still rechecks the exact routes before fading.
+    pub fn offer_arrangement_device_insert_consent(
+        &self,
+        receipt: &CancellablePublicationReceipt,
+    ) -> Option<DeviceInsertConsent> {
+        if self.output_transport_reaper.is_some() {
+            return None;
+        }
+        let basis = receipt.device_insert_basis()?;
+        let mut routes = [SessionRouteEntry::default(); MAX_TRACKS];
+        let snapshot = self.status.session_routes(&mut routes)?;
+        if snapshot.audio_revision != basis.fence.expected_active_revision
+            || snapshot.route_state_generation != basis.fence.route_state_generation
+            || routes[..snapshot.count].iter().any(|route| {
+                route.pending.is_some() || matches!(route.owner, SessionRouteOwner::Session { .. })
+            })
+        {
+            return None;
+        }
+        self.offer_device_insert_consent(receipt)
+    }
+
     /// Prepare the exact refused edit for a confirmed interruption on its
     /// original output. Both admission and the callback revalidate consent.
     #[allow(clippy::result_large_err)] // Refusal returns the actual graph to control.
@@ -266,7 +289,7 @@ impl Callback {
         if !next
             .fresh_runtime_cancellation
             .as_ref()
-            .is_some_and(PublicationReceiptOwner::begin_apply)
+            .is_some_and(PublicationReceiptOwner::begin_confirmed_fade)
         {
             return Err(PlaybackHandoffRejection::FreshRuntimeCancelled);
         }
@@ -303,10 +326,21 @@ mod tests {
     };
 
     #[test]
-    fn confirmed_insert_yields_to_priority_stop_and_admitted_route_actions() {
-        for stop_after_fade in [Some(false), Some(true), None] {
+    fn confirmed_insert_yields_to_priority_stop_admitted_routes_and_output_loss() {
+        enum Interrupt {
+            StopBeforeFade,
+            StopAtCut,
+            PendingRoute,
+            OutputFault,
+        }
+        for interrupt in [
+            Interrupt::StopBeforeFade,
+            Interrupt::StopAtCut,
+            Interrupt::PendingRoute,
+            Interrupt::OutputFault,
+        ] {
             let ([old, next], track) = revisions();
-            let pending_track = stop_after_fade.is_none().then_some(track);
+            let pending_track = matches!(interrupt, Interrupt::PendingRoute).then_some(track);
             let (mut control, mut callback, predecessor, original) =
                 begin_insert_with_pending_track(
                     old,
@@ -338,14 +372,23 @@ mod tests {
                 .unwrap();
             let receipt = control.fresh_runtime_receipt(revision).unwrap();
             let mut pcm = [[0.0; 2]; 256];
-            if stop_after_fade == Some(true) {
+            if matches!(interrupt, Interrupt::StopAtCut | Interrupt::OutputFault) {
                 callback.begin_block();
                 callback.render(&mut pcm).unwrap();
                 assert_eq!(receipt.state(), PublicationReceiptState::Applying);
                 assert_eq!(pcm[0], [0.25 * 127.0 / 128.0; 2]);
                 assert!(pcm[127..].iter().all(|frame| *frame == [0.0; 2]));
             }
-            if stop_after_fade.is_some() {
+            if matches!(interrupt, Interrupt::OutputFault) {
+                // An output error can be its last callback. The worker still
+                // closes an interrupted fade that never entered installation.
+                control.status.device_fault.store(true, Release);
+                control.poll_resident_publication();
+                assert_eq!(receipt.state(), PublicationReceiptState::OutputClosed);
+                assert_eq!(control.status.recording_source(), Some(predecessor));
+                continue;
+            }
+            if pending_track.is_none() {
                 control.stop();
             }
             callback.begin_block();
@@ -355,7 +398,7 @@ mod tests {
                 PublicationReceiptState::Refused(PlaybackHandoffRejection::RuntimeFenceChanged)
             );
             assert_eq!(control.status.recording_source(), Some(predecessor));
-            if stop_after_fade.is_some() {
+            if pending_track.is_none() {
                 assert_eq!(control.status.position.load(Acquire), 0);
                 assert!(!control.status.playing.load(Acquire));
                 assert!(pcm.iter().all(|frame| *frame == [0.0; 2]));
