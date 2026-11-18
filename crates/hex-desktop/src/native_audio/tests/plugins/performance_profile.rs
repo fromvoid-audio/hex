@@ -114,17 +114,20 @@ fn profile(plugins: usize, rate: u32, minimum_callback_spacing: bool) {
         "supported profile block sizes: 64, 128, 256"
     );
     let files = Files::new();
+    let mut plugin_log = minimum_callback_spacing
+        .then(|| hex_diagnostics::SessionLog::start(files.0.join("plugin-diagnostics")).unwrap());
     let path = fixture(&files, rate);
     let mut harness = if plugins == 0 {
         ResidentHarness::new()
     } else {
-        ResidentHarness::with_plugins_at_rate(
+        ResidentHarness::with_plugins_at_rate_and_diagnostics(
             host(),
             Some(EffectPresentation {
                 input_frames: 0,
                 output_frames: (PLUGIN_QUANTUM * 2) as u32,
             }),
             rate,
+            plugin_log.as_ref().map(hex_diagnostics::SessionLog::handle),
         )
     };
     assert!(harness.next().error.is_none());
@@ -174,6 +177,7 @@ fn profile(plugins: usize, rate: u32, minimum_callback_spacing: bool) {
     let mut times = Vec::with_capacity(SAMPLES as usize);
     let mut late_starts = 0;
     let mut max_start_lateness = Duration::ZERO;
+    let mut late_callbacks = Vec::with_capacity((WARMUP + SAMPLES) as usize);
     let mut frames = vec![[0.0; 2]; block];
     let mut host = vec![0.0; block * 2];
     let mut fingerprint = 0xcbf29ce484222325_u64;
@@ -189,15 +193,18 @@ fn profile(plugins: usize, rate: u32, minimum_callback_spacing: bool) {
         let begin = Instant::now();
         let result = callback.render_native_direct(&mut frames, &mut host);
         let elapsed = begin.elapsed();
+        let start_lateness = begin.saturating_duration_since(target);
         assert!(
             result.is_ok(),
             "callback {index} failed after {elapsed:?}: {result:?}"
         );
         if index >= WARMUP {
             times.push(elapsed);
-            let start_lateness = begin.saturating_duration_since(target);
             late_starts += usize::from(start_lateness >= budget);
             max_start_lateness = max_start_lateness.max(start_lateness);
+        }
+        if minimum_callback_spacing && (start_lateness >= budget || elapsed > budget) {
+            late_callbacks.push((index, start_lateness, elapsed));
         }
         assert!(
             host.chunks_exact(2)
@@ -262,6 +269,26 @@ fn profile(plugins: usize, rate: u32, minimum_callback_spacing: bool) {
     // The callback and native workers retire through the harness after the
     // profiling borrow ends. No worker is waited on during timed rendering.
     drop(slot);
+    drop(harness);
+    if let Some(log) = plugin_log.as_mut() {
+        log.shutdown().unwrap();
+        let diagnostics = fs::read_to_string(log.path()).unwrap();
+        for line in diagnostics.lines().filter(|line| {
+            line.contains("stage=slow_exchange")
+                || line.contains("stage=concealed_output")
+                || line.contains("stage=worker_failure")
+                || line.contains("log_dropped")
+        }) {
+            println!("{line}");
+        }
+        for (index, start_lateness, elapsed) in late_callbacks {
+            println!(
+                "dense_playback callback={index} start_lateness_ns={} wall_ns={}",
+                start_lateness.as_nanos(),
+                elapsed.as_nanos(),
+            );
+        }
+    }
 }
 
 fn require_release() {
