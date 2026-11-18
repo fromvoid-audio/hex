@@ -1508,6 +1508,11 @@ fn actual_tail_drain_waits_for_final_acceptance_and_preserves_last_bridge_sample
             };
             assert!(!callback.committed_tail_is_drained(wrong_node));
             callback.finish_host_callback(true).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(3);
+            while worker.published_blocks_on_control() < 4 {
+                assert!(Instant::now() < deadline);
+                std::thread::yield_now();
+            }
 
             let mut renewed = [[0.5; 2]; 8];
             let measured = allocation_counter::measure(|| {
