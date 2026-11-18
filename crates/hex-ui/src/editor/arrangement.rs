@@ -255,6 +255,7 @@ impl EditorView {
         );
         let rows_viewport = viewport;
         let rows_grid = grid.clone();
+        let selected_rows = self.time_selection_track_indices();
         let track_scale_factor = window.scale_factor();
         let rows_entity = cx.entity();
         let rows = list(self.track_scroll.list.clone(), move |index, _, cx| {
@@ -269,12 +270,11 @@ impl EditorView {
                     let Some(track) = state.project.tracks().get(index) else {
                         return div();
                     };
-                    let selected = this.selected_track() == Some(track.id());
                     this.track_row(
                         &state,
                         track,
                         index,
-                        selected,
+                        selected_rows,
                         super::tracks::ClipViewTimeline {
                             viewport: rows_viewport,
                             grid: &rows_grid,
