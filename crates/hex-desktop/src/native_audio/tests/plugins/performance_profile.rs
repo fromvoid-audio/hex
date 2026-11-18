@@ -5,7 +5,7 @@ use super::*;
 use hex_engine::{DeviceTypeId, default_native_device_state};
 use hex_project::{Editor, Project};
 
-const RATE: u32 = 48_000;
+const DEFAULT_RATE: u32 = 48_000;
 const TRACKS: usize = 48;
 const SOURCE_FRAMES: u32 = 8192;
 const WARMUP: u32 = 128;
@@ -17,23 +17,29 @@ const PLUGIN_QUANTUM: usize = 256;
 #[test]
 #[ignore = "opt-in optimized playback measurement with a fixed callback cadence"]
 fn dense_native_serial_baseline() {
-    profile(0);
+    profile(0, DEFAULT_RATE);
 }
 
 #[test]
 #[ignore = "opt-in optimized playback measurement with controlled native VST3 receipts"]
 fn dense_mixed_serial_baseline() {
-    profile(MIXED_PLUGINS);
+    profile(MIXED_PLUGINS, DEFAULT_RATE);
 }
 
-fn fixture(files: &Files) -> PathBuf {
-    let wav = files.wav(RATE, SOURCE_FRAMES);
-    let mut editor = Editor::new(Project::new(RATE).unwrap(), 1).unwrap();
+#[test]
+#[ignore = "opt-in optimized timing reproduction with twelve original SDK instances"]
+fn dense_twelve_vst3_deadline_profile() {
+    profile(12, 44_100);
+}
+
+fn fixture(files: &Files, rate: u32) -> PathBuf {
+    let wav = files.wav(rate, SOURCE_FRAMES);
+    let mut editor = Editor::new(Project::new(rate).unwrap(), 1).unwrap();
     let Created::Imported { asset, track, .. } = editor
         .execute(Command::ImportPreparedAudioTrack {
             name: "profile audio".into(),
             path: wav.file_name().unwrap().into(),
-            source_sample_rate: RATE,
+            source_sample_rate: rate,
             source_frames: u64::from(SOURCE_FRAMES),
             playback_frames: u64::from(SOURCE_FRAMES),
             conversion_version: hex_project::IDENTITY_CONVERSION,
@@ -96,7 +102,7 @@ fn fixture(files: &Files) -> PathBuf {
     path
 }
 
-fn profile(plugins: usize) {
+fn profile(plugins: usize, rate: u32) {
     let _native = native_fixture();
     require_release();
     let block: usize = std::env::var("HEX_PLAYBACK_PROFILE_BLOCK")
@@ -108,16 +114,17 @@ fn profile(plugins: usize) {
         "supported profile block sizes: 64, 128, 256"
     );
     let files = Files::new();
-    let path = fixture(&files);
+    let path = fixture(&files, rate);
     let mut harness = if plugins == 0 {
         ResidentHarness::new()
     } else {
-        ResidentHarness::with_plugins(
+        ResidentHarness::with_plugins_at_rate(
             host(),
             Some(EffectPresentation {
                 input_frames: 0,
                 output_frames: (PLUGIN_QUANTUM * 2) as u32,
             }),
+            rate,
         )
     };
     assert!(harness.next().error.is_none());
@@ -163,17 +170,21 @@ fn profile(plugins: usize) {
     let control = &mut harness.audio.as_mut().unwrap().control;
     control.command(PlaybackCommand::Play).unwrap();
 
-    let budget = Duration::from_nanos(block as u64 * 1_000_000_000 / u64::from(RATE));
+    let budget = Duration::from_nanos(block as u64 * 1_000_000_000 / u64::from(rate));
     let mut times = Vec::with_capacity(SAMPLES as usize);
+    let mut late_starts = 0;
+    let mut max_start_lateness = Duration::ZERO;
     let mut frames = vec![[0.0; 2]; block];
     let mut host = vec![0.0; block * 2];
     let mut fingerprint = 0xcbf29ce484222325_u64;
     let mut first_signal = None;
-    let mut slot = harness.callback.lock().unwrap();
+    let output_carrier = Arc::clone(&harness.callback);
+    let mut slot = output_carrier.lock().unwrap();
     let callback = slot.as_mut().unwrap();
     let start = Instant::now();
     for index in 0..WARMUP + SAMPLES {
-        if let Some(until) = (start + budget * index).checked_duration_since(Instant::now()) {
+        let target = start + budget * index;
+        if let Some(until) = target.checked_duration_since(Instant::now()) {
             std::thread::sleep(until);
         }
         let begin = Instant::now();
@@ -185,6 +196,9 @@ fn profile(plugins: usize) {
         );
         if index >= WARMUP {
             times.push(elapsed);
+            let start_lateness = begin.saturating_duration_since(target);
+            late_starts += usize::from(start_lateness >= budget);
+            max_start_lateness = max_start_lateness.max(start_lateness);
         }
         assert!(
             host.chunks_exact(2)
@@ -201,6 +215,7 @@ fn profile(plugins: usize) {
                     (fingerprint ^ u64::from(sample.to_bits())).wrapping_mul(0x100000001b3);
             }
         }
+        harness.pump();
     }
     let status = callback.status().unwrap();
     assert!(status.playing.load(Acquire));
@@ -212,7 +227,7 @@ fn profile(plugins: usize) {
         .checked_sub(status.audible_position.load(Acquire))
         .unwrap();
     let first_signal = first_signal.expect("profile must deliver nonzero audio");
-    if plugins != 0 {
+    if plugins != 0 && harness.degraded_devices.is_empty() {
         assert!(
             first_signal >= 2 * PLUGIN_QUANTUM,
             "mixed output appeared before the native transport delay"
@@ -227,12 +242,14 @@ fn profile(plugins: usize) {
     let misses = times.iter().filter(|&&time| time > budget).count();
     let plugin_quantum = if plugins == 0 { 0 } else { PLUGIN_QUANTUM };
     println!(
-        "dense_playback rate={RATE} block={block} tracks={TRACKS} utility=48 reverb=12 saturator=36 vst3={plugins} vst3_quantum={plugin_quantum} warmup={WARMUP} samples={SAMPLES} budget_ns={} mean_ns={mean} p50_ns={} p95_ns={} p99_ns={} max_ns={} misses={misses} first_signal={first_signal} audible_lag={audible_lag} worker_blocks={worker_blocks} pcm={fingerprint:016x}",
+        "dense_playback rate={rate} block={block} tracks={TRACKS} utility=48 reverb=12 saturator=36 vst3={plugins} vst3_quantum={plugin_quantum} warmup={WARMUP} samples={SAMPLES} budget_ns={} mean_ns={mean} p50_ns={} p95_ns={} p99_ns={} max_ns={} misses={misses} late_starts={late_starts} max_start_lateness_ns={} first_signal={first_signal} audible_lag={audible_lag} worker_blocks={worker_blocks} degraded_devices={:?} pcm={fingerprint:016x}",
         budget.as_nanos(),
         percentile(50),
         percentile(95),
         percentile(99),
         percentile(100),
+        max_start_lateness.as_nanos(),
+        harness.degraded_devices,
     );
     // The callback and native workers retire through the harness after the
     // profiling borrow ends. No worker is waited on during timed rendering.
