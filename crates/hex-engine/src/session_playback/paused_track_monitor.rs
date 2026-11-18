@@ -486,7 +486,6 @@ impl PausedTrackMonitor {
         resources: Option<&PreparedDeviceResources>,
         bindings: &[PausedMonitorForeignBinding],
     ) -> bool {
-        let arrangement = revision.arrangement();
         revision.resource_scope.is_none()
             && revision.device_resource_scope == resources.map(PreparedDeviceResources::id)
             && revision.scalar_automation.is_none()
