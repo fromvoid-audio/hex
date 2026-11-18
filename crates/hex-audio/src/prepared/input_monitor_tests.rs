@@ -139,11 +139,37 @@ fn paused_monitor_accepts_the_exact_accounted_resident_graph() {
         ),
         Err(SessionPlaybackError::Allocation)
     ));
-    let monitor = PausedTrackMonitor::prepare_resident_on_control(
+    let (monitor, hold) = PausedTrackMonitor::prepare_admitted_resident_on_control(
         Arc::clone(&revision),
         &resources,
         track,
-        allowance,
+        4096,
+        |view| {
+            use hex_engine::native_device_resources::{
+                DeviceResourcePhase, inspect_device_resource_union,
+            };
+            let phase = DeviceResourcePhase {
+                stores: &[],
+                registered: &[view],
+                selections: &[],
+                outbound: &[],
+                legacy: &[],
+                checked_runtime_bytes: 0,
+                construction_bytes: 0,
+            };
+            inspect_device_resource_union(
+                &phase,
+                &phase,
+                AudioStorageLedgerReservation {
+                    data_rows: 512,
+                    handle_rows: 256,
+                    root_rows: 128,
+                    max_retained_bytes: 256 * 1024 * 1024,
+                    max_construction_peak_bytes: 256 * 1024 * 1024,
+                },
+            )
+            .map(|_| ())
+        },
     )
     .unwrap();
     let playback = Playback::try_from_prepared_with_device_resources(revision, &resources).unwrap();
@@ -228,10 +254,15 @@ fn paused_monitor_accepts_the_exact_accounted_resident_graph() {
     assert_eq!(render_block(), [[0.0; 2]; 64]);
     assert!(control.status.playing.load(Acquire));
     assert_eq!(render_block(), [[0.0; 2]; 64]);
+    assert!(
+        !hold.released_on_control(),
+        "a callback return is not destruction"
+    );
     assert_eq!(
         original,
         &*control.input_monitor.reclaim().unwrap() as *const _
     );
+    assert!(hold.released_on_control());
     control.request_shutdown();
     assert_eq!(render_block(), [[0.0; 2]; 64]);
     control.reclaim();

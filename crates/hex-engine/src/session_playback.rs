@@ -2796,7 +2796,9 @@ mod handoff;
 pub use handoff::PreparedTempoAnchor;
 mod harmonic_import;
 mod paused_track_monitor;
-pub use paused_track_monitor::PausedTrackMonitor;
+pub use paused_track_monitor::{
+    PausedMonitorAdmissionError, PausedMonitorStorageHold, PausedTrackMonitor,
+};
 mod preroll;
 mod render;
 mod stream_actions;
