@@ -568,9 +568,9 @@ impl SessionPlayback {
         .bytes()?
         .checked_add(self.browser_audition.retained_bytes()?)?
         .checked_add(
-            self.paused_keyboard_monitor
+            self.paused_source_monitor
                 .as_deref()
-                .map_or(Some(0), PausedKeyboardMonitor::runtime_storage_bytes)?,
+                .map_or(Some(0), PausedTrackMonitor::runtime_storage_bytes)?,
         )
     }
 }

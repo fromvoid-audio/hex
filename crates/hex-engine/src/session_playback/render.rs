@@ -625,7 +625,7 @@ impl SessionPlayback {
             let revision = Arc::clone(&self.revision);
             let mut cells = std::mem::take(&mut self.meter_cells);
             let mut meter = super::meter_capture::MeterCapture::new(&revision, &mut cells, capture);
-            let result = self.render_internal_borrowed(
+            let result = self.render_on_active_route(
                 output,
                 pages,
                 observer,
@@ -640,7 +640,7 @@ impl SessionPlayback {
             self.meter_cells = cells;
             result
         } else {
-            self.render_internal_borrowed(
+            self.render_on_active_route(
                 output, pages, observer, capture, sources, foreign, live_audio,
             )
         };
@@ -653,14 +653,19 @@ impl SessionPlayback {
         result
     }
 
-    /// Render the loaned resident keyboard on its private, endpoint-free
-    /// route. It shares the caller's capture and meter transaction.
-    pub(super) fn render_resident_keyboard_block(
+    /// Render only the loaned source and its private downstream history. The
+    /// normal meter and capture transactions still belong to the caller.
+    pub(super) fn render_resident_source_block(
         &mut self,
         output: &mut [Frame],
         observer: Option<&mut crate::NodeSignalObserver<'_>>,
         capture: Option<&mut dyn CaptureSink>,
     ) -> Result<(), SessionPlaybackError> {
+        self.monitor_source_releases = true;
+        let pending_monitor_pcm = self
+            .compensation
+            .as_ref()
+            .is_some_and(|runtime| !runtime.delays.pcm_history_is_silent());
         self.render_internal_borrowed::<dyn MediaPages>(
             output,
             None,
@@ -669,6 +674,50 @@ impl SessionPlayback {
             None,
             &mut hex_lattice::RefuseForeign,
             None,
+            pending_monitor_pcm,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn render_on_active_route<P: MediaPages + ?Sized>(
+        &mut self,
+        output: &mut [Frame],
+        pages: Option<&mut P>,
+        observer: Option<&mut crate::NodeSignalObserver<'_>>,
+        capture: Option<&mut dyn CaptureSink>,
+        sources: Option<crate::native_device_resources::SamplerSourcesRef<'_>>,
+        foreign: &mut dyn hex_lattice::ForeignProcessors,
+        live_audio: Option<LiveTrackAudio<'_>>,
+    ) -> Result<(), SessionPlaybackError> {
+        if !output.is_empty()
+            && let Some(mut monitor) = self.paused_source_monitor.take()
+        {
+            let isolated = !self.playing
+                && (self.performance_frame != 0 || self.arrangement_frame != 0)
+                && live_audio.is_none()
+                && self.anchor.is_none()
+                && self.transient_loop.is_none()
+                && self.current_sampler_keyboards.is_empty()
+                && self.foreign_arrangement.is_empty()
+                && !self.source_effects.has_monitor_tail()
+                && !self.midi_capture_active()
+                && self.tail_groups.iter().all(Option::is_none)
+                && self.tail_mutable_instruments.iter().all(Option::is_none)
+                && self.releases.iter().all(|release| {
+                    release.location.tail_group().is_none()
+                        && release.location.track_index() < self.routes.len()
+                })
+                && !self.stopped_edit_tails();
+            if isolated {
+                let result = monitor.render_resident(self, output, observer, capture);
+                self.paused_source_monitor = Some(monitor);
+                return result;
+            }
+            monitor.end_resident_interval();
+            self.paused_source_monitor = Some(monitor);
+        }
+        self.render_internal_borrowed(
+            output, pages, observer, capture, sources, foreign, live_audio, false,
         )
     }
 
@@ -682,32 +731,8 @@ impl SessionPlayback {
         sources: Option<crate::native_device_resources::SamplerSourcesRef<'_>>,
         foreign: &mut dyn hex_lattice::ForeignProcessors,
         live_audio: Option<LiveTrackAudio<'_>>,
+        pending_monitor_pcm: bool,
     ) -> Result<(), SessionPlaybackError> {
-        if !output.is_empty()
-            && let Some(mut monitor) = self.paused_keyboard_monitor.take()
-        {
-            let isolated = !self.playing
-                && (self.performance_frame != 0 || self.arrangement_frame != 0)
-                && live_audio.is_none()
-                && self.anchor.is_none()
-                && self.transient_loop.is_none()
-                && self.computer_keyboard.is_some()
-                && self.current_sampler_keyboards.is_empty()
-                && self.foreign_arrangement.is_empty()
-                && !self.has_analytic_release_output()
-                && !self.source_effects.has_monitor_tail()
-                && !self.midi_capture_active()
-                && self.tail_groups.iter().all(Option::is_none)
-                && self.tail_mutable_instruments.iter().all(Option::is_none)
-                && !self.stopped_edit_tails();
-            if isolated {
-                let result = monitor.render_resident(self, output, observer, capture);
-                self.paused_keyboard_monitor = Some(monitor);
-                return result;
-            }
-            monitor.end_resident_interval();
-            self.paused_keyboard_monitor = Some(monitor);
-        }
         if let Some(state) = self.native_parameter_state.as_deref_mut() {
             state.application = None;
             state.processing = state.input.filter(|_| self.playing).map(|input| {
@@ -733,6 +758,7 @@ impl SessionPlayback {
             || (live_audio.is_none() && self.renders_no_device_chains())
             || (!self.playing
                 && live_audio.is_none()
+                && !pending_monitor_pcm
                 && !self.foreign_arrangement.has_started()
                 && !self.foreign_arrangement.has_keyboard()
                 && self.computer_keyboard.is_none()

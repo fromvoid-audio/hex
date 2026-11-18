@@ -31,48 +31,53 @@ pub struct PausedTrackMonitor {
 /// lease and retires it on resume, Stop, seek, or source replacement.
 pub struct PausedKeyboardMonitor(PausedTrackMonitor);
 
-impl PausedKeyboardMonitor {
+impl PausedTrackMonitor {
     pub(crate) fn resident_allowance(
         revision: &PreparedRevision,
         resources: Option<&PreparedDeviceResources>,
-        track: TrackId,
     ) -> Result<usize, SessionPlaybackError> {
-        let arrangement = revision.arrangement();
-        if arrangement.main_latency_frames() == 0
-            || !arrangement.tracks().iter().enumerate().any(|(index, row)| {
-                row.canonical_track_id() == Some(track)
-                    && row.instrument_state.is_some()
-                    && !row.instrument_bypassed
-                    && !revision.source_routing().is_shared(index)
-            })
-        {
+        let Some(track) = Self::resident_source_track(revision) else {
             return Ok(0);
-        }
-        match PausedTrackMonitor::runtime_allowance(revision, track, resources, &[]) {
+        };
+        match Self::runtime_allowance(revision, track, resources, &[]) {
             Err(SessionPlaybackError::InvalidCommand) => Ok(0),
             result => result,
         }
     }
 
+    fn resident_source_track(revision: &PreparedRevision) -> Option<TrackId> {
+        let arrangement = revision.arrangement();
+        if arrangement.main_latency_frames() == 0 {
+            return None;
+        }
+        arrangement.tracks().iter().find_map(|row| {
+            if row.instrument_state.is_some() && !row.instrument_bypassed {
+                row.canonical_track_id()
+            } else {
+                None
+            }
+        })
+    }
+
     pub(crate) fn prepare_resident_graph(
         revision: Arc<PreparedRevision>,
         resources: Option<&PreparedDeviceResources>,
-        track: TrackId,
         allowance: usize,
     ) -> Result<Self, SessionPlaybackError> {
-        PausedTrackMonitor::construct(revision, resources, track, &[], allowance).map(Self)
+        let track =
+            Self::resident_source_track(&revision).ok_or(SessionPlaybackError::UnknownTrack)?;
+        Self::construct(revision, resources, track, &[], allowance)
     }
 
     pub(super) fn runtime_storage_bytes(&self) -> Option<usize> {
-        self.0
-            .playback
+        self.playback
             .accounted_runtime_storage_bytes()?
             .checked_add(size_of::<Self>())
     }
 
-    // The resident uses one keyboard owner in both modes. Loan the complete
-    // scheduler, including committed voices, to the private callback and
-    // return it before the ordinary runtime can process another command.
+    // The release offsets and shared context indices belong to the same
+    // source owner in both transport modes. Lend the existing buffers as a
+    // unit so that rollback, note age, and context custody travel together.
     pub(super) fn render_resident(
         &mut self,
         arrangement: &mut SessionPlayback,
@@ -80,47 +85,61 @@ impl PausedKeyboardMonitor {
         observer: Option<&mut crate::NodeSignalObserver<'_>>,
         capture: Option<&mut dyn super::capture::CaptureSink>,
     ) -> Result<(), SessionPlaybackError> {
-        if !Arc::ptr_eq(&self.0.playback.revision, &arrangement.revision)
-            || arrangement
-                .computer_keyboard
-                .as_ref()
-                .is_none_or(|keys| keys.track() != self.0.track)
-        {
+        if !Arc::ptr_eq(&self.playback.revision, &arrangement.revision) {
             output.fill([0.0; 2]);
             return Err(SessionPlaybackError::InvalidCommand);
         }
         let cursor = Cursor::of(arrangement);
-        if self.0.cursor != Some(cursor) {
+        if self.cursor != Some(cursor) {
             self.end_resident_interval();
-            self.0.set_cursor_on_private_playback(cursor);
-            self.0.playback.track_faders = arrangement.track_faders;
-            self.0.cursor = Some(cursor);
+            self.set_cursor_on_private_playback(cursor);
+            self.playback.track_faders = arrangement.track_faders;
+            self.playback.routes.copy_from_slice(&arrangement.routes);
+            self.cursor = Some(cursor);
         }
-        self.0.playback.computer_keyboard = arrangement.computer_keyboard.take();
-        self.0.playback.live_expression = arrangement.live_expression.take();
-        std::mem::swap(
-            &mut self.0.playback.render_work,
-            &mut arrangement.render_work,
-        );
+        swap_pause_sources(&mut self.playback, arrangement);
         let result = self
-            .0
             .playback
-            .render_resident_keyboard_block(output, observer, capture);
-        arrangement.computer_keyboard = self.0.playback.computer_keyboard.take();
-        arrangement.live_expression = self.0.playback.live_expression.take();
-        std::mem::swap(
-            &mut self.0.playback.render_work,
-            &mut arrangement.render_work,
-        );
+            .render_resident_source_block(output, observer, capture);
+        swap_pause_sources(&mut self.playback, arrangement);
         result
     }
 
     pub(super) fn end_resident_interval(&mut self) {
-        if self.0.cursor.take().is_some() {
-            self.0.playback.stop_transport();
+        if self.cursor.take().is_some() {
+            self.playback.stop_transport();
         }
     }
+}
 
+fn swap_pause_sources(private: &mut SessionPlayback, arrangement: &mut SessionPlayback) {
+    use std::mem::swap;
+
+    swap(
+        &mut private.computer_keyboard,
+        &mut arrangement.computer_keyboard,
+    );
+    swap(
+        &mut private.live_expression,
+        &mut arrangement.live_expression,
+    );
+    swap(&mut private.releases, &mut arrangement.releases);
+    swap(
+        &mut private.release_scratch,
+        &mut arrangement.release_scratch,
+    );
+    swap(
+        &mut private.retained_contexts,
+        &mut arrangement.retained_contexts,
+    );
+    swap(
+        &mut private.analytic_continuations,
+        &mut arrangement.analytic_continuations,
+    );
+    swap(&mut private.render_work, &mut arrangement.render_work);
+}
+
+impl PausedKeyboardMonitor {
     /// Prepare a private built-in keyboard route from the exact compiled
     /// instrument, tuning, and graph. Only ordinary, unshared native analytic
     /// sources and owned effects are supported. The caller admits the private

@@ -161,12 +161,10 @@ fn resident_keyboard_pause_resumes_with_the_arrangement_history() {
             let mut oracle = Playback::from_prepared(Arc::clone(&revision));
             let keys = Arc::new(ComputerKeyboardInput::default());
             playback
-                .prepare_resident_computer_keyboard(
-                    f.editor.project(),
-                    None,
-                    track,
-                    Arc::clone(&keys),
-                )
+                .prepare_computer_keyboard(f.editor.project(), track, Arc::clone(&keys))
+                .unwrap();
+            playback
+                .prepare_resident_paused_source_monitor(None)
                 .unwrap();
             for player in [&mut playback, &mut oracle] {
                 player.apply(PlaybackCommand::Play);
@@ -283,6 +281,94 @@ fn paused_keyboard_monitor_checks_admission_and_exact_revision() {
         Err(SessionPlaybackError::InvalidCommand)
     );
     assert_eq!(refused, [[0.0; 2]; 1]);
+}
+
+#[test]
+fn authored_pause_release_keeps_queued_arrangement_pcm() {
+    use crate::computer_keyboard::ComputerKeyboardInput;
+    use crate::playback::{Playback, PlaybackCommand};
+    use hex_project::{Command, Created};
+
+    for track_index in [0, 1] {
+        let mut f = fixture(&[&[7], &[]], 1024);
+        let mut samples = vec![[0.0; 2]; 1024];
+        samples[253] = [0.25, -0.5];
+        for audio in f.media.values_mut() {
+            *audio = Audio::new(48_000, samples.clone()).unwrap();
+        }
+        let track = f.tracks[track_index];
+        f.editor
+            .execute(Command::InsertInstrument {
+                track,
+                state: hex_project::default_instrument_state().unwrap(),
+            })
+            .unwrap();
+        let Created::Clip(clip) = f
+            .editor
+            .execute(Command::PlaceMidiClip {
+                track,
+                start: BeatTime::ZERO,
+                length: BeatTime::ONE,
+            })
+            .unwrap()
+        else {
+            panic!("MIDI clip required");
+        };
+        f.editor
+            .execute(Command::AddMidiNote {
+                clip,
+                start: BeatTime::ZERO,
+                duration: BeatTime::ONE,
+                pitch: 60,
+                channel: 0,
+                velocity: 100,
+            })
+            .unwrap();
+        let revision = prepare(&f).unwrap();
+        for (partition, keyboard) in [(1, false), (257, false), (1, true), (257, true)] {
+            let mut playback = Playback::from_prepared(Arc::clone(&revision));
+            let mut oracle = Playback::from_prepared(Arc::clone(&revision));
+            let keys = Arc::new(ComputerKeyboardInput::default());
+            if keyboard {
+                playback
+                    .prepare_computer_keyboard(f.editor.project(), track, Arc::clone(&keys))
+                    .unwrap();
+            }
+            playback
+                .prepare_resident_paused_source_monitor(None)
+                .unwrap();
+            for player in [&mut playback, &mut oracle] {
+                player.apply(PlaybackCommand::Play);
+                player.render(&mut [[0.0; 2]; 257]).unwrap();
+                player.apply(PlaybackCommand::Pause);
+                assert_eq!(player.position(), 257);
+            }
+            if keyboard {
+                keys.set_key(0, Some((67, 100, 1))).unwrap();
+            }
+            let mut paused = [[0.0; 2]; 257];
+            for block in paused.chunks_mut(partition) {
+                playback.render(block).unwrap();
+            }
+            assert!(paused[32..].iter().any(|frame| *frame != [0.0; 2]));
+            assert_eq!(playback.position(), oracle.position());
+            for player in [&mut playback, &mut oracle] {
+                player.apply(PlaybackCommand::Play);
+            }
+            let mut resumed = [[0.0; 2]; 7];
+            let mut expected = resumed;
+            playback.render(&mut resumed).unwrap();
+            oracle.render(&mut expected).unwrap();
+            // No newly generated voice can reach Main until the queued window
+            // ends. This reference advances no output frames during Pause.
+            assert!(expected[3][0] - expected[3][1] >= 0.749_999, "{expected:?}");
+            assert_eq!(
+                resumed, expected,
+                "track {track_index}, partition {partition}, keyboard {keyboard}"
+            );
+            assert!(paused.iter().all(|frame| frame[0] == frame[1]));
+        }
+    }
 }
 
 #[test]
