@@ -948,10 +948,18 @@ impl NativeAudioSink {
                                     pending.snapshot.canonical(),
                                     policy.stream,
                                     policy.granular,
-                                    || {
-                                        self.request_cancellation
+                                    || match insert {
+                                        Some(insert) => insert
+                                            .cancellation
                                             .as_ref()
-                                            .is_some_and(|c| c.is_cancelled())
+                                            .is_some_and(|c| c.is_cancelled()),
+                                        // The desired snapshot already committed. Document
+                                        // intent supersedes request-owned work; replacement of
+                                        // this source is driven by the next committed snapshot.
+                                        None => self
+                                            .request_cancellation
+                                            .as_ref()
+                                            .is_some_and(|c| c.is_shutting_down()),
                                     },
                                 )
                                 .map(|(definitions, granular)| (sources, definitions, granular))
