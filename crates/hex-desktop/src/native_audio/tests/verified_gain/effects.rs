@@ -5,24 +5,6 @@ use hex_session::device_gesture::{
     GestureKey, GestureRequest, GestureTarget, ParameterId, ParameterValue,
 };
 
-fn run_insert(h: &mut Harness, command: Command) -> Event {
-    let staged = h.run(Request::Edit(command));
-    assert!(!staged.request_complete);
-    let mut applied = h.next_with_audio();
-    assert!(applied.error.is_none(), "{:?}", applied.error);
-    if let Some(offer) = applied.device_insert_confirmation.take() {
-        assert!(offer.proceed());
-        applied = h.next_with_audio();
-        assert!(applied.error.is_none(), "{:?}", applied.error);
-    }
-    let receipt = applied.device_insert_complete.as_ref().unwrap();
-    assert_eq!(
-        receipt.outcome,
-        hex_session::service::DeviceInsertOutcome::Installed
-    );
-    applied
-}
-
 #[test]
 fn verified_editor_insert_commits_only_the_confirmed_graph_and_one_undo() {
     use hex_session::service::DeviceInsertOutcome;
@@ -175,13 +157,10 @@ fn check_auto_pan(running: bool) {
         hex_engine::DeviceTypeId::from_static("hex.auto-pan"),
     )
     .unwrap();
-    let inserted = run_insert(
-        &mut h,
-        Command::InsertMainDevice {
-            before: None,
-            state: auto_pan,
-        },
-    );
+    let inserted = h.run_verified_device_insert(Command::InsertMainDevice {
+        before: None,
+        state: auto_pan,
+    });
     let Some(Created::Device(device)) = inserted.created else {
         panic!("Auto Pan device")
     };
@@ -372,14 +351,11 @@ fn verified_limiter_tempo_case(partition: usize, loop_range: Option<std::ops::Ra
         hex_engine::DeviceTypeId::from_static("hex.limiter"),
     )
     .unwrap();
-    run_insert(
-        &mut h,
-        Command::InsertDevice {
-            track,
-            before: None,
-            state: limiter,
-        },
-    );
+    h.run_verified_device_insert(Command::InsertDevice {
+        track,
+        before: None,
+        state: limiter,
+    });
     let mut previous = h.applied(h.context.unwrap());
     if let Some(range) = &loop_range {
         h.run(Request::Edit(Command::SetLoopRegion {
@@ -516,13 +492,10 @@ fn check_main_saturator(running: bool) {
         hex_engine::DeviceTypeId::from_static("hex.saturator"),
     )
     .unwrap();
-    run_insert(
-        &mut h,
-        Command::InsertMainDevice {
-            before: None,
-            state: saturator,
-        },
-    );
+    h.run_verified_device_insert(Command::InsertMainDevice {
+        before: None,
+        state: saturator,
+    });
     let installed = h.applied(h.context.unwrap());
     assert_ne!(installed.audio_revision, prior.audio_revision);
     if !running {

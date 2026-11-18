@@ -854,6 +854,23 @@ impl Harness {
         assert!(event.error.is_none(), "{:?}", event.error);
         event
     }
+    pub(super) fn run_verified_device_insert(&mut self, command: hex_project::Command) -> Event {
+        let staged = self.run(Request::Edit(command));
+        assert!(!staged.request_complete);
+        let mut applied = self.next_with_audio();
+        assert!(applied.error.is_none(), "{:?}", applied.error);
+        if let Some(offer) = applied.device_insert_confirmation.take() {
+            assert!(offer.proceed());
+            applied = self.next_with_audio();
+            assert!(applied.error.is_none(), "{:?}", applied.error);
+        }
+        let receipt = applied.device_insert_complete.as_ref().unwrap();
+        assert_eq!(
+            receipt.outcome,
+            hex_session::service::DeviceInsertOutcome::Installed
+        );
+        applied
+    }
     pub(super) fn open(&mut self) {
         let deadline = Instant::now() + self.wait;
         loop {
