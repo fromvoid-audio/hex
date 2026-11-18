@@ -47,9 +47,9 @@ impl Callback {
             Err(PlaybackHandoffRejection::RuntimeFenceChanged)
         } else if let Some(old) = old {
             let current = old.playback.performance_frame();
-            if next.quantized_seek_frame.is_none_or(|due| due < current) {
+            if next.scheduled_cut_frame.is_none_or(|due| due < current) {
                 match old.playback.quantized_seek_frame(quantization) {
-                    Ok(due) => next.quantized_seek_frame = Some(due),
+                    Ok(due) => next.scheduled_cut_frame = Some(due),
                     Err(_) => {
                         return self.reject_quantized_seek_publication(
                             PlaybackHandoffRejection::SessionRuntime,
@@ -57,7 +57,7 @@ impl Callback {
                     }
                 }
             }
-            Ok(next.quantized_seek_frame == Some(current))
+            Ok(next.scheduled_cut_frame == Some(current))
         } else {
             Err(PlaybackHandoffRejection::RuntimeFenceChanged)
         };
@@ -92,7 +92,7 @@ impl Callback {
                     PublicationPolicy::InstallQuantizedSeekWhenReady { .. }
                 )
             })
-            .and_then(|next| next.quantized_seek_frame)
+            .and_then(|next| next.scheduled_cut_frame)
         else {
             return Ok(QuantizedSeekRender::NotHandled);
         };
