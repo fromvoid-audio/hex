@@ -4469,6 +4469,48 @@ fn native_vst3_instrument_and_streamed_audio_export() {
 fn installed_instrument_and_effect_export_with_streamed_audio() {
     use hex_session::service::{ExportControl, ExportSignal};
     let _native = native_fixture();
+    let probe = std::env::var_os("HEX_TEST_EXPORT_PROBE").is_some();
+    let complete = std::env::var_os("HEX_TEST_EXPORT_COMPLETE").is_some();
+    let full_playthrough = std::env::var_os("HEX_TEST_FULL_MIXED_PLAYTHROUGH").is_some();
+    let hosted_mode = std::env::var("HEX_TEST_FULL_MIXED_HOSTED_INSERT").ok();
+    assert!(matches!(
+        hosted_mode.as_deref(),
+        None | Some("focused" | "full")
+    ));
+    let hosted_insert = hosted_mode.is_some();
+    let hosted_focused = hosted_mode.as_deref() == Some("focused");
+    let review_output = std::env::var_os("HEX_TEST_MIXED_REVIEW_OUTPUT").map(PathBuf::from);
+    assert!(!hosted_insert || full_playthrough);
+    assert!(
+        review_output.is_none() || (full_playthrough && hosted_mode.as_deref() == Some("full")),
+        "retaining a review project requires the full hosted Arrangement case"
+    );
+    assert!(
+        !full_playthrough || (complete && !probe),
+        "full playthrough requires a complete export"
+    );
+    let review_tools = review_output.as_ref().map(|_| {
+        hex_plugin_catalog::worker::available_app().expect("source-bound VST3 discovery tools")
+    });
+    let temporary = Files::new();
+    let scratch = temporary.0.canonicalize().unwrap();
+    let root = if let Some(path) = &review_output {
+        assert!(path.is_absolute(), "review destination must be absolute");
+        fs::create_dir(path)
+            .unwrap_or_else(|error| panic!("fresh review destination {}: {error}", path.display()));
+        path.canonicalize().unwrap()
+    } else {
+        scratch.clone()
+    };
+    let retain_source = |path: PathBuf| {
+        if review_output.is_some() {
+            let destination = root.join(path.file_name().unwrap());
+            fs::copy(&path, &destination).unwrap();
+            destination
+        } else {
+            path
+        }
+    };
     let bundle = std::env::var("HEX_TEST_VST3_INSTRUMENT_BUNDLE").unwrap();
     let original_catalog =
         PathBuf::from(std::env::var_os("HEX_TEST_VST3_INSTRUMENT_CATALOG").unwrap());
@@ -4477,34 +4519,50 @@ fn installed_instrument_and_effect_export_with_streamed_audio() {
         &bundle,
         hex_plugin_catalog::PluginRole::Instrument,
     );
-    let files = Files::new();
-    let root = files.0.canonicalize().unwrap();
     let catalog = root.join("plugin-catalog.json");
-    fs::copy(&original_catalog, &catalog).unwrap();
+    let effect_root = if let Some(tools) = &review_tools {
+        scan_mixed_review_plugin(
+            tools,
+            &catalog,
+            &instrument,
+            hex_plugin_catalog::PluginRole::Instrument,
+        );
+        let plugins = root.join("plugins");
+        fs::create_dir(&plugins).unwrap();
+        plugins
+    } else {
+        fs::copy(&original_catalog, &catalog).unwrap();
+        root.clone()
+    };
+    let register_effect = |effect: &PluginEffectSelection| {
+        if let Some(tools) = &review_tools {
+            scan_mixed_review_plugin(
+                tools,
+                &catalog,
+                effect,
+                hex_plugin_catalog::PluginRole::Effect,
+            );
+        } else {
+            hex_ui::write_plugin_effect_test_catalog(&root, effect, "Fx", 0).unwrap();
+        }
+    };
     let mut effect = selection();
-    let module = root.join("original-effect.vst3");
+    let module = effect_root.join("original-effect.vst3");
     super::ui::copy_original_module(&effect.module, &module);
     effect.module = module;
-    hex_ui::write_plugin_effect_test_catalog(&root, &effect, "Fx", 0).unwrap();
-    let recovery = root.join("recovery");
+    register_effect(&effect);
+    let recovery = scratch.join("recovery");
     fs::create_dir(&recovery).unwrap();
-    let hosted_mode = std::env::var("HEX_TEST_FULL_MIXED_HOSTED_INSERT").ok();
-    assert!(matches!(
-        hosted_mode.as_deref(),
-        None | Some("focused" | "full")
-    ));
-    let hosted_insert = hosted_mode.is_some();
-    let hosted_focused = hosted_mode.as_deref() == Some("focused");
     let hosted_effect = hosted_insert.then(|| {
         assert_eq!(
             std::env::var("HEX_ORIGINAL_TAIL_INSTANCE_VARIANT").as_deref(),
             Ok("144")
         );
         let mut selection = signed_effect_selection("tail");
-        let module = root.join("signed-main-tail.vst3");
+        let module = effect_root.join("signed-main-tail.vst3");
         super::ui::copy_original_module(&selection.module, &module);
         selection.module = module;
-        hex_ui::write_plugin_effect_test_catalog(&root, &selection, "Fx", 0).unwrap();
+        register_effect(&selection);
         selection
     });
     let witness_frames = if hosted_insert {
@@ -4522,10 +4580,6 @@ fn installed_instrument_and_effect_export_with_streamed_audio() {
     );
     assert!(h.next().error.is_none());
     let (applied, _) = h.applied(0);
-    let probe = std::env::var_os("HEX_TEST_EXPORT_PROBE").is_some();
-    let complete = std::env::var_os("HEX_TEST_EXPORT_COMPLETE").is_some();
-    let full_playthrough = std::env::var_os("HEX_TEST_FULL_MIXED_PLAYTHROUGH").is_some();
-    assert!(!hosted_insert || full_playthrough);
     let live_playback =
         full_playthrough || std::env::var_os("HEX_TEST_EXPORT_LIVE_PLAYBACK").is_some();
     let verify_live_state =
@@ -4534,10 +4588,6 @@ fn installed_instrument_and_effect_export_with_streamed_audio() {
     assert!(
         !live_edit || live_playback,
         "live edit requires mixed playback"
-    );
-    assert!(
-        !full_playthrough || (complete && !probe),
-        "full playthrough requires a complete export"
     );
     // The fixture uses the project default of 120 BPM at 48 kHz.
     const FRAMES_PER_QUARTER: usize = 24_000;
@@ -4565,7 +4615,8 @@ fn installed_instrument_and_effect_export_with_streamed_audio() {
         );
     };
     let source_frames = if probe || complete { 8_000_001 } else { 16_384 };
-    let source = files.wav(48_000, source_frames);
+    let source =
+        retain_source(temporary.constant_wav("mixed-rate.wav", 48_000, source_frames, &[8192]));
     // The original quiet markers catch shifted source pages. Separate rests
     // isolate the later instrument phrases from the otherwise audible stream.
     let markers = [(4_000_000usize, 8192usize), (7_950_000, 8192)];
@@ -4589,7 +4640,12 @@ fn installed_instrument_and_effect_export_with_streamed_audio() {
     let (applied, _) = h.applied(applied);
     let audio_track = imported.state.project.tracks()[0].id();
     let (imported, applied) = if full_playthrough {
-        let marker = files.constant_wav("insert-witness.wav", 48_000, witness_frames, &[0, 0]);
+        let marker = retain_source(temporary.constant_wav(
+            "insert-witness.wav",
+            48_000,
+            witness_frames,
+            &[0, 0],
+        ));
         let mut bytes = fs::read(&marker).unwrap();
         for (index, frame) in bytes[44..].chunks_exact_mut(4).enumerate() {
             frame[..2].copy_from_slice(&mixed_witness_sample(index as u64).to_le_bytes());
@@ -4725,6 +4781,29 @@ fn installed_instrument_and_effect_export_with_streamed_audio() {
     let mut inserted = terminal(&mut h);
     assert!(inserted.error.is_none(), "{:?}", inserted.error);
     let (mut applied, _) = h.applied(applied);
+    let starting_path = review_output.as_ref().map(|_| {
+        let path = root.join("before-inserts.hex");
+        // Keep the review copy outside the active document's recovery chain.
+        hex_storage::save_new(&path, &inserted.state.project).unwrap();
+        let starting_project = hex_storage::load(&path).unwrap();
+        assert!(starting_project.main_devices().is_empty());
+        assert!(
+            starting_project
+                .track(track)
+                .unwrap()
+                .instrument()
+                .is_some()
+        );
+        assert!(
+            starting_project
+                .track(second_track.unwrap())
+                .unwrap()
+                .instrument()
+                .is_none()
+        );
+        assert_retained_mixed_sources(&root, &starting_project);
+        path
+    });
     let mut expected_revision = inserted.state.revision;
     let mut expected_can_undo = inserted.state.can_undo;
     let mut expected_can_redo = inserted.state.can_redo;
@@ -5125,7 +5204,8 @@ fn installed_instrument_and_effect_export_with_streamed_audio() {
     }
     let before = Arc::clone(&inserted.state.project);
     let live_binding = h.plugin_progress.lock().unwrap().binding;
-    let saved_path = root.join("live-state.hex");
+    let saved_path = scratch.join("live-state.hex");
+    let retained_saved_path = review_output.as_ref().map(|_| root.join("live-state.hex"));
     let captured_before = if verify_live_state {
         let saved = h.run(Request::SaveNew(saved_path.clone()));
         assert!(saved.save_complete);
@@ -5316,10 +5396,21 @@ fn installed_instrument_and_effect_export_with_streamed_audio() {
             effect_state(&captured_before),
             effect_state(&captured_after)
         );
+        if let Some(path) = &retained_saved_path {
+            assert_retained_mixed_sources(&root, &captured_after);
+            assert_eq!(captured_after.main_devices().len(), 3);
+            assert!(
+                [track, second_track.unwrap()]
+                    .into_iter()
+                    .all(|track| { captured_after.track(track).unwrap().instrument().is_some() })
+            );
+            hex_storage::save_new(path, &captured_after).unwrap();
+            assert_eq!(fs::read(path).unwrap(), fs::read(&saved_path).unwrap());
+        }
     }
     let muted = h.run(Request::Edit(Command::Mute { track, muted: true }));
     h.applied(applied);
-    let silent_instrument_path = root.join("muted-instrument.wav");
+    let silent_instrument_path = scratch.join("muted-instrument.wav");
     let muted_queued = super::super::resident_sections::run_callback(
         &mut h,
         Request::ExportRange {
@@ -5360,41 +5451,14 @@ fn installed_instrument_and_effect_export_with_streamed_audio() {
     if complete {
         if full_playthrough || std::env::var_os("HEX_TEST_EXPORT_REOPEN").is_some() {
             assert!(verify_live_state, "reopen requires the saved mixed project");
-            let saved_project = hex_storage::load(&saved_path).unwrap();
-            let old_output = h.audio.as_ref().unwrap().control.output_identity().unwrap();
-            let reopened = h.run(Request::Open(saved_path));
-            assert!(reopened.open_complete && reopened.project_replaced);
-            assert_eq!(reopened.state.project.snapshot(), saved_project.snapshot());
-            super::super::resident_lifecycle::finish_replacement(&mut h, &reopened, old_output);
-            h.audio
-                .as_mut()
-                .unwrap()
-                .control
-                .command(PlaybackCommand::Play)
-                .unwrap();
-            let mut pcm = Vec::new();
-            let deadline = Instant::now() + Duration::from_secs(5);
-            while pcm.len() < 4096 {
-                let block = render_completed_block(&h);
-                let status = h.audio.as_ref().unwrap().status().unwrap();
-                assert!(
-                    status.render_fault_snapshot().is_none(),
-                    "reopened render fault"
-                );
-                if !status.stream_buffering.load(Acquire) {
-                    pcm.extend(block);
-                }
-                assert!(Instant::now() < deadline, "reopened stream did not start");
+            let final_path = retained_saved_path.unwrap_or(saved_path);
+            for path in std::iter::once(final_path).chain(starting_path) {
+                assert_mixed_project_reopens(&mut h, path);
             }
-            assert!(pcm.iter().flatten().any(|sample| sample.abs() > 0.001));
-            assert!(
-                pcm.iter().enumerate().skip(512).any(|(index, frame)| {
-                    let dry = 0.25 * (0.5 + ((index - 512) / 256) as f32 * 0.125);
-                    (frame[0] - dry).abs() > 1e-4 || (frame[1] - dry).abs() > 1e-4
-                }),
-                "reopened mix did not differ from the controlled effect alone"
-            );
             assert_eq!(fs::read(&source).unwrap(), source_bytes);
+        }
+        if review_output.is_some() {
+            println!("retained_mixed_review={}", root.display());
         }
         return;
     }
@@ -5443,6 +5507,107 @@ fn installed_instrument_and_effect_export_with_streamed_audio() {
 }
 
 const MIXED_WITNESS_FRAMES: u32 = 8192;
+
+fn scan_mixed_review_plugin(
+    tools: &std::path::Path,
+    catalog: &std::path::Path,
+    selection: &PluginEffectSelection,
+    role: hex_plugin_catalog::PluginRole,
+) {
+    use hex_plugin_catalog::worker::{self, Cancellation};
+
+    let module = selection.module.canonicalize().unwrap();
+    let cancellation = Cancellation::default();
+    let update = worker::scan(catalog, tools, module.clone(), cancellation.token());
+    let discovered = update
+        .catalog
+        .unwrap_or_else(|| panic!("review scan of {}: {}", module.display(), update.status));
+    let selected = if role == hex_plugin_catalog::PluginRole::Effect {
+        discovered.select_effect(&module, selection.cid)
+    } else {
+        discovered.select_plugin(&module, selection.cid)
+    }
+    .unwrap();
+    assert_eq!(selected.role, role);
+    assert_eq!(selected.executable_relative_path, selection.executable);
+    assert_eq!(selected.executable_sha256, selection.executable_sha256);
+    assert_eq!(selected.info_sha256, selection.info_sha256);
+}
+
+fn assert_mixed_project_reopens(h: &mut ResidentHarness, path: PathBuf) {
+    let saved = hex_storage::load(&path).unwrap();
+    let old_output = h.audio.as_ref().unwrap().control.output_identity().unwrap();
+    h.service.submit(Request::Open(path.clone())).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let reopened = loop {
+        let event = h.next();
+        if event.open_complete {
+            assert!(
+                event.error.is_none() && event.project_replaced,
+                "reopen {}: {:?}",
+                path.display(),
+                event.error
+            );
+            break event;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "reopen {} timed out",
+            path.display()
+        );
+    };
+    assert_eq!(reopened.state.project.snapshot(), saved.snapshot());
+    assert!(!reopened.state.unsaved);
+    super::super::resident_lifecycle::finish_replacement(h, &reopened, old_output);
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    let mut pcm = Vec::new();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while pcm.len() < 4096 {
+        let block = render_completed_block(h);
+        let status = h.audio.as_ref().unwrap().status().unwrap();
+        assert!(
+            status.render_fault_snapshot().is_none(),
+            "reopened render fault"
+        );
+        if !status.stream_buffering.load(Acquire) {
+            pcm.extend(block);
+        }
+        assert!(Instant::now() < deadline, "reopened stream did not start");
+    }
+    assert!(pcm.iter().flatten().any(|sample| sample.abs() > 0.001));
+    assert!(
+        pcm.iter().enumerate().skip(512).any(|(index, frame)| {
+            let dry = 0.25 * (0.5 + ((index - 512) / 256) as f32 * 0.125);
+            (frame[0] - dry).abs() > 1e-4 || (frame[1] - dry).abs() > 1e-4
+        }),
+        "reopened mix did not differ from the controlled effect alone"
+    );
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Stop)
+        .unwrap();
+    h.render_plugin_block();
+    println!("reopened_playable={}", path.display());
+}
+
+fn assert_retained_mixed_sources(root: &std::path::Path, project: &hex_project::Project) {
+    let mut paths: Vec<_> = project
+        .assets()
+        .map(|asset| root.join(asset.path()).canonicalize().unwrap())
+        .collect();
+    paths.sort();
+    assert_eq!(
+        paths,
+        [root.join("insert-witness.wav"), root.join("mixed-rate.wav")]
+    );
+}
 
 fn mixed_witness_sample(frame: u64) -> i16 {
     (((frame * 73) ^ ((frame >> 3) * 17)) & 1023) as i16 - 512
