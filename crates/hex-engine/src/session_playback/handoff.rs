@@ -1194,19 +1194,16 @@ impl SessionPlayback {
                 .any(|tail| tail.output_active);
         // None: the delay layout cannot carry the moved clock (refused below
         // unless a paused donor takes the reset at its cursor).
-        // A cold, independent added or removed track also needs a fresh delay history
-        // when no foreign instrument is present. Foreign handoff admission
-        // retains its narrower `fresh` input above; compensation proves the
-        // eligible routing and silent rings independently below.
-        let history_track = fresh.map(FreshHistory::Track).or_else(|| {
-            if !previous.playing {
-                return None;
-            }
+        // A track with no source qualifies for the cold history check even
+        // when another track has a hosted generator. The gate handoff above
+        // still uses its separate fresh-generator admission check.
+        let history_track = if previous.playing {
             let old = previous.revision.arrangement().tracks();
             let new = self.revision.arrangement().tracks();
             cold_added_track(new, old)
                 .or_else(|| cold_added_track(old, new))
                 .map(FreshHistory::ColdTrack)
+                .or(fresh.map(FreshHistory::Track))
                 .or_else(|| {
                     (old.len().checked_add(1) == Some(new.len())
                         && same_base_timing
@@ -1257,7 +1254,9 @@ impl SessionPlayback {
                     .flatten()
                     .map(FreshHistory::Track)
                 })
-        });
+        } else {
+            None
+        };
         let compensation_pair = self
             .compensation
             .as_ref()
@@ -6529,6 +6528,9 @@ fn fresh_unconnected_track(candidate: &[Track], previous: &[Track]) -> Option<Tr
 /// A track absent from the other revision with no authored or live source.
 /// The compensation graph separately proves isolated routing and silent rings.
 fn cold_added_track(candidate: &[Track], previous: &[Track]) -> Option<TrackId> {
+    if candidate.len().checked_sub(1) != Some(previous.len()) {
+        return None;
+    }
     let id = fresh_unconnected_track(candidate, previous)?;
     let track = candidate
         .iter()

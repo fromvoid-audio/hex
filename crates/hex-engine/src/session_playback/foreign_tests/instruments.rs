@@ -329,6 +329,87 @@ fn live_new_track_and_second_instrument_keep_the_first_gate_and_clock() {
 }
 
 #[test]
+fn silent_group_child_edit_keeps_a_hosted_instrument_gate_and_compensated_pcm() {
+    for partition in [1, 257] {
+        let (mut editor, first) = fixture_with_duration(BeatTime::from_ratio(1, 50).unwrap());
+        let track = editor.project().tracks()[0].id();
+        let Created::Track(group) = editor
+            .execute(Command::GroupTracks {
+                tracks: hex_project::TrackSelectionIds::new(&[track]).unwrap(),
+                name: "group".into(),
+            })
+            .unwrap()
+        else {
+            panic!("group");
+        };
+        let original = prepare(&editor, first, true).unwrap();
+        assert_eq!(original.arrangement().main_latency_frames(), 19);
+        let mut playing = SessionPlayback::new(Arc::clone(&original)).unwrap();
+        let mut reference = SessionPlayback::new(original).unwrap();
+        let mut endpoint = NoteEndpoint {
+            instrument_sample: 0.25,
+            ..Default::default()
+        };
+        let mut reference_endpoint = NoteEndpoint {
+            instrument_sample: 0.25,
+            ..Default::default()
+        };
+        playing.apply(SessionPlaybackCommand::Play).unwrap();
+        reference.apply(SessionPlaybackCommand::Play).unwrap();
+        let mut warm = [[0.0; 2]; 32];
+        endpoint.render(&mut playing, &mut warm).unwrap();
+        reference_endpoint
+            .render(&mut reference, &mut [[0.0; 2]; 32])
+            .unwrap();
+        let [(_, onset)] = endpoint.notes.as_slice() else {
+            panic!("one original note-on");
+        };
+        assert!(onset.on && warm[31] == [0.25; 2]);
+        let onset = *onset;
+        let Created::Track(empty) = editor
+            .execute(Command::InsertTrack {
+                name: "empty".into(),
+                before_track: Some(track),
+            })
+            .unwrap()
+        else {
+            panic!("track");
+        };
+        assert_eq!(
+            editor.project().track(empty).unwrap().parent_group(),
+            Some(group)
+        );
+        let mut released = 0;
+        for removed in [false, true] {
+            if removed {
+                editor.execute(Command::RemoveTrack(empty)).unwrap();
+            }
+            let mut next = SessionPlayback::new(prepare(&editor, first, true).unwrap()).unwrap();
+            next.try_inherit_state_from(&mut playing)
+                .expect("unchanged hosted gate and clock must admit a silent child edit");
+            let mut actual = [[0.0; 2]; 257];
+            let mut expected = actual;
+            for (actual, expected) in actual
+                .chunks_mut(partition)
+                .zip(expected.chunks_mut(partition))
+            {
+                endpoint.render(&mut next, actual).unwrap();
+                reference_endpoint.render(&mut reference, expected).unwrap();
+                assert_eq!(actual, expected, "partition {partition}, removed {removed}");
+                assert_eq!(endpoint.notes, reference_endpoint.notes);
+                for &(_, note) in &endpoint.notes {
+                    assert!(removed && !note.on && note.note_id == onset.note_id);
+                    released += 1;
+                }
+            }
+            assert_eq!(next.performance_frame(), reference.performance_frame());
+            playing = next;
+        }
+        assert_eq!(released, 1);
+    }
+}
+
+#[test]
 fn vst3_instrument_prepares_exact_generator_and_authored_notes() {
     let (editor, identity) = fixture();
     assert!(matches!(
