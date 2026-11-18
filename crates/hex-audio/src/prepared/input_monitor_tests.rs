@@ -260,6 +260,15 @@ fn check_paused_source_allocation(
 
 #[test]
 fn paused_monitor_accepts_the_exact_accounted_resident_graph() {
+    check_accounted_paused_monitor(false);
+}
+
+#[test]
+fn inheriting_graph_edit_keeps_the_old_monitor_tail_and_stops_feeding_it() {
+    check_accounted_paused_monitor(true);
+}
+
+fn check_accounted_paused_monitor(edit: bool) {
     use super::candidate_tests::{anchored, finish, serial};
     use hex_engine::native_device_resources::{PreparedDeviceResources, ResidentDeviceAssets};
     use hex_engine::{AudioStorageLedgerReservation, NativeDeviceClass, SessionPlaybackError};
@@ -362,7 +371,11 @@ fn paused_monitor_accepts_the_exact_accounted_resident_graph() {
         },
     )
     .unwrap();
-    let playback = Playback::try_from_prepared_with_device_resources(revision, &resources).unwrap();
+    let playback =
+        Playback::try_from_prepared_with_device_resources(Arc::clone(&revision), &resources)
+            .unwrap();
+    let successor = edit
+        .then(|| Playback::try_from_prepared_with_device_resources(revision, &resources).unwrap());
     drop(resources);
 
     let _serial = serial();
@@ -440,10 +453,33 @@ fn paused_monitor_accepts_the_exact_accounted_resident_graph() {
     assert!(!control.status.playing.load(Acquire));
     assert_eq!(control.outstanding_device_resource_leases(), 0);
     assert_eq!(input.submit(&[0.75; 512]), 2);
-    control.input_monitor.release_paused();
+    let successor_revision = if let Some(successor) = successor {
+        Some(
+            control
+                .publish_with_admission_and_source_on_control(
+                    successor,
+                    PublicationPolicy::InheritRuntime,
+                    hex_engine::AudioSourceContext {
+                        project_generation: 7,
+                        editor_revision: 4,
+                    },
+                    |_| Ok::<_, ()>(()),
+                )
+                .unwrap(),
+        )
+    } else {
+        control.input_monitor.release_paused();
+        None
+    };
     let tail: Vec<_> = (0..(latency.div_ceil(64) + 2))
         .flat_map(|_| render_block())
         .collect();
+    if let Some(successor_revision) = successor_revision {
+        assert_eq!(
+            control.status.recording_source().unwrap().audio_revision,
+            successor_revision
+        );
+    }
     assert!(tail[..latency].iter().all(|frame| *frame == output[1023]));
     assert!(tail[latency..].iter().all(|frame| *frame == [0.0; 2]));
     assert_eq!(control.status.position.load(Acquire), 0);

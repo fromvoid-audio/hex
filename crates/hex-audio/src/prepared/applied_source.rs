@@ -93,6 +93,12 @@ impl Status {
     /// Control-side request witness for a stopped ordinary input monitor.
     /// The callback still revalidates the exact source, epoch, and runtime.
     pub fn paused_input_source(&self) -> Option<(AppliedAudioSource, u64)> {
+        let interval = self.paused_input_interval()?;
+        (!self.publication_in_flight()).then_some(interval)
+    }
+    /// The installed stopped interval even while its successor is preparing.
+    /// It can keep existing input custody alive but cannot admit a new monitor.
+    pub fn paused_input_interval(&self) -> Option<(AppliedAudioSource, u64)> {
         let epoch = self.transport_epoch.load(Acquire);
         let command = self.admitted_ticket.load(Acquire);
         let source = self.recording_source()?;
@@ -100,7 +106,6 @@ impl Status {
             && !self.closing.load(Acquire)
             && !self.device_fault.load(Acquire)
             && !self.render_fault.load(Acquire)
-            && !self.publication_in_flight()
             && self.pending_stop_marker.load(Acquire) == 0
             && self.consumed_command.load(Acquire) == command
             && self.transport_epoch.load(Acquire) == epoch

@@ -61,7 +61,9 @@ fn monitor_action(phase: Monitoring, status: Option<MonitorStatus>) -> MonitorAc
         Some(MonitorStatus::Priming | MonitorStatus::Running) if phase == Monitoring::Waiting => {
             MonitorAction::StartInput
         }
-        Some(MonitorStatus::Priming | MonitorStatus::Running) => MonitorAction::Continue,
+        Some(MonitorStatus::Priming | MonitorStatus::Running | MonitorStatus::DrainingGraph) => {
+            MonitorAction::Continue
+        }
         Some(MonitorStatus::SourceChanged) => MonitorAction::Failed("audio source changed"),
         Some(MonitorStatus::Unsupported) => {
             MonitorAction::Failed("output configuration is unsupported")
