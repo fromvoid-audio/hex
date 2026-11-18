@@ -776,6 +776,93 @@ fn build_interval_tree(
 }
 
 #[cfg(test)]
+mod interval_tests {
+    use super::*;
+    use hex_project::{Command, Created, Editor};
+
+    #[test]
+    fn span_query_preserves_equal_onset_order_and_prunes_excluded_ancestors() {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let Created::Track(track) = editor
+            .execute(Command::AddMidiTrack {
+                name: "notes".into(),
+            })
+            .unwrap()
+        else {
+            panic!("expected a midi track");
+        };
+        let Created::Clip(clip) = editor
+            .execute(Command::PlaceMidiClip {
+                track,
+                start: BeatTime::ZERO,
+                length: BeatTime::ONE,
+            })
+            .unwrap()
+        else {
+            panic!("expected a midi clip");
+        };
+        let Created::Note(note) = editor
+            .execute(Command::AddMidiNote {
+                clip,
+                start: BeatTime::ZERO,
+                duration: BeatTime::ONE,
+                pitch: 60,
+                channel: 0,
+                velocity: 100,
+            })
+            .unwrap()
+        else {
+            panic!("expected a midi note");
+        };
+        let spans = [
+            (0, 30),
+            (5, 6),
+            (5, 14),
+            (5, 13),
+            (8, 23),
+            (12, 24),
+            (20, 31),
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(index, (start, end))| CompiledNoteSpan {
+            start,
+            gate_end: end,
+            end,
+            onset_beat: BeatTime::ZERO,
+            gate_end_beat: BeatTime::ONE,
+            sampler_index: 0,
+            pitch: 60,
+            channel: 0,
+            velocity: 100,
+            clip,
+            note,
+            iteration: index as u64,
+        })
+        .collect::<Vec<_>>();
+        let mut nodes = Vec::new();
+        let root = build_interval_tree(&spans, 0, spans.len(), &mut nodes);
+        for (floor, expected) in [
+            (None, &[0, 2, 3, 4][..]),
+            (Some(5), &[4][..]),
+            (Some(8), &[][..]),
+        ] {
+            let mut visited = Vec::new();
+            crate::midi_activity::visit_arrangement_spans(
+                &spans,
+                &nodes,
+                root,
+                6,
+                12,
+                floor,
+                |span| visited.push(span.iteration),
+            );
+            assert_eq!(visited, expected, "exclusive floor {floor:?}");
+        }
+    }
+}
+
+#[cfg(test)]
 mod density_tests {
     use super::*;
 
