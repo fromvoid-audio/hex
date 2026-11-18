@@ -864,20 +864,31 @@ fn held_clip_and_event_gains_reach_the_callback_without_editing_history() {
 fn held_audio_play_start_changes_only_its_clip_during_arrangement_playback() {
     use hex_project::{AudioViewResizeOperation, Command};
     use hex_session::service::{ArrangementPlayStartAudition, PlayStartEdit};
+    use std::io::{Seek, SeekFrom, Write};
 
     let _native = native_fixture();
     let files = Files::new();
     let mut h = ResidentHarness::with_frame_limit(262_144);
     assert!(h.next().error.is_none());
     let (initial, _) = h.applied(0);
-    let source = files.wav(48_000, 96_000);
-    let imported = h.run(Request::Import(source.clone()));
+    let slip_frames = 48_000_u32;
+    let source = files.constant_wav("slipped.wav", 48_000, slip_frames * 2, &[8192]);
+    // Use a quieter second half so shifting the source is audible, and keep
+    // the other track at 0.25 to distinguish a slip from muting the target.
+    let mut wav = fs::OpenOptions::new().write(true).open(&source).unwrap();
+    let tail_bytes = i64::from(slip_frames) * size_of::<i16>() as i64;
+    wav.seek(SeekFrom::End(-tail_bytes)).unwrap();
+    wav.write_all(&4096_i16.to_le_bytes().repeat(slip_frames as usize))
+        .unwrap();
+    drop(wav);
+    let imported = h.run(Request::Import(source));
     let clip = imported.state.project.tracks()[0].clips()[0].id();
     let (applied, _) = h.applied(initial);
-    let mixed = h.run(Request::Import(source));
+    let mixed = h.run(Request::Import(files.wav(48_000, slip_frames * 2)));
     let (applied, metadata) = h.applied(applied);
     assert_eq!(mixed.state.project.tracks().len(), 2);
     let original = mixed.state.project.snapshot();
+    let original_clip = mixed.state.project.clip(clip).unwrap();
     h.audio
         .as_mut()
         .unwrap()
@@ -889,13 +900,17 @@ fn held_audio_play_start_changes_only_its_clip_during_arrangement_playback() {
         context: metadata.context,
         edit: PlayStartEdit::Audio {
             clip,
-            position: 48_000,
+            position: u64::from(slip_frames),
         },
     };
     let render = |h: &ResidentHarness, gain: f32| {
+        let output = h.render();
         assert!(
-            h.render().iter().all(|f| (f[0] - gain).abs() < 1e-5),
-            "mix should be {gain}"
+            output
+                .iter()
+                .flatten()
+                .all(|sample| (sample - gain).abs() < 1e-5),
+            "mix should be {gain}, got {output:?}"
         );
     };
     let advance = |h: &mut ResidentHarness, previous| {
@@ -929,7 +944,8 @@ fn held_audio_play_start_changes_only_its_clip_during_arrangement_playback() {
         preview_metadata.source_origin,
         hex_session::service::ResidentSourceOrigin::ClipPlayStartPreview
     );
-    render(&h, 0.25);
+    let slipped_mix = 0.125 + 0.25;
+    render(&h, slipped_mix);
     assert!(
         h.service.try_event().is_err(),
         "preview must leave canonical history alone"
@@ -942,17 +958,31 @@ fn held_audio_play_start_changes_only_its_clip_during_arrangement_playback() {
     h.service.audition_arrangement_play_start(Some(target));
     let preview = advance(&mut h, restored);
     h.service.finish_arrangement_play_start_audition();
-    render(&h, 0.25);
+    render(&h, slipped_mix);
     let committed = h.run(Request::Edit(Command::ResizeAudioClipView {
         clip,
-        operation: AudioViewResizeOperation::PlayStart { position: 48_000 },
+        operation: AudioViewResizeOperation::PlayStart {
+            position: u64::from(slip_frames),
+        },
     }));
     assert_eq!(committed.state.revision, mixed.state.revision + 1);
+    let edited_clip = committed.state.project.clip(clip).unwrap();
+    assert_eq!(
+        (edited_clip.start(), edited_clip.duration()),
+        (original_clip.start(), original_clip.duration())
+    );
+    let edited = committed.state.project.snapshot();
     h.service.retire_arrangement_play_start_audition();
     let committed = advance(&mut h, preview);
-    render(&h, 0.25);
+    render(&h, slipped_mix);
     assert_eq!(h.run(Request::Undo).state.project.snapshot(), original);
-    let (undone, metadata) = h.applied(committed);
+    let (undone, _) = h.applied(committed);
+    render(&h, 0.5);
+    assert_eq!(h.run(Request::Redo).state.project.snapshot(), edited);
+    let (redone, _) = h.applied(undone);
+    render(&h, slipped_mix);
+    assert_eq!(h.run(Request::Undo).state.project.snapshot(), original);
+    let (undone, metadata) = h.applied(redone);
     render(&h, 0.5);
 
     h.service
