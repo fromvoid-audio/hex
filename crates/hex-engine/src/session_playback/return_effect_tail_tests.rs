@@ -1180,7 +1180,8 @@ fn failed_block_restores_tail_history_for_the_next_render_attempt() {
     let playback = playback(&project);
     let bus = &playback.revision.arrangement().return_buses()[0];
     let mut bank = ReturnEffectTailBank::new().unwrap();
-    bank.slots_mut()[0] = Some(ReturnEffectTail::new(
+    let slot = bank.slots().len() - 1;
+    bank.slots_mut()[slot] = Some(ReturnEffectTail::new(
         active_chain(return_id, StereoMatrix::identity()),
         bus,
     ));
@@ -1196,7 +1197,7 @@ fn failed_block_restores_tail_history_for_the_next_render_attempt() {
     .unwrap();
     assert_eq!(failed_attempt[0], [0.375, -0.75]);
     bank.rollback_block();
-    assert!(bank.slots()[0].as_ref().unwrap().output_active);
+    assert!(bank.slots()[slot].as_ref().unwrap().output_active);
 
     bank.begin_block();
     let mut retry = [[0.0; 2]; 1];
@@ -1204,7 +1205,7 @@ fn failed_block_restores_tail_history_for_the_next_render_attempt() {
         .unwrap();
     assert_eq!(retry, failed_attempt);
     bank.commit_block();
-    assert!(bank.slots()[0].as_ref().unwrap().output_active);
+    assert!(bank.slots()[slot].as_ref().unwrap().output_active);
 }
 
 #[test]

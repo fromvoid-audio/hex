@@ -65,6 +65,7 @@ impl ReturnEffectTail {
 
 pub(super) struct ReturnEffectTailBank {
     slots: Vec<Option<ReturnEffectTail>>,
+    render_limit: usize,
     scratch: [Frame; 256],
 }
 
@@ -73,7 +74,11 @@ impl ReturnEffectTailBank {
         &'a self,
         ledger: &mut crate::AudioRootStorageLedger<'a>,
     ) -> Result<(), crate::AudioStorageError> {
-        let Self { slots, scratch: _ } = self;
+        let Self {
+            slots,
+            render_limit: _,
+            scratch: _,
+        } = self;
         if slots.iter().any(Option::is_some) {
             return Err(crate::AudioStorageError::UnsupportedGraph);
         }
@@ -90,6 +95,7 @@ impl ReturnEffectTailBank {
         slots.resize_with(RETURN_EFFECT_TAIL_CAPACITY, || None);
         Ok(Self {
             slots,
+            render_limit: 0,
             scratch: [[0.0; 2]; 256],
         })
     }
@@ -104,11 +110,17 @@ impl ReturnEffectTailBank {
     }
 
     pub(super) fn begin_block(&mut self) {
-        for tail in self.slots.iter_mut().flatten() {
-            if tail.output_active {
-                tail.chain.begin_block();
+        // Handoffs install tail owners before this transaction. A block can
+        // drain an existing owner, but it cannot start another one.
+        self.render_limit = 0;
+        for (index, slot) in self.slots.iter_mut().enumerate() {
+            if let Some(tail) = slot {
+                if tail.output_active {
+                    tail.chain.begin_block();
+                    self.render_limit = index + 1;
+                }
+                tail.output_scratch = tail.output_active;
             }
-            tail.output_scratch = tail.output_active;
         }
     }
 
@@ -153,7 +165,7 @@ impl ReturnEffectTailBank {
         capture: &mut Option<&mut dyn super::capture::CaptureSink>,
         foreign: &mut dyn hex_lattice::ForeignProcessors,
     ) -> Result<(), SessionPlaybackError> {
-        let (slots, scratch) = (&mut self.slots, &mut self.scratch);
+        let (slots, scratch) = (&mut self.slots[..self.render_limit], &mut self.scratch);
         for tail in slots.iter_mut().flatten() {
             let TailDestination::Return(return_id) = tail.destination else {
                 continue;
@@ -213,7 +225,7 @@ impl ReturnEffectTailBank {
         frame_offset: usize,
         foreign: &mut dyn hex_lattice::ForeignProcessors,
     ) -> Result<(), SessionPlaybackError> {
-        let (slots, scratch) = (&mut self.slots, &mut self.scratch);
+        let (slots, scratch) = (&mut self.slots[..self.render_limit], &mut self.scratch);
         for tail in slots.iter_mut().flatten() {
             let TailDestination::Main {
                 suffix_start,
@@ -288,7 +300,11 @@ impl ReturnEffectTailBank {
     }
 
     pub(super) fn accounted_storage_bytes(&self) -> Option<usize> {
-        let Self { slots, scratch: _ } = self;
+        let Self {
+            slots,
+            render_limit: _,
+            scratch: _,
+        } = self;
         let mut bytes = std::mem::size_of::<Self>().checked_add(
             slots
                 .capacity()
