@@ -28,6 +28,7 @@ pub(super) struct Resident {
     pub(super) capture_target: Option<hex_engine::NativeParameterInputTarget>,
     pub(super) applied_loop: Option<ResidentRuntimeLoop>,
     pub(super) retired: Option<DeviceResourcePublication>,
+    paused_monitor: Option<hex_engine::PausedMonitorStorageHold>,
     observations: [Option<Arc<hex_engine::PreparedPlaybackObservation>>; RUNTIME_CELLS],
 }
 impl Resident {
@@ -66,7 +67,14 @@ impl Resident {
             self.pending = None;
         }
     }
-    pub(super) fn reap_observations(&mut self) {
+    pub(super) fn reap_control_owners(&mut self) {
+        if self
+            .paused_monitor
+            .as_ref()
+            .is_some_and(|hold| hold.released_on_control())
+        {
+            self.paused_monitor = None;
+        }
         for row in &mut self.observations {
             if row
                 .as_ref()
@@ -75,6 +83,15 @@ impl Resident {
                 *row = None;
             }
         }
+    }
+    fn retired_admission(&self) -> DeviceResourceAdmission<'_> {
+        let retired = self.retired.as_ref().map_or(
+            DeviceResourceAdmission::default(),
+            DeviceResourcePublication::admission_on_control,
+        );
+        self.paused_monitor
+            .as_ref()
+            .map_or(retired, |monitor| retired.with_paused_monitor(monitor))
     }
     fn observation_bytes(&self) -> Option<usize> {
         self.observations
@@ -352,12 +369,7 @@ impl NativeAudioSink {
                 .as_ref()
                 .and_then(|output| output.publication.device_resource_admission_on_control())
                 .unwrap_or_default(),
-            self.resident
-                .retired
-                .as_ref()
-                .map_or(DeviceResourceAdmission::default(), |book| {
-                    book.admission_on_control()
-                }),
+            self.resident.retired_admission(),
             self.resident
                 .pending
                 .as_ref()
@@ -372,6 +384,71 @@ impl NativeAudioSink {
                         .map_or(view, |files| files.include_requirements(view))
                 }),
         ]
+    }
+
+    pub(super) fn prepare_resident_paused_monitor(
+        &mut self,
+        request: hex_session::service::PausedInputMonitorRequest,
+        revision: &Arc<hex_engine::PreparedRevision>,
+        resources: &PreparedDeviceResources,
+        admit: &mut dyn FnMut(&[DeviceResourceAdmission<'_>]) -> Result<(), String>,
+    ) -> Result<hex_engine::PausedTrackMonitor, String> {
+        self.resident.reap_control_owners();
+        if self.resident.paused_monitor.is_some() {
+            return Err("paused input monitor is still retained".into());
+        }
+        self.check_paused_input_source(request)?;
+        let metadata = self
+            .policy
+            .as_ref()
+            .map_err(Clone::clone)?
+            .ordinary_graph_metadata_bytes;
+        let (monitor, hold) = hex_engine::PausedTrackMonitor::prepare_admitted_resident_on_control(
+            Arc::clone(revision),
+            resources,
+            request.track,
+            metadata,
+            |candidate| {
+                let [current, retired, pending] = self.resident_inventory();
+                admit(&[current, retired, pending, candidate])
+            },
+        )
+        .map_err(|error| match error {
+            hex_engine::PausedMonitorAdmissionError::Admission(reason) => reason,
+            hex_engine::PausedMonitorAdmissionError::Preparation(reason) => reason.to_string(),
+        })?;
+        self.check_paused_input_source(request)?;
+        self.resident.paused_monitor = Some(hold);
+        Ok(monitor)
+    }
+
+    fn check_paused_input_source(
+        &mut self,
+        request: hex_session::service::PausedInputMonitorRequest,
+    ) -> Result<(), String> {
+        let readiness = self.resident_publication_readiness();
+        if !request.source.matches_applied(readiness)
+            || self
+                .resident
+                .applied_loop
+                .is_some_and(|active| active.section_loop.is_some())
+        {
+            return Err("paused input monitor source changed".into());
+        }
+        let control = self
+            .output
+            .as_mut()
+            .and_then(|output| output.publication.control())
+            .ok_or("paused input monitor output is unavailable")?;
+        let expected = hex_audio::prepared::AppliedAudioSource {
+            context: request.source.context,
+            audio_revision: request.source.audio_revision,
+            output_identity: request.source.output_identity,
+        };
+        if control.status.paused_input_source() != Some((expected, request.transport_epoch)) {
+            return Err("paused input monitor transport changed".into());
+        }
+        Ok(())
     }
     /// Retry native Work contention with the exact returned graph. Once the
     /// caller's admission hook wins, later source intent cannot cancel that
@@ -556,7 +633,7 @@ impl NativeAudioSink {
         } else {
             None
         };
-        self.resident.reap_observations();
+        self.resident.reap_control_owners();
         let existing = self.resident.observations.iter().position(|row| {
             row.as_ref()
                 .is_some_and(|old| Arc::ptr_eq(old, &observation))
@@ -782,13 +859,7 @@ impl NativeAudioSink {
                     }
                 }
             };
-            let retired = self
-                .resident
-                .retired
-                .as_ref()
-                .map_or(DeviceResourceAdmission::default(), |book| {
-                    book.admission_on_control()
-                });
+            let retired = self.resident.retired_admission();
             let pending = self.resident.pending.as_ref().map_or(
                 DeviceResourceAdmission::default(),
                 |pending| {
