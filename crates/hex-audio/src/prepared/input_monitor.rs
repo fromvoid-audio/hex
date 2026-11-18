@@ -265,14 +265,14 @@ impl Callback {
         }
     }
     pub(super) fn reject_paused(&mut self, reason: MonitorStatus) {
-        if !self.stop.load(Acquire)
-            && self
-                .active
-                .as_ref()
-                .is_some_and(|binding| matches!(binding.mode, Mode::Paused { .. }))
-        {
+        if !self.stop.load(Acquire) && self.has_paused_binding() {
             self.reject(reason);
         }
+    }
+    pub(super) fn has_paused_binding(&self) -> bool {
+        self.active
+            .as_ref()
+            .is_some_and(|binding| matches!(binding.mode, Mode::Paused { .. }))
     }
     fn source_matches(&mut self, source: Option<AppliedAudioSource>) -> bool {
         if self.stop.load(Acquire) {

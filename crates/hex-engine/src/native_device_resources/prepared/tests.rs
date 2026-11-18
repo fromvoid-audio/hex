@@ -233,6 +233,14 @@ fn registered_sampler_fixture(streamed: bool, shared: bool) {
         24
     );
     let revision = Arc::new(prepare(&resources, 24).unwrap());
+    assert!(matches!(
+        crate::PausedTrackMonitor::resident_runtime_allowance_on_control(
+            &revision,
+            &resources,
+            audio_track,
+        ),
+        Err(crate::SessionPlaybackError::InvalidCommand)
+    ));
     if let Some(contributor) = shared_contributor {
         let receiver = editor.project().tracks()[0].id();
         let source = editor

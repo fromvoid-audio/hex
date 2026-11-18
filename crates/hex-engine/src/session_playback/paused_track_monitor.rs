@@ -3,6 +3,7 @@ use super::{
     Frame, MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES, PreparedRevision, SessionPlayback,
     SessionPlaybackError, TrackId, preroll::arrangement_runtime_storage_preflight_bytes,
 };
+use crate::native_device_resources::PreparedDeviceResources;
 use std::sync::Arc;
 
 /// A separate, owned monitor for one prepared revision and one track. The
@@ -34,13 +35,45 @@ impl PausedTrackMonitor {
         track: TrackId,
         max_runtime_bytes: usize,
     ) -> Result<Self, SessionPlaybackError> {
+        Self::prepare(revision, track, None, max_runtime_bytes)
+    }
+
+    /// Check the ordinary resident graph's eligibility and quote the
+    /// independent monitor runtime before construction. The caller also
+    /// accounts for the shared prepared data through control-side retirement.
+    pub fn resident_runtime_allowance_on_control(
+        revision: &PreparedRevision,
+        resources: &PreparedDeviceResources,
+        track: TrackId,
+    ) -> Result<usize, SessionPlaybackError> {
+        Self::runtime_allowance(revision, track, Some(resources))
+    }
+
+    /// Prepare a monitor for the exact scoped resident revision. The compiler's
+    /// resource set is borrowed only during construction. The monitor acquires
+    /// no resource leases and uses no foreign or mutable instrument endpoints.
+    pub fn prepare_resident_on_control(
+        revision: Arc<PreparedRevision>,
+        resources: &PreparedDeviceResources,
+        track: TrackId,
+        max_runtime_bytes: usize,
+    ) -> Result<Self, SessionPlaybackError> {
+        Self::prepare(revision, track, Some(resources), max_runtime_bytes)
+    }
+
+    fn runtime_allowance(
+        revision: &PreparedRevision,
+        track: TrackId,
+        resources: Option<&PreparedDeviceResources>,
+    ) -> Result<usize, SessionPlaybackError> {
         let arrangement = revision.arrangement();
         let tracks = arrangement.tracks();
         if !tracks
             .iter()
             .any(|row| row.canonical_track_id() == Some(track))
             || revision.resource_scope.is_some()
-            || revision.device_resource_scope.is_some()
+            || revision.device_resource_scope != resources.map(PreparedDeviceResources::id)
+            || revision.session().has_mutable_instruments()
             || revision.scalar_automation.is_some()
             || !revision.foreign_automation.is_empty()
             || !arrangement.source_effects.is_empty()
@@ -66,17 +99,31 @@ impl PausedTrackMonitor {
         {
             return Err(SessionPlaybackError::InvalidCommand);
         }
-        let limit = max_runtime_bytes
-            .min(MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES)
-            .checked_sub(size_of::<Self>())
-            .ok_or(SessionPlaybackError::Allocation)?;
-        if arrangement_runtime_storage_preflight_bytes(&revision).is_none_or(|n| n > limit) {
+        arrangement_runtime_storage_preflight_bytes(revision)
+            .and_then(|bytes| bytes.checked_add(size_of::<Self>()))
+            .filter(|bytes| *bytes <= MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES)
+            .ok_or(SessionPlaybackError::Allocation)
+    }
+
+    fn prepare(
+        revision: Arc<PreparedRevision>,
+        track: TrackId,
+        resources: Option<&PreparedDeviceResources>,
+        max_runtime_bytes: usize,
+    ) -> Result<Self, SessionPlaybackError> {
+        let limit = max_runtime_bytes.min(MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES);
+        let allowance = Self::runtime_allowance(&revision, track, resources)?;
+        if allowance > limit {
             return Err(SessionPlaybackError::Allocation);
         }
-        let playback = SessionPlayback::new(revision)?;
+        let playback = match resources {
+            Some(resources) => SessionPlayback::new_with_device_resources(revision, resources)?,
+            None => SessionPlayback::new(revision)?,
+        };
         if playback
             .accounted_runtime_storage_bytes()
-            .is_none_or(|n| n > limit)
+            .and_then(|bytes| bytes.checked_add(size_of::<Self>()))
+            .is_none_or(|bytes| bytes > limit)
         {
             return Err(SessionPlaybackError::Allocation);
         }
