@@ -26,7 +26,7 @@ struct Slot {
     ever_used: bool,
     request: Option<Request>,
     response: Option<ResidentPublicationResponse>,
-    cancellation: Option<Arc<FreshRuntimeCancellation>>,
+    cancellation: Option<CancellablePublicationReceipt>,
 }
 impl Slot {
     fn virgin(&self) -> bool {
@@ -240,10 +240,11 @@ impl Client {
         };
         slot.cancellation
             .as_ref()
-            .filter(|c| c.revision == revision)
-            .map_or(FreshRuntimeCancellationResult::UnknownRevision, |c| {
-                c.request_cancel()
-            })
+            .filter(|receipt| receipt.revision() == revision)
+            .map_or(
+                FreshRuntimeCancellationResult::UnknownRevision,
+                CancellablePublicationReceipt::cancel,
+            )
     }
     /// Nonblocking; a contended slot remains pending. The accepted revision is
     /// still distinct from Status.applied_revision produced by the callback.
@@ -289,9 +290,7 @@ impl PublicationControl {
             };
             std::mem::replace(
                 &mut slot.cancellation,
-                self.latest_fresh_runtime_cancellation
-                    .as_ref()
-                    .map(Arc::clone),
+                self.latest_fresh_runtime_cancellation.clone(),
             )
         };
         // A possibly final cancellation handle never drops under the cell lock
