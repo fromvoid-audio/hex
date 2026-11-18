@@ -32,11 +32,15 @@ fn host() -> Hosting {
     .unwrap()
 }
 fn selection() -> PluginEffectSelection {
+    signed_effect_selection("processing")
+}
+fn signed_effect_selection(name: &str) -> PluginEffectSelection {
     let receipt = PathBuf::from(std::env::var_os("HEX_VST3_MACOS_RECEIPT").unwrap());
     let module = receipt
         .parent()
         .unwrap()
-        .join("hex-vst3-host.app/Contents/Resources/fixtures/processing.vst3");
+        .join("hex-vst3-host.app/Contents/Resources/fixtures")
+        .join(format!("{name}.vst3"));
     let cid = [
         0x48, 0x45, 0x58, 0x50, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12,
     ];
