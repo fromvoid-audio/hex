@@ -2421,18 +2421,28 @@ fn vst3_status_body(
     if view.degraded_plugins.contains(device_id.value()) {
         return vst3_degraded_body(device_id);
     }
-    let (message, status) = match audible_vst3_processor(view, device_id) {
-        Ok(true) => {
-            let body = vst3_parameters::body(view, device_id, cx);
-            let body = div()
-                .debug_selector(move || format!("device-vst3-active-{}", device_id.value()))
-                .child(body);
-            return div()
-                .id(("device-body", device_id.value()))
-                .debug_selector(move || format!("device-body-{}", device_id.value()))
-                .child(body);
-        }
-        Ok(false) => (
+    let availability = audible_vst3_processor(view, device_id);
+    let parameters = match availability {
+        Ok(true) => Some(vst3_parameters::body(view, device_id, cx)),
+        Ok(false) => None,
+        Err(_) => vst3_parameters::pending_body(view, device_id, cx),
+    };
+    if let Some(body) = parameters {
+        let status = if availability.is_ok() {
+            "active"
+        } else {
+            "pending"
+        };
+        let body = div()
+            .debug_selector(move || format!("device-vst3-{status}-{}", device_id.value()))
+            .child(body);
+        return div()
+            .id(("device-body", device_id.value()))
+            .debug_selector(move || format!("device-body-{}", device_id.value()))
+            .child(body);
+    }
+    let (message, status) = match availability {
+        Ok(_) => (
             theme::text("vst3 unavailable · saved state preserved"),
             "unavailable",
         ),

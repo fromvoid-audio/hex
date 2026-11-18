@@ -12,7 +12,20 @@ struct Card {
 impl gpui::Render for Card {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let (focus, body) = self.editor.update(cx, |view, cx| {
-            (view.focus.clone(), body(view, self.device, cx))
+            let body = if view.stopped_playback_restore.is_some() {
+                let device = view
+                    .state
+                    .as_ref()
+                    .unwrap()
+                    .project
+                    .device(self.device)
+                    .unwrap()
+                    .clone();
+                super::super::super::vst3_status_body(view, &device, cx).into_any_element()
+            } else {
+                body(view, self.device, cx).into_any_element()
+            };
+            (view.focus.clone(), body)
         });
         let editor = self.editor.downgrade();
         div()
@@ -231,12 +244,26 @@ fn typed_value_case(
             .unwrap();
         panel.cache_loading = false;
         panel.source = Some(binding);
-        panel.result = Some(Arc::new(vec![layout_row(0.25, true, 1)]));
+        panel.result = Some(Arc::new(vec![
+            layout_row(0.25, true, 1),
+            PluginParameterRow {
+                id: 8,
+                ..layout_row(0.6, true, 1)
+            },
+        ]));
         panel.refilter(false);
         cx.notify();
     });
     visual.update(|window, _| window.activate_window());
     visual.run_until_parked();
+    let untouched = Box::leak(format!("vst3-knob-{}-8-knob", device.value()).into_boxed_str());
+    let untouched_bounds = visual.debug_bounds(untouched).expect("untouched dial");
+    let down = untouched_bounds.center();
+    let modifiers = Modifiers::default();
+    visual.simulate_mouse_move(down, None, modifiers);
+    visual.run_until_parked();
+    let available_cursor = Some(gpui::CursorStyle::PointingHand);
+    assert_eq!(visual.rendered_cursor_style(), available_cursor);
     let selector = Box::leak(format!("vst3-knob-{}-7-value", device.value()).into_boxed_str());
     // This headless fixture has no installed SDK source. Exercise the gesture
     // subscription independently; the hosted text path has its own SDK test.
@@ -358,6 +385,41 @@ fn typed_value_case(
         cx.notify();
     });
     visual.run_until_parked();
+    if !replace_before_ack {
+        assert_eq!(visual.debug_bounds(untouched), Some(untouched_bounds));
+        // The dial's hover cursor and paint use the same presentation state.
+        visual.simulate_mouse_move(down, None, modifiers);
+        visual.run_until_parked();
+        assert_eq!(
+            visual.rendered_cursor_style(),
+            available_cursor,
+            "an unrelated dial must not dim after the terminal"
+        );
+        let end = gpui::point(down.x + px(10.0), down.y);
+        visual.simulate_mouse_down(down, MouseButton::Left, modifiers);
+        visual.simulate_mouse_move(end, MouseButton::Left, modifiers);
+        visual.simulate_mouse_up(end, MouseButton::Left, modifiers);
+        editor.read_with(&visual, |view, cx| {
+            let control = view.device_panel.vst3_parameters.panels[&device].knobs[&8]
+                .control
+                .read(cx);
+            assert!(!control.is_interacting());
+            assert_eq!(control.value(), 0.6);
+            assert!(view.device_gesture.snapshot().is_none());
+        });
+        editor.update(&mut visual, |view, cx| {
+            view.stopped_playback_restore =
+                Some(crate::editor::audio_admission::StoppedPlaybackRestore::Preparing);
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let pending = Box::leak(format!("device-vst3-pending-{}", device.value()).into_boxed_str());
+        assert!(visual.debug_bounds(pending).is_some());
+        assert_eq!(visual.debug_bounds(untouched), Some(untouched_bounds));
+        visual.simulate_mouse_move(down, None, modifiers);
+        visual.run_until_parked();
+        assert_eq!(visual.rendered_cursor_style(), available_cursor);
+    }
     editor.read_with(&visual, |view, cx| {
         let control = view.device_panel.vst3_parameters.panels[&device].knobs[&7]
             .control

@@ -268,10 +268,13 @@ impl Panel {
         let Some(matched) = self.rows().map(|rows| matching_rows(rows, &self.filter)) else {
             return;
         };
-        if reset_scroll || *self.matched != matched {
+        let changed = *self.matched != matched;
+        if reset_scroll || changed {
             self.scrollbar.invalidate();
         }
-        self.matched = Arc::new(matched);
+        if changed {
+            self.matched = Arc::new(matched);
+        }
         if reset_scroll {
             self.scroll.scroll_to_item(0, gpui::ScrollStrategy::Top);
         }
@@ -282,7 +285,6 @@ impl Panel {
     }
 
     fn mark_values_stale_with_commit(&mut self, committed: Option<(u32, f64)>) {
-        self.scrollbar.invalidate();
         let total = self.rows().and_then(|rows| u16::try_from(rows.len()).ok());
         if let Some(rows) = &self.result {
             self.result = Some(Arc::new(
@@ -1778,6 +1780,35 @@ fn dense_target_owns_parameter(view: &EditorView, device: DeviceId, id: u32) -> 
 
 pub(super) fn body(view: &mut EditorView, device: DeviceId, cx: &mut Context<EditorView>) -> Div {
     ensure_panel(view, device, cx);
+    render_body(view, device, cx)
+}
+
+/// Present an existing inventory during an applied-source handoff.
+pub(super) fn pending_body(
+    view: &mut EditorView,
+    device: DeviceId,
+    cx: &mut Context<EditorView>,
+) -> Option<Div> {
+    view.device_panel
+        .vst3_parameters
+        .panels
+        .get(&device)?
+        .rows()?;
+    ensure_panel(view, device, cx);
+    let panel = view.device_panel.vst3_parameters.panels.get_mut(&device)?;
+    if panel.query.context.project_generation != view.project_generation
+        || Some(panel.owner) != view.device_panel.owner
+        || panel.rows().is_none()
+    {
+        return None;
+    }
+    if panel.source.is_some() {
+        panel.mark_values_stale();
+    }
+    Some(render_body(view, device, cx))
+}
+
+fn render_body(view: &mut EditorView, device: DeviceId, cx: &mut Context<EditorView>) -> Div {
     let body = crate::device_composition::body()
         .w(px(crate::device_composition::GENERIC_FRAME_WIDTH))
         .flex_col()
@@ -1815,11 +1846,7 @@ pub(super) fn body(view: &mut EditorView, device: DeviceId, cx: &mut Context<Edi
                 ),
         );
     }
-    let (follow, follow_row, _) = if restoring {
-        (None, None, None)
-    } else {
-        follow_display(view, device, cx)
-    };
+    let (follow, follow_row, _) = follow_display(view, device, cx);
     let follow_mapping = follow_row
         .as_ref()
         .and_then(|row| super::modulators::vst3_target_overlay(view, cx, device, row, "follow"));
@@ -1930,15 +1957,6 @@ pub(super) fn body(view: &mut EditorView, device: DeviceId, cx: &mut Context<Edi
         )
         .child(controls);
     let body = body.child(toolbar);
-    if restoring {
-        return body.child(
-            div()
-                .debug_selector(|| "vst3-parameter-list-area".to_string())
-                .flex_1()
-                .min_h_0()
-                .w_full(),
-        );
-    }
     match &panel.result {
         None => body.child(
             div()
@@ -2004,7 +2022,7 @@ pub(super) fn body(view: &mut EditorView, device: DeviceId, cx: &mut Context<Edi
                                         let row = rows.get(row_index)?;
                                         let (knob, mapping) = editor
                                             .update(app, |view, cx| {
-                                                let knob = if row.editable {
+                                                let knob = if row.editable && !restoring {
                                                     if let Some(panel) = view
                                                         .device_panel
                                                         .vst3_parameters
@@ -2148,7 +2166,8 @@ fn follow_display(
             }),
         );
     };
-    if !row.editable || row.metadata_revision == 0 || panel.source.is_none() {
+    let restoring = view.stopped_playback_restore.is_some();
+    if restoring || !row.editable || row.metadata_revision == 0 || panel.source.is_none() {
         let pending = panel.follow_knob.as_ref().and_then(|(current, knob)| {
             (*current == id
                 && panel.source.is_none_or(|source| source == knob.source)
@@ -2164,10 +2183,10 @@ fn follow_display(
         if let Some(control) = &control {
             control.update(cx, |control, cx| {
                 let _ = control.set_external_value(pending.unwrap_or(row.normalized), cx);
-                control.set_enabled(false, cx);
+                set_refresh_availability(control, &row, cx);
             });
         }
-        let status = if row.metadata_revision == 0 || panel.source.is_none() {
+        let status = if restoring || row.metadata_revision == 0 || panel.source.is_none() {
             "refreshing last touched parameter"
         } else {
             "last touched parameter is read only"
@@ -2198,7 +2217,8 @@ fn show_automation_menu(
     window: &mut gpui::Window,
     cx: &mut Context<EditorView>,
 ) -> bool {
-    if current_context(view) != Some(query.context)
+    if view.stopped_playback_restore.is_some()
+        || current_context(view) != Some(query.context)
         || view
             .audio
             .as_ref()
@@ -2346,6 +2366,18 @@ fn placeholder_knob(
     Some(control)
 }
 
+fn set_refresh_availability(
+    control: &mut NumericControl,
+    row: &PluginParameterRow,
+    cx: &mut Context<NumericControl>,
+) {
+    if row.metadata_revision == 0 || row.editable {
+        control.suspend_input(cx);
+    } else {
+        control.set_enabled(false, cx);
+    }
+}
+
 // A bounded set of display-only controls supports virtualization without giving
 // cached descriptors the authority to dispatch parameter gestures.
 fn row_placeholder(
@@ -2369,7 +2401,7 @@ fn row_placeholder(
         };
         control.update(cx, |control, cx| {
             let _ = control.set_external_value(value, cx);
-            control.set_enabled(false, cx);
+            set_refresh_availability(control, row, cx);
         });
         return Some(control);
     }
@@ -2573,7 +2605,8 @@ fn create_knob(
                             .is_some_and(|active| active.key == *key)
                 });
             if !continuing_owned {
-                if view.device_gesture.snapshot().is_some()
+                if view.stopped_playback_restore.is_some()
+                    || view.device_gesture.snapshot().is_some()
                     || current_context(view) != Some(origin.context)
                 {
                     return;
@@ -3629,11 +3662,24 @@ mod tests {
         assert!(thumb.top() > track.top());
         visual.simulate_mouse_down(thumb.center(), gpui::MouseButton::Left, modifiers);
         visual.run_until_parked();
+        editor.update(&mut visual, |view, cx| {
+            let panel = view
+                .device_panel
+                .vst3_parameters
+                .panels
+                .get_mut(&device)
+                .unwrap();
+            panel.mark_values_stale();
+            cx.notify();
+        });
+        visual.run_until_parked();
+        assert_eq!(geometry(&visual).1, thumb);
         editor.read_with(&visual, |view, _| {
             assert!(
                 view.device_panel.vst3_parameters.panels[&device]
                     .scrollbar
-                    .test_dragging()
+                    .test_dragging(),
+                "value refresh must retain the scrollbar drag"
             )
         });
         let outside = gpui::point(track.left(), track.bottom() + px(300.0));
