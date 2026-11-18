@@ -307,6 +307,21 @@ fn processor(playback: &Playback) -> PreparedForeignProcessor {
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn paused_monitor_uses_private_native_endpoint_and_contains_host_refusal() {
+    run_native_monitor_fixture(exercise_paused_monitor_host_refusal);
+}
+
+// Both prepared processor banks and their callback carrier exceed the default
+// test stack. Size only the thread that runs the signed fixture.
+fn run_native_monitor_fixture(exercise: fn()) {
+    std::thread::Builder::new()
+        .stack_size(16 * 1024 * 1024)
+        .spawn(exercise)
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+fn exercise_paused_monitor_host_refusal() {
     let _serial = serial();
     let mut f = fixture_at("processing", 0);
     let root = f.control.native_candidate_root();
@@ -447,6 +462,10 @@ fn paused_monitor_uses_private_native_endpoint_and_contains_host_refusal() {
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn shutdown_returns_both_native_banks_through_the_same_root() {
+    run_native_monitor_fixture(exercise_dual_bank_shutdown);
+}
+
+fn exercise_dual_bank_shutdown() {
     let _serial = serial();
     let mut f = fixture_at("processing", 0);
     let playback = compile(&f, true);
