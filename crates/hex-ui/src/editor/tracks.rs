@@ -555,7 +555,7 @@ impl EditorView {
         state: &ViewState,
         track: &Track,
         track_index: usize,
-        selected: bool,
+        selected_rows: Option<(usize, usize)>,
         timeline: ClipViewTimeline<'_>,
         cx: &mut Context<Self>,
     ) -> Div {
@@ -572,6 +572,7 @@ impl EditorView {
             scale_factor,
         } = timeline;
         let track_id = track.id();
+        let selected = self.selected_track() == Some(track_id);
         let Some(viewport_end) = viewport.end() else {
             return div().w_full().h(px(self.track_body_height(track_id)));
         };
@@ -1501,7 +1502,16 @@ impl EditorView {
         if let Some(preview) = self.clip_paint_overlay(track_id, viewport) {
             clip_area = clip_area.child(preview);
         }
-        if let Some(selection) = self.time_selection_overlay(track_id, viewport, scale_factor, cx) {
+        if let Some(selected_rows) = selected_rows
+            && let Some(selection) = self.time_selection_overlay(
+                track_id,
+                track_index,
+                selected_rows,
+                viewport,
+                scale_factor,
+                cx,
+            )
+        {
             clip_area = clip_area.children([selection]);
         }
         if let Some(preview) = self.time_range_move_preview_overlay(track_id, track_index, viewport)
