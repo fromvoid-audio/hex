@@ -302,6 +302,32 @@ enum EditFixture {
     NewTrackSample,
     TimeDuplicate,
     InFlightTimeDuplicate,
+    LoopToggle,
+    LoopRange,
+}
+
+#[gpui::test]
+fn degraded_loop_edit_keeps_one_intent_until_recovery_and_its_terminal(
+    cx: &mut gpui::TestAppContext,
+) {
+    graph_edit_recovery(
+        &mut cx.new_app(),
+        EditFixture::LoopToggle,
+        EditRecovery::Ready,
+    );
+    graph_edit_recovery(cx, EditFixture::LoopRange, EditRecovery::Ready);
+}
+
+#[gpui::test]
+fn degraded_loop_edit_clears_the_preview_after_stale_or_failed_recovery(
+    cx: &mut gpui::TestAppContext,
+) {
+    graph_edit_recovery(
+        &mut cx.new_app(),
+        EditFixture::LoopToggle,
+        EditRecovery::ProjectChanged,
+    );
+    graph_edit_recovery(cx, EditFixture::LoopRange, EditRecovery::Failed);
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -378,6 +404,35 @@ fn graph_edit_recovery(cx: &mut gpui::TestAppContext, edit: EditFixture, outcome
     service.submit(add_track("other")).unwrap();
     let ready = next(&service).state;
     let other = ready.project.tracks()[1].id();
+    let loop_edit = matches!(edit, EditFixture::LoopToggle | EditFixture::LoopRange);
+    let ready = if loop_edit {
+        service
+            .submit(Request::Edit(Command::SetLoopRegion {
+                start: 0,
+                end: 32_768,
+                enabled: false,
+            }))
+            .unwrap();
+        next(&service).state
+    } else {
+        ready
+    };
+    let expected_loop = loop_edit.then(|| {
+        hex_project::LoopRegion::new(
+            if edit == EditFixture::LoopToggle {
+                0
+            } else {
+                4_096
+            },
+            if edit == EditFixture::LoopToggle {
+                32_768
+            } else {
+                65_536
+            },
+            true,
+        )
+        .unwrap()
+    });
     let mut refusal_event = None;
     let ready = if matches!(
         edit,
@@ -551,6 +606,33 @@ fn graph_edit_recovery(cx: &mut gpui::TestAppContext, edit: EditFixture, outcome
                 v.start_time_duplicate(range, 0);
             }
             assert!(v.pending_time_range_move.is_some());
+        } else if let Some(region) = expected_loop {
+            if edit == EditFixture::LoopToggle {
+                v.toggle_loop();
+            } else {
+                v.submit_selection_loop_preview(region, false);
+            }
+            assert_eq!(v.pending_loop_region(), Some(region));
+            assert!(
+                v.recovery.generation().is_some(),
+                "loop must wait for fresh audio"
+            );
+            assert_eq!(v.worker_requests_pending, 1, "only restart is queued");
+            assert!(
+                v.deferred_play.is_some(),
+                "playing intent must survive recovery"
+            );
+            v.toggle_loop();
+            v.submit_selection_loop_preview(
+                hex_project::LoopRegion::new(0, 2048, true).unwrap(),
+                false,
+            );
+            assert_eq!(
+                v.pending_loop_region(),
+                Some(region),
+                "repeats preserve the original loop"
+            );
+            assert_eq!(v.worker_requests_pending, 1, "repeats do not queue edits");
         } else {
             assert!(v.enqueue_device_barrier(request()));
         }
@@ -608,6 +690,7 @@ fn graph_edit_recovery(cx: &mut gpui::TestAppContext, edit: EditFixture, outcome
             assert!(v.recovery.deferred_edit.is_none());
             assert!(v.pending_sample_drop.is_none());
             assert!(v.pending_time_range_move.is_none());
+            assert!(v.pending_loop_region().is_none());
             assert!(v.service.try_event().is_err());
             assert_eq!(v.state.as_ref().unwrap().revision, revision);
         }
@@ -657,6 +740,7 @@ fn graph_edit_recovery(cx: &mut gpui::TestAppContext, edit: EditFixture, outcome
             assert!(v.service.try_event().is_err());
             assert!(v.pending_sample_drop.is_none());
             assert!(v.pending_time_range_move.is_none());
+            assert!(v.pending_loop_region().is_none());
             assert!(
                 v.error
                     .as_deref()
@@ -725,6 +809,18 @@ fn graph_edit_recovery(cx: &mut gpui::TestAppContext, edit: EditFixture, outcome
                     "capture auto-warp before recovery"
                 );
             }
+            EditFixture::LoopToggle | EditFixture::LoopRange => {
+                assert_eq!(project.loop_region(), expected_loop);
+                assert_eq!(
+                    v.pending_loop_region(),
+                    expected_loop,
+                    "preview waits for the loop terminal"
+                );
+                assert!(
+                    !v.tick_deferred_play(),
+                    "resume waits for the loop terminal"
+                );
+            }
         }
         if sample.is_some() {
             assert!(
@@ -734,6 +830,7 @@ fn graph_edit_recovery(cx: &mut gpui::TestAppContext, edit: EditFixture, outcome
         }
         v.receive(added);
         assert!(v.pending_sample_drop.is_none());
+        assert!(v.pending_loop_region().is_none());
         assert!(v.service.try_event().is_err(), "no repeated insertion");
         if matches!(
             edit,
