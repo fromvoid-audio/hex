@@ -1269,7 +1269,7 @@ fn unused_lower_header_space_selects_tracks_with_modifiers_in_both_audio_modes(
             assert!(!view.track_resize_active() && view.active_clip_drag.is_none());
         });
         if mode == hex_session::DocumentAudioMode::Resident {
-            let mute = bounds(&mut visual, "track-mute", first);
+            let sends = bounds(&mut visual, "track-return-sends", first);
             let sample_arm = bounds(&mut visual, "sample-arm-track", first);
             visual.simulate_click(sample_arm.center(), Modifiers::default());
             visual.simulate_mouse_move(point(px(0.0), px(0.0)), None, Modifiers::default());
@@ -1288,8 +1288,8 @@ fn unused_lower_header_space_selects_tracks_with_modifiers_in_both_audio_modes(
                     "sample arm owns its click"
                 );
             });
-            assert!(mute.right() < sample_arm.left());
-            let gap = point((mute.right() + sample_arm.left()) / 2.0, mute.center().y);
+            assert!(sends.right() < sample_arm.left());
+            let gap = point((sends.right() + sample_arm.left()) / 2.0, sends.center().y);
             visual.simulate_click(gap, Modifiers::default());
             visual.run_until_parked();
             editor.read_with(&visual, |view, _| {

@@ -55,6 +55,7 @@ pub(super) struct TrackLayout {
     overview: Option<BTreeMap<Row, f32>>,
     drag: Option<ResizeDrag>,
     wheel_remainder: Option<(Row, f32)>,
+    wheel_scroll_start: Option<gpui::ListOffset>,
     generation: u64,
     tracks: Vec<TrackId>,
     revision: Option<u64>,
@@ -456,6 +457,11 @@ impl EditorView {
             && !event.modifiers.platform
             && !event.modifiers.function
     }
+
+    pub(super) fn remember_row_size_scroll(&mut self) {
+        self.track_layout.wheel_scroll_start = Some(self.track_scroll.list.logical_scroll_top());
+    }
+
     /// Bubbling dispatch lets nested controls own their wheel input first. Main
     /// shares normal/overview maps; Returns deliberately retain their fixed size.
     pub(super) fn resize_row_wheel(
@@ -497,6 +503,14 @@ impl EditorView {
             return;
         }
         cx.stop_propagation();
+        // GPUI's list applies its native wheel delta before row listeners run.
+        // Restore its captured position when sizing claims the input, including
+        // sub-step deltas and events at a height limit.
+        if let Some(scroll) = self.track_layout.wheel_scroll_start.take()
+            && track.is_some()
+        {
+            self.track_scroll.list.scroll_to(scroll);
+        }
         if event.is_momentum
             || matches!(
                 event.touch_phase,
@@ -625,6 +639,7 @@ impl EditorView {
             self.track_layout.overview = None;
             self.track_layout.drag = None;
             self.track_layout.wheel_remainder = None;
+            self.track_layout.wheel_scroll_start = None;
             self.track_layout.generation = self.project_generation;
             self.track_layout.tracks.clear();
             self.track_scroll.list.reset(0);

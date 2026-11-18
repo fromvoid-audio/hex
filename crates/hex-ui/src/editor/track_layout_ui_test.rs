@@ -654,7 +654,7 @@ fn minimum_track_height_fits_compact_controls_and_resize_hit(cx: &mut TestAppCon
         "track-mute",
         "gain-lane-show",
         "track-return-sends",
-        "track-sample-arm",
+        "sample-arm-track",
         "track-solo",
         "track-audio-arm",
     ] {

@@ -129,9 +129,9 @@ fn nested_group_plates_and_poles_join_follow_selection_and_close_at_visible_ends
         assert_eq!(plate.left(), own_rail.right(), "title joins its own rail");
         assert_eq!(plate.top(), own_rail.top());
         assert!(
-            !visual
+            visual
                 .rendered_background(selector("track-name-plate", track))
-                .is_none(),
+                .is_some(),
             "group name plate is painted"
         );
     }

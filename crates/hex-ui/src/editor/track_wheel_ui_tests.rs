@@ -239,6 +239,14 @@ fn option_wheel_centers_hovered_track_as_it_resizes(cx: &mut TestAppContext) {
             viewport
         );
     }
+    let row = bounds(&mut visual, "arrangement-track-header", track);
+    wheel(
+        &mut visual,
+        row.center(),
+        ScrollDelta::Pixels(point(px(0.0), px(-16.0))),
+        option(),
+    );
+    assert_eq!(bounds(&mut visual, "arrangement-track-header", track), row);
 }
 
 #[gpui::test]
@@ -305,7 +313,11 @@ fn option_wheel_centers_track_taller_than_viewport(cx: &mut TestAppContext) {
     let viewport = editor.read_with(&visual, |view, _| view.track_scroll.list.viewport_bounds());
     let row = bounds(&mut visual, "arrangement-track-header", track);
     // The existing height limit can clamp the row to the smaller viewport.
-    assert!(row.size.height < previous_height);
+    assert!(
+        row.size.height < previous_height,
+        "row {row:?} did not shrink from {previous_height:?} at {:?}",
+        name.center()
+    );
     assert!(
         (f32::from(row.center().y - viewport.center().y)).abs() <= 1.0,
         "row {row:?}, viewport {viewport:?}"
