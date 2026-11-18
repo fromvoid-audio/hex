@@ -1045,9 +1045,11 @@ impl Prepared {
             .sequence
             .checked_add(1)
             .ok_or(Error::Protocol("instance sequence exhausted"))?;
-        let mut bytes = [0; crate::transport::wire::MAX_DENSE_PACKET_BYTES
-            + protocol::EditorTouchPlanSet::WIRE_BYTES];
-        let mut cursor = Cursor::new(bytes.as_mut_slice());
+        let bytes = self.packet.request_buffer(
+            crate::transport::wire::MAX_DENSE_PACKET_BYTES
+                + protocol::EditorTouchPlanSet::WIRE_BYTES,
+        )?;
+        let mut cursor = Cursor::new(&mut *bytes);
         match (metadata, dense) {
             (Some(metadata), Some(dense)) => crate::transport::wire::write_dense_authored(
                 &mut cursor,

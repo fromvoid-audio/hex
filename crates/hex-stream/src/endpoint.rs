@@ -273,6 +273,11 @@ impl Endpoint {
         self.ready_rx.peek().is_ok_and(|page| page.key == Some(key))
     }
 
+    #[cfg(feature = "test-support")]
+    pub(crate) fn test_next_failure(&self) -> Option<StreamFailure> {
+        self.failure_rx.peek().ok().copied()
+    }
+
     /// Reserve one extra pool buffer for a dedicated granular loan. Cache
     /// geometry/backing stays fixed; one ordinary turnover buffer remains free
     /// even with a held granular job and a full unpinned cache.

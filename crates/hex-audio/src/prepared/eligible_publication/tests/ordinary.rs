@@ -3125,6 +3125,7 @@ fn candidate_two_domain_capacity_case(action: TwoDomainAfterPressure) {
     let first_key = first.metadata.key();
     let old_second = old_wav.definition(assets[0], 11);
     let new_second = new_wav.definition(assets[1], 11);
+    let new_key = new_second.metadata.key();
     let new_path = new_second.path.clone();
     let metadata = vec![
         first.metadata.clone(),
@@ -3263,24 +3264,40 @@ fn candidate_two_domain_capacity_case(action: TwoDomainAfterPressure) {
         }
         TwoDomainAfterPressure::ChangeSource => {
             std::fs::write(&new_path, b"changed source").unwrap();
+            // Have the real worker attempt the retry's page before advancing
+            // the old graph. The callback still owns the refusal and rollback.
             loop {
-                measured_render(&mut data, &mut output);
-                assert_eq!(control.status.applied_revision.load(Acquire), old_revision);
-                assert!(!control.status.stream_buffering.load(Acquire));
-                assert_eq!(output, [[0.5; 2]; 256], "old sources remain audible");
-                if let Some(rejected) = control.status.rejected_revision() {
-                    assert_eq!(
-                        rejected,
-                        (new_revision, PlaybackHandoffRejection::StreamSourceChanged)
-                    );
+                let mut failure = None;
+                data.owner_mut().unwrap().run(|c, _| {
+                    let loan = c
+                        .domain_pages
+                        .iter_mut()
+                        .flatten()
+                        .find_map(|pages| pages.test_page_loan(second_domain))
+                        .unwrap();
+                    loan.test_request_audio_page(new_key, 1);
+                    failure = loan.test_next_failure();
+                });
+                if let Some(failure) = failure {
+                    assert_eq!(failure.key, new_key.into());
+                    assert_eq!(failure.page_index, 1);
+                    assert_eq!(failure.kind, hex_stream::StreamFailureKind::SourceChanged);
                     break;
                 }
                 assert!(
                     std::time::Instant::now() < deadline,
-                    "changed source was not refused"
+                    "changed source worker failure did not arrive"
                 );
                 std::thread::yield_now();
             }
+            measured_render(&mut data, &mut output);
+            assert_eq!(control.status.applied_revision.load(Acquire), old_revision);
+            assert!(!control.status.stream_buffering.load(Acquire));
+            assert_eq!(output, [[0.5; 2]; 256], "old sources remain audible");
+            assert_eq!(
+                control.status.rejected_revision(),
+                Some((new_revision, PlaybackHandoffRejection::StreamSourceChanged))
+            );
             let (failed, next_width, _) = crate::candidate_window_probe::finish().unwrap();
             assert_eq!((failed, next_width), (256, 128));
         }

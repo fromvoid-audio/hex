@@ -47,6 +47,25 @@ its published lockfile; workspace consumers use the root `Cargo.lock`.
 CPAL; do not edit the Cargo registry cache. Run `python3 scripts/check-cpal-patch.py`
 to verify the complete extracted archive against `hex-provenance.json`.
 
+## macOS callback host timebase
+
+Both macOS stream constructors acquire and validate the Mach timebase before
+configuring the device or registering callbacks. Apple caches the ratio after
+its first successful native lookup. Initialization can invoke a kernel trap.
+Each callback now converts Core Audio's supplied host ticks and its existing
+device-buffer offset with the retained ratio and widened integer arithmetic.
+Malformed ratios fail stream setup. Pre-boot or unrepresentable timestamp
+pairs return an Audio Unit callback error before delivering data to CPAL's
+caller. The conversion path does not query the OS, lock or allocate.
+
+The supplied timestamp identifies the device callback's time domain. The
+conversion measures neither later VST queue publication nor elapsed host
+callback work. The separate Hex CPU meter keeps its existing clock. iOS
+retains its original timestamp path. The focused `host_timebase_regression`
+tests use the native ratio and independent normal, overflow and invalid-input
+oracles. Physical device timestamp accuracy remains a separate check.
+See [Apple's timebase implementation](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.1.9/libsyscall/wrappers/mach_timebase_info.c).
+
 ## Control-side declared output timing
 
 The safe macOS-only `Stream::output_timing_on_control` query uses the actual

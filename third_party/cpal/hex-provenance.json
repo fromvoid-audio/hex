@@ -178,7 +178,7 @@
       "original": "e64c7f14f833251c8a884f5d379b03395723833f4ebc0a57999590dd2c456043"
     },
     "src/host/coreaudio/macos/device.rs": {
-      "current": "a1e08a33f1eec5eb4ce7b025f047fd45fdc16a489815fb3c2b98f15384ad19f2",
+      "current": "28fd0e948dd4474f5dac6c930b8a5ab60781241cfca12a6196620559eb2070fe",
       "original": "d5ccdc81b1c2fabb138d60362b3175bbd134b96897856db37231118dcf9ab70b"
     },
     "src/host/coreaudio/macos/enumerate.rs": {
@@ -190,7 +190,7 @@
       "original": "dfe0ec57041759e4f41e56f85426716e7d8ce49c127d9f07f95873e5fef5fe80"
     },
     "src/host/coreaudio/macos/mod.rs": {
-      "current": "14ef9cf3bc9f8fda75a5c980f44f788e5504a003680c85f86cf6feb926088658",
+      "current": "777876db6f9bacdc3417f845aa24456549abff1141a0e871ab5afd540f871fd1",
       "original": "70cc0279ecfbef07bc5f26b64e700845deb8f38f6d0fee6baf3461f6c0063699"
     },
     "src/host/coreaudio/macos/property_listener.rs": {
@@ -198,7 +198,7 @@
       "original": "5f469b72e20ec808d038b31ef731eb49882eac69bef42f461859524401d49e30"
     },
     "src/host/coreaudio/mod.rs": {
-      "current": "747d4485f26a8cb2f69a13d09665b785c5416f164d12dd0efdff95deb8c49687",
+      "current": "ba5d5c9f9f6d52d671bbb8210b97bacfdad1f8410bf14c5f90c67daefa42c82f",
       "original": "3aaa9a3ce18a676e545419cbfd88c097a23a3671cbf090a2edf529f3f3861903"
     },
     "src/host/custom/mod.rs": {
@@ -267,7 +267,7 @@
     }
   },
   "package": "cpal",
-  "patch_sha256": "34b60c00ec017fa9c16e430099b9fe27ed6651de73e2cfefaea6d8e274792e0c",
+  "patch_sha256": "406d9aeb4304fec45869bd75de27ecd18d45993a899b6b1fbcb5e29c9ae40434",
   "upstream_vcs": "fd3b945bffcaa493fa7cb5ceddf9db1f9330fd30",
   "version": "0.17.3"
 }

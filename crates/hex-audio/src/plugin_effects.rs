@@ -840,9 +840,11 @@ impl ForeignProcessors for NativeEffectCallback {
     }
 
     fn committed_tail_is_drained(&self, node: ForeignProcessorNode<'_>) -> bool {
-        self.matches(node)
+        // Scalar compensated rendering only finishes staging on the last
+        // segment. Avoid comparing processor facts for an incomplete callback.
+        self.transport.has_complete_staged_callback()
             && self.reported_tail_is_drained()
-            && self.transport.has_complete_staged_callback()
+            && self.matches(node)
     }
 
     fn reject_callback(&mut self) {

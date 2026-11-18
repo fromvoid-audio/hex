@@ -43,11 +43,17 @@ fn root_handle_bound(bank: &NativeBank) -> Option<usize> {
     // the actual callback constructor visitor, independently of queue occupancy.
     // Observer Status handles outside this publication Root own no graph or
     // source lease; no process-wide Arc/RSS bound is claimed.
+    let insert_receipts = if bank.publication.stream_extents.is_some() {
+        bank.publication.slots.len().checked_add(1)?
+    } else {
+        0
+    };
     bank.publication
         .slots
         .len()
         .checked_mul(5)?
         .checked_add(28)?
+        .checked_add(insert_receipts)?
         .checked_add(
             bank.native
                 .as_ref()

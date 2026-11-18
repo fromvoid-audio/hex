@@ -1182,6 +1182,11 @@ extern "C" __attribute__((visibility("default"))) bool bundleEntry(CFBundleRef) 
     // Supported fault control belongs only to this original SDK fixture.
     // The production helper never reads this environment variable.
     const auto* selected=std::getenv("HEX_ORIGINAL_INSTANCE_VARIANT");
+#if HEX_FIXTURE_RESIDUAL_ECHO
+    // Allow the signed tail effect and a signed instrument variant to share
+    // one host-test process while keeping their SDK bus layouts independent.
+    if (const auto* tail=std::getenv("HEX_ORIGINAL_TAIL_INSTANCE_VARIANT")) selected=tail;
+#endif
     if (selected) {
         const auto length=std::strlen(selected);if (!length || length>3) return false;
         int value=0;for (size_t n=0;n<length;++n) { if (selected[n]<'0' || selected[n]>'9') return false;value=value*10+selected[n]-'0'; }

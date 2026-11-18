@@ -466,6 +466,7 @@ enum Restart {
     None,
     Ordinary,
     Baked,
+    ConfirmedInsert { force: bool },
 }
 
 impl SessionPlayback {
@@ -510,6 +511,7 @@ impl SessionPlayback {
             false,
             None,
             Some(anchor),
+            false,
         )
     }
     #[allow(clippy::too_many_arguments)] // Explicit old/candidate timing, identity and disjoint span-buffer borrows.
@@ -683,6 +685,17 @@ impl SessionPlayback {
     ) -> Result<SessionHandoffReport, SessionPlaybackError> {
         self.inherit_state_planned(previous, None, None, true, true, None)
     }
+
+    pub(super) fn inherit_state_at_device_insert_cut(
+        &mut self,
+        previous: &mut Self,
+        groups: Option<crate::audio_candidate::groups::Transfer<'_>>,
+        demand: Option<&mut super::stream_demand::HandoffDemand<'_>>,
+    ) -> Result<SessionHandoffReport, SessionPlaybackError> {
+        self.inherit_state_planned_with_anchor(
+            previous, groups, demand, true, false, None, None, true,
+        )
+    }
     /// With `live`, a transition the strict planner cannot prove (an unproven
     /// mutable chase, a changed MIDI source layout, compensated timing or tails,
     /// unavailable source history...) does not refuse: the planner rejects it
@@ -711,6 +724,7 @@ impl SessionPlayback {
             fenced_restart,
             continuation,
             None,
+            false,
         )
     }
 
@@ -724,6 +738,7 @@ impl SessionPlayback {
         fenced_restart: bool,
         continuation: Option<&hex_lattice::ForeignConfigurationContinuation<'_>>,
         anchor: Option<&PreparedTempoAnchor>,
+        confirmed_insert: bool,
     ) -> Result<SessionHandoffReport, SessionPlaybackError> {
         if continuation.is_some() && (fenced_restart || self.live_restart || anchor.is_some()) {
             return Err(SessionPlaybackError::DeviceRuntime);
@@ -807,7 +822,11 @@ impl SessionPlayback {
             previous,
             groups,
             demand.as_deref_mut(),
-            Restart::None,
+            if confirmed_insert {
+                Restart::ConfirmedInsert { force: false }
+            } else {
+                Restart::None
+            },
             source_transfer.as_ref(),
             continuation,
             None,
@@ -837,7 +856,11 @@ impl SessionPlayback {
                     previous,
                     None,
                     demand,
-                    Restart::Ordinary,
+                    if confirmed_insert {
+                        Restart::ConfirmedInsert { force: true }
+                    } else {
+                        Restart::Ordinary
+                    },
                     None,
                     None,
                     None,
@@ -940,6 +963,11 @@ impl SessionPlayback {
         continuation: Option<&hex_lattice::ForeignConfigurationContinuation<'_>>,
         anchor: Option<&PreparedTempoAnchor>,
     ) -> Result<SessionHandoffReport, SessionPlaybackError> {
+        if self.stopped_input.map(|scope| scope.track)
+            != previous.stopped_input.map(|scope| scope.track)
+        {
+            return Err(SessionPlaybackError::InvalidCommand);
+        }
         if previous.pending_shared_chase.is_some() || previous.pending_shared_live.is_some() {
             return Err(SessionPlaybackError::MutableInstrumentChase);
         }
@@ -976,7 +1004,12 @@ impl SessionPlayback {
                 return Err(SessionPlaybackError::InvalidCommand);
             }
         }
-        let force_restart = restart != Restart::None;
+        let confirmed_insert = matches!(restart, Restart::ConfirmedInsert { .. });
+        let force_restart = matches!(
+            restart,
+            Restart::Ordinary | Restart::Baked | Restart::ConfirmedInsert { force: true }
+        );
+        let continuous_insert = self.require_continuous_insert && previous.playing;
         if self.revision.arrangement().sample_rate()
             != previous.revision.arrangement().sample_rate()
         {
@@ -1126,6 +1159,22 @@ impl SessionPlayback {
             .timing()
             .same_map(previous.revision.session().timing());
         let mapped_main_clock = same_base_timing && new_loop_region == old_loop_region;
+        if confirmed_insert
+            && (previous.playing
+                || !mapped_main_clock
+                || previous.periodic_tempo() != self.periodic_tempo_at(previous.arrangement_frame)
+                || previous.routes.iter().any(|route| route.pending.is_some()))
+        {
+            return Err(SessionPlaybackError::InvalidCommand);
+        }
+        if continuous_insert
+            && (force_restart
+                || !mapped_main_clock
+                || self.revision.arrangement().main_latency_frames()
+                    != previous.revision.arrangement().main_latency_frames())
+        {
+            return Err(SessionPlaybackError::DeviceInsertNeedsConfirmation);
+        }
         let donor_epoch_matches = previous.compensation.as_ref().is_none_or(|old| {
             old.delays.latest_stamp().is_none_or(|stamp| {
                 !stamp.transport_is_running
@@ -1194,19 +1243,16 @@ impl SessionPlayback {
                 .any(|tail| tail.output_active);
         // None: the delay layout cannot carry the moved clock (refused below
         // unless a paused donor takes the reset at its cursor).
-        // A cold, independent added or removed track also needs a fresh delay history
-        // when no foreign instrument is present. Foreign handoff admission
-        // retains its narrower `fresh` input above; compensation proves the
-        // eligible routing and silent rings independently below.
-        let history_track = fresh.map(FreshHistory::Track).or_else(|| {
-            if !previous.playing {
-                return None;
-            }
+        // A track with no source qualifies for the cold history check even
+        // when another track has a hosted generator. The gate handoff above
+        // still uses its separate fresh-generator admission check.
+        let history_track = if previous.playing {
             let old = previous.revision.arrangement().tracks();
             let new = self.revision.arrangement().tracks();
             cold_added_track(new, old)
                 .or_else(|| cold_added_track(old, new))
                 .map(FreshHistory::ColdTrack)
+                .or(fresh.map(FreshHistory::Track))
                 .or_else(|| {
                     (old.len().checked_add(1) == Some(new.len())
                         && same_base_timing
@@ -1257,7 +1303,9 @@ impl SessionPlayback {
                     .flatten()
                     .map(FreshHistory::Track)
                 })
-        });
+        } else {
+            None
+        };
         let compensation_pair = self
             .compensation
             .as_ref()
@@ -1457,6 +1505,9 @@ impl SessionPlayback {
         let relocate = (planned_transfer.is_none() || force_restart)
             && !self.current_sampler_console
             && !self.revision.requires_control_sampler_sources();
+        if continuous_insert && relocate {
+            return Err(SessionPlaybackError::DeviceInsertNeedsConfirmation);
+        }
         // An ordinary reset cannot transfer a detached Return tail. A fenced
         // bounce has already baked that audio into the successor.
         if relocate
@@ -1539,6 +1590,7 @@ impl SessionPlayback {
         // when the timing map and loop are unchanged.
         let running_restart =
             relocate && previous.playing && mapped_main_clock && same_periodic_timing;
+        let preserve_restart_clock = running_restart || (relocate && confirmed_insert);
         // Appending a hosted effect or removing an already bypassed suffix
         // can require fresh delay rings. The same-clock restart keeps the
         // Arrangement cursor, worker binding and accepted gate deadlines
@@ -1570,7 +1622,7 @@ impl SessionPlayback {
         }
         // A paused cursor keeps its Arrangement beat across an edited base
         // tempo map, like the running handoff below (Pulse #4118).
-        let paused_cursor = if relocate && !previous.playing {
+        let paused_cursor = if relocate && !previous.playing && !confirmed_insert {
             Some(
                 if self
                     .revision
@@ -1604,8 +1656,9 @@ impl SessionPlayback {
         }
         if (self.compensation.is_some() || previous.compensation.is_some() || force_restart)
             && (!previous.playing || running_restart || running_relocate)
+            && !previous.stopped_input_has_history()
             && (paused_cursor.is_some()
-                || running_restart
+                || preserve_restart_clock
                 || running_relocate
                 || (!previous.monitor_source_releases
                     && previous.performance_frame == 0
@@ -1648,12 +1701,19 @@ impl SessionPlayback {
                         {
                             RouteOwner::SessionAudio {
                                 clip,
-                                launch_frame: if running_restart { launch_frame } else { 0 },
+                                launch_frame: if preserve_restart_clock {
+                                    launch_frame
+                                } else {
+                                    0
+                                },
                             }
                         }
                         RouteOwner::Silence => RouteOwner::Silence,
                         _ => RouteOwner::Arrangement,
                     };
+                    if confirmed_insert && route.owner != old.owner {
+                        return Err(SessionPlaybackError::InvalidCommand);
+                    }
                 }
             }
             // Queued launches cannot be proven against the restarted graph;
@@ -1725,7 +1785,7 @@ impl SessionPlayback {
                 // epoch, DSP history or one-shot admission is changed.
                 let (frame, arrangement_frame, loop_pass) = match cursor {
                     Some((frame, _)) => (frame, frame, 0),
-                    None if running_restart => (
+                    None if preserve_restart_clock => (
                         previous.performance_frame,
                         previous.arrangement_frame,
                         previous.arrangement_loop_pass,
@@ -1772,7 +1832,7 @@ impl SessionPlayback {
                 // (or on the next block when relocating while playing).
                 self.interactive_start_frame = Some(frame);
                 self.playing = running_relocate;
-            } else if running_restart {
+            } else if preserve_restart_clock {
                 self.performance_frame = previous.performance_frame;
                 self.arrangement_frame = previous.arrangement_frame;
                 self.arrangement_loop_pass = previous.arrangement_loop_pass;
@@ -1782,7 +1842,7 @@ impl SessionPlayback {
                 self.monitor_source_releases |= previous.monitor_source_releases;
                 self.restart_audio_history();
                 self.interactive_start_frame = Some(self.performance_frame);
-                self.playing = true;
+                self.playing = previous.playing;
                 self.route_state_generation = previous.route_state_generation.wrapping_add(1);
             }
             self.foreign_arrangement.inherit_handoff(
@@ -3241,6 +3301,9 @@ impl SessionPlayback {
                         next.track == old_route.id && next.source_matches(old)
                     })
             });
+            if confirmed_insert && route.owner != old_route.owner {
+                return Err(SessionPlaybackError::InvalidCommand);
+            }
             if let Some(mut pending) = route.pending {
                 let valid = match pending.target {
                     RouteTarget::Arrangement | RouteTarget::Silence => true,
@@ -3276,9 +3339,19 @@ impl SessionPlayback {
                             .map_err(|_| SessionPlaybackError::TempoConversion)?
                             .max(previous.performance_frame)
                     };
+                    if continuous_insert
+                        && old_route.pending.is_some_and(|old| {
+                            old.frame.max(previous.performance_frame) != pending.frame
+                        })
+                    {
+                        return Err(SessionPlaybackError::DeviceInsertNeedsConfirmation);
+                    }
                     route.pending = Some(pending);
                 }
             }
+        }
+        if continuous_insert && report.cancelled_pending_len != 0 {
+            return Err(SessionPlaybackError::DeviceInsertNeedsConfirmation);
         }
         // Source/timing edits retain the historical global-floor policy: all
         // currently active Session MIDI routes need copied voices to bridge
@@ -5702,6 +5775,9 @@ impl SessionPlayback {
         // before this donor has ever monitored. Preserve that admission as
         // well as existing release intent when a later edit removes the input.
         self.monitor_source_releases |= previous.monitor_source_releases;
+        if previous.stopped_input_has_history() {
+            self.stopped_input = previous.stopped_input;
+        }
         self.capture_epoch = capture_epoch;
         previous.capture_epoch = previous_capture_epoch;
         self.anchor = candidate_anchor;
@@ -6529,6 +6605,9 @@ fn fresh_unconnected_track(candidate: &[Track], previous: &[Track]) -> Option<Tr
 /// A track absent from the other revision with no authored or live source.
 /// The compensation graph separately proves isolated routing and silent rings.
 fn cold_added_track(candidate: &[Track], previous: &[Track]) -> Option<TrackId> {
+    if candidate.len().checked_sub(1) != Some(previous.len()) {
+        return None;
+    }
     let id = fresh_unconnected_track(candidate, previous)?;
     let track = candidate
         .iter()

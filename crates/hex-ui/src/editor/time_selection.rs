@@ -1852,24 +1852,23 @@ impl EditorView {
     pub(super) fn time_selection_overlay(
         &self,
         track: TrackId,
+        rendered_index: usize,
+        (first_index, last_index): (usize, usize),
         viewport: super::viewport::Viewport,
         scale_factor: f32,
         cx: &mut Context<Self>,
     ) -> Option<Stateful<Div>> {
-        let cursor_owner = cx.entity();
         let raw_selection = self.time_selection?;
-        let state = self.state.as_ref()?;
-        state.project.track(track)?;
-        let (anchor_index, end_index) = self.time_selection_track_indices()?;
-        let track_index = state
-            .project
-            .tracks()
-            .iter()
-            .position(|item| item.id() == track)?;
-        let (first_index, last_index) = if anchor_index <= end_index {
-            (anchor_index, end_index)
+        let tracks = self.state.as_ref()?.project.tracks();
+        // A pending structural preview may display a projected row index.
+        // Time-selection anchors still belong to the canonical track order.
+        let track_index = if tracks
+            .get(rendered_index)
+            .is_some_and(|row| row.id() == track)
+        {
+            rendered_index
         } else {
-            (end_index, anchor_index)
+            tracks.iter().position(|row| row.id() == track)?
         };
         if track_index < first_index || track_index > last_index {
             return None;
@@ -1948,6 +1947,7 @@ impl EditorView {
                                     handle.cursor(CursorStyle::OpenHand)
                                 })
                                 .children(self.option_held.then(|| {
+                                    let cursor_owner = cx.entity();
                                     canvas(
                                         |bounds, window, _| {
                                             window

@@ -1,6 +1,6 @@
 use super::OSStatus;
 use super::Stream;
-use super::{asbd_from_config, check_os_status, frames_to_duration, host_time_to_stream_instant};
+use super::{asbd_from_config, check_os_status, frames_to_duration, HostTimebase};
 use crate::host::coreaudio::macos::loopback::LoopbackDevice;
 use crate::host::coreaudio::macos::StreamInner;
 use crate::traits::DeviceTrait;
@@ -866,6 +866,7 @@ impl Device {
         D: FnMut(&Data, &InputCallbackInfo) + Send + 'static,
         E: FnMut(StreamError) + Send + 'static,
     {
+        let host_timebase = HostTimebase::prepare()?;
         // The scope and element for working with a device's input stream.
         let scope = Scope::Output;
         let element = Element::Input;
@@ -907,13 +908,6 @@ impl Device {
             let len = data_byte_size as usize / bytes_per_channel;
             let data = Data::from_parts(data, len, sample_format);
 
-            let callback = match host_time_to_stream_instant(args.time_stamp.mHostTime) {
-                Err(err) => {
-                    invoke_error_callback(&error_callback, err.into());
-                    return Err(());
-                }
-                Ok(cb) => cb,
-            };
             let buffer_frames = len / channels as usize;
             // Use device buffer size for latency calculation if available
             let latency_frames = device_buffer_frames.unwrap_or(
@@ -922,9 +916,9 @@ impl Device {
                 buffer_frames,
             );
             let delay = frames_to_duration(latency_frames, sample_rate);
-            let capture = callback
-                .sub(delay)
-                .expect("`capture` occurs before origin of alsa `StreamInstant`");
+            let (callback, capture) = host_timebase
+                .timestamps(args.time_stamp.mHostTime, -(delay.as_nanos() as i128))
+                .ok_or(())?;
             let timestamp = crate::InputStreamTimestamp { callback, capture };
 
             let info = InputCallbackInfo { timestamp };
@@ -999,6 +993,7 @@ impl Device {
         D: FnMut(&mut Data, &OutputCallbackInfo) + Send + 'static,
         E: FnMut(StreamError) + Send + 'static,
     {
+        let host_timebase = HostTimebase::prepare()?;
         let mut rollback = if bounds.is_some() {
             let BufferSize::Fixed(requested) = config.buffer_size else {
                 return Err(bounded_output_error("a fixed hardware buffer is required"));
@@ -1069,13 +1064,6 @@ impl Device {
             let len = data_byte_size as usize / bytes_per_channel;
             let mut data = Data::from_parts(data, len, sample_format);
 
-            let callback = match host_time_to_stream_instant(args.time_stamp.mHostTime) {
-                Err(err) => {
-                    invoke_error_callback(&error_callback, err.into());
-                    return Err(());
-                }
-                Ok(cb) => cb,
-            };
             let buffer_frames = len / channels as usize;
             // Use device buffer size for latency calculation if available
             let latency_frames = device_buffer_frames.unwrap_or(
@@ -1087,9 +1075,9 @@ impl Device {
                 .filter(|_| device_buffer_frames.is_some())
                 .map_or(sample_rate, |(device_rate, _)| device_rate);
             let delay = frames_to_duration(latency_frames, latency_rate);
-            let playback = callback
-                .add(delay)
-                .expect("`playback` occurs beyond representation supported by `StreamInstant`");
+            let (callback, playback) = host_timebase
+                .timestamps(args.time_stamp.mHostTime, delay.as_nanos() as i128)
+                .ok_or(())?;
             let timestamp = crate::OutputStreamTimestamp { callback, playback };
 
             let info = OutputCallbackInfo { timestamp };

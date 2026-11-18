@@ -30,7 +30,7 @@ impl Callback {
         let cancelled = next
             .fresh_runtime_cancellation
             .as_ref()
-            .is_some_and(|cell| cell.decision.load(Acquire) == FRESH_PUBLICATION_CANCELLED);
+            .is_some_and(PublicationReceiptOwner::fenced_before_admission);
         let stale = old.is_none_or(|old| {
             old.revision != fence.expected_active_revision
                 || old.playback.session_route_state_generation() != fence.route_state_generation
@@ -47,9 +47,9 @@ impl Callback {
             Err(PlaybackHandoffRejection::RuntimeFenceChanged)
         } else if let Some(old) = old {
             let current = old.playback.performance_frame();
-            if next.quantized_seek_frame.is_none_or(|due| due < current) {
+            if next.scheduled_cut_frame.is_none_or(|due| due < current) {
                 match old.playback.quantized_seek_frame(quantization) {
-                    Ok(due) => next.quantized_seek_frame = Some(due),
+                    Ok(due) => next.scheduled_cut_frame = Some(due),
                     Err(_) => {
                         return self.reject_quantized_seek_publication(
                             PlaybackHandoffRejection::SessionRuntime,
@@ -57,7 +57,7 @@ impl Callback {
                     }
                 }
             }
-            Ok(next.quantized_seek_frame == Some(current))
+            Ok(next.scheduled_cut_frame == Some(current))
         } else {
             Err(PlaybackHandoffRejection::RuntimeFenceChanged)
         };
@@ -71,9 +71,6 @@ impl Callback {
         if let Some(mut next) = self.deferred.take() {
             if let Some(streams) = next.streams.as_mut() {
                 streams.cancel_install(&mut self.domain_pages);
-            }
-            if let Some(cell) = next.fresh_runtime_cancellation.as_ref() {
-                cell.finish();
             }
             self.status.publish_rejected_revision(next.revision, reason);
             self.return_graph(next);
@@ -95,7 +92,7 @@ impl Callback {
                     PublicationPolicy::InstallQuantizedSeekWhenReady { .. }
                 )
             })
-            .and_then(|next| next.quantized_seek_frame)
+            .and_then(|next| next.scheduled_cut_frame)
         else {
             return Ok(QuantizedSeekRender::NotHandled);
         };

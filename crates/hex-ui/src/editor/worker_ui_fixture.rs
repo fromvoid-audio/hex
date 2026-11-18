@@ -71,6 +71,32 @@ pub(super) fn open_with_section_and_recovery(
     section_fixture: bool,
     recovery: Option<std::path::PathBuf>,
 ) -> WorkerUiFixture {
+    open_worker(
+        cx,
+        commands,
+        audition_ready,
+        section_fixture,
+        recovery,
+        false,
+    )
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub(super) fn open_for_paused_monitor(
+    cx: &mut TestAppContext,
+    commands: Vec<hex_project::Command>,
+) -> WorkerUiFixture {
+    open_worker(cx, commands, false, true, None, true)
+}
+
+fn open_worker(
+    cx: &mut TestAppContext,
+    commands: Vec<hex_project::Command>,
+    audition_ready: bool,
+    section_fixture: bool,
+    recovery: Option<std::path::PathBuf>,
+    paused_monitor_enabled: bool,
+) -> WorkerUiFixture {
     let serial = hex_audio::worker_fixture::serial_output();
     let (mut output, mut backend) =
         hex_audio::worker_fixture::open_after_retirement(48_000, false).unwrap();
@@ -107,6 +133,7 @@ pub(super) fn open_with_section_and_recovery(
             audition_ready,
             Arc::clone(&consume_next_inherited_candidate),
             section_fixture,
+            paused_monitor_enabled,
         ),
         reservation,
     )

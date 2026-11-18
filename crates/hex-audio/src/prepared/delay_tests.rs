@@ -1,7 +1,9 @@
 //! Production registered delay through prepared callback publication; no OS audio.
 use super::*;
 use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
-use hex_project::{BeatTime, Command, Created, Editor, Project};
+use hex_project::{
+    BeatTime, Command, Created, Editor, Project, TrackDestination, TrackSelectionIds,
+};
 fn graph(project: &Project) -> Playback {
     let revision = Arc::new(
         hex_engine::PreparedRevision::prepare(
@@ -599,8 +601,8 @@ fn solo_toggles(session: bool) {
 }
 
 #[test]
-fn changing_an_empty_track_with_a_send_preserves_compensated_callback_audio() {
-    for partition in [1, 257] {
+fn changing_a_silent_routed_track_preserves_compensated_callback_audio() {
+    for (partition, grouped) in [(1, false), (257, false), (1, true), (257, true)] {
         let (mut editor, track, _) = editor_with_delay();
         editor
             .execute(Command::InsertDevice {
@@ -622,6 +624,50 @@ fn changing_an_empty_track_with_a_send_preserves_compensated_callback_audio() {
                 gain: 0.5,
             })
             .unwrap();
+        let group = grouped.then(|| {
+            let Created::Track(group) = editor
+                .execute(Command::GroupTracks {
+                    tracks: TrackSelectionIds::new(&[track]).unwrap(),
+                    name: "group".into(),
+                })
+                .unwrap()
+            else {
+                panic!("group");
+            };
+            let Created::Track(destination) = editor
+                .execute(Command::AddTrack {
+                    name: "feed".into(),
+                })
+                .unwrap()
+            else {
+                panic!("feed destination");
+            };
+            editor
+                .execute(Command::SetAudioFeed {
+                    source: hex_project::RoutingOwner::Track(track),
+                    destination,
+                    gain: 0.25,
+                })
+                .unwrap();
+            let Created::Device(compressor) = editor
+                .execute(Command::InsertMainDevice {
+                    before: None,
+                    state: hex_devices::compressor::COMPRESSOR_DEFINITION
+                        .default_state()
+                        .unwrap(),
+                })
+                .unwrap()
+            else {
+                panic!("compressor");
+            };
+            editor
+                .execute(Command::SetSidechain {
+                    device: compressor,
+                    source: Some(track),
+                })
+                .unwrap();
+            group
+        });
         let (mut control, mut callback) = channel(48_000).unwrap();
         let (mut reference_control, mut reference) = channel(48_000).unwrap();
         let original = graph(editor.project());
@@ -646,13 +692,22 @@ fn changing_an_empty_track_with_a_send_preserves_compensated_callback_audio() {
         else {
             panic!("track");
         };
-        editor
-            .execute(Command::SetReturnSend {
+        let route = if let Some(group) = group {
+            Command::ReparentTracks {
+                tracks: TrackSelectionIds::new(&[empty]).unwrap(),
+                destination: TrackDestination {
+                    parent_group: Some(group),
+                    before: None,
+                },
+            }
+        } else {
+            Command::SetReturnSend {
                 track: empty,
                 return_track: bus,
                 gain: 0.75,
-            })
-            .unwrap();
+            }
+        };
+        editor.execute(route).unwrap();
         for removed in [false, true] {
             if removed {
                 editor.execute(Command::RemoveTrack(empty)).unwrap();
@@ -664,7 +719,10 @@ fn changing_an_empty_track_with_a_send_preserves_compensated_callback_audio() {
             {
                 block(&mut callback, actual);
                 block(&mut reference, expected);
-                assert_eq!(actual, expected, "partition {partition}, removed {removed}");
+                assert_eq!(
+                    actual, expected,
+                    "partition {partition}, grouped {grouped}, removed {removed}"
+                );
             }
             assert_eq!(control.status.applied_revision.load(Acquire), revision);
             assert!(control.status.rejected_revision().is_none());

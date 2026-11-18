@@ -847,6 +847,7 @@ pub(super) struct EditorView {
     latency_rebuild: Option<audio_admission::LatencyRebuild>,
     leftover_recovery: leftover_recovery::State,
     truncated_import: truncated_import::State,
+    device_insert_confirmation: Option<hex_session::service::DeviceInsertConfirmation>,
     // Streamed documents replace their sampler output stopped; this frame
     // resumes playback once that edit settles (Pulse #3784).
     sampler_edit_resume: Option<u64>,
@@ -1664,6 +1665,7 @@ impl EditorView {
             latency_rebuild: None,
             leftover_recovery: Default::default(),
             truncated_import: Default::default(),
+            device_insert_confirmation: None,
             sampler_edit_resume: None,
             deferred_play: None,
             offline_cursor: 0,

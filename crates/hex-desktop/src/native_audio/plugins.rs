@@ -26,6 +26,10 @@ use restore::Restore;
 mod edits;
 mod offline_bounce;
 mod parameter_touches;
+mod paused_monitor;
+pub(super) use paused_monitor::{
+    PREPARATION_TIMEOUT, PausedEffects, PausedMonitorPreparation, paused_monitor_busy,
+};
 mod reopen;
 mod save;
 use reopen::Reopen;
@@ -156,6 +160,7 @@ pub(super) struct Plugins {
     configured: bool,
     pub(super) pool_held: bool,
     sources: Vec<Source>,
+    paused_monitor_sources: Vec<Binding>,
     pending: Option<Pending>,
     editor: Option<editor::EditorOperation>,
     queued_editor_toggle: Option<(Binding, u64)>,
@@ -275,6 +280,8 @@ impl Plugins {
         self.degraded_changed.take()
     }
     pub fn output_closed(&mut self) {
+        // The relinquished output's Root retains every outstanding loan.
+        self.paused_monitor_sources.clear();
         self.close_editor_recording();
         if let Some(parameters) = &mut self.parameters {
             parameters.output_closed();
@@ -352,10 +359,24 @@ impl Plugins {
         if self.sources.capacity() != policy.capacity {
             return Err("vst3 source record capacity differs".into());
         }
+        self.paused_monitor_sources
+            .try_reserve_exact(policy.capacity)
+            .map_err(|_| "vst3 monitor source records unavailable")?;
+        if self.paused_monitor_sources.capacity() != policy.capacity {
+            return Err("vst3 monitor source record capacity differs".into());
+        }
+        let monitor_bytes = policy
+            .capacity
+            .checked_mul(
+                std::mem::size_of::<Binding>()
+                    + std::mem::size_of::<hex_engine::PausedMonitorForeignBinding>(),
+            )
+            .ok_or("vst3 monitor control data overflow")?;
         let control_bytes = self
             .sources
             .capacity()
             .checked_mul(std::mem::size_of::<Source>())
+            .and_then(|n| n.checked_add(monitor_bytes))
             .and_then(|n| n.checked_add(std::mem::size_of::<Self>()))
             .and_then(|n| n.checked_add(self.host.as_ref()?.control_data_bytes()?))
             .and_then(|n| {
@@ -597,6 +618,18 @@ impl Plugins {
             None => Ok(PluginEffectPreparationState::Preparing),
         }
     }
+    /// The ready hosted operation alone may bind the successor's receipt.
+    pub(super) fn device_insert_control(
+        &self,
+        context: AudioSourceContext,
+    ) -> Option<Arc<PluginEffectControl>> {
+        let pending = self.pending.as_ref()?;
+        (pending.context.project_generation == context.project_generation
+            && pending.context.editor_revision.checked_add(1) == Some(context.editor_revision)
+            && matches!(pending.result, Some(Ok(_))))
+        .then(|| Arc::clone(&pending.operation))
+    }
+
     pub fn finish(&mut self, operation: &Arc<PluginEffectControl>, accepted: bool) {
         if self
             .pending
@@ -667,11 +700,14 @@ impl Plugins {
                     if let Some(log) = &self.diagnostics
                         && let Some(sample) = control.take_native_source_slow_exchange(source.binding)
                     {
+                        let pickup_interval = sample
+                            .empty_poll_to_pickup_ns
+                            .map_or_else(|| "unavailable".to_owned(), |ns| ns.to_string());
                         let _ = log.record_typed(
                             hex_diagnostics::Level::Warn,
                             hex_diagnostics::Category::Audio,
                             &format!(
-                                "vst3 v=1 stage=slow_exchange generation={generation} output={output} device={} binding={:?} sequence={} exchange_ns={} sdk_process_ns={} quantum_ns={} dropped={} queue_ns=unavailable",
+                                "vst3 v=1 stage=slow_exchange generation={generation} output={output} device={} binding={:?} sequence={} exchange_ns={} sdk_process_ns={} quantum_ns={} dropped={} queue_ns=unavailable empty_poll_to_pickup_ns={pickup_interval}",
                                 source.device, sample.binding, sample.sequence, sample.exchange_ns,
                                 sample.sdk_process_ns, sample.quantum_ns, sample.dropped
                             ),

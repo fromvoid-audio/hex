@@ -11,6 +11,7 @@ use hex_engine::native_device_resources::{
 use std::time::{Duration, Instant};
 
 mod bounce;
+pub(super) mod device_insert;
 mod runtime_inputs;
 pub(super) use bounce::{bounce_arrangement, bounce_clip, bounce_history};
 pub(super) use runtime_inputs::{RequiredInput, RuntimeInputs};
@@ -695,7 +696,7 @@ impl Inputs<'_> {
                     .map_or_else(RuntimeInputs::default, |current| current.inputs.clone())
             },
         };
-        let runtime = runtime_allowance(&snapshot.prepared, snapshot.inputs.allowance()?)?;
+        let runtime = runtime_allowance(&snapshot.prepared, snapshot.inputs.allowance(&snapshot)?)?;
         self.admit_with_requirements(
             &snapshot.resources,
             Some(&snapshot.prepared),
@@ -794,7 +795,7 @@ impl Inputs<'_> {
         }
         let previous = snapshot.inputs.clone();
         let mut selected = previous.clone();
-        selected.attach(project, &mut playback)?;
+        selected.attach(project, &mut playback, &snapshot.resources)?;
         selected.selected_after(&previous)?;
         let accepted = self.publish_runtime(
             snapshot,
@@ -813,7 +814,7 @@ impl Inputs<'_> {
                 requires_preroll: snapshot.prepared.arrangement_seek_requires_preroll(),
             },
             ResidentPublicationPolicy::ArrangementEdit,
-            selected.allowance()?,
+            selected.allowance(snapshot)?,
         )?;
         snapshot.record_submission(context, accepted);
         selected.cancel_retired_from(&previous);
@@ -911,10 +912,10 @@ impl Inputs<'_> {
     ) -> Result<ResidentPublicationAcceptance, SessionError> {
         let previous = snapshot.inputs.clone();
         let mut selected = previous.clone();
-        selected.attach(project, &mut playback)?;
+        selected.attach(project, &mut playback, &snapshot.resources)?;
         selected.selected_after(&previous)?;
         let additional_bytes = selected
-            .allowance()?
+            .allowance(snapshot)?
             .checked_add(
                 playback
                     .browser_audition_retained_bytes_on_control()
@@ -924,7 +925,9 @@ impl Inputs<'_> {
         let accepted =
             self.publish_runtime(snapshot, playback, sink, metadata, policy, additional_bytes)?;
         snapshot.record_submission(metadata.context, accepted);
-        selected.cancel_retired_from(&previous);
+        if !matches!(policy, ResidentPublicationPolicy::DeviceInsert { .. }) {
+            selected.cancel_retired_from(&previous);
+        }
         snapshot.inputs = selected;
         Ok(accepted)
     }
@@ -1088,7 +1091,11 @@ fn inherited_runtime(
                 )
             }))
         }
-        ResidentPublicationPolicy::InheritRuntimeAt(actual) => Ok((policy, actual.section_loop)),
+        ResidentPublicationPolicy::InheritRuntimeAt(actual)
+        | ResidentPublicationPolicy::DeviceInsert {
+            predecessor: actual,
+            ..
+        } => Ok((policy, actual.section_loop)),
         _ => Ok((policy, None)),
     }
 }
@@ -1945,9 +1952,9 @@ impl Session {
         cancelled: &AtomicBool,
     ) -> Result<ResidentPublicationAcceptance, SessionError> {
         let mut selected = snapshot.inputs.clone();
-        let extra = selected.allowance()?;
+        let extra = selected.allowance(snapshot)?;
         self.admit_resident_seek(current, sink, admission, extra)?;
-        selected.attach(project, &mut playback)?;
+        selected.attach(project, &mut playback, &snapshot.resources)?;
         selected.selected_after(&current.inputs)?;
         let accepted = self
             .resident_seek_inputs(admission, Some(current), Some(cancelled))?
@@ -2009,8 +2016,11 @@ impl Session {
     > {
         let inputs = self.resident_seek_inputs(admission, None, None)?;
         let (policy, section_loop) = inherited_runtime(sink, metadata.context, policy)?;
-        let quote =
-            runtime_allowance_with_loop(&snapshot.prepared, selected.allowance()?, section_loop)?;
+        let quote = runtime_allowance_with_loop(
+            &snapshot.prepared,
+            selected.allowance(snapshot)?,
+            section_loop,
+        )?;
         inputs.admit(
             &snapshot.resources,
             Some(&snapshot.prepared),
@@ -2023,7 +2033,7 @@ impl Session {
         )?;
         let mut playback = playback_with_loop(snapshot, section_loop)?;
         let requested = selected.clone();
-        selected.attach(project, &mut playback)?;
+        selected.attach(project, &mut playback, &snapshot.resources)?;
         if let Some(required) = required
             && !selected.satisfies(&requested, required)
         {
@@ -2039,10 +2049,90 @@ impl Session {
             sink,
             metadata,
             policy,
-            selected.allowance()?,
+            selected.allowance(snapshot)?,
         )?;
         Ok((hint, selected, accepted))
     }
+    pub(super) fn prepare_resident_paused_input_monitor(
+        &self,
+        request: PausedInputMonitorRequest,
+        snapshot: &Snapshot,
+        sink: &mut dyn WorkerAudioSink,
+        admission: sampler_export::Admission<'_>,
+    ) -> Result<hex_engine::PausedTrackMonitor, String> {
+        if snapshot.submission != Some(request.source)
+            || !request
+                .source
+                .matches_applied(sink.resident_publication_readiness())
+            || self
+                .project()
+                .track(request.track)
+                .is_none_or(|track| track.is_group())
+        {
+            return Err("paused input monitor source changed".into());
+        }
+        if snapshot.file_sources.is_some() {
+            return Err("paused input monitor requires an in-memory graph".into());
+        }
+        let inputs = self
+            .resident_seek_inputs(admission, None, None)
+            .map_err(|error| error.to_string())?;
+        let native_runtime = sink.native_sampler_hold().construction_bytes;
+        sink.prepare_paused_input_monitor(
+            request,
+            &snapshot.prepared,
+            &snapshot.resources,
+            &mut |native| {
+                inputs
+                    .admit(
+                        &snapshot.resources,
+                        Some(&snapshot.prepared),
+                        native,
+                        native_runtime,
+                        0,
+                    )
+                    .map_err(|error| error.to_string())
+            },
+        )
+    }
+
+    pub(super) fn poll_resident_paused_notes(
+        &self,
+        snapshot: Option<&Snapshot>,
+        sink: &mut dyn WorkerAudioSink,
+        admission: sampler_export::Admission<'_>,
+        cancellation: &RequestCancellation,
+    ) -> bool {
+        let graph = snapshot.and_then(|snapshot| {
+            let source = snapshot.submission?;
+            (snapshot.file_sources.is_none() && self.audio_mode() == DocumentAudioMode::Resident)
+                .then_some(PausedNoteGraph {
+                    source,
+                    revision: &snapshot.prepared,
+                    resources: &snapshot.resources,
+                    cancellation,
+                })
+        });
+        let native_runtime = sink.native_sampler_hold().construction_bytes;
+        sink.poll_paused_note_monitor(graph, &mut |native| {
+            let snapshot = snapshot.ok_or("paused note graph changed")?;
+            if cancellation.is_cancelled() {
+                return Err("paused note graph changed".into());
+            }
+            self.resident_seek_inputs(admission, None, None)
+                .and_then(|inputs| {
+                    inputs.admit(
+                        &snapshot.resources,
+                        Some(&snapshot.prepared),
+                        native,
+                        native_runtime,
+                        0,
+                    )
+                })
+                .map_err(|error| error.to_string())
+        })
+    }
+
     fn resident_seek_inputs<'a>(
         &'a self,
         admission: sampler_export::Admission<'a>,
