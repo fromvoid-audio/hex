@@ -28,7 +28,7 @@ pub(super) struct Resident {
     pub(super) capture_target: Option<hex_engine::NativeParameterInputTarget>,
     pub(super) applied_loop: Option<ResidentRuntimeLoop>,
     pub(super) retired: Option<DeviceResourcePublication>,
-    paused_monitor: Option<hex_engine::PausedMonitorStorageHold>,
+    pub(super) paused_monitor: Option<hex_engine::PausedMonitorStorageHold>,
     observations: [Option<Arc<hex_engine::PreparedPlaybackObservation>>; RUNTIME_CELLS],
 }
 impl Resident {
@@ -403,20 +403,63 @@ impl NativeAudioSink {
             .as_ref()
             .map_err(Clone::clone)?
             .ordinary_graph_metadata_bytes;
-        let (monitor, hold) = hex_engine::PausedTrackMonitor::prepare_admitted_resident_on_control(
-            Arc::clone(revision),
-            resources,
-            request.track,
-            metadata,
-            |candidate| {
-                let [current, retired, pending] = self.resident_inventory();
-                admit(&[current, retired, pending, candidate])
-            },
-        )
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        let preparation =
+            plugins::PausedMonitorPreparation::new(request, self.request_cancellation.as_ref());
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        let bindings = self.plugins.prepare_paused_monitor_effects(
+            self.output
+                .as_mut()
+                .and_then(|output| output.publication.control())
+                .ok_or("paused input monitor output is unavailable")?,
+            &preparation,
+            revision,
+        )?;
+        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+        let bindings = [];
+        let charge = |candidate: DeviceResourceAdmission<'_>| {
+            let [current, retired, pending] = self.resident_inventory();
+            admit(&[current, retired, pending, candidate])
+        };
+        let (monitor, hold) = if bindings.is_empty() {
+            hex_engine::PausedTrackMonitor::prepare_admitted_resident_on_control(
+                Arc::clone(revision),
+                resources,
+                request.track,
+                metadata,
+                charge,
+            )
+        } else {
+            hex_engine::PausedTrackMonitor::prepare_admitted_with_foreign_effects_on_control(
+                Arc::clone(revision),
+                Some(resources),
+                request.track,
+                &bindings,
+                metadata,
+                charge,
+            )
+        }
         .map_err(|error| match error {
             hex_engine::PausedMonitorAdmissionError::Admission(reason) => reason,
             hex_engine::PausedMonitorAdmissionError::Preparation(reason) => reason.to_string(),
         })?;
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        if !bindings.is_empty() {
+            self.plugins.install_paused_monitor_effects(
+                self.output
+                    .as_mut()
+                    .and_then(|output| output.publication.control())
+                    .ok_or("paused input monitor output is unavailable")?,
+                &preparation,
+            )?;
+            if self
+                .request_cancellation
+                .as_ref()
+                .is_some_and(hex_session::service::RequestCancellation::is_cancelled)
+            {
+                return Err("paused vst3 monitor source changed".into());
+            }
+        }
         self.check_paused_input_source(request)?;
         self.resident.paused_monitor = Some(hold);
         Ok(monitor)

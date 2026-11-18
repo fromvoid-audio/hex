@@ -1705,8 +1705,13 @@ impl Callback {
     /// This grants no readiness, endpoint loan, graph admission or native ACK.
     #[cfg(feature = "allocation-probe")]
     pub(crate) fn native_workers_idle_on_control(&self) -> Option<bool> {
-        self.native_sources
-            .workers_idle_on_control(&self.candidate_root)
+        Some(
+            self.native_sources
+                .workers_idle_on_control(&self.candidate_root)?
+                && self
+                    .paused_native_sources
+                    .workers_idle_on_control(&self.candidate_root)?,
+        )
     }
     #[cfg(feature = "allocation-probe")]
     pub(crate) fn native_worker_phase_for_test(&self) -> Option<usize> {

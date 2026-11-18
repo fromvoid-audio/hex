@@ -2220,6 +2220,12 @@ impl WorkerAudioSink for NativeAudioSink {
                     control.reclaim();
                     control.poll_resident_publication();
                 }
+                #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                if self.resident.paused_monitor.is_none()
+                    && let Some(control) = output.publication.control()
+                {
+                    self.plugins.reap_paused_monitor(control);
+                }
                 if self.document_rebind.as_ref().is_none_or(|rebind| {
                     output
                         .publication
