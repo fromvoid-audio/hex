@@ -69,6 +69,180 @@ fn render_paused_fixture_block(callback: &mut Callback) -> [Frame; 64] {
 }
 
 #[test]
+fn paused_monitor_accepts_the_exact_accounted_resident_graph() {
+    use super::candidate_tests::{anchored, finish, serial};
+    use hex_engine::native_device_resources::{PreparedDeviceResources, ResidentDeviceAssets};
+    use hex_engine::{AudioStorageLedgerReservation, NativeDeviceClass, SessionPlaybackError};
+    use hex_lattice_contract::DeviceTypeId;
+
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+    let Created::Track(track) = editor
+        .execute(Command::AddTrack {
+            name: "input".into(),
+        })
+        .unwrap()
+    else {
+        panic!("track")
+    };
+    let limiter = hex_engine::default_native_device_state_for_class(
+        NativeDeviceClass::Effect,
+        DeviceTypeId::from_static("hex.limiter"),
+    )
+    .unwrap();
+    editor
+        .execute(Command::InsertDevice {
+            track,
+            before: None,
+            state: limiter,
+        })
+        .unwrap();
+    let project = editor.project();
+    let assets = ResidentDeviceAssets::default();
+    let cancel = AtomicBool::new(false);
+    let resources =
+        PreparedDeviceResources::prepare_on_control(&assets, project, 4096, &cancel).unwrap();
+    let unrelated =
+        PreparedDeviceResources::prepare_on_control(&assets, project, 4096, &cancel).unwrap();
+    let revision = Arc::new(
+        hex_engine::PreparedRevision::prepare_with_device_resources(
+            project,
+            &BTreeMap::new(),
+            Arc::new(hex_engine::SineTable::new()),
+            None,
+            &hex_engine::audio_transform::AudioTransformPreparation::default(),
+            &resources,
+            0,
+            &cancel,
+        )
+        .unwrap(),
+    );
+    let latency = revision.arrangement().main_latency_frames() as usize;
+    assert!((1..1024).contains(&latency));
+    let allowance =
+        PausedTrackMonitor::resident_runtime_allowance_on_control(&revision, &resources, track)
+            .unwrap();
+    assert!(matches!(
+        PausedTrackMonitor::prepare_resident_on_control(
+            Arc::clone(&revision),
+            &unrelated,
+            track,
+            allowance,
+        ),
+        Err(SessionPlaybackError::InvalidCommand)
+    ));
+    assert!(matches!(
+        PausedTrackMonitor::prepare_resident_on_control(
+            Arc::clone(&revision),
+            &resources,
+            track,
+            allowance - 1,
+        ),
+        Err(SessionPlaybackError::Allocation)
+    ));
+    let monitor = PausedTrackMonitor::prepare_resident_on_control(
+        Arc::clone(&revision),
+        &resources,
+        track,
+        allowance,
+    )
+    .unwrap();
+    let playback = Playback::try_from_prepared_with_device_resources(revision, &resources).unwrap();
+    drop(resources);
+
+    let _serial = serial();
+    let (mut control, mut data, errors, mut retirement) = anchored();
+    control
+        .configure_device_resource_publication_on_control(AudioStorageLedgerReservation {
+            data_rows: 512,
+            handle_rows: 256,
+            root_rows: 128,
+            max_retained_bytes: 20_000_000,
+            max_construction_peak_bytes: 20_000_000,
+        })
+        .unwrap();
+    control
+        .configure_ordinary_streaming_on_control(
+            crate::AudioCandidateDomainReservation {
+                max_retained_data_bytes: 8 * 1024 * 1024,
+                max_construction_peak_data_bytes: 8 * 1024 * 1024,
+            },
+            2,
+            4096,
+        )
+        .unwrap();
+    let revision = control
+        .publish_with_admission_and_source_on_control(
+            playback,
+            PublicationPolicy::InstallFreshRuntime,
+            hex_engine::AudioSourceContext {
+                project_generation: 7,
+                editor_revision: 3,
+            },
+            |_| Ok::<_, ()>(()),
+        )
+        .unwrap();
+    data.owner_mut().unwrap().run(|callback, _| {
+        callback.begin_block();
+        callback.render(&mut [[0.0; 2]; 64]).unwrap();
+        assert!(
+            callback
+                .active
+                .as_ref()
+                .is_some_and(ActivePublication::streaming_enabled),
+            "the ordinary source workspace must be attached as on desktop",
+        );
+    });
+    let source = control.status.recording_source().unwrap();
+    assert_eq!(source.audio_revision, revision);
+    assert_eq!(control.unreturned_resident_graphs_on_control(), Some(1));
+    let epoch = control.status.transport_epoch.load(Acquire);
+    let (mut input, stream) = test_monitor_source();
+    assert_eq!(input.submit(&[0.25; 1024]), 4);
+    let original = &*stream as *const _;
+    assert!(
+        control
+            .input_monitor
+            .publish_paused(stream, monitor, source, epoch)
+            .is_ok()
+    );
+
+    let mut render_block = || {
+        let mut block = [[0.0; 2]; 64];
+        data.owner_mut().unwrap().run(|callback, _| {
+            block = render_paused_fixture_block(callback);
+        });
+        block
+    };
+    let output: Vec<_> = (0..16).flat_map(|_| render_block()).collect();
+    assert!(output[..latency].iter().all(|frame| *frame == [0.0; 2]));
+    assert!(
+        output[latency..]
+            .iter()
+            .all(|frame| frame[0] > 0.0 && frame[1] > 0.0)
+    );
+    assert_eq!(control.status.position.load(Acquire), 0);
+    assert!(!control.status.playing.load(Acquire));
+    assert_eq!(control.outstanding_device_resource_leases(), 0);
+    assert_eq!(input.submit(&[0.25; 512]), 2);
+    control.command(PlaybackCommand::Play).unwrap();
+    assert_eq!(render_block(), [[0.0; 2]; 64]);
+    assert!(control.status.playing.load(Acquire));
+    assert_eq!(render_block(), [[0.0; 2]; 64]);
+    assert_eq!(
+        original,
+        &*control.input_monitor.reclaim().unwrap() as *const _
+    );
+    control.request_shutdown();
+    assert_eq!(render_block(), [[0.0; 2]; 64]);
+    control.reclaim();
+    assert_eq!(control.unreturned_resident_graphs_on_control(), Some(0));
+    drop(data);
+    drop(errors);
+    drop(control);
+    finish(&mut retirement);
+}
+
+#[test]
 fn paused_input_uses_the_resident_callback_and_retires_at_discontinuities() {
     use input_monitor::MonitorStatus;
 

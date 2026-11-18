@@ -5375,27 +5375,35 @@ impl Callback {
             .as_ref()
             .is_some_and(|active| !active.streaming_enabled());
         let mut recording = self.sample_recording.observation();
-        let paused_playback = self
-            .active
-            .as_ref()
-            .filter(|_| {
-                resident
-                    && !node_observed
-                    && !project_observed
-                    && recording.is_none()
-                    && !self.status.closing.load(Acquire)
-            })
-            .and_then(ActivePublication::legacy)
-            .map(|active| active.playback.as_ref());
-        if self.input_monitor.render_paused(
-            recording_source,
-            self.status.transport_epoch.load(Acquire),
-            paused_playback,
-            output,
-        ) {
-            self.publish_transport();
-            self.publish_active_routes(false);
-            return Ok(());
+        if self.input_monitor.has_paused_binding() {
+            let paused_playback = self
+                .active
+                .as_ref()
+                .and_then(ActivePublication::legacy)
+                .filter(|graph| {
+                    !node_observed
+                        && !project_observed
+                        && recording.is_none()
+                        && !self.status.closing.load(Acquire)
+                        && self.recovery_seek_pending.is_none()
+                        && self.stream_pending_play.is_none()
+                        && self.transport_fade.is_none()
+                        && graph
+                            .streams
+                            .as_ref()
+                            .is_none_or(|streams| streams.permits_paused_monitor())
+                })
+                .map(|active| active.playback.as_ref());
+            if self.input_monitor.render_paused(
+                recording_source,
+                self.status.transport_epoch.load(Acquire),
+                paused_playback,
+                output,
+            ) {
+                self.publish_transport();
+                self.publish_active_routes(false);
+                return Ok(());
+            }
         }
         let monitor_track = self.input_monitor.target();
         let monitor_supported = output.len() <= 256
