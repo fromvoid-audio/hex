@@ -381,6 +381,13 @@ fn run_invalid_banks_return_all_sources_before_worker_start() {
 #[cfg(feature = "test-support")]
 #[test]
 fn stop_reclaims_active_second_source_and_keeps_the_next_request_queued() {
+    with_granular_control_stack(
+        run_stop_reclaims_active_second_source_and_keeps_the_next_request_queued,
+    );
+}
+
+#[cfg(feature = "test-support")]
+fn run_stop_reclaims_active_second_source_and_keeps_the_next_request_queued() {
     let (_tones_wav, tones, _) = source(WarpMode::Tones { grain_ms: 32 });
     let (_texture_wav, texture, _) = source(WarpMode::Texture {
         grain_ms: 32,
