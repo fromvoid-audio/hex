@@ -184,6 +184,13 @@ full disks with a useful error and a defined recovery path.
   residual audio from the edit, or let tail preservation block the switch.
   An admitted edit becomes active in the editor only after the audio owner
   confirms installation of its exact graph.
+  The [live track and device editing brief](docs/design/live-repatching-brief.md)
+  records the agreed 0.2 product target, including surviving processor history,
+  running cross-track moves, genuine power off/on, timing retention and fresh
+  DSP on reintroduction by Undo/Redo. Implementations must distinguish pending
+  track/loading-slot feedback from the audio-confirmed active chain. The brief
+  defines desired behavior; it does not establish current implementation or
+  native acceptance.
 - **Contain failure deliberately.** A future command/import boundary may catch
   unwinds to preserve project state, but that does not justify panic paths. Do not
   add panic recovery or blocking error reporting inside the audio callback.
