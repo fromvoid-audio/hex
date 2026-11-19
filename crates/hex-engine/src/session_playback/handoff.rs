@@ -515,6 +515,62 @@ enum Restart {
 }
 
 impl SessionPlayback {
+    /// A confirmed reduction can rebuild PDC after a Return's unchanged
+    /// prefix. Its local DSP and exact hosted endpoint can stay at the old
+    /// input origin even though the downstream latency changes.
+    fn retains_return_prefix_at_latency_cut(
+        &self,
+        previous: &Self,
+        old_index: usize,
+        new_index: usize,
+    ) -> bool {
+        let old = previous.revision.arrangement();
+        let new = self.revision.arrangement();
+        let Some((old_bus, new_bus)) = old
+            .return_buses
+            .get(old_index)
+            .zip(new.return_buses.get(new_index))
+        else {
+            return false;
+        };
+        let Some((old_chain, new_chain)) = previous
+            .return_chains
+            .get(old_index)
+            .zip(self.return_chains.get(new_index))
+        else {
+            return false;
+        };
+        let Some((old_graph, new_graph)) = old.signal_graph.as_ref().zip(new.signal_graph.as_ref())
+        else {
+            return false;
+        };
+        let Some((removed, prefix)) = old_bus.device_chain.split_last() else {
+            return false;
+        };
+        old_bus.id == new_bus.id
+            && prefix.len() == new_bus.device_chain.len()
+            && removed.definition.is_some()
+            && removed.foreign_processor().is_none()
+            && removed
+                .algorithmic_latency_frames()
+                .is_some_and(|frames| frames > 0)
+            && new_bus
+                .device_chain
+                .iter()
+                .any(|node| node.foreign_processor().is_some())
+            && old_chain.configuration_matches_range(new_chain, 0..new_chain.len())
+            && new_chain.can_inherit_from(old_chain)
+            && new_bus.device_chain.iter().all(|node| {
+                old_graph
+                    .processor_latency(node.device_id, None)
+                    .zip(new_graph.processor_latency(node.device_id, None))
+                    .is_some_and(|(before, after)| {
+                        before.upstream_frames == after.upstream_frames
+                            && before.stage_frames == after.stage_frames
+                    })
+            })
+    }
+
     /// Borrow a control-prepared anchor for an exact running cut that carries
     /// compensated history. A missed or incompatible cut leaves the donor running.
     /// The host must independently fence its output, commands, routes, faults
@@ -1668,9 +1724,10 @@ impl SessionPlayback {
         {
             return Err(SessionPlaybackError::LatencyLayoutChanged);
         }
-        // A reset cannot carry residual output from a changed Return. An
-        // approved cut may retire it when no old endpoint also has to run on
-        // the relocated graph. Otherwise retain the predecessor at its clock.
+        // A reset cannot carry residual output from a changed Return. A
+        // confirmed cut may keep a prefix with the same input clock, or cut
+        // the obsolete chain when its endpoints are absent from the successor.
+        let mut restart_return_prefixes = [None; hex_project::MAX_RETURN_TRACKS];
         if relocate && restart != Restart::Baked {
             let old_buses = previous.revision.arrangement().return_buses();
             let new_buses = self.revision.arrangement().return_buses();
@@ -1679,21 +1736,35 @@ impl SessionPlayback {
                     .return_chains
                     .get(index)
                     .ok_or(SessionPlaybackError::DeviceRuntime)?;
+                let successor = new_buses
+                    .iter()
+                    .zip(&self.return_chains)
+                    .enumerate()
+                    .find(|(_, (new_bus, _))| new_bus.id == bus.id);
+                if confirmed_insert
+                    && groups.is_none()
+                    && !self.revision.contains_streamed_sources()
+                    && !previous.revision.contains_streamed_sources()
+                    && donor_epoch_matches
+                    && let Some((new_index, _)) = successor
+                    && self.retains_return_prefix_at_latency_cut(previous, index, new_index)
+                {
+                    *restart_return_prefixes
+                        .get_mut(new_index)
+                        .ok_or(SessionPlaybackError::DeviceRuntime)? = Some(index);
+                    continue;
+                }
                 if bus.muted || bus.gain == 0.0 || old.committed_range_is_quiescent(0..old.len()) {
                     continue;
                 }
-                let can_relocate = new_buses
-                    .iter()
-                    .zip(&self.return_chains)
-                    .find(|(new_bus, _)| new_bus.id == bus.id)
-                    .is_some_and(|(new_bus, new)| {
-                        (old.len() == new.len()
-                            && old.configuration_matches_range(new, 0..old.len())
-                            && new.can_inherit_from(old))
-                            || (tail_policy.for_chain(&bus.device_chain, &new_bus.device_chain)
-                                == DeviceEditTailPolicy::Cut
-                                && validate_foreign_tail_sources(self, old, 0).is_ok())
-                    });
+                let can_relocate = successor.is_some_and(|(_, (new_bus, new))| {
+                    (old.len() == new.len()
+                        && old.configuration_matches_range(new, 0..old.len())
+                        && new.can_inherit_from(old))
+                        || (tail_policy.for_chain(&bus.device_chain, &new_bus.device_chain)
+                            == DeviceEditTailPolicy::Cut
+                            && validate_foreign_tail_sources(self, old, 0).is_ok())
+                });
                 if !can_relocate {
                     return Err(SessionPlaybackError::LatencyLayoutChanged);
                 }
@@ -2026,6 +2097,11 @@ impl SessionPlayback {
                 self.interactive_start_frame = Some(self.performance_frame);
                 self.playing = previous.playing;
                 self.route_state_generation = previous.route_state_generation.wrapping_add(1);
+            }
+            for (new, old) in self.return_chains.iter_mut().zip(restart_return_prefixes) {
+                if let Some(old) = old.and_then(|index| previous.return_chains.get_mut(index)) {
+                    new.transfer_history_from(old);
+                }
             }
             self.foreign_arrangement.inherit_handoff(
                 &mut previous.foreign_arrangement,
