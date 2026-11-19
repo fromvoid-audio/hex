@@ -351,6 +351,8 @@ struct SourceSlot {
     // Semantic compilation may keep a nonneutral canonical envelope in final
     // metadata. Reserve its existing box before constructing transformed PCM.
     reserve_fade: bool,
+    // Only this projected source phase may be installed late by compilation.
+    reserved_phase: Option<std::num::NonZeroU64>,
     owner: Option<OwnedAudioSource>,
     // Fresh constructor root stays here after its distinct graph alias moves.
     prepared_origin: Option<OwnedAudioSource>,
@@ -1783,6 +1785,15 @@ impl AudioPreparationCustody {
                         clip.fade()
                     },
                     reserve_fade: transformed && !clip.retained_fade().is_neutral(),
+                    reserved_phase: if transformed {
+                        crate::audio_transform::prepared_frame_repeat_phase(
+                            clip,
+                            project.tempo_map(),
+                        )
+                        .map_err(|_| AudioStorageError::UnsupportedGraph)?
+                    } else {
+                        None
+                    },
                     owner: None,
                     prepared_origin: None,
                     sparse_frames: crate::audio_transform::sparse_group_plan(clip)
