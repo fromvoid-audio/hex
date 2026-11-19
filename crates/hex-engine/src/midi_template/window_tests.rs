@@ -739,9 +739,11 @@ mod note_chase {
 
 #[test]
 #[ignore = "optimized timing evidence; run with --release and --ignored"]
-fn profile_default_source_window_queries() {
+fn profile_default_source_window_queries() -> Result<(), &'static str> {
     use std::{hint::black_box, time::Instant};
-    assert!(!cfg!(debug_assertions), "use --release");
+    if cfg!(debug_assertions) {
+        return Err("use --release");
+    }
     let (editor, track, clip, _) = fixture(true);
     let timing = PreparedTempoMap::prepare(editor.project().tempo_map().clone(), 8_000).unwrap();
     let source = PreparedMidiSourceTemplate::prepare_source_window(
@@ -782,4 +784,5 @@ fn profile_default_source_window_queries() {
             );
         }
     }
+    Ok(())
 }
