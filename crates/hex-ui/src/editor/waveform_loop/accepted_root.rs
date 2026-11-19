@@ -153,6 +153,7 @@ mod tests {
             .unwrap(),
         );
         let accepted = hex_session::service::AudioClipWaveform {
+            neutral_musical: None,
             waveform: outer,
             offset: 0,
             length: original.duration(),
@@ -183,6 +184,7 @@ mod tests {
             0.7
         );
         let missing = hex_session::service::AudioClipWaveform {
+            neutral_musical: None,
             preview_root: None,
             ..accepted.clone()
         };
@@ -233,6 +235,7 @@ mod tests {
             .unwrap(),
         );
         let accepted = hex_session::service::AudioClipWaveform {
+            neutral_musical: None,
             waveform: Arc::clone(&root),
             offset: 0,
             length: original.duration(),

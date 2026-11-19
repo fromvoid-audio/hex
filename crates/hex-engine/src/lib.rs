@@ -2708,7 +2708,8 @@ pub struct PreparedAudioClipView {
     pub repeat: Option<PreparedAudioRepeat>,
     /// Maps logical root frames to packed PCM for a non-repeating source.
     pub sparse: Option<Arc<SparseFrameMap>>,
-    /// Unweighted destination bins captured before a baked musical outer fade.
+    /// Unweighted destination bins for a musical outer fade, including before
+    /// the first fade or after a reset. Empty means capture was unavailable.
     pub neutral_musical_peaks: Vec<PreparedAudioPeak>,
 }
 

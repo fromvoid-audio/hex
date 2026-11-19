@@ -910,6 +910,7 @@ fn file_batch_storage_and_preparation_refusals_preserve_project_sources_and_wave
     session.audio_clip_waveforms.get_mut().insert(
         clip,
         AudioClipWaveform {
+            neutral_musical: None,
             waveform: Arc::clone(&waveform),
             offset: 0,
             length: 4,

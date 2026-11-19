@@ -196,6 +196,14 @@ pub struct AudioClipWaveform {
     /// Original processing-root peaks for metadata-only placement gestures.
     /// Outer waveform above continues to match actual committed playback.
     pub preview_root: Option<AudioPreviewWaveform>,
+    /// Neutral destination peaks and their accepted musical placement clock.
+    pub neutral_musical: Option<AudioMusicalWaveform>,
+}
+
+#[derive(Clone)]
+pub struct AudioMusicalWaveform {
+    pub waveform: Arc<Waveform>,
+    pub tempo: Arc<hex_project::TempoMap>,
 }
 
 #[derive(Clone)]

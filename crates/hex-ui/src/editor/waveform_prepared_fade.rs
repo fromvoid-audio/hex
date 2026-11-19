@@ -1,13 +1,96 @@
-//! Arrangement destination envelope over the accepted prepared frame waveform.
+//! Arrangement destination envelope over accepted prepared waveforms.
 //! Frame playback attaches the Outer fade after source processing. Reuse that
 //! same processed signal, including repeats and sparse spans, without preparing
-//! or retaining another buffer. Baked envelopes stay on their prepared path.
+//! or retaining another buffer. The musical bake exposes pre-fade peak bins
+//! so the same projected clock drives held and accepted paint.
 use super::waveform_source::aggregate_peaks;
-use hex_project::{AudioClipFadeClock, AudioDomainClock, Clip, ClipFade, ClipGain, Project};
+use hex_project::{
+    AudioClipFadeClock, AudioDomainClock, Clip, ClipFade, ClipGain, Project,
+    ProjectedOuterAudioFade, TempoMap,
+};
 use hex_session::{CachedOverrange, CachedPeak, CachedWaveform, service::AudioClipWaveform};
-use std::ops::Range;
+use std::{ops::Range, sync::Arc};
 
 const ZERO: [CachedPeak; 2] = [CachedPeak { min: 0.0, max: 0.0 }; 2];
+
+/// A peak-only display law. A display column weights the cached extrema at
+/// its clipped midpoint and carries no sample-level clipping evidence.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) struct PreparedMusicalFade {
+    clip: Clip,
+    tempo: Arc<TempoMap>,
+    held: Option<ClipFade>,
+    gain: ClipGain,
+}
+
+impl PreparedMusicalFade {
+    pub(super) fn for_clip(
+        project: &Project,
+        clip: &Clip,
+        prepared: &AudioClipWaveform,
+        held: Option<ClipFade>,
+        gain: ClipGain,
+    ) -> Option<(Arc<CachedWaveform>, Arc<Self>)> {
+        let source = prepared.neutral_musical.as_ref()?;
+        if project.clip(clip.id())? != clip
+            || prepared.length != clip.duration()
+            || (held.is_some() && !project.arrangement_fade_edit_uses_outer(clip))
+        {
+            return None;
+        }
+        let display = Self {
+            clip: clip.clone(),
+            tempo: Arc::clone(&source.tempo),
+            held,
+            gain,
+        };
+        display.projection()?;
+        Some((Arc::clone(&source.waveform), Arc::new(display)))
+    }
+
+    pub(super) fn start(&self) -> u64 {
+        self.clip.start()
+    }
+
+    pub(super) fn projection(&self) -> Option<ProjectedOuterAudioFade<'_>> {
+        if let Some(fade) = self.held {
+            return self
+                .clip
+                .projected_outer_fade_preview(&self.tempo, fade)
+                .ok();
+        }
+        if let Some(fade) = self.clip.projected_outer_fade(&self.tempo).ok()? {
+            return Some(fade);
+        }
+        let neutral = ClipFade::neutral(self.clip.duration()).ok()?;
+        self.clip
+            .projected_outer_fade_preview(&self.tempo, neutral)
+            .ok()
+    }
+
+    pub(super) fn peaks(
+        &self,
+        projection: &ProjectedOuterAudioFade<'_>,
+        waveform: &CachedWaveform,
+        visible: Range<u64>,
+    ) -> Option<[CachedPeak; 2]> {
+        let origin = self.start();
+        let start = visible.start.max(origin);
+        let end = visible.end.min(origin.checked_add(self.clip.duration())?);
+        if start >= end {
+            return Some(ZERO);
+        }
+        let gain = projection.gain_at(start + (end - start - 1) / 2).ok()?;
+        let peaks = aggregate_peaks(
+            waveform,
+            usize::try_from(start - origin).ok()?,
+            usize::try_from(end - origin).ok()?,
+        )?;
+        let mut values = (start != visible.start || end != visible.end).then_some(ZERO);
+        super::waveform_frame::merge(&mut values, scale(peaks, gain, self.gain.linear()));
+        values
+    }
+}
 
 /// Effective rendered shape shared by held, pending and canonical paints.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -251,6 +334,7 @@ mod tests {
             let view = &playback.arrangement().audio_clip_views()[0];
             let sparse = Arc::clone(view.sparse.as_ref().expect("real packed group"));
             AudioClipWaveform {
+                neutral_musical: None,
                 waveform: Arc::new(waveform::summarize_sparse(&view.audio, sparse, 64).unwrap()),
                 offset: view.offset,
                 length: view.length,
