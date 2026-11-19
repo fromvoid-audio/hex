@@ -90,15 +90,11 @@ impl Callback {
             return Ok(false);
         }
         let fade = runtime.device_insert_fade_frames().ok_or(stale)?;
-        let pins = old
-            .stream_view()
-            .reserve_outgoing_fade(&mut self.domain_pages, fade as usize)
-            .map_err(|error| match error {
-                crate::candidate_custody::QuantumFailure::Capacity => {
-                    PlaybackHandoffRejection::StreamedPageCapacity
-                }
-                _ => unavailable,
-            })?;
+        let pins = old.stream_view().reserve_outgoing_fade(
+            &mut self.domain_pages,
+            fade as usize,
+            next.revision(),
+        )?;
         let Some(pins) = pins else {
             next.cancel_stream_readiness(&mut self.domain_pages);
             self.cold_device_fade = Some(super::device_insert_consent::ColdDeviceFade {
