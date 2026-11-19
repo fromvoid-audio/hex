@@ -48,23 +48,21 @@ impl Hover {
     }
 }
 
-// The hit target stays square; the painted curve control is a diamond.
+// Center the compact marker within the square hit target.
 pub(super) fn handle_shape(curve: bool, state: theme::FadeHandleState) -> impl gpui::IntoElement {
     let style = theme::fade_handle_style(state);
     canvas(
         |_, _, _| (),
         move |bounds, _, window, _| {
-            let left = f32::from(bounds.left()) + 0.75;
-            let top = f32::from(bounds.top()) + 0.75;
-            let right = f32::from(bounds.right()) - 0.75;
-            let bottom = f32::from(bounds.bottom()) - 0.75;
+            let center = bounds.center();
+            let (x, y) = (f32::from(center.x), f32::from(center.y));
+            let half_extent = |extent: Pixels| (f32::from(extent) / 2.0 - 0.75).max(0.0) / 2.0;
+            let half_width = half_extent(bounds.size.width);
+            let half_height = half_extent(bounds.size.height);
+            let (left, right) = (x - half_width, x + half_width);
+            let (top, bottom) = (y - half_height, y + half_height);
             let vertices = if curve {
-                [
-                    ((left + right) / 2.0, top),
-                    (right, (top + bottom) / 2.0),
-                    ((left + right) / 2.0, bottom),
-                    (left, (top + bottom) / 2.0),
-                ]
+                [(x, top), (right, y), (x, bottom), (left, y)]
             } else {
                 [(left, top), (right, top), (right, bottom), (left, bottom)]
             };
