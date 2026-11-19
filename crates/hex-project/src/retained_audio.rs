@@ -158,7 +158,9 @@ impl Project {
             if edit.domain.clock.length() > crate::MAX_AUDIO_DOMAIN_FRAMES
                 && (edit.plain_frame_event_root()
                     || edit.is_plain_reversed_capture(clip)
-                    || edit.is_plain_pitch_capture(clip))
+                    || (edit.domain.fade_clock == crate::AudioClipFadeClock::Outer
+                        && edit.plain_reversed_source(clip).is_some())
+                    || edit.is_plain_pitch_source(clip))
             {
                 return Err(Invalid(
                     "long frame event timelines, plain reversals and plain pitch cannot be nested as retained audio sources",

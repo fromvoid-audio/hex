@@ -91,3 +91,59 @@ fn retained_root_admission_also_refuses_outer_clock() {
         "outer clip fades are not supported yet"
     );
 }
+
+#[test]
+fn prospective_outer_fade_keeps_stream_shape_separate_from_legacy_capture() {
+    let (project, id) = fixture();
+    let mut pitched = project.clip(id).unwrap().clone();
+    assert!(
+        pitched
+            .audio_edit()
+            .unwrap()
+            .is_plain_pitch_capture(&pitched)
+    );
+    let domain = Arc::make_mut(&mut pitched.audio_edit_mut().unwrap().domain);
+    domain.fade_clock = AudioClipFadeClock::Outer;
+    domain.fade = ClipFade::new(24_000, 0, 120, 240).unwrap();
+    domain.fade_start = 1_000;
+    let edit = pitched.audio_edit().unwrap();
+    assert!(edit.is_plain_pitch_source(&pitched));
+    assert!(!edit.is_plain_pitch_capture(&pitched));
+    let fade = pitched
+        .projected_outer_fade(project.tempo_map())
+        .unwrap()
+        .unwrap()
+        .frame_playback_envelope()
+        .unwrap();
+    assert_eq!(fade.gain_at(999), 0.0);
+    assert_eq!(fade.gain_at(1_120), 1.0);
+    assert_eq!(fade.gain_at(25_000), 0.0);
+
+    let mut snapshot = project.snapshot();
+    let row = &mut snapshot.tracks[0].audio_clips_mut().unwrap()[0];
+    row.edit = None;
+    row.fade = ClipFade::neutral(row.duration).unwrap();
+    let mut editor = Editor::new(Project::from_snapshot(snapshot).unwrap(), 8).unwrap();
+    editor.execute(Command::ReverseClips(vec![id])).unwrap();
+    let mut reversed = editor.project().clip(id).unwrap().clone();
+    let playable = reversed
+        .audio_edit()
+        .unwrap()
+        .plain_reversed_source(&reversed)
+        .unwrap();
+    let domain = Arc::make_mut(&mut reversed.audio_edit_mut().unwrap().domain);
+    domain.fade_clock = AudioClipFadeClock::Outer;
+    domain.fade = ClipFade::new(96_000, 0, 800, 1_200).unwrap();
+    let edit = reversed.audio_edit().unwrap();
+    assert_eq!(edit.plain_reversed_source(&reversed), Some(playable));
+    assert!(!edit.is_plain_reversed_capture(&reversed));
+    let domain = Arc::make_mut(&mut reversed.audio_edit_mut().unwrap().domain);
+    domain.fade_clock = AudioClipFadeClock::LegacyRoot;
+    assert!(
+        reversed
+            .audio_edit()
+            .unwrap()
+            .plain_reversed_source(&reversed)
+            .is_none()
+    );
+}

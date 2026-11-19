@@ -255,12 +255,13 @@ pub(crate) fn plain_pitch_requirement(
 ) -> Option<crate::service::ResidentFilePitch> {
     let edit = clip.audio_edit()?;
     let asset = project.asset(clip.asset())?;
-    (edit.is_plain_pitch_capture(clip) && clip.source_length() == asset.playback_frames())
-        .then_some(crate::service::ResidentFilePitch {
+    (edit.is_plain_pitch_source(clip) && clip.source_length() == asset.playback_frames()).then_some(
+        crate::service::ResidentFilePitch {
             asset: clip.asset(),
             cents: edit.domain.pitch_cents,
             law: edit.domain.warp_resampler,
-        })
+        },
+    )
 }
 /// Derive immutable metadata only for the streamed Re-Pitch shape supported by
 /// the canonical engine projection. The caller still owns file and page custody.
