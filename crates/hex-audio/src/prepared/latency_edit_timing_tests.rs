@@ -326,6 +326,86 @@ fn zero_latency_insert_installs_with_the_admitted_action_intact() {
 }
 
 #[test]
+fn resident_native_removal_installs_with_an_ordinary_stream_workspace() {
+    let ([dry, wet], _) = insert_revisions(
+        hex_devices::reverb::REVERB_DEFINITION
+            .default_state()
+            .unwrap(),
+    );
+    let (mut control, mut callback) = channel(RATE).unwrap();
+    control.enable_native_custody().unwrap();
+    control
+        .configure_device_resource_publication_on_control(
+            hex_engine::AudioStorageLedgerReservation {
+                data_rows: 512,
+                handle_rows: 256,
+                root_rows: 128,
+                max_retained_bytes: 20_000_000,
+                max_construction_peak_bytes: 20_000_000,
+            },
+        )
+        .unwrap();
+    control
+        .configure_ordinary_streaming_on_control(
+            crate::AudioCandidateDomainReservation {
+                max_retained_data_bytes: 8 * 1024 * 1024,
+                max_construction_peak_data_bytes: 8 * 1024 * 1024,
+            },
+            3,
+            4096,
+        )
+        .unwrap();
+    let context = hex_engine::AudioSourceContext {
+        project_generation: 5,
+        editor_revision: 7,
+    };
+    control
+        .publish_with_admission_and_source_on_control(
+            Playback::try_from_prepared_with_session(wet).unwrap(),
+            PublicationPolicy::InstallFreshRuntime,
+            context,
+            |_| Ok::<(), ()>(()),
+        )
+        .unwrap();
+    control.command(PlaybackCommand::Play).unwrap();
+    callback.begin_block();
+    callback.render(&mut [[0.0; 2]; BLOCK]).unwrap();
+    let predecessor = control.status.recording_source().unwrap();
+    let fence = control.capture_fresh_runtime_fence().unwrap();
+    let next_context = hex_engine::AudioSourceContext {
+        editor_revision: 8,
+        ..context
+    };
+    let revision = control
+        .publish_device_insert_with_receipt_on_control(
+            Playback::try_from_prepared_with_session(dry).unwrap(),
+            PublicationPolicy::DeviceInsert { predecessor, fence },
+            next_context,
+            |_| {},
+            |_| Ok::<(), ()>(()),
+        )
+        .unwrap();
+    let receipt = control.fresh_runtime_receipt(revision).unwrap();
+    callback.begin_block();
+    callback.render(&mut [[0.0; 2]; BLOCK]).unwrap();
+    assert_eq!(receipt.state(), PublicationReceiptState::Pending);
+    assert_eq!(control.status.recording_source(), Some(predecessor));
+    callback.begin_block();
+    let mut output = [[0.0; 2]; BLOCK];
+    callback.render(&mut output).unwrap();
+    assert_eq!(receipt.state(), PublicationReceiptState::Installed);
+    assert_eq!(output, [SIGNAL; BLOCK]);
+    assert_eq!(
+        control.status.recording_source(),
+        Some(AppliedAudioSource {
+            context: next_context,
+            audio_revision: revision,
+            ..predecessor
+        })
+    );
+}
+
+#[test]
 fn seamless_device_insert_keeps_the_pcm_of_an_independently_rendered_held_note() {
     use hex_project::BeatTime;
 
