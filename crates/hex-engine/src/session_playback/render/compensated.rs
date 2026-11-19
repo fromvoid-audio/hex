@@ -468,10 +468,13 @@ impl SessionPlayback {
     }
     /// Advance independent resident audio owners and their Main alignment
     /// rings. The frame loop still pushes stamps and sums in its original order.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn align_resident_tracks(
         &mut self,
         arrangement_frame: u64,
         frames: usize,
+        frame_offset: usize,
+        foreign: &mut dyn hex_lattice::ForeignProcessors,
         eligible: &[bool; MAX_TRACKS],
         origins: Option<(&[Option<TransportStamp>], u32)>,
         aligned: &mut [bool; MAX_TRACKS],
@@ -536,17 +539,9 @@ impl SessionPlayback {
             let native_origins = if chain.is_empty() {
                 None
             } else {
-                let Some((incoming, _)) = origins.filter(|&(_, history_frames)| {
-                    // In this independent serial track, the fader arrival
-                    // bounds the lookback of every native device stage.
-                    arrival <= history_frames
-                        && track.device_chain.iter().all(|device| {
-                            !matches!(
-                                device.definition.as_ref(),
-                                Some(hex_lattice::PreparedProcessorFactory::Foreign(_))
-                            )
-                        })
-                }) else {
+                let Some((incoming, _)) =
+                    origins.filter(|&(_, history_frames)| arrival <= history_frames)
+                else {
                     continue;
                 };
                 Some(OriginWindow {
@@ -585,12 +580,12 @@ impl SessionPlayback {
                         chain,
                         stage..stage + 1,
                         samples,
-                        0,
+                        frame_offset,
                         Some(&input),
                         Some(&output),
                         planned.input_arrival_frames,
                         planned.output_arrival_frames,
-                        &mut hex_lattice::RefuseForeign,
+                        foreign,
                         None,
                         &mut None,
                     )
@@ -657,7 +652,7 @@ impl SessionPlayback {
         {
             return Ok(None);
         }
-        let lookback = compensation.graph.main_latency().min(256);
+        let lookback = compensation.graph.main_latency().min(512);
         let history_frames = (0..lookback)
             .take_while(|&delay| {
                 compensation

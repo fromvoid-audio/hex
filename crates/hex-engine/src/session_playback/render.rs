@@ -1265,6 +1265,8 @@ impl SessionPlayback {
                 self.align_resident_tracks(
                     arrangement_frame,
                     count,
+                    output_offset,
+                    foreign,
                     &resident_source_eligible,
                     projected_history.map(|frames| (&stamps[..count], frames)),
                     &mut aligned,
