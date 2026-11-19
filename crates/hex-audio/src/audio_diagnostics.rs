@@ -75,6 +75,7 @@ impl std::str::FromStr for AudioDiagnosticsFlags {
 /// The callback prerequisite that kept an admitted graph pending.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PublicationWaitReason {
+    NativeRemovalFade,
     PredecessorWindow,
     StreamPages,
     StreamPageCapacity,

@@ -4732,6 +4732,20 @@ fn ordinary_zero_latency_track_and_device_edits_keep_compensated_playback_runnin
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 #[test]
 fn verified_file_zero_latency_removal_uses_the_stage_fade_without_consent() {
+    verified_file_native_removal(false);
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[test]
+fn verified_file_removal_yields_to_priority_stop_during_the_local_fade() {
+    verified_file_native_removal(true);
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn verified_file_native_removal(stop_during_fade: bool) {
+    use hex_audio::audio_diagnostics::{
+        AudioDiagnosticKind, AudioDiagnosticsFlags, PublicationWaitReason,
+    };
     use hex_project::{Command, Created};
     use hex_session::service::DeviceInsertOutcome;
 
@@ -4799,7 +4813,7 @@ fn verified_file_zero_latency_removal_uses_the_stage_fade_without_consent() {
         );
         std::thread::yield_now();
     }
-    for _ in 0..64 {
+    for _ in 0..24 {
         h.render();
     }
     let cursor = h
@@ -4810,6 +4824,11 @@ fn verified_file_zero_latency_removal_uses_the_stage_fade_without_consent() {
         .unwrap()
         .position
         .load(Acquire);
+    h.audio
+        .as_ref()
+        .unwrap()
+        .control
+        .set_audio_diagnostics(AudioDiagnosticsFlags::ALL);
     h.enable_confirmed_device_inserts();
     h.service
         .submit(Request::Edit(Command::RemoveDevice(removed)))
@@ -4820,12 +4839,67 @@ fn verified_file_zero_latency_removal_uses_the_stage_fade_without_consent() {
     assert_eq!(staged.state.project, delay.state.project);
     assert_eq!(status(&h), previous);
 
-    h.render();
-    let result = h.next();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut saw_fade = false;
+    let result = loop {
+        h.pump();
+        if let Ok(event) = h.service.try_event() {
+            break event;
+        }
+        if status(&h) != previous {
+            break h.next();
+        }
+        let pcm = h.render();
+        if saw_fade && !stop_during_fade {
+            assert!(
+                pcm.iter().flatten().any(|sample| *sample != 0.0),
+                "fitting removal interrupted the graph output"
+            );
+        }
+        let audio = h.audio.as_mut().unwrap();
+        while let Some(event) = audio.control.take_audio_diagnostic() {
+            if !saw_fade
+                && event.kind
+                    == (AudioDiagnosticKind::PublicationWaiting {
+                        reason: PublicationWaitReason::NativeRemovalFade,
+                    })
+            {
+                saw_fade = true;
+                assert_eq!(audio.status().unwrap().recording_source(), Some(previous));
+                if stop_during_fade {
+                    audio.control.stop();
+                }
+            }
+        }
+        assert!(Instant::now() < deadline, "removal did not terminate");
+        std::thread::yield_now();
+    };
     assert!(
         result.device_insert_confirmation.is_none(),
         "fitting verified-file removal offered an interruption"
     );
+    assert!(saw_fade, "the original filter must fade before retirement");
+    if stop_during_fade {
+        assert_eq!(result.state.project, delay.state.project);
+        assert_eq!(status(&h), previous);
+        assert_ne!(
+            result.device_insert_complete.unwrap().outcome,
+            DeviceInsertOutcome::Installed
+        );
+        while h
+            .audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .playing
+            .load(Acquire)
+        {
+            h.render();
+            assert!(Instant::now() < deadline, "priority Stop did not settle");
+        }
+        return;
+    }
     assert!(result.error.is_none(), "{:?}", result.error);
     assert_eq!(
         result.device_insert_complete.unwrap().outcome,
