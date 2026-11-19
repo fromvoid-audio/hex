@@ -176,6 +176,14 @@ full disks with a useful error and a defined recovery path.
 - **Define discontinuities.** Seek, loop wrap, scene launch, tempo changes, and
   graph replacement need explicit DSP/MIDI reset and sample-offset semantics.
   Test boundaries across different block sizes.
+- **Device edits may interrupt audio.** Adding, removing, replacing or moving a
+  device can cut the previous chain's signal, including residual tails and
+  delay history. Publish one active graph at the cut. Keep compatible history
+  in that graph when practical. Use a short fade where safe to soften an
+  interruption. Never run the old chain alongside its replacement to preserve
+  residual audio from the edit, or let tail preservation block the switch.
+  An admitted edit becomes active in the editor only after the audio owner
+  confirms installation of its exact graph.
 - **Contain failure deliberately.** A future command/import boundary may catch
   unwinds to preserve project state, but that does not justify panic paths. Do not
   add panic recovery or blocking error reporting inside the audio callback.
