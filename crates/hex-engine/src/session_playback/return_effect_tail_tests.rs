@@ -3137,6 +3137,90 @@ fn native_removal_fades_its_stage_and_keeps_the_running_downstream_delay() {
 }
 
 #[test]
+fn fading_an_effect_out_of_a_muted_return_preserves_its_surviving_reverb() {
+    use crate::{OutputCapture, OutputCaptureId};
+    use hex_devices::eq::EQ_DEFINITION;
+    use hex_lattice_contract::NativeDeviceMetadata;
+    use hex_project::{Command, Created, Editor, Project};
+
+    let (mut editor, _, bus, _, media, table) = real_main_limiter_reverb_fixture();
+    let Created::Device(eq) = editor
+        .execute(Command::InsertReturnDevice {
+            return_track: bus,
+            before: None,
+            state: EQ_DEFINITION.default_state().unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("eq effect");
+    };
+    let mute = |muted| Command::ReturnMute {
+        return_track: bus,
+        muted,
+    };
+    editor.execute(mute(true)).unwrap();
+    let original = editor.project().clone();
+    let prepare = |project: &Project| {
+        let revision =
+            PreparedRevision::prepare(project, &media, Arc::clone(&table), None).unwrap();
+        SessionPlayback::new(Arc::new(revision)).unwrap()
+    };
+    let mut old = prepare(&original);
+    let mut reference = prepare(&original);
+    for runtime in [&mut old, &mut reference] {
+        runtime.apply(SessionPlaybackCommand::Play).unwrap();
+        runtime.render(&mut vec![[0.0; 2]; 6_000]).unwrap();
+    }
+
+    editor.execute(Command::RemoveDevice(eq)).unwrap();
+    let mut candidate = prepare(editor.project());
+    candidate.require_continuous_insert = true;
+    assert_eq!(
+        candidate.advance_native_removal_from(&mut old),
+        Ok(NativeRemovalProgress::Fading)
+    );
+    for runtime in [&mut old, &mut reference] {
+        runtime.render(&mut [[0.0; 2]; 240]).unwrap();
+    }
+    assert_eq!(
+        candidate.advance_native_removal_from(&mut old),
+        Ok(NativeRemovalProgress::Ready)
+    );
+    candidate.try_inherit_state_live_from(&mut old).unwrap();
+
+    editor.execute(mute(false)).unwrap();
+    let mut heard = prepare(editor.project());
+    heard.try_inherit_state_live_from(&mut candidate).unwrap();
+    let mut reference_editor = Editor::new(original, 4).unwrap();
+    reference_editor.execute(mute(false)).unwrap();
+    let mut expected = prepare(reference_editor.project());
+    expected
+        .try_inherit_state_live_from(&mut reference)
+        .unwrap();
+    let capture = |runtime: &mut SessionPlayback| {
+        let plan = runtime
+            .output_capture_plan(&[OutputCaptureId::Return(bus)], 257)
+            .unwrap();
+        let mut wet = [[0.0; 2]; 257];
+        runtime
+            .render_with_capture(
+                &mut [[0.0; 2]; 257],
+                &mut OutputCapture::new(&plan, &mut [&mut wet]),
+            )
+            .unwrap();
+        wet
+    };
+    let reference_wet = capture(&mut expected);
+    assert!(
+        reference_wet
+            .iter()
+            .flatten()
+            .any(|sample| sample.abs() > 1e-6)
+    );
+    assert_eq!(capture(&mut heard), reference_wet);
+}
+
+#[test]
 fn cancelling_a_native_removal_restores_the_wet_predecessor() {
     use hex_project::{Command, Editor, Project};
 
