@@ -5,8 +5,7 @@ mod selection;
 
 use super::{
     ControlPresentation, ControlText, DeviceControlIdentity, EditorView, ParameterKey,
-    action_button, effective_parameter_value, finalize_controls,
-    parameter_control_with_presentation,
+    action_button, finalize_controls, parameter_control_with_presentation,
 };
 use crate::theme;
 use gpui::{Context, Div, ElementId, Entity, Stateful, Subscription, div, prelude::*, px, rgb};
@@ -47,6 +46,7 @@ pub(super) struct GraphGestureState {
     origin_y: f32,
     initial_q: f32,
     q_by_delta: bool,
+    touch: super::eq_automation::DragTouch,
 }
 
 pub(super) struct GraphControl {

@@ -9,7 +9,10 @@ use hex_plugin_host::{
 };
 use hex_plugin_scan::macos::{build_identity::InstanceBuild, package::InstancePackage};
 use hex_plugin_state::{BinaryIdentity, ClassId};
-use std::{path::Path, time::Duration};
+use std::{
+    path::Path,
+    time::{Duration, Instant},
+};
 
 /// Borrowed explicit catalog choice. Hashes identify the selected bytes rather
 /// than permission or authenticity. Compare both hashes before native spawn;
@@ -40,12 +43,21 @@ impl EffectSelection<'_> {
     }
 }
 
-/// Caller-derived graph/device contributions. None uses the SDK's explicit
-/// unknown mode. Buffer duration alone does not establish device latency.
+/// Both caller-derived graph/device contributions in project frames. Use a
+/// presentation plan for independently known or unknown directions.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EffectPresentation {
     pub input_frames: u32,
     pub output_frames: u32,
+}
+
+impl EffectPresentation {
+    pub fn plan(self) -> PresentationPlan {
+        PresentationPlan::Known(PresentationLatency {
+            input_frames: self.input_frames,
+            output_frames: self.output_frames,
+        })
+    }
 }
 
 /// Fixed audio-bus shape for the selected project device slot.
@@ -61,17 +73,21 @@ pub struct Hosting {
     build: InstanceBuild,
     limits: native::Limits,
     grouped_editor_callbacks: bool,
+    transport_space: bool,
 }
 impl Hosting {
     /// Prepare a private offline source. Its reserved root is never admitted
     /// by the live output. The owner must join the instance before publishing.
-    pub fn prepare_offline_instrument_on_control(
+    #[allow(clippy::too_many_arguments)] // Exact offline source, destination, and authored program.
+    pub fn prepare_offline_processor_on_control(
         &self,
         selection: EffectSelection<'_>,
         owner: ProcessorChainOwner,
         device_id: u64,
         sample_rate: u32,
+        profile: PluginProfile,
         state: &NativeDeviceState,
+        authored: Option<&AuthoredSelection>,
     ) -> Result<NativeEffect, String> {
         let identity =
             ProcessorInstanceIdentity::new(owner, device_id).map_err(|e| e.to_string())?;
@@ -87,7 +103,10 @@ impl Hosting {
                 },
                 sample_rate: f64::from(sample_rate),
                 quantum: MAX_FRAMES as u16,
-                input_channels: 0,
+                input_channels: match profile {
+                    PluginProfile::Effect => 2,
+                    PluginProfile::Instrument => 0,
+                },
                 output_channels: 2,
                 limits: self.limits,
             },
@@ -102,8 +121,45 @@ impl Hosting {
             .complete_with_plan_on_control(PresentationPlan::AllowUnknown)
             .map_err(|e| e.to_string())?;
         let data_limit = Self::source_data_reservation()?.max_retained_data_bytes;
-        NativeEffect::prepare_retained_with_data_limit_on_control(identity, instance, data_limit)
-            .map_err(|e| e.finish_on_control().to_string())
+        NativeEffect::prepare_with_renewal_on_control(
+            identity,
+            instance,
+            data_limit,
+            authored.map(AuthoredSelection::parameters),
+            None,
+            authored.and_then(AuthoredSelection::dense_parameter),
+        )
+        .map_err(|e| e.finish_on_control().to_string())
+    }
+    /// Hold a real private offline source at zero PCM while its sole graph is
+    /// compiled. Completion applies graph timing and constructs the final pair.
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_offline_effect_on_control(
+        &self,
+        selection: EffectSelection<'_>,
+        owner: ProcessorChainOwner,
+        device_id: u64,
+        sample_rate: u32,
+        profile: PluginProfile,
+        state: &NativeDeviceState,
+        authored: Option<&AuthoredSelection>,
+        bypassed: bool,
+    ) -> Result<OfflineEffectPreparation, String> {
+        let effect = self.prepare_offline_processor_on_control(
+            selection,
+            owner,
+            device_id,
+            sample_rate,
+            profile,
+            state,
+            authored,
+        )?;
+        OfflineEffectPreparation::from_effect_on_control(
+            effect,
+            Self::source_data_reservation()?.max_retained_data_bytes,
+            authored.cloned(),
+            bypassed,
+        )
     }
     /// Maximum payload for the single pending native capture response.
     pub const CAPTURE_RESPONSE_DATA_BYTES: usize = hex_plugin_state::MAX_ENVELOPE_BYTES;
@@ -169,6 +225,7 @@ impl Hosting {
         Ok(Self {
             build: InstanceBuild::inspect(receipt)?,
             grouped_editor_callbacks: false,
+            transport_space: false,
             limits: native::Limits {
                 startup: Duration::from_secs(3),
                 exchange: Duration::from_secs(1),
@@ -196,6 +253,7 @@ impl Hosting {
         Self {
             build: package.build,
             grouped_editor_callbacks: false,
+            transport_space: false,
             limits: native::Limits {
                 startup: Duration::from_secs(30),
                 exchange: Duration::from_secs(1),
@@ -209,6 +267,7 @@ impl Hosting {
             build,
             limits,
             grouped_editor_callbacks: false,
+            transport_space: false,
         }
     }
     /// Opt in before a live SDK controller is constructed. This grants no
@@ -217,11 +276,16 @@ impl Hosting {
         self.grouped_editor_callbacks = true;
         self
     }
+    pub fn with_transport_space(mut self) -> Self {
+        self.transport_space = true;
+        self
+    }
     /// Begin an explicit user-selected effect, including restoration of its
     /// saved identity from a user-opened project, on a configured output.
     /// A catalog match remains copied metadata; this revalidates the files.
     /// Quantum comes from that output, never the UI. Root allocates the actual
     /// binding/cancellation for the captured owner/planned canonical device.
+    /// Timing optionally fills a fresh control-side observation for new sources.
     #[allow(clippy::too_many_arguments)] // Complete selected source and destination.
     pub fn begin_on_control(
         &self,
@@ -233,6 +297,7 @@ impl Hosting {
         sample_rate: u32,
         profile: PluginProfile,
         restore: Option<NativeDeviceState>,
+        mut timings: Option<&mut EffectStartupTimings>,
     ) -> Result<Binding, String> {
         let quantum = output
             .plugin_callback_quantum_on_control()
@@ -242,9 +307,19 @@ impl Hosting {
             .ok_or("native output is unavailable")?;
         let identity =
             ProcessorInstanceIdentity::new(owner, device_id).map_err(|error| error.to_string())?;
-        let source = selection.inspect_on_control()?;
+        let inspected_at = timings.as_ref().map(|_| Instant::now());
+        let source = selection.inspect_on_control();
+        if let Some((started, timings)) = inspected_at.zip(timings.as_deref_mut()) {
+            timings.selection_inspection = started.elapsed();
+        }
+        let source = source?;
         let source = if self.grouped_editor_callbacks {
             source.with_grouped_editor_callbacks()
+        } else {
+            source
+        };
+        let source = if self.transport_space {
+            source.with_transport_space()
         } else {
             source
         };
@@ -273,6 +348,7 @@ impl Hosting {
                 },
                 restore,
                 native::TrustUserCode::Acknowledged,
+                timings,
             )
             .map_err(str::to_owned)
     }
@@ -283,18 +359,10 @@ impl Hosting {
         &self,
         output: &mut PublicationControl,
         binding: Binding,
-        presentation: Option<EffectPresentation>,
+        presentation: PresentationPlan,
     ) -> Result<(), String> {
         output
-            .complete_native_source_preparation(
-                binding,
-                presentation.map_or(PresentationPlan::AllowUnknown, |p| {
-                    PresentationPlan::Known(PresentationLatency {
-                        input_frames: p.input_frames,
-                        output_frames: p.output_frames,
-                    })
-                }),
-            )
+            .complete_native_source_preparation(binding, presentation)
             .map_err(str::to_owned)
     }
     /// Borrow actual Root-held definitions through the ordinary compiler facade.

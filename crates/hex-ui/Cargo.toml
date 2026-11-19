@@ -6,7 +6,7 @@ rust-version.workspace = true
 publish.workspace = true
 
 [features]
-ui-test-support = ["gpui/test-support", "hex-session/source-overview-test-support"]
+ui-test-support = ["gpui/test-support", "hex-session/source-overview-test-support", "hex-session/recovery-checkpoint-test-support"]
 # Enables source-local pure tests in separately selected unit targets.
 ui-unit-tier = []
 
@@ -39,6 +39,16 @@ required-features = ["ui-unit-tier"]
 name = "unit_editor_logic"
 path = "tests/unit_editor_logic.rs"
 required-features = ["ui-unit-tier"]
+
+[[test]]
+name = "midi_pressure_boundary"
+path = "tests/midi_pressure_boundary.rs"
+required-features = ["ui-test-support"]
+
+[[test]]
+name = "sample_recorder_layout"
+path = "tests/sample_recorder_layout.rs"
+required-features = ["ui-test-support"]
 
 [dependencies]
 # UI-only random result selection; already pinned in the workspace lock graph.

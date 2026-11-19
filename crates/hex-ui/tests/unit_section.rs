@@ -18,3 +18,6 @@ mod section_resize;
 #[allow(dead_code)]
 #[path = "../src/section_selection.rs"]
 mod section_selection;
+
+#[path = "section_unit/section_surface.rs"]
+mod section_surface;

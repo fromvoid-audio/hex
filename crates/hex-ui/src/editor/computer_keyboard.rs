@@ -106,6 +106,11 @@ impl super::EditorView {
     }
 
     pub(super) fn tick_computer_keyboard(&mut self) -> bool {
+        if self.controller_wants_live_notes() {
+            let changed =
+                self.tick_computer_keyboard_with_policy(self.worker_owns_keyboard_publication());
+            return self.tick_midi_audition().unwrap_or(false) || changed;
+        }
         if let Some(changed) = self.tick_midi_audition() {
             return changed;
         }
@@ -138,7 +143,8 @@ impl super::EditorView {
                 .as_ref()
                 .is_some_and(|input| input.live_notes().is_none())
         {
-            self.cancel_computer_keyboard();
+            self.retire_computer_keyboard_audio();
+            self.computer_keyboard.release_all();
         }
         let retain_input = self.reusable_worker_keyboard_input(worker_owned);
         if worker_owned
@@ -205,6 +211,9 @@ impl super::EditorView {
                 .is_some_and(|(new, old)| new.0 == old.0 && new.2 == old.2);
         if same_physical_target {
             self.retire_computer_keyboard_audio();
+        } else if self.controller_wants_live_notes() {
+            self.retire_computer_keyboard_audio();
+            self.computer_keyboard.release_all();
         } else {
             self.cancel_computer_keyboard();
         }

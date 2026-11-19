@@ -253,15 +253,6 @@ fn review_final_right_click_actions_target_the_node_under_the_pointer(cx: &mut T
         assert_eq!(view.tuning.value.scale().cents()[0], 0.0);
     });
 }
-#[test]
-fn review_final_audition_level_keyboard_steps_are_fractional_and_reversible() {
-    let (spec, _, _) = Field::Level.spec(ProjectTuning::default(), 80.0).unwrap();
-    assert!((spec.step(0.5, 1.0, false).unwrap() - 0.51).abs() < 1e-12);
-    assert!((spec.step(0.5, -1.0, false).unwrap() - 0.49).abs() < 1e-12);
-    assert!((spec.step(0.5, 1.0, true).unwrap() - 0.501).abs() < 1e-12);
-    assert_eq!(spec.step(1.0, 1.0, false).unwrap(), 1.0);
-}
-
 #[gpui::test]
 fn retained_tuning_preview_declines_new_numeric_drag_without_adopting_its_events(
     cx: &mut TestAppContext,

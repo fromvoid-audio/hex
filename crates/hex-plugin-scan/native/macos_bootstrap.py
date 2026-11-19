@@ -23,7 +23,7 @@ SOURCES = ("macos_bootstrap.py", "macos_helper.mm", "macos_fixture.cpp", "build.
            "macos_scan.mm", "macos_scan_wire.hpp", "macos_factory_fixture.cpp", "launch_ignored.cpp",
            "macos_instance.hpp", "macos_lifecycle_fixture.cpp", "macos_lifecycle_case.hpp",
            "macos_host_messages.hpp", "macos_host.hpp", "macos_parameters.hpp", "macos_editor_touch.hpp", "macos_parameter_page.hpp", "macos_host_case.hpp", "macos_stream_case.hpp",
-           "macos_processing.hpp", "macos_processing_fixture.cpp", "macos_processing_case.hpp", "macos_bundle.hpp", "macos_state_stream.hpp", "macos_instance_wire.hpp", "macos_input_notes.hpp", "macos_editor.hpp", "macos_instance_worker.mm")
+           "macos_processing.hpp", "macos_processing_fixture.cpp", "macos_processing_case.hpp", "macos_bundle.hpp", "macos_state_stream.hpp", "macos_instance_wire.hpp", "macos_input_notes.hpp", "macos_editor.hpp", "macos_editor_position.hpp", "macos_instance_worker.mm")
 MAX_FILE = 16 * 1024 * 1024
 
 
@@ -124,6 +124,8 @@ def verify(receipt, run=False, expected_source_digest=None, expected_sdk_pins=No
         expected_id = "org.portalsurfer.hex.vst3.instance" if instance else "org.portalsurfer.hex.vst3.discovery"
         if info.get("CFBundleExecutable") != name or info.get("CFBundleIdentifier") != expected_id:
             raise ValueError("unexpected helper package identity")
+        if instance and info.get("NSHighResolutionCapable") is not True:
+            raise ValueError("instance editor helper lacks high-resolution support")
         if run:
             raise ValueError("instance helper requires owned duplex protocol" if instance else
                              "discovery helper requires owned factory protocol; use scanner fixture qualification")
@@ -278,6 +280,7 @@ def build(sdk, output, *, discovery_only=False, instance_only=False):
         "CFBundleIdentifier": "org.portalsurfer.hex.vst3.instance" if instance_only else ("org.portalsurfer.hex.vst3.discovery" if discovery_only else "org.portalsurfer.hex.vst3.bootstrap"),
         "CFBundlePackageType": "APPL", "CFBundleVersion": "1",
         ("LSUIElement" if instance_only else "LSBackgroundOnly"): True,
+        **({"NSHighResolutionCapable": True} if instance_only else {}),
     }, sort_keys=True))
     # CommonCrypto's legacy one-shot function remains available for local identity.
     if not minimal:

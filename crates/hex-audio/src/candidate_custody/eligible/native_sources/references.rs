@@ -2,6 +2,30 @@
 //! cells cannot be reused while these references survive; no owner is cloned.
 use super::*;
 
+/// A source-reference check reports unavailability separately from other
+/// validation failures. It makes no claim about why the source is unavailable.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum NativeReferenceFailure {
+    Unavailable,
+    Other(&'static str),
+}
+impl NativeReferenceFailure {
+    pub(crate) fn is_unavailable(self) -> bool {
+        matches!(self, Self::Unavailable)
+    }
+    pub(crate) fn message(self) -> &'static str {
+        match self {
+            Self::Unavailable => "native graph source is unavailable",
+            Self::Other(message) => message,
+        }
+    }
+}
+impl From<&'static str> for NativeReferenceFailure {
+    fn from(message: &'static str) -> Self {
+        Self::Other(message)
+    }
+}
+
 #[derive(Clone, Copy, Default)]
 pub(in crate::candidate_custody::eligible) struct References([u64; MAX_SOURCES.div_ceil(64)]);
 impl References {
@@ -38,17 +62,18 @@ impl Bank {
                 .map_err(|_| "foreign constructor query refused")?,
             work,
         )
+        .map_err(NativeReferenceFailure::message)
     }
     pub(super) fn references_for_nodes<'a>(
         &self,
         nodes: impl Iterator<Item = &'a hex_lattice::PreparedRuntimeInstance>,
         work: &Work,
-    ) -> Result<References, &'static str> {
+    ) -> Result<References, NativeReferenceFailure> {
         let mut references = References::default();
         for node in nodes {
             let Some(hex_lattice::PreparedProcessorFactory::Foreign(prepared)) = &node.definition
             else {
-                return Err("native graph node differs");
+                return Err("native graph node differs".into());
             };
             let binding = prepared
                 .binding()
@@ -74,13 +99,13 @@ impl Bank {
                 || cell.cleanup_error.is_some()
                 || cell.disposal.is_some()
             {
-                return Err("native graph source is unavailable");
+                return Err(NativeReferenceFailure::Unavailable);
             }
             let Some(Owner::Loaned(control)) = cell.owner.as_ref() else {
-                return Err("native graph endpoint is not loaned");
+                return Err("native graph endpoint is not loaned".into());
             };
             if !control.transport_is_live_on_control() {
-                return Err("native graph source is unavailable");
+                return Err(NativeReferenceFailure::Unavailable);
             }
             if control.constructor_storage_on_control().is_none()
                 || slot.identity != Some(control.identity())
@@ -89,7 +114,7 @@ impl Bank {
                 || !crate::plugin_effects::NativeEffectReference::Loaned(control)
                     .matches_prepared(node)
             {
-                return Err("native graph configuration or original source differs");
+                return Err("native graph configuration or original source differs".into());
             }
             references.insert(index)?;
         }

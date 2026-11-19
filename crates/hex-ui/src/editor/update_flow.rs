@@ -172,6 +172,7 @@ impl EditorView {
             request,
             Request::SaveCurrent
                 | Request::SaveNew(_)
+                | Request::SaveProjectAs { .. }
                 | Request::SaveCurrentWithFormatUpgrade { .. }
         ) {
             return None;
@@ -204,6 +205,13 @@ impl EditorView {
         let request = match request {
             Request::SaveCurrent => Request::SaveCurrent,
             Request::SaveNew(path) => Request::SaveNew(path.clone()),
+            Request::SaveProjectAs {
+                path,
+                replace_existing,
+            } => Request::SaveProjectAs {
+                path: path.clone(),
+                replace_existing: *replace_existing,
+            },
             Request::SaveCurrentWithFormatUpgrade {
                 project_generation,
                 path,
@@ -417,7 +425,7 @@ impl EditorView {
             if !view.prepare_theme_window_close(window, cx) {
                 drop(ready);
                 view.cancel_update(id, cx);
-                view.error = Some("theme save in progress · update cancelled".into());
+                view.error = Some("settings change in progress · update cancelled".into());
                 cx.notify();
                 return;
             }

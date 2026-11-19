@@ -339,6 +339,7 @@ pub(super) struct Backdrop {
     pub stroke: f32,
     pub bottom_radius: f32,
     pub header_height: f32,
+    pub header_gradient: Option<super::clip_header_loop::HeaderGradient>,
     pub notch: Notch,
 }
 
@@ -500,8 +501,21 @@ fn paint_backdrop(
             Default::default(),
         ));
     };
+    let paint_header_gradient = |window: &mut gpui::Window| {
+        if let Some(gradient) = &style.header_gradient {
+            gradient.paint(
+                bounds,
+                style.header_height,
+                style.stroke,
+                cut,
+                style.header,
+                window,
+            );
+        }
+    };
     if cut == 0.0 {
         paint_square(window);
+        paint_header_gradient(window);
         return;
     }
     let below = Bounds::from_corners(
@@ -531,6 +545,7 @@ fn paint_backdrop(
         if let Ok(path) = triangle.build() {
             window.paint_path(path, rgb(style.header));
         }
+        paint_header_gradient(window);
         let inset = px(style.stroke / (2.0 * std::f32::consts::SQRT_2));
         let mut diagonal = gpui::PathBuilder::stroke(px(style.stroke));
         diagonal.move_to(point(
@@ -550,3 +565,32 @@ fn paint_backdrop(
 #[cfg(all(test, feature = "ui-test-support"))]
 #[path = "clip_border_ui_test.rs"]
 pub(super) mod tests;
+
+#[cfg(all(test, not(feature = "ui-test-support")))]
+mod tests {
+    #[test]
+    fn corner_geometry_is_bounded_and_resolves_again_after_resize() {
+        use super::{Notch, corner_extent};
+        assert_eq!(corner_extent(100.0, 44.0), 5.0);
+        assert_eq!(corner_extent(6.0, 44.0), 3.0);
+        assert_eq!(corner_extent(100.0, 4.0), 2.0);
+        assert_eq!(corner_extent(0.0, 44.0), 0.0);
+        assert_eq!(corner_extent(-1.0, 44.0), 0.0);
+        assert_eq!(corner_extent(f32::NAN, 44.0), 0.0);
+        let notch = Notch::new(true);
+        let edge = notch.clone();
+        for width in [100.0, 6.0, 100.0] {
+            notch.observe(gpui::Bounds::new(
+                gpui::point(gpui::px(10.0), gpui::px(20.0)),
+                gpui::size(gpui::px(width), gpui::px(44.0)),
+            ));
+            assert_eq!(edge.extent(), corner_extent(width, 44.0));
+        }
+        let cropped = Notch::default();
+        cropped.observe(gpui::Bounds::new(
+            gpui::point(gpui::px(0.0), gpui::px(0.0)),
+            gpui::size(gpui::px(100.0), gpui::px(44.0)),
+        ));
+        assert_eq!(cropped.extent(), 0.0);
+    }
+}

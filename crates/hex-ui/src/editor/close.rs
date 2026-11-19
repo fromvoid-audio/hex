@@ -293,8 +293,10 @@ impl EditorView {
             return;
         }
         if self.update_blocks_close()
+            || super::device_panel::source_naming(self)
             || self.gain_recorder.blocks_edits()
             || self.midi_recorder.blocks_edits()
+            || self.audio_recorder.blocks_edits()
             || self.native_automation_recorder.busy()
             || self.automation_take_recovery.unresolved()
             || self.close_prompt_open
@@ -678,7 +680,7 @@ impl EditorView {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "ui-test-support")))]
 mod tests {
     use super::{AutomationClosePreflight, PreflightState, requires_close_confirmation};
 

@@ -1,9 +1,13 @@
 //! Instrumented headless callback allocation regression; no device is opened.
 
+#[path = "callback_allocations/cold_track.rs"]
+mod cold_track;
 #[path = "callback_allocations/compressor.rs"]
 mod compressor;
 #[path = "callback_allocations/cursor_loop.rs"]
 mod cursor_loop;
+#[path = "callback_allocations/device_track.rs"]
+mod device_track;
 #[path = "callback_allocations/finite_bounce.rs"]
 mod finite_bounce;
 #[path = "callback_allocations/gate.rs"]
@@ -16,6 +20,8 @@ mod overdrive;
 pub(super) mod probe;
 #[path = "callback_allocations/project_tuning.rs"]
 mod project_tuning;
+#[path = "callback_allocations/return_tail.rs"]
+mod return_tail;
 #[path = "callback_allocations/reverb_outputs.rs"]
 mod reverb_outputs;
 #[path = "../../../hex-engine/examples/support/session_audio_fixture.rs"]

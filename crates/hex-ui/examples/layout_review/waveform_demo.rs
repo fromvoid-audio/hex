@@ -171,6 +171,7 @@ pub(super) fn view(
             waveform: style.text,
             inactive: style.muted,
             centerline: style.border,
+            overrange: style.border,
         },
         WaveformEmphasis::Range(range),
     )

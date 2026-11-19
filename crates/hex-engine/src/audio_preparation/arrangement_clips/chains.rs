@@ -1,4 +1,4 @@
-//! Closed Utility/reverb/Saturator/Auto Pan/foreign chain metadata. No registry/provider owner
+//! Closed native and foreign chain metadata. No registry/provider owner
 //! is adopted and no owning Arc escapes this private preparation path.
 use crate::{
     AudioStorageError,
@@ -163,6 +163,19 @@ impl ChainCustody {
                         OwnedShared::<hex_devices::rattle::PreparedRattle>::declared_parts(),
                     )?),
                 )
+            } else if state.type_id() == hex_devices::limiter::TYPE_ID {
+                let migrated = hex_devices::limiter::DEFINITION
+                    .migrate_state(state)
+                    .map_err(|_| AudioStorageError::UnsupportedGraph)?;
+                hex_devices::limiter::LimiterDefinition::prepare_owned(&migrated, rate, &[])
+                    .map_err(|_| AudioStorageError::UnsupportedGraph)?;
+                largest_copy = largest_copy.max(migrated.payload().len());
+                let fixed =
+                    parts(OwnedShared::<hex_devices::limiter::PreparedLimiter>::declared_parts())?;
+                let structural = parts(OwnedShared::<
+                    hex_devices::limiter::PreparedStructuralLimiter,
+                >::declared_parts())?;
+                (migrated.payload().len(), Some(fixed.max(structural)))
             } else if state.type_id() == hex_devices::delay::TYPE_ID {
                 let migrated = hex_devices::delay::DEFINITION
                     .migrate_state(state)
@@ -413,6 +426,7 @@ impl ChainCustody {
             let rattle = device.state().type_id() == hex_devices::rattle::RATTLE_TYPE_ID;
             let eq8 = device.state().type_id() == hex_devices::eq8::EQ8_TYPE_ID;
             let delay = device.state().type_id() == hex_devices::delay::TYPE_ID;
+            let limiter = device.state().type_id() == hex_devices::limiter::TYPE_ID;
             let native = crate::native_effect_storage::is_closed_type(device.state().type_id());
             let definition = &hex_devices::utility::UTILITY_DEFINITION;
             // Construct closed native factories here. Foreign factories
@@ -433,6 +447,11 @@ impl ChainCustody {
                     .map_err(|_| AudioStorageError::UnsupportedGraph)?
             } else if rattle {
                 hex_devices::rattle::RATTLE_DEFINITION
+                    .migrate_state(device.state())
+                    .and_then(|state| state.with_host_metadata_from(device.state()))
+                    .map_err(|_| AudioStorageError::UnsupportedGraph)?
+            } else if limiter {
+                hex_devices::limiter::DEFINITION
                     .migrate_state(device.state())
                     .and_then(|state| state.with_host_metadata_from(device.state()))
                     .map_err(|_| AudioStorageError::UnsupportedGraph)?
@@ -513,7 +532,9 @@ impl ChainCustody {
                     foreign,
                     project.tempo_map(),
                     project.loop_region(),
-                )? {
+                )
+                .map_err(crate::foreign_automation::candidate::PreparationError::into_storage)?
+                {
                     if !automation.is_empty() {
                         return Err(AudioStorageError::UnsupportedGraph);
                     }
@@ -539,6 +560,7 @@ impl ChainCustody {
                 || rattle
                 || eq8
                 || delay
+                || limiter
             {
                 StereoMatrix::identity()
             } else if reverb {
@@ -663,7 +685,39 @@ impl ChainCustody {
             let state = OwnedShared::new_owned(migrated);
             state.parts().ok_or(AudioStorageError::UnknownStorage)?;
             let (configuration, state) = state.into_paired_parts_on_control();
-            let (factory, processor_declaration) = if delay {
+            let (factory, processor_declaration) = if limiter {
+                use hex_devices::limiter::{LimiterDefinition, parameter};
+                let structural = parameters.iter().any(|id| {
+                    matches!(
+                        *id,
+                        parameter::LOOKAHEAD | parameter::ROUTING | parameter::MODE
+                    )
+                });
+                let (owner, declaration) = if structural {
+                    OwnedShared::new_owned(
+                        LimiterDefinition::prepare_owned_structural_for_parameters(
+                            &configuration,
+                            rate,
+                            parameters,
+                        )
+                        .map_err(|_| AudioStorageError::UnsupportedGraph)?,
+                    )
+                    .into_owned_processor_parts_on_control()
+                } else {
+                    OwnedShared::new_owned(
+                        LimiterDefinition::prepare_owned(&configuration, rate, parameters)
+                            .map_err(|_| AudioStorageError::UnsupportedGraph)?,
+                    )
+                    .into_owned_processor_parts_on_control()
+                };
+                declaration
+                    .parts(&owner)
+                    .ok_or(AudioStorageError::UnknownStorage)?;
+                (
+                    Some(PreparedProcessorFactory::Owned(owner)),
+                    Some(declaration),
+                )
+            } else if delay {
                 let (owner, declaration) = OwnedShared::new_owned(
                     hex_devices::delay::DelayDefinition::prepare_owned(
                         &configuration,
@@ -714,6 +768,8 @@ impl ChainCustody {
                         &hex_devices::eq8::EQ8_DEFINITION
                     } else if delay {
                         &hex_devices::delay::DEFINITION
+                    } else if limiter {
+                        &hex_devices::limiter::DEFINITION
                     } else if rattle {
                         &hex_devices::rattle::RATTLE_DEFINITION
                     } else if gate {
@@ -800,9 +856,11 @@ impl ChainCustody {
                     }
                     (Some(PreparedProcessorFactory::Owned(_)), None, true) => {
                         pair.device_type != hex_devices::delay::TYPE_ID
+                            && pair.device_type != hex_devices::limiter::TYPE_ID
                     }
                     (Some(PreparedProcessorFactory::Legacy(_)), None, true) => {
                         pair.device_type == hex_devices::delay::TYPE_ID
+                            || pair.device_type == hex_devices::limiter::TYPE_ID
                     }
                     (None, None, false) => false,
                     _ => true,

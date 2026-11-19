@@ -270,6 +270,7 @@ impl Plugins {
                     output.sample_rate,
                     hosting_profile(destination),
                     Some(state.clone()),
+                    None,
                 )
                 .map(|binding| (binding, authored))
         });
@@ -288,6 +289,7 @@ impl Plugins {
                     observes_latency: false,
                     editor_open: false,
                     editor_transfer: false,
+                    editor_open_on_insert: false,
                     edit_backlog: false,
                     edit_recovery: None,
                     pending_touch: None,

@@ -31,6 +31,7 @@ fn unavailable_plugin_insertion_preserves_project_history_and_ordinary_output() 
             },
             destination: PluginEffectDestination::Track(track),
             before: None,
+            track_device_name: None,
             control: Arc::new(PluginEffectControl::default()),
         }))
         .unwrap();

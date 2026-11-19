@@ -6,8 +6,6 @@ use gpui::{Context, Window};
 
 #[path = "midi_draw_pointer.rs"]
 mod pointer;
-#[cfg(test)]
-use hex_project::BeatTime;
 use hex_project::{ClipId, MidiNote, NoteId};
 use std::sync::Arc;
 
@@ -323,10 +321,10 @@ pub(super) fn created_range_ids(
     Ok(Some(created))
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "ui-test-support")))]
 mod tests {
     use super::*;
-    use hex_project::{Command, Created, Editor, Project};
+    use hex_project::{BeatTime, Command, Created, Editor, Project};
 
     #[test]
     fn draw_coordinate_mapping_clamps_during_motion_and_rejects_offroll_release() {

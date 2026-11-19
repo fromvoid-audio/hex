@@ -1,10 +1,28 @@
-//! Audio clip loop brace in the event editor's retained-root viewport.
+//! Audio clip scope bar in the event editor's retained-root viewport.
 //! Window input capture ends independently of the existing clip-loop receipt.
 use super::*;
 use crate::editor::audio_event_editor::{editor_bounds, event_grid_origin};
 use crate::editor::{musical_time::SnapGrid, signed_frame_viewport::SignedFrameViewport};
 use gpui::{Bounds, Context, Div, MouseButton, Pixels, canvas, div, prelude::*, px, relative};
 use hex_project::AudioClipEdit;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Handle {
+    Start,
+    End,
+    Body,
+}
+
+impl Handle {
+    fn cursor(self, held: bool) -> gpui::CursorStyle {
+        match self {
+            Self::Start => gpui::CursorStyle::ResizeLeft,
+            Self::End => gpui::CursorStyle::ResizeRight,
+            Self::Body if held => gpui::CursorStyle::ClosedHand,
+            Self::Body => gpui::CursorStyle::OpenHand,
+        }
+    }
+}
 
 #[derive(Clone)]
 pub(super) struct Gesture {
@@ -15,7 +33,7 @@ pub(super) struct Gesture {
     clip_start: u64,
     viewport: SignedFrameViewport,
     bounds: Bounds<Pixels>,
-    start_edge: bool,
+    handle: Handle,
     down_x: f32,
     preview: (u64, u64),
     looping: bool,
@@ -48,17 +66,13 @@ impl EditorView {
         let generation = gesture.generation;
         let revision = gesture.revision;
         let clip = gesture.clip;
-        let start_edge = gesture.start_edge;
+        let handle = gesture.handle;
         let owner = cx.entity().downgrade();
         let cancelled = owner.clone();
         window.capture_pointer(
             cx.entity_id(),
             MouseButton::Left,
-            if start_edge {
-                gpui::CursorStyle::ResizeLeft
-            } else {
-                gpui::CursorStyle::ResizeRight
-            },
+            handle.cursor(true),
             move |event, window, cx| {
                 let moved = event.downcast_ref::<gpui::MouseMoveEvent>();
                 let released = event
@@ -75,39 +89,42 @@ impl EditorView {
                         g.generation == generation
                             && g.revision == revision
                             && g.clip == clip
-                            && g.start_edge == start_edge
+                            && g.handle == handle
                     }) {
                         return;
                     }
-                    if !view.clip_view_open
+                    let changed = if !view.clip_view_open
                         || view.device_panel_active
                         || view.audio_event_editor.source_view
                         || !view.audio_event_focus.is_focused(window)
                         || !f32::from(position.x).is_finite()
                         || !f32::from(position.y).is_finite()
                     {
-                        view.cancel_audio_loop_gesture();
+                        view.cancel_audio_loop_gesture()
                     } else {
                         let platform = moved
                             .map(|e| e.modifiers.platform)
                             .or_else(|| released.map(|e| e.modifiers.platform))
                             .unwrap_or(false);
-                        view.audio_loop_update(f32::from(position.x), platform);
+                        let changed = view.audio_loop_update(f32::from(position.x), platform);
                         if released.is_some()
                             && let Some(g) = view.clip_loop.audio_gesture.take()
                             && g.preview != (g.root.view_start, g.root.view_end)
                         {
                             view.commit_audio_clip_loop(
                                 g.clip,
-                                AudioViewResizeOperation::CycleRange {
+                                AudioViewResizeOperation::ScopeRange {
                                     start: g.preview.0,
                                     end: g.preview.1,
                                     looping: g.looping,
                                 },
                             );
                         }
+                        changed
+                    };
+                    if changed || released.is_some() {
+                        cx.notify();
                     }
-                    cx.notify();
                 });
             },
             move |_, cx| {
@@ -116,7 +133,7 @@ impl EditorView {
                         g.generation == generation
                             && g.revision == revision
                             && g.clip == clip
-                            && g.start_edge == start_edge
+                            && g.handle == handle
                     }) {
                         view.cancel_audio_loop_gesture();
                         cx.notify();
@@ -126,12 +143,12 @@ impl EditorView {
             cx,
         )
     }
-    fn audio_loop_update(&mut self, x: f32, platform: bool) {
+    fn audio_loop_update(&mut self, x: f32, platform: bool) -> bool {
         let Some(mut g) = self.clip_loop.audio_gesture.take() else {
-            return;
+            return false;
         };
         let Some(state) = &self.state else {
-            return;
+            return true;
         };
         if !x.is_finite()
             || self.project_generation != g.generation
@@ -142,8 +159,9 @@ impl EditorView {
             || self.event_frame_window(&g.root) != g.viewport
             || g.grid != self.audio_loop_grid()
         {
-            return;
+            return true;
         }
+        let previous = g.preview;
         if (x - g.down_x).abs() >= 3.0 {
             let tempo = state.project.tempo_map();
             let first = g.root.root_frame_at(event_grid_origin(&g.root), tempo).ok();
@@ -156,15 +174,14 @@ impl EditorView {
                 let offset =
                     (f64::from(x - g.down_x) / f64::from(width) * g.viewport.length as f64).round();
                 let Ok(edge) = g.root.root_frame_at(
-                    if g.start_edge {
-                        g.root.view_start
-                    } else {
-                        g.root.view_end
+                    match g.handle {
+                        Handle::Start | Handle::Body => g.root.view_start,
+                        Handle::End => g.root.view_end,
                     },
                     tempo,
                 ) else {
                     self.clip_loop.audio_gesture = Some(g);
-                    return;
+                    return false;
                 };
                 let raw = (i128::from(edge)
                     + offset.clamp(-(u64::MAX as f64), u64::MAX as f64) as i128)
@@ -185,16 +202,81 @@ impl EditorView {
                             .clamp(0, i128::from(horizon)) as u64
                     });
                 if let Ok(position) = g.root.root_position_at(snapped, tempo) {
-                    if g.start_edge {
-                        g.preview.0 = position.min(g.root.view_end - 1);
-                    } else {
-                        g.preview.1 =
-                            position.clamp(g.root.view_start + 1, g.root.domain.clock.length());
+                    match g.handle {
+                        Handle::Start => g.preview.0 = position.min(g.root.view_end - 1),
+                        Handle::End => {
+                            g.preview.1 =
+                                position.clamp(g.root.view_start + 1, g.root.domain.clock.length());
+                        }
+                        Handle::Body => {
+                            let length = g.root.view_end - g.root.view_start;
+                            let start = position.min(g.root.domain.clock.length() - length);
+                            g.preview = (start, start + length);
+                        }
                     }
                 }
             }
+        } else if g.handle == Handle::Body {
+            g.preview = (g.root.view_start, g.root.view_end);
         }
+        let changed = g.preview != previous;
         self.clip_loop.audio_gesture = Some(g);
+        changed
+    }
+    pub(in crate::editor) fn audio_scope_preview_active(
+        &self,
+        clip: ClipId,
+        state: &super::super::ViewState,
+    ) -> bool {
+        self.pending_clip_loop_audio(clip).is_some()
+            || self.clip_loop.audio_gesture.as_ref().is_some_and(|g| {
+                g.clip == clip
+                    && g.generation == self.project_generation
+                    && g.revision == state.revision
+                    && g.preview != (g.root.view_start, g.root.view_end)
+            })
+            || (self.detail_clip_id() == Some(clip)
+                && self.held_audio_play_start_position().is_some())
+    }
+    /// Arrangement geometry and peaks share the detail editor's held and
+    /// released scope/start edit through its ordinary receipt.
+    pub(in crate::editor) fn audio_scope_display_clip<'a>(
+        &'a self,
+        clip: &'a Clip,
+        state: &super::super::ViewState,
+    ) -> std::borrow::Cow<'a, Clip> {
+        if let Some(g) = self.clip_loop.audio_gesture.as_ref().filter(|g| {
+            g.clip == clip.id()
+                && g.generation == self.project_generation
+                && g.revision == state.revision
+                && g.preview != (g.root.view_start, g.root.view_end)
+        }) && let Some(asset) = state.project.asset(clip.asset())
+            && let Ok(preview) = hex_project::preview_audio_view_resize(
+                clip,
+                state.project.tempo_map(),
+                asset.playback_frames(),
+                AudioViewResizeOperation::ScopeRange {
+                    start: g.preview.0,
+                    end: g.preview.1,
+                    looping: g.looping,
+                },
+            )
+        {
+            return std::borrow::Cow::Owned(preview);
+        }
+        if self.detail_clip_id() == Some(clip.id())
+            && let Some(position) = self.held_audio_play_start_position()
+            && let Some(asset) = state.project.asset(clip.asset())
+            && let Ok(preview) = hex_project::preview_audio_view_resize(
+                clip,
+                state.project.tempo_map(),
+                asset.playback_frames(),
+                AudioViewResizeOperation::PlayStart { position },
+            )
+        {
+            return std::borrow::Cow::Owned(preview);
+        }
+        std::borrow::Cow::Borrowed(self.pending_clip_loop_audio(clip.id()).unwrap_or(clip))
     }
     pub(in crate::editor) fn audio_loop_ruler(
         &mut self,
@@ -229,7 +311,7 @@ impl EditorView {
         let refusal = hex_project::preview_view_resize(
             clip,
             state.project.tempo_map(),
-            AudioViewResizeOperation::CycleRange {
+            AudioViewResizeOperation::ScopeRange {
                 start: root.view_start,
                 end: root.view_end,
                 looping,
@@ -257,10 +339,10 @@ impl EditorView {
             .debug_selector(|| "audio-loop-ruler".into())
             .w_full()
             .track_focus(&self.audio_event_focus);
-        let description=refusal.unwrap_or_else(||format!("clip loop {} · drag ends · w/l uses time selection · hold cmd/control to invert snap",if looping {"on"} else {"off"}));
+        let description=refusal.unwrap_or_else(||format!("clip scope · looping {} · drag scope bar or its ends · w/l uses time selection · hold cmd/control to invert snap",if looping {"on"} else {"off"}));
         ruler = ruler.tooltip(move |_, cx| {
             cx.new(|_| crate::editor::transport::MiniTooltip {
-                kind: crate::tooltips::Kind::control("clip loop"),
+                kind: crate::tooltips::Kind::control("scope bar"),
                 description: description.clone().into(),
             })
             .into()
@@ -272,30 +354,34 @@ impl EditorView {
                 looping,
                 ["audio-loop-start-marker", "audio-loop-end-marker"],
             ));
-            for (start_edge, at) in [(true, a), (false, b)] {
-                if !editable || !(0.0..=1.0).contains(&at) {
+            let body_start = a.clamp(0.0, 1.0);
+            let body_end = b.clamp(0.0, 1.0);
+            // Insert the body first so the existing edge handles retain hit priority.
+            for (handle, at, selector) in [
+                (Handle::Body, body_start, "audio-scope-body"),
+                (Handle::Start, a, "audio-loop-start"),
+                (Handle::End, b, "audio-loop-end"),
+            ] {
+                if !editable
+                    || !(0.0..=1.0).contains(&at)
+                    || (handle == Handle::Body && body_start >= body_end)
+                {
                     continue;
                 }
-                let selector = if start_edge {
-                    "audio-loop-start"
-                } else {
-                    "audio-loop-end"
-                };
                 ruler = ruler.child(
                     div()
                         .id(selector)
                         .debug_selector(move || selector.into())
                         .absolute()
                         .left(relative(at as f32))
-                        .ml(px(if start_edge { 0.0 } else { -7.0 }))
                         .top_0()
-                        .w(px(7.0))
                         .h_full()
-                        .cursor(if start_edge {
-                            gpui::CursorStyle::ResizeLeft
-                        } else {
-                            gpui::CursorStyle::ResizeRight
+                        .when(handle == Handle::Body, |target| {
+                            target.w(relative((body_end - body_start) as f32))
                         })
+                        .when(handle != Handle::Body, |target| target.w(px(7.0)))
+                        .when(handle == Handle::End, |target| target.ml(px(-7.0)))
+                        .cursor(handle.cursor(false))
                         .on_mouse_down(
                             MouseButton::Left,
                             cx.listener(move |view, event: &gpui::MouseDownEvent, window, cx| {
@@ -306,6 +392,7 @@ impl EditorView {
                                     || view.audio_event_editor.source_view
                                     || view.edit_pending()
                                     || view.clip_loop.pending.is_some()
+                                    || view.clip_loop.audio_gesture.is_some()
                                     || view.audio_event_editor.gesture.is_some()
                                 {
                                     return;
@@ -341,7 +428,7 @@ impl EditorView {
                                     root,
                                     clip_start: clip.start(),
                                     bounds,
-                                    start_edge,
+                                    handle,
                                     down_x: f32::from(event.position.x),
                                     looping,
                                     grid: view.audio_loop_grid(),
@@ -387,14 +474,7 @@ impl EditorView {
                                 .as_ref()
                                 .is_some_and(|s| s.revision == g.revision)
                         {
-                            window.renew_pointer_capture(
-                                entity.entity_id(),
-                                if g.start_edge {
-                                    gpui::CursorStyle::ResizeLeft
-                                } else {
-                                    gpui::CursorStyle::ResizeRight
-                                },
-                            );
+                            window.renew_pointer_capture(entity.entity_id(), g.handle.cursor(true));
                         }
                     },
                 )

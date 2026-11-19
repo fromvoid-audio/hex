@@ -83,6 +83,7 @@ pub(crate) struct CaptureStorage {
     pub(crate) faulted: Option<MidiCaptureFault>,
     pub(crate) route: usize,
     pub(crate) first_occurrence: u64,
+    pub(crate) latency_frames: u64,
     clock: MidiCaptureClock,
     frames: usize,
     events: [AcceptedMidiNote; MAX_ACCEPTED_MIDI_NOTES_PER_RENDER],
@@ -112,6 +113,7 @@ impl Default for CaptureStorage {
             faulted: None,
             route: 0,
             first_occurrence: 0,
+            latency_frames: 0,
             clock: MidiCaptureClock {
                 content_frame: 0,
                 performance_frame: 0,
@@ -149,7 +151,11 @@ impl CaptureStorage {
         let binding = self
             .binding
             .ok_or(Invalid("midi capture binding is unavailable"))?;
-        if content < binding.first_frame || content >= binding.end_frame {
+        let end = binding
+            .end_frame
+            .checked_add(self.latency_frames)
+            .ok_or(Invalid("midi capture latency exceeds frame range"))?;
+        if content < binding.first_frame || content >= end {
             self.fail(MidiCaptureFault::Clock);
             return Err(Invalid("midi capture position left its clip"));
         }
@@ -162,8 +168,7 @@ impl CaptureStorage {
             content_frame: content,
             performance_frame: performance,
         };
-        self.frames =
-            frames.min(usize::try_from(binding.end_frame - content).unwrap_or(usize::MAX));
+        self.frames = frames.min(usize::try_from(end - content).unwrap_or(usize::MAX));
         Ok(())
     }
     pub(crate) fn push(&mut self, event: AcceptedMidiNote) -> Result<(), Invalid> {

@@ -41,6 +41,28 @@ fn clip_move_worker_refuses_stale_or_unrelated_commands_without_history_changes(
         (1, placed.state.revision, move_command.clone()),
         (0, placed.state.revision + 1, move_command.clone()),
         (
+            1,
+            placed.state.revision,
+            Command::MoveMidiClipToNewTrack {
+                clip,
+                name: "new".into(),
+                before_track: Some(track),
+                start: BeatTime::ONE,
+                initial_gain: Some(0.5),
+            },
+        ),
+        (
+            0,
+            placed.state.revision + 1,
+            Command::CopyMidiClipToNewTrack {
+                clip,
+                name: "new".into(),
+                before_track: Some(track),
+                start: BeatTime::ONE,
+                initial_gain: Some(0.5),
+            },
+        ),
+        (
             0,
             placed.state.revision,
             Command::RenameTrack {

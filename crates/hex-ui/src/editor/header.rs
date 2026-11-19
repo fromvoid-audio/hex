@@ -123,7 +123,7 @@ pub(super) fn toolbar_row() -> Stateful<Div> {
         })
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "ui-test-support")))]
 mod tests {
     use super::project_title;
     use crate::theme;
@@ -453,6 +453,7 @@ mod ui_tests {
                         "global-launch-quantization",
                         "input-quantization",
                         "section-focus-control",
+                        "track-tag-filter-control",
                     ] {
                         let control = visual.debug_bounds(selector).unwrap();
                         assert!(

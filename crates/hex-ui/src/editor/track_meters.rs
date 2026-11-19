@@ -249,16 +249,37 @@ pub(super) fn render(track: TrackId, peak: [f32; 2], height: f32) -> Div {
     render_meter(
         format!("track-output-meter-{}", track.value()),
         peak,
-        height,
+        compact_meter_height(height),
     )
 }
 
+pub(super) fn render_arrangement(track: TrackId, peak: [f32; 2], row_height: f32) -> Div {
+    render_meter(
+        format!("track-output-meter-{}", track.value()),
+        peak,
+        row_height - 6.0,
+    )
+    .mt(px(2.0))
+}
+
 pub(super) fn render_return(id: ReturnId, peak: [f32; 2], height: f32) -> Div {
-    render_meter(format!("return-output-meter-{}", id.value()), peak, height)
+    render_meter(
+        format!("return-output-meter-{}", id.value()),
+        peak,
+        compact_meter_height(height),
+    )
 }
 
 pub(super) fn render_main(peak: [f32; 2], height: f32) -> Div {
-    render_meter("main-output-meter".into(), peak, height)
+    render_meter(
+        "main-output-meter".into(),
+        peak,
+        compact_meter_height(height),
+    )
+}
+
+fn compact_meter_height(height: f32) -> f32 {
+    (height - 8.0).clamp(10.0, 42.0)
 }
 
 fn render_meter(id: String, peaks: [f32; 2], height: f32) -> Div {
@@ -278,7 +299,7 @@ fn render_meter(id: String, peaks: [f32; 2], height: f32) -> Div {
         .w(px(
             2.0 * hex_widgets::STEREO_PEAK_BAR_WIDTH + hex_widgets::STEREO_PEAK_BAR_GAP
         ))
-        .h(px((height - 8.0).clamp(10.0, 42.0)))
+        .h(px(height))
         .flex_shrink_0();
     for (side, peak) in ["left", "right"].into_iter().zip(peaks) {
         let channel_id = format!("{id}-{side}");
@@ -347,9 +368,11 @@ mod tests {
         }
         impl Render for Fixture {
             fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-                div()
-                    .size_full()
-                    .child(render_meter("scale-probe".into(), self.peak, self.height))
+                div().size_full().child(render_meter(
+                    "scale-probe".into(),
+                    self.peak,
+                    compact_meter_height(self.height),
+                ))
             }
         }
         let handle = cx.add_window(|_, _| Fixture {
@@ -428,6 +451,7 @@ mod tests {
         }
     }
 
+    #[cfg(all(test, not(feature = "ui-test-support")))]
     #[test]
     fn clearing_meters_keeps_the_per_tick_staging_capacity() {
         let mut state = State::default();
@@ -463,6 +487,7 @@ mod tests {
         );
     }
 
+    #[cfg(all(test, not(feature = "ui-test-support")))]
     #[test]
     fn revision_handoffs_decay_accepted_levels_without_crossing_projects() {
         let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
@@ -592,19 +617,9 @@ mod tests {
         let observation = Arc::new(
             hex_engine::PreparedPlaybackObservation::prepare_on_control(&prepared).unwrap(),
         );
-        let deadline = crate::test_wait::hang_deadline();
-        let (mut output, _backend) = loop {
-            match hex_audio::worker_fixture::open(48_000) {
-                Ok(output) => break output,
-                Err(error)
-                    if error == "audio output is open or still shutting down"
-                        && Instant::now() < deadline =>
-                {
-                    std::thread::yield_now()
-                }
-                Err(error) => panic!("{error}"),
-            }
-        };
+        let _output_serial = hex_audio::worker_fixture::serial_output();
+        let (mut output, mut backend) =
+            hex_audio::worker_fixture::open_after_retirement(48_000, false).unwrap();
         let client = output.take_client().unwrap();
         let applied = client.status().unwrap().applied_revision.load(Acquire);
         let (window, editor) = editor_window(cx, project, Arc::default());
@@ -621,6 +636,7 @@ mod tests {
                 mode: hex_session::DocumentAudioMode::Resident,
             });
             view.audible_playback = Some(super::super::PlaybackCandidate {
+                clip_preview_identity: None,
                 worker_requires_preroll: None,
                 observation: Some(observation),
                 audio_revision: applied,
@@ -709,5 +725,10 @@ mod tests {
             assert_eq!(view.track_meters.scratch.visible.as_ptr(), pointers.0);
             assert_eq!(view.track_meters.scratch.readings.as_ptr(), pointers.1);
         });
+        editor.update(cx, |view, _| {
+            view.audio.take().unwrap().control.close();
+        });
+        backend.close();
+        drop(output);
     }
 }

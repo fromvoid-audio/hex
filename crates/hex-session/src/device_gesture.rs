@@ -73,6 +73,16 @@ pub enum GestureTarget {
 }
 
 impl GestureTarget {
+    pub fn is_mixer_gain(self) -> bool {
+        matches!(
+            self,
+            Self::TrackGain { .. }
+                | Self::TrackGains { .. }
+                | Self::MainGain
+                | Self::ReturnGain { .. }
+        )
+    }
+
     pub fn track_gain_anchor(self) -> Option<TrackId> {
         match self {
             Self::TrackGain { track } | Self::TrackGains { track } => Some(track),
@@ -1356,6 +1366,45 @@ impl GestureMachine {
     pub fn reset(&mut self) {
         self.active = None;
         self.last_key = None;
+    }
+
+    /// Retire a refused native terminal when the resident worker has no
+    /// matching published overlay. Plugin previews use their own custody.
+    pub(crate) fn retire_unpublished_native_terminal(&mut self, ack: &mut GestureAck) {
+        if ack.preview_retained
+            && self.active.as_ref().is_some_and(|active| {
+                active.snapshot.key == ack.key && !matches!(active.kind, ActiveKind::Plugin { .. })
+            })
+        {
+            self.active = None;
+            ack.preview_retained = false;
+        }
+    }
+
+    /// An accepted restart relinquishes output-bound previews. An unrecorded
+    /// plugin preview has lost its original source, so report that its edit was
+    /// not saved. Recorded gestures retain their separate recovery custody.
+    pub(crate) fn retire_native_on_restart(&mut self) -> Option<GestureAck> {
+        let active = self.active.as_ref()?;
+        if matches!(active.kind, ActiveKind::Plugin { recording: true }) {
+            return None;
+        }
+        let plugin = matches!(active.kind, ActiveKind::Plugin { .. });
+        let snapshot = active.snapshot;
+        self.active = None;
+        Some(GestureAck {
+            key: snapshot.key,
+            phase: GesturePhase::Cancel,
+            sequence: 0,
+            accepted: false,
+            preview_retained: false,
+            source_lost: plugin,
+            reason: Some(if plugin {
+                "vst3 parameter edit was not saved · audio restarted".into()
+            } else {
+                "device edit canceled · audio is restarting".into()
+            }),
+        })
     }
 
     pub fn handle(

@@ -21,6 +21,45 @@ fn instrument_loop_edits_share_a_worker_only_with_a_bounded_wrap_distance() {
     assert!(!QuantumProfile::keeps_instrument_epoch(256, first, short));
 }
 
+#[test]
+fn effect_loop_activation_reuses_only_compatible_marker_budgets() {
+    let region =
+        |start, end, enabled| Some(hex_project::LoopRegion::new(start, end, enabled).unwrap());
+    let later = region(1024, 2048, false);
+    let earlier = region(0, 1024, true);
+    let short = region(0, 128, true);
+    let same_short = region(0, 128, false);
+    let overlapping = region(0, 1025, true);
+    let later_short = region(1024, 1152, false);
+    let different_enabled = region(1024, 2048, true);
+
+    for (before, after) in [
+        (None, earlier),
+        (later, earlier),
+        (later, different_enabled),
+        (different_enabled, later),
+        (same_short, short),
+        (short, same_short),
+    ] {
+        assert!(QuantumProfile::keeps_effect_epoch(Some(256), before, after));
+    }
+    for (before, after) in [
+        (None, short),
+        (later, short),
+        (later, overlapping),
+        (different_enabled, earlier),
+        (later_short, earlier),
+        (earlier, None),
+    ] {
+        assert!(!QuantumProfile::keeps_effect_epoch(
+            Some(256),
+            before,
+            after
+        ));
+    }
+    assert!(!QuantumProfile::keeps_effect_epoch(None, later, earlier));
+}
+
 fn point(beat: BeatTime, value: f32, outgoing: AutomationInterpolation) -> AutomationPoint {
     AutomationPoint {
         beat,
@@ -55,6 +94,79 @@ fn render(program: &Program, origins: &[Option<u64>], cuts: &[u16]) -> Vec<Forei
     let count = program.render_quantum(origins, cuts, &mut output).unwrap();
     assert!(count <= program.point_budget());
     output[..count].to_vec()
+}
+
+#[test]
+fn linear_effect_programs_admit_in_flight_loop_wraps_when_the_budget_allows() {
+    let tempo = tempo();
+    let enabled = hex_project::LoopRegion::new(1024, 1536, true).unwrap();
+    let disabled = hex_project::LoopRegion::new(1024, 1536, false).unwrap();
+    let capabilities = std::array::from_fn::<_, 7, _>(|id| ParameterCapability {
+        id: id as u32,
+        steps: 0,
+        normalized_base_bits: 0,
+    });
+    let lanes = capabilities.map(|parameter| {
+        lane(
+            parameter.id,
+            vec![
+                point(BeatTime::ZERO, 0.25, AutomationInterpolation::Linear),
+                point(BeatTime::ONE, 0.75, AutomationInterpolation::Step),
+            ],
+        )
+    });
+    let source = hex_lattice::ForeignAutomationSource {
+        binding: hex_lattice_contract::ForeignProcessorBinding {
+            root: 1,
+            instance: 2,
+            graph: 3,
+            epoch: 4,
+        },
+        revision: std::num::NonZeroU64::MIN,
+        class: CLASS,
+        sample_rate: tempo.sample_rate(),
+        quantum_frames: 256,
+        dense_parameter: None,
+        parameters: &capabilities,
+    };
+    let prepare = |count, region| {
+        Program::prepare_arrangement_source(
+            &lanes[..count],
+            hex_lattice::ForeignAutomationSource {
+                parameters: &capabilities[..count],
+                ..source
+            },
+            &tempo,
+            region,
+            false,
+        )
+    };
+    let old = prepare(1, Some(enabled)).unwrap().unwrap();
+    // Disabling can leave a wrap in delayed audio. Enabling can introduce a
+    // wrap while an old linear program still owns the partial worker quantum.
+    let origins = std::array::from_fn::<_, 256, _>(|frame| {
+        Some(if frame < 64 {
+            1472 + frame as u64
+        } else {
+            1024 + (frame - 64) as u64
+        })
+    });
+    let cuts = [16, 32, 48, 80, 96, 112, 128];
+    let points = render(&old, &origins, &cuts);
+    assert_eq!(points.len(), 18);
+    assert!(points[8].normalized < points[7].normalized);
+
+    assert!(matches!(
+        prepare(7, Some(enabled)),
+        Err(AUTOMATION_POINT_LIMIT)
+    ));
+    let linear = std::array::from_fn::<_, 256, _>(|frame| Some(1472 + frame as u64));
+    for region in [None, Some(disabled)] {
+        let linear_program = prepare(1, region).unwrap().unwrap();
+        assert_eq!(render(&linear_program, &origins, &cuts), points);
+        let dense_linear = prepare(7, region).unwrap().unwrap();
+        assert_eq!(render(&dense_linear, &linear, &cuts).len(), 112);
+    }
 }
 
 #[test]
@@ -232,7 +344,8 @@ fn coincident_frames_keep_the_later_point_and_one_point_holds_across_its_origin(
 #[test]
 fn refuses_dense_or_mismatched_programs_and_checks_admitted_runs() {
     use AutomationInterpolation::Step;
-    let lanes: Vec<_> = (0..9)
+    let full_lanes = MAX_POINTS / 8;
+    let lanes: Vec<_> = (0..=full_lanes as u32)
         .map(|id| {
             lane(
                 id,
@@ -243,7 +356,7 @@ fn refuses_dense_or_mismatched_programs_and_checks_admitted_runs() {
             )
         })
         .collect();
-    let capabilities: Vec<_> = (0..9)
+    let capabilities: Vec<_> = (0..=full_lanes as u32)
         .map(|id| ParameterCapability {
             id,
             steps: 0,
@@ -251,16 +364,34 @@ fn refuses_dense_or_mismatched_programs_and_checks_admitted_runs() {
         })
         .collect();
     let profile = QuantumProfile::arbitrary(8, 2);
-    assert!(Program::prepare(&lanes, CLASS, &capabilities, &tempo(), profile).is_err());
+    assert_eq!(
+        Program::prepare(&lanes, CLASS, &capabilities, &tempo(), profile).unwrap_err(),
+        Invalid("vst3 automation exceeds the per-quantum point limit")
+    );
     assert!(Program::prepare(&lanes[..1], [2; 16], &capabilities, &tempo(), profile).is_err());
     assert!(Program::prepare(&lanes[..1], CLASS, &capabilities[1..], &tempo(), profile).is_err());
-    // The ninth armed parameter still needs its canonical base even
+    // The next armed parameter still needs its canonical base even
     // when its authored lane is absent; it cannot evade the shared budget.
-    assert!(Program::prepare(&lanes[..8], CLASS, &capabilities, &tempo(), profile).is_err());
+    assert!(
+        Program::prepare(
+            &lanes[..full_lanes],
+            CLASS,
+            &capabilities,
+            &tempo(),
+            profile
+        )
+        .is_err()
+    );
 
-    let program = Program::prepare(&lanes[..8], CLASS, &capabilities[..8], &tempo(), profile)
-        .unwrap()
-        .unwrap();
+    let program = Program::prepare(
+        &lanes[..full_lanes],
+        CLASS,
+        &capabilities[..full_lanes],
+        &tempo(),
+        profile,
+    )
+    .unwrap()
+    .unwrap();
     assert_eq!(program.point_budget(), MAX_POINTS);
     let full = [0, 1, 2, 3, 0, 1, 2, 3].map(Some);
     assert_eq!(render(&program, &full, &[]).len(), MAX_POINTS);
@@ -530,7 +661,7 @@ fn constant_instrument_bases_share_one_point_each_across_discontinuities() {
         })
         .collect::<Vec<_>>();
     let profile = QuantumProfile::for_arrangement_instrument(256, None);
-    for width in [4, MAX_POINTS] {
+    for width in [4, MAX_TARGETS] {
         let program = Program::prepare(&[], CLASS, &capabilities[..width], &tempo(), profile)
             .unwrap()
             .unwrap();
@@ -549,6 +680,53 @@ fn constant_instrument_bases_share_one_point_each_across_discontinuities() {
             assert_eq!(point.normalized.to_bits(), capability.normalized_base_bits);
         }
         assert!(render(&program, &[None; 256], &[]).is_empty());
+    }
+}
+
+#[test]
+fn fourth_sparse_vst3_lane_keeps_all_slice_endpoints_at_44100() {
+    use AutomationInterpolation::{Linear, Step};
+    let tempo = TempoMap::new(
+        44_100,
+        vec![TempoPoint::new(
+            BeatTime::ZERO,
+            Tempo::new(120_000_000).unwrap(),
+        )],
+    )
+    .unwrap();
+    let ids = [86, 91, 97, 148];
+    let lanes = ids.map(|id| {
+        lane(
+            id,
+            vec![
+                point(BeatTime::ZERO, 0.25, Linear),
+                point(BeatTime::ONE, 0.75, Step),
+            ],
+        )
+    });
+    let capabilities = ids.map(|id| ParameterCapability {
+        id,
+        steps: 0,
+        normalized_base_bits: 0.25f64.to_bits(),
+    });
+    let program = Program::prepare(
+        &lanes,
+        CLASS,
+        &capabilities,
+        &tempo,
+        QuantumProfile::for_arrangement_instrument(256, None),
+    )
+    .unwrap()
+    .unwrap();
+    let cuts = [32, 64, 96, 128, 160, 192, 224];
+    let origins = std::array::from_fn::<_, 256, _>(|i| Some((1000 + (i + 16) % 256) as u64));
+    let points = render(&program, &origins, &cuts);
+    assert_eq!(points.len(), 72);
+    let end = tempo.beat_to_frame(BeatTime::ONE).unwrap() as f64;
+    for point in points {
+        assert!(ids.contains(&point.id));
+        let origin = origins[usize::from(point.frame)].unwrap() as f64;
+        assert!((point.normalized - (0.25 + 0.5 * origin / end)).abs() < 1e-12);
     }
 }
 
@@ -698,4 +876,48 @@ fn a_dense_raw_id_has_no_sparse_base_and_refuses_an_active_envelope() {
         ..source
     };
     assert!(Program::prepare_source(&[], wrong, &tempo, profile).is_err());
+}
+
+#[test]
+fn vst3_shared_beat_emits_the_incoming_ramp_then_the_jump() {
+    use AutomationInterpolation::Linear;
+    let tempo = tempo();
+    let lane = lane(
+        0,
+        vec![
+            point(BeatTime::ZERO, 0.0, Linear),
+            point(BeatTime::ONE, 1.0, Linear),
+            point(BeatTime::ONE, 0.25, Linear),
+            point(BeatTime::from_quarters(2).unwrap(), 0.75, Linear),
+        ],
+    );
+    let capability = ParameterCapability {
+        id: 0,
+        steps: 0,
+        normalized_base_bits: 0,
+    };
+    let program = Program::prepare(
+        &[lane],
+        CLASS,
+        &[capability],
+        &tempo,
+        QuantumProfile::arbitrary(6, 2),
+    )
+    .unwrap()
+    .unwrap();
+    let output = render(
+        &program,
+        &[3997, 3998, 3999, 4000, 4001, 4002].map(Some),
+        &[],
+    );
+    for (point, (frame, value)) in output.iter().zip([
+        (0, 3997.0 / 4000.0),
+        (2, 3999.0 / 4000.0),
+        (3, 0.25),
+        (5, 0.25 + 1.0 / 8000.0),
+    ]) {
+        assert_eq!(point.frame, frame);
+        assert!((point.normalized - value).abs() < 1e-12);
+    }
+    assert_eq!(output.len(), 4);
 }

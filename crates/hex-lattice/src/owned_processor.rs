@@ -383,6 +383,14 @@ pub struct PreparedRuntimeInstance {
     pub definition: Option<PreparedProcessorFactory>,
 }
 impl PreparedRuntimeInstance {
+    /// Processing facts for this prepared instance, without endpoint custody.
+    pub fn foreign_processor(&self) -> Option<crate::PreparedForeignProcessor> {
+        match self.definition {
+            Some(PreparedProcessorFactory::Foreign(processor)) => Some(processor),
+            _ => None,
+        }
+    }
+
     pub fn algorithmic_latency_frames(&self) -> Option<u32> {
         if self.bypassed
             && self.definition.as_ref().is_none_or(|factory| {

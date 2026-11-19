@@ -33,6 +33,7 @@ namespace {
 struct Observation {
     std::atomic<int> violations{0}, created{0}, initialized{0}, terminated{0};
     std::atomic<int> arrangements{0}, setups{0}, activations{0}, starts{0}, stops{0}, blocks{0}, flushes{0};
+    std::atomic<int> note_ons{0}, note_offs{0}, last_on{-1}, last_off{-1};
 } observed;
 int next_mode=0,next_fault=HEX_INSTANCE_VARIANT;
 bool control() { const bool valid=pthread_main_np()!=0; if (!valid) ++observed.violations; return valid; }
@@ -82,6 +83,15 @@ static void trace(int stage,int factory_refs=-1) {
         observed.arrangements,observed.setups,observed.activations,observed.starts,observed.stops,
         observed.blocks,observed.flushes,static_cast<int>(objects.load()),factory_refs};
     publish_trace(std::getenv("HEX_ORIGINAL_INSTANCE_TRACE"),values,14);
+    // Opt-in control-side snapshot of the exact helper process. DSP only
+    // updates bounded atomics; it never opens or writes this trace.
+    if (const auto* directory=std::getenv("HEX_ORIGINAL_NOTE_TRACE_DIR"); pthread_main_np() && directory) {
+        if (std::strlen(directory)<=4000) {
+            const auto path=std::string(directory)+"/"+std::to_string(::getpid())+".bin";
+            const int notes[]={stage,observed.note_ons,observed.note_offs,observed.last_on,observed.last_off};
+            publish_trace(path.c_str(),notes,5);
+        }
+    }
     const int restored[]={restoration.component_set,restoration.controller_component,restoration.controller_set,
         restoration.info_reads,restoration.value_reads,restoration.component_gain,restoration.controller_gain,
         restoration.scroll,restoration.latency,restoration.phase,restoration.component_get,restoration.controller_get,
@@ -111,6 +121,8 @@ constexpr int authored_instrument_variant=145, held_instrument_variant=146;
 // Original GUI callback + automatable controller fixture for desktop follow/lane
 // integration. It permits live-worker zero-frame flushes while transport is idle.
 constexpr int touched_automation_variant=147;
+constexpr int stopped_editor_echo_variant=150;
+constexpr int stopped_bus_refusal_effect=151, stopped_bus_refusal_instrument=152;
 static bool held_parameter_input(int variant) {
     return variant==144 || variant==held_instrument_variant || grouped_editor(variant);
 }
@@ -215,10 +227,15 @@ class RestoreController final : public IEditController {
         const auto* release=std::getenv("HEX_ORIGINAL_INSTANCE_RELEASE");
         if(!self || !release || std::strlen(release)>4096 || ::access(release,F_OK)!=0) return;
         if(grouped_editor(self->fault)) {self->grouped_edit_tick();return;}
-        const auto* end_release=(self->fault==touched_automation_variant || self->fault==held_instrument_variant)
+        const auto* end_release=(self->fault==touched_automation_variant || self->fault==held_instrument_variant ||
+            self->fault==stopped_editor_echo_variant)
             ?std::getenv("HEX_ORIGINAL_EDITOR_END_RELEASE"):nullptr;
         if(self->edits_sent) {
             if(end_release && std::strlen(end_release)<=4096 && ::access(end_release,F_OK)==0) {
+                if(self->fault==stopped_editor_echo_variant) {
+                    self->component_gain=3.5;
+                    if(self->handler->performEdit(parameter_id(self->fault),0.875)!=kResultOk) ++observed.violations;
+                }
                 self->handler->endEdit(parameter_id(self->fault));
                 CFRunLoopTimerInvalidate(self->edit_timer);
             }
@@ -315,7 +332,7 @@ public:
         if (!control() || !context || (value && handler)) return kResultFalse;
         if(value)value->addRef();if(handler)handler->release();handler=value;
         if(fault==104 || fault==105 || fault==118 || fault==119) latency_handler=handler;
-        if(value && ((fault>=85 && fault<=89) || fault==105 || fault==116 || (fault>=131 && fault<=135) || fault==141 || fault==142 || fault==touched_automation_variant || grouped_editor(fault) ||
+        if(value && ((fault>=85 && fault<=89) || fault==105 || fault==116 || (fault>=131 && fault<=135) || fault==141 || fault==142 || fault==touched_automation_variant || fault==stopped_editor_echo_variant || grouped_editor(fault) ||
             (fault==held_instrument_variant && std::getenv("HEX_ORIGINAL_EDITOR_TOUCH")))) {
             CFRunLoopTimerContext timer_context{};timer_context.info=this;
             edit_timer=CFRunLoopTimerCreate(nullptr,CFAbsoluteTimeGetCurrent(),0.001,0,0,edit_tick,&timer_context);
@@ -413,10 +430,16 @@ public:
             if(index!=inventory_size-2 || !shape || std::strcmp(shape,"duplicate"))
                 info.id=static_cast<ParamID>(1001+index);
             info.flags=ParameterInfo::kIsReadOnly;
+            if(index==0 && shape && !std::strcmp(shape,"2593")) {
+                info.flags=0x400;
+                info.defaultNormalizedValue=-1;
+            }
             const char16_t name[]=u"observed";
             std::memcpy(info.title,name,sizeof(name));std::memcpy(info.shortTitle,name,sizeof(name));
             return kResultOk;
         }
+        const auto* shape=std::getenv("HEX_ORIGINAL_PARAMETER_INVENTORY");
+        if(shape && !std::strcmp(shape,"invalid-default")) info.defaultNormalizedValue=-1;
         if(fault==80 || fault==81 || fault==82 || fault==91 || fault==92 || fault==touched_automation_variant || mixed_parameter_input(fault) || (fault==authored_instrument_variant || fault==held_instrument_variant)) info.flags=ParameterInfo::kCanAutomate;
         if(fault==91 || fault==92) {const char16_t unit[]=u"ratio";std::memcpy(info.units,unit,sizeof(unit));}
         if(fault==81) info.stepCount=3;
@@ -502,7 +525,9 @@ class ProcessingProcessor final : public Processor,public IAudioPresentationLate
     const bool multiple_outputs=fault>=128 && fault<=130;
     const bool silent_input=fault==120 || fault==136;
     const bool midi_instrument=fault==115 || silent_input || fault==127 || multiple_outputs ||
-        fault==authored_instrument_variant || fault==held_instrument_variant || fault==grouped_instrument_variant;
+        fault==authored_instrument_variant || fault==held_instrument_variant || fault==grouped_instrument_variant ||
+        fault==stopped_bus_refusal_instrument;
+    const bool live_preset=fault==127 && std::getenv("HEX_ORIGINAL_INSTRUMENT_LIVE_PRESET");
     const int mode=midi_instrument?1:next_mode;
     bool initialized=false, arranged=false, setup=false, active=false;
     std::atomic<bool> processing{false};
@@ -786,6 +811,7 @@ public:
             return kResultOk;
         }
         if (!control() || !setup || active || processing || index || !getBusCount(media,direction)) return kResultFalse;
+        if (!enabled && (fault==stopped_bus_refusal_effect || fault==stopped_bus_refusal_instrument)) return kResultFalse;
         if (media==kEvent) { event_active=enabled;return kResultOk; }
         ++observed.activations;
         if (enabled && fault==7) return kResultFalse;
@@ -861,7 +887,7 @@ public:
                 ++observed.flushes;
                 return kResultOk;
             }
-            if ((processing && fault!=37 && fault!=86 && fault!=92 && fault!=116 && fault!=132 && fault!=touched_automation_variant) ||
+            if ((processing && fault!=37 && fault!=86 && fault!=92 && fault!=116 && fault!=132 && fault!=touched_automation_variant && fault!=stopped_editor_echo_variant) ||
                 !data.inputParameterChanges || data.inputParameterChanges->getParameterCount()!=1)
                 return kInvalidArgument;
             auto* queue=data.inputParameterChanges->getParameterData(0);
@@ -875,9 +901,13 @@ public:
             if(fault==74) fault_hang(24);
             if(fault==75) data.numSamples=1;
             if(fault==77) data.inputParameterChanges->addRef();
+            const auto previous_gain=gain.load();
             value=parameter_value(fault,value);
             gain=static_cast<float>(value*(fault>=37?4.0:1.0));
             if(fault>=37 && data.outputParameterChanges) {
+                // The stopped processor reports its previous value while
+                // accepting the current editor input. Host input still echoes normally.
+                if(fault==stopped_editor_echo_variant && (value==0.75 || value==0.875)) value=previous_gain/4.0;
                 int32 index=-1;const ParamID id=parameter_id(fault);
                 auto* feedback=data.outputParameterChanges->addParameterData(id,index);
                 if(!feedback || feedback->addPoint(0,value,index)!=kResultOk) return kResultFalse;
@@ -984,14 +1014,18 @@ public:
         }
         ++observed.blocks; // count attempted foreign DSP, including a refusal
         if (fault==140) fault_hang(27); // controlled in-flight host-input barrier
-        if (fault==28) fault_hang(9);
+        if (fault==28 || (fault==127 && std::getenv("HEX_ORIGINAL_SDK_TIMING_GATE"))) fault_hang(9);
+        if (fault==127 && std::getenv("HEX_ORIGINAL_SDK_TIMING_GATE")) ::usleep(5000);
         if (fault==31) fault_crash(9);
         if (fault==10) return kResultFalse;
         const float scale=(fault==127 || held_parameter_input(fault))?1.0f:0.5f+static_cast<float>(block)*0.125f;
         const auto point_count=primary.count;
-        double current_gain=gain.load();
         bool silent=true;
         const auto event_count=data.inputEvents?data.inputEvents->getEventCount():0;
+        // Model a plugin-internal preset change after its initial state capture.
+        // It changes the opaque component state without a host parameter edit.
+        if(live_preset && process_mode==kRealtime && event_count) gain.store(0.5f);
+        double current_gain=gain.load();
         int32 next_event=0;
         Event event{};
         if (event_count && data.inputEvents->getEvent(0,event)!=kResultOk) return kResultFalse;
@@ -1018,6 +1052,8 @@ public:
                         *existing={};
                     }
                 }
+                if(on) { ++observed.note_ons;observed.last_on=id; }
+                else { ++observed.note_offs;observed.last_off=id; }
                 if (++next_event<event_count && data.inputEvents->getEvent(next_event,event)!=kResultOk)
                     return kResultFalse;
             }
@@ -1067,12 +1103,18 @@ public:
                 return kResultFalse;
             if(fault==125) queue->addRef();
         }
-        if(point_count || fault==83 || fault==84) {
+        // Emit an old processor observation one quantum after the edit that
+        // caused it, with no parameter input in that second quantum.
+        if(point_count || fault==83 || fault==84 || fault==stopped_editor_echo_variant || (fault==135 && block==1)) {
             gain.store(static_cast<float>(current_gain));
             if(data.outputParameterChanges && fault!=78) {
                 int32 index=-1;const ParamID id=parameter_id(fault);
                 auto* queue=data.outputParameterChanges->addParameterData(id,index);
-                if(!queue || queue->addPoint(fault==79 || fault==83 || fault==84?0:data.numSamples-1,fault==79?0.25:current_gain/4.0,index)!=kResultOk) return kResultFalse;
+                // A processor can report its previous/smoothed value while
+                // accepting the editor's new target. Keep the PCM at that target.
+                const auto feedback_value=fault==79 || (fault==stopped_editor_echo_variant &&
+                    (current_gain==3.0 || current_gain==3.5))?0.25:current_gain/4.0;
+                if(!queue || queue->addPoint(fault==79 || fault==83 || fault==84?0:data.numSamples-1,feedback_value,index)!=kResultOk) return kResultFalse;
             }
         }
         if (output) data.outputs[0].silenceFlags=silent || fault==9?((uint64(1)<<outputs)-1):0;
@@ -1082,14 +1124,24 @@ public:
     }
 };
 
-class ProcessingFactory final : public IPluginFactory {
+class ProcessingFactory final : public IPluginFactory2 {
     std::atomic<uint32> refs{0};
 public:
     uint32 count() const { return refs.load(); }
     tresult PLUGIN_API queryInterface(const TUID iid,void** out) override {
         if (!out) return kInvalidArgument;*out=nullptr;
-        if (!same(iid,INLINE_UID_OF(FUnknown)) && !same(iid,INLINE_UID_OF(IPluginFactory))) return kNoInterface;
-        *out=static_cast<IPluginFactory*>(this);addRef();return kResultOk;
+        if (same(iid, INLINE_UID_OF(IPluginFactory2))) {
+            // Discovery starts with a clean environment; the controlled
+            // fault and instrument variants keep their factory surface.
+            if (next_fault != 0) return kNoInterface;
+            *out = static_cast<IPluginFactory2*>(this);
+        } else {
+            if (!same(iid, INLINE_UID_OF(FUnknown))
+                && !same(iid, INLINE_UID_OF(IPluginFactory))) return kNoInterface;
+            *out = static_cast<IPluginFactory*>(this);
+        }
+        addRef();
+        return kResultOk;
     }
     uint32 PLUGIN_API addRef() override { return ++refs; }
     uint32 PLUGIN_API release() override { return --refs; }
@@ -1109,7 +1161,19 @@ public:
             return kResultOk;
         }
         if(index==1) {*out=PClassInfo(restore_controller_id,PClassInfo::kManyInstances,"Component Controller Class","hex original restore controller");return kResultOk;}
-        *out=PClassInfo(processing_id,PClassInfo::kManyInstances,"Audio Module Class","hex original processing fixture");return kResultOk;
+        const char* name = HEX_FIXTURE_RESIDUAL_ECHO ? "hex original tail fixture"
+            : HEX_FIXTURE_INFINITE_TAIL ? "hex original infinite tail fixture"
+            : "hex original processing fixture";
+        *out = PClassInfo(processing_id, PClassInfo::kManyInstances, "Audio Module Class", name);
+        return kResultOk;
+    }
+    tresult PLUGIN_API getClassInfo2(int32 index, PClassInfo2* out) override {
+        PClassInfo basic{};
+        if (!out || next_fault != 0 || getClassInfo(index, &basic) != kResultOk)
+            return kInvalidArgument;
+        *out = PClassInfo2(basic.cid, basic.cardinality, basic.category, basic.name,
+            0, "Fx", "hex original fixtures", "1", "VST 3.8");
+        return kResultOk;
     }
     tresult PLUGIN_API createInstance(FIDString cid,FIDString iid,void** out) override {
         if (!out) return kInvalidArgument;*out=nullptr;
@@ -1140,10 +1204,15 @@ extern "C" __attribute__((visibility("default"))) bool bundleEntry(CFBundleRef) 
     // Supported fault control belongs only to this original SDK fixture.
     // The production helper never reads this environment variable.
     const auto* selected=std::getenv("HEX_ORIGINAL_INSTANCE_VARIANT");
+#if HEX_FIXTURE_RESIDUAL_ECHO
+    // Allow the signed tail effect and a signed instrument variant to share
+    // one host-test process while keeping their SDK bus layouts independent.
+    if (const auto* tail=std::getenv("HEX_ORIGINAL_TAIL_INSTANCE_VARIANT")) selected=tail;
+#endif
     if (selected) {
         const auto length=std::strlen(selected);if (!length || length>3) return false;
         int value=0;for (size_t n=0;n<length;++n) { if (selected[n]<'0' || selected[n]>'9') return false;value=value*10+selected[n]-'0'; }
-        if (value>grouped_instrument_variant) return false;next_fault=value;
+        if (value>stopped_bus_refusal_instrument) return false;next_fault=value;
     }
     if(!module_event('E')) return false;
     trace(1,0);

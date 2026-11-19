@@ -120,6 +120,113 @@ fn one_actual_page_loan_uses_real_rings_and_retires_without_callback_allocation_
     drop(errors);
     finish(&mut retirement);
 }
+
+#[test]
+fn recovered_page_token_cannot_retire_or_recover_a_reused_domain_slot() {
+    let _serial = serial();
+    let Some(mut owner) = candidate() else { return };
+    let limits = reservation(&mut owner);
+    let (mut control, mut data, errors, mut retirement) = anchored();
+    control
+        .configure_audio_candidate_publication(limits)
+        .unwrap();
+    let first = register(&mut control);
+    let callback = |data: &mut crate::native_callback_owner::Guard<
+        crate::native_callback_owner::NativeCallbackOwner,
+    >| {
+        let measured = allocation_counter::measure(|| {
+            data.owner_mut()
+                .unwrap()
+                .run(|callback, _| callback.begin_block());
+        });
+        assert_eq!(
+            (
+                measured.count_total,
+                measured.bytes_total,
+                measured.count_current,
+                measured.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+    };
+    callback(&mut data);
+    let guard = register(&mut control);
+    callback(&mut data);
+    assert_eq!(observed_usage(&control).occupied_domains, 2);
+
+    assert!(control.retire_audio_candidate_domain(first));
+    let wait_for_returns = |data: &mut crate::native_callback_owner::Guard<
+        crate::native_callback_owner::NativeCallbackOwner,
+    >,
+                            count: usize| {
+        let deadline = std::time::Instant::now() + LIFECYCLE_BOUND;
+        loop {
+            let mut requested = 0;
+            data.owner_mut().unwrap().run(|callback, _| {
+                requested = callback
+                    .domain_pages
+                    .iter()
+                    .flatten()
+                    .filter(|pages| pages.return_requested())
+                    .count();
+            });
+            if requested == count {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "page returns did not arrive"
+            );
+            std::thread::yield_now();
+        }
+    };
+    wait_for_returns(&mut data, 1);
+    callback(&mut data);
+    let report = pool(&mut control, first);
+    assert!(report.worker_joined && report.accounting_complete);
+    assert_eq!(report.page_buffers, 4);
+    assert!(control.recover_audio_candidate_domain(first).is_none());
+
+    // The guard occupies the other fixed slot, so this new incarnation must
+    // reuse the recovered slot while its old token is still held by the caller.
+    let replacement = register(&mut control);
+    assert_ne!(first, replacement);
+    callback(&mut data);
+    assert!(control.audio_candidate_domain_endpoint_is_installed(replacement));
+    assert!(!control.retire_audio_candidate_domain(first));
+    assert!(control.recover_audio_candidate_domain(first).is_none());
+    callback(&mut data);
+    data.owner_mut().unwrap().run(|callback, _| {
+        assert_eq!(callback.domain_pages.iter().flatten().count(), 2);
+        assert!(
+            !callback
+                .domain_pages
+                .iter()
+                .flatten()
+                .any(|pages| pages.return_requested())
+        );
+    });
+    assert_eq!(observed_usage(&control).occupied_domains, 2);
+
+    assert!(control.retire_audio_candidate_domain(replacement));
+    assert!(control.retire_audio_candidate_domain(guard));
+    wait_for_returns(&mut data, 2);
+    callback(&mut data);
+    for token in [replacement, guard] {
+        let report = pool(&mut control, token);
+        assert!(report.worker_joined && report.accounting_complete);
+        assert_eq!(report.page_buffers, 4);
+        assert!(control.recover_audio_candidate_domain(token).is_none());
+    }
+    assert!(control.recover_audio_candidate_domain(first).is_none());
+    assert_eq!(observed_usage(&control).occupied_domains, 0);
+    println!("actual page-domain slot reuse and recovery verified");
+    drop(owner);
+    drop(control);
+    drop(data);
+    drop(errors);
+    finish(&mut retirement);
+}
 #[test]
 fn final_page_loans_wait_for_both_guard_orders_completed_handle_and_normal_carrier_drop() {
     let _serial = serial();

@@ -1,9 +1,38 @@
 //! Canonical VST3 lanes for Arrangement preparation.
-use super::{Knot, Lane, Program, QuantumProfile};
-use crate::AudioStorageError as Error;
+use super::{Knot, Lane, Program};
+use crate::{AudioStorageError as Error, Invalid};
 use hex_lattice::{DevicePreparationContext, NativeDeviceRegistry, ProcessorInstanceIdentity};
 use hex_lattice_contract::DeviceAutomationTarget;
 use hex_project::{Device, DeviceAutomation, Project};
+
+pub(crate) enum PreparationError {
+    Source(Error),
+    Program(Invalid),
+}
+
+impl PreparationError {
+    pub(crate) fn into_storage(self) -> Error {
+        match self {
+            Self::Source(error) => error,
+            Self::Program(_) => Error::UnsupportedGraph,
+        }
+    }
+}
+
+impl From<PreparationError> for Invalid {
+    fn from(error: PreparationError) -> Self {
+        match error {
+            PreparationError::Program(reason) => reason,
+            PreparationError::Source(Error::SourceMismatch) => {
+                Self("vst3 automation source differs from the prepared device")
+            }
+            PreparationError::Source(Error::Overflow) => {
+                Self("vst3 automation storage size overflow")
+            }
+            PreparationError::Source(_) => Self("vst3 automation source is unavailable"),
+        }
+    }
+}
 
 fn effects(project: &Project) -> impl Iterator<Item = &Device> {
     project
@@ -65,7 +94,8 @@ fn quote_devices<'a>(
             .checked_add(std::mem::size_of::<Program>() + 3 * std::mem::size_of::<usize>())
             .and_then(|bytes| {
                 bytes.checked_add(
-                    super::MAX_POINTS * (std::mem::size_of::<Lane>() + std::mem::size_of::<Knot>()),
+                    super::MAX_TARGETS
+                        * (std::mem::size_of::<Lane>() + std::mem::size_of::<Knot>()),
                 )
             })
             .ok_or(Error::Overflow)?;
@@ -99,30 +129,37 @@ pub(crate) fn prepare_device(
     processor: hex_lattice::PreparedForeignProcessor,
     tempo: &hex_project::TempoMap,
     region: Option<hex_project::LoopRegion>,
-) -> Result<Option<hex_lattice::PreparedForeignAutomation>, Error> {
-    let Some(source) = exact_source(device, identity, effects, processor, tempo.sample_rate())?
+) -> Result<Option<hex_lattice::PreparedForeignAutomation>, PreparationError> {
+    let Some(source) = exact_source(device, identity, effects, processor, tempo.sample_rate())
+        .map_err(PreparationError::Source)?
     else {
         return if has_authored(device) {
-            Err(Error::UnsupportedGraph)
+            Err(PreparationError::Source(Error::UnsupportedGraph))
         } else {
             Ok(None)
         };
     };
     let revision = source.revision;
-    let profile = if processor.is_instrument_profile() {
-        QuantumProfile::for_arrangement_instrument(source.quantum_frames, region)
-    } else {
-        QuantumProfile::arrangement(source.quantum_frames, region)
-    };
-    let program = Program::prepare_source(device.automation(), source, tempo, profile)
-        .map_err(|_| Error::UnsupportedGraph)?;
+    let program = Program::prepare_arrangement_source(
+        device.automation(),
+        source,
+        tempo,
+        region,
+        processor.is_instrument_profile(),
+    )
+    .map_err(PreparationError::Program)?;
     let Some(program) = program else {
         return Ok(None);
     };
-    let bytes = program.backing_bytes().ok_or(Error::Overflow)?;
-    hex_lattice::PreparedForeignAutomation::new(source.binding, revision, program, bytes)
-        .map(Some)
-        .map_err(|_| Error::Overflow)
+    let overflow = || PreparationError::Source(Error::Overflow);
+    let bytes = program.backing_bytes().ok_or_else(overflow)?;
+    let mut prepared =
+        hex_lattice::PreparedForeignAutomation::new(source.binding, revision, program, bytes)
+            .map_err(|_| overflow())?;
+    if !processor.is_instrument_profile() {
+        prepared.bind_effect_clock_on_control(std::num::NonZeroU64::MIN, false);
+    }
+    Ok(Some(prepared))
 }
 
 pub(crate) fn exact_source<'a>(

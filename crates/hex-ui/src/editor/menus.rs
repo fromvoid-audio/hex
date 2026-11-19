@@ -85,13 +85,17 @@ fn application_menus(recent_projects: &[PathBuf]) -> Vec<Menu> {
     ]
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "ui-test-support")))]
 mod tests {
     use super::*;
 
     #[test]
-    fn project_menu_exposes_one_ordinary_new_and_open_action() {
-        let menus = application_menus(&[]);
+    fn project_menu_keeps_open_actions_and_recent_project_paths() {
+        let paths = [
+            PathBuf::from("/Work/Live/Session.HEX"),
+            PathBuf::from("/Archive/Session.HEX"),
+        ];
+        let menus = application_menus(&paths);
         let file = menus.iter().find(|menu| menu.name == "file").unwrap();
         let new_actions: Vec<_> = file
             .items
@@ -117,6 +121,31 @@ mod tests {
             })
             .collect();
         assert_eq!(open_actions, ["open project…"]);
+        let recent = file
+            .items
+            .iter()
+            .find_map(|item| match item {
+                MenuItem::Submenu(menu) if menu.name == "recent projects" => Some(menu),
+                _ => None,
+            })
+            .expect("recent projects submenu");
+        assert_eq!(recent.items.len(), paths.len());
+        for ((item, path), label) in recent
+            .items
+            .iter()
+            .zip(&paths)
+            .zip(["session.hex · /work/live", "session.hex · /archive"])
+        {
+            let MenuItem::Action { name, action, .. } = item else {
+                panic!("recent project action");
+            };
+            assert_eq!(name.as_ref(), label);
+            let action = action
+                .as_any()
+                .downcast_ref::<OpenRecentProject>()
+                .expect("open recent project");
+            assert_eq!(&action.path, path);
+        }
         for item in &file.items {
             if let MenuItem::Action { name, action, .. } = item {
                 assert!(

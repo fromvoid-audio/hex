@@ -6,6 +6,136 @@ const HELD_OPERATION_TIMEOUT: Duration = Duration::from_millis(20);
 
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn excess_live_children_keep_processing_and_reaped_child_returns_scheduling_slot() {
+    let build = build();
+    let case = Case::new();
+    let mut options = options();
+    options.preparation.sample_rate = 44_100.0;
+    options.preparation.quantum = 256;
+    let launch = |ordinal| {
+        let mut preparation = options.preparation;
+        preparation.binding.instance = ordinal;
+        Pending::prepare_with_restore(
+            &build,
+            source().with_live_audio_deadline(true),
+            preparation,
+            None,
+            PreparationCancellation::new_on_control().unwrap(),
+            case.setup(0),
+        )
+        .unwrap()
+        .complete_on_control(Some(options.presentation))
+        .unwrap()
+    };
+
+    let mut admitted = (1..=12).map(launch).collect::<Vec<_>>();
+    assert!(
+        admitted
+            .iter()
+            .all(|prepared| prepared.deadline_period_on_worker().is_some())
+    );
+    let mut ordinary = launch(13);
+    assert_eq!(ordinary.deadline_period_on_worker(), None);
+    let block = request(ordinary.configuration(), 0);
+    let reply = ordinary.exchange_on_worker(block).unwrap();
+    assert_eq!(reply.pcm[0], block.pcm[0].map(|sample| sample * 0.5));
+
+    // Observe retirement while the original owner is still retained.
+    let retired = admitted[0].stop_and_reap_on_control().unwrap();
+    assert!(retired.status.success());
+    assert_eq!(admitted[0].deadline_period_on_worker(), None);
+    let mut replacement = launch(14);
+    assert!(replacement.deadline_period_on_worker().is_some());
+    assert!(
+        replacement
+            .stop_and_reap_on_control()
+            .unwrap()
+            .status
+            .success()
+    );
+    assert!(
+        ordinary
+            .stop_and_reap_on_control()
+            .unwrap()
+            .status
+            .success()
+    );
+    for prepared in &mut admitted[1..] {
+        assert!(
+            prepared
+                .stop_and_reap_on_control()
+                .unwrap()
+                .status
+                .success()
+        );
+    }
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn live_deadline_preserves_pcm_across_idle_and_same_child_quiescence() {
+    let case = Case::new();
+    let mut options = options();
+    options.preparation.sample_rate = 44_100.0;
+    options.preparation.quantum = 256;
+    let setup = case.setup(0);
+    let mut instance = Pending::prepare_with_restore(
+        &build(),
+        source().with_live_audio_deadline(true),
+        options.preparation,
+        None,
+        PreparationCancellation::new_on_control().unwrap(),
+        setup,
+    )
+    .unwrap()
+    .complete_on_control(Some(options.presentation))
+    .unwrap();
+    let child = instance.child_id_on_control();
+    let period = instance.deadline_period_on_worker().unwrap();
+
+    for sequence in 0..2 {
+        let input = request(instance.configuration(), sequence);
+        let output = instance.exchange_on_worker(input).unwrap();
+        let gain = 0.5 + sequence as f32 * 0.125;
+        for (input, output) in input.pcm.iter().zip(output.pcm) {
+            assert_eq!(output, [input[0] * gain, input[1] * gain]);
+        }
+        if sequence == 0 {
+            // More than two 256-frame periods at the admitted rate. The
+            // next request goes through the idle reader on the same child.
+            std::thread::sleep(Duration::from_millis(24));
+        }
+    }
+    let stopped = instance.quiesce_retained_on_control().unwrap();
+    assert_eq!(stopped.child_id_on_control(), child);
+    assert_eq!(stopped.completed_blocks(), 2);
+    let previous = stopped.configuration().binding;
+    let mut instance = stopped
+        .resume_retained_on_control(
+            Binding {
+                epoch: previous.epoch + 1,
+                ..previous
+            },
+            Some(options.presentation),
+        )
+        .unwrap();
+    assert_eq!(instance.child_id_on_control(), child);
+    assert_eq!(instance.deadline_period_on_worker(), Some(period));
+    let input = request(instance.configuration(), 2);
+    let output = instance.exchange_on_worker(input).unwrap();
+    for (input, output) in input.pcm.iter().zip(output.pcm) {
+        assert_eq!(output, [input[0] * 0.75, input[1] * 0.75]);
+    }
+    let terminal = instance
+        .stop_and_reap_on_control()
+        .unwrap()
+        .terminal
+        .unwrap();
+    assert_eq!((terminal.blocks, terminal.frames), (3, 768));
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn explicit_quiescent_reactivation_refreshes_latency_without_recreating_or_restoring() {
     let case = Case::new();
     let selected = source();
@@ -1072,4 +1202,42 @@ fn actual_overflow_with_unrelated_sdk_error_is_still_terminal_when_stopped() {
     let stopped = instance.quiesce_retained_on_control().unwrap();
     let result = stopped.capture_state_retained_on_control();
     epoch_refusal(result, Some(6), &probe);
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn export_cancellation_is_checked_while_original_resume_waits_for_sdk() {
+    let case = Case::new();
+    let instance = Prepared::prepare(
+        &build(),
+        source(),
+        options(),
+        PreparationCancellation::new_on_control().unwrap(),
+        case.setup(67),
+    )
+    .unwrap();
+    let stopped = instance.quiesce_retained_on_control().unwrap();
+    let binding = stopped.configuration().binding;
+    let mut checks = 0;
+    let result = stopped.resume_with_plan_while_on_control(
+        Binding {
+            epoch: binding.epoch + 1,
+            ..binding
+        },
+        protocol::PresentationPlan::Known(options().presentation),
+        || {
+            checks += 1;
+            case.observation().is_some_and(|observed| observed[0] == 22)
+        },
+    );
+    assert!(result.err().unwrap().to_string().contains("cancel"));
+    assert!(
+        checks > 1,
+        "cancellation must be polled during the held SDK operation"
+    );
+    assert_eq!(
+        case.observation().unwrap()[8],
+        1,
+        "refused resume must not restart DSP"
+    );
 }
