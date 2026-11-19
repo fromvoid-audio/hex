@@ -1824,7 +1824,18 @@ fn repeated_clip_shade_keeps_the_held_mesh_through_delayed_ack_and_history(
         cx.notify();
     });
     visual.run_until_parked();
-    editor.read_with(&visual, |v, _| assert!(v.pending_fade.is_none()));
+    editor.read_with(&visual, |v, _| {
+        assert!(v.pending_fade.is_none());
+        let project = &v.state.as_ref().unwrap().project;
+        let outer = project
+            .clip(clip)
+            .unwrap()
+            .projected_outer_fade(project.tempo_map())
+            .unwrap()
+            .unwrap();
+        assert_eq!(outer.gain_at(19_174).unwrap(), 1.0);
+        assert_eq!(outer.gain_at(38_348).unwrap(), 1.0);
+    });
     assert_eq!(
         mesh(&mut visual),
         held,

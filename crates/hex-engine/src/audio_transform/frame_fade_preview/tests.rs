@@ -245,14 +245,61 @@ fn reported_four_repeat_window_keeps_original_source_and_fade_clocks() {
             },
         })
         .unwrap();
+    let context = AudioTransformPreparation::default();
+    let raw = prepare(&editor, &media, &context);
+    let fade = ClipFade::new(76_696, 0, 13_184, 23_254).unwrap();
     editor
-        .execute(Command::SetClipFades {
-            clip,
-            fade_in: 13_184,
-            fade_out: 23_254,
-        })
+        .execute(Command::SetClipFadeEnvelope { clip, fade })
         .unwrap();
-    assert_matches(&editor, clip, &media, &AudioTransformPreparation::default());
+    let row = editor.project().clip(clip).unwrap();
+    assert!(
+        row.projected_outer_fade(editor.project().tempo_map())
+            .unwrap()
+            .is_some()
+    );
+    let mut raw_renderer = crate::Renderer::new(raw.arrangement());
+    raw_renderer.play();
+    let mut expected = vec![[0.0; 2]; 76_696];
+    for block in expected.chunks_mut(317) {
+        raw_renderer.render(block).unwrap();
+    }
+    for (frame, sample) in expected.iter_mut().enumerate() {
+        *sample = sample.map(|value| value * fade.gain_at(frame as u64));
+    }
+    let actual = prepare(&editor, &media, &context);
+    for size in [31, 256] {
+        let mut renderer = crate::Renderer::new(actual.arrangement());
+        renderer.play();
+        let mut pcm = vec![[0.0; 2]; expected.len()];
+        for block in pcm.chunks_mut(size) {
+            renderer.render(block).unwrap();
+        }
+        assert_eq!(pcm, expected);
+    }
+    assert_matches(&editor, clip, &media, &context);
+    let project = editor.project();
+    let mapping = FrameFadePreview::new(
+        row,
+        project.tempo_map(),
+        project.asset(row.asset()).unwrap(),
+    )
+    .unwrap()
+    .unwrap();
+    let root = mapping.root_sample(1_049).unwrap().unwrap();
+    let first = mapping.timeline_sample(1_049).unwrap().unwrap();
+    let repeated = mapping.timeline_sample(19_174 + 1_049).unwrap().unwrap();
+    assert_eq!(first.source_frame(), repeated.source_frame());
+    assert_eq!(&root.gains()[..2], &repeated.gains()[..2]);
+    assert_eq!(root.gains()[2], 1.0);
+    assert_eq!(first.gains()[2], fade.gain_at(1_049));
+    assert_eq!(repeated.gains()[2], 1.0);
+    let mut ranges = Vec::new();
+    mapping
+        .visit_timeline_ranges(1_000..1_100, &mut 8, |part| ranges.push(part))
+        .unwrap()
+        .unwrap();
+    assert_eq!(ranges.len(), 1);
+    assert_eq!(ranges[0].sample.gains()[2], first.gains()[2]);
 }
 
 #[test]
