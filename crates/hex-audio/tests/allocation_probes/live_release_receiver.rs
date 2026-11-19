@@ -1,5 +1,5 @@
-//! Terminal live-input retirement and released source rejoin, through actual
-//! prepared callback publication versus uninterrupted keyboard synthesis.
+//! Terminal live-input retirement and fresh instrument power-on through
+//! prepared callback publication, with independent wet and dry references.
 use allocation_counter::measure;
 use hex_audio::prepared;
 use hex_engine::{
@@ -39,7 +39,7 @@ fn prepare(
 }
 
 #[test]
-fn released_live_source_rejoin_and_new_generation_have_zero_callback_allocations() {
+fn live_source_power_cycle_and_new_generation_have_zero_callback_allocations() {
     for key_up in ["before-disable", "while-disabled", "after-reenable"] {
         for block in [1, 7, 64, 512] {
             check(key_up, block, false);
@@ -48,7 +48,7 @@ fn released_live_source_rejoin_and_new_generation_have_zero_callback_allocations
 }
 
 #[test]
-fn loaded_sampler_host_trim_and_detached_release_have_zero_callback_allocations() {
+fn loaded_sampler_host_trim_and_power_fade_have_zero_callback_allocations() {
     check("before-disable", 64, true);
 }
 
@@ -215,6 +215,15 @@ fn check(key_up: &str, block: usize, host_output: bool) {
         }
         playback
     };
+    let mut dry_editor = Editor::new(editor.project().clone(), 2).unwrap();
+    dry_editor
+        .execute(Command::SetDeviceBypass {
+            device,
+            bypassed: true,
+        })
+        .unwrap();
+    let mut dry = make(dry_editor.project(), None);
+    dry.apply(PlaybackCommand::Play);
     let mut oracle = make(editor.project(), Some(&reference));
     oracle.apply(PlaybackCommand::Play);
     let (mut control, mut callback) = prepared::channel(8000).unwrap();
@@ -265,48 +274,98 @@ fn check(key_up: &str, block: usize, host_output: bool) {
         );
         assert_eq!(&actual[..13], &expected[..13]);
         position += 13;
-    } else {
-        reference.set_key(0, None).unwrap();
     }
-    for (bypassed, count) in [(true, 39), (false, 13)] {
-        editor
-            .execute(Command::SetDeviceBypass { device, bypassed })
-            .unwrap();
-        control
-            .publish_with_policy_and_context_generation(
-                make(editor.project(), (!bypassed).then_some(&fresh)),
-                prepared::PublicationPolicy::InheritRuntime,
-                19,
-            )
-            .unwrap();
-        let mut done = 0;
-        while done < count {
-            let n = (count - done).min(block);
-            render(
-                &mut callback,
-                &mut oracle,
-                &mut actual[..n],
-                &mut expected[..n],
-            );
-            assert_eq!(
-                &actual[..n],
-                &expected[..n],
-                "{key_up} block={block} bypassed={bypassed}"
-            );
-            done += n;
-            position += n;
-            assert_eq!(control.status.recovery_position(), position as u64);
+    let mut dry_pcm = [[0.0; 2]; 512];
+    dry.render(&mut dry_pcm[..position]).unwrap();
+
+    const FADE: usize = 40;
+    editor
+        .execute(Command::SetDeviceBypass {
+            device,
+            bypassed: true,
+        })
+        .unwrap();
+    let off_revision = control
+        .publish_with_policy_and_context_generation(
+            make(editor.project(), None),
+            prepared::PublicationPolicy::InheritRuntime,
+            19,
+        )
+        .unwrap();
+    for (chunk, offset) in (0..FADE + 24).step_by(block).enumerate() {
+        let n = (FADE + 24 - offset).min(block);
+        render(
+            &mut callback,
+            &mut oracle,
+            &mut actual[..n],
+            &mut expected[..n],
+        );
+        dry.render(&mut dry_pcm[..n]).unwrap();
+        for i in 0..n {
+            let gain = FADE.saturating_sub(offset + i) as f32 / FADE as f32;
+            for channel in 0..2 {
+                let dry = dry_pcm[i][channel];
+                let target = dry + (expected[i][channel] - dry) * gain;
+                assert!(
+                    (actual[i][channel] - target).abs() < 0.000_001,
+                    "{key_up} block={block} power-off frame={}",
+                    offset + i
+                );
+            }
         }
+        position += n;
+        assert_eq!(control.status.recovery_position(), position as u64);
+        assert_eq!(
+            control
+                .status
+                .applied_revision
+                .load(std::sync::atomic::Ordering::Acquire),
+            off_revision
+        );
         assert!(control.status.rejected_revision().is_none());
-        assert!(old.is_cancelled(), "bypass retires the old activation");
-        if bypassed {
+        if chunk == 0 {
+            assert!(old.is_cancelled(), "power-off retires the old activation");
             if key_up == "while-disabled" {
                 old.set_key(0, None).unwrap();
             }
             old.set_key(1, Some((67, 127, 2))).unwrap();
         }
-        control.reclaim();
     }
+    control.reclaim();
+
+    editor
+        .execute(Command::SetDeviceBypass {
+            device,
+            bypassed: false,
+        })
+        .unwrap();
+    let reference = Arc::new(ComputerKeyboardInput::default());
+    let mut oracle = make(editor.project(), Some(&reference));
+    oracle.try_inherit_runtime_from(&mut dry).unwrap();
+    let on_revision = control
+        .publish_with_policy_and_context_generation(
+            make(editor.project(), Some(&fresh)),
+            prepared::PublicationPolicy::InheritRuntime,
+            19,
+        )
+        .unwrap();
+    render(
+        &mut callback,
+        &mut oracle,
+        &mut actual[..13],
+        &mut expected[..13],
+    );
+    assert_eq!(&actual[..13], &expected[..13], "old key stays silent");
+    assert_eq!(
+        control
+            .status
+            .applied_revision
+            .load(std::sync::atomic::Ordering::Acquire),
+        on_revision
+    );
+    assert!(control.status.rejected_revision().is_none());
+    position += 13;
+    control.reclaim();
     for input in [&fresh, &reference] {
         input.set_key(1, Some((67, 127, 1))).unwrap();
     }
