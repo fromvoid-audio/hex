@@ -2514,6 +2514,203 @@ fn computer_keyboard_plays_through_positive_latency_on_another_track() {
 }
 
 #[test]
+fn paused_source_monitor_preserves_buffered_arrangement_audio() {
+    use crate::playback::{Playback, PlaybackCommand};
+    use hex_project::Command;
+
+    let mut mismatches = Vec::new();
+    for (effect_delay, keyboard, partition) in [
+        (false, false, 1),
+        (false, false, 257),
+        (false, true, 1),
+        (false, true, 257),
+        (true, false, 1),
+        (true, false, 257),
+        (true, true, 1),
+        (true, true, 257),
+    ] {
+        let mut f = fixture(&[&[7], &[]], 1024);
+        let keyboard_track = f.tracks[usize::from(effect_delay)];
+        f.editor
+            .execute(Command::InsertInstrument {
+                track: keyboard_track,
+                state: hex_project::default_instrument_state().unwrap(),
+            })
+            .unwrap();
+        // The muted keyboard track contributes no PCM. The other track's
+        // impulse is queued either in compensation or a device delay.
+        f.editor
+            .execute(Command::Gain {
+                track: keyboard_track,
+                gain: 0.0,
+            })
+            .unwrap();
+        let revision = prepare(&f).unwrap();
+        let mut actual = Playback::from_prepared(Arc::clone(&revision));
+        let mut oracle = Playback::from_prepared(revision);
+        let keys = Arc::new(crate::computer_keyboard::ComputerKeyboardInput::default());
+        if keyboard {
+            actual
+                .prepare_computer_keyboard(f.editor.project(), keyboard_track, Arc::clone(&keys))
+                .unwrap();
+        }
+        actual.prepare_resident_paused_source_monitor(None).unwrap();
+        for playback in [&mut actual, &mut oracle] {
+            playback.apply(PlaybackCommand::Play);
+            playback.render(&mut [[0.0; 2]; 4]).unwrap();
+            playback.apply(PlaybackCommand::Pause);
+        }
+        if keyboard {
+            keys.set_key(0, Some((60, 100, 1))).unwrap();
+        }
+        let mut monitored = [[0.0; 2]; 257];
+        for block in monitored.chunks_mut(partition) {
+            actual.render(block).unwrap();
+        }
+        if keyboard {
+            keys.set_key(0, None).unwrap();
+        }
+        for playback in [&mut actual, &mut oracle] {
+            playback.apply(PlaybackCommand::Play);
+        }
+        let mut got = [[0.0; 2]; 32];
+        let mut expected = got;
+        actual.render(&mut got).unwrap();
+        oracle.render(&mut expected).unwrap();
+        assert!(expected.iter().any(|frame| *frame != [0.0; 2]));
+        let leaked_while_paused = monitored.iter().any(|frame| *frame != [0.0; 2]);
+        let resume_differs = got != expected;
+        if leaked_while_paused || resume_differs {
+            mismatches.push((
+                effect_delay,
+                keyboard,
+                partition,
+                leaked_while_paused,
+                resume_differs,
+            ));
+        }
+    }
+    assert!(
+        mismatches.is_empty(),
+        "mismatches: (device delay, keyboard active, paused partition, leaked, resume differs) {mismatches:?}"
+    );
+}
+
+#[test]
+fn paused_keyboard_preserves_same_track_device_history() {
+    use crate::playback::{Playback, PlaybackCommand};
+    use hex_project::Command;
+
+    let mut f = fixture(&[&[7]], 1024);
+    f.editor
+        .execute(Command::InsertInstrument {
+            track: f.tracks[0],
+            state: hex_project::default_instrument_state().unwrap(),
+        })
+        .unwrap();
+    let revision = prepare(&f).unwrap();
+    let mut monitored = Playback::from_prepared(Arc::clone(&revision));
+    let mut oracle = Playback::from_prepared(revision);
+    let keys = Arc::new(crate::computer_keyboard::ComputerKeyboardInput::default());
+    monitored
+        .prepare_computer_keyboard(f.editor.project(), f.tracks[0], keys)
+        .unwrap();
+    monitored
+        .prepare_resident_paused_source_monitor(None)
+        .unwrap();
+    for playback in [&mut monitored, &mut oracle] {
+        playback.apply(PlaybackCommand::Play);
+        playback.render(&mut [[0.0; 2]; 4]).unwrap();
+        playback.apply(PlaybackCommand::Pause);
+    }
+    let mut paused = [[0.0; 2]; 257];
+    monitored.render(&mut paused).unwrap();
+    for playback in [&mut monitored, &mut oracle] {
+        playback.apply(PlaybackCommand::Play);
+    }
+    let mut actual = [[0.0; 2]; 32];
+    let mut expected = actual;
+    monitored.render(&mut actual).unwrap();
+    oracle.render(&mut expected).unwrap();
+    assert!(expected.iter().any(|frame| *frame != [0.0; 2]));
+    let leaked_while_paused = paused.iter().any(|frame| *frame != [0.0; 2]);
+    let resume_differs = actual != expected;
+    assert!(
+        !leaked_while_paused && !resume_differs,
+        "queued clip audio leaked while paused: {leaked_while_paused}; resume differs: {resume_differs}"
+    );
+}
+
+#[test]
+fn paused_keyboard_sounds_without_consuming_same_track_clip_history() {
+    use crate::playback::{Playback, PlaybackCommand};
+    use hex_project::Command;
+
+    let mut f = fixture(&[&[7]], 1024);
+    f.editor
+        .execute(Command::InsertInstrument {
+            track: f.tracks[0],
+            state: hex_project::default_instrument_state().unwrap(),
+        })
+        .unwrap();
+    let with_clip = prepare(&f).unwrap();
+    for audio in f.media.values_mut() {
+        *audio = Audio::new(48_000, vec![[0.0; 2]; 1024]).unwrap();
+    }
+    let without_clip = prepare(&f).unwrap();
+    let mut actual = Playback::from_prepared(Arc::clone(&with_clip));
+    let mut live_only = Playback::from_prepared(without_clip);
+    let mut oracle = Playback::from_prepared(with_clip);
+    let keys = Arc::new(crate::computer_keyboard::ComputerKeyboardInput::default());
+    for playback in [&mut actual, &mut live_only] {
+        playback
+            .prepare_computer_keyboard(f.editor.project(), f.tracks[0], Arc::clone(&keys))
+            .unwrap();
+        playback
+            .prepare_resident_paused_source_monitor(None)
+            .unwrap();
+    }
+    for playback in [&mut actual, &mut live_only, &mut oracle] {
+        playback.apply(PlaybackCommand::Play);
+        playback.render(&mut [[0.0; 2]; 4]).unwrap();
+        playback.apply(PlaybackCommand::Pause);
+    }
+    keys.set_key(0, Some((60, 100, 1))).unwrap();
+    let mut paused = [[0.0; 2]; 257];
+    let mut live_paused = paused;
+    actual.render(&mut paused).unwrap();
+    live_only.render(&mut live_paused).unwrap();
+    assert!(live_paused.iter().flatten().any(|sample| *sample != 0.0));
+    let leaked = paused
+        .iter()
+        .zip(&live_paused)
+        .any(|(a, b)| (a[0] - b[0]).abs() > 1e-6 || (a[1] - b[1]).abs() > 1e-6);
+    for playback in [&mut actual, &mut live_only, &mut oracle] {
+        playback.apply(PlaybackCommand::Play);
+    }
+    let mut resumed = [[0.0; 2]; 32];
+    let mut live_resumed = resumed;
+    let mut expected_clip = resumed;
+    actual.render(&mut resumed).unwrap();
+    live_only.render(&mut live_resumed).unwrap();
+    oracle.render(&mut expected_clip).unwrap();
+    assert!(expected_clip.iter().any(|frame| *frame != [0.0; 2]));
+    let missing =
+        resumed
+            .iter()
+            .zip(&live_resumed)
+            .zip(&expected_clip)
+            .any(|((actual, live), expected)| {
+                (actual[0] - live[0] - expected[0]).abs() > 1e-6
+                    || (actual[1] - live[1] - expected[1]).abs() > 1e-6
+            });
+    assert!(
+        !leaked && !missing,
+        "clip leaked while paused: {leaked}; resume differs: {missing}"
+    );
+}
+
+#[test]
 fn operator_sync_companions_preserve_pcm_through_compensated_startup_and_partitions() {
     use hex_lattice_contract::{DeviceTypeId, ParameterId, ParameterValue};
     use hex_project::{BeatTime, Command, Created};
