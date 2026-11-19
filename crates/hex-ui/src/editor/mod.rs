@@ -182,6 +182,17 @@ mod midi_pitch_viewport;
 mod midi_ruler;
 mod midi_scene;
 use midi_pitch_viewport::PitchViewport;
+
+#[cfg(all(test, feature = "ui-test-support"))]
+impl PitchViewport {
+    fn first_test_pitch(self) -> u8 {
+        self.coverage().start
+    }
+
+    fn test_row_count(self) -> u8 {
+        self.coverage().len() as u8
+    }
+}
 mod midi_selection;
 mod midi_source_controls;
 mod midi_step;
@@ -931,8 +942,7 @@ pub(super) struct EditorView {
     piano_pitch_scroll_accum: f32,
     pub(in crate::editor) piano_beat_start: i128,
     pub(in crate::editor) piano_beat_span: hex_project::BeatTime,
-    pub(in crate::editor) piano_pitch_low: u8,
-    piano_pitch_rows: u8,
+    pub(in crate::editor) piano_pitch: PitchViewport,
     piano_pitch_zoom: Option<midi_pitch_zoom::Zoom>,
     pub(in crate::editor) midi_snap_grid: midi_drag::MidiGrid,
     pending_requests: VecDeque<Request>,
@@ -1755,8 +1765,7 @@ impl EditorView {
             piano_beat_start: 0,
             piano_beat_span: hex_project::BeatTime::from_quarters(4)
                 .unwrap_or(hex_project::BeatTime::ONE),
-            piano_pitch_low: 48,
-            piano_pitch_rows: 24,
+            piano_pitch: PitchViewport::DEFAULT,
             piano_pitch_zoom: None,
             midi_snap_grid: midi_drag::MidiGrid::default(),
             pending_requests: VecDeque::new(),

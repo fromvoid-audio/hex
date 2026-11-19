@@ -78,7 +78,13 @@ fn key_zoom_owns_input_and_uses_outside_release_without_project_edit(cx: &mut Te
     repaint(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
         assert!(v.piano_pitch_zoom.is_none());
-        assert_eq!((v.piano_pitch_low, v.piano_pitch_rows), (54, 12));
+        assert_eq!(
+            (
+                v.piano_pitch.first_test_pitch(),
+                v.piano_pitch.test_row_count()
+            ),
+            (54, 12)
+        );
         assert!(!v.edit_pending());
         assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
     });
@@ -117,7 +123,10 @@ fn key_zoom_loss_keeps_last_view_and_suppresses_trailing_release(cx: &mut TestAp
         visual.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
         repaint(&editor, &mut visual);
         assert_eq!(
-            editor.read_with(&visual, |v, _| (v.piano_pitch_low, v.piano_pitch_rows)),
+            editor.read_with(&visual, |v, _| (
+                v.piano_pitch.first_test_pitch(),
+                v.piano_pitch.test_row_count()
+            )),
             (54, 12)
         );
         match loss {
@@ -192,7 +201,14 @@ fn key_zoom_loss_keeps_last_view_and_suppresses_trailing_release(cx: &mut TestAp
         assert_eq!(actions.get(), 0, "{loss}: trailing up");
         editor.read_with(&visual, |v, _| {
             assert!(v.piano_pitch_zoom.is_none(), "{loss}");
-            assert_eq!((v.piano_pitch_low, v.piano_pitch_rows), (54, 12), "{loss}");
+            assert_eq!(
+                (
+                    v.piano_pitch.first_test_pitch(),
+                    v.piano_pitch.test_row_count()
+                ),
+                (54, 12),
+                "{loss}"
+            );
             assert!(!v.edit_pending());
             assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
         });

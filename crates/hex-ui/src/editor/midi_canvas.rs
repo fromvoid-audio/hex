@@ -14,7 +14,7 @@ use super::midi_drag::{self, NotePreview};
 use super::midi_draw::StrokeModifiers;
 use super::{EditorView, midi::NoteField};
 use crate::theme;
-use geometry::{beat_at_x, beat_label, pitch_at_y, source_beat_label};
+use geometry::{beat_at_x, beat_label, source_beat_label};
 use gpui::{
     Bounds, Context, Div, MouseButton, MouseDownEvent, MouseMoveEvent, ScrollWheelEvent, Window,
     canvas, div, fill, point, prelude::*, px, relative, rgb, size,
@@ -73,8 +73,7 @@ impl EditorView {
         );
         let beat_start = self.piano_beat_start;
         let beat_span = self.piano_beat_span;
-        let pitch_low = self.piano_pitch_low;
-        let pitch_rows = self.piano_pitch_rows;
+        let pitch = self.piano_pitch;
         let grid = self.midi_snap_grid;
         let notes = source.notes();
         let key = super::midi_scene::SceneKey {
@@ -83,7 +82,7 @@ impl EditorView {
             clip: clip_id,
             beat_start,
             beat_span: beat_span.raw(),
-            pitch: super::PitchViewport::from_rows(pitch_low, pitch_rows)?,
+            pitch,
         };
         let scene = self.midi_scene_cache.get_or_build(key, notes).0;
         let draw_overwrite = match self.midi_overwrite_preview() {
@@ -247,7 +246,10 @@ impl EditorView {
             move |bounds, hitbox, window, cx| {
                 let width = f32::from(bounds.size.width);
                 let height = f32::from(bounds.size.height);
-                if width <= 0.0 || height <= 0.0 {
+                let Some(row_height) = pitch.row_height_pixels(height) else {
+                    return;
+                };
+                if width <= 0.0 {
                     return;
                 }
                 entity.read(cx).renew_midi_marquee_pointer(
@@ -382,8 +384,11 @@ impl EditorView {
                         ));
                     }
                 };
-                for row in 0..=usize::from(pitch_rows) {
-                    let y = row as f32 * height / usize::from(pitch_rows) as f32;
+                for (row, note) in pitch.coverage().rev().enumerate() {
+                    let Some(top) = pitch.note_top(note) else {
+                        continue;
+                    };
+                    let y = top.max(0.0) * height;
                     quad(
                         0.0,
                         y,
@@ -423,6 +428,18 @@ impl EditorView {
                         );
                     }
                 }
+                let note_band = |normalized_top: f32| {
+                    let top = normalized_top * height;
+                    let bottom = top + row_height;
+                    if top >= 0.0 && bottom <= height + 0.001 {
+                        (top + 1.0, (row_height - 2.0).max(1.0))
+                    } else {
+                        let top = top.max(0.0);
+                        let visible = (bottom.min(height) - top).max(0.0);
+                        let inset = 1.0_f32.min((visible - 1.0).max(0.0) * 0.5);
+                        (top + inset, visible - 2.0 * inset)
+                    }
+                };
                 for note in canvas_scene.notes() {
                     if draw_selected.binary_search(&note.id).is_ok()
                         || draw_stroke
@@ -448,29 +465,29 @@ impl EditorView {
                     let Some((x, right)) = super::midi_scene::pixel_bounds(note, width) else {
                         continue;
                     };
-                    let y = note.y * height;
+                    let (y, note_height) = note_band(note.y);
                     let w = right - x;
                     quad(
                         x,
-                        y + 1.0,
+                        y,
                         w,
-                        (height / f32::from(pitch_rows) - 2.0).max(1.0),
+                        note_height,
                         theme::color(if note.active {
                             theme::PaletteRole::Secondary
                         } else {
                             theme::PaletteRole::Muted
                         }),
                     );
-                    let note_height = (height / f32::from(pitch_rows) - 2.0).max(1.0);
                     let border = theme::color(theme::PaletteRole::Background);
-                    quad(x, y + 1.0, w, 1.0, border);
-                    quad(x, y + note_height, w, 1.0, border);
+                    let edge_height = 1.0_f32.min(note_height);
+                    quad(x, y, w, edge_height, border);
+                    quad(x, y + note_height - edge_height, w, edge_height, border);
                     if w >= 3.0 {
                         if note.leading_edge_visible {
-                            quad(x, y + 1.0, 1.0, note_height, border);
+                            quad(x, y, 1.0, note_height, border);
                         }
                         if note.trailing_edge_visible {
-                            quad(right - 1.0, y + 1.0, 1.0, note_height, border);
+                            quad(right - 1.0, y, 1.0, note_height, border);
                         }
                     }
                 }
@@ -499,13 +516,13 @@ impl EditorView {
                     let Some((x, right)) = super::midi_scene::pixel_bounds(note, width) else {
                         continue;
                     };
-                    let y = note.y * height;
+                    let (y, note_height) = note_band(note.y);
                     let w = right - x;
                     quad(
                         x,
-                        y + 1.0,
+                        y,
                         w,
-                        (height / f32::from(pitch_rows) - 2.0).max(1.0),
+                        note_height,
                         theme::color(if note.active {
                             theme::PaletteRole::Primary
                         } else {
@@ -513,27 +530,26 @@ impl EditorView {
                         }),
                     );
                     if draw_primary == Some(id) {
-                        let note_height = (height / f32::from(pitch_rows) - 2.0).max(1.0);
                         let accent = 2.0_f32.min(note_height);
                         let color = theme::color(theme::PaletteRole::Text);
-                        quad(x, y + 1.0, w, accent, color);
-                        quad(x, y + 1.0 + note_height - accent, w, accent, color);
+                        quad(x, y, w, accent, color);
+                        quad(x, y + note_height - accent, w, accent, color);
                     }
                     if w >= 3.0 && note.leading_edge_visible {
                         quad(
                             x,
-                            y + 1.0,
+                            y,
                             1.0,
-                            (height / f32::from(pitch_rows) - 2.0).max(1.0),
+                            note_height,
                             theme::color(theme::PaletteRole::Text),
                         );
                     }
                     if w >= 3.0 && note.trailing_edge_visible {
                         quad(
                             x + w - 1.0,
-                            y + 1.0,
+                            y,
                             1.0,
-                            (height / f32::from(pitch_rows) - 2.0).max(1.0),
+                            note_height,
                             theme::color(theme::PaletteRole::Text),
                         );
                     }
@@ -557,11 +573,12 @@ impl EditorView {
                     if let Some(rect) = canvas_scene.insert_geometry(note) {
                         let x = rect.x * width;
                         let right = (rect.x + rect.width) * width;
+                        let (y, note_height) = note_band(rect.y);
                         quad(
                             x,
-                            rect.y * height + 1.0,
+                            y,
                             right - x,
-                            (height / f32::from(pitch_rows) - 2.0).max(1.0),
+                            note_height,
                             theme::color(theme::PaletteRole::Primary),
                         );
                     }
@@ -570,11 +587,12 @@ impl EditorView {
                     && let Some(note) = canvas_scene.rebased_preview_geometry(id, item, prefix)
                     && let Some((x, right)) = super::midi_scene::pixel_bounds(note, width)
                 {
+                    let (y, note_height) = note_band(note.y);
                     quad(
                         x,
-                        note.y * height + 1.0,
+                        y,
                         right - x,
-                        (height / f32::from(pitch_rows) - 2.0).max(1.0),
+                        note_height,
                         theme::color(if canvas_scene.note(id).is_some_and(|n| !n.active) {
                             theme::PaletteRole::Muted
                         } else {
@@ -612,11 +630,12 @@ impl EditorView {
                             continue;
                         };
                         if let Some((x, right)) = super::midi_scene::pixel_bounds(note, width) {
+                            let (y, note_height) = note_band(note.y);
                             quad(
                                 x,
-                                note.y * height + 1.0,
+                                y,
                                 right - x,
-                                (height / f32::from(pitch_rows) - 2.0).max(1.0),
+                                note_height,
                                 theme::color(if original.active {
                                     theme::PaletteRole::Primary
                                 } else {
@@ -632,11 +651,17 @@ impl EditorView {
                     && let Some(note) = canvas_scene.note(target.note)
                     && let Some((left, right)) = super::midi_scene::pixel_bounds(note, width)
                 {
-                    let top = note.y * height + 1.0;
-                    let note_height = (height / f32::from(pitch_rows) - 2.0).max(1.0);
+                    let (top, note_height) = note_band(note.y);
                     let color = theme::color(theme::PaletteRole::SecondaryText);
-                    quad(left, top, right - left, 1.0, color);
-                    quad(left, top + note_height - 1.0, right - left, 1.0, color);
+                    let edge_height = 1.0_f32.min(note_height);
+                    quad(left, top, right - left, edge_height, color);
+                    quad(
+                        left,
+                        top + note_height - edge_height,
+                        right - left,
+                        edge_height,
+                        color,
+                    );
                     quad(left, top, 1.0, note_height, color);
                     quad(right - 1.0, top, 1.0, note_height, color);
                     let edge = match target.kind {
@@ -693,11 +718,9 @@ impl EditorView {
 
                 // Held chords are lines, separate from authored/selected note bodies.
                 for note in draw_step.into_iter().flatten() {
-                    if note.pitch < pitch_low
-                        || u16::from(note.pitch) >= u16::from(pitch_low) + u16::from(pitch_rows)
-                    {
+                    let Some((row_top, row_bottom)) = pitch.visible_row(note.pitch) else {
                         continue;
-                    }
+                    };
                     let first = i128::from(note.start.raw()).max(beat_start);
                     let last = i128::from(note.start.raw())
                         .saturating_add(i128::from(note.duration.raw()))
@@ -707,8 +730,7 @@ impl EditorView {
                     }
                     let left = ((first - beat_start) as f64 / raw_span as f64) as f32 * width;
                     let right = ((last - beat_start) as f64 / raw_span as f64) as f32 * width;
-                    let row = pitch_low.saturating_add(pitch_rows - 1) - note.pitch;
-                    let y = (f32::from(row) + 0.5) * height / f32::from(pitch_rows);
+                    let y = (row_top + row_bottom) * 0.5 * height;
                     quad(
                         left,
                         y - 1.0,
@@ -764,8 +786,7 @@ impl EditorView {
                     pitch_modifier: false,
                     view_start: beat_start,
                     view_span: beat_span.raw(),
-                    pitch_low,
-                    pitch_rows,
+                    pitch,
                     bounds: super::midi_stroke::CanvasBounds {
                         x: f32::from(bounds.origin.x),
                         y: f32::from(bounds.origin.y),
@@ -1004,8 +1025,7 @@ impl EditorView {
                                         bounds: gesture_bounds,
                                         beat_start,
                                         beat_span: beat_span.raw(),
-                                        pitch_low,
-                                        pitch_rows,
+                                        pitch,
                                         clip_length: clip_len.raw(),
                                         grid,
                                     },
@@ -1045,8 +1065,7 @@ impl EditorView {
                                 beat_start,
                                 beat_span: beat_span.raw(),
                                 clip_length: clip_len.raw(),
-                                pitch_low,
-                                pitch_rows,
+                                pitch,
                                 grid,
                             })
                             .and_then(midi_drag::begin);
@@ -1122,7 +1141,7 @@ impl EditorView {
                         ) else {
                             return;
                         };
-                        let Some(pitch) = pitch_at_y(y, height, pitch_low, pitch_rows) else {
+                        let Some(pitch) = pitch.pitch_at_y(y, height) else {
                             return;
                         };
                         let local = local_beat.raw();
@@ -1454,7 +1473,7 @@ impl EditorView {
                 "lower piano roll pitch range",
                 cx.listener(|v, _, _, cx| {
                     v.cancel_midi_note_gesture();
-                    v.piano_pitch_low = v.piano_pitch_low.saturating_sub(12).min(128 - v.piano_pitch_rows);
+                    v.piano_pitch = v.piano_pitch.scroll_rows(-12).0;
                     cx.notify();
                 }),
             )])
@@ -1463,7 +1482,7 @@ impl EditorView {
                 "raise piano roll pitch range",
                 cx.listener(|v, _, _, cx| {
                     v.cancel_midi_note_gesture();
-                    v.piano_pitch_low = v.piano_pitch_low.saturating_add(12).min(128 - v.piano_pitch_rows);
+                    v.piano_pitch = v.piano_pitch.scroll_rows(12).0;
                     cx.notify();
                 }),
             )])
@@ -1634,7 +1653,7 @@ impl EditorView {
             .flex_1()
             .min_h_0()
             .flex()
-            .children([self.piano_keys(pitch_low, cx)])
+            .children([self.piano_keys(cx)])
             .children([roll.children(self.time_selection_cursor_layer())]);
         let source_ruler = self.midi_source_ruler(cx);
         panel = panel.child(source_column).child(
@@ -1708,19 +1727,15 @@ impl EditorView {
             return false;
         }
         self.piano_pitch_wheel_accum -= f32::from(steps) * 80.0;
-        let Some(next) = super::midi_scene::wheel_pitch_zoom(
-            self.piano_pitch_low,
-            self.piano_pitch_rows,
-            fraction,
-            steps,
-        ) else {
+        let Some(next) = super::midi_scene::wheel_pitch_zoom(self.piano_pitch, fraction, steps)
+        else {
             return false;
         };
-        if next == (self.piano_pitch_low, self.piano_pitch_rows) {
+        if next == self.piano_pitch {
             return false;
         }
         self.cancel_midi_note_gesture();
-        (self.piano_pitch_low, self.piano_pitch_rows) = next;
+        self.piano_pitch = next;
         true
     }
 
@@ -1878,8 +1893,8 @@ impl EditorView {
             || marquee
     }
 
-    fn piano_keys(&self, low: u8, cx: &mut Context<Self>) -> impl IntoElement {
-        let rows = self.piano_pitch_rows;
+    fn piano_keys(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let viewport = self.piano_pitch;
         let held = self.midi_live_pitches();
         let entity = cx.entity();
         let input = self.piano_pitch_input(cx);
@@ -1896,8 +1911,10 @@ impl EditorView {
             .w(px(38.))
             .h_full()
             .flex_shrink_0();
-        for row in 0..rows {
-            let pitch = low.saturating_add(rows - 1).saturating_sub(row);
+        for pitch in viewport.coverage().rev() {
+            let Some((top, bottom)) = viewport.visible_row(pitch) else {
+                continue;
+            };
             let black = matches!(pitch % 12, 1 | 3 | 6 | 8 | 10);
             let is_c = pitch % 12 == 0;
             let label = if is_c {
@@ -1910,8 +1927,8 @@ impl EditorView {
                     .absolute()
                     .left_0()
                     .right_0()
-                    .top(relative(f32::from(row) / f32::from(rows)))
-                    .h(relative(1.0 / f32::from(rows)))
+                    .top(relative(top))
+                    .h(relative(bottom - top))
                     .flex()
                     .items_center()
                     .pl(px(2.0))

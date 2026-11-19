@@ -55,8 +55,12 @@ fn position(
                         / v.piano_beat_span.raw() as f64) as f32,
             bounds.origin.y
                 + bounds.size.height
-                    * ((f32::from(v.piano_pitch_low + v.piano_pitch_rows - 1 - pitch) + 0.5)
-                        / f32::from(v.piano_pitch_rows)),
+                    * ((f32::from(
+                        v.piano_pitch.first_test_pitch() + v.piano_pitch.test_row_count()
+                            - 1
+                            - pitch,
+                    ) + 0.5)
+                        / f32::from(v.piano_pitch.test_row_count())),
         )
     })
 }
@@ -872,8 +876,7 @@ fn marquee_audition_off_is_silent_and_new_contact_overflow_refuses_whole_batch(
     });
     pump(&editor, &mut visual);
     editor.update(&mut visual, |v, cx| {
-        v.piano_pitch_low = 24;
-        v.piano_pitch_rows = 72;
+        v.piano_pitch = crate::editor::PitchViewport::from_rows(24, 72).unwrap();
         cx.notify();
     });
     visual.run_until_parked();

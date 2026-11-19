@@ -30,7 +30,8 @@ fn empty_roll_arrows_move_the_snapped_cursor_without_editing(cx: &mut TestAppCon
     editor.read_with(&visual, |v, _| assert_eq!(v.midi_marker, Some(cursor)));
     // Clicking again owns the cursor and remains independent of vertical zoom.
     editor.update(&mut visual, |v, cx| {
-        v.piano_pitch_rows = 12;
+        v.piano_pitch =
+            crate::editor::PitchViewport::from_rows(v.piano_pitch.first_test_pitch(), 12).unwrap();
         cx.notify();
     });
     visual.run_until_parked();

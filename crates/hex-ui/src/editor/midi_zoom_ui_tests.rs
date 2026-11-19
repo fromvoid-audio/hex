@@ -241,7 +241,13 @@ fn piano_key_drag_zooms_pitch_and_preserves_note_editing(cx: &mut TestAppContext
     );
     visual.run_until_parked();
     editor.read_with(&visual, |v, _| {
-        assert_eq!((v.piano_pitch_low, v.piano_pitch_rows), (54, 12));
+        assert_eq!(
+            (
+                v.piano_pitch.first_test_pitch(),
+                v.piano_pitch.test_row_count()
+            ),
+            (54, 12)
+        );
         assert_eq!(v.piano_beat_span, BeatTime::from_quarters(4).unwrap());
         assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
     });
@@ -262,7 +268,7 @@ fn piano_key_drag_zooms_pitch_and_preserves_note_editing(cx: &mut TestAppContext
     });
     visual.run_until_parked();
     editor.read_with(&visual, |v, _| {
-        assert_eq!(v.piano_pitch_rows, 12);
+        assert_eq!(v.piano_pitch.test_row_count(), 12);
         assert!(v.piano_beat_span.raw() < 4 * BeatTime::ONE.raw());
     });
     let at = point(
@@ -327,8 +333,8 @@ fn piano_key_drag_zooms_pitch_and_preserves_note_editing(cx: &mut TestAppContext
         );
         visual.run_until_parked();
         editor.read_with(&visual, |v, _| {
-            assert_eq!(v.piano_pitch_rows, rows);
-            assert!(u16::from(v.piano_pitch_low) + u16::from(rows) <= 128);
+            assert_eq!(v.piano_pitch.test_row_count(), rows);
+            assert!(u16::from(v.piano_pitch.first_test_pitch()) + u16::from(rows) <= 128);
         });
         visual.simulate_mouse_up(keys.center(), MouseButton::Left, Modifiers::default());
         visual.run_until_parked();
@@ -383,11 +389,7 @@ fn short_source_long_arrangement_notes_visibly_shrink_when_zooming_out(cx: &mut 
                 clip,
                 beat_start: v.piano_beat_start,
                 beat_span: v.piano_beat_span.raw(),
-                pitch: crate::editor::PitchViewport::from_rows(
-                    v.piano_pitch_low,
-                    v.piano_pitch_rows,
-                )
-                .unwrap(),
+                pitch: v.piano_pitch,
             },
             state.project.midi_source(clip).unwrap().notes(),
         );
@@ -445,8 +447,8 @@ fn option_wheel_zooms_pitch_under_pointer_and_preserves_time_and_history(cx: &mu
         let bounds = visual.debug_bounds(surface).unwrap();
         let before = editor.read_with(&visual, |v, _| {
             (
-                v.piano_pitch_low,
-                v.piano_pitch_rows,
+                v.piano_pitch.first_test_pitch(),
+                v.piano_pitch.test_row_count(),
                 v.piano_beat_start,
                 v.piano_beat_span,
                 v.state.as_ref().unwrap().project.snapshot(),
@@ -468,18 +470,22 @@ fn option_wheel_zooms_pitch_under_pointer_and_preserves_time_and_history(cx: &mu
         visual.run_until_parked();
         let pitch_view = editor.read_with(&visual, |v, _| {
             assert!(
-                v.piano_pitch_rows < before.1,
+                v.piano_pitch.test_row_count() < before.1,
                 "Option-wheel must enlarge pitch rows over {surface}"
             );
             let old_pitch = f32::from(before.0) + f32::from(before.1) * 0.25;
-            let new_pitch = f32::from(v.piano_pitch_low) + f32::from(v.piano_pitch_rows) * 0.25;
+            let new_pitch = f32::from(v.piano_pitch.first_test_pitch())
+                + f32::from(v.piano_pitch.test_row_count()) * 0.25;
             assert!((new_pitch - old_pitch).abs() <= 0.5);
             assert_eq!(
                 (v.piano_beat_start, v.piano_beat_span),
                 (before.2, before.3)
             );
             assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before.4);
-            (v.piano_pitch_low, v.piano_pitch_rows)
+            (
+                v.piano_pitch.first_test_pitch(),
+                v.piano_pitch.test_row_count(),
+            )
         });
         editor.update(&mut visual, |v, _| {
             assert!(v.enqueue(Request::Edit(Command::RenameTrack {
@@ -489,7 +495,13 @@ fn option_wheel_zooms_pitch_under_pointer_and_preserves_time_and_history(cx: &mu
         });
         pump(&editor, &mut visual);
         editor.read_with(&visual, |v, _| {
-            assert_eq!((v.piano_pitch_low, v.piano_pitch_rows), pitch_view)
+            assert_eq!(
+                (
+                    v.piano_pitch.first_test_pitch(),
+                    v.piano_pitch.test_row_count()
+                ),
+                pitch_view
+            )
         });
         let roll = visual.debug_bounds("midi-note-roll").unwrap();
         visual.simulate_event(ScrollWheelEvent {
@@ -500,7 +512,13 @@ fn option_wheel_zooms_pitch_under_pointer_and_preserves_time_and_history(cx: &mu
         });
         visual.run_until_parked();
         editor.read_with(&visual, |v, _| {
-            assert_eq!((v.piano_pitch_low, v.piano_pitch_rows), pitch_view);
+            assert_eq!(
+                (
+                    v.piano_pitch.first_test_pitch(),
+                    v.piano_pitch.test_row_count()
+                ),
+                pitch_view
+            );
             assert!(v.piano_beat_span < before.3, "cmd-wheel zooms time");
         });
     }
@@ -515,7 +533,7 @@ fn option_wheel_accumulates_independently_clamps_and_respects_held_marquee(
     let roll = visual.debug_bounds("midi-note-roll").unwrap();
     let before = editor.read_with(&visual, |v, _| {
         (
-            v.piano_pitch_rows,
+            v.piano_pitch.test_row_count(),
             v.piano_beat_span,
             v.state.as_ref().unwrap().project.snapshot(),
         )
@@ -539,35 +557,43 @@ fn option_wheel_accumulates_independently_clamps_and_respects_held_marquee(
     }
     editor.read_with(&visual, |v, _| {
         assert_eq!(
-            (v.piano_pitch_rows, v.piano_beat_span),
+            (v.piano_pitch.test_row_count(), v.piano_beat_span),
             (before.0, before.1)
         )
     });
     wheel(&mut visual, 20.0, true);
     let rows = editor.read_with(&visual, |v, _| {
-        assert!(v.piano_pitch_rows < before.0);
+        assert!(v.piano_pitch.test_row_count() < before.0);
         assert_eq!(v.piano_beat_span, before.1);
-        v.piano_pitch_rows
+        v.piano_pitch.test_row_count()
     });
     wheel(&mut visual, 60.0, false);
     editor.read_with(&visual, |v, _| {
-        assert_eq!(v.piano_pitch_rows, rows);
+        assert_eq!(v.piano_pitch.test_row_count(), rows);
         assert!(v.piano_beat_span < before.1);
     });
     for _ in 0..12 {
         wheel(&mut visual, -320.0, true);
     }
     editor.read_with(&visual, |v, _| {
-        assert_eq!((v.piano_pitch_low, v.piano_pitch_rows), (0, 128))
+        assert_eq!(
+            (
+                v.piano_pitch.first_test_pitch(),
+                v.piano_pitch.test_row_count()
+            ),
+            (0, 128)
+        )
     });
     for _ in 0..12 {
         wheel(&mut visual, 320.0, true);
     }
-    editor.read_with(&visual, |v, _| assert_eq!(v.piano_pitch_rows, 1));
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.piano_pitch.test_row_count(), 1)
+    });
     editor.update(&mut visual, |v, _| {
         let saved = (
-            v.piano_pitch_low,
-            v.piano_pitch_rows,
+            v.piano_pitch.first_test_pitch(),
+            v.piano_pitch.test_row_count(),
             v.piano_pitch_wheel_accum,
         );
         for (bounds, y, delta) in [
@@ -580,8 +606,8 @@ fn option_wheel_accumulates_independently_clamps_and_respects_held_marquee(
             assert!(!v.zoom_piano_pitch_wheel_at(bounds, y, delta));
             assert_eq!(
                 (
-                    v.piano_pitch_low,
-                    v.piano_pitch_rows,
+                    v.piano_pitch.first_test_pitch(),
+                    v.piano_pitch.test_row_count(),
                     v.piano_pitch_wheel_accum
                 ),
                 saved
@@ -611,7 +637,11 @@ fn option_wheel_accumulates_independently_clamps_and_respects_held_marquee(
             v.midi_marquee.is_some(),
             "wheel cannot cancel held selection"
         );
-        assert_eq!(v.piano_pitch_rows, 1, "wheel cannot zoom during capture");
+        assert_eq!(
+            v.piano_pitch.test_row_count(),
+            1,
+            "wheel cannot zoom during capture"
+        );
     });
     visual.simulate_keystrokes("escape");
     visual.simulate_mouse_up(roll.center(), MouseButton::Left, Modifiers::default());
@@ -619,7 +649,10 @@ fn option_wheel_accumulates_independently_clamps_and_respects_held_marquee(
     wheel(&mut visual, -80.0, true);
     editor.read_with(&visual, |v, _| {
         assert!(v.midi_marquee.is_none());
-        assert!(v.piano_pitch_rows > 1, "fresh wheel works after release");
+        assert!(
+            v.piano_pitch.test_row_count() > 1,
+            "fresh wheel works after release"
+        );
     });
     editor.read_with(&visual, |v, _| {
         assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before.2)
@@ -649,9 +682,9 @@ fn option_wheel_pitch_geometry_creates_the_displayed_note_through_worker_and_und
     });
     visual.run_until_parked();
     let expected_pitch = editor.read_with(&visual, |v, _| {
-        v.piano_pitch_low + v.piano_pitch_rows
+        v.piano_pitch.first_test_pitch() + v.piano_pitch.test_row_count()
             - 1
-            - (f32::from(v.piano_pitch_rows) * 0.75).floor() as u8
+            - (f32::from(v.piano_pitch.test_row_count()) * 0.75).floor() as u8
     });
     double_down(&mut visual, at, Modifiers::default());
     visual.simulate_mouse_up(at, MouseButton::Left, Modifiers::default());
