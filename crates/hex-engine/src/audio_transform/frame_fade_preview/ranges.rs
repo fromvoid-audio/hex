@@ -1,5 +1,6 @@
 //! Bounded coarse range queries over the same eligible frame-source law.
 use super::*;
+use hex_project::AudioViewMode;
 
 impl FrameFadePreview<'_> {
     /// Visit source unions for a wide Arrangement column. `remaining` is shared
@@ -28,7 +29,21 @@ impl FrameFadePreview<'_> {
         let roots = if first >= last {
             [None, None]
         } else if let Some(projection) = &self.projection {
-            if projection.has_silent_repeat_gap() {
+            let roots = projection
+                .root_ranges_for_frames(first..last)
+                .map_err(|error| Invalid(error.0))?;
+            if let Some(view) = self.clip.audio_edit().and_then(|edit| edit.content_view) {
+                // Base occurrence bounds are in read order. In a finite Once
+                // window the directed root union counts exactly the audible
+                // frames. Repeat has no placement holes and can reuse frames.
+                if view
+                    .base_placement
+                    .is_none_or(|p| p.mode != AudioViewMode::Repeat)
+                {
+                    let audible = roots.iter().flatten().map(|r| r.end - r.start).sum::<u64>();
+                    silence |= audible < last - first;
+                }
+            } else if projection.has_silent_repeat_gap() {
                 let edit = self
                     .clip
                     .audio_edit()
@@ -51,9 +66,7 @@ impl FrameFadePreview<'_> {
                 silence |=
                     first < occurrence.destination_start || last > occurrence.destination_end;
             }
-            projection
-                .root_ranges_for_frames(first..last)
-                .map_err(|error| Invalid(error.0))?
+            roots
         } else {
             [
                 Some(first - self.clip.start()..last - self.clip.start()),
