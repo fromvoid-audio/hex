@@ -1146,7 +1146,7 @@ mod tests {
 
     #[test]
     fn fade_lookahead_only_accepts_its_exact_reply_and_never_evicts() {
-        let mut test = endpoint(2, 4, 4);
+        let mut test = endpoint(3, 4, 4);
         let source = source();
         let key = |page_index| PageKey { source, page_index };
         let extent = |page_index| crate::StreamResourceExtent {
