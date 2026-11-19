@@ -1519,11 +1519,16 @@ impl SessionPlayback {
                     .map(FreshHistory::RemovedTrack)
                 })
                 .or_else(|| {
+                    let approved_cut = confirmed_insert && !force_restart;
                     (candidate.graph.has_one_more_node_than(&old.graph)
                         || old.graph.has_one_more_node_than(&candidate.graph))
-                    .then(|| isolated_single_latency_edit(self, previous))
+                    .then(|| isolated_single_latency_edit(self, previous, approved_cut))
                     .flatten()
-                    .map(|(track, device)| FreshHistory::ChangedTrack(track, device))
+                    .map(|(track, device)| FreshHistory::ChangedTrack {
+                        track,
+                        device,
+                        cut_predecessor_pcm: approved_cut,
+                    })
                 })
                 .or_else(|| {
                     candidate
@@ -6901,13 +6906,14 @@ fn fresh_added_audio_track(
 
 /// Exactly one resident audio track gains or loses its only native latency processor.
 /// Unchanged native Arrangement instruments use the ordinary voice handoff.
-/// Graph preflight independently proves isolation, equal maximum latency and
-/// silent discarded rings before any runtime state is moved.
+/// Graph preflight proves isolation and equal maximum latency. A continuous
+/// edit needs silent local rings; the approved held cut may retire donor PCM.
 fn isolated_single_latency_edit(
     candidate: &SessionPlayback,
     previous: &SessionPlayback,
+    approved_cut: bool,
 ) -> Option<(TrackId, u64)> {
-    if !previous.playing
+    if !(previous.playing || approved_cut)
         || candidate.revision.contains_streamed_sources()
         || previous.revision.contains_streamed_sources()
         || candidate.loop_region().is_some()

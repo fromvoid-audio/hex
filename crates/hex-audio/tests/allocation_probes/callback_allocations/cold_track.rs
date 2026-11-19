@@ -608,6 +608,18 @@ fn buffered_latency_insert_refuses_without_callback_allocations_or_source_replac
     )
 }
 
+#[test]
+fn approved_isolated_latency_edit_preserves_other_pcm_and_source_without_allocations()
+-> Result<(), Box<dyn Error>> {
+    for edit in [
+        IsolatedLatencyEdit::ApprovedInsert,
+        IsolatedLatencyEdit::ApprovedRemove,
+    ] {
+        verify_silent_track_latency_edit(SilentLatencyRouting::GroupAndReturn, edit)?;
+    }
+    Ok(())
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SilentLatencyRouting {
     TrackReverb,
@@ -620,15 +632,22 @@ enum IsolatedLatencyEdit {
     Insert,
     Remove,
     BufferedInsert,
+    ApprovedInsert,
+    ApprovedRemove,
 }
 
 fn verify_silent_track_latency_edit(
     routing: SilentLatencyRouting,
     edit: IsolatedLatencyEdit,
 ) -> Result<(), Box<dyn Error>> {
-    use hex_audio::prepared::{AppliedAudioSource, PublicationPolicy};
+    use hex_audio::prepared::{AppliedAudioSource, PublicationPolicy, PublicationReceiptState};
     use hex_project::BeatTime;
 
+    let approved = matches!(
+        edit,
+        IsolatedLatencyEdit::ApprovedInsert | IsolatedLatencyEdit::ApprovedRemove
+    );
+    let buffered = approved || edit == IsolatedLatencyEdit::BufferedInsert;
     let mut editor = Editor::new(Project::new(RATE)?, 16)?;
     let mut media = BTreeMap::new();
     let mut tracks = Vec::new();
@@ -648,8 +667,9 @@ fn verify_silent_track_latency_edit(
             return Err("expected source".into());
         };
         let mut samples = vec![[0.0; 2]; 12_000];
-        if index == 0 && edit == IsolatedLatencyEdit::BufferedInsert {
-            samples.fill([0.25, -0.125]);
+        if index == 0 && buffered {
+            // The right channel is an independent witness for untouched DSP.
+            samples.fill([0.25, 0.0]);
         } else if routing != SilentLatencyRouting::HeldOperator {
             samples[..512].fill([0.25, -0.125]);
         }
@@ -737,7 +757,10 @@ fn verify_silent_track_latency_edit(
             velocity: 100,
         })?;
     }
-    let command = if edit == IsolatedLatencyEdit::Remove {
+    let command = if matches!(
+        edit,
+        IsolatedLatencyEdit::Remove | IsolatedLatencyEdit::ApprovedRemove
+    ) {
         let Created::Device(device) = editor.execute(insert_limiter(tracks[0])?)? else {
             return Err("expected limiter".into());
         };
@@ -788,22 +811,28 @@ fn verify_silent_track_latency_edit(
         .ok_or("missing original source")?;
     assert_eq!((active.context, active.audio_revision), (context, initial));
     editor.execute(command)?;
-    let mut next = Playback::try_from_prepared_with_session(prepare(editor.project())?)?;
+    let successor = prepare(editor.project())?;
+    let mut next = Playback::try_from_prepared_with_session(Arc::clone(&successor))?;
     next.require_continuous_device_insert();
     let context = hex_engine::AudioSourceContext {
         editor_revision: 1,
         ..context
     };
+    let policy = if approved {
+        PublicationPolicy::DeviceInsert {
+            predecessor: active,
+            fence: control
+                .capture_fresh_runtime_fence()
+                .ok_or("device cut fence")?,
+        }
+    } else {
+        PublicationPolicy::InheritRuntime
+    };
     let submitted = control
-        .publish_with_admission_and_source_on_control(
-            next,
-            PublicationPolicy::InheritRuntime,
-            context,
-            |_| Ok::<_, ()>(()),
-        )
+        .publish_with_admission_and_source_on_control(next, policy, context, |_| Ok::<_, ()>(()))
         .map_err(|_| "updated publication")?;
     measured_block(&mut callback, &mut actual);
-    if edit == IsolatedLatencyEdit::BufferedInsert {
+    if buffered {
         assert_eq!(control.status.recording_source(), Some(active));
         assert_eq!(
             control.status.rejected_revision(),
@@ -826,6 +855,60 @@ fn verify_silent_track_latency_edit(
     oracle.render(&mut expected)?;
     assert!(expected.iter().flatten().any(|sample| *sample != 0.0));
     assert_eq!(actual, expected);
+    if approved {
+        let refused = control
+            .fresh_runtime_receipt(submitted)
+            .ok_or("refused receipt")?;
+        let consent = control
+            .offer_device_insert_consent(&refused)
+            .ok_or("device cut consent")?;
+        control.reclaim();
+        let mut receipt = None;
+        let installed = control
+            .publish_confirmed_device_insert_with_receipt_on_control(
+                Playback::try_from_prepared_with_session(successor)?,
+                consent,
+                |value| receipt = Some(value.clone()),
+                |_| Ok::<_, ()>(()),
+            )
+            .map_err(|_| "approved publication")?;
+        let receipt = receipt.ok_or("approved receipt")?;
+        let position = control.status.position.load(Ordering::Acquire);
+        const FADE: usize = 128;
+        measured_block(&mut callback, &mut actual);
+        oracle.render(&mut expected[..FADE])?;
+        assert_eq!(
+            actual[0],
+            expected[0].map(|sample| sample * (127.0 / 128.0))
+        );
+        assert!(actual[(FADE - 1)..].iter().all(|&frame| frame == [0.0; 2]));
+        assert_eq!(receipt.state(), PublicationReceiptState::Applying);
+        assert_eq!(control.status.recording_source(), Some(active));
+        assert_eq!(
+            control.status.position.load(Ordering::Acquire),
+            position + FADE as u64
+        );
+
+        measured_block(&mut callback, &mut actual);
+        oracle.render(&mut expected)?;
+        assert_eq!(receipt.state(), PublicationReceiptState::Installed);
+        assert_eq!(
+            control.status.recording_source(),
+            Some(AppliedAudioSource {
+                context,
+                audio_revision: installed,
+                ..active
+            })
+        );
+        assert_eq!(
+            control.status.position.load(Ordering::Acquire),
+            position + (FADE + actual.len()) as u64
+        );
+        assert!(expected[FADE..].iter().any(|frame| frame[1].abs() > 1e-7));
+        for (actual, expected) in actual[FADE..].iter().zip(&expected[FADE..]) {
+            assert_eq!(actual[1].to_bits(), expected[1].to_bits());
+        }
+    }
     control.request_shutdown();
     measured_shutdown(&mut callback, &mut actual);
     control.reclaim();
