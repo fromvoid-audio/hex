@@ -367,6 +367,140 @@ fn block(f: &mut OrdinaryFixture) -> [Frame; 8] {
 
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn approved_track_effect_removal_keeps_one_native_endpoint_through_the_cut() {
+    use hex_lattice_contract::NativeDeviceMetadata;
+
+    const QUANTUM: usize = 128;
+    let _serial = serial();
+    let mut f = fixture_with_quantum("processing", 0, QUANTUM as u16);
+    let track = &f.editor.project().tracks()[0];
+    let hosted = track.devices()[0].id();
+    let track = track.id();
+    let Created::Device(eq) = f
+        .editor
+        .execute(Command::InsertDevice {
+            track,
+            before: Some(hosted),
+            state: hex_devices::eq::EQ_DEFINITION.default_state().unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("eq");
+    };
+    f.editor
+        .execute(Command::PlaceClip {
+            track,
+            asset: *f.media.keys().next().unwrap(),
+            start: 32,
+            duration: 4096,
+            source_offset: 0,
+            source_length: 32,
+            looping: true,
+        })
+        .unwrap();
+    let first = compile(&f, true);
+    publish(&mut f.control, first, PublicationPolicy::InheritRuntime);
+    f.control.command(PlaybackCommand::Play).unwrap();
+    let root = f.control.native_candidate_root();
+    let binding = f.binding;
+    let mut next_block = 1;
+    let mut render = |f: &mut OrdinaryFixture| {
+        let pcm = physical_block::<QUANTUM>(f);
+        replacement::wait_for_blocks(&root, binding, next_block);
+        assert_eq!(
+            crate::candidate_custody::native_source_test_fixture::original_worker_published_blocks(
+                &root, binding,
+            ),
+            Some(next_block)
+        );
+        next_block += 1;
+        pcm
+    };
+    // The signed processing fixture's gain advances once per SDK quantum.
+    let expected =
+        |sdk_block: u8| [0.25, -0.5].map(|sample| sample * (0.5 + f32::from(sdk_block) * 0.125));
+    let check_block = |pcm: [Frame; QUANTUM], sdk_block| {
+        let signal = expected(sdk_block);
+        assert_eq!(pcm[0], signal);
+        assert!(pcm.into_iter().all(|frame| frame == signal));
+    };
+    for _ in 0..3 {
+        render(&mut f);
+    }
+    check_block(render(&mut f), 1);
+    let predecessor = f.control.status.recording_source().unwrap();
+    f.editor.execute(Command::RemoveDevice(eq)).unwrap();
+    let replacement = compile(&f, true);
+    let fence = f.control.capture_fresh_runtime_fence().unwrap();
+    let revision = publish_in_context(
+        &mut f.control,
+        replacement,
+        PublicationPolicy::DeviceInsert { predecessor, fence },
+        hex_engine::AudioSourceContext {
+            editor_revision: context().editor_revision + 1,
+            ..context()
+        },
+    );
+    let refused = f.control.fresh_runtime_receipt(revision).unwrap();
+    check_block(render(&mut f), 2);
+    assert_eq!(
+        refused.state(),
+        PublicationReceiptState::Refused(PlaybackHandoffRejection::DeviceInsertNeedsConfirmation)
+    );
+    assert_eq!(f.control.status.recording_source(), Some(predecessor));
+
+    let consent = f.control.offer_device_insert_consent(&refused).unwrap();
+    f.control.reclaim();
+    let replacement = compile(&f, true);
+    let mut approved = None;
+    let revision = f
+        .control
+        .publish_confirmed_device_insert_with_receipt_on_control(
+            replacement,
+            consent,
+            |receipt| approved = Some(receipt.clone()),
+            |_| Ok::<_, ()>(()),
+        )
+        .unwrap();
+    let approved = approved.unwrap();
+    let fade_out = render(&mut f);
+    assert_eq!(
+        fade_out[0],
+        expected(3).map(|sample| sample * 127.0 / 128.0)
+    );
+    assert_eq!(fade_out[QUANTUM - 1], [0.0; 2]);
+    assert_eq!(f.control.status.recording_source(), Some(predecessor));
+    render(&mut f);
+    assert_eq!(approved.state(), PublicationReceiptState::Installed);
+    assert_eq!(
+        f.control.status.recording_source(),
+        Some(AppliedAudioSource {
+            context: consent.candidate_context(),
+            audio_revision: revision,
+            ..predecessor
+        })
+    );
+    check_block(render(&mut f), 5);
+
+    let OrdinaryFixture {
+        mut control,
+        data,
+        errors,
+        retirement,
+        ..
+    } = f;
+    let mut retirement = close_backend(data, errors, retirement);
+    let returned = recover(&mut control, binding);
+    assert!(returned.error.is_none() && returned.cleanup_error.is_none());
+    assert!(
+        matches!(returned.disposal, native::PreparationDisposal::Reaped(retired) if retired.status.success())
+    );
+    drop(control);
+    finish(&mut retirement);
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn retained_foreign_track_tail_and_successor_use_distinct_original_workers() {
     retained_foreign_track_tail(false, false, false, false);
 }

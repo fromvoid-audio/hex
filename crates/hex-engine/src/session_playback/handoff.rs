@@ -4773,6 +4773,26 @@ impl SessionPlayback {
                 }
                 continue;
             }
+            if (continuous_insert || confirmed_insert)
+                && candidate_index
+                    .and_then(|index| self.revision.arrangement().tracks().get(index))
+                    .is_some_and(|candidate| {
+                        old_track
+                            .device_chain
+                            .iter()
+                            .map(|device| device.device_id)
+                            .ne(candidate.device_chain.iter().map(|device| device.device_id))
+                    })
+            {
+                // The confirmed cut may discard residual output from a changed
+                // track chain. The normal history preflight still governs the
+                // surviving devices and the donor stays intact for retirement.
+                // A tail already reserved for an actual release was handled above.
+                if continuous_insert {
+                    return Err(SessionPlaybackError::DeviceInsertNeedsConfirmation);
+                }
+                continue;
+            }
             let Some(slot) = (0..self.tail_groups.len()).find(|slot| {
                 self.tail_groups.get(*slot).is_some_and(Option::is_none)
                     && self
