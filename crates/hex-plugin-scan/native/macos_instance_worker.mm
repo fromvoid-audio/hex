@@ -12,6 +12,10 @@
 #include <condition_variable>
 #include <mutex>
 #include <fcntl.h>
+#include <mach/mach.h>
+#include <mach/mach_time.h>
+#include <mach/thread_policy.h>
+#include <pthread.h>
 #include <poll.h>
 #include <sys/ioctl.h>
 #include <optional>
@@ -21,6 +25,73 @@
 namespace wire=hex_instance_wire;
 using namespace Steinberg;using namespace Steinberg::Vst;
 namespace {
+// The processing lane alone owns this policy. Standby header reads, editor
+// and state control, startup, and teardown run with ordinary scheduling.
+class WorkerDeadline {
+    thread_time_constraint_policy_data_t policy_{};
+    std::chrono::milliseconds idle_{};
+    std::chrono::steady_clock::time_point live_until_{};
+    bool active_=false;
+public:
+    WorkerDeadline(const wire::Config& config,bool enabled) {
+        if(!enabled) return;
+        const double period_ns=1e9*config.maximum/config.rate;
+        // Only admit the hardware periods under qualification. In particular,
+        // the scheduler's minimum computation budget must fit this interval.
+        if(period_ns<4e6 || period_ns>8e6) return;
+        mach_timebase_info_data_t clock{};
+        if(mach_timebase_info(&clock)!=KERN_SUCCESS || !clock.numer || !clock.denom) return;
+        const double ticks_per_ns=static_cast<double>(clock.denom)/clock.numer;
+        if(period_ns*ticks_per_ns>std::numeric_limits<uint32_t>::max() ||
+            300'000*ticks_per_ns<1) return;
+        const auto ticks=[&](double ns) { return static_cast<uint32_t>(ns*ticks_per_ns); };
+        policy_={ticks(period_ns),ticks(300'000),ticks(4'000'000),true};
+        idle_=std::chrono::milliseconds(static_cast<int>(std::ceil(2*period_ns/1e6)));
+    }
+    WorkerDeadline(const WorkerDeadline&)=delete;
+    WorkerDeadline& operator=(const WorkerDeadline&)=delete;
+    ~WorkerDeadline() { leave(); }
+
+    void enter() {
+        if(idle_.count()==0 || active_) return;
+        const auto thread=pthread_mach_thread_np(pthread_self());
+        active_=thread_policy_set(thread,THREAD_TIME_CONSTRAINT_POLICY,
+            reinterpret_cast<thread_policy_t>(&policy_),THREAD_TIME_CONSTRAINT_POLICY_COUNT)==KERN_SUCCESS;
+        if(!active_) idle_={};
+    }
+
+    void pcm_replied() {
+        if(active_) live_until_=std::chrono::steady_clock::now()+idle_;
+    }
+
+    void end_stream() { live_until_={}; }
+
+    bool before_read(int channel) {
+        if(idle_.count()==0) return true;
+        const auto remaining=live_until_-std::chrono::steady_clock::now();
+        if(remaining<=std::chrono::steady_clock::duration::zero()) return leave();
+        // Control packets run at ordinary priority. If one completes inside
+        // the current PCM interval, resume the remaining wait for audio.
+        enter();
+        if(!active_) return true;
+        const auto wait=std::chrono::ceil<std::chrono::milliseconds>(remaining);
+        pollfd input{channel,POLLIN,0};
+        const int ready=::poll(&input,1,static_cast<int>(wait.count()));
+        return (ready>0 && (input.revents&POLLIN)) || leave();
+    }
+
+    bool leave() {
+        if(!active_) return true;
+        thread_standard_policy_data_t standard{};
+        const auto thread=pthread_mach_thread_np(pthread_self());
+        if(thread_policy_set(thread,THREAD_STANDARD_POLICY,
+            reinterpret_cast<thread_policy_t>(&standard),THREAD_STANDARD_POLICY_COUNT)!=KERN_SUCCESS)
+            return false;
+        active_=false;
+        return true;
+    }
+};
+
 void report_message_activity(const wire::Config& config,bool editor_open,
     const hex_instance::HostMessageDiagnostics& trace,uint64_t pcm_blocks,uint64_t nonzero_input_blocks) {
     static const auto log=os_log_create("org.portalsurfer.hex.vst3","messages");
@@ -293,6 +364,10 @@ int main(int argc,char** argv) {
     const auto* transport_space=std::getenv("HEX_VST3_TRANSPORT_SPACE");
     const bool reserve_space=supervised && !offline && transport_space && !std::strcmp(transport_space,"1");
     const auto process_mode=offline?kOffline:kRealtime;
+    // The joining host reserves one paired slot for this native child.
+    const auto* deadline_admitted=std::getenv("HEX_VST3_WORKER_DEADLINE_ADMITTED");
+    const bool try_worker_deadline=supervised && !offline && deadline_admitted
+        && !std::strcmp(deadline_admitted,"1");
     // Static lifetime keeps cancellation live through main-thread TLS/atexit
     // cleanup registered by subsequently loaded SDK modules, not just main.
     static CancellationGuardian guardian;
@@ -815,9 +890,13 @@ int main(int argc,char** argv) {
                     // request to report its error, without another DSP call.
                     // This keeps the failure reply paired with that exchange
                     // instead of racing a later write against child exit.
+                    WorkerDeadline deadline(*config,try_worker_deadline);
                     while(started && (!worker_failure.load() || live_stage.load(std::memory_order_acquire)==LiveFailed || page_stage.load(std::memory_order_acquire)==PageFailed)) {
                         phase.store(1,std::memory_order_release); // receiving a complete frame
+                        if(!deadline.before_read(channel)) {worker_failure.store(Processing);break;}
                         const auto received=packet.read(channel,*config,blocks,frames);
+                        if(received!=1 && !deadline.leave()) {worker_failure.store(Processing);break;}
+                        if(received==2 || received==3) deadline.end_stream();
                         if(worker_failure.load()) break;
                         // A late End is not DSP work. Retire its pending
                         // custody even when the next request is save capture;
@@ -971,6 +1050,7 @@ int main(int argc,char** argv) {
                             continue;
                         }
                         if(received!=1) { worker_retiring.store(true,std::memory_order_release);worker_failure.store(ProtocolFailure);break; }
+                        deadline.enter();
                         bool valid=true;output_right.fill(0);input.silenceFlags=input_silence;output.silenceFlags=0;
                         bool nonzero_input=false;
                         for(size_t n=0;n<packet.frames;++n) {
@@ -1137,12 +1217,17 @@ int main(int argc,char** argv) {
                         for(size_t n=0;n<applying_edit_count;++n) complete_edit(applying_edits[n]);
                         instance.publish_parameter_feedback(parameter_feedback);
                         if(!packet.write(channel)) { worker_failure.store(Cancelled);break; }
+                        deadline.pcm_replied();
                         ++blocks;frames+=packet.frames;
                         pcm_since_main_pump.store(true,std::memory_order_relaxed);
                         if(trace_messages) {
                             diagnostic_pcm_blocks.store(blocks,std::memory_order_relaxed);
                             if(nonzero_input) diagnostic_nonzero_input_blocks.fetch_add(1,std::memory_order_relaxed);
                         }
+                    }
+                    if(!deadline.leave()) {
+                        error(channel,&*config,Processing);
+                        std::_Exit(Processing);
                     }
                     if(worker_failure.load()) error(channel,&*config,worker_failure.load());
                     // Never stop/deactivate/unload beneath a main-lane capture,

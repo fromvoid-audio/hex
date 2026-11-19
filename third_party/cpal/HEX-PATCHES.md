@@ -121,3 +121,19 @@ receipt or access a disposed Stream. The native regression registers on an
 actual unstarted output and injects a delivered signal through the registered
 shim. Hardware property-notification delivery and physical timing still need
 native acceptance.
+
+## Auxiliary macOS worker time constraint
+
+The safe `platform::CoreAudioWorkerTimeConstraint` handle uses the existing
+Mach dependency and stays on the dedicated calling thread. It validates the
+Mach timebase and arithmetic, owns one thread send right, and refuses to
+replace an existing time constraint. Enter applies the bounded policy and leave
+restores ordinary scheduling. macOS can refuse a subsequent pthread QoS
+request on a manually scheduled thread.
+Drop retries restoration and deallocates the right. Device callback code and
+stream ownership are outside this API.
+
+The opt-in Hex playback integration owns its scheduling admission and releases
+the policy before idle and controller work. The native regression checks actual
+kernel admission, refused nesting, and repeated restoration without opening
+an audio device.

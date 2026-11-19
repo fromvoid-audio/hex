@@ -1,5 +1,6 @@
 //! Actual Mac child control/worker custody. No process-global signal changes or
 //! numeric PID signalling. The helper's pre-SDK guardian owns self-cancellation.
+mod deadline;
 mod edits;
 mod epoch;
 mod live_capture;
@@ -44,6 +45,7 @@ pub struct Source {
     identity: Identity,
     grouped_editor_callbacks: bool,
     transport_space: bool,
+    live_deadline: bool,
 }
 impl Source {
     pub fn inspect_on_control(path: &Path, executable: &str, class: ClassId) -> Result<Self> {
@@ -62,6 +64,7 @@ impl Source {
             identity,
             grouped_editor_callbacks: false,
             transport_space: false,
+            live_deadline: false,
         })
     }
     /// Explicit opt-in on the exact inspected source before the SDK creates
@@ -72,6 +75,12 @@ impl Source {
     }
     pub fn with_transport_space(mut self) -> Self {
         self.transport_space = true;
+        self
+    }
+    /// Request paired scheduling for a live source on an admitted output.
+    /// Unsupported periods or exhausted capacity leave the source ordinary.
+    pub fn with_live_audio_deadline(mut self, requested: bool) -> Self {
+        self.live_deadline = requested;
         self
     }
     pub fn identity(&self) -> Identity {
@@ -411,7 +420,7 @@ impl Pending {
             .spawn()
             .map_err(Error::Io)
             .map_err(PreparationFailure::before_native)?;
-        let mut probe = ChildCustody::Owned(probe);
+        let mut probe = ChildCustody::Owned(probe, None);
         let status = match probe.reap() {
             Ok(status) => status,
             Err(cause) => return Err(PreparationFailure::probe(cause, probe)),
@@ -451,6 +460,16 @@ impl Pending {
             command.arg("--test-grouped-editor");
         }
         setup(&mut command);
+        let deadline = if source.live_deadline && !command.get_args().any(|arg| arg == "--offline")
+        {
+            deadline::Permit::reserve(&config)
+        } else {
+            None
+        };
+        command.env(
+            "HEX_VST3_WORKER_DEADLINE_ADMITTED",
+            if deadline.is_some() { "1" } else { "0" },
+        );
         let child = command
             .spawn()
             .map_err(Error::Io)
@@ -461,7 +480,7 @@ impl Pending {
         // The process exists before Ready. The local lease below owns every
         // early error path, including malformed data/source changes/timeouts.
         let mut pending = Lease {
-            child: ChildCustody::Owned(child),
+            child: ChildCustody::Owned(child, deadline),
             channel,
             cancellation,
             #[cfg(test)]
@@ -702,7 +721,15 @@ impl Prepared {
     }
     pub fn child_id_on_control(&self) -> Option<u32> {
         match &self.lease.child {
-            ChildCustody::Owned(child) => Some(child.id()),
+            ChildCustody::Owned(child, _) => Some(child.id()),
+            _ => None,
+        }
+    }
+    /// The PCM period reserved for this exact native child and joining
+    /// transport. The permit itself stays with the waitable child.
+    pub fn deadline_period_on_worker(&self) -> Option<Duration> {
+        match &self.lease.child {
+            ChildCustody::Owned(_, permit) => permit.as_ref().map(|permit| permit.period),
             _ => None,
         }
     }
@@ -1241,14 +1268,27 @@ struct Lease {
 // The process handle is consumed exactly once. Lost custody is terminal: even
 // cleanup/Drop must not retry a numeric wait against a potentially reused PID.
 enum ChildCustody {
-    Owned(Child),
+    Owned(Child, Option<deadline::Permit>),
     Reaped(ExitStatus),
     Lost(Arc<std::io::Error>),
 }
 impl ChildCustody {
+    fn lose(&mut self, error: std::io::Error) -> Error {
+        if let Self::Owned(_, permit) = self
+            && let Some(permit) = permit.take()
+        {
+            // A wait error cannot prove the other scheduling lane has exited.
+            // Keep its scalar reservation until the application exits.
+            std::mem::forget(permit);
+        }
+        let source = Arc::new(error);
+        *self = Self::Lost(Arc::clone(&source));
+        Error::Custody(crate::CustodyError::Lost(source))
+    }
+
     fn observe(&mut self) -> Result<Option<ExitStatus>> {
         let result = match self {
-            Self::Owned(child) => child.try_wait(),
+            Self::Owned(child, _) => child.try_wait(),
             Self::Reaped(status) => return Ok(Some(*status)),
             Self::Lost(error) => {
                 return Err(Error::Custody(crate::CustodyError::Lost(Arc::clone(error))));
@@ -1260,16 +1300,12 @@ impl ChildCustody {
                 Ok(Some(status))
             }
             Ok(None) => Ok(None),
-            Err(error) => {
-                let source = Arc::new(error);
-                *self = Self::Lost(Arc::clone(&source));
-                Err(Error::Custody(crate::CustodyError::Lost(source)))
-            }
+            Err(error) => Err(self.lose(error)),
         }
     }
     fn reap(&mut self) -> Result<ExitStatus> {
         let result = match self {
-            Self::Owned(child) => child.wait(),
+            Self::Owned(child, _) => child.wait(),
             Self::Reaped(status) => return Ok(*status),
             Self::Lost(error) => {
                 return Err(Error::Custody(crate::CustodyError::Lost(Arc::clone(error))));
@@ -1280,11 +1316,7 @@ impl ChildCustody {
                 *self = Self::Reaped(status);
                 Ok(status)
             }
-            Err(error) => {
-                let source = Arc::new(error);
-                *self = Self::Lost(Arc::clone(&source));
-                Err(Error::Custody(crate::CustodyError::Lost(source)))
-            }
+            Err(error) => Err(self.lose(error)),
         }
     }
 }

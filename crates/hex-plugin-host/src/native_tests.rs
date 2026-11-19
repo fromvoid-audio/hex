@@ -1078,7 +1078,7 @@ fn actual_retained_refusal_distinguishes_before_spawn_from_owned_native_failure(
     assert!(matches!(
         &failed.custody,
         preparation_failure::Custody::Native(Lease {
-            child: ChildCustody::Owned(_),
+            child: ChildCustody::Owned(_, _),
             ..
         })
     ));
@@ -1088,7 +1088,7 @@ fn actual_retained_refusal_distinguishes_before_spawn_from_owned_native_failure(
         matches!(
             &failed.custody,
             preparation_failure::Custody::Native(Lease {
-                child: ChildCustody::Owned(_),
+                child: ChildCustody::Owned(_, _),
                 ..
             })
         ),
@@ -1133,7 +1133,7 @@ fn actual_retained_completion_failure_keeps_same_lease_until_observed_disposal()
                 options().preparation.binding
             );
             let original_child = match &pending.lease.child {
-                ChildCustody::Owned(child) => child.id(),
+                ChildCustody::Owned(child, _) => child.id(),
                 _ => panic!("actual pending lease"),
             };
             let dropped = Arc::new(AtomicI32::new(-99));
@@ -1158,7 +1158,7 @@ fn actual_retained_completion_failure_keeps_same_lease_until_observed_disposal()
                 panic!("actual source is still retained")
             };
             assert!(
-                matches!(&lease.child, ChildCustody::Owned(child) if child.id() == original_child)
+                matches!(&lease.child, ChildCustody::Owned(child, _) if child.id() == original_child)
             );
             if terminal == "unknown" {
                 assert!(matches!(

@@ -25,7 +25,7 @@ pub use self::ios::{
 };
 
 #[cfg(target_os = "macos")]
-pub use self::macos::{Host, OutputTiming, OutputTimingReceipt, Stream};
+pub use self::macos::{Host, OutputTiming, OutputTimingReceipt, Stream, WorkerTimeConstraint};
 
 // Common helper methods used by both macOS and iOS
 
