@@ -219,7 +219,7 @@ pub(super) fn navigate_to_track(
         });
         if let Some(row) = row {
             view.track_scroll
-                .scroll_to_item(row, gpui::ScrollStrategy::Top);
+                .scroll_to_item(view.arrangement_list_row(row), gpui::ScrollStrategy::Top);
         } else {
             view.status = "track selected · hidden by the current view".into();
         }

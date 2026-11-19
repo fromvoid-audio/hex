@@ -1,6 +1,7 @@
 //! Browser intent and cancellation only. Session retains the admitted request;
 //! the audio owner retains native resources through its exact terminal.
 use super::*;
+use gpui::{Div, div, prelude::*, rgb};
 use hex_session::service::{
     PluginEffectControl, PluginEffectDestination, PluginEffectInsertion, PluginEffectSelection,
 };
@@ -87,6 +88,7 @@ pub(super) struct PendingPluginEffect {
     pub(super) destination: PluginEffectDestination,
     #[cfg(all(test, feature = "ui-test-support"))]
     pub(super) before: Option<hex_project::DeviceId>,
+    track: Option<ProposedPluginTrack>,
     control: Arc<PluginEffectControl>,
     trace: Option<crate::diagnostics::PluginLoad>,
 }
@@ -96,7 +98,165 @@ impl Drop for PendingPluginEffect {
     }
 }
 
+pub(super) struct ProposedPluginTrack {
+    before: Option<TrackId>,
+    name: String,
+}
+
+pub(super) struct FailedPluginTrack {
+    track: ProposedPluginTrack,
+    control: Arc<PluginEffectControl>,
+    error: String,
+}
+
 impl EditorView {
+    fn plugin_track_proposal(
+        &self,
+    ) -> Option<(
+        &ProposedPluginTrack,
+        &Arc<PluginEffectControl>,
+        Option<&str>,
+    )> {
+        if let Some((pending, track)) = self
+            .pending_plugin_effect
+            .as_ref()
+            .filter(|pending| !pending.control.is_cancelled())
+            .and_then(|pending| pending.track.as_ref().map(|track| (pending, track)))
+        {
+            return Some((track, &pending.control, None));
+        }
+        self.failed_plugin_track
+            .as_ref()
+            .map(|failed| (&failed.track, &failed.control, Some(failed.error.as_str())))
+    }
+
+    pub(super) fn proposed_plugin_track_anchor(&self) -> Option<Option<TrackId>> {
+        self.plugin_track_proposal()
+            .map(|(track, _, _)| track.before)
+    }
+
+    pub(super) fn restore_proposed_plugin_focus(&self, window: &mut Window) {
+        if self
+            .proposed_plugin_action_focus
+            .as_ref()
+            .is_some_and(|focus| focus.is_focused(window))
+            && (self.mode != EditorMode::Arrangement || self.plugin_track_proposal().is_none())
+        {
+            self.focus.focus(window);
+        }
+    }
+
+    pub(super) fn proposed_plugin_track_row(&mut self, cx: &mut Context<Self>) -> Div {
+        let Some((track, control, error)) = self.plugin_track_proposal() else {
+            return div();
+        };
+        let title = hex_session::service::text::verbatim(&track.name);
+        let failed = error.is_some();
+        let detail = error.unwrap_or("loading vst3").to_owned();
+        let tooltip = super::display_error::DisplayError::from(detail.clone());
+        let control = Arc::clone(control);
+        let focus = self
+            .proposed_plugin_action_focus
+            .get_or_insert_with(|| cx.focus_handle().tab_index(0).tab_stop(true))
+            .clone();
+        let action = move |view: &mut Self, window: &mut Window, cx: &mut Context<Self>| {
+            if failed {
+                if view
+                    .failed_plugin_track
+                    .as_ref()
+                    .is_some_and(|track| Arc::ptr_eq(&track.control, &control))
+                {
+                    view.failed_plugin_track = None;
+                }
+            } else if let Some(pending) = &view.pending_plugin_effect
+                && Arc::ptr_eq(&pending.control, &control)
+            {
+                pending.control.cancel();
+            }
+            view.restore_proposed_plugin_focus(window);
+            cx.stop_propagation();
+            cx.notify();
+        };
+        let key_action = action.clone();
+        let action_id = if failed {
+            "arrangement-pending-device-dismiss"
+        } else {
+            "arrangement-pending-device-cancel"
+        };
+        let button = hex_widgets::action(
+            theme::text(if failed { "dismiss" } else { "cancel" }),
+            theme::action_style(),
+        )
+        .id(action_id)
+        .debug_selector(move || action_id.into())
+        .h(px(22.0))
+        .px_2()
+        .text_xs()
+        .track_focus(&focus)
+        .focus(|style| {
+            style
+                .border_1()
+                .border_color(rgb(theme::color(theme::PaletteRole::Text)))
+        })
+        .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .on_click(cx.listener(move |view, _, window, cx| action(view, window, cx)))
+        .on_key_down(
+            cx.listener(move |view, event: &gpui::KeyDownEvent, window, cx| {
+                if event.keystroke.modifiers == gpui::Modifiers::default()
+                    && matches!(event.keystroke.key.as_str(), "enter" | "space")
+                {
+                    cx.stop_propagation();
+                    if !event.is_held {
+                        key_action(view, window, cx);
+                    }
+                }
+            }),
+        );
+        div()
+            .debug_selector(|| "arrangement-pending-device-track".into())
+            .w_full()
+            .h(px(super::tracks::TRACK_ROW_HEIGHT))
+            .flex()
+            .justify_end()
+            .border_b_1()
+            .border_color(rgb(theme::color(theme::PaletteRole::Border)))
+            .child(
+                div()
+                    .w(px(self.track_header_width()))
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .px_2()
+                    .bg(rgb(theme::color(theme::PaletteRole::Surface)))
+                    .child(
+                        div()
+                            .min_w_0()
+                            .flex_1()
+                            .text_xs()
+                            .child(div().truncate().child(theme::text(title)))
+                            .child(
+                                div()
+                                    .text_color(rgb(theme::color(if failed {
+                                        theme::PaletteRole::Error
+                                    } else {
+                                        theme::PaletteRole::Muted
+                                    })))
+                                    .truncate()
+                                    .id("arrangement-pending-device-status")
+                                    .debug_selector(|| "arrangement-pending-device-status".into())
+                                    .tooltip(move |_, cx| {
+                                        cx.new(|_| {
+                                            super::display_error::ErrorTooltip(tooltip.clone())
+                                        })
+                                        .into()
+                                    })
+                                    .child(theme::text(detail)),
+                            ),
+                    )
+                    .children([button]),
+            )
+    }
+
     pub(super) fn reconcile_device_insert_confirmation(
         &mut self,
         window: &mut Window,
@@ -158,11 +318,39 @@ impl EditorView {
         }) else {
             return;
         };
-        if let Some(pending) = self.pending_plugin_effect.take()
-            && let Some(trace) = &pending.trace
+        self.retire_plugin_effect(&terminal.control, terminal.accepted, event.error.as_deref());
+    }
+
+    pub(super) fn retire_plugin_effect(
+        &mut self,
+        control: &Arc<PluginEffectControl>,
+        installed: bool,
+        error: Option<&str>,
+    ) -> bool {
+        if self
+            .pending_plugin_effect
+            .as_ref()
+            .is_none_or(|pending| !Arc::ptr_eq(&pending.control, control))
         {
-            trace.complete(terminal.accepted);
+            return false;
         }
+        let Some(mut pending) = self.pending_plugin_effect.take() else {
+            return false;
+        };
+        if let Some(trace) = &pending.trace {
+            trace.complete(installed);
+        }
+        if !installed
+            && !pending.control.is_cancelled()
+            && let Some(track) = pending.track.take()
+        {
+            self.failed_plugin_track = Some(FailedPluginTrack {
+                track,
+                control: Arc::clone(control),
+                error: error.unwrap_or("vst3 load failed").into(),
+            });
+        }
+        true
     }
 
     pub(super) fn insert_browser_plugin_effect(
@@ -254,11 +442,21 @@ impl EditorView {
                 control,
                 trace,
                 status,
+                track: match destination {
+                    PluginEffectDestination::NewTrack { before_track, .. } => {
+                        Some(ProposedPluginTrack {
+                            before: before_track,
+                            name: selection.class_name.clone(),
+                        })
+                    }
+                    _ => None,
+                },
                 #[cfg(all(test, feature = "ui-test-support"))]
                 destination,
                 #[cfg(all(test, feature = "ui-test-support"))]
                 before,
             });
+            self.failed_plugin_track = None;
             self.error = None;
         }
     }

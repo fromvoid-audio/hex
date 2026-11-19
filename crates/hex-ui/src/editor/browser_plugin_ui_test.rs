@@ -1139,13 +1139,69 @@ fn all_search_keeps_within_kind_order_and_single_kind_queries(cx: &mut TestAppCo
 
 #[gpui::test]
 fn pending_vst_new_track_paints_a_loading_row_before_worker_outcome(cx: &mut TestAppContext) {
-    use hex_project::TrackDeviceSlot;
-    use hex_session::service::PluginEffectDestination;
+    check_vst_new_track_proposal(cx, false);
+}
 
-    let (handle, editor, tracks, directory, _) =
-        browser_drag_fixture_with_tracks(cx, &["original"]);
-    let mut visual = VisualTestContext::from_window(handle, cx);
-    visual.run_until_parked();
+#[gpui::test]
+fn cancel_vst_new_track_removes_the_proposal_before_the_worker_terminal(cx: &mut TestAppContext) {
+    check_vst_new_track_proposal(cx, true);
+}
+
+fn check_vst_new_track_proposal(cx: &mut TestAppContext, cancel_first: bool) {
+    use hex_project::TrackDeviceSlot;
+    use hex_session::service::{
+        CanonicalAudioSourceSnapshot, PluginEffectDestination, Service, WorkerAudioSink,
+    };
+    use std::{
+        sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+            mpsc,
+        },
+        time::Duration,
+    };
+
+    // Hold only the Session control worker so Cancel can reliably win before
+    // the request reaches preparation. The worker still returns its own event.
+    struct Gate {
+        armed: Arc<AtomicBool>,
+        entered: mpsc::SyncSender<()>,
+        release: mpsc::Receiver<()>,
+    }
+    impl WorkerAudioSink for Gate {
+        fn initialize(&mut self, _: &AtomicBool) -> Result<u32, String> {
+            Ok(48_000)
+        }
+        fn canonical_changed(&mut self, _: Arc<CanonicalAudioSourceSnapshot>) {}
+        fn poll(&mut self) {
+            if self.armed.swap(false, Ordering::AcqRel) {
+                self.entered.try_send(()).unwrap();
+                let _ = self.release.recv_timeout(Duration::from_secs(3));
+            }
+        }
+        fn close(&mut self) {}
+    }
+    let armed = Arc::new(AtomicBool::new(false));
+    let (entered_tx, entered_rx) = mpsc::sync_channel(1);
+    let (release_tx, release_rx) = mpsc::sync_channel(1);
+    let service = if cancel_first {
+        Service::with_audio_sink(
+            32,
+            8_000_000,
+            None,
+            Box::new(Gate {
+                armed: Arc::clone(&armed),
+                entered: entered_tx,
+                release: release_rx,
+            }),
+        )
+    } else {
+        Service::new(48_000, 32, 8_000_000)
+    }
+    .unwrap();
+    let (mut visual, editor, tracks) =
+        crate::editor::track_reorder_ui_test::live_tracks_on_service(cx, 1, 0, service);
+    let directory = PreferencesTestDirectory::new();
     let module = directory.0.canonicalize().unwrap().join("Original.vst3");
     let mut catalog = original_plugin_catalog(module.clone());
     let class = &mut catalog.entries[0]
@@ -1163,6 +1219,11 @@ fn pending_vst_new_track_paints_a_loading_row_before_worker_outcome(cx: &mut Tes
     class.class_sdk_version = Some("3.8".into());
     let selection = catalog.select_effect(&module, [1; 16]).unwrap();
 
+    if cancel_first {
+        armed.store(true, Ordering::Release);
+        entered_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+    }
+    let prior = editor.read_with(&visual, |view, _| view.state.clone().unwrap());
     editor.update(&mut visual, |view, cx| {
         let before = view.state.as_ref().unwrap().project.next_identity();
         view.selected_track = Some(tracks[0]);
@@ -1190,12 +1251,79 @@ fn pending_vst_new_track_paints_a_loading_row_before_worker_outcome(cx: &mut Tes
         assert_eq!(view.state.as_ref().unwrap().project.tracks().len(), 1);
         assert_eq!(view.selected_track, Some(tracks[0]));
     });
-    let row = visual.debug_bounds("arrangement-pending-device-track");
-    let cancel = visual.debug_bounds("arrangement-pending-device-cancel");
+    let row = visual
+        .debug_bounds("arrangement-pending-device-track")
+        .expect("loading row");
+    let cancel = visual
+        .debug_bounds("arrangement-pending-device-cancel")
+        .expect("cancel alongside pending track");
+    let original =
+        Box::leak(format!("arrangement-track-header-{}", tracks[0].value()).into_boxed_str());
+    assert!(row.contains(&cancel.center()));
+    assert!(row.bottom() <= visual.debug_bounds(original).unwrap().top());
+
+    if cancel_first {
+        visual.simulate_click(cancel.center(), Modifiers::default());
+        visual.run_until_parked();
+        assert!(
+            visual
+                .debug_bounds("arrangement-pending-device-track")
+                .is_none()
+        );
+        editor.read_with(&visual, |view, _| {
+            assert!(view.pending_plugin_effect.is_some())
+        });
+        release_tx.send(()).unwrap();
+    }
+    editor.update(&mut visual, |view, cx| {
+        let event = crate::editor::track_reorder_ui_test::next(&view.service);
+        assert_eq!(event.plugin_effect_complete.len(), 1);
+        assert!(!event.plugin_effect_complete[0].accepted);
+        assert_eq!(
+            event.plugin_effect_complete[0].control.is_cancelled(),
+            cancel_first
+        );
+        if !cancel_first {
+            assert!(
+                event
+                    .error
+                    .as_ref()
+                    .unwrap()
+                    .contains("vst3 hosting unavailable")
+            );
+        }
+        view.receive(event);
+        assert!(view.pending_plugin_effect.is_none());
+        assert_eq!(view.selected_track, Some(tracks[0]));
+        let state = view.state.as_ref().unwrap();
+        assert_eq!(state.revision, prior.revision);
+        assert_eq!(state.project, prior.project);
+        assert_eq!(state.can_undo, prior.can_undo);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    if !cancel_first {
+        assert_eq!(
+            visual.debug_bounds("arrangement-pending-device-track"),
+            Some(row)
+        );
+        assert!(
+            visual
+                .debug_bounds("arrangement-pending-device-cancel")
+                .is_none()
+        );
+        let dismiss = visual
+            .debug_bounds("arrangement-pending-device-dismiss")
+            .expect("failed proposal retains an explicit dismissal");
+        visual.simulate_click(dismiss.center(), Modifiers::default());
+        visual.run_until_parked();
+    }
     assert!(
-        row.is_some() && cancel.is_some(),
-        "pending track and cancel must paint together"
+        visual
+            .debug_bounds("arrangement-pending-device-track")
+            .is_none()
     );
+    assert!(visual.debug_bounds(original).unwrap().top() < row.bottom());
 }
 
 #[gpui::test]

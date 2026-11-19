@@ -2560,6 +2560,7 @@ impl EditorView {
             self.time_selection_key_held = false;
             self.section_loop_key = Default::default();
             self.pending_plugin_effect.take();
+            self.failed_plugin_track.take();
             self.retire_sampler_parameter();
             self.retire_first_sampler_load();
             self.cancel_open_after_save();

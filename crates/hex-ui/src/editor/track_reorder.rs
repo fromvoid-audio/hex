@@ -388,10 +388,18 @@ impl EditorView {
         let header_left = bounds.left + (bounds.width - self.track_header_width()).max(0.0);
         let top = self.track_scroll.list.logical_scroll_top();
         let mut row_y = bounds.top - f32::from(top.offset_in_item);
-        let mut index = top.item_ix;
-        for (_, track) in self.arrangement_tracks(project).skip(index) {
-            let height = self.track_height(track.id());
+        let mut target = tracks.len();
+        for row in top.item_ix..self.track_scroll.list.item_count() {
+            let height = self.arrangement_list_row_height(row)?;
             let row_end = row_y + height;
+            let Some(index) = self.arrangement_list_track_index(row) else {
+                if y < row_end {
+                    return None;
+                }
+                row_y = row_end;
+                continue;
+            };
+            let track = tracks.get(index)?;
             if track.is_group()
                 && x >= header_left
                 && row_y >= bounds.top
@@ -413,7 +421,8 @@ impl EditorView {
                 && y < row_end - 1.0
             {
                 let next = self
-                    .arrangement_track_index(index + 1)
+                    .arrangement_row_index(index)
+                    .and_then(|ordinal| self.arrangement_track_index(ordinal + 1))
                     .unwrap_or(tracks.len());
                 if let Some(group) = self
                     .track_hierarchy_indent
@@ -430,20 +439,19 @@ impl EditorView {
                 }
             }
             if y < row_y + height / 2.0 {
+                target = index;
                 break;
             }
             row_y = row_end;
-            index += 1;
         }
-        let index = self.arrangement_track_index(index).unwrap_or(tracks.len());
-        let destination_parent = tracks.get(index).and_then(|track| track.parent_group());
-        if !source.permits(index, destination_parent) {
+        let destination_parent = tracks.get(target).and_then(|track| track.parent_group());
+        if !source.permits(target, destination_parent) {
             return None;
         }
         if row_y < bounds.top || row_y > bounds.top + bounds.height {
             return None;
         }
-        Some(Destination::Gap(tracks.get(index).map(|t| t.id())))
+        Some(Destination::Gap(tracks.get(target).map(|t| t.id())))
     }
 
     fn console_reorder_destination(
@@ -914,22 +922,22 @@ impl EditorView {
         };
         let index = match target {
             Some(id) => {
-                tracks
+                let ordinal = tracks
                     .iter()
-                    .position(|i| state.project.tracks().get(*i).is_some_and(|t| t.id() == id))?
-                    + usize::from(after)
+                    .position(|i| state.project.tracks().get(*i).is_some_and(|t| t.id() == id))?;
+                self.arrangement_list_row(ordinal) + usize::from(after)
             }
-            None => tracks.len(),
+            None => self.track_scroll.list.item_count(),
         };
         let top = self.track_scroll.list.logical_scroll_top();
         let mut y = -f32::from(top.offset_in_item);
         if index >= top.item_ix {
-            for track in tracks.iter().skip(top.item_ix).take(index - top.item_ix) {
-                y += self.track_height(state.project.tracks().get(*track)?.id());
+            for row in top.item_ix..index {
+                y += self.arrangement_list_row_height(row)?;
             }
         } else {
-            for track in tracks.iter().skip(index).take(top.item_ix - index) {
-                y -= self.track_height(state.project.tracks().get(*track)?.id());
+            for row in index..top.item_ix {
+                y -= self.arrangement_list_row_height(row)?;
             }
         }
         if y < 0.0 || y > bounds.height {

@@ -58,6 +58,8 @@ pub(super) struct TrackLayout {
     wheel_scroll_start: Option<gpui::ListOffset>,
     generation: u64,
     tracks: Vec<TrackId>,
+    proposal_row: Option<usize>,
+    proposal_anchor: Option<Option<TrackId>>,
     revision: Option<u64>,
     focus_ranges: std::rc::Rc<[(u64, u64)]>,
 }
@@ -327,7 +329,9 @@ impl EditorView {
             generation: self.project_generation,
             heights: self.track_layout.heights.clone(),
             overview: self.track_layout.overview.clone(),
-            anchor: self.track_layout.tracks.get(scroll.item_ix).copied(),
+            anchor: self
+                .arrangement_list_ordinal(scroll.item_ix)
+                .and_then(|row| self.track_layout.tracks.get(row).copied()),
             scroll,
         })
     }
@@ -359,17 +363,22 @@ impl EditorView {
         };
         let last = rows.next_back().unwrap_or(first);
         let tracks = &self.track_layout.tracks[first..=last];
+        let first_row = self.arrangement_list_row(first);
+        let proposal_height = self
+            .arrangement_proposal_row()
+            .filter(|row| (first_row..self.arrangement_list_row(last)).contains(row))
+            .map_or(0.0, |_| TRACK_ROW_HEIGHT);
         let extra: f32 = tracks
             .iter()
             .map(|id| self.track_height(*id) - self.track_body_height(*id))
             .sum();
-        let height = ((area.height - extra) / tracks.len() as f32)
+        let height = ((area.height - extra - proposal_height) / tracks.len() as f32)
             .clamp(HEADER_ONLY_HEIGHT, area.height.max(TRACK_ROW_HEIGHT));
         let scroll = self.track_scroll.list.logical_scroll_top();
         if tracks
             .iter()
             .all(|id| (self.track_body_height(*id) - height).abs() < 0.01)
-            && scroll.item_ix == first
+            && scroll.item_ix == first_row
             && scroll.offset_in_item == px(0.0)
         {
             return false;
@@ -384,7 +393,7 @@ impl EditorView {
         }
         self.track_scroll.remeasure();
         self.track_scroll
-            .scroll_to_item(first, gpui::ScrollStrategy::Top);
+            .scroll_to_item(first_row, gpui::ScrollStrategy::Top);
         true
     }
 
@@ -419,17 +428,14 @@ impl EditorView {
         let index = prior
             .anchor
             .and_then(|id| self.track_layout.tracks.iter().position(|item| *item == id))
+            .map(|ordinal| self.arrangement_list_row(ordinal))
             .unwrap_or(
                 prior
                     .scroll
                     .item_ix
-                    .min(self.track_layout.tracks.len().saturating_sub(1)),
+                    .min(self.track_scroll.list.item_count().saturating_sub(1)),
             );
-        let height = self
-            .track_layout
-            .tracks
-            .get(index)
-            .map_or(0.0, |id| self.track_height(*id));
+        let height = self.arrangement_list_row_height(index).unwrap_or(0.0);
         self.track_scroll.list.scroll_to(gpui::ListOffset {
             item_ix: index,
             offset_in_item: if f32::from(prior.scroll.offset_in_item).is_finite() {
@@ -548,9 +554,10 @@ impl EditorView {
     // backwards only across rows that fit above the target avoids maintaining a
     // second content-height inventory; GPUI clamps the final position at the end.
     fn center_resized_track(&self, track: TrackId) {
-        let Some(mut index) = self.track_layout.tracks.iter().position(|id| *id == track) else {
+        let Some(ordinal) = self.track_layout.tracks.iter().position(|id| *id == track) else {
             return;
         };
+        let mut index = self.arrangement_list_row(ordinal);
         let viewport_height = f32::from(self.track_scroll.list.viewport_bounds().size.height);
         let height = self.track_height(track);
         if !viewport_height.is_finite() || viewport_height <= 0.0 || !height.is_finite() {
@@ -559,7 +566,9 @@ impl EditorView {
         let mut offset = (height - viewport_height) / 2.0;
         while offset < 0.0 && index > 0 {
             index -= 1;
-            let previous = self.track_height(self.track_layout.tracks[index]);
+            let Some(previous) = self.arrangement_list_row_height(index) else {
+                return;
+            };
             if !previous.is_finite() || previous <= 0.0 {
                 return;
             }
@@ -633,6 +642,43 @@ impl EditorView {
         self.track_layout.revision = None;
     }
 
+    // The virtual list includes one proposed row. Canonical visible ordinals
+    // still index only real tracks for editing, selection, and navigation.
+    pub(super) fn arrangement_list_row(&self, ordinal: usize) -> usize {
+        ordinal
+            + usize::from(
+                self.arrangement_proposal_row()
+                    .is_some_and(|row| row <= ordinal),
+            )
+    }
+
+    pub(super) fn arrangement_list_ordinal(&self, row: usize) -> Option<usize> {
+        match self.arrangement_proposal_row() {
+            Some(proposal) if proposal == row => None,
+            Some(proposal) if proposal < row => Some(row - 1),
+            _ => Some(row),
+        }
+    }
+
+    pub(super) fn arrangement_list_track_index(&self, row: usize) -> Option<usize> {
+        self.arrangement_track_index(self.arrangement_list_ordinal(row)?)
+    }
+
+    pub(super) fn arrangement_list_row_height(&self, row: usize) -> Option<f32> {
+        if self.arrangement_proposal_row() == Some(row) {
+            return Some(TRACK_ROW_HEIGHT);
+        }
+        let id = *self
+            .track_layout
+            .tracks
+            .get(self.arrangement_list_ordinal(row)?)?;
+        Some(self.track_height(id))
+    }
+
+    pub(super) fn arrangement_proposal_row(&self) -> Option<usize> {
+        self.track_layout.proposal_row
+    }
+
     pub(super) fn sync_track_layout(&mut self, tracks: &[hex_project::Track]) {
         if self.track_layout.generation != self.project_generation {
             self.track_layout.heights.clear();
@@ -642,12 +688,17 @@ impl EditorView {
             self.track_layout.wheel_scroll_start = None;
             self.track_layout.generation = self.project_generation;
             self.track_layout.tracks.clear();
+            self.track_layout.proposal_row = None;
+            self.track_layout.proposal_anchor = None;
             self.track_scroll.list.reset(0);
             self.track_layout.revision = None;
         }
         let revision = self.state.as_ref().map(|state| state.revision);
         let focus_ranges = self.arrangement_focus_ranges();
-        if self.track_layout.revision == revision && self.track_layout.focus_ranges == focus_ranges
+        let proposal_anchor = self.proposed_plugin_track_anchor();
+        if self.track_layout.revision == revision
+            && self.track_layout.focus_ranges == focus_ranges
+            && self.track_layout.proposal_anchor == proposal_anchor
         {
             return;
         }
@@ -658,7 +709,18 @@ impl EditorView {
             .filter(|t| self.arrangement_track_visible(t.id()))
             .map(|t| t.id())
             .collect::<Vec<_>>();
-        if self.track_layout.tracks != ids {
+        let proposal_row = proposal_anchor.map(|anchor| {
+            anchor
+                .and_then(|id| tracks.iter().position(|track| track.id() == id))
+                .map_or(ids.len(), |index| {
+                    self.arrangement_track_indices()
+                        .partition_point(|row| *row < index)
+                })
+        });
+        let old_proposal_row = self.arrangement_proposal_row();
+        self.track_layout.proposal_anchor = proposal_anchor;
+        let tracks_changed = self.track_layout.tracks != ids;
+        if tracks_changed {
             if let Some(drag) = self.track_layout.drag.take() {
                 self.restore_track_resize(drag);
             }
@@ -672,12 +734,37 @@ impl EditorView {
                         .is_none_or(|id| tracks.iter().any(|t| t.id() == id))
                 });
             }
+        }
+        if tracks_changed || old_proposal_row != proposal_row {
             let mut top = self.track_scroll.list.logical_scroll_top();
-            let anchor = self.track_layout.tracks.get(top.item_ix).copied();
-            top.item_ix = anchor
+            let old_ordinal = self.arrangement_list_ordinal(top.item_ix);
+            let anchor = old_ordinal.and_then(|row| self.track_layout.tracks.get(row).copied());
+            let new_ordinal = anchor
                 .and_then(|id| ids.iter().position(|item| *item == id))
-                .unwrap_or(top.item_ix.min(ids.len().saturating_sub(1)));
-            if let Some((from, to)) = single_row_move(&self.track_layout.tracks, &ids) {
+                .unwrap_or(
+                    old_ordinal
+                        .unwrap_or(top.item_ix)
+                        .min(ids.len().saturating_sub(1)),
+                );
+            self.track_layout.proposal_row = proposal_row;
+            top.item_ix = if old_ordinal.is_none() {
+                proposal_row.unwrap_or(new_ordinal)
+            } else {
+                self.arrangement_list_row(new_ordinal)
+            };
+            if !tracks_changed {
+                if let Some(row) = old_proposal_row {
+                    self.track_scroll.list.splice(row..row + 1, 0);
+                }
+                if let Some(row) = proposal_row {
+                    self.track_scroll.list.splice(row..row, 1);
+                }
+                let _ = self.track_scroll.list.clone().measure_all();
+            } else if old_proposal_row.is_some() || proposal_row.is_some() {
+                self.track_scroll
+                    .list
+                    .reset(ids.len() + usize::from(proposal_row.is_some()));
+            } else if let Some((from, to)) = single_row_move(&self.track_layout.tracks, &ids) {
                 // Cached sizes belong to stable TrackIds. Preserve every
                 // unchanged row; only the inserted moved row loses its size.
                 // GPUI still scans bounded metadata, but constructs elements
@@ -695,13 +782,18 @@ impl EditorView {
                 self.track_scroll.list.reset(ids.len());
             }
             self.track_scroll.list.scroll_to(top);
+            if old_proposal_row.is_none()
+                && let Some(row) = proposal_row
+            {
+                self.track_scroll.list.scroll_to_reveal_item(row);
+            }
             self.track_layout.tracks = ids;
         }
         if let Some((id, offset)) = self.arrangement_focus.pending_restore.take()
             && let Some(item_ix) = self.track_layout.tracks.iter().position(|t| *t == id)
         {
             self.track_scroll.list.scroll_to(gpui::ListOffset {
-                item_ix,
+                item_ix: self.arrangement_list_row(item_ix),
                 offset_in_item: offset,
             });
         }
@@ -710,6 +802,7 @@ impl EditorView {
         if let Some(id) = track
             && let Some(index) = self.track_layout.tracks.iter().position(|t| *t == id)
         {
+            let index = self.arrangement_list_row(index);
             self.track_scroll.invalidate(index..index + 1, 1);
         }
     }

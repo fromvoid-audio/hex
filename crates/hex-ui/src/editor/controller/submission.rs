@@ -385,6 +385,9 @@ impl EditorView {
             Refusal::Closed => "project worker stopped",
             Refusal::QueueFull => "request queue full · edit was not applied",
         };
+        if let Request::InsertPluginEffect(insertion) = request {
+            visible |= self.retire_plugin_effect(&insertion.control, false, Some(message));
+        }
         if kinds.project_rate {
             self.project_rate_settings.refused(message.into());
             visible = true;

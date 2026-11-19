@@ -51,13 +51,12 @@ impl EditorView {
             cx.notify();
             return None;
         };
+        let row_index = self.arrangement_list_row(row_index);
         let body = self.arrangement_bounds?;
         let scroll_y = f32::from(self.track_scroll.offset().y);
         let expected_top = body.top
-            + self
-                .arrangement_tracks(&state.project)
-                .take(row_index)
-                .map(|(_, track)| self.track_height(track.id()))
+            + (0..row_index)
+                .filter_map(|row| self.arrangement_list_row_height(row))
                 .sum::<f32>()
             + scroll_y;
         let expected_bottom = expected_top + self.track_height(track_id);

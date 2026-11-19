@@ -1002,6 +1002,8 @@ pub(super) struct EditorView {
     drag_bounce_held: bool,
     pending_bounce_drop: Option<bounce::PendingBounceDrop>,
     pending_plugin_effect: Option<plugin_effect::PendingPluginEffect>,
+    failed_plugin_track: Option<plugin_effect::FailedPluginTrack>,
+    proposed_plugin_action_focus: Option<gpui::FocusHandle>,
     export_control: Option<hex_session::service::ExportControl>,
     export_window: Option<gpui::AnyWindowHandle>,
     export_dialog_open: bool,
@@ -1812,6 +1814,8 @@ impl EditorView {
             drag_bounce_held: false,
             pending_bounce_drop: None,
             pending_plugin_effect: None,
+            failed_plugin_track: None,
+            proposed_plugin_action_focus: None,
             export_control: None,
             export_window: None,
             export_dialog_open: false,
@@ -2251,7 +2255,7 @@ impl EditorView {
             };
             if let Some(row) = row {
                 self.track_scroll
-                    .scroll_to_item(row, gpui::ScrollStrategy::Top);
+                    .scroll_to_item(self.arrangement_list_row(row), gpui::ScrollStrategy::Top);
             }
         }
     }

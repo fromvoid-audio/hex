@@ -154,7 +154,7 @@ impl EditorView {
                     )])
             });
         let ruler_width = (self.workspace_body_width(window) - self.track_header_width()).max(0.0);
-        if self.arrangement_track_index(0).is_none() {
+        if self.track_scroll.list.item_count() == 0 {
             let empty_viewport = viewport;
             self.refresh_locators(&locator_state, empty_viewport);
             let grid = super::musical_time::grid_lines(
@@ -261,10 +261,13 @@ impl EditorView {
         let rows = list(self.track_scroll.list.clone(), move |index, _, cx| {
             rows_entity
                 .update(cx, |this, cx| {
+                    if this.arrangement_proposal_row() == Some(index) {
+                        return this.proposed_plugin_track_row(cx);
+                    }
                     let Some(state) = this.arrangement_rows_state() else {
                         return div();
                     };
-                    let Some(index) = this.arrangement_track_index(index) else {
+                    let Some(index) = this.arrangement_list_track_index(index) else {
                         return div();
                     };
                     let Some(track) = state.project.tracks().get(index) else {

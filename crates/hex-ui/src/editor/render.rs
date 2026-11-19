@@ -615,6 +615,7 @@ impl Render for EditorView {
         self.reconcile_zoom_fit();
         self.sync_hardware_step_context(window);
         self.restore_sampler_parameter_focus(window);
+        self.restore_proposed_plugin_focus(window);
         self.reconcile_project_open(window, cx);
         self.reconcile_format_upgrade_prompt(window, cx);
         self.reconcile_leftover_recovery(window, cx);
