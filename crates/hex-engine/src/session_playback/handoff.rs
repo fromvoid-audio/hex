@@ -1353,10 +1353,12 @@ impl SessionPlayback {
         if compensation_bytes > crate::signal_graph::MAX_COEXISTING_COMPENSATION_BYTES {
             return Err(SessionPlaybackError::DeviceRuntime);
         }
-        // 0: existing fresh/no-delay path; 1: copy into the larger fresh
+        // 0: no pre-Main delay history to copy; 1: copy into the larger fresh
         // history; 2: carry the actual larger donor plan/rings, explicitly bound
         // to the candidate's immutable typed pre-Main map; 3: copy only stamps
-        // after removing one proven zero-delay send.
+        // after removing one proven zero-delay send. A trailing Main stage
+        // can change the output latency with no pre-Main delay to copy.
+        // Its approved cut can still use the usual processor-history plan.
         let mapped_main_clock = same_base_timing && new_loop_region == old_loop_region;
         if confirmed_insert
             && (previous.playing
