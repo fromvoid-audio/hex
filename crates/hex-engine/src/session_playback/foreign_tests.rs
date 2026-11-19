@@ -1118,6 +1118,117 @@ fn paused_device_removal_keeps_the_surviving_hosted_worker_and_cursor() {
     }
 }
 
+#[test]
+fn fitting_native_removal_keeps_a_running_hosted_return_on_one_route() {
+    use hex_devices::eq::EQ_DEFINITION;
+
+    let mut f = fixture(&[&[], &[]], 512);
+    let track = f.tracks[0];
+    for media in f.media.values_mut() {
+        let frames = (0..512)
+            .map(|frame| [((frame % 7) as f32 - 3.0) / 16.0, 0.125])
+            .collect();
+        *media = crate::Audio::new(48_000, frames).unwrap();
+    }
+    let Created::ReturnTrack(bus) = f
+        .editor
+        .execute(Command::AddReturnTrack {
+            name: "room".into(),
+        })
+        .unwrap()
+    else {
+        panic!("return bus");
+    };
+    f.editor
+        .execute(Command::SetReturnSend {
+            track,
+            return_track: bus,
+            gain: 0.5,
+        })
+        .unwrap();
+    let insert = |state| Command::InsertReturnDevice {
+        return_track: bus,
+        before: None,
+        state,
+    };
+    let Created::Device(eq) = f
+        .editor
+        .execute(insert(EQ_DEFINITION.default_state().unwrap()))
+        .unwrap()
+    else {
+        panic!("native effect");
+    };
+    let Created::Device(hosted) = f.editor.execute(insert(state(19).unwrap())).unwrap() else {
+        panic!("hosted effect");
+    };
+    let owner = ProcessorChainOwner::Return(bus.value());
+    let definition = BorrowedDefinition {
+        binding_epoch: Some(1),
+        instances: vec![(
+            ProcessorInstanceIdentity::new(owner, hosted.value()).unwrap(),
+            3,
+        )],
+        unbounded_tail: true,
+    };
+    let definitions: [&dyn NativeDeviceDefinition; 2] = [&definition, &EQ_DEFINITION];
+    let registry = NativeDeviceRegistry::new(&definitions).unwrap();
+    let prepare = |project: &hex_project::Project| {
+        let revision = PreparedRevision::prepare_with_effect_registry(
+            project,
+            &f.media,
+            Arc::new(SineTable::new()),
+            None,
+            &registry,
+        )
+        .unwrap();
+        SessionPlayback::new(Arc::new(revision)).unwrap()
+    };
+    let mut old = prepare(f.editor.project());
+    let mut reference = prepare(f.editor.project());
+    f.editor.execute(Command::RemoveDevice(eq)).unwrap();
+    let mut candidate = prepare(f.editor.project());
+    candidate.require_continuous_insert = true;
+    let mut endpoint = Borrowed::new(owner, hosted.value());
+    let mut oracle = Borrowed::new(owner, hosted.value());
+    old.apply(SessionPlaybackCommand::Play).unwrap();
+    reference.apply(SessionPlaybackCommand::Play).unwrap();
+
+    let render = |runtime: &mut SessionPlayback, endpoint: &mut Borrowed, count| {
+        endpoint.next_offset = 0;
+        let mut pcm = vec![[0.0; 2]; count];
+        runtime
+            .render_with_foreign_processors(&mut pcm, None, None, None, endpoint)
+            .unwrap();
+        assert_eq!(endpoint.next_offset, count);
+        pcm
+    };
+    assert_eq!(
+        render(&mut old, &mut endpoint, 64),
+        render(&mut reference, &mut oracle, 64)
+    );
+    assert_eq!(
+        candidate.advance_native_removal_from(&mut old),
+        Ok(NativeRemovalProgress::Fading)
+    );
+    for _ in 0..2 {
+        assert_eq!(
+            render(&mut old, &mut endpoint, 120),
+            render(&mut reference, &mut oracle, 120)
+        );
+    }
+    assert_eq!(
+        candidate.advance_native_removal_from(&mut old),
+        Ok(NativeRemovalProgress::Ready)
+    );
+    candidate.try_inherit_state_live_from(&mut old).unwrap();
+    assert!(candidate.playing);
+    assert_eq!(candidate.performance_frame, 304);
+    let actual = render(&mut candidate, &mut endpoint, 64);
+    assert_eq!(actual, render(&mut reference, &mut oracle, 64));
+    assert!(actual.iter().any(|frame| *frame != [0.0; 2]));
+    assert_eq!(endpoint.processed, 368);
+}
+
 fn verify_effect_removal(location: usize, remove_hosted: bool, paused: bool) {
     use hex_devices::eq::EQ_DEFINITION;
 
