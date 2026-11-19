@@ -1273,3 +1273,110 @@ fn resident_auto_pan_power_installs_and_restarts_at_the_callback_boundary() {
         assert_eq!(control.reclaim(), 1);
     }
 }
+
+#[test]
+fn resident_gate_power_restarts_closed_and_installs_at_the_callback_boundary() {
+    use hex_devices::gate::{GATE_DEFINITION, parameter};
+
+    const QUIET: Frame = [0.025; 2];
+    const CLOSED: Frame = [0.000_025; 2]; // Default floor is -60 dB.
+    const FADE: usize = 240; // 5 ms at 48 kHz.
+    let mut pcm = vec![QUIET; 8192];
+    pcm[..BLOCK].fill(SIGNAL);
+    let (mut editor, _, prepare) = resident_input(pcm);
+    let mut state = GATE_DEFINITION.default_state().unwrap();
+    for (parameter, db) in [(parameter::THRESHOLD, -18.0), (parameter::RETURN, -24.0)] {
+        state = GATE_DEFINITION
+            .patch_parameter(&state, parameter, ParameterValue::Float(db))
+            .unwrap();
+    }
+    let Created::Device(device) = editor
+        .execute(Command::InsertMainDevice {
+            before: None,
+            state,
+        })
+        .unwrap()
+    else {
+        panic!("Gate insertion");
+    };
+    let on = prepare(editor.project());
+    editor
+        .execute(Command::SetDeviceBypass {
+            device,
+            bypassed: true,
+        })
+        .unwrap();
+    let off = prepare(editor.project());
+
+    let (mut control, mut callback) = channel(RATE).unwrap();
+    let cases = [
+        (
+            Arc::clone(&on),
+            PublicationPolicy::InstallFreshRuntime,
+            SIGNAL,
+        ),
+        (off, PublicationPolicy::InheritRuntime, QUIET),
+        (on, PublicationPolicy::InheritRuntime, CLOSED),
+    ];
+    for (index, (prepared, policy, settled_frame)) in cases.into_iter().enumerate() {
+        let context = hex_engine::AudioSourceContext {
+            project_generation: 5,
+            editor_revision: index as u64 + 1,
+        };
+        let audio_revision = control
+            .publish_unaccounted_pcm_obligation(
+                Playback::try_from_prepared_with_session(prepared).unwrap(),
+                policy,
+                context.project_generation,
+                true,
+                false,
+                Some(context),
+            )
+            .unwrap();
+        if index == 0 {
+            control.command(PlaybackCommand::Play).unwrap();
+        }
+        let mut block = [[0.0; 2]; BLOCK];
+        let mut render = || {
+            callback.begin_block();
+            callback.render(&mut block).unwrap();
+        };
+        #[cfg(feature = "allocation-probe")]
+        {
+            let counts = allocation_counter::measure(&mut render);
+            assert_eq!(
+                (
+                    counts.count_total,
+                    counts.bytes_total,
+                    counts.count_current,
+                    counts.bytes_current,
+                ),
+                (0, 0, 0, 0)
+            );
+        }
+        #[cfg(not(feature = "allocation-probe"))]
+        render();
+        let applied = control.status.recording_source().unwrap();
+        assert_eq!(
+            (applied.context, applied.audio_revision),
+            (context, audio_revision)
+        );
+        assert_eq!(
+            control.status.position.load(Acquire),
+            ((index + 1) * BLOCK) as u64
+        );
+        assert_eq!(control.reclaim(), usize::from(index > 0));
+        if index == 1 {
+            assert_eq!(block[FADE..], [QUIET; BLOCK - FADE]);
+        }
+        for actual in &block[FADE..] {
+            assert!(
+                actual
+                    .iter()
+                    .zip(settled_frame)
+                    .all(|(value, expected)| { (value - expected).abs() < 1.0e-9 }),
+                "revision {index}: {actual:?}, expected {settled_frame:?}"
+            );
+        }
+    }
+}
