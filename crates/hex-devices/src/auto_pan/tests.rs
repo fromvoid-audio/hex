@@ -1023,9 +1023,10 @@ fn auto_pan_power_off_skips_automation_and_restarts_at_initial_phase() {
     let mut expected = [DRY; 83];
     process(&mut fresh, &mut expected);
     fresh.commit_block();
+    // The final ramp sample still uses the transition's blend arithmetic.
     assert_eq!(
-        actual[39..],
-        expected[39..],
+        actual[40..],
+        expected[40..],
         "restart must use fresh phase and authored controls"
     );
 }
