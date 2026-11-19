@@ -17,6 +17,7 @@ pub(super) struct PendingNativeRemoval {
     pub(super) transition: NativeRemovalTransition,
     runtime: u64,
     epoch: u64,
+    started: bool,
 }
 
 impl PendingNativeRemoval {
@@ -33,34 +34,15 @@ impl SessionPlayback {
         &mut self,
         previous: &mut Self,
     ) -> Result<NativeRemovalProgress, SessionPlaybackError> {
-        if let Some(pending) = self.native_removal {
-            if !pending.matches(previous) {
-                return Err(SessionPlaybackError::InvalidCommand);
-            }
-            return Ok(if previous.native_removal_ready(pending.transition) {
-                NativeRemovalProgress::Ready
-            } else {
-                NativeRemovalProgress::Fading
-            });
+        if self.native_removal.is_some() {
+            return self.advance_planned_native_removal_from(previous);
         }
-        if !self.require_continuous_insert
-            || !previous.playing
-            || self.live_restart
-            || self.revision.contains_streamed_sources()
+        if self.revision.contains_streamed_sources()
             || previous.revision.contains_streamed_sources()
-            || self.revision.arrangement().main_latency_frames()
-                != previous.revision.arrangement().main_latency_frames()
+            || !self.plan_native_removal_from(previous)?
         {
             return Ok(NativeRemovalProgress::NotApplicable);
         }
-        let Some(transition) = self.native_removal_transition_from(previous) else {
-            return Ok(NativeRemovalProgress::NotApplicable);
-        };
-        self.native_removal = Some(PendingNativeRemoval {
-            transition,
-            runtime: previous.capture_runtime,
-            epoch: previous.capture_epoch,
-        });
         let preview = self.preview_stream_handoff_with_policy_and_report(
             previous,
             1,
@@ -78,18 +60,72 @@ impl SessionPlayback {
                     .unwrap_or(SessionPlaybackError::DeviceInsertNeedsConfirmation));
             }
         }
-        if !previous
-            .native_removal_chain_mut(transition.identity().owner())
-            .is_some_and(|chain| chain.begin_native_removal(transition))
-        {
-            self.native_removal = None;
-            return Err(SessionPlaybackError::DeviceRuntime);
+        self.advance_planned_native_removal_from(previous)
+    }
+
+    /// Classify a candidate before preview, without touching the running stage.
+    /// For a streamed graph the caller must prove page readiness at this plan
+    /// before advancing it. The exact successor still goes through full handoff.
+    pub(crate) fn plan_native_removal_from(
+        &mut self,
+        previous: &Self,
+    ) -> Result<bool, SessionPlaybackError> {
+        if let Some(pending) = self.native_removal {
+            return if pending.matches(previous) {
+                Ok(true)
+            } else {
+                Err(SessionPlaybackError::InvalidCommand)
+            };
         }
-        Ok(if previous.native_removal_ready(transition) {
+        if !self.require_continuous_insert
+            || !previous.playing
+            || self.live_restart
+            || self.revision.arrangement().main_latency_frames()
+                != previous.revision.arrangement().main_latency_frames()
+        {
+            return Ok(false);
+        }
+        let Some(transition) = self.native_removal_transition_from(previous) else {
+            return Ok(false);
+        };
+        self.native_removal = Some(PendingNativeRemoval {
+            transition,
+            runtime: previous.capture_runtime,
+            epoch: previous.capture_epoch,
+            started: false,
+        });
+        Ok(true)
+    }
+
+    pub(crate) fn advance_planned_native_removal_from(
+        &mut self,
+        previous: &mut Self,
+    ) -> Result<NativeRemovalProgress, SessionPlaybackError> {
+        let Some(pending) = self.native_removal.as_mut() else {
+            return Ok(NativeRemovalProgress::NotApplicable);
+        };
+        if !pending.matches(previous) {
+            return Err(SessionPlaybackError::InvalidCommand);
+        }
+        if !pending.started {
+            if !previous
+                .native_removal_chain_mut(pending.transition.identity().owner())
+                .is_some_and(|chain| chain.begin_native_removal(pending.transition))
+            {
+                self.native_removal = None;
+                return Err(SessionPlaybackError::DeviceRuntime);
+            }
+            pending.started = true;
+        }
+        Ok(if previous.native_removal_ready(pending.transition) {
             NativeRemovalProgress::Ready
         } else {
             NativeRemovalProgress::Fading
         })
+    }
+
+    pub(crate) fn native_removal_started(&self) -> bool {
+        self.native_removal.is_some_and(|pending| pending.started)
     }
 
     pub(crate) fn native_removal_pending(&self) -> bool {
@@ -100,6 +136,7 @@ impl SessionPlayback {
     /// current wet/dry mix, including after a transport command invalidates it.
     pub fn cancel_native_removal_from(&mut self, previous: &mut Self) {
         if let Some(pending) = self.native_removal.take()
+            && pending.started
             && pending.runtime == previous.capture_runtime
             && let Some(chain) =
                 previous.native_removal_chain_mut(pending.transition.identity().owner())
