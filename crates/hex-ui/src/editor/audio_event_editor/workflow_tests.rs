@@ -1342,7 +1342,21 @@ fn event_fade_drag_keeps_pending_paint_then_one_undo_and_reset(cx: &mut TestAppC
     visual.run_until_parked();
     let thumbnail =
         |visual: &mut VisualTestContext| painted_clip_waveform_outline(&editor, visual, clip);
+    let event_outline = |visual: &mut VisualTestContext| {
+        let bounds = visual.debug_bounds("audio-event-waveform-1").unwrap();
+        editor.read_with(visual, |view, _| {
+            view.clip_waveform_geometry_cache
+                .borrow()
+                .painted_waveforms()
+                .iter()
+                .rev()
+                .find(|paint| paint.bounds == bounds)
+                .expect("completed event waveform paint")
+                .outline_fingerprint
+        })
+    };
     let original_thumbnail = thumbnail(&mut visual);
+    let original_event = event_outline(&mut visual);
     focus_events(&mut visual);
     fade_key(&mut visual, true);
     let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
@@ -1370,6 +1384,11 @@ fn event_fade_drag_keeps_pending_paint_then_one_undo_and_reset(cx: &mut TestAppC
     assert_ne!(
         held_thumbnail, original_thumbnail,
         "event fade reshapes the Arrangement thumbnail"
+    );
+    let held_event = event_outline(&mut visual);
+    assert_ne!(
+        held_event, original_event,
+        "held fade reshapes the event waveform"
     );
     use crate::{editor::fade_handles::paint_probe, theme::FadeHandleState};
     paint_probe::assert_style(
@@ -1408,6 +1427,7 @@ fn event_fade_drag_keeps_pending_paint_then_one_undo_and_reset(cx: &mut TestAppC
         });
         repaint(&mut visual, &editor);
         assert_eq!(thumbnail(&mut visual), held_thumbnail);
+        assert_eq!(event_outline(&mut visual), held_event);
         paint_probe::assert_style(
             &mut visual,
             "audio-event-fade-in-top-1",
@@ -1425,6 +1445,7 @@ fn event_fade_drag_keeps_pending_paint_then_one_undo_and_reset(cx: &mut TestAppC
     repaint(&mut visual, &editor);
     paint_probe::assert_not_active(&mut visual, "audio-event-fade-in-top-1");
     assert_eq!(thumbnail(&mut visual), held_thumbnail);
+    assert_eq!(event_outline(&mut visual), held_event);
     let accepted = editor.read_with(&visual, |v, _| {
         assert!(v.error.is_none(), "{:?}", v.error);
         assert!(v.audio_event_editor.pending.is_none());
@@ -1469,12 +1490,14 @@ fn event_fade_drag_keeps_pending_paint_then_one_undo_and_reset(cx: &mut TestAppC
         assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before)
     });
     assert_eq!(thumbnail(&mut visual), original_thumbnail);
+    assert_eq!(event_outline(&mut visual), original_event);
     visual.simulate_keystrokes("cmd-shift-z");
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
         assert_eq!(v.state.as_ref().unwrap().project.snapshot(), accepted)
     });
     assert_eq!(thumbnail(&mut visual), held_thumbnail);
+    assert_eq!(event_outline(&mut visual), held_event);
     let diamond = visual
         .debug_bounds("audio-event-fade-in-curve-1")
         .unwrap()

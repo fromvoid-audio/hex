@@ -31,7 +31,7 @@ pub(super) use placement::MusicalEventWaveform;
 pub(in crate::editor) use play_start::Camera as PlayStartCamera;
 pub(super) use view::view;
 
-fn is_arrangement_amplitude(operation: &AudioEventEdit) -> bool {
+fn is_event_amplitude_edit(operation: &AudioEventEdit) -> bool {
     matches!(
         operation,
         AudioEventEdit::SetFade { .. } | AudioEventEdit::SetGain { .. }
@@ -279,7 +279,7 @@ impl EditorView {
     fn held_arrangement_event_amplitude(&self) -> Option<(ClipId, &AudioEventEdit)> {
         let editor = &self.audio_event_editor;
         let operation = editor.gesture.as_ref()?.operation.as_ref()?;
-        if !is_arrangement_amplitude(operation)
+        if !is_event_amplitude_edit(operation)
             || !editor.retained_ancestors.is_empty()
             || !self.event_context_current()
         {
@@ -295,7 +295,7 @@ impl EditorView {
     ) -> Option<hex_project::AudioEvents> {
         if let Some(pending) = &self.audio_event_editor.pending
             && pending.owner == (clip.id(), self.project_generation)
-            && is_arrangement_amplitude(&pending.operation)
+            && is_event_amplitude_edit(&pending.operation)
         {
             return Some(pending.preview.clone());
         }

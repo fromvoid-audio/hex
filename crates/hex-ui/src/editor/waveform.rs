@@ -558,8 +558,15 @@ pub(super) fn waveform_canvas(
                 else {
                     return None;
                 };
-                let (source, mapping) = fallback.as_ref();
-                geometry_for(source, &WaveformGeometryRequest { mapping, ..request })
+                geometry_for(
+                    &fallback.waveform,
+                    &WaveformGeometryRequest {
+                        mapping: &fallback.mapping,
+                        visible_start: fallback.visible.start,
+                        visible_end: fallback.visible.end,
+                        ..request
+                    },
+                )
             });
             #[cfg(all(test, feature = "ui-test-support"))]
             if let Some((geometry, offset)) = &geometry
