@@ -865,5 +865,5 @@ pub(super) struct FrameContext {
     pub(super) loop_pass: u64,
     pub(super) playing: bool,
     pub(super) chase: bool,
-    pub(super) interactive_onset_floor: Option<u64>,
+    pub(super) interactive_onset_floor: Option<crate::midi_compile::InteractiveOnsetFloor>,
 }

@@ -1643,7 +1643,7 @@ impl SessionPlayback {
         &mut self,
         performance_frame: u64,
         arrangement_frame: u64,
-        interactive_onset_floor: Option<u64>,
+        interactive_onset_floor: Option<crate::midi_compile::InteractiveOnsetFloor>,
     ) -> Result<(bool, bool), SessionPlaybackError> {
         let mut captured_release = false;
         let mut applied_route = false;
@@ -3129,7 +3129,7 @@ struct MutableInstrumentChunkContext<'a, T: ?Sized> {
     arrangement_loop_pass: u64,
     transient: Option<hex_lattice::NativeTransientInput>,
     chase_at_start: bool,
-    interactive_onset_floor: Option<u64>,
+    interactive_onset_floor: Option<crate::midi_compile::InteractiveOnsetFloor>,
     pending_shared_chase: Option<super::PendingSharedChase>,
     loop_region: Option<hex_project::LoopRegion>,
     timing: &'a T,
@@ -3580,7 +3580,7 @@ struct RouteSourceContext<'a, T> {
     midi: crate::session_inventory::EffectiveSessionMidi<'a>,
     route: super::TrackRoute,
     historical_floor: Option<BeatTime>,
-    interactive_onset_floor: Option<u64>,
+    interactive_onset_floor: Option<crate::midi_compile::InteractiveOnsetFloor>,
     suppressions: &'a [MidiOccurrenceSuppression],
     continuations: &'a [Option<hex_lattice::AnalyticContinuation>],
     index: usize,

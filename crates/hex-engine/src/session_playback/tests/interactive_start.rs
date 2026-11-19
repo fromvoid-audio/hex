@@ -883,6 +883,36 @@ mod note_chase {
     }
 
     #[test]
+    fn tempo_handoff_cannot_collapse_a_rejected_onset_into_the_start_bucket() {
+        let mut snapshot =
+            project_at_tempo(1.0, 1 << 29, 1 << 30, Tempo::new(60_000_000).unwrap()).snapshot();
+        snapshot.sample_rate = 8_000;
+        let original = Project::from_snapshot(snapshot.clone()).unwrap();
+        let mut old =
+            SessionPlayback::new(revision(&original, Arc::new(hex_devices::SineTable::new())))
+                .unwrap();
+        // The authored note maps to frame 1000. The action rejects it before
+        // any render, so handoff must not manufacture an owned release either.
+        old.play_from_with_note_chase(1_001, crate::NoteChase::Off)
+            .unwrap();
+        snapshot.tempo_points = vec![TempoPoint::new(
+            BeatTime::ZERO,
+            Tempo::new(240_000_000).unwrap(),
+        )];
+        let faster = Project::from_snapshot(snapshot).unwrap();
+        let mut next =
+            SessionPlayback::new(revision(&faster, Arc::new(hex_devices::SineTable::new())))
+                .unwrap();
+        next.try_inherit_state_from(&mut old).unwrap();
+        assert_eq!(next.arrangement_frame(), 250);
+        let output = render_checkpoint_partitioned(&mut next, &[1, 7, 32], 32);
+        assert!(
+            output.iter().flatten().all(|sample| *sample == 0.0),
+            "tempo rounding must not revive the rejected frame-1000 note"
+        );
+    }
+
+    #[test]
     fn explicit_policy_keeps_default_chase_and_accepts_exact_onsets_and_remaining_gate() {
         let prepared = start_fixture(1 << 27, 1 << 27, None);
         for (destination, note_chase, audible) in [

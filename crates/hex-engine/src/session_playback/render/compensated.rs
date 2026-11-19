@@ -31,7 +31,7 @@ pub(super) struct ResidentSourceWindow {
     pub(super) arrangement_frame: u64,
     pub(super) frames: usize,
     pub(super) mutable_loop_pass: Option<u64>,
-    pub(super) interactive_onset_floor: Option<u64>,
+    pub(super) interactive_onset_floor: Option<crate::midi_compile::InteractiveOnsetFloor>,
     pub(super) chase_at_start: bool,
 }
 

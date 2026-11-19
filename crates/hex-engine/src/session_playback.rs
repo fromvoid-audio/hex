@@ -549,7 +549,7 @@ pub struct SessionPlayback {
     interactive_start_frame: Option<u64>,
     /// One interactive start's inclusive Arrangement onset floor. Only the
     /// first loop pass uses it; later authored loop occurrences remain eligible.
-    interactive_onset_floor: Option<u64>,
+    interactive_onset_floor: Option<crate::midi_compile::InteractiveOnsetFloor>,
     // One exact muted-onset chase, retained until a successful render.
     pending_shared_chase: Option<PendingSharedChase>,
     pending_shared_live: Option<PendingSharedLive>,
@@ -1133,9 +1133,11 @@ impl SessionPlayback {
         }
     }
 
-    /// Preserve Some(0): a source-window gate clipped to frame zero differs
-    /// from an authored onset exactly there.
-    pub(super) fn interactive_note_onset_floor(&self) -> Option<u64> {
+    /// Retain the canonical bucket even at frame zero: a source-window gate
+    /// clipped there differs from an authored onset in the same frame.
+    pub(super) fn interactive_note_onset_floor(
+        &self,
+    ) -> Option<crate::midi_compile::InteractiveOnsetFloor> {
         (self.arrangement_loop_pass == 0)
             .then_some(self.interactive_onset_floor)
             .flatten()

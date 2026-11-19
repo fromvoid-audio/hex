@@ -318,8 +318,8 @@ impl SessionPlayback {
         self.play_from_with_note_chase(frame, crate::NoteChase::On)
     }
 
-    /// Capture a normal interactive start's note policy without affecting later
-    /// structural handoffs, source cues or exact-history preparation.
+    /// Capture a normal interactive start's note policy. Ordinary handoffs
+    /// retain its admission; source cues and exact-history keep their own laws.
     pub(crate) fn play_from_with_note_chase(
         &mut self,
         frame: u64,
@@ -335,13 +335,32 @@ impl SessionPlayback {
             return self.apply(SessionPlaybackCommand::Play);
         }
         let beat = self.play_from_coordinates(frame)?;
+        // Capture the original rounded frame's complete canonical beat bucket
+        // before mutating transport. A later tempo edit can collapse distinct
+        // old frames into one candidate frame, but cannot change this admission.
+        let interactive_onset_floor = if note_chase == crate::NoteChase::Off {
+            let next = frame
+                .checked_add(1)
+                .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
+            let timing = base_timing_for(self.revision.session(), self.periodic_tempo_at(frame));
+            Some(crate::midi_compile::InteractiveOnsetFloor {
+                onset_raw: timing
+                    .beat_lower_bound_for_frame(frame)
+                    .map_err(|_| SessionPlaybackError::TempoConversion)?,
+                after_start_frame_raw: timing
+                    .beat_lower_bound_for_frame(next)
+                    .map_err(|_| SessionPlaybackError::TempoConversion)?,
+            })
+        } else {
+            None
+        };
         let generation = self.route_state_generation;
         self.install_seek(frame, beat);
         if self.route_state_generation == generation {
             self.advance_route_state_generation();
         }
         self.interactive_start_frame = (note_chase == crate::NoteChase::On).then_some(frame);
-        self.interactive_onset_floor = (note_chase == crate::NoteChase::Off).then_some(frame);
+        self.interactive_onset_floor = interactive_onset_floor;
         self.clear_gain_recording_override();
         self.invalidate_native_parameter_input();
         self.candidate_admission_open = false;
@@ -1046,7 +1065,7 @@ impl SessionPlayback {
         owner: RouteOwner,
         source_frame: u64,
         performance_frame: u64,
-        interactive_onset_floor: Option<u64>,
+        interactive_onset_floor: Option<crate::midi_compile::InteractiveOnsetFloor>,
     ) -> Result<(), SessionPlaybackError> {
         self.capture_outgoing_with_source_binding(
             index,
@@ -1065,7 +1084,7 @@ impl SessionPlayback {
         source_frame: u64,
         performance_frame: u64,
         keep_current_source: bool,
-        interactive_onset_floor: Option<u64>,
+        interactive_onset_floor: Option<crate::midi_compile::InteractiveOnsetFloor>,
     ) -> Result<(), SessionPlaybackError> {
         let arrangement = self.revision.arrangement();
         let source_origin = ReleaseSourceOrigin::capture(&self.revision, index);

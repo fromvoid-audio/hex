@@ -1874,7 +1874,7 @@ impl Track {
         pages: Option<&mut (impl MediaPages + ?Sized)>,
         continuations: &[Option<hex_lattice::AnalyticContinuation>],
         timing: Option<&dyn prepared_tempo::MidiTempoBreaks>,
-        interactive_onset_floor: Option<u64>,
+        interactive_onset_floor: Option<crate::midi_compile::InteractiveOnsetFloor>,
     ) -> Result<(), Invalid> {
         self.require_volume_timing(timing)?;
         let length = u64::try_from(output.len()).map_err(|_| Invalid("render length overflow"))?;
@@ -1954,7 +1954,7 @@ impl Track {
         continuations: &[Option<hex_lattice::AnalyticContinuation>],
         timing: Option<&dyn prepared_tempo::MidiTempoBreaks>,
         loop_fade: Option<loop_seam::LoopEndFade>,
-        interactive_onset_floor: Option<u64>,
+        interactive_onset_floor: Option<crate::midi_compile::InteractiveOnsetFloor>,
     ) -> Result<(), Invalid> {
         self.require_volume_timing(timing)?;
         let end_frame = start_frame
@@ -2040,7 +2040,7 @@ impl Track {
         suppressions: &[midi_template::MidiOccurrenceSuppression],
         continuations: &[Option<hex_lattice::AnalyticContinuation>],
         timing: Option<&dyn prepared_tempo::MidiTempoBreaks>,
-        interactive_onset_floor: Option<u64>,
+        interactive_onset_floor: Option<crate::midi_compile::InteractiveOnsetFloor>,
     ) -> Result<(), Invalid> {
         let length = u64::try_from(output.len()).map_err(|_| Invalid("render length overflow"))?;
         let end_frame = start_frame
@@ -2096,7 +2096,7 @@ impl Track {
         suppressions: &[midi_template::MidiOccurrenceSuppression],
         continuations: &[Option<hex_lattice::AnalyticContinuation>],
         timing: Option<&dyn prepared_tempo::MidiTempoBreaks>,
-        interactive_onset_floor: Option<u64>,
+        interactive_onset_floor: Option<crate::midi_compile::InteractiveOnsetFloor>,
     ) -> Result<(), Invalid> {
         let (start, performance) = frames;
         let end = start
@@ -2121,7 +2121,7 @@ impl Track {
     pub(crate) fn for_each_active_midi_span(
         &self,
         frame: u64,
-        interactive_onset_floor: Option<u64>,
+        interactive_onset_floor: Option<crate::midi_compile::InteractiveOnsetFloor>,
         mut visit: impl FnMut(&midi_compile::CompiledNoteSpan, midi_note_bank::PreparedMidiNote),
     ) -> Result<(), Invalid> {
         let end = frame
@@ -2477,7 +2477,7 @@ impl Track {
         capture: Option<&mut [Frame]>,
         continuations: &[Option<hex_lattice::AnalyticContinuation>],
         timing: Option<&dyn prepared_tempo::MidiTempoBreaks>,
-        interactive_onset_floor: Option<u64>,
+        interactive_onset_floor: Option<crate::midi_compile::InteractiveOnsetFloor>,
     ) -> Result<(), Invalid> {
         self.render_instrument_range_with_mix(
             (start_frame, end_frame),
@@ -2505,7 +2505,7 @@ impl Track {
         continuations: &[Option<hex_lattice::AnalyticContinuation>],
         source_mix: PreparedTrackMix,
         timing: Option<&dyn prepared_tempo::MidiTempoBreaks>,
-        interactive_onset_floor: Option<u64>,
+        interactive_onset_floor: Option<crate::midi_compile::InteractiveOnsetFloor>,
     ) -> Result<(), Invalid> {
         self.require_volume_timing(timing)?;
         if let Some(instrument) = &self.instrument {

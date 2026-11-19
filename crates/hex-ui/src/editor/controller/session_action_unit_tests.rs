@@ -106,6 +106,17 @@ fn launch_and_transport_actions_have_explicit_play_intents() {
         intent_desired_playing(PlaybackAction::Transport(PlaybackCommand::Play)),
         Some(true)
     );
+    for note_chase in [hex_engine::NoteChase::On, hex_engine::NoteChase::Off] {
+        assert_eq!(
+            intent_desired_playing(PlaybackAction::Transport(
+                PlaybackCommand::PlayFromWithNoteChase {
+                    frame: 750,
+                    note_chase,
+                }
+            )),
+            Some(true),
+        );
+    }
     assert_eq!(
         intent_desired_playing(PlaybackAction::Transport(PlaybackCommand::Pause)),
         Some(false)

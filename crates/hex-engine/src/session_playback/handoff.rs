@@ -2061,18 +2061,8 @@ impl SessionPlayback {
             .frame_to_beat(previous.performance_frame)
             .map_err(|_| SessionPlaybackError::TempoConversion)?;
         let new_base_view = base_timing_for(self.revision.session(), candidate_periodic);
-        // This admission boundary belongs to authored Arrangement time, not
-        // the performance clock. Retiming must not revive a rejected onset.
-        let interactive_onset_floor = old_floor
-            .map(|frame| {
-                let beat = base_timing_for(previous.revision.session(), previous.periodic_tempo())
-                    .frame_to_beat(frame)
-                    .map_err(|_| SessionPlaybackError::TempoConversion)?;
-                new_base_view
-                    .beat_to_frame(beat)
-                    .map_err(|_| SessionPlaybackError::TempoConversion)
-            })
-            .transpose()?;
+        // Keep the original canonical beat bucket. Candidate frame rounding
+        // must not turn a previously rejected onset into an admitted boundary.
         let new_beat = new_base_view
             .frame_to_beat(previous.performance_frame)
             .map_err(|_| SessionPlaybackError::TempoConversion)?;
@@ -5997,7 +5987,7 @@ impl SessionPlayback {
         self.arrangement_frame = arrangement_cut;
         self.arrangement_loop_pass = arrangement_cut_pass;
         self.interactive_start_frame = previous.interactive_start_frame;
-        self.interactive_onset_floor = interactive_onset_floor;
+        self.interactive_onset_floor = old_floor;
         self.pending_shared_chase = pending_shared_chase;
         self.pending_shared_live = pending_shared_live;
         self.playing = previous.playing;

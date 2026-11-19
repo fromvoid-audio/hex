@@ -640,13 +640,27 @@ trait DensitySpan {
     fn end(&self) -> u64;
 }
 
+/// Canonical beat bucket captured by one interactive no-chase action. Both
+/// bounds are retained across tempo changes, including the beat-domain sentinel;
+/// rounding them back into a candidate's frames would lose onset identity.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct InteractiveOnsetFloor {
+    pub(crate) onset_raw: u128,
+    pub(crate) after_start_frame_raw: u128,
+}
+
 impl CompiledNoteSpan {
     /// One explicit interactive start excludes historical onsets and a gate
     /// synthetically clipped exactly to that destination. Later clip onsets
     /// and later loop occurrences retain their existing playback law.
-    pub(crate) fn admitted_at_interactive_start(&self, floor: Option<u64>) -> bool {
+    pub(crate) fn admitted_at_interactive_start(
+        &self,
+        floor: Option<InteractiveOnsetFloor>,
+    ) -> bool {
         floor.is_none_or(|floor| {
-            self.start > floor || (self.start == floor && !self.starts_inside_gate)
+            let onset = u128::from(self.onset_beat.raw());
+            onset >= floor.onset_raw
+                && (!self.starts_inside_gate || onset >= floor.after_start_frame_raw)
         })
     }
 }
