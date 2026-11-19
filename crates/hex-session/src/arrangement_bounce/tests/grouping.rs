@@ -320,7 +320,7 @@ fn grouping_final_preparation_failure_removes_unpublished_render_and_preserves_c
             .map(Arc::new)
             .map_err(|e| e.to_string())
         },
-        |path, revision, item, tails, control| {
+        |path, revision, _, item, tails, control| {
             assert!(!tails);
             let report = hex_export::render_arrangement_bounce_new(
                 path,

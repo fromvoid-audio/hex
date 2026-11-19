@@ -44,12 +44,30 @@ pub enum ArrangementSeekMode {
     SectionLoop(hex_project::LoopRegion),
 }
 
-/// Transient click intent. The loop is installed before preroll; quantization
-/// waits on the predecessor clock only after the prepared candidate is ready.
+/// Transient click intent. The region's enabled bit selects a canonical loop
+/// or continuous Arrangement playback. Both use the predecessor clock for launch.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SectionLaunch {
     pub region: hex_project::LoopRegion,
     pub quantization: hex_engine::LaunchQuantization,
+}
+
+impl SectionLaunch {
+    pub fn mode(self) -> ArrangementSeekMode {
+        if self.region.enabled() {
+            ArrangementSeekMode::SectionLoop(self.region)
+        } else {
+            ArrangementSeekMode::Interactive
+        }
+    }
+
+    pub fn matches_loop(self, current: Option<hex_project::LoopRegion>) -> bool {
+        if self.region.enabled() {
+            current == Some(self.region)
+        } else {
+            current.is_none_or(|region| !region.enabled())
+        }
+    }
 }
 
 /// Control-side identity and destination for one prepared seek candidate.
@@ -716,6 +734,23 @@ mod tests {
         assert_eq!(playback.section_loop(), Some(enabled));
         assert_eq!(playback.position(), 0);
         assert!(playback.playing());
+
+        let plain = SectionLaunch {
+            region: hex_project::LoopRegion::new(0, 256, false).unwrap(),
+            quantization: hex_engine::LaunchQuantization::Immediate,
+        };
+        worker
+            .submit(ArrangementSeekSpec {
+                mode: plain.mode(),
+                start_playing: true,
+                ..spec(graph, 3)
+            })
+            .unwrap();
+        wait_for_ready(&worker);
+        let mut playback = worker.try_result().unwrap().result.unwrap();
+        playback.render(&mut [[0.0; 2]; 272]).unwrap();
+        assert_eq!(playback.position(), 272);
+        assert!(playback.playing());
         worker.shutdown_and_join_on_control();
     }
 
@@ -1185,6 +1220,12 @@ mod tests {
                 use hex_engine::session_playback::SessionPlaybackCommand;
                 use hex_lattice_contract::{DeviceTypeId, ParameterId, ParameterValue};
                 use hex_project::{BeatTime, Command, Created};
+                let profile = std::env::var_os("HEX_TEST_HISTORY_WORKER_PROFILE").is_some();
+                assert!(
+                    !profile || !cfg!(debug_assertions),
+                    "worker profile requires an optimized build"
+                );
+                let setup_started = Instant::now();
                 let mut session = Session::new(48_000, 8, 0).unwrap();
                 let state = hex_engine::default_native_device_state_for_class(
                     hex_engine::NativeDeviceClass::Instrument,
@@ -1232,6 +1273,12 @@ mod tests {
                 let graph = session.compile_prepared_revision(None).unwrap();
                 assert!(graph.arrangement_seek_requires_preroll());
                 let worker = ArrangementSeekWorker::new().unwrap();
+                if profile {
+                    println!(
+                        "HISTORY_WORKER_SETUP,rate=48000,tracks=1,voices=1,feedback=0.3,poll_ms=1,setup_us={}",
+                        setup_started.elapsed().as_micros()
+                    );
+                }
                 for (destination, playing) in [(512, true), (24_004, false)] {
                     let mut oracle = SessionPlayback::new(Arc::clone(&graph)).unwrap();
                     oracle.apply(SessionPlaybackCommand::Play).unwrap();
@@ -1254,8 +1301,15 @@ mod tests {
                         start_playing: playing,
                         ..spec(Arc::clone(&graph), 7)
                     };
+                    let submitted_at = Instant::now();
                     let request = worker.submit(requested.clone()).unwrap();
                     wait_for_ready(&worker);
+                    if profile {
+                        println!(
+                            "HISTORY_WORKER_SAMPLE,destination={destination},start_playing={playing},submit_to_observed_ready_us={}",
+                            submitted_at.elapsed().as_micros()
+                        );
+                    }
                     let result = worker.try_result().unwrap();
                     assert_eq!(
                         (
@@ -1339,6 +1393,9 @@ mod tests {
                 },
                 semantic_source_epoch: 1,
                 files: &[],
+                pitches: &[],
+                repitches: &[],
+                granulars: &[],
             },
             ResidentFileMetadata::new(1, std::collections::BTreeMap::new()).unwrap(),
         )

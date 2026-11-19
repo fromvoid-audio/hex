@@ -37,9 +37,20 @@ def install_delivery_source_fixture(root: Path) -> None:
     """Install independent copies of the actual delivery input sources."""
     scripts = root / "scripts"
     scripts.mkdir(parents=True, exist_ok=True)
-    for name in ("local-ci.py", "ci_plan.py", "python_test_plan.py", "build_inputs.py",
+    for name in ("hex-test-build.py", "local-ci.py", "ci_plan.py", "python_test_plan.py", "build_inputs.py",
                  "ci_checkpoint.py", "ci_target_storage.py"):
         (scripts / name).write_bytes((SCRIPT.parent / name).read_bytes())
+
+
+def load_delivery_source_fixture(name):
+    path = SCRIPT.with_name("hex-test-build.py")
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    source = path.read_bytes()
+    module._EXECUTED_DELIVERY_SOURCE_SHA256 = hashlib.sha256(source).hexdigest()
+    exec(compile(source, str(path), "exec", dont_inherit=True), module.__dict__)
+    return module
 
 
 FAKE_TOOL = """#!/bin/sh
@@ -53,6 +64,10 @@ case "$tool $*" in
   git\\ ls-files*) printf '%s\\0' "$FAKE_FILE_LIST"; exit 0 ;;
   'cargo metadata'*)
     case "$FAIL_MATCH" in *metadata*) echo "metadata unavailable" >&2; exit 9 ;; esac
+    if [ "$METADATA_WRITE_TARGET_FILE" = 1 ]; then
+      /bin/mkdir -p "$CARGO_TARGET_DIR"
+      printf 'cargo metadata side effect\n' > "$CARGO_TARGET_DIR/.rustc_info.json"
+    fi
     printf '{"target_directory":"%s","workspace_root":"%s","workspace_members":["fixture 0.1.0","other 0.1.0"],"packages":[{"id":"fixture 0.1.0","name":"fixture","version":"0.1.0","manifest_path":"%s/Cargo.toml"},{"id":"other 0.1.0","name":"other","version":"0.1.0","manifest_path":"%s/other/Cargo.toml"}]}\\n' "$FAKE_METADATA_TARGET" "$FAKE_WORKSPACE_ROOT" "$FAKE_WORKSPACE_ROOT" "$FAKE_WORKSPACE_ROOT"
     exit 0 ;;
 esac
@@ -78,7 +93,992 @@ def bounded_checkpoint_case(function):
     return function
 
 
+class CargoTargetLockTests(unittest.TestCase):
+    def test_existing_lock_contents_survive_acquisition_contention_and_release(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "target.lock"
+            original = b"unowned private bytes\n"
+            path.write_bytes(original)
+            first = local_ci.CargoTargetLock(path, {"run_id": "first"})
+            second = local_ci.CargoTargetLock(path, {"run_id": "second"})
+            child_code = ("import fcntl,sys\n"
+                          "with open(sys.argv[1], 'rb') as lock:\n"
+                          " try: fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)\n"
+                          " except BlockingIOError: sys.exit(42)\n")
+            try:
+                first.acquire()
+                self.assertEqual(path.read_bytes(), original)
+                self.assertEqual(subprocess.run([sys.executable, "-c", child_code, str(path)],
+                                                check=False).returncode, 42)
+                with self.assertRaisesRegex(local_ci.TargetCacheError, "already in use") as error:
+                    second.acquire()
+                self.assertNotIn(original.decode().strip(), str(error.exception))
+                self.assertEqual(path.read_bytes(), original)
+            finally:
+                self.assertIsNone(first.release())
+                self.assertIsNone(second.release())
+            self.assertEqual(path.read_bytes(), original)
+            self.assertEqual(subprocess.run([sys.executable, "-c", child_code, str(path)],
+                                            check=False).returncode, 0)
+
+    def test_symlink_substitution_is_refused_at_open(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "target.lock"
+            victim = Path(directory) / "user-file"
+            victim.write_bytes(b"preserve")
+            path.symlink_to(victim)
+            lock = local_ci.CargoTargetLock(path, {"run_id": "test"})
+            self.addCleanup(lock.release)
+            original_open = Path.open
+            def replace_after_open(selected, *args, **kwargs):
+                stream = original_open(selected, *args, **kwargs)
+                if selected == path:
+                    path.unlink()
+                    os.link(victim, path)
+                return stream
+            # A same-inode hard link defeats a post-open stat after following
+            # the symlink; the open itself must refuse it.
+            with patch.object(Path, "is_symlink", return_value=False), \
+                    patch.object(Path, "open", replace_after_open):
+                with self.assertRaises(local_ci.TargetCacheError):
+                    lock.acquire()
+            self.assertIsNone(lock.file)
+            self.assertEqual(victim.read_bytes(), b"preserve")
+
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "requires FIFO support")
+    def test_nonregular_lock_is_refused_without_blocking_or_replacement(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "target.lock"
+            os.mkfifo(path)
+            lock = local_ci.CargoTargetLock(path, {"run_id": "test"})
+            with self.assertRaises(local_ci.TargetCacheError):
+                lock.acquire()
+            self.assertIsNone(lock.file)
+            self.assertTrue(path.exists())
+
+
+class FreshTargetReservationTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name).resolve()
+        install_delivery_source_fixture(self.root)
+        self.state = self.root / "locks"
+        self.target = self.root / "cargo-target"
+
+    def reserve(self, target=None):
+        return local_ci.FreshTargetReservation.acquire(
+            self.root, str(self.target if target is None else target), {"run_id": "fixture"}, state_dir=self.state)
+
+    def test_absent_target_refuses_before_staging_can_acquire_an_unrelated_directory(self):
+        victim = self.root / "unrelated-empty"
+        victim.mkdir()
+        original_identity = victim.stat().st_ino
+        created = []
+        opened = []
+        real_mkdir = os.mkdir
+        real_open = os.open
+
+        def track_staging(path, *args, **kwargs):
+            if os.fspath(path).startswith(".hex-cargo-target-"):
+                created.append(path)
+            return real_mkdir(path, *args, **kwargs)
+
+        def track_open(*args, **kwargs):
+            descriptor = real_open(*args, **kwargs)
+            opened.append(descriptor)
+            return descriptor
+
+        with patch.object(local_ci.os, "mkdir", side_effect=track_staging), \
+                patch.object(local_ci.os, "open", side_effect=track_open), \
+                self.assertRaisesRegex(local_ci.TargetCacheError, "create an empty directory"):
+            with self.reserve() as reservation:
+                reservation.revalidate(str(self.target))
+        self.assertEqual(created, [])
+        self.assertTrue(opened)
+        for descriptor in set(opened):
+            with self.assertRaises(OSError):
+                os.fstat(descriptor)
+        self.assertEqual(victim.stat().st_ino, original_identity)
+        self.assertFalse(self.target.exists())
+        self.target.mkdir()
+        with self.reserve() as recovered:
+            recovered.revalidate(str(self.target))
+
+    def test_empty_target_holds_exact_lock_until_close(self):
+        self.target.mkdir()
+        with self.reserve() as reservation:
+            reservation.revalidate(str(self.target))
+            with self.assertRaisesRegex(local_ci.TargetCacheError, "already in use"):
+                self.reserve()
+            with self.assertRaisesRegex(local_ci.TargetCacheError, "differs"):
+                reservation.revalidate(str(self.root / "other"))
+        with self.assertRaisesRegex(local_ci.TargetCacheError, "no longer live"):
+            reservation.revalidate(str(self.target))
+
+    def test_relative_alias_symlink_and_missing_parent_refuse(self):
+        self.target.mkdir()
+        alias = self.root / "alias"
+        alias.symlink_to(self.target, target_is_directory=True)
+        parent_alias = self.root / "parent-alias"
+        parent_alias.symlink_to(self.root, target_is_directory=True)
+        for value in ("relative", "//tmp/alias", str(self.target) + "\0bad", str(alias), str(parent_alias / "cargo-target"),
+                      str(self.root / "missing" / "target"), str(self.target) + "/."):
+            with self.subTest(value=value), self.assertRaises(local_ci.TargetCacheError):
+                self.reserve(value)
+        self.assertFalse(any(self.target.iterdir()))
+
+    def test_metadata_entries_and_target_presence_changes_refuse(self):
+        self.target.mkdir()
+        with self.reserve() as reservation:
+            (self.target / ".rustc_info.json").write_text("metadata")
+            with self.assertRaisesRegex(local_ci.TargetCacheError, "not empty"):
+                reservation.revalidate(str(self.target))
+            (self.target / ".rustc_info.json").unlink()
+            with self.assertRaisesRegex(local_ci.TargetCacheError, "no longer live"):
+                reservation.revalidate(str(self.target))
+        with self.reserve() as replacement:
+            replacement.revalidate(str(self.target))
+        self.target.rmdir()
+        with self.assertRaisesRegex(local_ci.TargetCacheError, "create an empty directory"):
+            self.reserve()
+        self.assertFalse(self.target.exists())
+
+    def test_replacement_of_target_or_ancestor_refuses(self):
+        parent = self.root / "parent"
+        parent.mkdir()
+        target = parent / "target"
+        target.mkdir()
+        with self.reserve(target) as reservation:
+            target.rename(parent / "old-target")
+            target.mkdir()
+            with self.assertRaisesRegex(local_ci.TargetCacheError, "identity"):
+                reservation.revalidate(str(target))
+        target.rmdir()
+        (parent / "old-target").rename(target)
+        with self.reserve(target) as reservation:
+            parent.rename(self.root / "old-parent")
+            parent.mkdir()
+            (parent / "target").mkdir()
+            with self.assertRaisesRegex(local_ci.TargetCacheError, "identity"):
+                reservation.revalidate(str(target))
+
+    def test_source_change_revokes_reservation(self):
+        self.target.mkdir()
+        with self.reserve() as reservation:
+            helper = self.root / "scripts/ci_plan.py"
+            helper.write_bytes(helper.read_bytes() + b"\n# changed\n")
+            with self.assertRaisesRegex(local_ci.TargetCacheError, "source mismatch"):
+                reservation.revalidate(str(self.target))
+            self.assertIsNone(reservation._lock.file)
+            self.assertEqual(reservation._handles, [])
+
+    def test_failure_closes_descriptors_and_preserves_target_and_owner(self):
+        self.target.mkdir()
+        sentinel = self.target / "keep"
+        sentinel.write_bytes(b"preserve")
+        _, owner = local_ci.target_state_paths(self.target, self.state)
+        owner.parent.mkdir(parents=True)
+        opened = []
+        original = os.open
+        def record(*args, **kwargs):
+            descriptor = original(*args, **kwargs)
+            opened.append(descriptor)
+            return descriptor
+        with patch.object(local_ci.os, "open", side_effect=record):
+            with self.assertRaisesRegex(local_ci.TargetCacheError, "not empty"):
+                self.reserve()
+        self.assertTrue(opened)
+        for descriptor in opened:
+            with self.assertRaises(OSError):
+                os.fstat(descriptor)
+        self.assertEqual(sentinel.read_bytes(), b"preserve")
+        self.assertFalse(owner.exists())
+        sentinel.unlink()
+        owner.write_bytes(b"existing owner")
+        with self.assertRaisesRegex(local_ci.TargetCacheError, "owner marker"):
+            self.reserve()
+        self.assertEqual(owner.read_bytes(), b"existing owner")
+        owner.unlink()
+        with self.reserve() as reservation:
+            self.assertTrue(reservation._handles)
+            reservation._lock.release()  # Unusual external unlock invalidates authority.
+            with self.assertRaisesRegex(local_ci.TargetCacheError, "no longer live"):
+                reservation.revalidate(str(self.target))
+
+    def test_owner_markers_revoke_fresh_authority(self):
+        self.target.mkdir()
+        _, owner = local_ci.target_state_paths(self.target, self.state)
+        release = owner.with_name(owner.name.replace(".owner.json", ".release-owner.json"))
+        for marker in (owner, release):
+            with self.subTest(marker=marker.name):
+                with self.reserve() as reservation:
+                    marker.write_bytes(b"other owner")
+                    with self.assertRaisesRegex(local_ci.TargetCacheError, "owner marker"):
+                        reservation.revalidate(str(self.target))
+                self.assertEqual(marker.read_bytes(), b"other owner")
+                marker.unlink()
+
+    def test_existing_release_marker_and_dangling_marker_refuse(self):
+        self.target.mkdir()
+        _, owner = local_ci.target_state_paths(self.target, self.state)
+        release = owner.with_name(owner.name.replace(".owner.json", ".release-owner.json"))
+        self.state.mkdir(parents=True)
+        for dangling in (False, True):
+            with self.subTest(dangling=dangling):
+                if dangling:
+                    release.symlink_to(self.root / "missing")
+                else:
+                    release.write_bytes(b"existing")
+                with self.assertRaisesRegex(local_ci.TargetCacheError, "owner marker"):
+                    self.reserve()
+                self.assertTrue(os.path.lexists(release))
+                release.unlink()
+                with self.reserve():
+                    pass
+
+    def test_replaced_lock_or_state_directory_revokes_authority(self):
+        self.target.mkdir()
+        for replace_state in (False, True):
+            with self.subTest(replace_state=replace_state):
+                with self.reserve() as reservation:
+                    lock_path = reservation._lock.path
+                    if replace_state:
+                        self.state.rename(self.root / "old-locks")
+                        self.state.mkdir()
+                    else:
+                        lock_path.unlink()
+                    lock_path.write_text("replacement")
+                    with self.assertRaisesRegex(local_ci.TargetCacheError, "lock identity"):
+                        reservation.revalidate(str(self.target))
+                    self.assertIsNone(reservation._lock.file)
+                    self.assertEqual(lock_path.read_text(), "replacement")
+                if replace_state:
+                    lock_path.unlink()
+                    self.state.rmdir()
+                    (self.root / "old-locks").rename(self.state)
+
+    def test_reserved_metadata_matches_target_and_preserves_live_lock(self):
+        self.target.mkdir()
+        runner = local_ci.LocalCiRunner(self.root, env={"CARGO_TARGET_DIR": str(self.target)},
+                                        target_state_dir=self.state)
+        metadata = {"target_directory": str(self.target), "workspace_root": str(self.root),
+                    "workspace_members": ["fixture"],
+                    "packages": [{"id": "fixture", "name": "fixture", "version": "0.1.0"}]}
+        result = subprocess.CompletedProcess([], 0, json.dumps(metadata), "")
+        with self.reserve() as reservation, patch.object(local_ci.subprocess, "run", return_value=result):
+            self.assertTrue(runner._resolve_cargo_identity(reservation))
+            reservation.revalidate(str(self.target))
+            self.assertEqual(runner.cargo_identity["target_directory"], str(self.target))
+            self.assertIsNone(runner.target_lock)  # Identity resolution grants no custody.
+
+    def test_reserved_metadata_mismatch_or_mutation_refuses(self):
+        self.target.mkdir()
+        for scenario in ("configured", "selected", "created"):
+            with self.subTest(scenario=scenario):
+                env_target = self.root / "other" if scenario == "configured" else self.target
+                runner = local_ci.LocalCiRunner(self.root, env={"CARGO_TARGET_DIR": str(env_target)},
+                                                target_state_dir=self.state)
+                metadata = {"target_directory": str(self.root / "other" if scenario == "selected" else self.target),
+                            "workspace_root": str(self.root), "workspace_members": ["fixture"],
+                            "packages": [{"id": "fixture", "name": "fixture", "version": "0.1.0"}]}
+                def run(*args, **kwargs):
+                    if scenario == "created":
+                        (self.target / "entry").write_text("preserve")
+                    return subprocess.CompletedProcess([], 0, json.dumps(metadata), "")
+                with self.reserve() as reservation, patch.object(local_ci.subprocess, "run", side_effect=run) as cargo:
+                    self.assertFalse(runner._resolve_cargo_identity(reservation))
+                    self.assertIsNone(runner.cargo_identity)
+                    self.assertIsNone(reservation._lock.file)
+                    if scenario == "configured":
+                        cargo.assert_not_called()
+                if scenario == "created":
+                    self.assertEqual((self.target / "entry").read_text(), "preserve")
+                    (self.target / "entry").unlink()
+
+    def test_reserved_real_cargo_metadata_on_empty_target(self):
+        (self.root / "Cargo.toml").write_text('[package]\nname = "fixture"\nversion = "0.1.0"\nedition = "2021"\n')
+        (self.root / "Cargo.lock").write_text('version = 4\n\n[[package]]\nname = "fixture"\nversion = "0.1.0"\n')
+        (self.root / "src").mkdir()
+        (self.root / "src/lib.rs").write_text("")
+        self.target.mkdir()
+        env = dict(os.environ, CARGO_TARGET_DIR=str(self.target), CARGO_NET_OFFLINE="true")
+        runner = local_ci.LocalCiRunner(self.root, env=env, target_state_dir=self.state)
+        with self.reserve() as reservation:
+            self.assertTrue(runner._resolve_cargo_identity(reservation), runner.summary.get("cargo_metadata_error"))
+            reservation.revalidate(str(self.target))
+            self.assertEqual(runner.cargo_identity["target_directory"], str(self.target))
+
+    def test_reserved_metadata_refuses_other_lock_namespace_before_cargo(self):
+        self.target.mkdir()
+        other_state = self.root / "other-locks"
+        runner = local_ci.LocalCiRunner(self.root, env={"CARGO_TARGET_DIR": str(self.target)},
+                                        target_state_dir=other_state)
+        _, owner = local_ci.target_state_paths(self.target, other_state)
+        owner.parent.mkdir(parents=True)
+        owner.write_text("existing owner")
+        with self.reserve() as reservation, patch.object(local_ci.subprocess, "run") as cargo:
+            self.assertFalse(runner._resolve_cargo_identity(reservation))
+            cargo.assert_not_called()
+            self.assertIsNone(reservation._lock.file)
+        self.assertEqual(owner.read_text(), "existing owner")
+
+    def test_failed_or_interrupted_resolution_revokes_prior_identity(self):
+        self.target.mkdir()
+        runner = local_ci.LocalCiRunner(self.root, env={"CARGO_TARGET_DIR": str(self.target)},
+                                        target_state_dir=self.state)
+        metadata = {"target_directory": str(self.target), "workspace_root": str(self.root),
+                    "workspace_members": ["fixture"],
+                    "packages": [{"id": "fixture", "name": "fixture", "version": "0.1.0"}]}
+        success = subprocess.CompletedProcess([], 0, json.dumps(metadata), "")
+        for interruption in (False, True):
+            with self.subTest(interruption=interruption), self.reserve() as reservation:
+                with patch.object(local_ci.subprocess, "run", return_value=success):
+                    self.assertTrue(runner._resolve_cargo_identity(reservation))
+                failure = KeyboardInterrupt() if interruption else subprocess.CompletedProcess([], 1, "", "failure")
+                with patch.object(local_ci.subprocess, "run", side_effect=failure if interruption else None,
+                                  return_value=None if interruption else failure):
+                    if interruption:
+                        with self.assertRaises(KeyboardInterrupt):
+                            runner._resolve_cargo_identity(reservation)
+                    else:
+                        self.assertFalse(runner._resolve_cargo_identity(reservation))
+                self.assertIsNone(runner.cargo_identity)
+                self.assertIsNone(runner.target_owner_path)
+                self.assertIsNone(runner._lexical_cargo_target)
+                self.assertNotIn("cargo_identity", runner.summary)
+                self.assertIsNone(reservation._lock.file)
+            with self.reserve():
+                pass
+
+    def test_metadata_refusal_reports_cleanup_failure_without_masking_cause(self):
+        self.target.mkdir()
+        runner = local_ci.LocalCiRunner(self.root, env={"CARGO_TARGET_DIR": str(self.target)},
+                                        target_state_dir=self.state)
+        reservation = self.reserve()
+        release = reservation._lock.release
+        def failed_release():
+            release()
+            return "simulated release failure"
+        metadata = {"target_directory": str(self.root / "other"), "workspace_root": str(self.root),
+                    "workspace_members": ["fixture"], "packages": []}
+        result = subprocess.CompletedProcess([], 0, json.dumps(metadata), "")
+        with patch.object(reservation._lock, "release", side_effect=failed_release), \
+                patch.object(local_ci.subprocess, "run", return_value=result):
+            self.assertFalse(runner._resolve_cargo_identity(reservation))
+        self.assertIn("differs", runner.summary["cargo_metadata_error"])
+        self.assertEqual(runner.summary["reservation_close_error"], "simulated release failure")
+        self.assertIsNone(reservation._lock.file)
+
+
+class ManualFixtureCleanupTests(unittest.TestCase):
+    def test_manual_teardown_restores_runner_sequence_guard(self):
+        original = local_ci.LocalCiRunner._step_sequence_error
+        fixture = LocalCiRunnerTests()
+        fixture.setUp()
+        try:
+            self.assertIsNot(local_ci.LocalCiRunner._step_sequence_error, original)
+        finally:
+            fixture.tearDown()
+        self.assertIs(local_ci.LocalCiRunner._step_sequence_error, original)
+
+
+class ReportStepAdmissionTests(unittest.TestCase):
+    def test_unscoped_full_audit_shards_only_without_native_opt_in(self):
+        ordinary = local_ci.LocalCiRunner(env={})
+        native = local_ci.LocalCiRunner(env={"HEX_VST3_INSTANCE_RECEIPT": "fixture"})
+        release = local_ci.LocalCiRunner(mode="release", env={})
+        for runner, argv in ((ordinary, local_ci.ci_plan.python_tests.SHARDED_DISCOVERY_ARGV),
+                             (native, local_ci.ci_plan.python_tests.COMPREHENSIVE_ARGV),
+                             (release, local_ci.ci_plan.python_tests.COMPREHENSIVE_ARGV)):
+            with self.subTest(mode=runner.mode, native=runner.summary["native_acceptance_opt_in"]):
+                step = next(step for step in runner.steps if step.step_id == "runner-tests")
+                self.assertEqual(step.argv, argv)
+                self.assertTrue(step.uses_cargo_target and step.requires_tests)
+                self.assertIs(runner.summary["sharded_full_python"], runner is ordinary)
+                self.assertIsNone(runner._step_sequence_error())
+                evidence = {**runner.summary, "steps": [
+                    {"step_id": s.step_id, "argv": list(s.argv), "test_results": {"python_executions": [1]}}
+                    for s in runner.steps
+                ]}
+                local_ci.validate_report_steps(evidence)
+        ordinary.env["HEX_TEST_SIGNING_IDENTITY"] = "fixture"
+        self.assertIn("without native opt-in", ordinary._step_sequence_error())
+
+    def evidence(self):
+        plan = {"scope": "full", "python_tests": {"mode": "comprehensive",
+                "test_selectors": ["test_local_ci"], "sharded_discovery": True}}
+        return {"plan": plan, "steps": [{"step_id": step.step_id, "argv": list(step.argv),
+                "status": "passed", "test_results": {"rust_passed_by_binary": [1], "python_executions": [1]}}
+                for step in local_ci.planned_steps(plan)]}
+
+    def test_complete_steps_and_known_narrowed_python_configuration(self):
+        evidence = self.evidence()
+        local_ci.validate_report_steps(evidence, allow_carried=True)
+        row = next(row for row in evidence["steps"] if row["step_id"] == "runner-tests")
+        row["carry"] = {"planned_argv": row["argv"],
+                        "carried_remainder_from": {"report": "original.json", "commit": "a" * 40}}
+        row["argv"] = ["python3", "scripts/python_shards.py", "--", "test_local_ci.SomeTests"]
+        local_ci.validate_report_steps(evidence, allow_carried=True)
+        row["argv"] = ["true"]
+        with self.assertRaisesRegex(ValueError, "unknown narrowed"):
+            local_ci.validate_report_steps(evidence, allow_carried=True)
+
+    def test_missing_reordered_and_altered_configurations_refuse(self):
+        for change in (lambda rows: rows.pop(), lambda rows: rows.reverse(),
+                       lambda rows: rows[0].update(argv=["true"])):
+            evidence = self.evidence()
+            change(evidence["steps"])
+            with self.assertRaisesRegex(ValueError, "complete required configurations"):
+                local_ci.validate_report_steps(evidence, allow_carried=True)
+
+    def test_nonpython_narrowing_and_zero_match_refuse(self):
+        evidence = self.evidence()
+        row = evidence["steps"][0]
+        row["carry"] = {"planned_argv": row["argv"]}
+        with self.assertRaisesRegex(ValueError, "unknown narrowed"):
+            local_ci.validate_report_steps(evidence, allow_carried=True)
+        evidence = self.evidence()
+        required = next(step for step in local_ci.planned_steps(evidence["plan"]) if step.requires_tests)
+        next(row for row in evidence["steps"] if row["step_id"] == required.step_id)["test_results"] = {}
+        with self.assertRaisesRegex(ValueError, "zero-match"):
+            local_ci.validate_report_steps(evidence, allow_carried=True)
+
+    def test_malformed_test_count_objects_refuse(self):
+        for counts in ([], {"rust_passed_by_binary": "one"}, {"python_executions": [None]}):
+            evidence = self.evidence()
+            evidence["steps"][0]["test_results"] = counts
+            with self.assertRaisesRegex(ValueError, "malformed test counts"):
+                local_ci.validate_report_steps(evidence, allow_carried=True)
+
+    def test_malformed_nested_selection_refuses_before_inheritance(self):
+        for value in ([], None, 42):
+            evidence = self.evidence()
+            evidence["plan"]["python_tests"] = value
+            for allow_carried in (False, True):
+                with self.subTest(value=value, carry=allow_carried), \
+                        self.assertRaisesRegex(ValueError, "historical report selection"):
+                    local_ci.validate_report_steps(evidence, allow_carried=allow_carried)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            report = root / "old.json"
+            report.write_text(json.dumps(evidence))
+            runner = local_ci.LocalCiRunner(root, mode="merge", plan={"scope": "full"}, carry_report=report)
+            runner._carry = [{"action": "carry"}]
+            runner._prepare_carry()
+            self.assertIsNone(runner._carry)
+            self.assertIn("historical report selection", runner.summary["carry"]["refused"])
+            self.assertIn("every step runs fresh", runner.summary["carry"]["refused"])
+
+    def test_malformed_narrowed_selector_groups_refuse(self):
+        evidence = self.evidence()
+        evidence["plan"]["python_tests"]["test_selectors"] = None
+        row = next(row for row in evidence["steps"] if row["step_id"] == "runner-tests")
+        row["carry"] = {"planned_argv": row["argv"],
+                        "carried_remainder_from": {"report": "old.json", "commit": "a" * 40}}
+        row["argv"] = ["python3", "scripts/python_shards.py", "--", "test_local_ci"]
+        with self.assertRaisesRegex(ValueError, "unknown narrowed"):
+            local_ci.validate_report_steps(evidence, allow_carried=True)
+
+    def test_module_source_cannot_escape_verified_workspace(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            (root / "src").mkdir()
+            (root / "src/lib.rs").write_text('#[path = "/outside.rs"]\nmod outside;\n')
+            with self.assertRaisesRegex(ValueError, "escapes the verified workspace"):
+                local_ci.ci_plan.module_paths(root / "src", workspace_root=root)
+
+
+class SuppliedSelectionTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+        self.env = {**os.environ, "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull}
+        self.git("init", "-q")
+        (self.root / ".gitignore").write_text("artifacts/\ntarget/\n")
+        (self.root / "Cargo.toml").write_text("[workspace]\nmembers = ['crates/fixture']\n")
+        self.crate = self.root / "crates/fixture"
+        (self.crate / "src").mkdir(parents=True)
+        (self.crate / "Cargo.toml").write_text("[package]\nname = 'fixture'\nversion = '0.1.0'\n")
+        (self.crate / "src/lib.rs").write_text("pub fn value() -> u8 { 1 }\n")
+        (self.root / "README.md").write_text("first\n")
+        self.commit()
+        self.base = self.git("rev-parse", "HEAD")
+        (self.root / "README.md").write_text("second\n")
+        self.commit()
+        self.target = self.root / "target"
+        self.target.mkdir()
+        (self.target / "preserve").write_text("existing target\n")
+        self.env["CARGO_TARGET_DIR"] = str(self.target)
+        self.metadata = {"workspace_root": str(self.root), "target_directory": str(self.target),
+                         "workspace_members": ["fixture"], "packages": [{
+                             "id": "fixture", "name": "fixture", "version": "0.1.0",
+                             "manifest_path": str(self.crate / "Cargo.toml"), "features": {},
+                             "targets": [{"name": "fixture", "kind": ["lib"]}], "dependencies": []}]}
+
+    def git(self, *args):
+        return subprocess.check_output(["git", *args], cwd=self.root, env=self.env, text=True).strip()
+
+    def commit(self):
+        self.git("add", ".")
+        self.git("-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "fixture")
+
+    def plan(self):
+        return local_ci.ci_plan.resolve(self.root, profile="merge", base=self.base,
+            source=self.git("rev-parse", "HEAD"), metadata=self.metadata, env=self.env)
+
+    def run_plan(self, plan, *, stop_at_target=False, untrusted_carry=False):
+        runner = local_ci.LocalCiRunner(self.root, mode="merge", env=self.env, plan=plan, min_free_bytes=0,
+            carry_report=self.root / "artifacts/untrusted-report.json" if untrusted_carry else None)
+        original_run = subprocess.run
+        metadata_calls = []
+        def metadata_command(argv, *args, **kwargs):
+            if argv[:2] == ["cargo", "metadata"]:
+                metadata_calls.append(argv)
+                self.assertEqual(kwargs["env"]["CARGO_TARGET_DIR"], str(self.target))
+                self.assertEqual(kwargs["env"]["GIT_CONFIG_GLOBAL"], os.devnull)
+                return subprocess.CompletedProcess(argv, 0, json.dumps(self.metadata), "")
+            return original_run(argv, *args, **kwargs)
+        def record_step(step, index):
+            result = {"step_id": step.step_id, "argv": list(step.argv), "status": "passed"}
+            runner.summary["steps"].append(result)
+            return result
+        with patch.object(runner, "_execution_policy_error", return_value=None), \
+                patch.object(local_ci.subprocess, "run", side_effect=metadata_command), \
+                patch.object(runner, "_prepare_target_cache", return_value=False) as target, \
+                patch.object(runner, "_prepare_carry", side_effect=AssertionError("carry prepared")) as carry, \
+                patch.object(runner, "_run_step", side_effect=record_step) as execute, \
+                redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            result = runner.run()
+        self.assertEqual((self.target / "preserve").read_text(), "existing target\n")
+        self.assertEqual(len(metadata_calls), 1)
+        if stop_at_target:
+            target.assert_called_once()
+        else:
+            target.assert_not_called()
+        carry.assert_not_called()
+        return runner, result, execute
+
+    def test_rehashed_python_selection_refuses_before_execution(self):
+        plan = self.plan()
+        plan["python_tests"]["modules"] = ["test_unrelated"]
+        self.assert_refused(plan)
+
+    def assert_refused(self, plan):
+        plan.pop("plan_sha256")
+        plan["plan_sha256"] = hashlib.sha256(json.dumps(plan, sort_keys=True).encode()).hexdigest()
+        runner, result, execute = self.run_plan(plan, untrusted_carry=True)
+        self.assertEqual(result, 2)
+        self.assertIn("selection_error", runner.summary)
+        execute.assert_not_called()
+
+    def test_rehashed_inventory_refuses_before_execution(self):
+        plan = self.plan()
+        plan["cargo_inventory"][0]["features"] = {"forged": []}
+        self.assert_refused(plan)
+
+    def test_metadata_change_since_planning_refuses_before_execution(self):
+        plan = self.plan()
+        self.metadata["packages"][0]["features"] = {"new_configuration": []}
+        self.assert_refused(plan)
+
+    def test_rehashed_policy_refuses_before_execution(self):
+        plan = self.plan()
+        plan["policy_version"] -= 1
+        self.assert_refused(plan)
+
+    def test_rehashed_boundary_refuses_before_execution(self):
+        plan = self.plan()
+        plan["boundary"] = {"packages": []}
+        self.assert_refused(plan)
+
+    def test_rust_scope_cannot_masquerade_as_metadata(self):
+        (self.crate / "src/lib.rs").write_text("pub fn value() -> u8 { 2 }\n")
+        self.commit()
+        plan = self.plan()
+        self.assertEqual(plan["scope"], "rust")
+        plan["scope"] = "metadata"
+        plan.pop("boundary")
+        plan["affected_packages"] = []
+        self.assert_refused(plan)
+
+    def test_matching_metadata_selection_uses_explicit_runner_environment(self):
+        plan = self.plan()
+        # Ambient Git configuration must not replace the runner's environment.
+        with patch.dict(os.environ, {"GIT_DIR": str(self.root / "missing")}):
+            runner, result, execute = self.run_plan(plan)
+        self.assertEqual(result, 0)
+        self.assertEqual([call.args[0] for call in execute.call_args_list], list(local_ci.planned_steps(plan)))
+        self.assertNotIn("selection_error", runner.summary)
+
+    def test_matching_rust_selection_reaches_target_admission(self):
+        (self.crate / "src/lib.rs").write_text("pub fn value() -> u8 { 2 }\n")
+        self.commit()
+        runner, result, execute = self.run_plan(self.plan(), stop_at_target=True)
+        self.assertNotIn("selection_error", runner.summary)
+        self.assertEqual(result, 1)
+        self.assertTrue(all(not runner._uses_cargo_target(call.args[0]) for call in execute.call_args_list))
+
+    def test_rehashed_reuse_overlay_requires_its_actual_report(self):
+        plan = self.plan()
+        plan["reuse"] = {"report": str(self.root / "absent.json"), "source": plan["base"],
+                         "native_acceptance_opt_in": False, "dependency_inputs": {}}
+        self.assert_refused(plan)
+
+    def reuse_plan(self, alter_previous=None):
+        # Report bytes cannot mutate the separately observed Cargo metadata.
+        previous = json.loads(json.dumps(self.plan()))
+        if alter_previous is not None:
+            alter_previous(previous)
+            previous.pop("plan_sha256")
+            previous["plan_sha256"] = hashlib.sha256(json.dumps(previous, sort_keys=True).encode()).hexdigest()
+        report = self.root / "artifacts/runtime.json"
+        report.parent.mkdir()
+        tree = {"commit": previous["source"]}
+        report.write_text(json.dumps({"schema_version": 2, "mode": "merge", "status": "passed",
+            "exit_code": 0, "stale": False, "dirty": False, "start_tree": tree, "end_tree": tree,
+            "native_acceptance_opt_in": False, "runtime_inputs": previous["runtime_inputs"],
+            "commit": previous["source"], "plan": previous,
+            "target_cache": {"dependency_inputs": {"version": 1}},
+            # Fabricated harness counts exercise report admission, not product tests.
+            "steps": [{"step_id": step.step_id, "argv": list(step.argv), "status": "passed",
+                       "test_results": {"rust_passed_by_binary": [1]}}
+                      for step in local_ci.planned_steps(previous)]}))
+        (self.root / "README.md").unlink()
+        (self.root / "docs").mkdir()
+        (self.root / "docs/new.md").write_text("third\n")
+        self.commit()
+        return local_ci.reusable_plan(self.root, self.plan(), report, env=self.env)
+
+    def test_rehashed_reuse_identity_refuses_before_execution(self):
+        plan = self.reuse_plan()
+        plan["reuse"]["dependency_inputs"] = {"forged": True}
+        self.assert_refused(plan)
+
+    def test_matching_reuse_overlay_is_reconstructed_before_target_admission(self):
+        with patch.dict(os.environ, {"GIT_DIR": str(self.root / "missing")}):
+            runner, result, execute = self.run_plan(self.reuse_plan(), stop_at_target=True)
+        self.assertNotIn("selection_error", runner.summary)
+        self.assertEqual(result, 1)
+        execute.assert_not_called()
+
+    def test_rehashed_historical_python_selection_refuses_reuse(self):
+        with self.assertRaisesRegex(ValueError, "historical"):
+            self.reuse_plan(lambda old: old["python_tests"].update(modules=["test_unrelated"]))
+
+    def test_rehashed_historical_inventory_refuses_reuse(self):
+        with self.assertRaisesRegex(ValueError, "historical"):
+            self.reuse_plan(lambda old: old["cargo_inventory"][0]["features"].update(forged=[]))
+
+    def test_historical_rust_scope_cannot_masquerade_as_metadata(self):
+        (self.crate / "src/lib.rs").write_text("pub fn value() -> u8 { 2 }\n")
+        self.commit()
+        def as_metadata(old):
+            self.assertEqual(old["scope"], "rust")
+            old["scope"] = "metadata"
+            old["affected_packages"] = []
+            old.pop("boundary")
+        with self.assertRaisesRegex(ValueError, "historical"):
+            self.reuse_plan(as_metadata)
+
+    def test_matching_historical_rust_selection_remains_reusable(self):
+        (self.crate / "src/lib.rs").write_text("pub fn value() -> u8 { 2 }\n")
+        self.commit()
+        runner, result, execute = self.run_plan(self.reuse_plan(), stop_at_target=True)
+        self.assertNotIn("selection_error", runner.summary)
+        self.assertEqual(result, 1)
+        execute.assert_not_called()
+
+    def test_historical_profile_must_match_report_mode(self):
+        with self.assertRaisesRegex(ValueError, "historical plan mode/source"):
+            self.reuse_plan(lambda old: old.update(profile="full"))
+
+    def test_forged_historical_report_refuses_before_target_or_carry(self):
+        plan = self.reuse_plan()
+        report = Path(plan["reuse"]["report"])
+        evidence = json.loads(report.read_bytes())
+        old = evidence["plan"]
+        old["python_tests"]["modules"] = ["test_unrelated"]
+        old.pop("plan_sha256")
+        old["plan_sha256"] = hashlib.sha256(json.dumps(old, sort_keys=True).encode()).hexdigest()
+        raw = json.dumps(evidence).encode()
+        report.write_bytes(raw)
+        plan["reuse"]["sha256"] = hashlib.sha256(raw).hexdigest()
+        self.assert_refused(plan)
+        self.assertEqual(report.read_bytes(), raw)
+
+    def test_committed_inputs_match_binary_modes_and_links_without_checkout(self):
+        (self.root / "binary.bin").write_bytes(b"\x00\xff\nblob 123\n")
+        executable = self.root / "executable"
+        executable.write_text("fixture\n")
+        executable.chmod(0o755)
+        (self.root / "link").symlink_to("binary.bin")
+        self.commit()
+        source = self.git("rev-parse", "HEAD")
+        expected = local_ci.ci_plan.runtime_inputs(self.root, self.env)
+        original = (self.root / "binary.bin").read_bytes()
+        self.assertEqual(local_ci.ci_plan.committed_runtime_inputs(self.root, source, env=self.env), expected)
+        (self.root / "README.md").unlink()
+        (self.root / "docs").mkdir()
+        (self.root / "docs/new.md").write_text("new prose\n")
+        self.commit()
+        head = self.git("rev-parse", "HEAD")
+        self.assertEqual(local_ci.ci_plan.committed_runtime_inputs(self.root, source, env=self.env), expected)
+        self.assertEqual(self.git("rev-parse", "HEAD"), head)
+        self.assertEqual((self.root / "binary.bin").read_bytes(), original)
+
+    def test_committed_inputs_refuse_unknown_gitlinks(self):
+        self.git("update-index", "--add", "--cacheinfo", "160000," + self.git("rev-parse", "HEAD") + ",nested")
+        self.git("-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "gitlink")
+        with self.assertRaisesRegex(ValueError, "unsupported Git tree entry"):
+            local_ci.ci_plan.committed_runtime_inputs(self.root, self.git("rev-parse", "HEAD"), env=self.env)
+
+    def test_historical_plan_must_be_an_object(self):
+        report = self.root / "artifacts/malformed.json"
+        report.parent.mkdir()
+        report.write_text(json.dumps({"plan": [], "native_acceptance_opt_in": False}))
+        for check in (local_ci.reusable_plan, local_ci.ci_plan.reuse_checks):
+            with self.subTest(check=check.__name__), self.assertRaisesRegex(ValueError, "plan must be an object"):
+                check(self.root, self.plan(), report, env=self.env)
+
+    def test_nonqualifying_custom_selection_remains_available(self):
+        runner = local_ci.LocalCiRunner(self.root, mode="edit", env=self.env,
+            plan={"qualifies_merge": False}, steps=())
+        self.assertIsNone(runner._selection_error())
+
+
+class SuppliedGitScopeTests(unittest.TestCase):
+    def test_altered_git_scope_refuses_before_steps_or_target_access(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            env = {**os.environ, "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull}
+            def git(*args):
+                return subprocess.check_output(["git", *args], cwd=root, env=env, text=True).strip()
+            git("init", "-q")
+            (root / ".gitignore").write_text("artifacts/\n")
+            (root / "README.md").write_text("first\n")
+            git("add", ".")
+            git("-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "base")
+            base = git("rev-parse", "HEAD")
+            (root / "README.md").write_text("second\n")
+            git("add", ".")
+            git("-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "source")
+            plan = {"profile": "merge", "scope": "metadata", "qualifies_merge": True,
+                    "base": base, "source": git("rev-parse", "HEAD"),
+                    "tree": git("rev-parse", "HEAD^{tree}"), "paths": ["README.md"],
+                    "runtime_inputs": local_ci.ci_plan.runtime_inputs(root, env)}
+            matching = local_ci.LocalCiRunner(root, mode="merge", env=env, plan=plan, min_free_bytes=0)
+            with patch.dict(os.environ, {"GIT_DIR": str(root / "not-the-repository")}):
+                self.assertIsNone(matching._git_scope_error())
+            self.assertIsNone(local_ci.LocalCiRunner(root, mode="edit", env=env,
+                plan={"qualifies_merge": False}, steps=())._git_scope_error())
+            for field, value in (("paths", []), ("tree", "0" * 40), ("base", plan["source"])):
+                altered = {**plan, field: value}
+                altered.pop("plan_sha256", None)
+                altered["plan_sha256"] = hashlib.sha256(json.dumps(altered, sort_keys=True).encode()).hexdigest()
+                runner = local_ci.LocalCiRunner(root, mode="merge", env=env, plan=altered,
+                                                run_id=field, min_free_bytes=0)
+                with patch.object(runner, "_execution_policy_error", return_value=None), \
+                        patch.object(runner, "_run_step", side_effect=AssertionError("unvalidated steps executed")) as execute, \
+                        patch.object(runner, "_resolve_cargo_identity") as target:
+                    self.assertEqual(runner.run(), 2)
+                self.assertIn("git_scope_error", runner.summary)
+                execute.assert_not_called()
+                target.assert_not_called()
+
+
+class RunnerEnvironmentInputTests(unittest.TestCase):
+    def test_qualifying_inputs_use_the_runner_git_environment(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory).resolve()
+            root = base / "repo"
+            root.mkdir()
+            clean_config = base / "clean-config"
+            clean_config.write_text("")
+            excludes = base / "excludes"
+            excludes.write_text("untracked.rs\n")
+            configured = base / "configured-git"
+            configured.write_text(f"[core]\n\texcludesfile = {excludes}\n")
+            default_env = {**os.environ, "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": str(clean_config)}
+            actual_env = {**default_env, "GIT_CONFIG_GLOBAL": str(configured)}
+
+            def git(*args):
+                return subprocess.check_output(["git", *args], cwd=root, env=default_env, text=True).strip()
+
+            git("init", "-q")
+            (root / ".gitignore").write_text("artifacts/\n")
+            (root / "tracked.rs").write_text("tracked\n")
+            git("add", ".gitignore", "tracked.rs")
+            git("-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "initial")
+            source = git("rev-parse", "HEAD")
+            (root / "untracked.rs").write_text("untracked\n")
+            default_inputs = local_ci.ci_plan.runtime_inputs(root, default_env)
+            actual_inputs = local_ci.ci_plan.runtime_inputs(root, actual_env)
+            self.assertNotEqual(default_inputs, actual_inputs)
+            self.assertEqual(subprocess.check_output(
+                ["git", "status", "--porcelain"], cwd=root, env=actual_env, text=True), "")
+
+            for label, inputs in (("mismatch", default_inputs), ("matching", actual_inputs)):
+                with self.subTest(label=label), patch.dict(os.environ, default_env, clear=True):
+                    plan = {"scope": "full", "profile": "merge", "qualifies_merge": True,
+                            "source": source, "runtime_inputs": inputs}
+                    runner = local_ci.LocalCiRunner(root, mode="merge", run_id=label, env=actual_env,
+                                                   plan=plan, min_free_bytes=0)
+                    def stop_before_target():
+                        runner.summary["cargo_metadata_error"] = "fixture stopped before target"
+                        return False
+                    with patch.object(runner, "_execution_policy_error", return_value=None), \
+                            patch.object(runner, "_git_scope_error", return_value=None), \
+                            patch.object(runner, "_resolve_cargo_identity", side_effect=stop_before_target) as identity, \
+                            patch.object(runner, "_run_step") as execute:
+                        self.assertEqual(runner.run(), 2)
+                    if label == "mismatch":
+                        self.assertIn("resolved plan source/inputs changed", runner.summary["metadata_error"])
+                        identity.assert_not_called()
+                    else:
+                        identity.assert_called_once()
+                    execute.assert_not_called()
+
+
 class LocalCiRunnerTests(unittest.TestCase):
+    def test_qualifying_plan_refuses_partial_overlays_before_target_access(self):
+        self.step_sequence_patch.stop()
+        overlays = {
+            "edit": {"package": "fixture", "features": "", "target": None, "filter": "one_test"},
+            "health": {"python": False, "workspace_inputs": False, "packages": []},
+        }
+        for mode in ("full", "merge", "release"):
+            for key, value in overlays.items():
+                with self.subTest(mode=mode, overlay=key):
+                    plan = {"scope": "metadata", "profile": mode, "base": "base", "source": "source",
+                            "qualifies_merge": True, key: value}
+                    plan["plan_sha256"] = hashlib.sha256(json.dumps(plan, sort_keys=True).encode()).hexdigest()
+                    runner = local_ci.LocalCiRunner(
+                        self.repo, mode=mode, run_id=f"overlay-{mode}-{key}", env=self.env,
+                        plan=plan, steps=local_ci.planned_steps(plan), min_free_bytes=0,
+                        target_state_dir=self.target_state_dir)
+                    with patch.object(runner, "_capture_repository_state", return_value=False) as capture, \
+                            patch.object(runner, "_resolve_cargo_identity") as identity, \
+                            patch.object(runner, "_run_step") as execute:
+                        self.assertEqual(runner.run(), 2)
+                    self.assertIn("step_sequence_error", runner.summary)
+                    capture.assert_not_called()
+                    identity.assert_not_called()
+                    execute.assert_not_called()
+                    self.assertFalse(Path(self.env["FAKE_METADATA_TARGET"]).exists())
+        for key in overlays:
+            for index, value in enumerate((None, {}, [], "invalid")):
+                with self.subTest(overlay=key, malformed=value):
+                    plan = {"scope": "metadata", "profile": "merge", "qualifies_merge": True, key: value}
+                    runner = local_ci.LocalCiRunner(
+                        self.repo, mode="merge", run_id=f"malformed-{key}-{index}", env=self.env,
+                        plan=plan, steps=(), min_free_bytes=0, target_state_dir=self.target_state_dir)
+                    with patch.object(runner, "_capture_repository_state") as capture, \
+                            patch.object(runner, "_resolve_cargo_identity") as identity, \
+                            patch.object(runner, "_run_step") as execute:
+                        self.assertEqual(runner.run(), 2)
+                    self.assertIn("step_sequence_error", runner.summary)
+                    capture.assert_not_called()
+                    identity.assert_not_called()
+                    execute.assert_not_called()
+        for key, value in overlays.items():
+            plan = {"scope": "metadata", "profile": key, "base": "base", "source": "source",
+                    "qualifies_merge": False, key: value}
+            runner = local_ci.LocalCiRunner(self.repo, mode=key, env=self.env, plan=plan)
+            self.assertIsNone(runner._step_sequence_error())
+            self.assertTrue(runner.steps)
+
+    def test_qualifying_step_sequence_refuses_drift_before_execution_or_target_access(self):
+        self.step_sequence_patch.stop()
+        expected = local_ci.planned_steps({"scope": "full"})
+        first = expected[0]
+        cases = {
+            "empty": (),
+            "missing": expected[1:],
+            "added": (*expected, first),
+            "reordered": (expected[1], expected[0], *expected[2:]),
+            "argv": (local_ci.Step(first.step_id, (*first.argv, "--changed"),
+                                   first.uses_cargo_target, first.requires_tests), *expected[1:]),
+            "flags": (local_ci.Step(first.step_id, first.argv, not first.uses_cargo_target,
+                                    first.requires_tests), *expected[1:]),
+            "id": (local_ci.Step("changed", first.argv, first.uses_cargo_target,
+                                 first.requires_tests), *expected[1:]),
+            "test-flag": (local_ci.Step(first.step_id, first.argv, first.uses_cargo_target,
+                                         not first.requires_tests), *expected[1:]),
+        }
+        for label, steps in cases.items():
+            with self.subTest(label=label):
+                runner = local_ci.LocalCiRunner(self.repo, mode="full", run_id="sequence-" + label,
+                    env=self.env, steps=steps, min_free_bytes=0, target_state_dir=self.target_state_dir)
+                with patch.object(runner, "_resolve_cargo_identity") as identity, \
+                        patch.object(runner, "_run_step") as execute:
+                    self.assertEqual(runner.run(), 2)
+                self.assertIn("step_sequence_error", runner.summary)
+                identity.assert_not_called()
+                execute.assert_not_called()
+
+    def test_qualifying_plan_profile_must_match_runner_before_target_access(self):
+        self.step_sequence_patch.stop()
+        profiles = ("full", "merge", "release", None, [], 1)
+        for mode in ("full", "merge", "release"):
+            for profile in profiles:
+                if profile == mode:
+                    continue
+                with self.subTest(mode=mode, profile=profile):
+                    plan = {"scope": "metadata", "base": "base", "source": "source",
+                            "qualifies_merge": True}
+                    if profile is not None:
+                        plan["profile"] = profile
+                    runner = local_ci.LocalCiRunner(
+                        self.repo, mode=mode, run_id=f"profile-{mode}-{profiles.index(profile)}",
+                        env=self.env, plan=plan, steps=local_ci.planned_steps(plan),
+                        min_free_bytes=0, target_state_dir=self.target_state_dir)
+                    with patch.object(runner, "_resolve_cargo_identity") as identity, \
+                            patch.object(runner, "_run_step") as execute, \
+                            patch.object(runner, "_capture_repository_state", return_value=False) as capture:
+                        self.assertEqual(runner.run(), 2)
+                    self.assertIn("step_sequence_error", runner.summary)
+                    identity.assert_not_called()
+                    execute.assert_not_called()
+                    capture.assert_not_called()
+                    self.assertFalse(Path(self.env["FAKE_METADATA_TARGET"]).exists())
+        for mode in ("full", "merge", "release"):
+            plan = {"scope": "metadata", "profile": mode, "base": "base", "source": "source",
+                    "qualifies_merge": True}
+            runner = local_ci.LocalCiRunner(self.repo, mode=mode, env=self.env, plan=plan)
+            self.assertIsNone(runner._step_sequence_error())
+        self.assertIsNone(local_ci.LocalCiRunner(self.repo, mode="full", env=self.env)._step_sequence_error())
+        partial = {"scope": "metadata", "profile": "edit", "qualifies_merge": False}
+        self.assertIsNone(local_ci.LocalCiRunner(self.repo, mode="merge", env=self.env,
+                                               plan=partial, steps=())._step_sequence_error())
+
+    def test_scoped_step_binding_and_nonqualifying_custom_execution(self):
+        self.step_sequence_patch.stop()
+        plan = {"scope": "metadata", "profile": "merge", "base": "base", "source": "source", "qualifies_merge": True}
+        expected = local_ci.planned_steps(plan)
+        matching = local_ci.LocalCiRunner(self.repo, mode="merge", env=self.env, plan=plan, steps=expected)
+        self.assertIsNone(matching._step_sequence_error())
+        altered = local_ci.LocalCiRunner(self.repo, mode="merge", env=self.env, plan=plan, steps=())
+        self.assertIsNotNone(altered._step_sequence_error())
+        with patch.object(altered, "_resolve_cargo_identity") as identity, \
+                patch.object(altered, "_run_step") as execute:
+            self.assertEqual(altered.run(), 2)
+        identity.assert_not_called()
+        execute.assert_not_called()
+        full = local_ci.LocalCiRunner(self.repo, mode="full", env=self.env)
+        self.assertIsNone(full._step_sequence_error())
+        for mode in ("quick", "component", "custom"):
+            with self.subTest(mode=mode):
+                partial = local_ci.LocalCiRunner(self.repo, mode=mode, run_id="custom-" + mode, env=self.env,
+                    steps=(local_ci.Step("first", ("first",)),), min_free_bytes=0,
+                    target_state_dir=self.target_state_dir)
+                self.assertEqual(partial.run(), 0)
+                self.assertEqual(partial.summary["status"], "partial")
+        scoped_partial = local_ci.LocalCiRunner(self.repo, mode="merge", env=self.env,
+            plan={"scope": "metadata", "qualifies_merge": False}, steps=())
+        self.assertIsNone(scoped_partial._step_sequence_error())
+
     def test_module_shard_empty_configs_require_aggregate_passes(self):
         (self.bin / "python3").write_text(
             '#!/bin/sh\ncase "$*" in\n'
@@ -125,6 +1125,20 @@ class LocalCiRunnerTests(unittest.TestCase):
         self.assertGreaterEqual(summary["duration_seconds"], summary["time_to_first_result_seconds"])
 
     def setUp(self) -> None:
+        # Pipeline and checkpoint fixtures exercise other boundaries with short,
+        # synthetic steps. Sequence admission has dedicated unmocked tests above.
+        self.step_sequence_patch = patch.object(local_ci.LocalCiRunner, "_step_sequence_error", return_value=None)
+        self.step_sequence_patch.start()
+        self.addCleanup(self.step_sequence_patch.stop)
+        # These pipeline fixtures use synthetic Git; scope authentication has
+        # its own real-repository regression above.
+        self.git_scope_patch = patch.object(local_ci.LocalCiRunner, "_git_scope_error", return_value=None)
+        self.git_scope_patch.start()
+        self.addCleanup(self.git_scope_patch.stop)
+        # Canonical selection uses real Git/Cargo metadata in its own tests.
+        selection = patch.object(local_ci.LocalCiRunner, "_selection_error", return_value=None)
+        selection.start()
+        self.addCleanup(selection.stop)
         self.temp = tempfile.TemporaryDirectory()
         # Ordinary fixtures use the same physical identity as the runner.
         # Tests for unsafe lexical aliases construct those paths explicitly.
@@ -151,6 +1165,7 @@ class LocalCiRunnerTests(unittest.TestCase):
             "FAKE_WORKSPACE_ROOT": str(self.repo),
             "FAKE_METADATA_TARGET": str(self.repo / "cargo-target"),
             "MAKE_TARGET": "0",
+            "METADATA_WRITE_TARGET_FILE": "0",
         }
         self.target_state_dir = self.base / "target-ownership"
         # Storage probing has its own real-command/metadata tests. Keep cache,
@@ -162,7 +1177,12 @@ class LocalCiRunnerTests(unittest.TestCase):
 
 
     def tearDown(self) -> None:
-        self.temp.cleanup()
+        try:
+            self.temp.cleanup()
+        finally:
+            # Some other test modules construct this fixture manually.
+            # unittest invokes cleanups automatically only for its own run().
+            self.doCleanups()
 
     def test_programmatic_source_admission_and_missing_witness_refuse(self):
         for missing_witness in (False, True):
@@ -331,6 +1351,161 @@ class LocalCiRunnerTests(unittest.TestCase):
             report["build_exit_code"] = 0
             report["artifact"] = runner.identify_release_artifact(artifact, argv)
         return runner, report
+
+    def _reserved_release_runner(self, name):
+        target = self.repo / name
+        target.mkdir()
+        env = dict(self.env, CARGO_TARGET_DIR=str(target), FAKE_METADATA_TARGET=str(target))
+        runner = self.runner(name, env=env)
+        self.assertTrue(runner._capture_repository_state("start_tree"),
+                        runner.summary.get("repository_error"))
+        reservation = local_ci.FreshTargetReservation.acquire(
+            runner.root, str(target), {"run_id": name}, state_dir=self.target_state_dir)
+        self.addCleanup(reservation.close)
+        return runner, reservation, target
+
+    def _release_owner_path(self, target):
+        dev = local_ci.target_state_paths(target, self.target_state_dir)[1]
+        return dev.with_name(dev.name.removesuffix(".owner.json") + ".release-owner.json")
+
+    def _finish_reserved_release(self, runner, report, target):
+        artifact = target / "release" / "release-fixture"
+        artifact.parent.mkdir(parents=True, exist_ok=True)
+        artifact.write_bytes(b"optimized reserved fixture")
+        argv = ["cargo", "build", "--release"]
+        report.update(build_argv=argv, build_exit_code=0,
+                      artifact=runner.identify_release_artifact(artifact, argv))
+
+    def test_reserved_release_publishes_ready_owner_while_holding_same_lock(self):
+        name = "reserved-release-existing"
+        runner, reservation, target = self._reserved_release_runner(name)
+        lock = reservation._lock
+        lock_file = lock.file
+        owner = self._release_owner_path(target)
+        with runner.guarded_release(reservation=reservation) as report:
+            self.assertIs(runner.target_lock, lock)
+            self.assertIs(lock.file, lock_file)
+            self.assertEqual(report["state"], "pending")
+            self.assertEqual(report["cleanup_status"], "not_needed")
+            self._finish_reserved_release(runner, report, target)
+        record = json.loads(owner.read_text())
+        self.assertEqual(record["schema_version"], 1)
+        self.assertEqual(record["profile"], "release")
+        self.assertEqual(record["state"], "ready")
+        self.assertEqual(record["target_directory"], str(target))
+        self.assertEqual(record["target_identity"], runner._directory_identity(target))
+        self.assertEqual(record["workspace_owner"], {
+            key: runner.git_identity[key] for key in ("workspace_root", "git_common_dir")})
+        self.assertEqual(record["artifact"]["sha256"], hashlib.sha256(
+            b"optimized reserved fixture").hexdigest())
+        self.assertEqual(report["state"], "ready")
+        self.assertNotIn("cargo clean", self.call_log.read_text())
+        self.assertIsNone(runner.target_lock)
+        self.assertIsNone(lock.file)
+
+    def test_reserved_release_real_offline_metadata_leaves_target_fresh(self):
+        runner, reservation, target = self._reserved_dev_runner(
+            "release-real-offline", real_cargo=True)
+        runner.env["CARGO_CACHE_RUSTC_INFO"] = "1"
+        with runner.guarded_release(reservation=reservation) as report:
+            self.assertEqual(runner.env["CARGO_CACHE_RUSTC_INFO"], "0")
+            self.assertEqual(list(target.iterdir()), [])
+            self._finish_reserved_release(runner, report, target)
+        self.assertEqual(runner.env["CARGO_CACHE_RUSTC_INFO"], "1")
+        self.assertEqual(json.loads(self._release_owner_path(target).read_text())["state"], "ready")
+
+    def test_reserved_release_refuses_metadata_side_effects_before_publication(self):
+        runner, reservation, target = self._reserved_release_runner("reserved-release-metadata-entry")
+        scope = runner._release_scope
+        foreign = target / ".rustc_info.json"
+
+        def metadata():
+            packages = scope()
+            foreign.write_bytes(b"unowned cache")
+            return packages
+
+        with patch.object(runner, "_release_scope", side_effect=metadata), \
+                self.assertRaisesRegex(local_ci.TargetCacheError, "fresh target is not empty"):
+            with runner.guarded_release(reservation=reservation):
+                self.fail("release admitted unowned metadata output")
+        self.assertEqual(foreign.read_bytes(), b"unowned cache")
+        self.assertFalse(self._release_owner_path(target).exists())
+        self.assertIsNone(runner.target_lock)
+
+    def test_reserved_release_marker_collision_preserves_competitor_and_pending_sentinel(self):
+        runner, reservation, target = self._reserved_release_runner("reserved-release-collision")
+        owner = self._release_owner_path(target)
+        lock = reservation._lock
+        pending = local_ci.target_admission_pending_path(lock.path)
+        competitor = b"competing release owner\n"
+        original_link = os.link
+
+        def collide(source, destination, *args, **kwargs):
+            if os.fspath(destination) == owner.name:
+                descriptor = os.open(owner, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                with os.fdopen(descriptor, "wb") as stream:
+                    stream.write(competitor)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+            return original_link(source, destination, *args, **kwargs)
+
+        with patch.object(local_ci.os, "link", side_effect=collide), \
+                self.assertRaises(local_ci.TargetCacheError):
+            with runner.guarded_release(reservation=reservation):
+                self.fail("release entered after competing owner publication")
+        self.assertEqual(owner.read_bytes(), competitor)
+        self.assertTrue(pending.exists())
+        self.assertNotIn("cargo clean", self.call_log.read_text())
+        self.assertIsNone(runner.target_lock)
+
+    def test_reserved_release_refuses_replacements_during_ready_marker_staging(self):
+        for replacement in ("target", "owner", "staging"):
+            with self.subTest(replacement=replacement):
+                runner, reservation, target = self._reserved_release_runner(
+                    f"reserved-release-replace-{replacement}")
+                owner = self._release_owner_path(target)
+                replacement_target = target.with_name(target.name + ".original")
+                write_owner = runner._write_release_owner
+                fsync = os.fsync
+                changed = False
+
+                def sync_then_replace(descriptor):
+                    nonlocal changed
+                    fsync(descriptor)
+                    if changed:
+                        return
+                    changed = True
+                    if replacement == "target":
+                        target.rename(replacement_target)
+                        target.mkdir()
+                    elif replacement == "owner":
+                        owner.unlink()
+                        owner.write_bytes(b"competing pending owner\n")
+                    else:
+                        staging, = owner.parent.glob(f"{owner.name}.*.tmp")
+                        staging.unlink()
+                        staging.write_bytes(b"competing ready staging entry\n")
+
+                def write_with_race(path, payload, **options):
+                    with patch.object(local_ci.os, "fsync", side_effect=sync_then_replace):
+                        write_owner(path, payload, **options)
+
+                with patch.object(runner, "_write_release_owner", side_effect=write_with_race), \
+                        self.assertRaises(local_ci.TargetCacheError):
+                    with runner.guarded_release(reservation=reservation) as report:
+                        self._finish_reserved_release(runner, report, target)
+                self.assertTrue(changed)
+                self.assertNotIn("cargo clean", self.call_log.read_text())
+                if replacement == "target":
+                    self.assertTrue(replacement_target.is_dir())
+                    self.assertTrue(target.is_dir())
+                    self.assertEqual(json.loads(owner.read_text())["state"], "pending")
+                elif replacement == "owner":
+                    self.assertEqual(owner.read_bytes(), b"competing pending owner\n")
+                else:
+                    self.assertEqual(json.loads(owner.read_text())["state"], "pending")
+                    staging, = owner.parent.glob(f"{owner.name}.*.tmp")
+                    self.assertEqual(staging.read_bytes(), b"competing ready staging entry\n")
 
     def test_release_unknown_pending_and_explicit_recovery(self):
         target = self.repo / "cargo-target"
@@ -802,6 +1977,237 @@ class LocalCiRunnerTests(unittest.TestCase):
                 local_ci.main(["--profile", "merge", "--base", "base", "--source", "source"])
             resolve.assert_called_once()
 
+    def _isolate_fresh_cli(self):
+        state_paths = local_ci.target_state_paths
+        def isolated_paths(target, state_dir=None):
+            return state_paths(target, state_dir or self.target_state_dir)
+
+        paths = patch.object(local_ci, "target_state_paths", side_effect=isolated_paths)
+        paths.start()
+        self.addCleanup(paths.stop)
+
+    def test_fresh_target_cli_refuses_absent_before_any_metadata(self):
+        self._isolate_fresh_cli()
+        target = self.repo / "fresh-cli-absent"
+        for scoped in (False, True):
+            arguments = ["--fresh-target"]
+            if scoped:
+                arguments.extend(["--profile", "merge", "--base", "base", "--source", "source"])
+            with self.subTest(scoped=scoped), patch.object(local_ci, "ROOT", self.repo), \
+                    patch.dict(os.environ, {"CARGO_TARGET_DIR": str(target)}), \
+                    patch.object(local_ci, "command_output") as metadata, \
+                    patch.object(local_ci, "LocalCiRunner") as runner, \
+                    redirect_stderr(io.StringIO()) as errors:
+                with self.assertRaises(SystemExit) as refused:
+                    local_ci.main(arguments)
+            self.assertEqual(refused.exception.code, 2)
+            self.assertIn("create an empty directory", errors.getvalue())
+            metadata.assert_not_called()
+            runner.assert_not_called()
+            self.assertFalse(target.exists())
+
+    def test_fresh_target_scoped_metadata_is_locked_and_target_bound(self):
+        self._isolate_fresh_cli()
+        target = self.base / "fresh-scoped-target"
+        target.mkdir()
+        foreign = self.base / "foreign-target"
+        foreign.mkdir()
+        lock_path, _ = local_ci.target_state_paths(target)
+        observations = []
+
+        def metadata(*_args, **_kwargs):
+            contender = local_ci.CargoTargetLock(lock_path, {"run_id": "metadata-contender"})
+            with self.assertRaisesRegex(local_ci.TargetCacheError, "already in use"):
+                contender.acquire()
+            observations.append("locked")
+            return subprocess.CompletedProcess([], 0, stdout=json.dumps({
+                "target_directory": str(foreign), "workspace_root": str(self.repo),
+                "workspace_members": [], "packages": [],
+            }))
+
+        with patch.object(local_ci, "ROOT", self.repo), \
+                patch.dict(os.environ, {"CARGO_TARGET_DIR": str(target)}), \
+                patch.object(local_ci, "command_output", side_effect=metadata), \
+                patch.object(local_ci.ci_plan, "resolve") as resolve:
+            with self.assertRaises(SystemExit):
+                local_ci.main(["--fresh-target", "--profile", "merge", "--base", "base", "--source", "source"])
+            resolve.assert_not_called()
+        self.assertEqual(observations, ["locked"])
+        self.assertFalse(list(target.iterdir()))
+
+    def test_fresh_target_scoped_metadata_refuses_preexisting_lock(self):
+        self._isolate_fresh_cli()
+        target = self.base / "fresh-scoped-contended"
+        target.mkdir()
+        lock_path, _ = local_ci.target_state_paths(target)
+        owner = local_ci.CargoTargetLock(lock_path, {"run_id": "existing-owner"})
+        owner.acquire()
+        self.addCleanup(owner.release)
+        metadata = Mock(return_value=SimpleNamespace(stdout="{}"))
+        with patch.object(local_ci, "ROOT", self.repo), \
+                patch.dict(os.environ, {"CARGO_TARGET_DIR": str(target)}), \
+                patch.object(local_ci, "command_output", metadata):
+            with self.assertRaises(SystemExit):
+                local_ci.main(["--fresh-target", "--profile", "merge", "--base", "base", "--source", "source"])
+        metadata.assert_not_called()
+
+    def test_fresh_target_full_metadata_side_effect_refuses_before_build(self):
+        self._isolate_fresh_cli()
+        target = self.repo / "fresh-full-target"
+        target.mkdir()
+        env = dict(self.env, CARGO_TARGET_DIR=str(target), FAKE_METADATA_TARGET=str(target),
+                   METADATA_WRITE_TARGET_FILE="1")
+        lock_path, owner_path = local_ci.target_state_paths(target)
+        original_subprocess_run = subprocess.run
+        observations = []
+
+        def checked_subprocess_run(argv, *args, **kwargs):
+            if argv[:2] == ["cargo", "metadata"]:
+                contender = local_ci.CargoTargetLock(lock_path, {"run_id": "metadata-contender"})
+                with self.assertRaisesRegex(local_ci.TargetCacheError, "already in use"):
+                    contender.acquire()
+                observations.append("locked-before-metadata")
+            return original_subprocess_run(argv, *args, **kwargs)
+
+        runners = []
+        runner_class = local_ci.LocalCiRunner
+
+        def make_runner(**options):
+            runner = runner_class(self.repo, target_state_dir=self.target_state_dir, **options)
+            runners.append(runner)
+            return runner
+
+        with patch.object(local_ci, "ROOT", self.repo), \
+                patch.dict(os.environ, env), \
+                patch.object(local_ci, "planned_steps", return_value=(
+                    local_ci.Step("one-build", ("cargo", "build")),)), \
+                patch.object(local_ci.subprocess, "run", side_effect=checked_subprocess_run), \
+                patch.object(local_ci, "LocalCiRunner", side_effect=make_runner):
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                exit_code = local_ci.main(["--fresh-target"])
+
+        self.assertEqual(exit_code, 2)
+        self.assertEqual(observations, ["locked-before-metadata"])
+        self.assertEqual(len(runners), 1)
+        runner = runners[0]
+        self.assertIn("cargo_metadata_error", runner.summary)
+        self.assertTrue((target / ".rustc_info.json").is_file())
+        self.assertFalse(owner_path.exists())
+        self.assertTrue(all(entry["status"] == "not_run" for entry in runner.summary["steps"]))
+        self.assertIsNone(runner.target_lock)
+
+    def test_fresh_target_cli_admits_full_and_scoped_under_one_lock(self):
+        self._isolate_fresh_cli()
+        runner_class = local_ci.LocalCiRunner
+        run = subprocess.run
+        for scoped in (False, True):
+            with self.subTest(scoped=scoped):
+                target = self.repo / f"fresh-cli-{scoped}"
+                target.mkdir()
+                lock_path, owner_path = local_ci.target_state_paths(target)
+                observed = []
+                runners = []
+
+                def check_metadata(argv, *args, **options):
+                    if argv[:2] == ["cargo", "metadata"]:
+                        contender = local_ci.CargoTargetLock(lock_path, {"run_id": "contender"})
+                        with self.assertRaisesRegex(local_ci.TargetCacheError, "already in use"):
+                            contender.acquire()
+                        observed.append(options["env"].get("CARGO_CACHE_RUSTC_INFO"))
+                    return run(argv, *args, **options)
+
+                def make_runner(**options):
+                    runner = runner_class(self.repo, target_state_dir=self.target_state_dir, **options)
+                    runners.append(runner)
+                    return runner
+
+                arguments = ["--fresh-target"]
+                if scoped:
+                    arguments.extend(["--profile", "edit", "--base", "base", "--source", "source"])
+                env = dict(self.env, CARGO_TARGET_DIR=str(target), FAKE_METADATA_TARGET=str(target),
+                           CARGO_CACHE_RUSTC_INFO="1")
+                steps = (local_ci.Step("build", ("cargo", "build")),)
+                with patch.object(local_ci, "ROOT", self.repo), patch.dict(os.environ, env), \
+                        patch.object(local_ci.ci_plan, "resolve", return_value={"qualifies_merge": False}), \
+                        patch.object(local_ci, "planned_steps", return_value=steps), \
+                        patch.object(local_ci, "LocalCiRunner", side_effect=make_runner), \
+                        patch.object(local_ci.subprocess, "run", side_effect=check_metadata), \
+                        redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                    self.assertEqual(local_ci.main(arguments), 0)
+
+                self.assertEqual(observed, ["0"] * (3 if scoped else 2) + ["1"])
+                runner, = runners
+                cache = runner.summary["target_cache"]
+                self.assertEqual(cache["action"], "claim-fresh")
+                self.assertEqual(cache["target_identity"], runner._directory_identity(target))
+                self.assertEqual(runner._load_target_owner(owner_path, target)["dependency_inputs"],
+                                 cache["dependency_inputs"])
+                self.assertIsNone(runner.target_lock)
+        self.assertNotIn("cargo clean", self.call_log.read_text())
+
+    def test_direct_fresh_target_rejects_runner_source_drift_before_cargo(self):
+        scripts = self.repo / "scripts"
+        planner = scripts / "ci_plan.py"
+        planner.write_bytes(planner.read_bytes() + b'''
+with Path(__file__).with_name("local-ci.py").open("ab") as runner:
+    runner.write(b"\\n# changed after direct runner compilation\\n")
+''')
+        target = self.repo / "fresh-direct"
+        result = subprocess.run([sys.executable, str(scripts / "local-ci.py"), "--fresh-target"],
+                                cwd=self.repo, env=dict(self.env, CARGO_TARGET_DIR=str(target)),
+                                capture_output=True, text=True, timeout=8)
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("executed runner differs from candidate source", result.stderr)
+        self.assertFalse(target.exists())
+        self.assertFalse(self.call_log.exists())
+
+    def test_fresh_target_run_admits_real_offline_metadata(self):
+        fixture, reservation, target = self._reserved_dev_runner(
+            "fresh-real-run", real_cargo=True)
+        step = local_ci.Step("probe", (sys.executable, "-c", "pass"), uses_cargo_target=True)
+        runner = local_ci.LocalCiRunner(self.repo, mode="quick", run_id="real-fresh-ci",
+                                        env=fixture.env, steps=(step,), min_free_bytes=0,
+                                        target_state_dir=self.target_state_dir)
+        self.assertEqual(runner.run(reservation=reservation), 0)
+        cache = runner.summary["target_cache"]
+        self.assertEqual(cache["action"], "claim-fresh")
+        self.assertEqual(cache["target_identity"], runner._directory_identity(target))
+        self.assertEqual(runner._load_target_owner(runner.target_owner_path, target)["dependency_inputs"],
+                         cache["dependency_inputs"])
+        self.assertIsNone(runner.target_lock)
+
+    def test_fresh_target_runner_claim_keeps_reservation_lock_without_cleanup(self):
+        target = self.repo / "fresh-claim-success"
+        target.mkdir()
+        env = dict(self.env, CARGO_TARGET_DIR=str(target), FAKE_METADATA_TARGET=str(target))
+        runner = local_ci.LocalCiRunner(
+            self.repo, mode="quick", run_id="fresh-claim-success", env=env,
+            steps=(local_ci.Step("build", ("cargo", "build")),), min_free_bytes=0,
+            target_state_dir=self.target_state_dir)
+        reservation = local_ci.FreshTargetReservation.acquire(
+            self.repo, str(target), {"run_id": "fresh-claim-success"}, state_dir=self.target_state_dir)
+        self.addCleanup(reservation.close)
+        lock = reservation._lock
+        transferred = []
+        original_claim = runner._claim_fresh_dev_owner
+
+        def record_claim(current):
+            identity = original_claim(current)
+            transferred.append(runner.target_lock)
+            return identity
+
+        with patch.object(runner, "_claim_fresh_dev_owner", side_effect=record_claim):
+            self.assertEqual(runner.run(reservation=reservation), 0)
+
+        cache = runner.summary["target_cache"]
+        self.assertEqual(cache["action"], "claim-fresh")
+        self.assertIsNone(cache["cleanup_argv"])
+        self.assertEqual(cache["cleanup_status"], "not_needed")
+        self.assertEqual(transferred, [lock])
+        self.assertFalse(local_ci.target_admission_pending_path(lock.path).exists())
+        self.assertIn("cargo build", self.call_log.read_text())
+        self.assertNotIn("cargo clean", self.call_log.read_text())
+
     def test_cli_policy_refuses_change_during_plan_resolution(self):
         self._install_cli_policy_fixture()
         policy = self.repo / "scripts" / "python_test_plan.py"
@@ -1166,10 +2572,7 @@ fi
 
         # Exercise the delivery consumer against this small complete fake plan;
         # no native build or signing is invoked.
-        spec = importlib.util.spec_from_file_location("checkpoint_delivery", SCRIPT.with_name("hex-test-build.py"))
-        delivery = importlib.util.module_from_spec(spec)
-        sys.modules[spec.name] = delivery
-        spec.loader.exec_module(delivery)
+        delivery = load_delivery_source_fixture("checkpoint_delivery")
         with patch.object(delivery.ci, "FULL_STEPS", case.steps):
             self.assertEqual(delivery.validate_ci(resumed.summary_path, resumed, report["commit"]), report)
             forged = json.loads(resumed.summary_path.read_text())
@@ -1889,6 +3292,284 @@ runpy.run_path(sys.argv[1], run_name='__main__')
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("dependency patches passed", result.stdout)
 
+    def test_dev_owner_record_matches_writer_and_reader(self) -> None:
+        target = Path(self.env["FAKE_METADATA_TARGET"])
+        target.mkdir()
+        runner = self.runner("owner-record")
+        runner.cargo_identity = {"target_directory": str(target)}
+        runner._dependency_inputs = {"version": 1, "sha256": "a" * 64, "packages": []}
+        workspace = {"workspace_root": str(self.repo), "git_common_dir": str(self.repo / ".git")}
+        marker = self.base / "owner.json"
+        with patch.object(local_ci, "utc_now", return_value="2026-01-01T00:00:00Z"), \
+                patch.object(runner, "_cache_provenance", return_value={"witness": "fixture"}) as provenance:
+            record = runner._target_owner_record(workspace, checked=True)
+            runner._write_target_owner(marker, workspace, checked=True)
+        self.assertEqual(runner._load_target_owner(marker, target), record)
+        self.assertEqual(record["workspace_owner"], workspace)
+        self.assertEqual(record["dependency_inputs"], runner._dependency_inputs)
+        self.assertEqual(record["target_identity"], runner._directory_identity(target))
+        self.assertEqual(record["cache_inputs"], {"witness": "fixture"})
+        self.assertEqual(provenance.call_args_list, [unittest.mock.call(checked=True)] * 2)
+
+    def _reserved_dev_runner(self, name, *, real_cargo=False):
+        target = self.repo / name
+        target.mkdir()
+        env = dict(self.env, CARGO_TARGET_DIR=str(target), FAKE_METADATA_TARGET=str(target))
+        if real_cargo:
+            # Use real offline Cargo metadata and provenance, with the same
+            # deterministic Git witness as the other runner fixtures.
+            git_bin = self.base / "git-only"
+            git_bin.mkdir()
+            (git_bin / "git").symlink_to(self.bin / "git")
+            env = dict(os.environ, **env)
+            env.update(PATH=str(git_bin) + os.pathsep + os.environ["PATH"],
+                       CARGO_NET_OFFLINE="true", CARGO_CACHE_RUSTC_INFO="0",
+                       FAKE_FILE_LIST="Cargo.toml")
+            (self.repo / "Cargo.toml").write_text('[package]\nname = "fixture"\nversion = "0.1.0"\nedition = "2021"\n')
+            (self.repo / "Cargo.lock").write_text('version = 4\n\n[[package]]\nname = "fixture"\nversion = "0.1.0"\n')
+            (self.repo / "src").mkdir()
+            (self.repo / "src/lib.rs").write_text("")
+        runner = self.runner(name, env=env)
+        self.assertTrue(runner._capture_repository_state("start_tree"), runner.summary.get("repository_error"))
+        reservation = local_ci.FreshTargetReservation.acquire(
+            runner.root, str(target), {"run_id": name}, state_dir=self.target_state_dir)
+        self.addCleanup(reservation.close)
+        self.assertTrue(runner._resolve_cargo_identity(reservation), runner.summary.get("cargo_metadata_error"))
+        if real_cargo:
+            runner._dependency_inputs = runner._dependency_context()
+            runner._workspace_inputs = local_ci.build_inputs.workspace_snapshot(
+                runner.root, runner.env, runner._release_metadata)
+        else:
+            runner._dependency_inputs = {"version": 1, "sha256": "a" * 64, "packages": []}
+        return runner, reservation, target
+
+    def test_fresh_dev_publication_transfers_same_lock_and_real_owner_schema(self):
+        runner, reservation, target = self._reserved_dev_runner("fresh-owner-real", real_cargo=True)
+        owner = runner.target_owner_path
+        lock = reservation._lock
+        locked_file = lock.file
+        with reservation:
+            runner._claim_fresh_dev_owner(reservation)
+            self.addCleanup(lock.release)
+        self.assertIs(runner.target_lock, lock)
+        self.assertIs(lock.file, locked_file)
+        self.assertTrue(runner.target_owner_claimed)
+        record = runner._load_target_owner(owner, target)
+        self.assertEqual(record["workspace_owner"], {key: runner.git_identity[key]
+                                                    for key in ("workspace_root", "git_common_dir")})
+        self.assertEqual(record["target_identity"], runner._directory_identity(target))
+        self.assertEqual(record["dependency_inputs"], runner._dependency_inputs)
+        self.assertFalse(record["cache_inputs"]["workspace"]["checked"])
+        self.assertEqual(list(target.iterdir()), [])
+        self.assertFalse(local_ci.target_admission_pending_path(lock.path).exists())
+        with self.assertRaises(local_ci.TargetCacheError):
+            runner._claim_fresh_dev_owner(reservation)
+        contender = local_ci.CargoTargetLock(lock.path, {"run_id": "contender"})
+        with self.assertRaisesRegex(local_ci.TargetCacheError, "already in use"):
+            contender.acquire()
+        self.assertIs(lock.file, locked_file)
+        self.assertEqual(runner._load_target_owner(owner, target), record)
+
+    def test_fresh_dev_refuses_absent_before_metadata_or_owner_publication(self):
+        target = self.repo / "fresh-absent-refused"
+        env = dict(self.env, CARGO_TARGET_DIR=str(target), FAKE_METADATA_TARGET=str(target))
+        runner = self.runner("fresh-absent-refused", env=env)
+        owner = local_ci.target_state_paths(target, self.target_state_dir)[1]
+        with patch.object(runner, "_resolve_cargo_identity") as metadata, \
+                self.assertRaisesRegex(local_ci.TargetCacheError, "create an empty directory"):
+            local_ci.FreshTargetReservation.acquire(
+                runner.root, str(target), {"run_id": "absent"}, state_dir=self.target_state_dir)
+        metadata.assert_not_called()
+        self.assertFalse(target.exists())
+        self.assertFalse(owner.exists())
+        self.assertFalse(list(target.parent.glob(".hex-cargo-target-*.tmp")))
+
+    def _assert_pending_consumers_refuse(self, name, target):
+        env = dict(self.env, CARGO_TARGET_DIR=str(target), FAKE_METADATA_TARGET=str(target))
+        calls = self.call_log.read_text()
+        for adopt in (False, True):
+            consumer = self.runner(f"{name}-dev-{adopt}", env=env, adopt_target=adopt)
+            self.assertEqual(consumer.run(), 1)
+            self.assertIn("admission is incomplete", consumer.summary["target_cache_error"])
+            self.assertIsNone(consumer.target_lock)
+            release = self.runner(f"{name}-release-{adopt}", env=env)
+            with self.assertRaisesRegex(local_ci.TargetCacheError, "admission is incomplete"):
+                with release.guarded_release(adopt=adopt):
+                    self.fail("release accepted a pending target")
+            self.assertIsNone(release.target_lock)
+        new_calls = self.call_log.read_text()[len(calls):]
+        self.assertNotIn("cargo clean", new_calls)
+        self.assertNotIn("cargo build", new_calls)
+
+    def test_fresh_dev_publication_keeps_durable_refusal_after_precommit_failure(self):
+        for event in ("same-profile", "opposite-profile", "target-contents", "target-replaced",
+                      "lock", "state", "owner-bytes", "owner-inode", "temporary",
+                      "link-error", "link-interrupt", "pending-file-sync", "pending-directory-sync",
+                      "owner-file-sync", "owner-directory-sync"):
+            with self.subTest(event=event):
+                runner, reservation, target = self._reserved_dev_runner("fresh-" + event)
+                owner = runner.target_owner_path
+                opposite = owner.with_name(owner.name.replace(".owner.json", ".release-owner.json"))
+                lock_path = reservation._lock.path
+                pending = local_ci.target_admission_pending_path(lock_path)
+                observed_pending = pending
+                link, fsync = os.link, os.fsync
+                expected = {}
+                synced = []
+
+                def change(source, destination, **kwargs):
+                    nonlocal observed_pending
+                    identity = pending.stat()
+                    self.assertIn((identity.st_dev, identity.st_ino), synced)
+                    self.assertIn("directory", synced)
+                    if event == "same-profile":
+                        owner.write_bytes(b"other dev owner")
+                        expected[owner] = owner.read_bytes()
+                    link(source, destination, **kwargs)
+                    expected[owner] = owner.read_bytes()
+                    if event == "opposite-profile":
+                        opposite.write_bytes(b"release owner")
+                        expected[opposite] = opposite.read_bytes()
+                    elif event in {"target-contents", "target-replaced"}:
+                        if event == "target-replaced":
+                            target.rename(target.with_suffix(".old"))
+                            target.mkdir()
+                        (target / "keep").write_bytes(b"unowned target")
+                        expected[target / "keep"] = b"unowned target"
+                    elif event == "lock":
+                        lock_path.rename(lock_path.with_suffix(".old"))
+                        lock_path.write_bytes(b"replacement lock")
+                        expected[lock_path] = lock_path.read_bytes()
+                    elif event == "state":
+                        old_state = self.target_state_dir.with_suffix(".old")
+                        self.target_state_dir.rename(old_state)
+                        self.target_state_dir.mkdir()
+                        expected[old_state / owner.name] = expected.pop(owner)
+                        observed_pending = old_state / pending.name
+                    elif event == "owner-bytes":
+                        owner.write_bytes(b"changed in place")
+                        expected[owner] = owner.read_bytes()
+                    elif event == "owner-inode":
+                        owner.rename(owner.with_suffix(".old"))
+                        owner.write_bytes(expected[owner])
+                        expected[owner.with_suffix(".old")] = expected[owner]
+                    elif event == "temporary":
+                        temporary = owner.parent / source
+                        temporary.unlink()
+                        temporary.write_bytes(b"replacement temporary")
+                        expected[temporary] = temporary.read_bytes()
+                    elif event == "link-error":
+                        raise OSError(errno.EIO, "ambiguous link")
+                    elif event == "link-interrupt":
+                        raise KeyboardInterrupt()
+
+                def sync(descriptor):
+                    if descriptor == reservation._state_fd:
+                        key = "directory"
+                        stage = "owner-directory-sync" if owner.exists() else "pending-directory-sync"
+                    else:
+                        info = os.fstat(descriptor)
+                        key = (info.st_dev, info.st_ino)
+                        identity = pending.stat()
+                        stage = ("pending-file-sync" if key == (identity.st_dev, identity.st_ino)
+                                 else "owner-file-sync")
+                    if event == stage:
+                        raise OSError(errno.EIO, "failed " + stage)
+                    fsync(descriptor)
+                    synced.append(key)
+
+                error = KeyboardInterrupt if event == "link-interrupt" else local_ci.TargetCacheError
+                with patch.object(local_ci.os, "link", side_effect=change), \
+                        patch.object(local_ci.os, "fsync", side_effect=sync), self.assertRaises(error):
+                    runner._claim_fresh_dev_owner(reservation)
+                self.assertIsNone(runner.target_lock)
+                self.assertFalse(runner.target_owner_claimed)
+                self.assertIsNone(reservation._lock.file)
+                with self.assertRaisesRegex(local_ci.TargetCacheError, "no longer live"):
+                    reservation.revalidate(str(target))
+                self.assertEqual(observed_pending.read_bytes(), b"")
+                self.assertEqual(owner.exists(), owner in expected)
+                for path, preserved in expected.items():
+                    self.assertEqual(path.read_bytes(), preserved)
+                self.assertEqual(set(self.target_state_dir.glob(f".{owner.name}.*.tmp")),
+                                 {path for path in expected if path.suffix == ".tmp"})
+                if event in {"opposite-profile", "target-contents", "link-interrupt"}:
+                    self._assert_pending_consumers_refuse(event, target)
+                    self.assertEqual(observed_pending.read_bytes(), b"")
+                    for path, preserved in expected.items():
+                        self.assertEqual(path.read_bytes(), preserved)
+
+    def test_fresh_dev_link_interrupt_survives_temp_cleanup_failure(self):
+        runner, reservation, _ = self._reserved_dev_runner("fresh-link-double-failure")
+        pending = local_ci.target_admission_pending_path(reservation._lock.path)
+        replacement = []
+        def interrupt(source, destination, **kwargs):
+            temporary = self.target_state_dir / source
+            temporary.unlink()
+            temporary.write_bytes(b"replacement temporary")
+            replacement.append(temporary)
+            raise KeyboardInterrupt()
+        with patch.object(local_ci.os, "link", side_effect=interrupt):
+            with self.assertRaises(KeyboardInterrupt) as caught:
+                runner._claim_fresh_dev_owner(reservation)
+        self.assertIsInstance(caught.exception.__cause__, local_ci.TargetCacheError)
+        self.assertEqual(replacement[0].read_bytes(), b"replacement temporary")
+        self.assertTrue(pending.exists())
+        self.assertIsNone(reservation._lock.file)
+        self.assertIsNone(runner.target_lock)
+
+    def test_fresh_dev_handoff_interruption_closes_remaining_pins_and_lock(self):
+        runner, reservation, target = self._reserved_dev_runner("fresh-close-interrupt")
+        descriptors = set(reservation._handles + [reservation._state_fd])
+        attempted = []
+        original_finish, original_close = reservation._finish, os.close
+        def interrupted_finish(*, transfer_lock):
+            if not transfer_lock:
+                return original_finish(transfer_lock=False)
+            def close_then_interrupt(descriptor):
+                original_close(descriptor)
+                attempted.append(descriptor)
+                if len(attempted) == 1:
+                    raise KeyboardInterrupt()
+            with patch.object(local_ci.os, "close", side_effect=close_then_interrupt):
+                return original_finish(transfer_lock=True)
+        with patch.object(reservation, "_finish", side_effect=interrupted_finish):
+            with self.assertRaises(KeyboardInterrupt):
+                runner._claim_fresh_dev_owner(reservation)
+        self.assertEqual(set(attempted), descriptors)
+        self.assertIsNone(runner.target_lock)
+        self.assertIsNone(reservation._lock.file)
+        self.assertFalse(runner.target_owner_claimed)
+        self.assertIsNotNone(runner._load_target_owner(runner.target_owner_path, target))
+        self.assertFalse(local_ci.target_admission_pending_path(reservation._lock.path).exists())
+
+    def test_fresh_dev_publication_sync_failure_after_commit_does_not_transfer_lock(self):
+        runner, reservation, target = self._reserved_dev_runner("fresh-final-sync")
+        owner = runner.target_owner_path
+        lock = reservation._lock
+        pending = local_ci.target_admission_pending_path(lock.path)
+        fsync = os.fsync
+
+        def sync(descriptor):
+            if descriptor == reservation._state_fd and not pending.exists():
+                raise OSError(errno.EIO, "failed final directory sync")
+            fsync(descriptor)
+
+        with patch.object(local_ci.os, "fsync", side_effect=sync):
+            with self.assertRaisesRegex(local_ci.TargetCacheError, "failed final directory sync"):
+                runner._claim_fresh_dev_owner(reservation)
+        self.assertIsNone(runner.target_lock)
+        self.assertFalse(runner.target_owner_claimed)
+        self.assertIsNone(lock.file)
+        self.assertFalse(pending.exists())
+        self.assertEqual(runner._load_target_owner(owner, target)["target_identity"],
+                         runner._directory_identity(target))
+        # The verified owner was durable before commit. If the deletion is
+        # lost on crash, the restored sentinel would instead refuse admission.
+        contender = local_ci.CargoTargetLock(lock.path, {"run_id": "later"})
+        contender.acquire()
+        self.assertIsNone(contender.release())
+
     def test_full_pipeline_claims_fresh_target_before_python_cargo_wrapper(self) -> None:
         target = Path(self.env["FAKE_METADATA_TARGET"])
         _lock, owner = local_ci.target_state_paths(target.resolve(), self.target_state_dir)
@@ -1899,14 +3580,24 @@ runpy.run_path(sys.argv[1], run_name='__main__')
             '  [ -f "$EXPECTED_OWNER" ] || exit 12\n'
             '  /bin/mkdir -p "$CARGO_TARGET_DIR/debug"\n'
             '  echo fixture > "$CARGO_TARGET_DIR/debug/fixture.rlib"\n'
-            'fi\necho "completed $tool $*"',
+            'fi\n'
+            'if [ "$1" = scripts/python_shards.py ]; then echo "Ran 1 test in 0.001s"; fi\n'
+            'if [ "$1" = scripts/test_shards.py ]; then echo "test result: ok. 1 passed; 0 failed; 0 ignored;"; fi\n'
+            'echo "completed $tool $*"',
         ))
-        runner = self.runner("python-cargo", env={**self.env, "EXPECTED_OWNER": str(owner)},
-                             steps=local_ci.FULL_STEPS)
+        cargo = self.bin / "cargo"
+        cargo.write_text(FAKE_TOOL.replace(
+            'echo "completed $tool $*"',
+            'if [ "$1" = test ]; then echo "test result: ok. 1 passed; 0 failed; 0 ignored;"; fi\n'
+            'echo "completed $tool $*"',
+        ))
+        steps = local_ci.qualification_steps("full", None, native_acceptance_opt_in=False,
+                                             sharded_full_python=True)
+        runner = self.runner("python-cargo", env={**self.env, "EXPECTED_OWNER": str(owner)}, steps=steps)
         self.assertEqual(runner.run(), 0)
         summary = self.summary("python-cargo")
         self.assertEqual([(s["step_id"], s["argv"], s["status"]) for s in summary["steps"]],
-                         [(s.step_id, list(s.argv), "passed") for s in local_ci.FULL_STEPS])
+                         [(s.step_id, list(s.argv), "passed") for s in steps])
         self.assertEqual(summary["target_cache"]["action"], "claim-empty")
         self.assertTrue((target / "debug/fixture.rlib").is_file())
         self.assertNotIn("cargo clean", self.call_log.read_text())
@@ -2104,6 +3795,143 @@ runpy.run_path(sys.argv[1], run_name='__main__')
         self.assertIn("target-handoff-clean.log", output)
         self.assertIn("workspace dev-artifact cleanup failed", output)
 
+    def test_pending_admission_refuses_dev_release_and_adoption_without_mutation(self):
+        target = Path(self.env["FAKE_METADATA_TARGET"]).resolve()
+        target.mkdir()
+        (target / "keep").write_bytes(b"original target")
+        self.assertEqual(self.runner("pending-seed", adopt_target=True).run(), 0)
+        self.release_attempt("pending-release-seed", adopt=True)
+        lock_path, owner = local_ci.target_state_paths(target, self.target_state_dir)
+        release = owner.with_name(owner.name.replace(".owner.json", ".release-owner.json"))
+        pending = local_ci.target_admission_pending_path(lock_path)
+        before_owner, before_release = owner.read_bytes(), release.read_bytes()
+        before_lock = lock_path.read_bytes()
+        for kind in ("regular", "dangling"):
+            with self.subTest(kind=kind):
+                if kind == "regular":
+                    pending.write_bytes(b"incomplete claim")
+                else:
+                    pending.symlink_to(self.base / "missing")
+                for adopt in (False, True):
+                    calls_before = self.call_log.read_text()
+                    runner = self.runner(f"pending-{kind}-{adopt}", adopt_target=adopt)
+                    self.assertEqual(runner.run(), 1)
+                    self.assertIn("admission is incomplete", runner.summary["target_cache_error"])
+                    self.assertIsNone(runner.target_lock)
+                    with self.assertRaisesRegex(local_ci.TargetCacheError, "admission is incomplete"):
+                        self.release_attempt(f"pending-release-{kind}-{adopt}", adopt=adopt)
+                    calls = self.call_log.read_text()[len(calls_before):]
+                    self.assertNotIn("cargo clean", calls)
+                    self.assertNotIn("cargo build", calls)
+                    self.assertEqual((target / "keep").read_bytes(), b"original target")
+                    self.assertEqual(owner.read_bytes(), before_owner)
+                    self.assertEqual(release.read_bytes(), before_release)
+                    self.assertEqual(lock_path.read_bytes(), before_lock)
+                    self.assertTrue(os.path.lexists(pending))
+                pending.unlink()
+        # Refusals release the actual flock without altering its metadata.
+        lock = local_ci.CargoTargetLock(lock_path, {"run_id": "after-pending"})
+        lock.acquire()
+        self.assertIsNone(lock.release())
+
+    def test_pending_admission_inspection_failure_releases_lock(self):
+        target = Path(self.env["FAKE_METADATA_TARGET"]).resolve()
+        lock_path, _ = local_ci.target_state_paths(target, self.target_state_dir)
+        lock = local_ci.CargoTargetLock(lock_path, {"run_id": "inspection-error"})
+        original = os.stat
+        pending_name = local_ci.target_admission_pending_path(lock_path).name
+        def deny(path, *args, **kwargs):
+            if path == pending_name:
+                raise PermissionError("pending inspection denied")
+            return original(path, *args, **kwargs)
+        with patch.object(local_ci.os, "stat", side_effect=deny):
+            with self.assertRaisesRegex(local_ci.TargetCacheError, "pending inspection denied"):
+                lock.acquire()
+        self.assertIsNone(lock.file)
+        lock.acquire()
+        self.assertIsNone(lock.release())
+
+    def test_pending_guard_refuses_replaced_lock_or_state_directory(self):
+        target = Path(self.env["FAKE_METADATA_TARGET"]).resolve()
+        for kind in ("lock", "directory"):
+            with self.subTest(kind=kind):
+                state = self.base / f"state-{kind}"
+                state.mkdir()
+                path, _ = local_ci.target_state_paths(target, state)
+                path.write_bytes(b"previous lock metadata")
+                lock = local_ci.CargoTargetLock(path, {"run_id": kind})
+                original = os.stat
+                replaced = False
+                def replace(path_arg, *args, **kwargs):
+                    nonlocal replaced
+                    if not replaced and ((kind == "lock" and path_arg == path.name)
+                                         or (kind == "directory" and path_arg == state)):
+                        replaced = True
+                        if kind == "lock":
+                            path.rename(state / "original.lock")
+                            path.write_bytes(b"replacement")
+                        else:
+                            state.rename(self.base / "original-state")
+                            state.mkdir()
+                    return original(path_arg, *args, **kwargs)
+                with patch.object(local_ci.os, "stat", side_effect=replace):
+                    with self.assertRaisesRegex(local_ci.TargetCacheError, "identity changed"):
+                        lock.acquire()
+                self.assertTrue(replaced)
+                self.assertIsNone(lock.file)
+                original_path = state / "original.lock" if kind == "lock" else self.base / "original-state" / path.name
+                self.assertEqual(original_path.read_bytes(), b"previous lock metadata")
+                if kind == "lock":
+                    self.assertEqual(path.read_bytes(), b"replacement")
+
+    def test_pending_guard_interruption_releases_flock(self):
+        target = Path(self.env["FAKE_METADATA_TARGET"]).resolve()
+        lock_path, _ = local_ci.target_state_paths(target, self.target_state_dir)
+        pending = local_ci.target_admission_pending_path(lock_path).name
+        original = os.stat
+        def interrupt(path, *args, **kwargs):
+            if path == pending:
+                raise KeyboardInterrupt()
+            return original(path, *args, **kwargs)
+        for stage in ("flock", "pending"):
+            with self.subTest(stage=stage):
+                lock = local_ci.CargoTargetLock(lock_path, {"run_id": stage})
+                operation = (patch.object(local_ci.fcntl, "flock", side_effect=KeyboardInterrupt())
+                             if stage == "flock" else patch.object(local_ci.os, "stat", side_effect=interrupt))
+                with operation, self.assertRaises(KeyboardInterrupt):
+                    lock.acquire()
+                self.assertIsNone(lock.file)
+                lock.acquire()
+                self.assertIsNone(lock.release())
+
+    def test_pending_guard_rechecks_lock_after_pending_lookup(self):
+        target = Path(self.env["FAKE_METADATA_TARGET"]).resolve()
+        for kind in ("lock", "directory"):
+            with self.subTest(kind=kind):
+                state = self.base / f"late-state-{kind}"
+                state.mkdir()
+                path, _ = local_ci.target_state_paths(target, state)
+                path.write_bytes(b"previous lock metadata")
+                pending = local_ci.target_admission_pending_path(path).name
+                lock = local_ci.CargoTargetLock(path, {"run_id": kind})
+                original = os.stat
+                def replace_during_pending(path_arg, *args, **kwargs):
+                    if path_arg == pending:
+                        if kind == "lock":
+                            path.rename(state / "original.lock")
+                            path.write_bytes(b"replacement")
+                        else:
+                            state.rename(self.base / "late-original-state")
+                            state.mkdir()
+                        raise FileNotFoundError("pending absent")
+                    return original(path_arg, *args, **kwargs)
+                with patch.object(local_ci.os, "stat", side_effect=replace_during_pending):
+                    with self.assertRaisesRegex(local_ci.TargetCacheError, "identity changed"):
+                        lock.acquire()
+                self.assertIsNone(lock.file)
+                original_path = state / "original.lock" if kind == "lock" else self.base / "late-original-state" / path.name
+                self.assertEqual(original_path.read_bytes(), b"previous lock metadata")
+
     def test_target_lock_contention_refuses_before_cargo_build(self) -> None:
         target = Path(self.env["FAKE_METADATA_TARGET"]).resolve()
         lock_path, _ = local_ci.target_state_paths(target, self.target_state_dir)
@@ -2131,36 +3959,31 @@ runpy.run_path(sys.argv[1], run_name='__main__')
                 denied.acquire()
         self.assertIsNone(denied.file)
 
-        failed_holder = local_ci.CargoTargetLock(path, {"run_id": "write-failed"})
-        with patch.object(failed_holder, "_write", side_effect=OSError("holder write denied")):
-            with self.assertRaisesRegex(local_ci.TargetCacheError, "holder write denied"):
-                failed_holder.acquire()
-        self.assertIsNone(failed_holder.file)
+        original_flock = local_ci.fcntl.flock
+        def failed_unlock(descriptor, operation):
+            if operation == local_ci.fcntl.LOCK_UN:
+                raise OSError("unlock denied")
+            return original_flock(descriptor, operation)
 
-        with patch.object(local_ci.CargoTargetLock, "_write", side_effect=OSError("runner holder write denied")):
-            self.assertEqual(self.runner("runner-lock-write-failed").run(), 1)
-        failed_summary = self.summary("runner-lock-write-failed")
-        self.assertIn("runner holder write denied", failed_summary["target_cache_error"])
-
-        holder = local_ci.CargoTargetLock(path, {"run_id": "release-write-failed"})
+        holder = local_ci.CargoTargetLock(path, {"run_id": "release-unlock-failed"})
         holder.acquire()
-        with patch.object(holder, "_write", side_effect=OSError("release write denied")):
+        with patch.object(local_ci.fcntl, "flock", side_effect=failed_unlock):
             release_error = holder.release()
-        self.assertIn("release write denied", release_error or "")
+        self.assertIn("unlock denied", release_error or "")
         next_holder = local_ci.CargoTargetLock(path, {"run_id": "after-release-failure"})
         next_holder.acquire()
         next_holder.release()
 
         original_release = local_ci.CargoTargetLock.release
 
-        def release_with_unwritable_status(lock: local_ci.CargoTargetLock) -> str | None:
-            with patch.object(lock, "_write", side_effect=OSError("runner release write denied")):
+        def release_with_unlock_failure(lock: local_ci.CargoTargetLock) -> str | None:
+            with patch.object(local_ci.fcntl, "flock", side_effect=failed_unlock):
                 return original_release(lock)
 
-        with patch.object(local_ci.CargoTargetLock, "release", release_with_unwritable_status):
+        with patch.object(local_ci.CargoTargetLock, "release", release_with_unlock_failure):
             self.assertEqual(self.runner("runner-lock-release-failed").run(), 0)
         release_summary = self.summary("runner-lock-release-failed")
-        self.assertIn("runner release write denied", release_summary["target_lock_release_error"])
+        self.assertIn("unlock denied", release_summary["target_lock_release_error"])
 
     def test_malformed_owner_marker_fails_closed_without_adoption(self) -> None:
         target = Path(self.env["FAKE_METADATA_TARGET"]).resolve()

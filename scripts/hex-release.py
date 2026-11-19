@@ -15,15 +15,17 @@ never lexical comparison between different channels.
 from __future__ import annotations
 
 import argparse
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from datetime import datetime, timezone
 import fcntl
+import hashlib
 import importlib.util
 import json
 import os
 from pathlib import Path
 import plistlib
 import re
+import shlex
 import shutil
 import stat
 import subprocess
@@ -58,6 +60,7 @@ def module(name, filename):
     if filename == "hex-test-build.py":
         # Delivery authority must reflect source bytes, not a timestamp-valid pyc.
         source = _delivery_source(Path(spec.origin))
+        value._EXECUTED_DELIVERY_SOURCE_SHA256 = hashlib.sha256(source).hexdigest()
         exec(compile(source, spec.origin, "exec", dont_inherit=True), value.__dict__)
     else:
         spec.loader.exec_module(value)
@@ -143,6 +146,7 @@ def ready_releases(store):
 
 def publish_channel(path):
     """Advance the local channel index last, without overwriting a newer build."""
+    delivery.require_delivery_source(ROOT)
     manifest = read(path)
     if (manifest.get("schema") != 1 or manifest.get("status") != "ready"
             or manifest.get("channel") not in {"beta", "nightly", "stable"}
@@ -243,6 +247,7 @@ def prepare_notes(store, through, *, base=None, max_changes=512, timeout=300):
 
 
 def cut(args, store):
+    delivery.require_delivery_source(ROOT)
     through = source()
     version = args.version or delivery.changelog.workspace_version((ROOT / "Cargo.toml").read_text()).split("-")[0]
     if not BASE_VERSION.fullmatch(version):
@@ -325,6 +330,7 @@ def cut(args, store):
 
 
 def validate_plan(candidate):
+    delivery.require_delivery_source(ROOT)
     plan = read(candidate / "plan.json")
     if plan.get("schema") != 1 or plan.get("platform") != "macos-arm64":
         raise Refusal("unsupported release plan")
@@ -451,15 +457,45 @@ def notarize(candidate, app, plan):
     return submission["id"]
 
 
-def package(candidate, *, adopt_release_target=False):
+def require_separate_ci_target(target, env):
+    """Keep dev CI and the explicitly selected optimized target disjoint."""
+    configured = env.get("CARGO_TARGET_DIR")
+    if not configured:
+        raise Refusal("fresh release requires an explicit existing CARGO_TARGET_DIR for full CI")
+    dev = Path(configured)
+    release = Path(target)
+    if (not dev.is_absolute() or not dev.is_dir() or str(dev.resolve()) != configured
+            or not release.is_absolute() or not release.is_dir()):
+        raise Refusal("fresh release requires existing absolute CI and release target directories")
+    if (any(dev.samefile(path) for path in (release, *release.parents))
+            or any(release.samefile(path) for path in (dev, *dev.parents))):
+        raise Refusal("fresh release target must be separate from the full CI target")
+
+
+def reserve_fresh_release_target(target, env):
+    require_separate_ci_target(target, env)
+    return ci.FreshTargetReservation.acquire(ROOT, target, {"operation": "fresh-distribution-release"})
+
+
+def package(candidate, *, adopt_release_target=False, reservation=None):
+    if reservation is not None and adopt_release_target:
+        raise Refusal("fresh release target cannot adopt an existing owner")
+    delivery.require_delivery_source(ROOT)
     with locked(candidate):
         plan = validate_plan(candidate)
+        app = candidate / "hex.app"
+        if reservation is not None and (app.exists() or (candidate / "release.json").exists()):
+            raise Refusal("fresh release target requires an unfinished optimized bundle")
         if (candidate / "release.json").exists():
             completed = verify_release(candidate / "release.json")
             publish_channel(candidate / "release.json")
             return completed
-        preflight(candidate, plan)
         env = release_environment(candidate, plan)
+        if reservation is not None:
+            require_separate_ci_target(reservation._target, env)
+            reservation.revalidate(reservation._target)
+            env["CARGO_CACHE_RUSTC_INFO"] = "0"
+        preflight(candidate, plan)
         report_ref = candidate / "ci-report.json"
         if report_ref.exists():
             ci_report = Path(read(report_ref)["path"])
@@ -471,17 +507,26 @@ def package(candidate, *, adopt_release_target=False):
                 raise Refusal(f"full local CI failed: {runner.summary_path}; resume after resolving the failure")
             ci_report = runner.summary_path
             immutable(report_ref, encode({"path": str(ci_report), "sha256": delivery.sha(ci_report)}))
-        app = candidate / "hex.app"
         if not app.exists():
-            runner = ci.LocalCiRunner(ROOT, env=env)
+            optimized_env = {**env, "CARGO_TARGET_DIR": reservation._target} if reservation is not None else env
+            runner = ci.LocalCiRunner(ROOT, env=optimized_env)
             runner.output_dir.mkdir(parents=True)
+            ownership = None
+
+            def admitted(current):
+                nonlocal ownership
+                ownership = current
 
             def revalidate():
                 validate_plan(candidate)
-                delivery.validate_ci(ci_report, runner, plan["source"])
+                delivery.validate_ci(ci_report, runner, plan["source"],
+                                     **({"reservation": reservation} if reservation is not None and ownership is None else {}))
+                if reservation is not None and ownership is not None:
+                    runner.validate_release_inputs(ownership)
 
             revalidate()
-            with delivery.optimized_artifact(runner, adopt=adopt_release_target, verification_check=revalidate) as (binary, ownership):
+            with delivery.optimized_artifact(runner, adopt=adopt_release_target, verification_check=revalidate,
+                                             **({"reservation": reservation, "on_admission": admitted} if reservation is not None else {})) as (binary, ownership):
                 stage = candidate / "bundle.pending.app"
                 discard_generated_stage(candidate, "bundle.pending.app")
                 resources = stage / "Contents/Resources"
@@ -592,6 +637,7 @@ def verify_release(path):
 
 
 def install(path):
+    delivery.require_delivery_source(ROOT)
     manifest = verify_release(path)
     configuration = read(ROOT / "scripts/hex-test-build.json")
     common = store_path().parent.parent
@@ -616,6 +662,7 @@ def install(path):
             if delivery.inventory(checked, include_receipt=True) != manifest["app_files"]:
                 raise Refusal("installation app differs from release manifest")
             subprocess.run(["ditto", str(checked), str(workspace / "stage.app")], check=True)
+        delivery.require_delivery_source(ROOT)
         delivery.activate(app, workspace / "stage.app")
         receipt = {"release_manifest": str(path), "manifest_sha256": delivery.sha(path),
                    "source": manifest["source"], "version": manifest["version"], "build": manifest["build"],
@@ -637,14 +684,12 @@ def main(argv=None):
         sub.add_argument("--max-changes", type=int, default=512)
         sub.add_argument("--generation-timeout", type=int, default=300, help="seconds per bounded notes input, 1..600")
         sub.add_argument("--accept-source", help="explicit native-accepted full source SHA for stable")
-        sub.add_argument("--adopt-release-target", action="store_true",
-                         help="explicitly adopt an inspected Cargo cache for first release/recovery")
+        release_target_options(sub)
     for operation in ("resume", "verify", "install"):
         sub = commands.add_parser(operation)
         sub.add_argument("path", type=Path, help="candidate directory for resume; release.json for verify/install")
         if operation == "resume":
-            sub.add_argument("--adopt-release-target", action="store_true",
-                             help="explicitly adopt an inspected Cargo cache for first release/recovery")
+            release_target_options(sub)
     sub = commands.add_parser("notes", help="recover/prepare rolling notes without cutting a version")
     sub.add_argument("--base")
     sub.add_argument("--max-changes", type=int, default=20)
@@ -664,16 +709,32 @@ def main(argv=None):
         elif args.operation == "install":
             result = install(args.path.resolve())
         else:
-            candidate = args.path.resolve() if args.operation == "resume" else cut(args, store)
-            adoption = " --adopt-release-target" if args.adopt_release_target else ""
-            print(f"frozen release: {candidate}\nresume: ./release resume {candidate}{adoption}", flush=True)
-            result = package(candidate, adopt_release_target=args.adopt_release_target)
+            target = (reserve_fresh_release_target(args.fresh_release_target, os.environ)
+                      if args.fresh_release_target is not None else nullcontext())
+            with target as reservation:
+                candidate = args.path.resolve() if args.operation == "resume" else cut(args, store)
+                resume = ["./release", "resume", str(candidate)]
+                if args.adopt_release_target:
+                    resume.append("--adopt-release-target")
+                if args.fresh_release_target is not None:
+                    resume.extend(("--fresh-release-target", args.fresh_release_target))
+                print(f"frozen release: {candidate}\nresume: {shlex.join(resume)}", flush=True)
+                result = package(candidate, adopt_release_target=args.adopt_release_target,
+                                 **({"reservation": reservation} if reservation is not None else {}))
         print(json.dumps(result, indent=2, sort_keys=True))
         return 0
     except (Refusal, notes.Refusal, ci.TargetCacheError, OSError, ValueError, KeyError, TypeError,
             subprocess.CalledProcessError, KeyboardInterrupt) as error:
         print(f"release incomplete: {error}; previous releases preserved; no upload or process termination", file=sys.stderr)
         return 1
+
+
+def release_target_options(parser):
+    target = parser.add_mutually_exclusive_group()
+    target.add_argument("--adopt-release-target", action="store_true",
+                        help="explicitly adopt an inspected Cargo cache for first release/recovery")
+    target.add_argument("--fresh-release-target", metavar="PATH",
+                        help="reserve a separate existing empty optimized Cargo target before metadata")
 
 
 if __name__ == "__main__":

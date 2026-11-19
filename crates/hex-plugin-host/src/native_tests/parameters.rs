@@ -36,6 +36,55 @@ fn wait_for_latency_restart(instance: &mut Prepared) -> std::num::NonZeroU64 {
 
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn native_sparse_authored_request_delivers_the_full_point_capacity() {
+    use crate::transport::MAX_PARAMETER_POINTS;
+    let case = Case::new();
+    let mut settings = options();
+    settings.preparation.quantum = 256;
+    let mut instance = Prepared::prepare(
+        &build(),
+        source(),
+        settings,
+        PreparationCancellation::new_on_control().unwrap(),
+        case.setup_restore(80),
+    )
+    .unwrap();
+    let class = instance.configuration().identity.class;
+    let metadata = instance
+        .read_authored_parameter_metadata_on_control(class, &[0])
+        .unwrap();
+    let mut input = request(instance.configuration(), 0);
+    for index in 0..MAX_PARAMETER_POINTS {
+        input
+            .parameters
+            .push(ParameterPoint {
+                frame: (index * 2) as u16,
+                id: 0,
+                normalized: if index % 2 == 0 { 0.75 } else { 0.125 },
+            })
+            .unwrap();
+    }
+    let reply = instance
+        .exchange_authored_on_worker(input, &metadata)
+        .unwrap();
+    for point in input.parameters.as_slice() {
+        let frame = usize::from(point.frame);
+        assert_eq!(
+            reply.pcm[frame],
+            input.pcm[frame].map(|sample| sample * (point.normalized * 2.0) as f32)
+        );
+    }
+    assert!(
+        instance
+            .stop_and_reap_on_control()
+            .unwrap()
+            .status
+            .success()
+    );
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn native_dense_authored_request_preserves_every_sample_of_the_raw_zero_parameter() {
     exercise_native_dense_request(false);
 }
@@ -946,6 +995,97 @@ fn editor_burst_drains(idle: bool) {
     assert!(paused.retire_on_control().unwrap().status.success());
 }
 
+fn first_controller_parameter(instance: &mut Prepared) -> crate::protocol::ControllerParameter {
+    instance
+        .begin_parameter_page_on_worker(ParameterPageQuery::default())
+        .unwrap();
+    let until = Instant::now() + Duration::from_secs(2);
+    loop {
+        match instance.poll_parameter_page_on_worker().unwrap() {
+            ParameterPageProgress::Page(page) => return page.as_slice()[0],
+            ParameterPageProgress::Pending => {
+                assert!(Instant::now() < until, "controller feedback must settle");
+                thread::yield_now();
+            }
+            other => panic!("expected a controller page, got {other:?}"),
+        }
+    }
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn actual_sdk_stopped_editor_ignores_the_previous_processor_value() {
+    use crate::protocol::ParameterEditKind::{Begin, End, Perform};
+
+    let case = Case::new();
+    let setup = case.setup_restore(150);
+    let end = case.root.join("end");
+    let end_gate = end.clone();
+    let mut instance = Prepared::prepare(
+        &build(),
+        source(),
+        options(),
+        PreparationCancellation::new_on_control().unwrap(),
+        move |command| {
+            setup(command);
+            command.env("HEX_ORIGINAL_EDITOR_END_RELEASE", end_gate);
+        },
+    )
+    .unwrap();
+    let mut edits = Vec::new();
+    let mut drain = |instance: &mut Prepared, count| {
+        let until = Instant::now() + Duration::from_secs(2);
+        while edits.len() < count {
+            let batch = instance.service_idle_editor_edits_on_worker().unwrap();
+            edits.extend(batch.edits.as_slice().iter().map(|edit| {
+                assert_eq!(edit.gesture, 1);
+                (edit.kind, edit.normalized)
+            }));
+            assert!(Instant::now() < until, "stopped native gesture must drain");
+            thread::yield_now();
+        }
+    };
+
+    fs::write(case.release(), b"move and hold the editor knob").unwrap();
+    drain(&mut instance, 2);
+    assert_eq!(first_controller_parameter(&mut instance).normalized, 0.75);
+
+    fs::write(end, b"move the knob again and release").unwrap();
+    drain(&mut instance, 4);
+    assert_eq!(first_controller_parameter(&mut instance).normalized, 0.875);
+    assert_eq!(
+        edits,
+        [(Begin, 0.0), (Perform, 0.75), (Perform, 0.875), (End, 0.0)]
+    );
+    assert_eq!(instance.completed_blocks_on_control(), 0);
+
+    let input = request(instance.configuration(), 0);
+    let output = instance.exchange_on_worker(input).unwrap();
+    for (actual, input) in output.pcm[..8].iter().zip(input.pcm) {
+        assert_eq!(*actual, input.map(|value| value * 1.75));
+    }
+
+    let mut host_input = Parameters::default();
+    host_input
+        .push(ParameterPoint {
+            frame: 0,
+            id: 7,
+            normalized: 0.5,
+        })
+        .unwrap();
+    instance
+        .flush_idle_parameters_on_worker(&host_input)
+        .unwrap();
+    assert_eq!(first_controller_parameter(&mut instance).normalized, 0.5);
+    assert!(
+        instance
+            .stop_and_reap_on_control()
+            .unwrap()
+            .status
+            .success()
+    );
+}
+
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn actual_sdk_playback_does_not_replay_stale_editor_values() {
@@ -961,7 +1101,9 @@ fn actual_sdk_playback_does_not_replay_stale_editor_values() {
         .unwrap();
         fs::write(case.release(), b"finish the editor drag").unwrap();
         let until = Instant::now() + Duration::from_secs(2);
-        while instance.poll_parameter_edits_on_worker().unwrap().ready == 0 {
+        while usize::from(instance.poll_parameter_edits_on_worker().unwrap().ready)
+            < protocol::MAX_PARAMETER_EDITS
+        {
             assert!(Instant::now() < until, "the drag must reach the worker");
             thread::yield_now();
         }
@@ -985,26 +1127,38 @@ fn actual_sdk_playback_does_not_replay_stale_editor_values() {
                 normalized: if authored { 0.5 } else { 0.25 },
             }]
         );
-        instance
-            .begin_parameter_page_on_worker(ParameterPageQuery::default())
-            .unwrap();
-        let until = Instant::now() + Duration::from_secs(2);
-        loop {
-            match instance.poll_parameter_page_on_worker().unwrap() {
-                ParameterPageProgress::Page(page) => {
-                    assert_eq!(
-                        page.as_slice()[0].normalized,
-                        if authored { 0.5 } else { 0.875 }
-                    );
-                    break;
-                }
-                ParameterPageProgress::Pending => {
-                    assert!(Instant::now() < until, "controller feedback must settle");
-                    thread::yield_now();
-                }
-                other => panic!("expected a controller page, got {other:?}"),
-            }
-        }
+        let expected = if authored { 0.5 } else { 0.875 };
+        let first = first_controller_parameter(&mut instance);
+        assert_eq!(first.normalized, expected);
+        // Keep the completed receipt batch full so this second quantum
+        // reports processor feedback before it can admit the final Perform.
+        let input = request(instance.configuration(), 1);
+        let output = instance.exchange_on_worker(input).unwrap();
+        assert_eq!(
+            output.parameters.as_slice(),
+            &[ParameterPoint {
+                frame: input.frames - 1,
+                id: 7,
+                normalized: if authored { 0.5 } else { 0.25 },
+            }]
+        );
+        assert_eq!(
+            first_controller_parameter(&mut instance).normalized,
+            expected
+        );
+        let edits = instance.poll_parameter_edits_on_worker().unwrap();
+        let delayed = edits
+            .as_slice()
+            .iter()
+            .rev()
+            .find(|edit| edit.kind == protocol::ParameterEditKind::Perform)
+            .expect("delayed native Perform after the page");
+        assert_eq!(delayed.normalized, 0.25);
+        assert!(delayed.sequence < first.editor_sequence);
+        println!(
+            "controller page {}, delayed Perform {} at {}",
+            first.normalized, delayed.normalized, delayed.sequence
+        );
         assert!(
             instance
                 .stop_and_reap_on_control()
@@ -1013,6 +1167,121 @@ fn actual_sdk_playback_does_not_replay_stale_editor_values() {
                 .success()
         );
     }
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn active_native_editor_gesture_is_not_overwritten_by_host_feedback() {
+    let case = Case::new();
+    let end = case.root.join("editor-end");
+    let end_gate = end.clone();
+    let setup = case.setup_restore(150);
+    let mut instance = Prepared::prepare(
+        &build(),
+        source(),
+        options(),
+        PreparationCancellation::new_on_control().unwrap(),
+        move |command| {
+            setup(command);
+            command.env("HEX_ORIGINAL_EDITOR_END_RELEASE", end_gate);
+        },
+    )
+    .unwrap();
+    fs::write(case.release(), b"begin and hold the editor drag").unwrap();
+    let until = Instant::now() + Duration::from_secs(2);
+    loop {
+        let edits = instance.poll_parameter_edits_on_worker().unwrap();
+        if edits.pending >= 2 {
+            break;
+        }
+        assert!(Instant::now() < until, "editor backlog did not arrive");
+        thread::yield_now();
+    }
+    let mut input = request(instance.configuration(), 0);
+    input
+        .parameters
+        .push(ParameterPoint {
+            frame: 7,
+            id: 7,
+            normalized: 0.5,
+        })
+        .unwrap();
+    instance.exchange_on_worker(input).unwrap();
+    assert_eq!(
+        first_controller_parameter(&mut instance).normalized,
+        0.75,
+        "host feedback must not overwrite an active native editor gesture"
+    );
+    fs::write(end, b"release the editor drag").unwrap();
+    let until = Instant::now() + Duration::from_secs(2);
+    loop {
+        let edits = instance.poll_parameter_edits_on_worker().unwrap();
+        if edits.pending >= 2 {
+            break;
+        }
+        assert!(Instant::now() < until, "final editor point did not arrive");
+        thread::yield_now();
+    }
+    let mut next_block = 1;
+    let until = Instant::now() + Duration::from_secs(2);
+    loop {
+        instance
+            .exchange_on_worker(request(instance.configuration(), next_block))
+            .unwrap();
+        next_block += 1;
+        let delivered = instance.poll_parameter_edits_on_worker().unwrap();
+        if delivered.as_slice().iter().any(|edit| {
+            edit.kind == protocol::ParameterEditKind::Perform && edit.normalized == 0.875
+        }) {
+            break;
+        }
+        assert!(
+            Instant::now() < until,
+            "final editor point was not processed"
+        );
+        thread::yield_now();
+    }
+    assert_eq!(
+        first_controller_parameter(&mut instance).normalized,
+        0.875,
+        "a lagging processor observation must not replay over the final native target"
+    );
+    let delayed = instance
+        .exchange_on_worker(request(instance.configuration(), next_block))
+        .unwrap();
+    next_block += 1;
+    assert_eq!(
+        delayed.parameters.as_slice(),
+        &[ParameterPoint {
+            frame: 7,
+            id: 7,
+            normalized: 0.25,
+        }],
+        "processor observations still reach the caller"
+    );
+    assert_eq!(
+        first_controller_parameter(&mut instance).normalized,
+        0.875,
+        "output-only feedback must not reintroduce the lagging value"
+    );
+    let mut authored = request(instance.configuration(), next_block);
+    authored
+        .parameters
+        .push(ParameterPoint {
+            frame: 0,
+            id: 7,
+            normalized: 0.5,
+        })
+        .unwrap();
+    instance.exchange_on_worker(authored).unwrap();
+    assert_eq!(first_controller_parameter(&mut instance).normalized, 0.5);
+    assert!(
+        instance
+            .stop_and_reap_on_control()
+            .unwrap()
+            .status
+            .success()
+    );
 }
 
 #[test]

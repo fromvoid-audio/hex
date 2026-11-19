@@ -8,7 +8,8 @@
 #include <thread>
 
 namespace hex_instance {
-inline constexpr size_t PARAMETER_POINT_COUNT=64;
+// Mirrors MAX_FOREIGN_PARAMETER_POINTS in hex-lattice-contract.
+inline constexpr size_t PARAMETER_POINT_COUNT=128;
 inline constexpr size_t DENSE_PARAMETER_SAMPLE_COUNT=256;
 struct ParameterPoint {
     int32 offset=0;

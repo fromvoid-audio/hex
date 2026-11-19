@@ -13,6 +13,9 @@ use hex_widgets::{
 };
 use std::{collections::HashMap, path::PathBuf};
 
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+mod vst3_editor;
+
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 enum ThemeChannel {
     BackgroundRed,
@@ -192,6 +195,8 @@ struct ColorControl {
 }
 
 pub(super) struct ThemeSettingsState {
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    vst3_editor: vst3_editor::State,
     path: PathBuf,
     window: AnyWindowHandle,
     loading: bool,
@@ -222,6 +227,8 @@ impl ThemeSettingsState {
     pub(super) fn new(path: PathBuf, window: &Window, cx: &mut Context<EditorView>) -> Self {
         let colors = theme::preferences();
         Self {
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            vst3_editor: vst3_editor::State::new(path.with_file_name("vst3-editor.json")),
             path,
             window: window.window_handle(),
             loading: true,
@@ -334,6 +341,8 @@ impl EditorView {
             self.close_controller_input_menu(window, cx);
         }
         self.prepare_controller_settings(cx);
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        self.load_vst3_editor_settings(cx);
         self.project_rate_settings.clear_draft();
         self.theme_settings.open = true;
         if self.theme_settings.loading {
@@ -851,6 +860,10 @@ impl EditorView {
         if self.project_rate_settings.applying() {
             return false;
         }
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        if self.theme_settings.vst3_editor.saving {
+            return false;
+        }
         if self.theme_settings.saving {
             self.theme_settings.error = Some("theme save in progress".into());
             cx.notify();
@@ -1001,7 +1014,13 @@ impl EditorView {
             .text_color(rgb(style.text))
             .shadow_lg()
             .children([audio_rates, settings, track_defaults])
-            .child(self.controller_input_settings(cx))
+            .child(self.controller_input_settings(cx));
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        {
+            let row = self.vst3_editor_settings_row(cx);
+            card = card.child(row);
+        }
+        card = card
             .child(div().text_sm().child(theme::text("theme colors")))
             .child(rows)
             .child(content);
@@ -1227,6 +1246,10 @@ mod tests {
         click_bounds(&mut visual, "project rate 96000");
         click_bounds(&mut visual, "cancel theme changes");
         editor.read_with(&visual, |view, _| {
+            assert!(
+                !view.theme_settings.open,
+                "cancel closes the settings panel"
+            );
             assert_eq!(view.state.as_ref().unwrap().project.sample_rate(), 48_000);
             assert_eq!(view.worker_requests_pending, 0);
         });
@@ -1777,5 +1800,74 @@ mod tests {
                 .is_some()
         );
         assert!(reopened.debug_bounds("theme settings panel").is_some());
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[gpui::test]
+    fn vst3_space_setting_defaults_on_and_reopens_with_the_saved_choice(cx: &mut TestAppContext) {
+        fn wait_for_choice(editor: &Entity<EditorView>, cx: &mut TestAppContext, expected: bool) {
+            let deadline = crate::test_wait::hang_deadline();
+            loop {
+                cx.run_until_parked();
+                if editor.read_with(cx, |view, cx| {
+                    view.theme_settings.vst3_editor.visible_choice(cx) == Some(expected)
+                }) {
+                    break;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "vst3 space setting did not settle"
+                );
+                std::thread::yield_now();
+            }
+        }
+
+        let _restore = RestoreTheme(theme::preferences());
+        let directory = TestDirectory::new();
+        let path = directory.0.join("vst3-editor.json");
+        let (handle, editor) = editor_fixture(cx, &directory);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.simulate_keystrokes("cmd-,");
+        wait_for_choice(&editor, cx, true);
+        assert!(!path.exists());
+
+        click_bounds(&mut visual, "vst3 space transport");
+        wait_for_choice(&editor, cx, false);
+        assert!(
+            !hex_preferences::load_vst3_editor_preferences(&path)
+                .unwrap()
+                .spacebar_controls_transport
+        );
+
+        let (handle, reopened_editor) = editor_fixture(cx, &directory);
+        let mut reopened = VisualTestContext::from_window(handle, cx);
+        reopened.simulate_keystrokes("cmd-,");
+        wait_for_choice(&reopened_editor, cx, false);
+        click_bounds(&mut reopened, "vst3 space transport");
+        wait_for_choice(&reopened_editor, cx, true);
+        assert!(
+            hex_preferences::load_vst3_editor_preferences(&path)
+                .unwrap()
+                .spacebar_controls_transport
+        );
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[gpui::test]
+    fn window_close_waits_for_vst3_space_setting_save(cx: &mut TestAppContext) {
+        let _restore = RestoreTheme(theme::preferences());
+        let directory = TestDirectory::new();
+        let (handle, editor) = editor_fixture(cx, &directory);
+        cx.update_window(handle, |_, window, cx| {
+            editor.update(cx, |view, cx| {
+                view.open_theme_settings(window, cx);
+                view.theme_settings.vst3_editor.saving = true;
+                assert!(!view.prepare_theme_window_close(window, cx));
+                assert!(view.theme_settings.open);
+                view.theme_settings.vst3_editor.saving = false;
+                assert!(view.prepare_theme_window_close(window, cx));
+            });
+        })
+        .unwrap();
     }
 }

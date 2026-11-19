@@ -2,6 +2,10 @@
 #pragma once
 #import <AppKit/AppKit.h>
 #include "pluginterfaces/gui/iplugview.h"
+#include "pluginterfaces/base/keycodes.h"
+#include "macos_editor_position.hpp"
+#include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -13,18 +17,167 @@
 
 namespace hex_instance {
 using namespace Steinberg;
-enum class EditorState : uint8_t { Closed, Open, Unavailable };
+enum class EditorState : uint8_t { Closed, Open, Unavailable, GestureActive=4 };
 
 class EditorFrame final : public IPlugFrame {
     std::atomic<uint32> references{1};
     NSWindow* window;
     IPlugView* view;
     NSSize accepted_size;
-    bool resizing=false;
+    bool resizing=false,focused=false;
+    // 0 = no down, 1 = AppKit, 2 = SDK, 3 = reentrant SDK plus AppKit, 4 = Hex transport.
+    std::array<uint8_t,128> key_owners{};
+    std::array<int16,128> key_values{};
+    std::array<char16,128> key_characters{};
+    std::array<uint64_t,128> key_serials{};
+    uint64_t focus_epoch=0;
 public:
     EditorFrame(NSWindow* parent,IPlugView* editor):window(parent),view(editor),
         accepted_size([[parent contentView] bounds].size) {}
-    void invalidate() { window=nil;view=nullptr; }
+    void invalidate() { ++focus_epoch;key_owners.fill(0);window=nil;view=nullptr; }
+    void focus_changed(bool active) {
+        if(![NSThread isMainThread] || !window || !view || focused==active) return;
+        focused=active;
+        ++focus_epoch;
+        if(!active) key_owners.fill(0);
+        view->onFocus(active);
+    }
+    // Unambiguous ASCII may be offered to the SDK when the responder is not a
+    // text input client. Composition and other text remain with AppKit.
+    bool handle_key_event(NSEvent* event,bool* transport_press=nullptr) {
+        if(transport_press) *transport_press=false;
+        if(![NSThread isMainThread] || !window || !view || !focused ||
+           [event window]!=window || ([event type]!=NSEventTypeKeyDown &&
+                                      [event type]!=NSEventTypeKeyUp)) return false;
+        const auto code=[event keyCode];
+        if(code>=key_owners.size()) return false;
+        auto& owner=key_owners[code];
+        const auto flags=[event modifierFlags];
+        if(owner==4) {
+            if([event type]==NSEventTypeKeyUp) { owner=0;++key_serials[code]; }
+            return true;
+        }
+        if(transport_press && !owner &&
+           !(flags&(NSEventModifierFlagShift|NSEventModifierFlagOption|
+                    NSEventModifierFlagCommand|NSEventModifierFlagControl|
+                    NSEventModifierFlagFunction|NSEventModifierFlagHelp)) &&
+           [[event charactersIgnoringModifiers] isEqualToString:@" "]) {
+            if([event type]==NSEventTypeKeyDown) {
+                owner=4;++key_serials[code];
+                *transport_press=![event isARepeat];
+            }
+            return true;
+        }
+        if([event type]==NSEventTypeKeyUp && !owner) return false;
+        // An unhandled down gives the complete pair, including repeats and
+        // release, to AppKit. Never offer those later events to both owners.
+        if(owner==1) {
+            if([event type]==NSEventTypeKeyUp) { owner=0;++key_serials[code]; }
+            return false;
+        }
+        const auto key_epoch=focus_epoch;
+        const auto key_serial=key_serials[code];
+        const auto appkit_pair=[&] {
+            // Even an unrepresentable initial down owns its repeats and up.
+            // A responder may reenter and admit a separate SDK pair first.
+            if(key_epoch==focus_epoch) {
+                if(!owner) { owner=1;++key_serials[code]; }
+                else if(owner==2 && key_serial!=key_serials[code]) {
+                    owner=3;++key_serials[code];
+                }
+            }
+            return false;
+        };
+        const int16 modifiers=(flags&NSEventModifierFlagShift?kShiftKey:0) |
+            (flags&NSEventModifierFlagOption?kAlternateKey:0) |
+            (flags&NSEventModifierFlagCommand?kCommandKey:0) |
+            (flags&NSEventModifierFlagControl?kControlKey:0);
+        if(owner==3) {
+            // One physical release closes two separately admitted logical pairs.
+            // Clear custody before entering plug-in code, which can reenter.
+            if([event type]==NSEventTypeKeyUp) {
+                const auto key=key_values[code];
+                const auto character=key_characters[code];
+                owner=0;++key_serials[code];
+                view->onKeyUp(character,key,modifiers);
+            }
+            return false;
+        }
+        if([event type]==NSEventTypeKeyUp) {
+            // The original down already selected the SDK. A text responder
+            // is not consulted for release and cannot reenter before it.
+            const auto key=key_values[code];
+            const auto character=key_characters[code];
+            owner=0;++key_serials[code];
+            view->onKeyUp(character,key,modifiers);
+            return true;
+        }
+        id responder=[window firstResponder];
+        const bool text_responder=[responder respondsToSelector:@selector(hasMarkedText)];
+        if(key_epoch!=focus_epoch || key_serial!=key_serials[code]) return appkit_pair();
+        int16 key=owner?key_values[code]:0;
+        char16 character=owner?key_characters[code]:0;
+        if(owner==2 && character && [event type]==NSEventTypeKeyDown) {
+            NSString* typed=[event characters];
+            const bool ascii=[typed length]==1 && [typed characterAtIndex:0]>=0x20 &&
+                [typed characterAtIndex:0]<=0x7e;
+            if(text_responder || (flags&NSEventModifierFlagOption) || !ascii) {
+                // End the SDK's logical pair before handing this repeat and
+                // its physical release to AppKit's text input system.
+                owner=0;
+                const auto serial=++key_serials[code];
+                const auto epoch=focus_epoch;
+                view->onKeyUp(character,key,modifiers);
+                if(epoch==focus_epoch) {
+                    if(serial==key_serials[code] || owner==0) {
+                        owner=1;++key_serials[code];
+                    } else if(owner==2) {
+                        owner=3;++key_serials[code];
+                    }
+                }
+                return false;
+            }
+            character=[typed characterAtIndex:0];
+        }
+        if(!owner) {
+            NSString* characters=[event charactersIgnoringModifiers];
+            if([characters length]!=1) return appkit_pair();
+            const unichar unmodified=[characters characterAtIndex:0];
+            key=nontext_key(unmodified);
+            if(!key && !text_responder && !(flags&NSEventModifierFlagOption))
+                key=text_control_key(unmodified);
+            if(!key) {
+                // A text client owns even the first composing keystroke, before
+                // hasMarkedText becomes true. Option/dead keys and multi-unit
+                // or non-ASCII text likewise stay with the native input system.
+                if(text_responder || (flags&NSEventModifierFlagOption)) return appkit_pair();
+                NSString* typed=[event characters];
+                if([typed length]!=1) return appkit_pair();
+                character=[typed characterAtIndex:0];
+                if(character<0x20 || character>0x7e) return appkit_pair();
+                const auto upper=unmodified>='a' && unmodified<='z'?
+                    unmodified-('a'-'A'):unmodified;
+                key=CharToVirtualKeyCode(upper);
+            }
+        }
+        const bool marked=text_responder && [(id<NSTextInputClient>)responder hasMarkedText];
+        if(key_epoch!=focus_epoch || key_serial!=key_serials[code]) return appkit_pair();
+        if(marked && !owner) return appkit_pair();
+        const auto previous_owner=owner;
+        const auto epoch=focus_epoch;
+        const auto serial=key_serials[code];
+        const auto handled=view->onKeyDown(character,key,modifiers)==kResultTrue;
+        // Foreign code can enter AppKit and change focus or dispatch the
+        // same physical key before returning. Do not restore an obsolete
+        // owner over that newer state.
+        if(epoch!=focus_epoch || serial!=key_serials[code])
+            return previous_owner==2 || handled;
+        if(!owner) {
+            key_values[code]=key;key_characters[code]=character;
+            owner=handled?2:1;++key_serials[code];
+        }
+        return owner==2;
+    }
     static NSWindowStyleMask window_style(IPlugView& editor) {
         auto style=NSWindowStyleMaskTitled|NSWindowStyleMaskClosable;
         if(editor.canResize()==kResultOk) style|=NSWindowStyleMaskResizable;
@@ -89,6 +242,36 @@ public:
         resizing=false;
     }
 private:
+    static int16 text_control_key(unichar character) {
+        switch(character) {
+        case '\t': return KEY_TAB;
+        case '\r': return KEY_RETURN;
+        case 0x03: return KEY_ENTER;
+        case 0x1b: return KEY_ESCAPE;
+        case 0x7f: return KEY_BACK;
+        default: return 0;
+        }
+    }
+    static int16 nontext_key(unichar character) {
+        switch(character) {
+        case NSLeftArrowFunctionKey: return KEY_LEFT;
+        case NSRightArrowFunctionKey: return KEY_RIGHT;
+        case NSUpArrowFunctionKey: return KEY_UP;
+        case NSDownArrowFunctionKey: return KEY_DOWN;
+        case NSHomeFunctionKey: return KEY_HOME;
+        case NSEndFunctionKey: return KEY_END;
+        case NSPageUpFunctionKey: return KEY_PAGEUP;
+        case NSPageDownFunctionKey: return KEY_PAGEDOWN;
+        case NSInsertFunctionKey: return KEY_INSERT;
+        case NSDeleteFunctionKey: return KEY_DELETE;
+        default:
+            if(character>=NSF1FunctionKey && character<=NSF12FunctionKey)
+                return KEY_F1+(character-NSF1FunctionKey);
+            if(character>=NSF13FunctionKey && character<=NSF24FunctionKey)
+                return KEY_F13+(character-NSF13FunctionKey);
+            return 0;
+        }
+    }
     static bool content_rectangle(NSSize size,ViewRect& rect) {
         if(!(size.width>=1 && size.width<=4096 && size.height>=1 && size.height<=4096))
             return false;
@@ -124,9 +307,51 @@ private:
 - (void)windowDidResize:(NSNotification*)notification {
     editor_frame->window_did_resize();
 }
+- (void)windowDidBecomeKey:(NSNotification*)notification {
+    editor_frame->focus_changed(true);
+}
+- (void)windowDidResignKey:(NSNotification*)notification {
+    editor_frame->focus_changed(false);
+}
 @end
 
 namespace hex_instance {
+// A file picker can suspend the worker's outer main loop. This source runs on
+// the same lane inside AppKit's modal panel mode. Its handler must outlive it
+// and leave SDK calls, including editor detach, to the outer main loop.
+class ModalEditorRequest {
+    CFRunLoopSourceRef source;
+public:
+    template<class Handle>
+    explicit ModalEditorRequest(Handle& handle) {
+        CFRunLoopSourceContext context{};
+        context.info=&handle;
+        context.perform=[](void* info) { (*static_cast<Handle*>(info))(); };
+        source=CFRunLoopSourceCreate(kCFAllocatorDefault,0,&context);
+        if(source)
+            CFRunLoopAddSource(CFRunLoopGetMain(),source,(CFStringRef)NSModalPanelRunLoopMode);
+    }
+    ModalEditorRequest(const ModalEditorRequest&)=delete;
+    ModalEditorRequest& operator=(const ModalEditorRequest&)=delete;
+    ~ModalEditorRequest() {
+        if(source) {
+            CFRunLoopSourceInvalidate(source);
+            CFRelease(source);
+        }
+    }
+    explicit operator bool() const { return source!=nullptr; }
+    void notify() const {
+        CFRunLoopSourceSignal(source);
+        CFRunLoopWakeUp(CFRunLoopGetMain());
+    }
+    static void cancel_file_picker(NSApplication* app) {
+        // NSOpenPanel inherits NSSavePanel. Leave sheets and custom dialogs
+        // with their owners. AppKit returns Cancel to the SDK's caller.
+        if([[app modalWindow] isKindOfClass:[NSSavePanel class]])
+            [app stopModalWithCode:NSModalResponseCancel];
+    }
+};
+
 // AppKit's default deactivate rule follows only the helper. Treat Hex and
 // its editor helpers as one foreground group without transferring the view.
 class EditorPanelVisibility {
@@ -165,6 +390,33 @@ inline bool is_editor_foreground_group(pid_t foreground,pid_t editor,pid_t owner
         info.pbi_ppid==static_cast<uint32_t>(owner);
 }
 
+inline std::optional<EditorPosition> editor_window_position(NSWindow* window) {
+    if(!window) return std::nullopt;
+    const auto frame=[window frame];
+    const EditorPosition position{NSMinX(frame),NSMaxY(frame)};
+    return position.valid()?std::optional<EditorPosition>(position):std::nullopt;
+}
+
+inline void restore_editor_window_position(NSWindow* window,EditorPosition position) {
+    if(position.valid()) {
+        const auto frame=[window frame];
+        const auto content=[window contentRectForFrameRect:frame];
+        const auto title_height=NSHeight(frame)-NSHeight(content);
+        const auto title=NSMakeRect(position.x,position.y-title_height,NSWidth(frame),title_height);
+        // Keep enough room to grab the title bar in logical screen points.
+        const auto drag_width=std::min(NSWidth(title),title_height);
+        for(NSScreen* screen in [NSScreen screens]) {
+            const auto visible_title=NSIntersectionRect(title,[screen visibleFrame]);
+            if(!NSIsEmptyRect(visible_title) && NSWidth(visible_title)>=drag_width &&
+                NSHeight(visible_title)>=title_height) {
+                [window setFrameTopLeftPoint:NSMakePoint(position.x,position.y)];
+                return;
+            }
+        }
+    }
+    [window center]; // The old display can disappear during replacement.
+}
+
 // Owns the window and one SDK reference. Explicit teardown precedes controller
 // release. On a refused detach the isolated process retains foreign resources.
 class EditorWindow {
@@ -183,6 +435,7 @@ public:
         if(quarantined) return false;
         if(!view) return true;
         const bool was_visible=window && [window isVisible];
+        if(frame) frame->focus_changed(false);
         if(resize_delegate) {
             [window setDelegate:nil];
             [resize_delegate release];resize_delegate=nil;
@@ -203,7 +456,11 @@ public:
         return true;
     }
     bool is_open() const { return visibility.is_open(window); }
-    std::optional<EditorState> open(IPlugView* editor,bool activate) {
+    std::optional<EditorPosition> position() const {
+        return is_open()?editor_window_position(window):std::nullopt;
+    }
+    std::optional<EditorState> open(IPlugView* editor,bool activate,
+                                    std::optional<EditorPosition> placement=std::nullopt) {
         view=editor;
         if(!view) return EditorState::Unavailable;
         ViewRect rect{};
@@ -226,7 +483,7 @@ public:
         EditorPanelVisibility::configure(window);
         [window setReleasedWhenClosed:NO];
         [window setTitle:@"vst3 editor"];
-        [window center];
+        if(!placement) [window center];
         frame=new(std::nothrow) EditorFrame(window,view);
         if(!frame) return unavailable();
         const auto frame_result=view->setFrame(frame);
@@ -234,11 +491,12 @@ public:
         if(!frame_set && frame_result!=kNotImplemented) return unavailable();
         if(view->attached([window contentView],kPlatformTypeNSView)!=kResultOk) return unavailable();
         attached=true;
-        if(style&NSWindowStyleMaskResizable) {
-            resize_delegate=[[HexVSTEditorResizeDelegate alloc] initWithEditorFrame:frame];
-            if(!resize_delegate) return unavailable();
-            [window setDelegate:resize_delegate];
-        }
+        resize_delegate=[[HexVSTEditorResizeDelegate alloc] initWithEditorFrame:frame];
+        if(!resize_delegate) return unavailable();
+        [window setDelegate:resize_delegate];
+        // Apply the original top-left after attachment, when the SDK view
+        // has supplied its final size. Ordering the panel keeps Hex focused.
+        if(placement) restore_editor_window_position(window,*placement);
         if(activate) {
             [window makeKeyAndOrderFront:nil];
             [NSApp activateIgnoringOtherApps:YES];
@@ -248,7 +506,8 @@ public:
         next_application_check=std::chrono::steady_clock::now()+std::chrono::milliseconds(100);
         return is_open()?std::optional<EditorState>(EditorState::Open):unavailable();
     }
-    bool pump() {
+    template<class TransportPress>
+    bool pump(bool reserve_space,TransportPress send_transport_press) {
         if(!window) return true;
         @autoreleasepool {
             // Bound AppKit event work before the next control/cancellation check.
@@ -256,7 +515,10 @@ public:
                 NSEvent* event=[NSApp nextEventMatchingMask:NSEventMaskAny untilDate:[NSDate distantPast]
                     inMode:NSDefaultRunLoopMode dequeue:YES];
                 if(!event) break;
-                [NSApp sendEvent:event];
+                bool transport_press=false;
+                if(!frame || !frame->handle_key_event(event,reserve_space?&transport_press:nullptr))
+                    [NSApp sendEvent:event];
+                if(transport_press) send_transport_press();
             }
             if(is_open() && owner>0) {
                 const auto now=std::chrono::steady_clock::now();

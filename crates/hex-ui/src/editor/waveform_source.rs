@@ -1,5 +1,6 @@
 //! Map waveform display intervals to source frames and cached peak ranges.
-use hex_project::Clip;
+use hex_project::{Clip, ClipFade};
+use hex_session::CachedOverrange as Overrange;
 use hex_session::{CachedPeak, CachedWaveform};
 use std::ops::Range;
 
@@ -18,6 +19,105 @@ impl SourceRanges {
     fn is_empty(&self) -> bool {
         self.len == 0
     }
+}
+
+/// Iterate ordered active timeline intervals and their corresponding source
+/// intervals. Unlike peak summaries, repeated source cycles are not collapsed:
+/// each occurrence retains the timeline coordinates needed by a changing fade.
+/// Rejects transformed/invalid clips and active spans beyond `max_frames` before
+/// iteration. Empty or silent intersections produce an empty iterator.
+pub(super) fn timeline_source_runs_at(
+    clip: &Clip,
+    timeline_origin: u64,
+    visible: Range<u64>,
+    available_frames: usize,
+    max_frames: usize,
+) -> Option<impl Iterator<Item = (Range<u64>, Range<usize>)>> {
+    let source_length = clip.source_length();
+    let source_end = clip.source_offset().checked_add(source_length)?;
+    let clip_end = timeline_origin.checked_add(clip.duration())?;
+    if clip.audio_edit().is_some()
+        || source_length == 0
+        || source_end > u64::try_from(available_frames).ok()?
+        || visible.start > visible.end
+    {
+        return None;
+    }
+    let start = visible.start.max(timeline_origin).min(clip_end);
+    let end = visible.end.min(clip_end).max(start);
+    let mut relative_start = start - timeline_origin;
+    let mut relative_end = end - timeline_origin;
+    if !clip.looping() {
+        relative_start = relative_start.min(source_length);
+        relative_end = relative_end.min(source_length);
+    }
+    let mut remaining = relative_end - relative_start;
+    if remaining > u64::try_from(max_frames).ok()? {
+        return None;
+    }
+    let mut timeline = timeline_origin.checked_add(relative_start)?;
+    let mut phase = if clip.looping() {
+        ((u128::from(clip.source_phase() % source_length)
+            + u128::from(relative_start % source_length))
+            % u128::from(source_length)) as u64
+    } else {
+        relative_start
+    };
+    let source_offset = clip.source_offset();
+    Some(std::iter::from_fn(move || {
+        if remaining == 0 {
+            return None;
+        }
+        let length = remaining.min(source_length - phase);
+        let timeline_end = timeline + length;
+        // The validated source end is at most available_frames, a usize.
+        let source_start = (source_offset + phase) as usize;
+        let source_end = source_start + length as usize;
+        let run = (timeline..timeline_end, source_start..source_end);
+        timeline = timeline_end;
+        remaining -= length;
+        phase = 0;
+        Some(run)
+    }))
+}
+
+/// Query the actual gained samples of a plain clip, retaining the timeline
+/// position of every loop occurrence. `None` means the decision is unavailable,
+/// not that the interval is below full scale.
+pub(super) fn bounded_clip_overrange(
+    waveform: &CachedWaveform,
+    clip: &Clip,
+    timeline_origin: u64,
+    visible: Range<u64>,
+    fade: Option<ClipFade>,
+    max_frames: usize,
+) -> Option<Overrange> {
+    let runs = timeline_source_runs_at(
+        clip,
+        timeline_origin,
+        visible,
+        waveform.source_frames(),
+        max_frames,
+    )?;
+    let mut result = Overrange::default();
+    let clip_gain = clip.gain().linear();
+    for (timeline, source) in runs {
+        let start = source.start;
+        let next = waveform.bounded_overrange(source.clone(), source.len(), |frame| {
+            let elapsed = u64::try_from(frame.checked_sub(start)?).ok()?;
+            let position = timeline.start.checked_add(elapsed)?;
+            let gain = match fade {
+                Some(fade) => fade.gain_at(position.checked_sub(clip.start())?),
+                None => 1.0,
+            };
+            Some((gain, clip_gain))
+        })?;
+        for channel in 0..2 {
+            result.positive[channel] |= next.positive[channel];
+            result.negative[channel] |= next.negative[channel];
+        }
+    }
+    Some(result)
 }
 
 /// Map a visible timeline interval to its active source region, splitting at a loop wrap.
@@ -58,56 +158,32 @@ pub(super) fn timeline_source_ranges_at(
     if start >= end {
         return SourceRanges::default();
     }
-    let relative_start = start - timeline_origin;
     let span = end - start;
     let mut ranges = SourceRanges::default();
-    if !clip.looping() {
-        let active_end = (relative_start.saturating_add(span)).min(clip.source_length());
-        let active_start = relative_start.min(clip.source_length());
-        if active_start < active_end {
+    if clip.looping() && span >= clip.source_length() {
+        push_source_range(
+            &mut ranges,
+            clip.source_offset(),
+            source_end,
+            available_frames,
+        );
+        return ranges;
+    }
+    if let Some(runs) = timeline_source_runs_at(
+        clip,
+        timeline_origin,
+        start..end,
+        available_frames,
+        usize::MAX,
+    ) {
+        for (_, source) in runs {
             push_source_range(
                 &mut ranges,
-                clip.source_offset() + active_start,
-                clip.source_offset() + active_end,
+                source.start as u64,
+                source.end as u64,
                 available_frames,
             );
         }
-        return ranges;
-    }
-
-    if span >= clip.source_length() {
-        push_source_range(
-            &mut ranges,
-            clip.source_offset(),
-            source_end,
-            available_frames,
-        );
-        return ranges;
-    }
-    let phase_start = ((u128::from(clip.source_phase() % clip.source_length())
-        + u128::from(relative_start % clip.source_length()))
-        % u128::from(clip.source_length())) as u64;
-    let phase_end = u128::from(phase_start) + u128::from(span);
-    if phase_end <= u128::from(clip.source_length()) {
-        push_source_range(
-            &mut ranges,
-            clip.source_offset() + phase_start,
-            clip.source_offset() + phase_end as u64,
-            available_frames,
-        );
-    } else {
-        push_source_range(
-            &mut ranges,
-            clip.source_offset() + phase_start,
-            source_end,
-            available_frames,
-        );
-        push_source_range(
-            &mut ranges,
-            clip.source_offset(),
-            clip.source_offset() + (phase_end - u128::from(clip.source_length())) as u64,
-            available_frames,
-        );
     }
     ranges
 }
@@ -142,9 +218,29 @@ pub(super) fn aggregate_ranges(
     waveform: &CachedWaveform,
     ranges: &[Range<usize>],
 ) -> Option<[CachedPeak; 2]> {
+    aggregate_ranges_with_detail(waveform, ranges, 0)
+}
+
+/// Refine narrow resident ranges without exceeding the supplied per-column PCM budget.
+pub(super) fn aggregate_ranges_with_detail(
+    waveform: &CachedWaveform,
+    ranges: &[Range<usize>],
+    budget: usize,
+) -> Option<[CachedPeak; 2]> {
     let mut merged = None;
+    let per_range_budget = budget / ranges.len().max(1);
+    let leaf_width = waveform
+        .source_frames()
+        .div_ceil(waveform.bins().len().max(1));
     for range in ranges {
-        let peaks = aggregate_peaks(waveform, range.start, range.end)?;
+        let span = range.end.saturating_sub(range.start);
+        let peaks = if budget > 0 && span > 64 && span < leaf_width {
+            waveform
+                .bounded_exact_peaks_for_frames(range.start, range.end, per_range_budget)
+                .or_else(|| aggregate_peaks(waveform, range.start, range.end))?
+        } else {
+            aggregate_peaks(waveform, range.start, range.end)?
+        };
         if let Some(current) = merged.as_mut() {
             let current: &mut [CachedPeak; 2] = current;
             for channel in 0..2 {
@@ -255,6 +351,28 @@ mod tests {
     }
 
     #[test]
+    fn narrow_loop_ranges_refine_within_budget_and_fall_back_without_pcm() {
+        let mut samples = vec![[0.0, 0.0]; 4_096];
+        samples[1_200] = [1.0, -1.0];
+        let audio = hex_engine::Audio::new(48_000, samples).unwrap();
+        let waveform = hex_media::waveform::summarize(&audio, 4).unwrap();
+        let ranges = [1_024..1_100, 1_300..1_376];
+        let exact = aggregate_ranges_with_detail(&waveform, &ranges, 152).unwrap();
+        assert_eq!(exact[0].max, 0.0);
+        let fallback = aggregate_ranges_with_detail(&waveform, &ranges, 0).unwrap();
+        assert_eq!(fallback[0].max, 1.0);
+        let peak_only = CachedWaveform::from_peaks(4_096, waveform.bins().to_vec()).unwrap();
+        assert_eq!(
+            aggregate_ranges_with_detail(&peak_only, &ranges, 152),
+            Some(fallback)
+        );
+        let invalid = Range { start: 20, end: 10 };
+        assert!(
+            aggregate_ranges_with_detail(&waveform, std::slice::from_ref(&invalid), 152).is_none()
+        );
+    }
+
+    #[test]
     fn display_group_merges_all_bins_to_keep_transient_extrema() {
         let waveform = CachedWaveform::from_peaks(
             12,
@@ -295,6 +413,165 @@ mod tests {
         assert_eq!(
             timeline_source_ranges(&clip(100, 20, 10, 4, true), 101..106, 32).as_slice(),
             std::slice::from_ref(&(10..14))
+        );
+    }
+
+    #[test]
+    fn source_runs_keep_each_trimmed_loop_occurrence_and_timeline_position() {
+        let clip = trimmed_loop_after_left_trim();
+        let runs = timeline_source_runs_at(&clip, clip.start(), 99..113, 32, 12)
+            .expect("within budget")
+            .collect::<Vec<_>>();
+        assert_eq!(
+            runs,
+            vec![
+                (101..104, 11..14),
+                (104..108, 10..14),
+                (108..112, 10..14),
+                (112..113, 10..11)
+            ]
+        );
+        assert!(timeline_source_runs_at(&clip, clip.start(), 99..113, 32, 11).is_none());
+        assert!(timeline_source_runs_at(&clip, clip.start(), 101..104, 13, 3).is_none());
+    }
+
+    #[test]
+    fn source_runs_clip_one_shots_and_skip_the_silent_tail() {
+        let clip = clip(100, 20, 10, 8, false);
+        let collect = |visible, budget| {
+            timeline_source_runs_at(&clip, 100, visible, 32, budget)
+                .expect("valid mapping")
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(collect(95..104, 4), vec![(100..104, 10..14)]);
+        assert_eq!(collect(105..120, 3), vec![(105..108, 15..18)]);
+        assert!(collect(108..120, 0).is_empty());
+        assert!(collect(1..2, 0).is_empty());
+        assert!(timeline_source_runs_at(&clip, 100, 105..120, 32, 2).is_none());
+        assert!(
+            timeline_source_runs_at(
+                &clip,
+                100,
+                Range {
+                    start: 110,
+                    end: 109
+                },
+                32,
+                8
+            )
+            .is_none()
+        );
+        assert_eq!(
+            timeline_source_runs_at(&clip, 200, 198..203, 32, 3)
+                .unwrap()
+                .collect::<Vec<_>>(),
+            vec![(200..203, 10..13)]
+        );
+    }
+
+    #[test]
+    fn source_runs_refuse_transformed_audio() {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 4).unwrap();
+        let Created::Imported { clip, .. } = editor
+            .execute(Command::ImportAudioTrack {
+                name: "track".into(),
+                path: "audio.wav".into(),
+                sample_rate: 48_000,
+                frames: 32,
+            })
+            .unwrap()
+        else {
+            panic!("unexpected import result")
+        };
+        editor.execute(Command::ReverseClips(vec![clip])).unwrap();
+        let clip = editor.project().clip(clip).unwrap();
+        assert!(clip.audio_edit().is_some());
+        assert!(timeline_source_runs_at(clip, clip.start(), 0..8, 32, 8).is_none());
+        assert!(timeline_source_ranges(clip, 0..8, 32).is_empty());
+    }
+
+    #[test]
+    fn overrange_uses_each_loop_occurrence_and_its_actual_fade() {
+        let clip = clip(100, 12, 10, 4, true);
+        let mut samples = vec![[0.0; 2]; 32];
+        samples[10] = [3.0, -3.0];
+        samples[12] = [-1.0, 1.0];
+        let audio = hex_engine::Audio::new(48_000, samples).unwrap();
+        let waveform = hex_media::waveform::summarize(&audio, 1).unwrap();
+        let fade = ClipFade::new(12, 0, 12, 0).unwrap();
+        assert_eq!(
+            bounded_clip_overrange(&waveform, &clip, 100, 102..103, None, 1),
+            Some(Overrange::default()),
+            "exact positive and negative full scale are not over-range"
+        );
+        assert_eq!(
+            bounded_clip_overrange(&waveform, &clip, 100, 99..101, Some(fade), 1),
+            Some(Overrange::default()),
+            "the first occurrence is silenced at its own timeline position"
+        );
+        assert_eq!(
+            bounded_clip_overrange(&waveform, &clip, 100, 100..104, Some(fade), 4),
+            Some(Overrange::default())
+        );
+        assert_eq!(
+            bounded_clip_overrange(&waveform, &clip, 100, 104..108, Some(fade), 4),
+            Some(Overrange {
+                positive: [true, false],
+                negative: [false, true]
+            })
+        );
+        assert_eq!(
+            bounded_clip_overrange(&waveform, &clip, 100, 99..112, Some(fade), 12),
+            Some(Overrange {
+                positive: [true, false],
+                negative: [false, true]
+            })
+        );
+        assert_eq!(
+            bounded_clip_overrange(&waveform, &clip, 100, 100..112, Some(fade), 11),
+            None
+        );
+        let peaks_only = CachedWaveform::from_peaks(32, waveform.bins().to_vec()).unwrap();
+        assert_eq!(
+            bounded_clip_overrange(&peaks_only, &clip, 100, 100..104, Some(fade), 4),
+            None
+        );
+    }
+
+    #[test]
+    fn overrange_applies_the_clip_gain_after_the_fade() {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 4).unwrap();
+        let Created::Imported { clip, .. } = editor
+            .execute(Command::ImportAudioTrack {
+                name: "gain".into(),
+                path: "gain.wav".into(),
+                sample_rate: 48_000,
+                frames: 2,
+            })
+            .unwrap()
+        else {
+            panic!("unexpected import result")
+        };
+        editor
+            .execute(Command::SetAudioClipGain {
+                clip,
+                millidb: 6_000,
+            })
+            .unwrap();
+        let clip = editor.project().clip(clip).unwrap();
+        let audio = hex_engine::Audio::new(48_000, vec![[0.75, -0.75]; 2]).unwrap();
+        let waveform = hex_media::waveform::summarize(&audio, 1).unwrap();
+        let fade = ClipFade::new(2, 0, 2, 0).unwrap();
+        assert_eq!(
+            bounded_clip_overrange(&waveform, clip, 0, 0..1, Some(fade), 1),
+            Some(Overrange::default())
+        );
+        assert_eq!(
+            bounded_clip_overrange(&waveform, clip, 0, 1..2, Some(fade), 1),
+            Some(Overrange {
+                positive: [true, false],
+                negative: [false, true]
+            })
         );
     }
 

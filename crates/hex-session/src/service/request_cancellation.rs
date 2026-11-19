@@ -43,6 +43,7 @@ pub struct RequestCancellation {
     document_intent: Arc<AtomicU64>,
     expected_intent: u64,
     publication_waited: bool,
+    bounce: Option<hex_export::ExportControl>,
 }
 impl RequestCancellation {
     pub(super) fn new(
@@ -55,7 +56,12 @@ impl RequestCancellation {
             document_intent,
             expected_intent,
             publication_waited: false,
+            bounce: None,
         }
+    }
+    pub(super) fn with_bounce(mut self, control: &hex_export::ExportControl) -> Self {
+        self.bounce = Some(control.clone());
+        self
     }
     pub(super) fn after_publication_wait(mut self, waited: bool) -> Self {
         self.publication_waited = waited;
@@ -72,6 +78,10 @@ impl RequestCancellation {
     pub fn is_cancelled(&self) -> bool {
         self.is_shutting_down()
             || self.document_intent.load(Ordering::Acquire) != self.expected_intent
+            || self
+                .bounce
+                .as_ref()
+                .is_some_and(hex_export::ExportControl::is_cancelled)
     }
 }
 

@@ -9,6 +9,9 @@ use crate::theme;
 use gpui::{Div, div, prelude::*, px, rgb};
 use hex_project::Clip;
 
+mod intervals;
+pub(super) use intervals::time_fragments_outside;
+
 pub(super) fn move_exclusions(
     display: Option<&super::time_selection::TimeRangeMoveDisplay<'_>>,
     track: hex_project::TrackId,
@@ -54,45 +57,6 @@ pub(super) fn clip_fragments_outside(
     result
 }
 
-pub(super) fn time_fragments_outside(
-    start: u64,
-    end: u64,
-    exclusions: [Option<(u64, u64)>; 2],
-) -> [Option<(u64, u64)>; 3] {
-    let mut intervals = [None, None];
-    let mut interval_count = 0;
-    for (exclude_start, exclude_end) in exclusions.into_iter().flatten() {
-        let exclude_start = exclude_start.max(start);
-        let exclude_end = exclude_end.min(end);
-        if exclude_start < exclude_end && interval_count < intervals.len() {
-            intervals[interval_count] = Some((exclude_start, exclude_end));
-            interval_count += 1;
-        }
-    }
-    if interval_count == 2
-        && intervals[0].is_some_and(|left| intervals[1].is_some_and(|right| right.0 < left.0))
-    {
-        intervals.swap(0, 1);
-    }
-    let mut result = [None, None, None];
-    let mut count = 0;
-    let mut cursor = start;
-    for (from, to) in intervals.into_iter().flatten() {
-        if to <= cursor {
-            continue;
-        }
-        if from > cursor && count < result.len() {
-            result[count] = Some((cursor, from));
-            count += 1;
-        }
-        cursor = cursor.max(to);
-    }
-    if cursor < end && count < result.len() {
-        result[count] = Some((cursor, end));
-    }
-    result
-}
-
 pub(super) fn clip_intersection(clip: &Clip, interval: (u64, u64)) -> Option<(u64, u64)> {
     let end = clip.start().checked_add(clip.duration())?;
     let start = clip.start().max(interval.0);
@@ -110,7 +74,7 @@ pub(super) fn passive_audio_fragment(
     viewport: Viewport,
     viewport_end: u64,
     grid: &[super::musical_time::GridLine],
-    cache: std::rc::Rc<std::cell::RefCell<super::waveform_geometry::WaveformGeometryCache>>,
+    cache: std::rc::Rc<super::waveform_geometry::WaveformViewCache>,
     selector: String,
     header_only: bool,
 ) -> Option<Div> {
@@ -126,6 +90,8 @@ pub(super) fn passive_audio_fragment(
     let has_border = hex_widgets::rectangle_border_width(pixel_width) > 0.0;
     let stroke = 1.0 / scale.max(1.0);
     let looping = loop_handles::audio_repeats(clip);
+    let color = theme::clip_activity_outline(clip.active(), theme::PaletteRole::ClipOutline);
+    let detail_opacity = theme::clip_detail_opacity(clip.active());
     let header_selector = format!("{selector}-name");
     let mut content = hex_widgets::rectangle_surface(left as f32, width as f32, pixel_width)
         .left_0()
@@ -133,7 +99,7 @@ pub(super) fn passive_audio_fragment(
         .border_l(px(if has_border { stroke } else { 0.0 }))
         .border_r(px(0.0))
         .debug_selector(move || selector.clone())
-        .border_color(rgb(theme::color(theme::PaletteRole::ClipOutline)))
+        .border_color(rgb(color))
         .bg(rgb(fill))
         .when(has_border, |surface| {
             surface
@@ -143,14 +109,14 @@ pub(super) fn passive_audio_fragment(
     if !header_only {
         content = content.children(
             aligned_clip_grid_layer(grid, start, stop, stroke, has_border)
-                .map(|grid| loop_handles::body(grid, looping)),
+                .map(|grid| loop_handles::body(grid.opacity(detail_opacity), looping)),
         );
         let body = if let Some(waveform) = waveform {
             super::waveform::waveform_view_cached(
                 waveform,
                 clip,
-                start,
-                stop,
+                start..stop,
+                None,
                 cache,
                 theme::waveform_ink_for_fill(fill),
             )
@@ -174,7 +140,6 @@ pub(super) fn passive_audio_fragment(
         super::clip_name::passive_name_header(clip.name(), fill, has_border)
             .debug_selector(move || header_selector.clone()),
     );
-    let color = theme::color(theme::PaletteRole::ClipOutline);
     Some(if has_border {
         super::clip_boundary::backdrop_shell(
             content,
@@ -192,6 +157,7 @@ pub(super) fn passive_audio_fragment(
                     0.0
                 },
                 header_height: super::clip_name::CLIP_NAME_HEIGHT,
+                header_gradient: None,
                 notch: super::clip_boundary::Notch::new(stop == end),
             },
             true,
@@ -225,6 +191,7 @@ pub(super) fn passive_midi_fragment(
     clip_id: hex_project::ClipId,
     name: &str,
     looping: bool,
+    active: bool,
     notes: impl FnOnce(u64, u64, u64) -> (Vec<(f32, f32, u8)>, super::midi_thumbnail::PitchFit),
     source_interval: (u64, u64),
     timeline_interval: (u64, u64),
@@ -244,6 +211,8 @@ pub(super) fn passive_midi_fragment(
     let pixel_width = super::trim::rendered_clip_width(lane_width, width);
     let has_border = hex_widgets::rectangle_border_width(pixel_width) > 0.0;
     let stroke = 1.0 / scale.max(1.0);
+    let color = theme::clip_activity_outline(active, theme::PaletteRole::ClipOutline);
+    let detail_opacity = theme::clip_detail_opacity(active);
     let notes_selector = format!("{selector}-notes-{}", clip_id.value());
     let header_selector = format!("{selector}-name-{}", clip_id.value());
     let mut content = hex_widgets::rectangle_surface(left as f32, width as f32, pixel_width)
@@ -253,7 +222,7 @@ pub(super) fn passive_midi_fragment(
         .border_r(px(0.0))
         .debug_selector(move || format!("{selector}-{}", clip_id.value()))
         .bg(rgb(fill))
-        .border_color(rgb(theme::color(theme::PaletteRole::ClipOutline)))
+        .border_color(rgb(color))
         .when(has_border, |surface| {
             surface
                 .bg(gpui::transparent_black())
@@ -262,7 +231,7 @@ pub(super) fn passive_midi_fragment(
     if !header_only {
         content = content.children(
             aligned_clip_grid_layer(grid, visible_start, visible_end, stroke, has_border)
-                .map(|grid| loop_handles::body(grid, looping)),
+                .map(|grid| loop_handles::body(grid.opacity(detail_opacity), looping)),
         );
         // The visible destination maps frame-for-frame onto canonical source
         // frames; shapes are fractions of that window, so they land unchanged.
@@ -283,7 +252,7 @@ pub(super) fn passive_midi_fragment(
             let (notes, _) =
                 super::tracks::midi_note_canvas(move || notes_selector.clone(), shapes, fit);
             content = content.child(loop_handles::body(
-                super::tracks::clip_waveform_body(notes),
+                super::tracks::clip_waveform_body(notes.opacity(detail_opacity)),
                 looping,
             ));
         }
@@ -292,7 +261,6 @@ pub(super) fn passive_midi_fragment(
         super::clip_name::passive_name_header(name, fill, has_border)
             .debug_selector(move || header_selector.clone()),
     );
-    let color = theme::color(theme::PaletteRole::ClipOutline);
     Some(if has_border {
         super::clip_boundary::backdrop_shell(
             content,
@@ -310,6 +278,7 @@ pub(super) fn passive_midi_fragment(
                     0.0
                 },
                 header_height: super::clip_name::CLIP_NAME_HEIGHT,
+                header_gradient: None,
                 notch: super::clip_boundary::Notch::new(visible_end == timeline_interval.1),
             },
             true,
@@ -329,27 +298,6 @@ pub(super) fn passive_midi_fragment(
             || "passive-midi-trailing".into(),
         )
     })
-}
-
-#[cfg(test)]
-mod time_move_interval_tests {
-    use super::time_fragments_outside;
-
-    #[test]
-    fn overlapping_source_and_destination_exclusions_leave_only_the_union_tail() {
-        assert_eq!(
-            time_fragments_outside(0, 96_000, [Some((0, 48_000)), Some((24_000, 72_000))]),
-            [Some((72_000, 96_000)), None, None]
-        );
-    }
-
-    #[test]
-    fn destination_replacement_preserves_both_outside_tails() {
-        assert_eq!(
-            time_fragments_outside(0, 96_000, [None, Some((24_000, 72_000))]),
-            [Some((0, 24_000)), Some((72_000, 96_000)), None]
-        );
-    }
 }
 
 #[cfg(all(test, feature = "ui-test-support"))]
@@ -392,7 +340,7 @@ mod visual_tests {
                             viewport,
                             length,
                             &[],
-                            Rc::new(std::cell::RefCell::new(Default::default())),
+                            Rc::new(Default::default()),
                             "fragment-audio".into(),
                             self.compact,
                         )),
@@ -409,6 +357,7 @@ mod visual_tests {
                             self.midi,
                             &self.name,
                             false,
+                            true,
                             move |start, end, _| {
                                 mapped.set(Some((start, end)));
                                 (

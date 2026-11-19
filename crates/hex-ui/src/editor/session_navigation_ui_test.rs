@@ -253,6 +253,92 @@ fn piano_focus_keeps_arrow_and_enter_out_of_session_navigation_and_launch(cx: &m
 }
 
 #[gpui::test]
+fn session_cell_delete_and_undo_respect_piano_focus(cx: &mut TestAppContext) {
+    let (handle, editor) = worker_session_window(cx);
+    submit_edit_and_wait(
+        cx,
+        handle,
+        &editor,
+        Command::AddMidiTrack {
+            name: "instrument".into(),
+        },
+    );
+    let track = editor.read_with(cx, |view, _| {
+        view.state.as_ref().unwrap().project.tracks()[0].id()
+    });
+    submit_edit_and_wait(
+        cx,
+        handle,
+        &editor,
+        Command::AddScene {
+            name: "scene".into(),
+        },
+    );
+    let scene = editor.read_with(cx, |view, _| {
+        view.state.as_ref().unwrap().project.scenes()[0].id()
+    });
+    submit_edit_and_wait(
+        cx,
+        handle,
+        &editor,
+        Command::CreateSessionMidiClip {
+            track,
+            scene,
+            name: "pattern".into(),
+            source_length: BeatTime::from_quarters(4).unwrap(),
+        },
+    );
+    let original = editor.read_with(cx, |view, _| {
+        view.state.as_ref().unwrap().project.snapshot()
+    });
+    cx.update_window(handle, |_, window, cx| {
+        editor.update(cx, |view, _| {
+            view.select_session_cell(track, scene);
+            view.midi_focus.focus(window);
+            assert!(view.midi_focus.is_focused(window));
+        });
+    })
+    .unwrap();
+    cx.simulate_keystrokes(handle, "backspace");
+    editor.read_with(cx, |view, _| {
+        assert_eq!(view.state.as_ref().unwrap().project.snapshot(), original);
+        assert_eq!(view.worker_requests_pending, 0);
+        assert!(view.pending_requests.is_empty());
+    });
+
+    cx.update_window(handle, |_, window, cx| {
+        editor.update(cx, |view, _| {
+            view.focus.focus(window);
+            assert!(view.focus.is_focused(window));
+        });
+    })
+    .unwrap();
+    cx.simulate_keystrokes(handle, "backspace");
+    wait_for_worker(cx, handle, &editor, |view| {
+        view.worker_requests_pending == 0
+            && view.pending_requests.is_empty()
+            && view
+                .state
+                .as_ref()
+                .is_some_and(|state| state.project.session_cell(track, scene).is_none())
+    });
+    editor.read_with(cx, |view, _| {
+        let project = &view.state.as_ref().unwrap().project;
+        assert!(project.track(track).is_some());
+        assert!(project.scenes().iter().any(|item| item.id() == scene));
+    });
+    cx.simulate_keystrokes(handle, "cmd-z");
+    wait_for_worker(cx, handle, &editor, |view| {
+        view.worker_requests_pending == 0
+            && view.pending_requests.is_empty()
+            && view
+                .state
+                .as_ref()
+                .is_some_and(|state| state.project.snapshot() == original)
+    });
+}
+
+#[gpui::test]
 fn scene_column_stays_pinned_and_aligned_at_small_and_large_window_widths(cx: &mut TestAppContext) {
     let (handle, _, _, _) = session_window(cx);
     let mut visual = VisualTestContext::from_window(handle, cx);

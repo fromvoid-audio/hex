@@ -1126,12 +1126,11 @@ impl Window {
                         .log_err();
                 }
 
-                // Keep presenting the current scene for 1 extra second since the
-                // last input to prevent the display from underclocking the refresh rate.
-                let needs_present = request_frame_options.require_presentation
-                    || needs_present.get()
-                    || (active.get()
-                        && last_input_timestamp.get().elapsed() < Duration::from_secs(1));
+                let presentation_required =
+                    request_frame_options.require_presentation || needs_present.get();
+                // Keep the display warm for one second after ordinary input.
+                let keepalive = active.get()
+                    && last_input_timestamp.get().elapsed() < Duration::from_secs(1);
 
                 if invalidator.is_dirty() || request_frame_options.force_render {
                     measure("frame duration", || {
@@ -1144,9 +1143,13 @@ impl Window {
                             })
                             .log_err();
                     })
-                } else if needs_present {
+                } else if presentation_required || keepalive {
                     handle
-                        .update(&mut cx, |_, window, _| window.present())
+                        .update(&mut cx, |_, window, _| {
+                            if window.should_present_drawn_scene(presentation_required, keepalive) {
+                                window.present();
+                            }
+                        })
                         .log_err();
                 }
 
@@ -2193,6 +2196,14 @@ impl Window {
             self.mark_view_dirty(entity);
         }
         self.invalidator.replace_views(views);
+    }
+
+    pub(crate) fn should_present_drawn_scene(&self, required: bool, keepalive: bool) -> bool {
+        // Snapping and held previews can leave a scene unchanged across many
+        // display requests. On macOS, skip optional drawable acquisition while
+        // the gesture is held. A new paint or required presentation still runs.
+        required
+            || (keepalive && (!cfg!(target_os = "macos") || !self.is_pointer_dragging()))
     }
 
     #[profiling::function]
@@ -5700,5 +5711,47 @@ pub fn outline(
         border_widths: (1.).into(),
         border_color: border_color.into(),
         border_style,
+    }
+}
+
+impl Window {
+    /// Paint two retained paths at a logical-pixel offset. Visible paths at least
+    /// one device pixel apart vertically may share a scene order.
+    pub fn paint_disjoint_path_pair_with_offset(
+        &mut self,
+        paths: [&Path<Pixels>; 2],
+        offset: Point<Pixels>,
+        color: impl Into<Background>,
+    ) {
+        self.invalidator.debug_assert_paint();
+
+        let scale_factor = self.scale_factor();
+        let content_mask = self.content_mask();
+        let color = color.into().opacity(self.element_opacity());
+        let scene_paths = paths.map(|path| {
+            let mut scene_path = path.scale_with_offset(scale_factor, offset, &content_mask);
+            scene_path.color = color;
+            scene_path
+        });
+        self.next_frame.scene.insert_disjoint_path_pair(scene_paths);
+    }
+
+    /// Paint a retained path at a logical-pixel offset before device scaling.
+    ///
+    /// This method should only be called as part of the paint phase of element drawing.
+    pub fn paint_path_with_offset(
+        &mut self,
+        path: &Path<Pixels>,
+        offset: Point<Pixels>,
+        color: impl Into<Background>,
+    ) {
+        self.invalidator.debug_assert_paint();
+
+        let scale_factor = self.scale_factor();
+        let content_mask = self.content_mask();
+        let opacity = self.element_opacity();
+        let mut scene_path = path.scale_with_offset(scale_factor, offset, &content_mask);
+        scene_path.color = color.into().opacity(opacity);
+        self.next_frame.scene.insert_primitive(scene_path);
     }
 }

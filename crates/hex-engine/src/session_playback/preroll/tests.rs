@@ -345,3 +345,201 @@ fn history_pages_refuse_invalid_width_failure_and_mid_chunk_cancellation() {
         }
     });
 }
+
+// This is an opt-in elapsed-time probe, not a realtime or native-device test.
+// Run with: cargo test --release -p hex-engine --lib history_preparation_profile -- --ignored --nocapture
+#[test]
+#[ignore = "manual optimized preparation profile"]
+#[allow(clippy::assertions_on_constants, reason = "reject debug profiling")]
+fn history_preparation_profile() {
+    on_worker_stack(|| {
+        use hex_lattice_contract::{
+            DeviceTypeId, NativeDeviceMetadata, ParameterId, ParameterValue,
+        };
+        use hex_project::{BeatTime, Command, Created, DeviceSnapshot, Editor, Project};
+        use std::time::Instant;
+
+        assert!(
+            !cfg!(debug_assertions),
+            "profile requires an optimized build"
+        );
+        let setup = Instant::now();
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+        let Created::Track(track) = editor
+            .execute(Command::InsertTrackWithDevice {
+                name: "history profile".into(),
+                before_track: None,
+                slot: hex_project::TrackDeviceSlot::Instrument,
+                state: hex_project::default_instrument_state().unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("expected instrument track")
+        };
+        let instrument = editor
+            .project()
+            .track(track)
+            .unwrap()
+            .instrument()
+            .unwrap()
+            .id();
+        let operator = DeviceTypeId::from_static("hex.instrument.operator");
+        let state = crate::default_native_device_state_for_class(
+            crate::NativeDeviceClass::Instrument,
+            operator,
+        )
+        .unwrap();
+        let state = crate::patch_native_device_parameter_for_class(
+            crate::NativeDeviceClass::Instrument,
+            &state,
+            ParameterId::from_static(78),
+            ParameterValue::Float(0.4),
+        )
+        .unwrap();
+        editor
+            .execute(Command::ReplaceDeviceState {
+                device: instrument,
+                state,
+            })
+            .unwrap();
+        let Created::Clip(clip) = editor
+            .execute(Command::PlaceMidiClip {
+                track,
+                start: BeatTime::ZERO,
+                length: BeatTime::from_quarters(4).unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("expected MIDI clip")
+        };
+        editor
+            .execute(Command::AddMidiNote {
+                clip,
+                start: BeatTime::ZERO,
+                duration: BeatTime::from_quarters(1).unwrap(),
+                pitch: 60,
+                channel: 0,
+                velocity: 100,
+            })
+            .unwrap();
+        let mut snapshot = editor.project().snapshot();
+        let track_effect_id = snapshot.next_id;
+        let return_id = track_effect_id + 1;
+        let return_effect_id = track_effect_id + 2;
+        snapshot.next_id += 3;
+        let filter = hex_devices::utility::UTILITY_DEFINITION
+            .patch_parameter(
+                &hex_devices::utility::UTILITY_DEFINITION
+                    .default_state()
+                    .unwrap(),
+                hex_devices::utility::parameter::DC_REMOVE,
+                ParameterValue::Bool(true),
+            )
+            .unwrap();
+        snapshot.tracks[0].devices.push(DeviceSnapshot {
+            modulation: Default::default(),
+            parent: None,
+            automation: Vec::new(),
+            comparison: None,
+            id: track_effect_id,
+            bypassed: false,
+            state: filter.clone(),
+        });
+        snapshot.tracks[0]
+            .sends
+            .push(hex_project::SendLevelSnapshot {
+                return_track: return_id,
+                gain: 0.5,
+            });
+        snapshot
+            .return_tracks
+            .push(hex_project::ReturnTrackSnapshot {
+                id: return_id,
+                name: "return".into(),
+                gain: 0.75,
+                muted: false,
+                devices: vec![DeviceSnapshot {
+                    modulation: Default::default(),
+                    parent: None,
+                    automation: Vec::new(),
+                    comparison: None,
+                    id: return_effect_id,
+                    bypassed: false,
+                    state: filter,
+                }],
+            });
+        let project = Project::from_legacy_snapshot(snapshot).unwrap();
+        let revision = Arc::new(
+            PreparedRevision::prepare(
+                &project,
+                &std::collections::BTreeMap::new(),
+                Arc::new(hex_devices::SineTable::new()),
+                None,
+            )
+            .unwrap(),
+        );
+        println!(
+            "HISTORY_PROFILE,rate=48000,tracks=1,voices=1,track_effect=dc_remove,return_effect=dc_remove,feedback=0.4,replay_block_max=256,work_limit_frames={MAX_ARRANGEMENT_PREROLL_FRAMES},storage_limit_bytes={MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES},warmup=1,measured=3,setup_us={}",
+            setup.elapsed().as_micros()
+        );
+        for destination in [512_u64, 24_001] {
+            let mut oracle = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+            oracle.apply(SessionPlaybackCommand::Play).unwrap();
+            let mut remaining = destination;
+            let mut buffer = [[0.0_f32; 2]; 256];
+            while remaining > 0 {
+                let frames = remaining.min(buffer.len() as u64) as usize;
+                oracle.render(&mut buffer[..frames]).unwrap();
+                remaining -= frames as u64;
+            }
+            let mut expected = [[0.0_f32; 2]; 256];
+            oracle.render(&mut expected).unwrap();
+            for history in [false, true] {
+                for iteration in 0..4 {
+                    let start = Instant::now();
+                    let mut candidate = if history {
+                        SessionPlayback::prepare_history_preserving_arrangement_preroll(
+                            Arc::clone(&revision),
+                            None,
+                            destination,
+                            destination,
+                            true,
+                            &AtomicBool::new(false),
+                        )
+                    } else {
+                        SessionPlayback::prepare_interactive_arrangement_preroll_from_revision(
+                            Arc::clone(&revision),
+                            destination,
+                            destination,
+                            true,
+                            &AtomicBool::new(false),
+                        )
+                    }
+                    .unwrap();
+                    let elapsed = start.elapsed();
+                    let mut output = [[0.0_f32; 2]; 256];
+                    candidate.render(&mut output).unwrap();
+                    assert!(output.iter().flatten().all(|sample| sample.is_finite()));
+                    if history {
+                        assert!(output.iter().flatten().any(|sample| sample.abs() > 1.0e-7));
+                        assert_eq!(output, expected, "history must match linear playback");
+                    }
+                    let digest =
+                        output
+                            .iter()
+                            .flatten()
+                            .fold(0xcbf2_9ce4_8422_2325_u64, |hash, sample| {
+                                (hash ^ u64::from(sample.to_bits()))
+                                    .wrapping_mul(0x0000_0100_0000_01b3)
+                            });
+                    println!(
+                        "HISTORY_SAMPLE,destination={destination},mode={},warmup={},elapsed_us={},pcm_digest={digest:016x}",
+                        if history { "history" } else { "fresh" },
+                        iteration == 0,
+                        elapsed.as_micros()
+                    );
+                }
+            }
+        }
+    });
+}

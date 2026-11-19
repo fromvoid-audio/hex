@@ -58,7 +58,7 @@ fn ceil_multiple(value: u64, step: u64) -> Option<u64> {
     value.div_ceil(step).checked_mul(step)
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "ui-test-support")))]
 mod tests {
     use super::*;
     use hex_project::{BeatTime, Tempo, TempoMap, TempoPoint};

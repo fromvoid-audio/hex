@@ -152,3 +152,121 @@ fn stopped_session_audio_drains_live_filter_without_callback_allocation_or_drop(
     );
     control.reclaim();
 }
+
+#[test]
+fn session_release_handoff_rejects_replacement_audio_without_callback_allocation() {
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+    let Created::Asset(asset) = editor
+        .execute(Command::AddAsset {
+            path: "memory/release.wav".into(),
+            sample_rate: 48_000,
+            frames: 32,
+        })
+        .unwrap()
+    else {
+        panic!("asset expected")
+    };
+    let Created::Track(track) = editor
+        .execute(Command::AddTrack {
+            name: "audio".into(),
+        })
+        .unwrap()
+    else {
+        panic!("track expected")
+    };
+    let Created::Scene(scene) = editor
+        .execute(Command::AddScene {
+            name: "scene".into(),
+        })
+        .unwrap()
+    else {
+        panic!("scene expected")
+    };
+    let Created::SessionClip(clip) = editor
+        .execute(Command::CreateSessionAudioClip {
+            track,
+            scene,
+            name: "clip".into(),
+            asset,
+            source_start: 0,
+            source_end: 32,
+        })
+        .unwrap()
+    else {
+        panic!("clip expected")
+    };
+    let original = Audio::new(48_000, vec![[0.5; 2]; 32]).unwrap();
+    let replacement = Audio::new(48_000, vec![[-0.5; 2]; 32]).unwrap();
+    let prepare = |audio: &Audio| {
+        Arc::new(
+            PreparedRevision::prepare(
+                editor.project(),
+                &BTreeMap::from([(asset, audio.clone())]),
+                Arc::new(SineTable::new()),
+                None,
+            )
+            .unwrap(),
+        )
+    };
+    let original_revision = prepare(&original);
+    for (audio, keeps_release) in [(&original, true), (&replacement, false)] {
+        let (mut control, mut callback) = prepared::channel(48_000).unwrap();
+        control
+            .publish(
+                Playback::try_from_prepared_with_session(Arc::clone(&original_revision)).unwrap(),
+            )
+            .unwrap();
+        control
+            .launch_and_play_with_ticket(SessionPlaybackCommand::LaunchClip {
+                clip,
+                quantization: LaunchQuantization::Immediate,
+            })
+            .unwrap();
+        let mut prefix = [[0.0; 2]; 8];
+        callback.begin_block();
+        callback.render(&mut prefix).unwrap();
+        control
+            .session_command_with_ticket(SessionPlaybackCommand::StopTrack {
+                track,
+                quantization: LaunchQuantization::Immediate,
+            })
+            .unwrap();
+        let mut release = [[0.0; 2]; 1];
+        callback.begin_block();
+        callback.render(&mut release).unwrap();
+        assert!(release[0][0] > 0.0);
+        let candidate = control
+            .publish(Playback::try_from_prepared_with_session(prepare(audio)).unwrap())
+            .unwrap();
+        let mut after = [[0.0; 2]; 1];
+        let stats = measure(|| {
+            callback.begin_block();
+            callback.render(&mut after).unwrap();
+        });
+        assert_eq!(
+            (
+                stats.count_total,
+                stats.bytes_total,
+                stats.count_current,
+                stats.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        assert_eq!(
+            control
+                .status
+                .applied_revision
+                .load(std::sync::atomic::Ordering::Acquire),
+            candidate
+        );
+        if keeps_release {
+            assert!(after[0][0] > 0.0);
+        } else {
+            assert_eq!(after, [[0.0; 2]]);
+        }
+        control.request_shutdown();
+        callback.begin_block();
+        callback.render(&mut after).unwrap();
+        control.reclaim();
+    }
+}

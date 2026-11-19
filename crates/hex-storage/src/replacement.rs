@@ -292,8 +292,6 @@ fn replace_encoded_with_hooks(
             operation: "synchronize the project directory",
             source,
         });
-    // Best effort: leaked temporaries never fail a committed replacement.
-    let _ = crate::temporaries::sweep_stale_temporaries(&parent);
     Ok(ReplaceOutcome {
         path: target.to_path_buf(),
         recovery_path: recovery,
@@ -569,10 +567,17 @@ pub(crate) fn prepare_temp(
     bytes: &[u8],
     permissions: Option<Permissions>,
 ) -> Result<Temporary, StorageError> {
+    prepare_temp_with(parent, permissions, |file| file.write_all(bytes))
+}
+
+pub(crate) fn prepare_temp_with(
+    parent: &Path,
+    permissions: Option<Permissions>,
+    write: impl FnOnce(&mut File) -> io::Result<()>,
+) -> Result<Temporary, StorageError> {
     let mut created = None;
     for _ in 0..MAX_TEMP_ATTEMPTS {
         let id = NEXT_TEMP.fetch_add(1, Ordering::Relaxed);
-        // `crate::temporaries` sweeps this exact pattern once it is stale.
         let path = parent.join(format!(".hex-r-{}-{id}", std::process::id()));
         let mut options = OpenOptions::new();
         options.write(true).create_new(true);
@@ -596,7 +601,7 @@ pub(crate) fn prepare_temp(
     if let Some(permissions) = permissions {
         file.set_permissions(permissions)?;
     }
-    file.write_all(bytes)?;
+    write(&mut file)?;
     file.sync_all()?;
     drop(file);
     Ok(temporary)

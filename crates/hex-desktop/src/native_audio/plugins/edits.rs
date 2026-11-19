@@ -19,14 +19,10 @@ impl Plugins {
             if check_cancel(cancellation).is_err() {
                 return ForeignProgramFrontier::Unknown;
             }
-            match control.try_native_source_received_program_on_control(binding) {
-                Ok(Some(received)) if received.binding == binding => {
-                    return received.program.map_or(
-                        ForeignProgramFrontier::Empty,
-                        ForeignProgramFrontier::Program,
-                    );
-                }
-                Ok(None) | Err("native preparation is busy" | "native source is busy")
+            match control.try_native_source_program_frontier_on_control(binding) {
+                Ok(frontier) if frontier != ForeignProgramFrontier::Unknown => return frontier,
+                Ok(ForeignProgramFrontier::Unknown)
+                | Err("native preparation is busy" | "native source is busy")
                     if std::time::Instant::now() < deadline =>
                 {
                     poll_control(control);
@@ -98,7 +94,7 @@ impl Plugins {
         cancellation: Option<&RequestCancellation>,
     ) -> Result<Option<Binding>, String> {
         let owner = destination.owner();
-        let retain_instrument = destination.is_instrument()
+        let mut retain_instrument = destination.is_instrument()
             && (self.restore.is_some()
                 || control
                     .status
@@ -112,14 +108,28 @@ impl Plugins {
             })
         {
             let previous = desired.effect_preparation();
-            changed_state = !input.same_authored_plugin_program(
-                &previous,
-                device,
-                control.plugin_callback_quantum_on_control(),
-            );
+            let retimed_effect = !destination.is_instrument()
+                && control
+                    .status
+                    .playing
+                    .load(std::sync::atomic::Ordering::Acquire)
+                && input.retimes_existing_authored_effect(&previous, device);
+            changed_state = !retimed_effect
+                && !input.same_authored_plugin_program(
+                    &previous,
+                    device,
+                    control.plugin_callback_quantum_on_control(),
+                );
             previous.visit_plugin_devices(|old_owner, old_device, old| {
-                changed_state |= old_device == device
-                    && (old_owner.owner() != owner || !old.processing_eq(state));
+                if old_device == device {
+                    let same_processor = old_owner.owner() == owner && old.processing_eq(state);
+                    changed_state |= !same_processor;
+                    // Play can reach the callback after preparation has begun.
+                    // A lane-only edit can keep the existing instrument in either
+                    // transport state because its processor configuration is equal.
+                    retain_instrument |=
+                        destination.is_instrument() && old_owner == destination && same_processor;
+                }
                 Ok(())
             })?;
         }
@@ -138,6 +148,22 @@ impl Plugins {
                 continue;
             }
             if changed_state
+                && !destination.is_instrument()
+                && input.preparing_edit()
+                && let Some(gesture) = self.parameter_gesture.as_ref()
+                && gesture.sequenced_candidate_source(
+                    control,
+                    input.context(),
+                    desired.map(|old| old.context()),
+                    source.binding,
+                    device,
+                    state,
+                    cancellation,
+                )?
+            {
+                return Ok(Some(source.binding));
+            }
+            if changed_state
                 && !retain_instrument
                 && !matches!(source.operation, SourceOperation::Edit(context) if context == input.context())
             {
@@ -146,7 +172,10 @@ impl Plugins {
                 // own source instead of introducing a current/tail alias.
                 continue;
             }
-            if (retain_instrument
+            // A fenced stopped restore may reuse the exact source whose
+            // sequenced capture became canonical during a playing gesture.
+            // The original prepared state can predate that capture.
+            if ((retain_instrument || self.restored_canonical_source(input.context()).is_some())
                 && captured_state_approved(control, source.binding, state, cancellation)?)
                 || original_state(control, source.binding, cancellation)?.processing_eq(state)
             {
@@ -265,6 +294,7 @@ impl Plugins {
                     output.sample_rate,
                     hosting_profile(destination),
                     Some(state.clone()),
+                    None,
                 ) {
                 Ok(binding) => break binding,
                 Err(error) if error == "native preparation is busy" => poll_control(control),
@@ -285,6 +315,7 @@ impl Plugins {
             observes_latency: false,
             editor_open: false,
             editor_transfer: false,
+            editor_open_on_insert: false,
             edit_backlog: false,
             edit_recovery: None,
             pending_touch: None,

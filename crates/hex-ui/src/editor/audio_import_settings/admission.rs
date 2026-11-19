@@ -48,6 +48,9 @@ impl State {
             | Request::ImportToTrack { .. }
             | Request::ImportToTrackWithOverwrite { .. }
             | Request::ImportToNewTrack { .. } => true,
+            Request::InsertProjectSample { destination, .. } => {
+                !matches!(destination, AudioBatchDestination::Console(_))
+            }
             Request::ImportAudioBatch { destination, .. } => {
                 !matches!(destination, AudioBatchDestination::Console(_))
             }
@@ -65,10 +68,21 @@ impl State {
 /// Off without any later preference read. Explicit batches retain their original
 /// strict source context; Console and sampler requests are untouched.
 fn capture(
-    request: Request,
+    mut request: Request,
     warp: AudioImportWarp,
     context: AudioBatchContext,
 ) -> Result<Request, String> {
+    if let Request::InsertProjectSample {
+        destination,
+        warp: captured,
+        ..
+    } = &mut request
+    {
+        if !matches!(destination, AudioBatchDestination::Console(_)) {
+            *captured = warp;
+        }
+        return Ok(request);
+    }
     let (path, destination, overwrite) = match request {
         Request::ImportAudioBatch {
             paths,
@@ -76,6 +90,7 @@ fn capture(
             context,
             control,
             mut options,
+            audition_timing,
         } => {
             if !matches!(destination, AudioBatchDestination::Console(_)) {
                 options.warp = warp;
@@ -86,6 +101,7 @@ fn capture(
                 context,
                 control,
                 options,
+                audition_timing,
             });
         }
         other if warp == AudioImportWarp::Off => return Ok(other),

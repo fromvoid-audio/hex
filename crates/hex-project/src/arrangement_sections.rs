@@ -214,6 +214,7 @@ impl Project {
             aliases,
             native_sources,
             arrangement_sections: _,
+            arrangement_locators,
             tuning,
             routing,
             audio_feeds,
@@ -241,6 +242,7 @@ impl Project {
             && *tempo_map == other.tempo_map
             && *meter_map == other.meter_map
             && *tuning == other.tuning
+            && *arrangement_locators == other.arrangement_locators
             && *aliases == other.aliases
             && *native_sources == other.native_sources
             && *routing == other.routing

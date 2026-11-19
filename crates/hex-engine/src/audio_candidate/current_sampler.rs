@@ -72,6 +72,25 @@ impl RuntimeOwner {
                 .render_with_signal_observers(output, observer, project)
         }
     }
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn render_with_live_track_audio(
+        &mut self,
+        output: &mut [crate::Frame],
+        track: hex_project::TrackId,
+        input: &[crate::Frame],
+        pages: Option<&mut dyn crate::MediaPages>,
+        observer: Option<&mut crate::NodeSignalObserver<'_>>,
+        project: Option<&mut crate::ProjectOutputTap<'_, '_>>,
+        foreign: &mut dyn hex_lattice::ForeignProcessors,
+    ) -> Result<(), crate::Invalid> {
+        let sources = self
+            .sampler_sources
+            .as_ref()
+            .map(|(sources, _)| &***sources);
+        self.playback.render_live_audio(
+            output, track, input, pages, observer, project, sources, foreign,
+        )
+    }
     pub(super) fn render_with_foreign_processors(
         &mut self,
         output: &mut [crate::Frame],

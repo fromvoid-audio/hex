@@ -26,6 +26,16 @@ impl Packet {
     pub fn storage_bytes(&self) -> usize {
         self.bytes.capacity()
     }
+    /// Exchange requests and replies use the same fixed storage in sequence.
+    /// A request encoder must send only the prefix it wrote.
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub fn request_buffer(&mut self, capacity: usize) -> Result<&mut [u8]> {
+        self.len = 0;
+        self.bytes.get_mut(..capacity).ok_or(Error::Protocol(
+            "instance request extent exceeds packet storage",
+        ))
+    }
+
     pub fn data(&self) -> &[u8] {
         &self.bytes[..self.len]
     }
@@ -117,7 +127,7 @@ impl Channel {
                         b"HXVIFL01",
                         b"HXVIGE01",
                         b"HXVIGE02",
-                        b"HXVIMD02",
+                        b"HXVIMD03",
                         b"HXVLCA02",
                         b"HXVIER01",
                         b"HXVITR01",

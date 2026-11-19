@@ -82,9 +82,29 @@ impl VerifiedDeviceParameterSource {
                 preview: Some((identity, Arc::new(project))),
                 terminal: None,
             };
-            source.candidate_reservation_quote().map_err(|_| {
-                SessionError::Invalid("live parameter preview is unavailable for this device")
-            })?;
+            match source.candidate_reservation_quote() {
+                Ok(_) => {}
+                Err(hex_engine::AudioStorageError::UnsupportedGraph) => {
+                    hex_engine::AudioCandidateEffects::with_host_definitions(&[], |effects| {
+                        Ok(source.reservation_quote_with_effects(effects))
+                    })
+                    .map_err(|_| {
+                        SessionError::Invalid(
+                            "live parameter preview is unavailable for this device",
+                        )
+                    })?
+                    .map_err(|_| {
+                        SessionError::Invalid(
+                            "live parameter preview is unavailable for this device",
+                        )
+                    })?;
+                }
+                Err(_) => {
+                    return Err(SessionError::Invalid(
+                        "live parameter preview is unavailable for this device",
+                    ));
+                }
+            }
             return Ok(Some(source));
         }
         if event.device_preview.is_some()
@@ -147,12 +167,30 @@ impl VerifiedDeviceParameterSource {
     pub fn candidate_reservation_quote(
         &self,
     ) -> Result<hex_engine::AudioCandidateReservationQuote, hex_engine::AudioStorageError> {
-        if hex_engine::native_device_resources::requires_private_sampler_sources(self.project()) {
-            return Err(hex_engine::AudioStorageError::UnsupportedGraph);
-        }
-        hex_engine::AudioCandidateReservationQuote::for_project(
+        self.canonical
+            .candidate_reservation_quote_for(self.project())
+    }
+    /// Borrow host effect facts while retaining the canonical source and context.
+    pub fn reservation_quote_with_effects(
+        &self,
+        effects: &hex_engine::AudioCandidateEffects<'_, '_>,
+    ) -> Result<hex_engine::AudioCandidateReservationQuote, hex_engine::AudioStorageError> {
+        self.canonical
+            .candidate_reservation_quote_for_effects(self.project(), Some(effects))
+    }
+    /// Construct the same overlay using host-borrowed effect facts.
+    pub fn prepare_candidate_with_effects_on_control(
+        &self,
+        catalog: u64,
+        destination: &mut hex_engine::AudioCandidatePreparation,
+        effects: &hex_engine::AudioCandidateEffects<'_, '_>,
+    ) -> Result<(), hex_engine::AudioStorageError> {
+        effects.prepare(
+            destination,
             self.project(),
-            self.canonical.required_sources().count(),
+            catalog,
+            self.canonical.context(),
+            None,
         )
     }
     /// Only the existing reserved cell constructs a graph. Context and catalog

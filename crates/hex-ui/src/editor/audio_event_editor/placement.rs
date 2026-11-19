@@ -4,11 +4,11 @@
 use super::*;
 use crate::editor::{
     waveform,
-    waveform_geometry::{WaveformGeometryCache, WaveformMapping},
+    waveform_geometry::{WaveformMapping, WaveformViewCache},
 };
 use hex_project::{AudioDomainClock, AudioEventPlacementPreview, AudioEvents, Clip, TempoMap};
 use hex_session::{CachedWaveform, service::ViewState};
-use std::{cell::RefCell, rc::Rc, sync::Arc};
+use std::{rc::Rc, sync::Arc};
 
 /// The accepted peak source is frozen with the model query. An unrelated actor
 /// event can install new summaries while this edit still awaits its own receipt.
@@ -214,7 +214,7 @@ impl Preview {
         event: u64,
         first: u64,
         end: u64,
-        cache: Rc<RefCell<WaveformGeometryCache>>,
+        cache: Rc<WaveformViewCache>,
         ink: u32,
     ) -> Option<gpui::Div> {
         use gpui::prelude::*;
@@ -252,7 +252,7 @@ impl Preview {
                 Arc::clone(waveform),
                 0,
                 a..b,
-                self.clip().gain(),
+                self.clip().gain().linear(),
                 true,
                 cache,
                 ink,
@@ -264,7 +264,7 @@ impl Preview {
             } => {
                 let a = clip.start().checked_add(a.checked_sub(*first)?)?;
                 let b = clip.start().checked_add(b.checked_sub(*first)?)?;
-                waveform::waveform_view_cached(waveform, clip, a, b, cache, ink)
+                waveform::waveform_view_cached(waveform, clip, a..b, None, cache, ink)
             }
         };
         Some(element.debug_selector(move || format!("audio-event-waveform-{event}")))

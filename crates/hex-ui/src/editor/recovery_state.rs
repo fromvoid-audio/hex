@@ -1,8 +1,26 @@
 //! Readiness belongs to the new control's counters, never an old stream's tickets.
+use hex_engine::AudioSourceContext;
+use hex_session::service::Request;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum DeferredEditKind {
+    NativeEffect,
+    SampleDrop,
+    TimeDuplicate,
+    LoopRegion,
+    ClipPlayStart,
+}
+
+pub(super) struct DeferredGraphEdit {
+    pub(super) kind: DeferredEditKind,
+    pub(super) context: AudioSourceContext,
+    pub(super) request: Box<Request>,
+}
 #[derive(Default)]
 pub(super) struct RecoveryState {
     next_generation: u64,
     active: Option<Attempt>,
+    pub(super) deferred_edit: Option<DeferredGraphEdit>,
 }
 
 struct Attempt {
@@ -14,9 +32,42 @@ struct Attempt {
     seek_outcome: Option<hex_audio::prepared::ActionOutcome>,
     prepared_seek: Option<u64>,
     prepared_revision: Option<u64>,
+    clip_play_start: Option<(AudioSourceContext, hex_project::ClipId)>,
 }
 
 impl RecoveryState {
+    pub(super) fn holds_clip_play_start(&self) -> bool {
+        self.deferred_edit
+            .as_ref()
+            .is_some_and(|edit| edit.kind == DeferredEditKind::ClipPlayStart)
+    }
+
+    pub(super) fn bind_clip_play_start(
+        &mut self,
+        context: AudioSourceContext,
+        clip: hex_project::ClipId,
+    ) {
+        if let Some(attempt) = self.active.as_mut() {
+            attempt.clip_play_start = Some((context, clip));
+        }
+    }
+
+    pub(super) fn admits_clip_play_start(
+        &self,
+        context: AudioSourceContext,
+        clip: hex_project::ClipId,
+    ) -> bool {
+        self.active
+            .as_ref()
+            .is_some_and(|attempt| attempt.clip_play_start == Some((context, clip)))
+    }
+
+    pub(super) fn holds_loop_region(&self) -> bool {
+        self.deferred_edit
+            .as_ref()
+            .is_some_and(|edit| edit.kind == DeferredEditKind::LoopRegion)
+    }
+
     pub(super) fn begin(&mut self, position: u64) -> Result<u64, &'static str> {
         if self.active.is_some() {
             return Err("audio recovery is already pending");
@@ -26,6 +77,7 @@ impl RecoveryState {
             .checked_add(1)
             .ok_or("audio recovery generation exhausted")?;
         self.next_generation = generation;
+        self.deferred_edit = None;
         self.active = Some(Attempt {
             generation,
             position,
@@ -35,6 +87,7 @@ impl RecoveryState {
             seek_outcome: None,
             prepared_seek: None,
             prepared_revision: None,
+            clip_play_start: None,
         });
         Ok(generation)
     }
@@ -232,5 +285,6 @@ impl RecoveryState {
 
     pub(super) fn fail(&mut self) {
         self.active = None;
+        self.deferred_edit = None;
     }
 }

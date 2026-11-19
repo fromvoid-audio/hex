@@ -1,5 +1,6 @@
 //! Actual Mac child control/worker custody. No process-global signal changes or
 //! numeric PID signalling. The helper's pre-SDK guardian owns self-cancellation.
+mod deadline;
 mod edits;
 mod epoch;
 mod live_capture;
@@ -26,7 +27,7 @@ use hex_plugin_scan::macos::{
 };
 use hex_plugin_state::{BinaryIdentity, ClassId, Identity};
 use std::{
-    io::Cursor,
+    io::{Cursor, Read},
     os::{fd::OwnedFd, unix::net::UnixStream},
     path::Path,
     process::{Child, Command, ExitStatus, Stdio},
@@ -43,6 +44,8 @@ pub struct Source {
     executable: Executable,
     identity: Identity,
     grouped_editor_callbacks: bool,
+    transport_space: bool,
+    live_deadline: bool,
 }
 impl Source {
     pub fn inspect_on_control(path: &Path, executable: &str, class: ClassId) -> Result<Self> {
@@ -60,12 +63,24 @@ impl Source {
             executable,
             identity,
             grouped_editor_callbacks: false,
+            transport_space: false,
+            live_deadline: false,
         })
     }
     /// Explicit opt-in on the exact inspected source before the SDK creates
     /// its component handler. This enables callbacks, not recording custody.
     pub fn with_grouped_editor_callbacks(mut self) -> Self {
         self.grouped_editor_callbacks = true;
+        self
+    }
+    pub fn with_transport_space(mut self) -> Self {
+        self.transport_space = true;
+        self
+    }
+    /// Request paired scheduling for a live source on an admitted output.
+    /// Unsupported periods or exhausted capacity leave the source ordinary.
+    pub fn with_live_audio_deadline(mut self, requested: bool) -> Self {
+        self.live_deadline = requested;
         self
     }
     pub fn identity(&self) -> Identity {
@@ -77,6 +92,28 @@ impl Source {
             .map_err(Error::Validation)
     }
 }
+
+/// Optional observation of the synchronous control-side startup. The caller
+/// supplies its separate selection-inspection interval. Absent child intervals
+/// mean the corresponding handoff never completed.
+#[derive(Default)]
+pub struct StartupTimings {
+    pub selection_inspection: Duration,
+    pub revalidation: Duration,
+    pub waitable_probe: Option<Duration>,
+    pub instance_to_facts: Option<Duration>,
+}
+
+fn measure_revalidation<T>(total: Option<&mut Duration>, validate: impl FnOnce() -> T) -> T {
+    let Some(total) = total else {
+        return validate();
+    };
+    let started = Instant::now();
+    let result = validate();
+    *total = total.saturating_add(started.elapsed());
+    result
+}
+
 fn digest(text: &str) -> Result<[u8; 32]> {
     if text.len() != 64 {
         return Err(Error::Protocol("source digest width"));
@@ -141,6 +178,9 @@ pub struct PreparationCancellation {
 impl PreparationCancellation {
     pub fn new_on_control() -> Result<Self> {
         let (sender, receiver) = UnixStream::pair().map_err(Error::Io)?;
+        // Only the parent reads shortcuts and shuts down its write half. The
+        // helper's distinct socket still blocks in its cancellation guardian.
+        sender.set_nonblocking(true).map_err(Error::Io)?;
         Ok(Self {
             token: Cancellation {
                 stream: Arc::new(sender),
@@ -159,6 +199,14 @@ pub struct Cancellation {
     cancelled: Arc<AtomicBool>,
 }
 impl Cancellation {
+    /// One editor Space token on the helper-to-parent half of this exact
+    /// source's socket. The parent-to-helper half remains cancellation only.
+    pub fn take_transport_space_on_control(&self) -> bool {
+        let mut token = [0];
+        !self.cancelled.load(Ordering::Acquire)
+            && self.stream.as_ref().read(&mut token).ok() == Some(1)
+            && token == [1]
+    }
     /// Test-only lifetime observation; never resource provenance or admission.
     /// A weak observer cannot keep the descriptor payload alive.
     #[cfg(feature = "test-support")]
@@ -213,6 +261,7 @@ pub struct Prepared {
     parameter_page_sequence: u64,
     authored_parameter_metadata: Option<AuthoredParameterMetadata>,
     grouped_editor_callbacks: bool,
+    offline: bool,
 }
 /// Source-bound configured component awaiting actual graph presentation facts.
 /// No processing/state capture or canonical/audio acceptance has occurred. Keep
@@ -226,6 +275,7 @@ pub struct Pending {
     packet: Packet,
     source: Source,
     build: InstanceBuild,
+    offline: bool,
 }
 impl Pending {
     /// Preserve actual failed-construction custody for the host's already
@@ -236,8 +286,17 @@ impl Pending {
         preparation: Preparation,
         cancellation: PreparationCancellation,
         _trust: TrustUserCode,
+        timings: Option<&mut StartupTimings>,
     ) -> std::result::Result<Self, PreparationFailure> {
-        Self::prepare_retained(build, source, preparation, None, cancellation, |_| {})
+        Self::prepare_retained(
+            build,
+            source,
+            preparation,
+            None,
+            cancellation,
+            |_| {},
+            timings,
+        )
     }
     /// The retained form of canonical startup restore; original state is not
     /// replaced by capture or by any later preparation failure.
@@ -256,6 +315,7 @@ impl Pending {
             Some(state),
             cancellation,
             |_| {},
+            None,
         )
     }
     pub fn prepare_on_control(
@@ -306,6 +366,10 @@ impl Pending {
                 command.arg("--offline");
             },
         )
+        .map(|mut pending| {
+            pending.offline = true;
+            pending
+        })
     }
     fn prepare(
         build: &InstanceBuild,
@@ -324,8 +388,16 @@ impl Pending {
         cancellation: PreparationCancellation,
         setup: impl FnOnce(&mut Command),
     ) -> Result<Self> {
-        Self::prepare_retained(build, source, preparation, restore, cancellation, setup)
-            .map_err(PreparationFailure::finish_on_control)
+        Self::prepare_retained(
+            build,
+            source,
+            preparation,
+            restore,
+            cancellation,
+            setup,
+            None,
+        )
+        .map_err(PreparationFailure::finish_on_control)
     }
     fn prepare_retained(
         build: &InstanceBuild,
@@ -334,6 +406,7 @@ impl Pending {
         restore: Option<NativeDeviceState>,
         cancellation: PreparationCancellation,
         setup: impl FnOnce(&mut Command),
+        mut timings: Option<&mut StartupTimings>,
     ) -> std::result::Result<Self, PreparationFailure> {
         let options = preparation;
         cancellation
@@ -371,15 +444,19 @@ impl Pending {
             .try_copy_on_control()
             .map_err(Error::Validation)
             .map_err(PreparationFailure::before_native)?;
-        source
-            .unchanged()
-            .map_err(PreparationFailure::before_native)?;
-        build
-            .unchanged()
-            .map_err(Error::Validation)
-            .map_err(PreparationFailure::before_native)?;
+        measure_revalidation(
+            timings
+                .as_deref_mut()
+                .map(|timings| &mut timings.revalidation),
+            || {
+                source.unchanged()?;
+                build.unchanged().map_err(Error::Validation)
+            },
+        )
+        .map_err(PreparationFailure::before_native)?;
         // No foreign module is loaded by this exact executable's probe. A
         // missing/auto-reaped child refuses before any SDK instance starts.
+        let probe_started = timings.as_ref().map(|_| Instant::now());
         let probe = Command::new(build.helper())
             .arg("--child-custody-probe")
             .stdin(Stdio::null())
@@ -388,23 +465,29 @@ impl Pending {
             .spawn()
             .map_err(Error::Io)
             .map_err(PreparationFailure::before_native)?;
-        let mut probe = ChildCustody::Owned(probe);
+        let mut probe = ChildCustody::Owned(probe, None);
         let status = match probe.reap() {
             Ok(status) => status,
             Err(cause) => return Err(PreparationFailure::probe(cause, probe)),
         };
+        if let Some((started, timings)) = probe_started.zip(timings.as_deref_mut()) {
+            timings.waitable_probe = Some(started.elapsed());
+        }
         if !status.success() {
             return Err(PreparationFailure::before_native(Error::Custody(
                 "waitable-child preflight did not exit normally".into(),
             )));
         }
-        build
-            .unchanged()
-            .map_err(Error::Validation)
-            .map_err(PreparationFailure::before_native)?;
-        source
-            .unchanged()
-            .map_err(PreparationFailure::before_native)?;
+        measure_revalidation(
+            timings
+                .as_deref_mut()
+                .map(|timings| &mut timings.revalidation),
+            || {
+                build.unchanged().map_err(Error::Validation)?;
+                source.unchanged()
+            },
+        )
+        .map_err(PreparationFailure::before_native)?;
         let (data, child_data) = UnixStream::pair()
             .map_err(Error::Io)
             .map_err(PreparationFailure::before_native)?;
@@ -417,6 +500,10 @@ impl Pending {
         let mut command = Command::new(build.helper());
         command
             .arg("--supervised")
+            .env(
+                "HEX_VST3_TRANSPORT_SPACE",
+                if source.transport_space { "1" } else { "0" },
+            )
             .stdin(Stdio::from(OwnedFd::from(child_data)))
             .stdout(Stdio::from(OwnedFd::from(child_cancel)))
             .stderr(Stdio::null());
@@ -424,6 +511,17 @@ impl Pending {
             command.arg("--test-grouped-editor");
         }
         setup(&mut command);
+        let deadline = if source.live_deadline && !command.get_args().any(|arg| arg == "--offline")
+        {
+            deadline::Permit::reserve(&config)
+        } else {
+            None
+        };
+        command.env(
+            "HEX_VST3_WORKER_DEADLINE_ADMITTED",
+            if deadline.is_some() { "1" } else { "0" },
+        );
+        let instance_started = timings.as_ref().map(|_| Instant::now());
         let child = command
             .spawn()
             .map_err(Error::Io)
@@ -434,7 +532,7 @@ impl Pending {
         // The process exists before Ready. The local lease below owns every
         // early error path, including malformed data/source changes/timeouts.
         let mut pending = Lease {
-            child: ChildCustody::Owned(child),
+            child: ChildCustody::Owned(child, deadline),
             channel,
             cancellation,
             #[cfg(test)]
@@ -462,9 +560,14 @@ impl Pending {
                 return Err(Error::Protocol("worker did not report preparation facts"));
             }
             let facts = Facts::decode(packet.body()?, &config)?;
+            if let Some((started, timings)) = instance_started.zip(timings.as_deref_mut()) {
+                timings.instance_to_facts = Some(started.elapsed());
+            }
             token.check()?;
-            source.unchanged()?;
-            build.unchanged().map_err(Error::Validation)?;
+            measure_revalidation(timings.map(|timings| &mut timings.revalidation), || {
+                source.unchanged()?;
+                build.unchanged().map_err(Error::Validation)
+            })?;
             match pending.child.observe()? {
                 None => {}
                 Some(_) => return Err(Error::Custody("prepared worker already exited".into())),
@@ -489,6 +592,7 @@ impl Pending {
             packet,
             source,
             build: owned_build,
+            offline: false,
         })
     }
     pub fn facts(&self) -> Facts {
@@ -618,11 +722,17 @@ impl Pending {
             parameter_page_sequence: 0,
             authored_parameter_metadata: None,
             grouped_editor_callbacks: self.source.grouped_editor_callbacks,
+            offline: self.offline,
         })
     }
 }
 
 impl Prepared {
+    /// The original helper was started in SDK offline processing mode.
+    pub const fn is_offline_on_control(&self) -> bool {
+        self.offline
+    }
+
     /// Cancel an instance still held by control during host preparation and
     /// retain its actual lease for independent, nonblocking disposal observation.
     /// This neither returns any callback endpoint nor grants graph admission.
@@ -668,7 +778,15 @@ impl Prepared {
     }
     pub fn child_id_on_control(&self) -> Option<u32> {
         match &self.lease.child {
-            ChildCustody::Owned(child) => Some(child.id()),
+            ChildCustody::Owned(child, _) => Some(child.id()),
+            _ => None,
+        }
+    }
+    /// The PCM period reserved for this exact native child and joining
+    /// transport. The permit itself stays with the waitable child.
+    pub fn deadline_period_on_worker(&self) -> Option<Duration> {
+        match &self.lease.child {
+            ChildCustody::Owned(_, permit) => permit.as_ref().map(|permit| permit.period),
             _ => None,
         }
     }
@@ -677,6 +795,11 @@ impl Prepared {
     pub fn exchange_on_worker(&mut self, block: Block) -> Result<Block> {
         self.exchange_on_worker_with_metadata(block, None, None, false, None, None)
             .map(|reply| reply.block)
+    }
+
+    /// Return the original PCM reply and its helper-side diagnostic timing.
+    pub fn exchange_timed_on_worker(&mut self, block: Block) -> Result<protocol::EditorPcm> {
+        self.exchange_on_worker_with_metadata(block, None, None, false, None, None)
     }
 
     /// Opt this exchange into facts about the effective editor input. This
@@ -827,6 +950,15 @@ impl Prepared {
         manual_parameter: Option<crate::transport::ParameterPoint>,
     ) -> Result<protocol::EditorPcm> {
         self.exchange_armed_with_mode(block, manual_parameter, true, None)
+    }
+
+    /// Return the original authored PCM reply and its helper-side diagnostic timing.
+    pub fn exchange_armed_authored_timed_on_worker(
+        &mut self,
+        block: Block,
+        manual: Option<crate::transport::ParameterPoint>,
+    ) -> Result<protocol::EditorPcm> {
+        self.exchange_armed_with_mode(block, manual, false, None)
     }
 
     /// A scoped editor gesture may temporarily replace one authored parameter.
@@ -997,9 +1129,11 @@ impl Prepared {
             .sequence
             .checked_add(1)
             .ok_or(Error::Protocol("instance sequence exhausted"))?;
-        let mut bytes = [0; crate::transport::wire::MAX_DENSE_PACKET_BYTES
-            + protocol::EditorTouchPlanSet::WIRE_BYTES];
-        let mut cursor = Cursor::new(bytes.as_mut_slice());
+        let bytes = self.packet.request_buffer(
+            crate::transport::wire::MAX_DENSE_PACKET_BYTES
+                + protocol::EditorTouchPlanSet::WIRE_BYTES,
+        )?;
+        let mut cursor = Cursor::new(&mut *bytes);
         match (metadata, dense) {
             (Some(metadata), Some(dense)) => crate::transport::wire::write_dense_authored(
                 &mut cursor,
@@ -1042,6 +1176,7 @@ impl Prepared {
         if observe_editor {
             bytes[5] |= (protocol::EDITOR_PCM_BIT >> 8) as u8;
         }
+        bytes[5] |= (protocol::SDK_TIMING_BIT >> 8) as u8;
         let until = end_after(self.limits.exchange)?;
         let token = self.lease.cancellation.clone();
         self.lease
@@ -1082,12 +1217,18 @@ impl Prepared {
                 self.last_pcm_edit_sequence,
             )?
         } else {
+            let (block, sdk_process_ns) =
+                protocol::timed_pcm(self.packet.data(), &self.config, self.sequence)?;
             protocol::EditorPcm {
-                block: protocol::pcm(self.packet.data(), &self.config, self.sequence)?,
+                block,
                 performs: protocol::EditorPerforms::default(),
                 restorations: Default::default(),
+                sdk_process_ns,
             }
         };
+        if output.sdk_process_ns.is_none() {
+            return Err(Error::Protocol("missing requested SDK processing timing"));
+        }
         token.check()?;
         if let Some(last) = output.performs.as_slice().last() {
             self.last_pcm_edit_sequence = last.sequence;
@@ -1184,14 +1325,27 @@ struct Lease {
 // The process handle is consumed exactly once. Lost custody is terminal: even
 // cleanup/Drop must not retry a numeric wait against a potentially reused PID.
 enum ChildCustody {
-    Owned(Child),
+    Owned(Child, Option<deadline::Permit>),
     Reaped(ExitStatus),
     Lost(Arc<std::io::Error>),
 }
 impl ChildCustody {
+    fn lose(&mut self, error: std::io::Error) -> Error {
+        if let Self::Owned(_, permit) = self
+            && let Some(permit) = permit.take()
+        {
+            // A wait error cannot prove the other scheduling lane has exited.
+            // Keep its scalar reservation until the application exits.
+            std::mem::forget(permit);
+        }
+        let source = Arc::new(error);
+        *self = Self::Lost(Arc::clone(&source));
+        Error::Custody(crate::CustodyError::Lost(source))
+    }
+
     fn observe(&mut self) -> Result<Option<ExitStatus>> {
         let result = match self {
-            Self::Owned(child) => child.try_wait(),
+            Self::Owned(child, _) => child.try_wait(),
             Self::Reaped(status) => return Ok(Some(*status)),
             Self::Lost(error) => {
                 return Err(Error::Custody(crate::CustodyError::Lost(Arc::clone(error))));
@@ -1203,16 +1357,12 @@ impl ChildCustody {
                 Ok(Some(status))
             }
             Ok(None) => Ok(None),
-            Err(error) => {
-                let source = Arc::new(error);
-                *self = Self::Lost(Arc::clone(&source));
-                Err(Error::Custody(crate::CustodyError::Lost(source)))
-            }
+            Err(error) => Err(self.lose(error)),
         }
     }
     fn reap(&mut self) -> Result<ExitStatus> {
         let result = match self {
-            Self::Owned(child) => child.wait(),
+            Self::Owned(child, _) => child.wait(),
             Self::Reaped(status) => return Ok(*status),
             Self::Lost(error) => {
                 return Err(Error::Custody(crate::CustodyError::Lost(Arc::clone(error))));
@@ -1223,11 +1373,7 @@ impl ChildCustody {
                 *self = Self::Reaped(status);
                 Ok(status)
             }
-            Err(error) => {
-                let source = Arc::new(error);
-                *self = Self::Lost(Arc::clone(&source));
-                Err(Error::Custody(crate::CustodyError::Lost(source)))
-            }
+            Err(error) => Err(self.lose(error)),
         }
     }
 }
