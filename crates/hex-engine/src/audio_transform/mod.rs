@@ -30,6 +30,7 @@ mod group;
 pub use granular_requirements::{StreamedGranularRequirement, StreamedGranularRequirements};
 pub(crate) use group::{GroupSource, sparse_group_plan};
 mod mapping;
+mod processing_root;
 mod view;
 use crate::{Audio, Clip, Invalid, compile::PreparedAudioSourceRef};
 pub(crate) use budget::Reservation;
@@ -830,13 +831,13 @@ impl AudioTransformPreparation {
         asset: &Asset,
         source: &Audio,
     ) -> Result<Audio, Invalid> {
+        if self.cancelled() {
+            return Err(Invalid("audio preparation cancelled"));
+        }
         edit.domain
             .fade_clock
             .require_supported()
             .map_err(|error| Invalid(error.0))?;
-        if self.cancelled() {
-            return Err(Invalid("audio preparation cancelled"));
-        }
         let (_, length, _, _) = edit.projected_domain(tempo_map)?;
         let tempo = if edit.reference_start_raw().is_some() {
             Some(self.shared_tempo(edit.processing_tempo(tempo_map))?)
@@ -1258,6 +1259,7 @@ fn same_translated_domain(a: &AudioClipDomain, b: &AudioClipDomain) -> bool {
         && a.source_phase == b.source_phase
         && a.looping == b.looping
         && a.fade == b.fade
+        && a.fade_clock == b.fade_clock
         && a.fade_start == b.fade_start
         && (a.fade_projection == b.fade_projection || a.fade.is_neutral())
 }
