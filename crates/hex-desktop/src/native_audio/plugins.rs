@@ -5,8 +5,8 @@ use hex_audio::plugin_effects::EffectBinding as Binding;
 use hex_audio::{
     NativeSourcePreparationProgress as Progress,
     plugin_effects::{
-        AuthoredSelection, EffectPresentation, EffectPresentationPlan, EffectSelection, Hosting,
-        PluginProfile,
+        AuthoredSelection, EffectPresentation, EffectPresentationPlan, EffectSelection,
+        EffectStartupTimings, Hosting, PluginProfile,
     },
 };
 use hex_engine::{PreparedRevision, ProcessorChainOwner};
@@ -78,6 +78,7 @@ struct Pending {
     context: AudioSourceContext,
     result: Option<Result<NativeDeviceState, String>>,
     facts_ready_for_session: bool,
+    facts_observed: bool,
     #[cfg(all(test, feature = "allocation-probe"))]
     facts_attempt_from_session: bool,
 }
@@ -551,6 +552,10 @@ impl Plugins {
                 .editor_revision
                 .checked_add(1)
                 .ok_or("vst3 graph revision exhausted")?;
+            let mut timing = self
+                .diagnostics
+                .as_ref()
+                .map(|_| (std::time::Instant::now(), EffectStartupTimings::default()));
             let binding = match host.begin_on_control(
                 control,
                 EffectSelection {
@@ -566,6 +571,7 @@ impl Plugins {
                 output.sample_rate,
                 hosting_profile(input.insertion.destination),
                 None,
+                timing.as_mut().map(|(_, timings)| timings),
             ) {
                 Ok(binding) => binding,
                 // Root's contended Work mutex refuses before reserving a slot
@@ -577,6 +583,22 @@ impl Plugins {
                 }
                 Err(reason) => return Err(reason),
             };
+            if let Some((started, timing)) = timing {
+                record_insertion_stage(
+                    self.diagnostics.as_ref(),
+                    binding,
+                    input.insertion.context.project_generation,
+                    "native_prepare_returned",
+                    format_args!(
+                        " elapsed_ns={} selection_inspection_ns={} revalidation_ns={} waitable_probe_ns={:?} instance_to_facts_ns={:?}",
+                        started.elapsed().as_nanos(),
+                        timing.selection_inspection.as_nanos(),
+                        timing.revalidation.as_nanos(),
+                        timing.waitable_probe.map(|elapsed| elapsed.as_nanos()),
+                        timing.instance_to_facts.map(|elapsed| elapsed.as_nanos()),
+                    ),
+                );
+            }
             #[cfg(all(test, feature = "allocation-probe"))]
             if let Some(gate) = self.facts_gate.as_mut() {
                 gate.binding = Some(binding);
@@ -609,6 +631,7 @@ impl Plugins {
                 context: input.insertion.context,
                 result: None,
                 facts_ready_for_session: false,
+                facts_observed: false,
                 #[cfg(all(test, feature = "allocation-probe"))]
                 facts_attempt_from_session: false,
             });
@@ -658,6 +681,13 @@ impl Plugins {
                     .is_some_and(|p| matches!(p.result, Some(Ok(_))));
             source.retiring |= !source.accepted;
             source.editor_open_on_insert = source.accepted && operation.opens_editor();
+            record_insertion_stage(
+                self.diagnostics.as_ref(),
+                source.binding,
+                source.project_generation,
+                "graph_terminal",
+                format_args!(" committed={}", source.accepted),
+            );
         }
     }
     pub fn poll(
@@ -794,6 +824,16 @@ impl Plugins {
                 // check could advance newly arrived Facts during background poll.
                 let progress = control.native_source_preparation_progress(source.binding);
                 let at_facts = matches!(progress, Some(Progress::Facts(_)));
+                if at_facts && !pending.facts_observed {
+                    pending.facts_observed = true;
+                    record_insertion_stage(
+                        self.diagnostics.as_ref(),
+                        source.binding,
+                        source.project_generation,
+                        "native_facts",
+                        format_args!(""),
+                    );
+                }
                 #[cfg(all(test, feature = "allocation-probe"))]
                 let held = if at_facts {
                     let held = self
@@ -842,7 +882,16 @@ impl Plugins {
                         })
                 };
                 match result {
-                    Ok(Some(state)) => pending.result = Some(Ok(state)),
+                    Ok(Some(state)) => {
+                        record_insertion_stage(
+                            self.diagnostics.as_ref(),
+                            source.binding,
+                            source.project_generation,
+                            "endpoint_ready",
+                            format_args!(""),
+                        );
+                        pending.result = Some(Ok(state));
+                    }
                     Ok(None) => {}
                     Err(error) => pending.result = Some(Err(bounded_error(error))),
                 }
@@ -1118,6 +1167,26 @@ fn hosting_profile(destination: PluginEffectDestination) -> PluginProfile {
         PluginProfile::Instrument
     } else {
         PluginProfile::Effect
+    }
+}
+
+/// Bounded worker-side correlation for one native insertion. The binding
+/// identifies the output, planned device, successor revision and lease.
+fn record_insertion_stage(
+    log: Option<&hex_diagnostics::DiagnosticsHandle>,
+    binding: Binding,
+    generation: u64,
+    stage: &'static str,
+    detail: std::fmt::Arguments<'_>,
+) {
+    if let Some(log) = log {
+        let _ = log.record_typed(
+            hex_diagnostics::Level::Debug,
+            hex_diagnostics::Category::Audio,
+            &format!(
+                "vst3_insert v=1 stage={stage} generation={generation} binding={binding:?}{detail}"
+            ),
+        );
     }
 }
 

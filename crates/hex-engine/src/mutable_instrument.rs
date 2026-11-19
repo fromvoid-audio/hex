@@ -336,6 +336,49 @@ impl DetachedSourceSends {
 }
 
 impl MutableInstrumentTrackRuntime {
+    /// Resource, live and parameter owners must not need to interleave with
+    /// this track's isolated dry rendering.
+    pub(crate) fn can_batch_isolated_window(&self, frames: u64) -> bool {
+        let last_offset = frames.saturating_sub(1);
+        let live_idle = self.live.as_ref().is_none_or(|live| {
+            live.pending_len == 0
+                && live.scratch.iter().all(Option::is_none)
+                && live
+                    .scratch_age
+                    .checked_add(last_offset)
+                    .and_then(|age| age.checked_add(self.max_release_tail_frames()))
+                    .is_some()
+        });
+        live_idle
+            && self.resources.is_none()
+            && self.expression.is_none()
+            && self.modulation.is_none()
+            && self.output_trim.is_none()
+            && !self.has_volume_gain()
+    }
+
+    /// Advance up to the next pending gate or proof retirement. A gate already
+    /// due renders on its own frame; an already quiet proof retires at entry.
+    pub(crate) fn isolated_segment_width(&self, performance: u64, max_frames: usize) -> usize {
+        let source_age = self.live.as_ref().map(|live| live.scratch_age);
+        let mut width = max_frames as u64;
+        for voice in &self.scratch {
+            let until_boundary = if voice.note_off_sent {
+                let (start, quiet) = source_age
+                    .zip(voice.quiet_deadline_age)
+                    .unwrap_or((performance, voice.quiet_deadline_frame));
+                if quiet <= start {
+                    continue;
+                }
+                quiet - start
+            } else {
+                voice.gate_end_frame.saturating_sub(performance)
+            };
+            width = width.min(until_boundary);
+        }
+        width.max(1) as usize
+    }
+
     pub(crate) fn is_concrete_current_sampler(&self) -> bool {
         self.resources.is_none()
             && self.expression.is_none()

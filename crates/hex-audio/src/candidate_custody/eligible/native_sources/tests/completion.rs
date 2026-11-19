@@ -20,6 +20,7 @@ fn start_absent(root: &Custody, restore: Option<NativeDeviceState>) -> Binding {
         preparation,
         restore,
         native::TrustUserCode::Acknowledged,
+        None,
     )
     .unwrap()
 }

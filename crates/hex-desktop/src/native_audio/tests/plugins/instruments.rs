@@ -63,12 +63,13 @@ fn slow_native_instrument_exchange_reaches_the_session_log() {
     let catalog = files.0.canonicalize().unwrap().join("plugin-catalog.json");
     let mut log = hex_diagnostics::SessionLog::start(files.0.join("logs")).unwrap();
     let log_path = log.path();
-    let mut harness = ResidentHarness::with_plugins_catalog_and_diagnostics(
+    let mut harness = ResidentHarness::with_plugins_at_rate_catalog_and_diagnostics(
         host(),
         Some(EffectPresentation {
             input_frames: 0,
             output_frames: 512,
         }),
+        48_000,
         catalog,
         log.handle(),
     );
@@ -1318,6 +1319,11 @@ fn instrument_entrypoint(workflow: InstrumentWorkflow) {
         output_frames: 512,
     });
     let automation_parameter = std::env::var("HEX_TEST_VST3_INSTRUMENT_AUTOMATION_PARAMETER").ok();
+    let paced_history_log = matches!(workflow, InstrumentWorkflow::PacedFiveHistory).then(|| {
+        let files = Files::new();
+        let log = hex_diagnostics::SessionLog::start(files.0.join("logs")).unwrap();
+        (files, log)
+    });
     let recording_catalog = std::env::var("HEX_DESKTOP_INSTRUMENT_TAKEOVER_CASE")
         .ok()
         .filter(|case| case.starts_with("session_"))
@@ -1346,7 +1352,23 @@ fn instrument_entrypoint(workflow: InstrumentWorkflow) {
         )
     } else if automation_parameter.is_some() || (shared_authoring && installed.is_some()) {
         let catalog = PathBuf::from(std::env::var_os("HEX_TEST_VST3_INSTRUMENT_CATALOG").unwrap());
-        ResidentHarness::with_plugins_at_rate_and_catalog(host(), presentation, rate, catalog, 8192)
+        if let Some((_, log)) = &paced_history_log {
+            ResidentHarness::with_plugins_at_rate_catalog_and_diagnostics(
+                host(),
+                presentation,
+                rate,
+                catalog,
+                log.handle(),
+            )
+        } else {
+            ResidentHarness::with_plugins_at_rate_and_catalog(
+                host(),
+                presentation,
+                rate,
+                catalog,
+                8192,
+            )
+        }
     } else {
         ResidentHarness::with_plugins_at_rate(host(), presentation, rate)
     };
@@ -1592,6 +1614,23 @@ fn instrument_entrypoint(workflow: InstrumentWorkflow) {
             monitor,
             matches!(workflow, InstrumentWorkflow::PacedFiveHistory),
         );
+        if let Some((_files, mut log)) = paced_history_log {
+            drop(harness);
+            log.shutdown().unwrap();
+            assert_eq!(log.handle().overflow_count(), 0);
+            let evidence = fs::read_to_string(log.path()).unwrap();
+            assert_eq!(
+                evidence
+                    .matches("vst3_insert v=1 stage=graph_terminal")
+                    .count(),
+                5,
+                "the driver must observe all five hosted sources"
+            );
+            assert!(
+                !evidence.contains("vst3 v=1 stage=concealed_output"),
+                "the mixed output can sound while one worker conceals a quantum: {evidence}"
+            );
+        }
         return;
     }
     if matches!(workflow, InstrumentWorkflow::ArrangementTempoAutomation) {

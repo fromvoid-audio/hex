@@ -17,11 +17,115 @@ pub(super) enum ResidentRoute {
 pub(super) struct BatchedSources<'a> {
     pub(super) index: usize,
     pub(super) audio: &'a [bool; MAX_TRACKS],
-    pub(super) analytic: &'a [bool; MAX_TRACKS],
+    pub(super) instrument: &'a [bool; MAX_TRACKS],
     pub(super) stamps: Option<&'a [Option<TransportStamp>]>,
     pub(super) aligned: &'a [bool; MAX_TRACKS],
     pub(super) passthrough: &'a [ResidentRoute; MAX_TRACKS],
     pub(super) batched_sends: bool,
+    /// Track sum in canonical Main mix order, including the incoming frame.
+    pub(super) main: Option<Frame>,
+}
+
+pub(super) struct ResidentSourceWindow {
+    pub(super) performance_frame: u64,
+    pub(super) arrangement_frame: u64,
+    pub(super) frames: usize,
+    pub(super) mutable_loop_pass: Option<u64>,
+    pub(super) chase_at_start: bool,
+}
+
+pub(super) fn add_main_track(main: &mut [Frame], track: &[Frame]) {
+    for (mixed, sample) in main.iter_mut().zip(track) {
+        mixed[0] += sample[0];
+        mixed[1] += sample[1];
+    }
+}
+
+fn render_isolated_mutable_window<T: crate::prepared_tempo::MidiTempoBreaks>(
+    context: MutableInstrumentChunkContext<'_, T>,
+    index: usize,
+    track: &crate::Track,
+    output: &mut [Frame],
+) -> Result<(), SessionPlaybackError> {
+    let start = context.arrangement_frame;
+    let end = start
+        .checked_add(output.len() as u64)
+        .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
+    context
+        .performance_frame
+        .checked_add(output.len() as u64)
+        .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
+    let mut note_boundaries = [false; 256];
+    let note_boundaries = &mut note_boundaries[..output.len()];
+    note_boundaries[0] = context.chase_at_start
+        || (context.arrangement_loop_pass > 0
+            && context
+                .loop_region
+                .is_some_and(|region| start == region.start()));
+    track
+        .for_each_mutable_midi_span(start, end, |span| {
+            if (start..end).contains(&span.start) {
+                note_boundaries[(span.start - start) as usize] = true;
+            }
+        })
+        .map_err(|_| SessionPlaybackError::MutableInstrumentEvents)?;
+    let mut offset = 0;
+    while offset < output.len() {
+        let performance = context.performance_frame + offset as u64;
+        let next_onset = note_boundaries[offset..]
+            .iter()
+            .position(|&due| due)
+            .unwrap_or(output.len() - offset);
+        let runtime = context.runtimes[index]
+            .as_ref()
+            .ok_or(SessionPlaybackError::MutableInstrumentRuntime)?;
+        let width = runtime.isolated_segment_width(performance, next_onset.max(1));
+        let segment_end = offset + width;
+        render_mutable_instrument_chunk(
+            MutableInstrumentChunkContext {
+                runtimes: &mut *context.runtimes,
+                onsets: &mut *context.onsets,
+                events: &mut *context.events,
+                spans: &mut *context.spans,
+                performance_frame: performance,
+                arrangement_frame: start + offset as u64,
+                chase_at_start: context.chase_at_start && offset == 0,
+                ..context
+            },
+            index,
+            &mut output[offset..segment_end],
+            None,
+        )?;
+        offset = segment_end;
+    }
+    Ok(())
+}
+
+fn resident_return_track_taps(
+    track: &crate::Track,
+    mut frame: Frame,
+    route: ResidentRoute,
+    metering: bool,
+) -> Frame {
+    // Unity scratch already preserves both tap magnitudes. Other tracks
+    // retain their raw scratch so each tap can observe its own gain stage.
+    if route != ResidentRoute::Unity {
+        frame[0] += 0.0;
+        frame[1] += 0.0;
+        track.apply_instrument_input_gain(std::slice::from_mut(&mut frame));
+    }
+    if metering {
+        track.instrument_meter.observe_input(&[frame]);
+    }
+    if route != ResidentRoute::Unity {
+        frame[0] += 0.0;
+        frame[1] += 0.0;
+        track.apply_instrument_output_gain(std::slice::from_mut(&mut frame));
+    }
+    if metering {
+        track.instrument_meter.observe_output(&[frame]);
+    }
+    frame
 }
 
 impl SessionPlayback {
@@ -176,12 +280,7 @@ impl SessionPlayback {
                         if routes[index] == ResidentRoute::Passthrough {
                             // Match the per-frame input/output taps below exactly;
                             // the original raw sample remains for meter publication.
-                            value[0] += 0.0;
-                            value[1] += 0.0;
-                            track.apply_instrument_input_gain(std::slice::from_mut(&mut value));
-                            value[0] += 0.0;
-                            value[1] += 0.0;
-                            track.apply_instrument_output_gain(std::slice::from_mut(&mut value));
+                            value = resident_return_track_taps(track, value, routes[index], false);
                             value = mix.apply_frame(value);
                         }
                         output[0] += value[0] * send.gain;
@@ -194,20 +293,70 @@ impl SessionPlayback {
         true
     }
 
-    /// Prepare resident audio and eligible analytic MIDI. A shared receiver uses
-    /// its scratch only when its active route has no local audio source.
-    /// Active suppressions or continuations retain per-frame scheduling. No page provider is read and
-    /// per-frame DSP/routing order is unchanged. The caller bounds each window
-    /// before every transport or route discontinuity.
+    /// After independent sends are prepared, advance each track's dry Main
+    /// edge in sample order. The wet Return processors still run per frame.
+    /// Keep the undelayed source scratch for the original per-frame meters.
+    pub(super) fn prepare_resident_return_main(
+        &mut self,
+        main: &mut [Frame],
+        routes: &[ResidentRoute; MAX_TRACKS],
+    ) -> Result<(), SessionPlaybackError> {
+        let compensation = self
+            .compensation
+            .as_mut()
+            .ok_or(SessionPlaybackError::DeviceRuntime)?;
+        let mut aligned = [[0.0; 2]; 256];
+        let aligned = &mut aligned[..main.len()];
+        for (index, (samples, &route)) in
+            self.resident_source_scratch.iter().zip(routes).enumerate()
+        {
+            let crate::signal_graph::TrackOutput::Main { edge } =
+                compensation.graph.tracks[index].output
+            else {
+                return Err(SessionPlaybackError::DeviceRuntime);
+            };
+            let work_start = self.render_work.track(index);
+            let samples = &samples[..aligned.len()];
+            if route == ResidentRoute::Unity {
+                aligned.copy_from_slice(samples);
+            } else {
+                let track = &self.revision.arrangement().tracks()[index];
+                let mix = track
+                    .mix()
+                    .with_channel_gain(self.track_fader_scratch[index].current());
+                for (output, &sample) in aligned.iter_mut().zip(samples) {
+                    *output =
+                        mix.apply_frame(resident_return_track_taps(track, sample, route, false));
+                }
+            }
+            compensation
+                .edge_block(edge, aligned)
+                .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
+            add_main_track(main, aligned);
+            self.render_work.finish(work_start);
+        }
+        Ok(())
+    }
+
+    /// Prepare resident audio and eligible instrument PCM. An instrument's
+    /// window must have no local audio in the same scratch. The caller bounds
+    /// windows at route and transport cuts and admits mutable processing only
+    /// on an independent dry graph with no live inputs or observable capture.
+    /// Page demand and downstream DSP still advance through the scalar route.
     pub(super) fn prepare_resident_sources(
         &mut self,
-        performance_frame: u64,
-        arrangement_frame: u64,
-        frames: usize,
+        window: ResidentSourceWindow,
         eligible: &mut [bool; MAX_TRACKS],
-        analytic: &mut [bool; MAX_TRACKS],
+        instruments: &mut [bool; MAX_TRACKS],
         live_track: Option<TrackId>,
     ) -> Result<(), SessionPlaybackError> {
+        let ResidentSourceWindow {
+            performance_frame,
+            arrangement_frame,
+            frames,
+            mutable_loop_pass,
+            chase_at_start,
+        } = window;
         if frames > 256 || self.resident_source_scratch.len() != self.route_scratch.len() {
             return Err(SessionPlaybackError::DeviceRuntime);
         }
@@ -229,10 +378,11 @@ impl SessionPlayback {
                 )
             });
         eligible.fill(false);
-        analytic.fill(false);
+        instruments.fill(false);
         let batch_analytic = self.suppression_scratch.is_empty()
             && self.analytic_continuations.iter().all(Option::is_none);
         let timing = timing_view_for(self.revision.session(), self.periodic_tempo(), self.anchor);
+        let active_loop = mutable_loop_pass.and_then(|_| self.active_loop_region());
         for (index, (route, scratch)) in self
             .route_scratch
             .iter()
@@ -302,7 +452,7 @@ impl SessionPlayback {
                         arrangement_frame,
                         output,
                     )?;
-                    *analytic
+                    *instruments
                         .get_mut(index)
                         .ok_or(SessionPlaybackError::DeviceRuntime)? = true;
                     self.render_work.finish(work_start);
@@ -317,7 +467,55 @@ impl SessionPlayback {
                         .tracks()
                         .get(index)
                         .ok_or(SessionPlaybackError::UnknownTrack)?;
-                    if batch_analytic
+                    if let Some(arrangement_loop_pass) = mutable_loop_pass
+                        && batch_analytic
+                        && track.clips.is_empty()
+                        && track.receives_source_audio()
+                        && track.midi_source_index.is_none()
+                        && !self.revision.source_routing().is_shared(index)
+                        && track
+                            .instrument
+                            .as_ref()
+                            .is_some_and(|device| device.mutable && device.volumes.is_none())
+                        && track.instrument_id.is_some_and(|device| {
+                            self.revision
+                                .session()
+                                .instrument_automation_at(index, device)
+                                .is_none()
+                        })
+                        && self.mutable_instruments[index]
+                            .as_ref()
+                            .is_some_and(|runtime| runtime.can_batch_isolated_window(frames as u64))
+                    {
+                        render_isolated_mutable_window(
+                            MutableInstrumentChunkContext {
+                                revision: &self.revision,
+                                midi: crate::session_inventory::EffectiveSessionMidi::new(
+                                    self.revision.session(),
+                                    self.midi_admission.as_ref(),
+                                ),
+                                sources: None,
+                                routes: &self.route_scratch,
+                                runtimes: &mut self.mutable_instruments,
+                                onsets: &mut self.mutable_onsets,
+                                suppressions: &self.suppression_scratch,
+                                events: &mut self.mutable_events,
+                                spans: &mut self.spans,
+                                performance_frame,
+                                arrangement_frame,
+                                arrangement_loop_pass,
+                                transient: None,
+                                chase_at_start,
+                                pending_shared_chase: None,
+                                loop_region: active_loop,
+                                timing: &timing,
+                            },
+                            index,
+                            track,
+                            output,
+                        )?;
+                        instruments[index] = true;
+                    } else if batch_analytic
                         && track.clips.is_empty()
                         && track.midi_source_index.is_none()
                         && !self.revision.source_routing().is_shared(index)
@@ -340,7 +538,7 @@ impl SessionPlayback {
                                 Some(self.revision.session().timing()),
                             )
                             .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
-                        *analytic
+                        *instruments
                             .get_mut(index)
                             .ok_or(SessionPlaybackError::DeviceRuntime)? = true;
                     } else if !track.has_streamed_clips {
@@ -416,7 +614,7 @@ impl SessionPlayback {
                         None,
                         SourceStage::Instrument,
                     )?;
-                    *analytic
+                    *instruments
                         .get_mut(index)
                         .ok_or(SessionPlaybackError::DeviceRuntime)? = true;
                 }
@@ -803,9 +1001,16 @@ impl SessionPlayback {
             .compensation
             .as_mut()
             .ok_or(SessionPlaybackError::DeviceRuntime)?;
-        compensation.inputs.fill([0.0; 2]);
-        compensation.main.fill([0.0; 2]);
-        let owner_count = compensation.graph.owner_order.len();
+        let batched_main = resident_source.and_then(|batch| batch.main);
+        if batched_main.is_none() {
+            compensation.inputs.fill([0.0; 2]);
+            compensation.main.fill([0.0; 2]);
+        }
+        let owner_count = if batched_main.is_none() || batched_sends {
+            compensation.graph.owner_order.len()
+        } else {
+            0
+        };
         for order in 0..owner_count {
             let owner = self
                 .compensation
@@ -816,6 +1021,19 @@ impl SessionPlayback {
             match owner {
                 crate::signal_graph::Owner::Track(index) => {
                     let track = &self.revision.arrangement().tracks()[index];
+                    if let Some(batch) = resident_source.filter(|batch| batch.main.is_some()) {
+                        if self.device_metering {
+                            let work_start = self.render_work.track(index);
+                            resident_return_track_taps(
+                                track,
+                                self.resident_source_scratch[index][batch.index],
+                                batch.passthrough[index],
+                                true,
+                            );
+                            self.render_work.finish(work_start);
+                        }
+                        continue;
+                    }
                     let route = self.route_scratch[index];
                     // The aligned owner was already timed with its batch.
                     if let Some(batch) = resident_source.filter(|batch| batch.aligned[index]) {
@@ -838,26 +1056,16 @@ impl SessionPlayback {
                     let mixed = if let Some(batch) = resident_source
                         .filter(|batch| batch.passthrough[index] != ResidentRoute::Scalar)
                     {
-                        let mut frame = self.resident_source_scratch[index][batch.index];
-                        if batch.passthrough[index] == ResidentRoute::Unity {
-                            if self.device_metering {
-                                track.instrument_meter.observe_input(&[frame]);
-                                track.instrument_meter.observe_output(&[frame]);
-                            }
+                        let route = batch.passthrough[index];
+                        let frame = resident_return_track_taps(
+                            track,
+                            self.resident_source_scratch[index][batch.index],
+                            route,
+                            self.device_metering,
+                        );
+                        if route == ResidentRoute::Unity {
                             frame
                         } else {
-                            frame[0] += 0.0;
-                            frame[1] += 0.0;
-                            track.apply_instrument_input_gain(std::slice::from_mut(&mut frame));
-                            if self.device_metering {
-                                track.instrument_meter.observe_input(&[frame]);
-                            }
-                            frame[0] += 0.0;
-                            frame[1] += 0.0;
-                            track.apply_instrument_output_gain(std::slice::from_mut(&mut frame));
-                            if self.device_metering {
-                                track.instrument_meter.observe_output(&[frame]);
-                            }
                             // The current stamp was just pushed. Admission proves
                             // zero fader arrival, no gain automation and no group
                             // mute, so its mix is exactly the static track mix.
@@ -870,10 +1078,10 @@ impl SessionPlayback {
                         let mut audio = [[0.0; 2]];
                         let mut generator = [[0.0; 2]];
                         if self.playing {
-                            let analytic_index = resident_source
-                                .filter(|batch| batch.analytic.get(index).copied().unwrap_or(false))
+                            let instrument_index = resident_source
+                                .filter(|batch| batch.instrument[index])
                                 .map(|batch| batch.index);
-                            if analytic_index.is_some() {
+                            if instrument_index.is_some() {
                                 // This route has no audio source; its scratch window
                                 // holds the instrument side of the ordered graph.
                             } else if let Some(sample_index) = resident_source
@@ -920,7 +1128,7 @@ impl SessionPlayback {
                             // source cannot contribute instrument samples. Shared
                             // sources and session routes must still use the normal
                             // scheduler, even when this track has no local instrument.
-                            if let Some(sample_index) = analytic_index {
+                            if let Some(sample_index) = instrument_index {
                                 generator[0] = *self
                                     .resident_source_scratch
                                     .get(index)
@@ -988,11 +1196,12 @@ impl SessionPlayback {
                                     None,
                                 )?;
                             }
-                            if self
-                                .mutable_instruments
-                                .get(index)
-                                .and_then(Option::as_ref)
-                                .is_some()
+                            if instrument_index.is_none()
+                                && self
+                                    .mutable_instruments
+                                    .get(index)
+                                    .and_then(Option::as_ref)
+                                    .is_some()
                             {
                                 render_mutable_instrument_chunk(
                                     MutableInstrumentChunkContext {
@@ -1374,14 +1583,18 @@ impl SessionPlayback {
                 }
             }
         }
-        for main in &self
-            .compensation
-            .as_ref()
-            .ok_or(SessionPlaybackError::DeviceRuntime)?
-            .main
-        {
-            output[0][0] += main[0];
-            output[0][1] += main[1];
+        if let Some(main) = batched_main {
+            output[0] = main;
+        } else {
+            for main in &self
+                .compensation
+                .as_ref()
+                .ok_or(SessionPlaybackError::DeviceRuntime)?
+                .main
+            {
+                output[0][0] += main[0];
+                output[0][1] += main[1];
+            }
         }
         for scratch in &self.return_scratch {
             output[0][0] += scratch[return_offset][0];
@@ -1412,6 +1625,51 @@ impl SessionPlayback {
 mod tests {
     use super::*;
     use crate::signal_graph::tests::fixture;
+
+    #[test]
+    fn aligned_main_sum_preserves_sample_order_across_a_loop() {
+        let mut f = fixture(&[&[], &[], &[], &[7]], 384);
+        let small = f32::EPSILON / 4.0;
+        // Summing the small contribution after the cancellation changes the
+        // PCM bits. Render the oracle through scalar routing.
+        for (audio, frame) in
+            f.media
+                .values_mut()
+                .zip([[1.0, -1.0], [small, -small], [-1.0, 1.0], [0.125, -0.125]])
+        {
+            *audio = crate::Audio::new(48_000, vec![frame; 384]).unwrap();
+        }
+        f.editor
+            .execute(hex_project::Command::SetLoopRegion {
+                start: 32,
+                end: 321,
+                enabled: true,
+            })
+            .unwrap();
+        let revision = crate::signal_graph::tests::prepare(&f).unwrap();
+        assert_eq!(revision.arrangement().main_latency_frames(), 7);
+        let mut batched = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+        let mut scalar = SessionPlayback::new(revision).unwrap();
+        scalar.resident_source_scratch.clear();
+        for playback in [&mut batched, &mut scalar] {
+            playback.apply(SessionPlaybackCommand::Play).unwrap();
+        }
+        let mut actual = [[0.0; 2]; 704];
+        let mut expected = actual;
+        for block in actual.chunks_mut(257) {
+            batched.render(block).unwrap();
+        }
+        for frame in expected.chunks_mut(1) {
+            scalar.render(frame).unwrap();
+        }
+        assert!(expected.contains(&[0.125, -0.125]));
+        for (actual, expected) in actual.into_iter().zip(expected) {
+            assert_eq!(actual.map(f32::to_bits), expected.map(f32::to_bits));
+        }
+        assert_eq!(batched.arrangement_frame, scalar.arrangement_frame);
+        assert_eq!(batched.arrangement_loop_pass, scalar.arrangement_loop_pass);
+        assert_eq!(batched.performance_frame, scalar.performance_frame);
+    }
 
     #[test]
     fn unity_batch_preserves_each_meter_tap_and_refuses_active_faders() {
@@ -1509,6 +1767,10 @@ mod tests {
         } else {
             fixture(&[&[]], 1024)
         };
+        f.samples[512..].fill([0.0625, -0.125]);
+        for audio in f.media.values_mut() {
+            *audio = crate::Audio::new(48_000, f.samples.clone()).unwrap();
+        }
         let mut snapshot = f.editor.project().snapshot();
         for track in &mut snapshot.tracks {
             track.gain = gain;
@@ -1569,16 +1831,16 @@ mod tests {
         } else {
             None
         };
-        let revision = Arc::new(
-            PreparedRevision::prepare(
-                f.editor.project(),
-                &f.media,
-                Arc::new(crate::SineTable::new()),
-                None,
-            )
-            .unwrap(),
-        );
-        let create_runtime = |revision| {
+        let create_runtime = || {
+            let revision = Arc::new(
+                PreparedRevision::prepare(
+                    f.editor.project(),
+                    &f.media,
+                    Arc::new(crate::SineTable::new()),
+                    None,
+                )
+                .unwrap(),
+            );
             if session {
                 SessionPlayback::new(revision)
             } else {
@@ -1586,8 +1848,9 @@ mod tests {
             }
             .unwrap()
         };
-        let mut actual = create_runtime(Arc::clone(&revision));
-        let mut scalar = create_runtime(revision);
+        // Each runtime has its own meter endpoints for independent readings.
+        let mut actual = create_runtime();
+        let mut scalar = create_runtime();
         scalar.resident_source_scratch.clear();
         for runtime in [&mut actual, &mut scalar] {
             runtime.set_device_metering(true);
@@ -1677,6 +1940,36 @@ mod tests {
             (actual.performance_frame(), actual.arrangement_frame()),
             position
         );
+        assert_eq!(
+            capture(&mut actual, actual_plan.as_ref()),
+            capture(&mut scalar, scalar_plan.as_ref())
+        );
+        for runtime in [&actual, &scalar] {
+            for track in runtime.revision.arrangement().tracks() {
+                track.instrument_meter.take_peaks();
+            }
+        }
+        for count in [129, 257] {
+            let mut output = [[0.0; 2]; 257];
+            let mut expected = output;
+            actual.render(&mut output[..count]).unwrap();
+            scalar.render(&mut expected[..count]).unwrap();
+            assert!(expected[..count].iter().any(|frame| *frame != [0.0; 2]));
+            for (actual, expected) in output[..count].iter().zip(&expected[..count]) {
+                assert_eq!(actual.map(f32::to_bits), expected.map(f32::to_bits));
+            }
+            for (track, reference) in actual
+                .revision
+                .arrangement()
+                .tracks()
+                .iter()
+                .zip(scalar.revision.arrangement().tracks())
+            {
+                let peaks = track.instrument_meter.take_peaks();
+                assert!(peaks.input > 0.0);
+                assert_eq!(peaks, reference.instrument_meter.take_peaks());
+            }
+        }
         assert_eq!(
             capture(&mut actual, actual_plan.as_ref()),
             capture(&mut scalar, scalar_plan.as_ref())

@@ -92,6 +92,28 @@ impl Source {
             .map_err(Error::Validation)
     }
 }
+
+/// Optional observation of the synchronous control-side startup. The caller
+/// supplies its separate selection-inspection interval. Absent child intervals
+/// mean the corresponding handoff never completed.
+#[derive(Default)]
+pub struct StartupTimings {
+    pub selection_inspection: Duration,
+    pub revalidation: Duration,
+    pub waitable_probe: Option<Duration>,
+    pub instance_to_facts: Option<Duration>,
+}
+
+fn measure_revalidation<T>(total: Option<&mut Duration>, validate: impl FnOnce() -> T) -> T {
+    let Some(total) = total else {
+        return validate();
+    };
+    let started = Instant::now();
+    let result = validate();
+    *total = total.saturating_add(started.elapsed());
+    result
+}
+
 fn digest(text: &str) -> Result<[u8; 32]> {
     if text.len() != 64 {
         return Err(Error::Protocol("source digest width"));
@@ -264,8 +286,17 @@ impl Pending {
         preparation: Preparation,
         cancellation: PreparationCancellation,
         _trust: TrustUserCode,
+        timings: Option<&mut StartupTimings>,
     ) -> std::result::Result<Self, PreparationFailure> {
-        Self::prepare_retained(build, source, preparation, None, cancellation, |_| {})
+        Self::prepare_retained(
+            build,
+            source,
+            preparation,
+            None,
+            cancellation,
+            |_| {},
+            timings,
+        )
     }
     /// The retained form of canonical startup restore; original state is not
     /// replaced by capture or by any later preparation failure.
@@ -284,6 +315,7 @@ impl Pending {
             Some(state),
             cancellation,
             |_| {},
+            None,
         )
     }
     pub fn prepare_on_control(
@@ -356,8 +388,16 @@ impl Pending {
         cancellation: PreparationCancellation,
         setup: impl FnOnce(&mut Command),
     ) -> Result<Self> {
-        Self::prepare_retained(build, source, preparation, restore, cancellation, setup)
-            .map_err(PreparationFailure::finish_on_control)
+        Self::prepare_retained(
+            build,
+            source,
+            preparation,
+            restore,
+            cancellation,
+            setup,
+            None,
+        )
+        .map_err(PreparationFailure::finish_on_control)
     }
     fn prepare_retained(
         build: &InstanceBuild,
@@ -366,6 +406,7 @@ impl Pending {
         restore: Option<NativeDeviceState>,
         cancellation: PreparationCancellation,
         setup: impl FnOnce(&mut Command),
+        mut timings: Option<&mut StartupTimings>,
     ) -> std::result::Result<Self, PreparationFailure> {
         let options = preparation;
         cancellation
@@ -403,15 +444,19 @@ impl Pending {
             .try_copy_on_control()
             .map_err(Error::Validation)
             .map_err(PreparationFailure::before_native)?;
-        source
-            .unchanged()
-            .map_err(PreparationFailure::before_native)?;
-        build
-            .unchanged()
-            .map_err(Error::Validation)
-            .map_err(PreparationFailure::before_native)?;
+        measure_revalidation(
+            timings
+                .as_deref_mut()
+                .map(|timings| &mut timings.revalidation),
+            || {
+                source.unchanged()?;
+                build.unchanged().map_err(Error::Validation)
+            },
+        )
+        .map_err(PreparationFailure::before_native)?;
         // No foreign module is loaded by this exact executable's probe. A
         // missing/auto-reaped child refuses before any SDK instance starts.
+        let probe_started = timings.as_ref().map(|_| Instant::now());
         let probe = Command::new(build.helper())
             .arg("--child-custody-probe")
             .stdin(Stdio::null())
@@ -425,18 +470,24 @@ impl Pending {
             Ok(status) => status,
             Err(cause) => return Err(PreparationFailure::probe(cause, probe)),
         };
+        if let Some((started, timings)) = probe_started.zip(timings.as_deref_mut()) {
+            timings.waitable_probe = Some(started.elapsed());
+        }
         if !status.success() {
             return Err(PreparationFailure::before_native(Error::Custody(
                 "waitable-child preflight did not exit normally".into(),
             )));
         }
-        build
-            .unchanged()
-            .map_err(Error::Validation)
-            .map_err(PreparationFailure::before_native)?;
-        source
-            .unchanged()
-            .map_err(PreparationFailure::before_native)?;
+        measure_revalidation(
+            timings
+                .as_deref_mut()
+                .map(|timings| &mut timings.revalidation),
+            || {
+                build.unchanged().map_err(Error::Validation)?;
+                source.unchanged()
+            },
+        )
+        .map_err(PreparationFailure::before_native)?;
         let (data, child_data) = UnixStream::pair()
             .map_err(Error::Io)
             .map_err(PreparationFailure::before_native)?;
@@ -470,6 +521,7 @@ impl Pending {
             "HEX_VST3_WORKER_DEADLINE_ADMITTED",
             if deadline.is_some() { "1" } else { "0" },
         );
+        let instance_started = timings.as_ref().map(|_| Instant::now());
         let child = command
             .spawn()
             .map_err(Error::Io)
@@ -508,9 +560,14 @@ impl Pending {
                 return Err(Error::Protocol("worker did not report preparation facts"));
             }
             let facts = Facts::decode(packet.body()?, &config)?;
+            if let Some((started, timings)) = instance_started.zip(timings.as_deref_mut()) {
+                timings.instance_to_facts = Some(started.elapsed());
+            }
             token.check()?;
-            source.unchanged()?;
-            build.unchanged().map_err(Error::Validation)?;
+            measure_revalidation(timings.map(|timings| &mut timings.revalidation), || {
+                source.unchanged()?;
+                build.unchanged().map_err(Error::Validation)
+            })?;
             match pending.child.observe()? {
                 None => {}
                 Some(_) => return Err(Error::Custody("prepared worker already exited".into())),

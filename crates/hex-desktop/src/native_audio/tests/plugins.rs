@@ -233,19 +233,22 @@ fn prepared_vst3_effect_drop_creates_one_track_and_undo_restores_the_project() {
 fn native_effect_coordinator_waits_for_actual_endpoint_then_commits_track_return_main() {
     let _native = native_fixture();
     for location in 0..3 {
+        let files = Files::new();
+        let mut log = hex_diagnostics::SessionLog::start(files.0.join("logs")).unwrap();
         // A headless sink has no physical-device contribution. This original
         // zero-latency fixture has a known2Q copied bridge and no downstream
         // processor; file input acquisition contributes0. No hardware claim.
-        let mut h = ResidentHarness::with_plugins(
+        let mut h = ResidentHarness::with_plugins_at_rate_and_diagnostics(
             host(),
             Some(EffectPresentation {
                 input_frames: 0,
                 output_frames: 512,
             }),
+            48_000,
+            Some(log.handle()),
         );
         assert!(h.next().error.is_none());
         let (mut applied, _) = h.applied(0);
-        let files = Files::new();
         let mut state = h.run(Request::Import(files.wav(48_000, 2048))).state;
         (applied, _) = h.applied(applied);
         let track = state.project.tracks()[0].id();
@@ -354,6 +357,58 @@ fn native_effect_coordinator_waits_for_actual_endpoint_then_commits_track_return
                 .unwrap()
                 .render_fault_snapshot()
         );
+        let binding = h.plugin_progress.lock().unwrap().binding.unwrap();
+        drop(h);
+        log.shutdown().unwrap();
+        let diagnostics = fs::read_to_string(log.path()).unwrap();
+        let stages: Vec<_> = diagnostics
+            .lines()
+            .filter_map(|line| {
+                let (_, message) = line.split_once(" message=\"")?;
+                let message = message.strip_suffix('"')?;
+                message.starts_with("vst3_insert v=1 ").then_some(message)
+            })
+            .collect();
+        for stage in &stages {
+            assert!(stage.contains(&format!("binding={binding:?}")), "{stage}");
+        }
+        let names: Vec<_> = stages
+            .iter()
+            .map(|line| {
+                line.split_once("stage=")
+                    .unwrap()
+                    .1
+                    .split_whitespace()
+                    .next()
+                    .unwrap()
+            })
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "native_prepare_returned",
+                "native_facts",
+                "endpoint_ready",
+                "graph_terminal"
+            ]
+        );
+        for field in [
+            "elapsed_ns=",
+            "selection_inspection_ns=",
+            "revalidation_ns=",
+            "waitable_probe_ns=Some(",
+            "instance_to_facts_ns=Some(",
+        ] {
+            let elapsed = stages[0]
+                .split_whitespace()
+                .find_map(|word| word.strip_prefix(field))
+                .unwrap()
+                .trim_end_matches(')')
+                .parse::<u128>()
+                .unwrap();
+            assert!(elapsed > 0, "missing duration for {field}");
+        }
+        assert!(stages[3].contains("committed=true"));
     }
 }
 

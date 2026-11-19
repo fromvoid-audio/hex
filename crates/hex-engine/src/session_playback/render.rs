@@ -1154,10 +1154,12 @@ impl SessionPlayback {
         let mut resident_source_index = 0;
         let mut resident_source_end = 0;
         let mut resident_source_eligible = [false; MAX_TRACKS];
-        let mut resident_analytic_eligible = [false; MAX_TRACKS];
+        let mut resident_instrument_eligible = [false; MAX_TRACKS];
         let mut aligned = [false; MAX_TRACKS];
         let mut passthrough = [compensated::ResidentRoute::Scalar; MAX_TRACKS];
         let mut stamps = [None; 256];
+        let mut aligned_main = [[0.0; 2]; 256];
+        let mut main_is_batched = false;
         let mut projected_history = None;
         let mut batched_sends = false;
         // Shared-source contributions can cross track ownership; retain the
@@ -1244,12 +1246,34 @@ impl SessionPlayback {
                 if count == 0 {
                     return Err(SessionPlaybackError::ArithmeticOverflow);
                 }
+                let mutable_loop_pass = (count > 1
+                    && self.revision.session().has_mutable_instruments()
+                    && observer.is_none()
+                    && capture.is_none()
+                    && pages.is_none()
+                    && sources.is_none()
+                    && scalar.is_none()
+                    && live_audio.is_none()
+                    && self.release_scratch.is_empty()
+                    && self
+                        .native_parameter_state
+                        .as_deref()
+                        .is_none_or(|state| state.processing.is_none())
+                    && self
+                        .compensation
+                        .as_ref()
+                        .is_some_and(|runtime| runtime.graph.independent_main_routes()))
+                .then_some(arrangement_loop_pass);
                 self.prepare_resident_sources(
-                    performance_frame,
-                    arrangement_frame,
-                    count,
+                    compensated::ResidentSourceWindow {
+                        performance_frame,
+                        arrangement_frame,
+                        frames: count,
+                        mutable_loop_pass,
+                        chase_at_start: self.interactive_start_frame == Some(performance_frame),
+                    },
                     &mut resident_source_eligible,
-                    &mut resident_analytic_eligible,
+                    &mut resident_instrument_eligible,
                     live_audio.map(|input| input.track),
                 )?;
                 projected_history = if observer.is_none() && scalar.is_none() {
@@ -1291,6 +1315,27 @@ impl SessionPlayback {
                 }
                 self.prepare_unity_faders(count, &mut passthrough, &aligned);
                 batched_sends = self.prepare_resident_return_sends(count, &passthrough);
+                // Capture still needs individual per-frame track taps.
+                // A fully aligned flat graph, or the independent Return
+                // send path, can sum track PCM in Main order ahead of time.
+                main_is_batched = count > 1
+                    && capture.is_none()
+                    && !self.route_scratch.is_empty()
+                    && (batched_sends
+                        || aligned[..self.route_scratch.len()]
+                            .iter()
+                            .all(|ready| *ready));
+                if main_is_batched {
+                    let main = &mut aligned_main[..count];
+                    main.copy_from_slice(&output[output_offset..output_offset + count]);
+                    if batched_sends {
+                        self.prepare_resident_return_main(main, &passthrough)?;
+                    } else {
+                        for track in &self.resident_source_scratch {
+                            compensated::add_main_track(main, track);
+                        }
+                    }
+                }
                 resident_source_index = 0;
                 resident_source_end = count;
             }
@@ -1382,14 +1427,15 @@ impl SessionPlayback {
                     sources,
                     foreign,
                     external,
-                    use_resident_sources.then_some(compensated::BatchedSources {
+                    use_resident_sources.then(|| compensated::BatchedSources {
                         index: resident_source_index,
                         audio: &resident_source_eligible,
-                        analytic: &resident_analytic_eligible,
+                        instrument: &resident_instrument_eligible,
                         stamps: projected_history.map(|_| &stamps[..resident_source_end]),
                         aligned: &aligned,
                         passthrough: &passthrough,
                         batched_sends,
+                        main: main_is_batched.then(|| aligned_main[resident_source_index]),
                     }),
                     live_audio,
                 )?;
