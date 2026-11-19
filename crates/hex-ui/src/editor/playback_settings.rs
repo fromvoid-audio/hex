@@ -4,11 +4,15 @@
 use super::{EditorView, arrangement_seek::SeekIntent};
 use gpui::Context;
 use hex_audio::prepared::AppliedAudioSource;
-use hex_engine::{NoteChase, PlaybackAction, PlaybackCommand};
+use hex_engine::NoteChase;
 use hex_preferences::PlaybackPreferences;
 use std::path::PathBuf;
 
 pub(super) enum Start {
+    Session {
+        command: hex_engine::SessionPlaybackCommand,
+        revision: u64,
+    },
     Play {
         frame: u64,
     },
@@ -23,10 +27,17 @@ pub(super) enum Start {
     },
 }
 
+#[derive(Clone, Copy)]
+enum StartSource {
+    Applied(AppliedAudioSource),
+    Recovery(u64),
+}
+
 pub(super) struct PendingStart {
     generation: u64,
     revision: u64,
-    source: Option<AppliedAudioSource>,
+    source: StartSource,
+    note_chase: Option<NoteChase>,
     start: Start,
 }
 
@@ -68,17 +79,38 @@ impl EditorView {
     }
 
     pub(super) fn queue_normal_start(&mut self, start: Start) {
+        self.playback_settings.pending = None;
         let source = match &start {
-            Start::Source { source, .. } => Some(*source),
-            _ => self.normal_start_source(),
+            Start::Source { source, .. } => Some(StartSource::Applied(*source)),
+            Start::Play { .. } if self.recovery.generation().is_some() => {
+                self.recovery.generation().map(StartSource::Recovery)
+            }
+            _ => self.normal_start_source().map(StartSource::Applied),
+        };
+        let source = source.or_else(|| {
+            if let Start::Play { frame } = &start
+                && self.has_degraded_vst3_output()
+            {
+                // Open stopped recovery only. Raw auto-Play must not race the settings load.
+                self.recover_audio_at(*frame);
+                self.recovery.generation().map(StartSource::Recovery)
+            } else {
+                None
+            }
+        });
+        let Some(source) = source else {
+            self.error =
+                Some("playback source is unavailable · retry playback when audio is ready".into());
+            return;
         };
         let pending = PendingStart {
             generation: self.project_generation,
             revision: self.state.as_ref().map_or(0, |state| state.revision),
             source,
+            note_chase: (!self.playback_settings.loading).then(|| self.playback_settings.policy()),
             start,
         };
-        self.playback_settings.pending = None;
+        self.deferred_play = None;
         if self.playback_settings.loading {
             self.cancel_section_launch_wait();
             self.invalidate_prepared_seek();
@@ -86,7 +118,7 @@ impl EditorView {
             self.status = "loading playback settings · playback starts when ready".into();
             self.wake_poll();
         } else {
-            self.dispatch_normal_start(pending, self.playback_settings.policy());
+            self.dispatch_normal_start(pending);
         }
     }
 
@@ -121,47 +153,41 @@ impl EditorView {
         .then_some(source)
     }
 
-    fn dispatch_normal_start(&mut self, pending: PendingStart, note_chase: NoteChase) {
-        if pending.generation != self.project_generation
-            || self
+    fn dispatch_normal_start(&mut self, mut pending: PendingStart) {
+        let current = pending.generation == self.project_generation
+            && self
                 .state
                 .as_ref()
-                .is_none_or(|state| state.revision != pending.revision)
-            || self.opening_project
-            || self.close_prompt_open
-            || pending
-                .source
-                .is_some_and(|source| self.normal_start_source() != Some(source))
-        {
+                .is_some_and(|state| state.revision == pending.revision)
+            && !self.opening_project
+            && !self.close_prompt_open;
+        if !current {
             self.error =
                 Some("playback target changed while settings loaded · retry playback".into());
             return;
         }
+        let note_chase = *pending
+            .note_chase
+            .get_or_insert_with(|| self.playback_settings.policy());
+        let source = match pending.source {
+            StartSource::Applied(source) if self.normal_start_source() == Some(source) => source,
+            StartSource::Recovery(generation) if self.recovery.generation() == Some(generation) => {
+                self.playback_settings.pending = Some(pending);
+                self.status = "restarting audio output · playback starts when ready".into();
+                return;
+            }
+            _ => {
+                self.error =
+                    Some("playback source changed while settings loaded · retry playback".into());
+                return;
+            }
+        };
         match pending.start {
+            Start::Session { command, revision } => {
+                self.queue_session_launch_with_note_chase(command, revision, note_chase);
+            }
             Start::Play { frame } => {
-                let command = if note_chase == NoteChase::On {
-                    PlaybackCommand::PlayFrom(frame)
-                } else {
-                    PlaybackCommand::PlayFromWithNoteChase { frame, note_chase }
-                };
-                if self.recovery.generation().is_some() || self.recover_degraded_play_at(frame) {
-                    self.deferred_play = Some((
-                        PlaybackAction::Transport(command),
-                        None,
-                        self.project_generation,
-                    ));
-                    self.status = "restarting audio output · playback starts when ready".into();
-                } else if let Some(source) = pending.source {
-                    self.queue_applied_source_play_with_note_chase(
-                        frame, source, false, note_chase,
-                    );
-                } else {
-                    self.queue_audio_command(command);
-                }
-                #[cfg(test)]
-                {
-                    self.last_transport_command = Some(command);
-                }
+                self.queue_applied_source_play_with_note_chase(frame, source, false, note_chase);
             }
             Start::Source {
                 frame,
@@ -192,6 +218,34 @@ impl EditorView {
         }
     }
 
+    /// The existing recovery owner transfers only its exact completed generation's witness.
+    pub(super) fn normal_start_recovery_completed(&mut self, generation: u64) {
+        let Some(mut pending) = self.playback_settings.pending.take() else {
+            return;
+        };
+        match pending.source {
+            StartSource::Recovery(expected) if expected == generation => {}
+            StartSource::Recovery(_) => {
+                self.error = Some("playback recovery changed · retry playback".into());
+                return;
+            }
+            StartSource::Applied(_) => {
+                self.playback_settings.pending = Some(pending);
+                return;
+            }
+        }
+        let Some(source) = self.normal_start_source() else {
+            self.error = Some("recovered playback source is unavailable · retry playback".into());
+            return;
+        };
+        pending.source = StartSource::Applied(source);
+        if self.playback_settings.loading {
+            self.playback_settings.pending = Some(pending);
+        } else {
+            self.dispatch_normal_start(pending);
+        }
+    }
+
     pub(super) fn start_playback_preferences_load(&mut self, cx: &mut Context<Self>) {
         let path = self.playback_settings.path.clone();
         #[cfg(test)]
@@ -212,7 +266,7 @@ impl EditorView {
                     Ok(preferences) => {
                         view.playback_settings.preferences = preferences;
                         if let Some(pending) = view.playback_settings.pending.take() {
-                            view.dispatch_normal_start(pending, view.playback_settings.policy());
+                            view.dispatch_normal_start(pending);
                         }
                     }
                     Err(error) => {
@@ -281,6 +335,7 @@ impl EditorView {
             });
         })
         .detach();
+        cx.notify();
     }
 }
 

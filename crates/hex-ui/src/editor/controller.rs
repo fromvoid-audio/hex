@@ -4448,6 +4448,33 @@ impl EditorView {
         command: hex_engine::SessionPlaybackCommand,
         revision: u64,
     ) {
+        self.queue_normal_start(super::playback_settings::Start::Session { command, revision });
+    }
+
+    pub(super) fn queue_session_launch_with_note_chase(
+        &mut self,
+        command: hex_engine::SessionPlaybackCommand,
+        revision: u64,
+        note_chase: hex_engine::NoteChase,
+    ) {
+        let command = match command {
+            hex_engine::SessionPlaybackCommand::LaunchClip { clip, quantization } => {
+                hex_engine::SessionPlaybackCommand::LaunchClipWithNoteChase {
+                    clip,
+                    quantization,
+                    note_chase,
+                }
+            }
+            hex_engine::SessionPlaybackCommand::LaunchScene {
+                scene,
+                quantization,
+            } => hex_engine::SessionPlaybackCommand::LaunchSceneWithNoteChase {
+                scene,
+                quantization,
+                note_chase,
+            },
+            command => command,
+        };
         self.wake_poll();
         self.invalidate_prepared_seek();
         if !matches!(
@@ -4630,11 +4657,7 @@ impl EditorView {
             self.error = Some("playback unavailable · retry".into());
             return;
         };
-        let command = if note_chase == hex_engine::NoteChase::On {
-            PlaybackCommand::PlayFrom(frame)
-        } else {
-            PlaybackCommand::PlayFromWithNoteChase { frame, note_chase }
-        };
+        let command = PlaybackCommand::PlayFromWithNoteChase { frame, note_chase };
         self.admit_play_intent(
             PendingPlaybackAction {
                 action: PlaybackAction::Transport(command),

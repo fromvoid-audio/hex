@@ -709,7 +709,9 @@ impl EditorView {
             prepared_revision,
             device_preview_identity: self.active_seek_preview(),
         };
-        if matches!(kind, SeekKind::Section(_) | SeekKind::Locator(_)) {
+        if matches!(kind, SeekKind::Section(_) | SeekKind::Locator(_))
+            || (matches!(kind, SeekKind::Fresh) && start_playing)
+        {
             self.queue_normal_start(super::playback_settings::Start::Prepared {
                 intent,
                 audio_revision,
