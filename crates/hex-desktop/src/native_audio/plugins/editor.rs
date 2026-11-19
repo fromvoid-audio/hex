@@ -572,6 +572,7 @@ mod tests {
                 )
                 .unwrap())),
                 facts_ready_for_session: true,
+                facts_observed: true,
                 #[cfg(feature = "allocation-probe")]
                 facts_attempt_from_session: false,
             });
