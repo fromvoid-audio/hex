@@ -407,7 +407,11 @@ fn ordinary_eq_density_scales_storage_to_authored_node_count() {
     let one = runtime::PreparedEq::new(settings, 48000).unwrap();
     assert!(empty.declared_runtime_bytes() < one.declared_runtime_bytes());
     assert!(one.declared_runtime_bytes() * 100 < hex_lattice::MAX_PROCESSOR_BANK_RUNTIME_BYTES);
-    assert!(one.declared_runtime_bytes() < 2048);
+    // Authored nodes still cost under 2 KiB each. Pulse #4122 adds one fixed
+    // outgoing-routing reserve of `MAX_NODES` bands (about 19 KiB) so a mode
+    // switch that also removes nodes still crossfades; it is not per node.
+    assert!(one.declared_runtime_bytes() - empty.declared_runtime_bytes() < 2048);
+    assert!(empty.declared_runtime_bytes() < 24 * 1024);
 }
 
 struct TestClock {
@@ -874,6 +878,118 @@ fn legacy_shelf_semantics_report_actual_lane_refusals_without_disabling_authored
     assert!(
         EQ_DEFINITION
             .parameter_enabled(&state, shelf.id.parameter(NodeParameter::Gain).unwrap())
+            .unwrap()
+    );
+}
+
+#[test]
+fn shared_node_admission_and_factory_agree_with_descriptors_and_refusals() {
+    use hex_lattice::{
+        DevicePreparationContext, EMPTY_DEVICE_RESOURCES, ProcessorChainOwner,
+        ProcessorInstanceIdentity, TuningTable,
+    };
+    let mut settings = EqState::default();
+    let id = NodeId::new(7).unwrap();
+    settings.add(node(7)).unwrap();
+    let state = settings.encode().unwrap();
+    let tuning = TuningTable::default();
+    let context = DevicePreparationContext {
+        sample_rate: 48000,
+        tuning: &tuning,
+        resources: &EMPTY_DEVICE_RESOURCES,
+    };
+    let identity = ProcessorInstanceIdentity::new(ProcessorChainOwner::Track(1), 1).unwrap();
+    for field in NodeParameter::ALL {
+        let parameter = id.parameter(field).unwrap();
+        assert!(
+            EQ_DEFINITION
+                .supports_parameter_automation(&state, parameter)
+                .unwrap(),
+            "{field:?}"
+        );
+        let processor = EQ_DEFINITION
+            .prepare_automated_runtime_instance(identity, &state, &context, &[parameter])
+            .unwrap()
+            .processor
+            .unwrap();
+        assert_eq!(
+            processor.parameter_automation_descriptor(parameter),
+            Some(descriptor(id, field).unwrap())
+        );
+    }
+    for (parameter, descriptor) in [(MODE, DESCRIPTORS[200]), (OUTPUT_GAIN, DESCRIPTORS[201])] {
+        assert!(
+            EQ_DEFINITION
+                .supports_parameter_automation(&state, parameter)
+                .unwrap()
+        );
+        let semantics = EQ_DEFINITION
+            .parameter_semantics_for_state(&state, parameter)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            semantics.automation,
+            hex_lattice_contract::ParameterAutomation::DeviceArrangementEnvelope
+        );
+        assert_eq!(
+            semantics.smoothing,
+            hex_lattice_contract::ParameterSmoothing::DeviceManaged
+        );
+        let processor = EQ_DEFINITION
+            .prepare_automated_runtime_instance(identity, &state, &context, &[parameter])
+            .unwrap()
+            .processor
+            .unwrap();
+        assert_eq!(
+            processor.parameter_automation_descriptor(parameter),
+            Some(descriptor)
+        );
+    }
+    for parameter in [
+        ParameterId::from_static(1063),
+        NodeId::new(99)
+            .unwrap()
+            .parameter(NodeParameter::Gain)
+            .unwrap(),
+    ] {
+        assert!(
+            !EQ_DEFINITION
+                .supports_parameter_automation(&state, parameter)
+                .unwrap()
+        );
+        assert!(
+            EQ_DEFINITION
+                .prepare_automated_runtime_instance(identity, &state, &context, &[parameter])
+                .is_err()
+        );
+    }
+    settings.nodes[0].kind = NodeKind::LowShelf;
+    settings.nodes[0].legacy_shelf = true;
+    let legacy = settings.encode().unwrap();
+    for field in NodeParameter::ALL {
+        let parameter = id.parameter(field).unwrap();
+        let supported = !matches!(
+            field,
+            NodeParameter::Kind | NodeParameter::Gain | NodeParameter::Q
+        );
+        assert_eq!(
+            EQ_DEFINITION
+                .supports_parameter_automation(&legacy, parameter)
+                .unwrap(),
+            supported
+        );
+        assert_eq!(
+            EQ_DEFINITION
+                .prepare_automated_runtime_instance(identity, &legacy, &context, &[parameter])
+                .is_ok(),
+            supported
+        );
+    }
+    settings.remove(id).unwrap();
+    let removed = settings.encode().unwrap();
+    assert!(
+        !EQ_DEFINITION
+            .supports_parameter_automation(&removed, id.parameter(NodeParameter::Gain).unwrap())
             .unwrap()
     );
 }

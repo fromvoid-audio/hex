@@ -1,5 +1,5 @@
 //! Borrowed neutral classification of one instrument-state history edge.
-use crate::{Asset, AssetId, Device, GainLane, Project, Track, TrackId};
+use crate::{Asset, AssetId, Device, GainLane, Project, SourceId, Track, TrackId};
 use std::collections::BTreeMap;
 
 /// At most one catalog membership change; every shared asset is identical.
@@ -9,10 +9,16 @@ pub enum InstrumentAssetHistoryDelta<'a> {
     Added(&'a Asset),
     Removed(&'a Asset),
 }
+/// Canonical owner of the instrument whose authored state changed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InstrumentHistoryOwner {
+    Track(TrackId),
+    UnassignedSource(SourceId),
+}
 /// Borrowed neutral facts about one changed existing instrument history edge.
 #[derive(Debug, Clone, Copy)]
 pub struct InstrumentHistoryDelta<'a> {
-    pub track: TrackId,
+    pub owner: InstrumentHistoryOwner,
     pub current: &'a Device,
     pub target: &'a Device,
     pub assets: InstrumentAssetHistoryDelta<'a>,
@@ -62,12 +68,15 @@ impl Project {
             aliases,
             native_sources,
             arrangement_sections,
+            arrangement_locators,
             tuning,
             routing,
             audio_feeds,
             midi_routes,
+            sidechains,
             import_provenance,
             sample_rate,
+            sample_rate_mode,
             next_id,
             assets,
             tracks,
@@ -84,12 +93,15 @@ impl Project {
             || offline_assets != &target.offline_assets
             || native_sources.len() != target.native_sources.len()
             || arrangement_sections != &target.arrangement_sections
+            || arrangement_locators != &target.arrangement_locators
             || tuning != &target.tuning
             || routing != &target.routing
             || audio_feeds != &target.audio_feeds
             || midi_routes != &target.midi_routes
+            || sidechains != &target.sidechains
             || import_provenance != &target.import_provenance
             || sample_rate != &target.sample_rate
+            || sample_rate_mode != &target.sample_rate_mode
             || target.next_id > *next_id
             || returns != &target.returns
             || session != &target.session
@@ -106,6 +118,8 @@ impl Project {
         let mut changed = None;
         for (current, next) in tracks.iter().zip(&target.tracks) {
             let Track {
+                group_output_mutes,
+                tags,
                 kind,
                 parent_group,
                 color,
@@ -119,6 +133,7 @@ impl Project {
                 soloed,
                 devices,
                 instrument,
+                retained_source_path,
                 instrument_position,
                 content,
                 sends,
@@ -132,6 +147,8 @@ impl Project {
                 || parent_group != &next.parent_group
                 || color != &next.color
                 || id != &next.id
+                || tags != &next.tags
+                || group_output_mutes != &next.group_output_mutes
                 || name != &next.name
                 || automatic_name != &next.automatic_name
                 || gain != &next.gain
@@ -139,6 +156,7 @@ impl Project {
                 || muted != &next.muted
                 || soloed != &next.soloed
                 || devices != &next.devices
+                || retained_source_path != &next.retained_source_path
                 || instrument_position != &next.instrument_position
                 || content != &next.content
                 || sends != &next.sends
@@ -155,6 +173,8 @@ impl Project {
                 return None;
             };
             let Device {
+                modulation,
+                parent,
                 automation,
                 id: device_id,
                 state,
@@ -163,7 +183,9 @@ impl Project {
             } = &**current;
             if current.source_id() != next.source_id()
                 || device_id != &next.id
+                || parent != &next.parent
                 || bypassed != &next.bypassed
+                || modulation != &next.modulation
                 || automation != &next.automation
                 || comparison != &next.comparison
                 || state.type_id() != next.state.type_id()
@@ -174,7 +196,56 @@ impl Project {
             }
             changed = Some((*id, current, next));
         }
-        let (track, current, next_instrument) = changed?;
+        let Some((track, current, next_instrument)) = changed else {
+            // An unassigned source has no track binding to carry its change.
+            // Only one exact instrument-state change and at most one catalog
+            // addition/removal are admitted; source metadata, effects and tracks
+            // stay unchanged.
+            let mut unassigned = None;
+            for (old, new) in native_sources.iter().zip(&target.native_sources) {
+                if old == new {
+                    continue;
+                }
+                if old.id() != new.id()
+                    || old.name() != new.name()
+                    || old.receiver().is_some()
+                    || new.receiver().is_some()
+                    || old.instrument_index() != new.instrument_index()
+                    || old.devices().count() != new.devices().count()
+                    || tracks
+                        .iter()
+                        .any(|track| track.source_id() == Some(old.id()))
+                    || old
+                        .devices()
+                        .zip(new.devices())
+                        .enumerate()
+                        .any(|(index, (a, b))| index != old.instrument_index() && a != b)
+                    || unassigned.is_some()
+                {
+                    return None;
+                }
+                let current = old.instrument();
+                let next = new.instrument();
+                if current.id != next.id
+                    || current.parent != next.parent
+                    || current.bypassed != next.bypassed
+                    || current.modulation != next.modulation
+                    || current.automation != next.automation
+                    || current.comparison != next.comparison
+                    || current.state.type_id() != next.state.type_id()
+                    || current.state == next.state
+                {
+                    return None;
+                }
+                unassigned = Some(InstrumentHistoryDelta {
+                    owner: InstrumentHistoryOwner::UnassignedSource(old.id()),
+                    current,
+                    target: next,
+                    assets: asset_change,
+                });
+            }
+            return unassigned;
+        };
         let source = current.source_id();
         for (old, new) in native_sources.iter().zip(&target.native_sources) {
             if old == new {
@@ -193,7 +264,7 @@ impl Project {
         }
         let target = next_instrument;
         Some(InstrumentHistoryDelta {
-            track,
+            owner: InstrumentHistoryOwner::Track(track),
             current,
             target,
             assets: asset_change,
@@ -245,12 +316,15 @@ mod tests {
                 editor
                     .inspect_history(false, |current, next| {
                         let delta = current.instrument_history_delta(next).unwrap();
-                        let (owner, a, b) = (delta.track, delta.current, delta.target);
+                        let (owner, a, b) = (delta.owner, delta.current, delta.target);
                         assert!(matches!(
                             delta.assets,
                             InstrumentAssetHistoryDelta::Unchanged
                         ));
-                        assert_eq!((owner, a.id(), b.id()), (track, device, device));
+                        assert_eq!(
+                            (owner, a.id(), b.id()),
+                            (InstrumentHistoryOwner::Track(track), device, device)
+                        );
                         assert_eq!(
                             (a.state().payload(), b.state().payload()),
                             (&[1][..], &[0][..])
@@ -340,7 +414,7 @@ mod tests {
             current.tracks[0].gain_lane.recording_epoch = 9;
             target.tracks[0].gain_lane.recording_epoch = 2;
             assert!(current.instrument_history_delta(&target).is_some());
-            for case in 0..10 {
+            for case in 0..11 {
                 let mut next = target.clone();
                 match case {
                     0 => next.next_id = current.next_id + 1,
@@ -367,6 +441,7 @@ mod tests {
                     7 => next.master_gain = 0.5,
                     8 => next.tracks[0].instrument_position = Some(1),
                     9 => next.tracks.push(next.tracks[0].clone()),
+                    10 => next.tracks[0].retained_source_path = true,
                     _ => panic!("case"),
                 }
                 assert!(
@@ -375,5 +450,120 @@ mod tests {
                 );
             }
         });
+    }
+
+    #[test]
+    fn unassigned_source_history_is_exact_and_preserves_other_owners() {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+        let Created::Track(track) = editor
+            .execute(Command::AddMidiTrack {
+                name: "track".into(),
+            })
+            .unwrap()
+        else {
+            panic!("track")
+        };
+        let state =
+            NativeDeviceState::new(DeviceTypeId::from_static("test.instrument"), 1, vec![0])
+                .unwrap();
+        let create = |name: &str| Command::CreateNativeSource {
+            name: name.into(),
+            devices: vec![state.clone(), state.clone()],
+            instrument_index: 0,
+        };
+        let Created::NativeSource(source) = editor.execute(create("source")).unwrap() else {
+            panic!("source")
+        };
+        let Created::NativeSource(other) = editor.execute(create("other")).unwrap() else {
+            panic!("other")
+        };
+        let device = editor
+            .project()
+            .native_source(source)
+            .unwrap()
+            .instrument()
+            .id();
+        let effect = editor
+            .project()
+            .native_source(source)
+            .unwrap()
+            .post_instrument_effects()[0]
+            .id();
+        let other_device = editor
+            .project()
+            .native_source(other)
+            .unwrap()
+            .instrument()
+            .id();
+        let before = editor.project().clone();
+        let changed = NativeDeviceState::new(state.type_id(), 1, vec![1]).unwrap();
+        editor
+            .execute(Command::ReplaceDeviceState {
+                device,
+                state: changed.clone(),
+            })
+            .unwrap();
+        let after = editor.project().clone();
+        for (a, b) in [(&before, &after), (&after, &before)] {
+            let delta = a.instrument_history_delta(b).expect("source state edge");
+            assert_eq!(
+                delta.owner,
+                InstrumentHistoryOwner::UnassignedSource(source)
+            );
+            assert_eq!((delta.current.id(), delta.target.id()), (device, device));
+            assert!(matches!(
+                delta.assets,
+                InstrumentAssetHistoryDelta::Unchanged
+            ));
+        }
+        assert!(before.instrument_history_delta(&before).is_none());
+        editor
+            .execute(Command::ReplaceDeviceState {
+                device: other_device,
+                state: changed.clone(),
+            })
+            .unwrap();
+        assert!(before.instrument_history_delta(editor.project()).is_none());
+        assert!(editor.undo());
+        editor
+            .execute(Command::ReplaceDeviceState {
+                device: effect,
+                state: changed,
+            })
+            .unwrap();
+        assert!(before.instrument_history_delta(editor.project()).is_none());
+        assert!(editor.undo());
+        editor
+            .execute(Command::RenameNativeSource {
+                source,
+                name: "renamed".into(),
+            })
+            .unwrap();
+        assert!(before.instrument_history_delta(editor.project()).is_none());
+        assert!(editor.undo());
+        editor
+            .execute(Command::BindTrackSource {
+                track,
+                source: Some(source),
+            })
+            .unwrap();
+        assert!(before.instrument_history_delta(editor.project()).is_none());
+        assert!(editor.undo());
+        editor
+            .execute(Command::SetDeviceBypass {
+                device,
+                bypassed: true,
+            })
+            .unwrap();
+        assert!(before.instrument_history_delta(editor.project()).is_none());
+        assert!(editor.undo());
+        editor
+            .execute(Command::AddAsset {
+                path: "unrelated.wav".into(),
+                sample_rate: 48_000,
+                frames: 4,
+            })
+            .unwrap();
+        assert!(before.instrument_history_delta(editor.project()).is_none());
     }
 }

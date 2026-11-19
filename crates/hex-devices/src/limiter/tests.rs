@@ -5,6 +5,9 @@ use hex_lattice::{
 };
 use hex_lattice_contract::{NativeDeviceMetadata, ParameterId, ParameterValue};
 use parameter::*;
+mod bypass;
+mod bypass_profile;
+mod custody;
 mod true_peak_oracle;
 fn state(changes: &[(ParameterId, ParameterValue)]) -> NativeDeviceState {
     let mut state = DEFINITION.default_state().unwrap();

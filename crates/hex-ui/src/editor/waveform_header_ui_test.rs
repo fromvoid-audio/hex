@@ -1,5 +1,8 @@
 //! Observe actual waveform paint callbacks/masks, never a mock header property.
-use crate::editor::{EditorView, external_audio_drop_ui_test::BatchFiles, musical_time::SnapGrid};
+use crate::editor::{
+    EditorView, clip_header_loop::gradient_quads, external_audio_drop_ui_test::BatchFiles,
+    musical_time::SnapGrid,
+};
 use gpui::{AppContext, Entity, Modifiers, MouseButton, TestAppContext, VisualTestContext};
 use hex_project::{ClipId, Command, TrackId};
 use hex_session::service::{Event, Request, Service};
@@ -75,6 +78,69 @@ fn fixture(
         })
         .unwrap();
     (files, handle, editor, track, clip)
+}
+
+#[gpui::test]
+fn completed_overrange_query_repaints_the_editor(cx: &mut TestAppContext) {
+    let (_files, handle, editor, _track, _clip) = fixture(cx, false);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let before = editor.read_with(&visual, |view, _| {
+        view.waveform_geometry_cache
+            .borrow()
+            .painted_waveforms()
+            .len()
+    });
+    let deadline = std::time::Instant::now() + Duration::from_millis(700);
+    loop {
+        visual.executor().advance_clock(Duration::from_millis(16));
+        visual.run_until_parked();
+        let (ready, paints, busy, painted_ready) = editor.read_with(&visual, |view, _| {
+            let cache = view.waveform_geometry_cache.borrow();
+            (
+                cache.overrange_ready_count(),
+                cache.painted_waveforms().len(),
+                cache.overrange_busy(),
+                cache
+                    .painted_waveforms()
+                    .iter()
+                    .any(|sample| sample.overrange_ready),
+            )
+        });
+        if ready > 0 && paints > before && painted_ready {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "overrange completion did not repaint: ready={ready}, paints={paints}, before={before}, busy={busy}, painted_ready={painted_ready}"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let (weak_cache, exited) = editor.read_with(&visual, |view, _| {
+        (
+            std::rc::Rc::downgrade(&view.waveform_geometry_cache),
+            view.waveform_geometry_cache
+                .borrow()
+                .overrange_exit_observer()
+                .unwrap(),
+        )
+    });
+    drop(editor);
+    visual.update(|window, _| window.remove_window());
+    visual.run_until_parked();
+    drop(visual);
+    let deadline = std::time::Instant::now() + Duration::from_millis(500);
+    while !exited.load(std::sync::atomic::Ordering::Acquire) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "worker did not exit after window close"
+        );
+        std::thread::yield_now();
+    }
+    assert!(
+        weak_cache.upgrade().is_none(),
+        "editor retained the waveform cache after close"
+    );
 }
 fn assert_body(visual: &mut VisualTestContext, editor: &Entity<EditorView>, clip: ClipId) {
     let selector = Box::leak(format!("clip-name-{}", clip.value()).into_boxed_str());
@@ -154,6 +220,80 @@ fn waveform_body_painter_stays_below_ordinary_selected_and_looped_headers(cx: &m
             cx.notify();
         });
         visual.run_until_parked();
+        assert_body(&mut visual, &editor, clip);
+    }
+}
+
+#[gpui::test]
+fn looped_header_paints_canonical_visible_cycle_edges_at_two_zooms(cx: &mut TestAppContext) {
+    let (_files, handle, editor, track, clip) = fixture(cx, false);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let header = Box::leak(format!("clip-name-{}", clip.value()).into_boxed_str());
+    assert!(gradient_quads(&mut visual, header).is_empty());
+    for command in [
+        Command::SetClipLooping {
+            clip,
+            looping: true,
+        },
+        Command::SetClipSourcePhase {
+            clip,
+            phase: 24_000,
+        },
+        Command::TrimClipEdge {
+            clip,
+            edge: hex_project::TrimEdge::Right,
+            frame: 312_000,
+        },
+    ] {
+        editor.update(&mut visual, |v, _| {
+            assert!(v.enqueue(Request::Edit(command)))
+        });
+        pump(&editor, &mut visual);
+    }
+    for (start, length) in [(48_000, 320_000), (120_000, 200_000)] {
+        editor.update(&mut visual, |v, cx| {
+            v.viewport = Some(crate::editor::viewport::Viewport { start, length });
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let (edges, lane, viewport) = editor.read_with(&visual, |v, _| {
+            let state = v.state.as_ref().unwrap();
+            let clip = state.project.clip(clip).unwrap();
+            let cycles = clip
+                .repeat_cycles(state.project.tempo_map())
+                .unwrap()
+                .unwrap();
+            let plan = cycles.cycles().seams().unwrap();
+            let edges = (0..plan.count())
+                .map(|index| {
+                    cycles
+                        .frame_at_elapsed(i128::from(plan.boundary(index).unwrap()))
+                        .unwrap()
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(edges, [168_000, 264_000]);
+            assert_eq!(clip.start() + clip.duration(), 312_000);
+            (
+                edges,
+                v.drag_lanes[&track],
+                v.visible_viewport(state.timeline_frames),
+            )
+        });
+        let scale = visual.update(|window, _| f64::from(window.scale_factor()));
+        let gradients = gradient_quads(&mut visual, header);
+        assert_eq!(gradients.len(), 3);
+        let x = |frame: i128| {
+            scale
+                * (f64::from(lane.left)
+                    + f64::from(lane.width)
+                        * ((frame - i128::from(viewport.start)) as f64 / viewport.length as f64))
+        };
+        for (pair, frame) in gradients.windows(2).zip(edges) {
+            assert!((f64::from(pair[0].0.right()) - x(frame)).abs() <= 1.0);
+            assert!((f64::from(pair[1].0.left()) - x(frame)).abs() <= 1.0);
+        }
+        assert!((f64::from(gradients[2].0.right()) - x(312_000)).abs() <= 1.0);
         assert_body(&mut visual, &editor, clip);
     }
 }
@@ -271,7 +411,9 @@ fn waveform_body_painter_omits_header_only_rows_and_clips_tiny_bodies(cx: &mut T
         )
         .unwrap(),
     );
-    let cache = Rc::new(RefCell::new(WaveformGeometryCache::default()));
+    let cache = Rc::new(crate::editor::waveform_geometry::WaveformViewCache::new(
+        Rc::new(RefCell::new(WaveformGeometryCache::default())),
+    ));
     for height in [
         CLIP_NAME_HEIGHT - 1.0,
         CLIP_NAME_HEIGHT,
@@ -313,6 +455,7 @@ fn waveform_body_painter_omits_header_only_rows_and_clips_tiny_bodies(cx: &mut T
                         96_000,
                         Some(Rc::clone(&cache)),
                         None,
+                        crate::theme::color(crate::theme::PaletteRole::Waveform),
                     )))
                     .into_element()
             },
@@ -338,5 +481,244 @@ fn waveform_body_painter_omits_header_only_rows_and_clips_tiny_bodies(cx: &mut T
                 }
             }
         }
+    }
+}
+
+#[gpui::test]
+fn waveform_scale_is_applied_to_canonical_and_preview_paints(cx: &mut TestAppContext) {
+    use crate::editor::waveform::WaveformAmplitudeScale;
+    use crate::editor::waveform_geometry::{
+        WaveformGeometryCache, WaveformMapping, WaveformViewCache,
+    };
+    use gpui::{point, prelude::*, px, size};
+    use hex_project::{Command, Created, Editor, Project};
+    use hex_session::{CachedPeak, CachedWaveform};
+    use std::{cell::RefCell, rc::Rc, sync::Arc};
+
+    let peak = CachedPeak {
+        min: -0.1,
+        max: 0.1,
+    };
+    let waveform = Arc::new(CachedWaveform::from_peaks(100, vec![[peak, peak]; 100]).unwrap());
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+    let Created::Imported { clip, .. } = editor
+        .execute(Command::ImportAudioTrack {
+            name: "scale".into(),
+            path: "scale.wav".into(),
+            sample_rate: 48_000,
+            frames: 100,
+        })
+        .unwrap()
+    else {
+        panic!("imported clip")
+    };
+    let clip = editor.project().clip(clip).unwrap().clone();
+    let shared = Rc::new(RefCell::new(WaveformGeometryCache::default()));
+    let arrangement = Rc::new(WaveformViewCache::new(Rc::clone(&shared)));
+    let detail = Rc::new(WaveformViewCache::new(shared));
+    let visual = cx.add_empty_window();
+    let paint = |visual: &mut gpui::VisualTestContext,
+                 cache: &Rc<WaveformViewCache>,
+                 mapping: WaveformMapping| {
+        cache.borrow_mut().clear();
+        visual.draw(
+            point(px(0.0), px(0.0)),
+            size(px(200.0), px(80.0)),
+            |_, _| {
+                gpui::div()
+                    .relative()
+                    .w(px(200.0))
+                    .h(px(80.0))
+                    .children([super::waveform_canvas(
+                        Arc::clone(&waveform),
+                        mapping,
+                        0,
+                        100,
+                        Some(Rc::clone(cache)),
+                        None,
+                        crate::theme::color(crate::theme::PaletteRole::Waveform),
+                    )])
+                    .into_element()
+            },
+        );
+        cache.borrow().painted_waveforms().back().unwrap().ordinates[0]
+    };
+    let canonical = || WaveformMapping::Clip {
+        clip: clip.clone(),
+        timeline_origin: 0,
+        gain: None,
+        fade: None,
+    };
+    let preview = || WaveformMapping::Prepared {
+        timeline_origin: 0,
+        root_offset: 0,
+        gain: hex_project::ClipGain::UNITY,
+    };
+    for mapping in [canonical(), preview()] {
+        let linear = paint(visual, &arrangement, mapping.clone());
+        arrangement.set_amplitude_scale(WaveformAmplitudeScale::Decibel);
+        let expanded = paint(visual, &arrangement, mapping.clone());
+        assert!(expanded.0 < linear.0 && expanded.1 > linear.1);
+        assert_eq!(paint(visual, &detail, mapping.clone()), linear);
+        arrangement.set_amplitude_scale(WaveformAmplitudeScale::Linear);
+        assert_eq!(paint(visual, &arrangement, mapping), linear);
+    }
+}
+
+#[gpui::test]
+fn arrangement_drag_waveform_helpers_follow_view_scale(cx: &mut TestAppContext) {
+    use crate::editor::waveform::WaveformAmplitudeScale;
+    use crate::editor::waveform_geometry::{WaveformGeometryCache, WaveformViewCache};
+    use gpui::{point, prelude::*, px, size};
+    use hex_session::{CachedPeak, CachedWaveform};
+    use std::{cell::RefCell, rc::Rc, sync::Arc};
+
+    let peak = CachedPeak {
+        min: -0.1,
+        max: 0.1,
+    };
+    let waveform = Arc::new(CachedWaveform::from_peaks(100, vec![[peak, peak]; 100]).unwrap());
+    let shared = Rc::new(RefCell::new(WaveformGeometryCache::default()));
+    let arrangement = Rc::new(WaveformViewCache::new(Rc::clone(&shared)));
+    let other_view = Rc::new(WaveformViewCache::new(shared));
+    let visual = cx.add_empty_window();
+    let paint =
+        |cache: &Rc<WaveformViewCache>, summary: bool, visual: &mut gpui::VisualTestContext| {
+            cache.borrow_mut().clear();
+            visual.draw(
+                point(px(0.0), px(0.0)),
+                size(px(200.0), px(80.0)),
+                |_, _| {
+                    let ink = crate::theme::color(crate::theme::PaletteRole::Waveform);
+                    let waveform = if summary {
+                        super::waveform_summary_view_cached(
+                            Arc::clone(&waveform),
+                            Rc::clone(cache),
+                            ink,
+                        )
+                    } else {
+                        super::waveform_source_segment_view_cached(
+                            Arc::clone(&waveform),
+                            0,
+                            0,
+                            100,
+                            Rc::clone(cache),
+                            ink,
+                        )
+                    };
+                    gpui::div()
+                        .relative()
+                        .w(px(200.0))
+                        .h(px(80.0))
+                        .children([waveform])
+                        .into_element()
+                },
+            );
+            cache.borrow().painted_waveforms().back().unwrap().ordinates[0]
+        };
+    for summary in [false, true] {
+        let linear = paint(&arrangement, summary, visual);
+        arrangement.set_amplitude_scale(WaveformAmplitudeScale::Decibel);
+        let expanded = paint(&arrangement, summary, visual);
+        assert!(expanded.0 < linear.0 && expanded.1 > linear.1);
+        assert_eq!(paint(&other_view, summary, visual), linear);
+        arrangement.set_amplitude_scale(WaveformAmplitudeScale::Linear);
+        assert_eq!(paint(&arrangement, summary, visual), linear);
+    }
+}
+
+#[gpui::test]
+fn clip_waveform_palette_uses_a_contrasting_hue(cx: &mut TestAppContext) {
+    use crate::theme::{self, ClipWaveformBackground};
+    let (_files, handle, editor, track, clip) = fixture(cx, false);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(gpui::size(gpui::px(1280.0), gpui::px(800.0)));
+    visual.run_until_parked();
+    for identity in [
+        hex_project::ElementColor::Green,
+        hex_project::ElementColor::Rose,
+    ] {
+        editor.update(&mut visual, |view, _| {
+            view.waveform_geometry_cache
+                .borrow_mut()
+                .clear_paint_samples();
+            assert!(view.enqueue(Request::Edit(Command::SetTrackColor {
+                track,
+                color: identity
+            })));
+        });
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |view, _| {
+            let state = view.state.as_ref().unwrap();
+            let model = state.project.clip(clip).unwrap();
+            let expected = theme::clip_waveform_ink(
+                identity,
+                ClipWaveformBackground::Arrangement {
+                    flavor: model.flavor(),
+                    selected: view.selected_clip == Some(clip),
+                },
+                true,
+            );
+            let cache = view.waveform_geometry_cache.borrow();
+            let paint = cache
+                .painted_waveforms()
+                .back()
+                .expect("actual completed Arrangement paint");
+            assert_eq!(
+                paint.colors.waveform, expected,
+                "latest Arrangement paint follows canonical hue without clearing geometry"
+            );
+            assert_ne!(paint.colors.waveform, 0);
+            let fill = theme::arrangement_clip_body_fill(
+                theme::clip_activity_fill(identity, model.flavor(), false, true),
+                view.selected_clip == Some(clip),
+            );
+            assert!(theme::contrast_ratio(paint.colors.waveform, fill) >= 3.0);
+        });
+    }
+    for source in [false, true] {
+        editor.update(&mut visual, |view, cx| {
+            view.selected_track = Some(track);
+            view.selected_clip = Some(clip);
+            view.clip_view_open = true;
+            view.device_panel_active = false;
+            view.audio_event_editor.source_view = source;
+            view.waveform_geometry_cache
+                .borrow_mut()
+                .clear_paint_samples();
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let panel = visual.debug_bounds("arrangement-audio-clip-view").unwrap();
+        editor.read_with(&visual, |view, _| {
+            let expected = theme::clip_waveform_ink(
+                hex_project::ElementColor::Rose,
+                if source {
+                    ClipWaveformBackground::Source
+                } else {
+                    ClipWaveformBackground::Events
+                },
+                true,
+            );
+            let cache = view.waveform_geometry_cache.borrow();
+            let paints: Vec<_> = cache
+                .painted_waveforms()
+                .iter()
+                .filter(|p| p.bounds.top() >= panel.top())
+                .collect();
+            assert!(
+                !paints.is_empty(),
+                "actual clip-editor painter must run: source={source}"
+            );
+            for paint in paints {
+                assert_eq!(paint.colors.waveform, expected);
+                let fill = theme::color(if source {
+                    theme::PaletteRole::Surface
+                } else {
+                    theme::PaletteRole::Clip
+                });
+                assert!(theme::contrast_ratio(paint.colors.waveform, fill) >= 3.0);
+            }
+        });
     }
 }

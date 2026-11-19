@@ -5,7 +5,8 @@ use super::*;
 use hex_plugin_host::{
     Error,
     protocol::{
-        ParameterConversionResult, ParameterPage, ParameterPageProgress, ParameterPageQuery,
+        ControllerRequest, EditorSealState, ParameterConversionResult, ParameterPage,
+        ParameterPageProgress, PluginEditorState,
     },
 };
 use std::{
@@ -13,16 +14,24 @@ use std::{
     time::Instant,
 };
 
+mod extension;
+pub use extension::NativeWorkerAuthoredParameterProgress;
+use extension::Operation;
+
 #[derive(Clone, Copy, Default)]
 struct Reply {
     page: ParameterPage,
     changed: bool,
     conversion: Option<ParameterConversionResult>,
+    editor: Option<PluginEditorState>,
+    editor_seal: Option<EditorSealState>,
+    extension: Option<NativeWorkerAuthoredParameterProgress>,
 }
+
 #[derive(Default)]
 pub(super) struct Slot {
     ordinal: u64,
-    query: ParameterPageQuery,
+    query: Operation,
     requested: bool,
     complete: bool,
     stopped: bool,
@@ -32,6 +41,7 @@ pub(super) struct Work {
     ordinal: Option<u64>,
     result: Option<Reply>,
     poll_after: Instant,
+    extension: bool,
 }
 impl Default for Work {
     fn default() -> Self {
@@ -39,6 +49,7 @@ impl Default for Work {
             ordinal: None,
             result: None,
             poll_after: Instant::now(),
+            extension: false,
         }
     }
 }
@@ -58,6 +69,7 @@ pub struct NativeWorkerControllerQuery {
     binding: Binding,
     ordinal: u64,
     stopped: bool,
+    extension: bool,
 }
 impl NativeWorkerControllerQuery {
     /// Whether the original completion allocation has been released. This
@@ -70,27 +82,67 @@ impl NativeWorkerControllerQuery {
 #[derive(Debug)]
 pub enum NativeWorkerControllerProgress {
     Pending,
+    Editor(PluginEditorState),
+    EditorSeal(EditorSealState),
     Page(Box<ParameterPage>),
     Conversion(Box<ParameterConversionResult>),
     Changed { revision: u64, total: u16 },
     Failed,
 }
 
+// One bounded copied terminal on control. Boxing would allocate a second
+// page merely to move it into the public observation result.
+#[allow(clippy::large_enum_variant)]
+enum Poll {
+    Pending,
+    Ready(Reply),
+    Failed,
+}
+
 impl NativeWorker {
+    pub(super) fn editor_seal_query_pending_on_control(&self) -> Result<bool, &'static str> {
+        let slot = self
+            .reaper
+            .completed
+            .capture
+            .try_lock()
+            .map_err(|error| match error {
+                TryLockError::WouldBlock => "native controller mailbox is busy",
+                TryLockError::Poisoned(_) => "native controller mailbox failed",
+            })?;
+        Ok(slot.controller.requested
+            && matches!(
+                slot.controller.query,
+                Operation::Observe(ControllerRequest::SealEditorEdits)
+            ))
+    }
+
     /// Admit one bounded query without SDK/socket work on a live worker.
     /// Full/contended admission preserves its existing query. Stopped mode
     /// first joins the healthy original transport; it never revives playback.
     pub fn begin_controller_query_on_control(
         &mut self,
-        query: ParameterPageQuery,
+        query: impl Into<ControllerRequest>,
     ) -> Result<NativeWorkerControllerQuery, &'static str> {
-        query
-            .validate()
-            .map_err(|_| "invalid native controller query")?;
+        self.begin_query(Operation::Observe(query.into()))
+    }
+
+    fn begin_query(
+        &mut self,
+        query: Operation,
+    ) -> Result<NativeWorkerControllerQuery, &'static str> {
+        query.validate()?;
         if self.retirement_requested || !self.retains_original_source_on_control() {
             return Err("native controller source is not live");
         }
         let stopped = !self.transport_is_live_on_control();
+        if matches!(
+            query,
+            Operation::Observe(ControllerRequest::SealEditorEdits)
+        ) && !stopped
+        {
+            return Err("native editor seal requires a stopped source");
+        }
         if stopped {
             self.service_stopped_controller()?;
         }
@@ -127,6 +179,7 @@ impl NativeWorker {
             binding: self.binding,
             ordinal,
             stopped,
+            extension: query.extension(),
         })
     }
 
@@ -138,6 +191,34 @@ impl NativeWorker {
         &mut self,
         request: &NativeWorkerControllerQuery,
     ) -> Result<NativeWorkerControllerProgress, &'static str> {
+        if request.extension {
+            return Err("native controller operation kind differs");
+        }
+        let reply = match self.poll_reply(request)? {
+            Poll::Pending => return Ok(NativeWorkerControllerProgress::Pending),
+            Poll::Failed => return Ok(NativeWorkerControllerProgress::Failed),
+            Poll::Ready(reply) => reply,
+        };
+        Ok(if let Some(editor) = reply.editor {
+            NativeWorkerControllerProgress::Editor(editor)
+        } else if let Some(seal) = reply.editor_seal {
+            if request.stopped && seal == EditorSealState::Sealed {
+                self.editor_edits_sealed = true;
+            }
+            NativeWorkerControllerProgress::EditorSeal(seal)
+        } else if let Some(conversion) = reply.conversion {
+            NativeWorkerControllerProgress::Conversion(Box::new(conversion))
+        } else if reply.changed {
+            NativeWorkerControllerProgress::Changed {
+                revision: reply.page.revision,
+                total: reply.page.total,
+            }
+        } else {
+            NativeWorkerControllerProgress::Page(Box::new(reply.page))
+        })
+    }
+
+    fn poll_reply(&mut self, request: &NativeWorkerControllerQuery) -> Result<Poll, &'static str> {
         if request.binding != self.binding
             || request.source.as_ptr() != Arc::as_ptr(&self.reaper.completed)
         {
@@ -147,7 +228,7 @@ impl NativeWorker {
             let slot = match self.reaper.completed.capture.try_lock() {
                 Ok(slot) => slot,
                 Err(TryLockError::WouldBlock) => {
-                    return Ok(NativeWorkerControllerProgress::Pending);
+                    return Ok(Poll::Pending);
                 }
                 Err(TryLockError::Poisoned(_)) => return Err("native controller mailbox failed"),
             };
@@ -159,16 +240,16 @@ impl NativeWorker {
             match self.service_stopped_controller() {
                 Ok(()) => {}
                 Err("native preparation is busy") => {
-                    return Ok(NativeWorkerControllerProgress::Pending);
+                    return Ok(Poll::Pending);
                 }
-                Err(_) => return Ok(NativeWorkerControllerProgress::Failed),
+                Err(_) => return Ok(Poll::Failed),
             }
         } else if !self.transport_is_live_on_control() {
-            return Ok(NativeWorkerControllerProgress::Failed);
+            return Ok(Poll::Failed);
         }
         let mut mailbox = match self.reaper.completed.capture.try_lock() {
             Ok(slot) => slot,
-            Err(TryLockError::WouldBlock) => return Ok(NativeWorkerControllerProgress::Pending),
+            Err(TryLockError::WouldBlock) => return Ok(Poll::Pending),
             Err(TryLockError::Poisoned(_)) => return Err("native controller mailbox failed"),
         };
         let slot = &mut mailbox.controller;
@@ -176,22 +257,12 @@ impl NativeWorker {
             return Err("native controller operation differs");
         }
         if !slot.complete {
-            return Ok(NativeWorkerControllerProgress::Pending);
+            return Ok(Poll::Pending);
         }
         let reply = slot.reply;
         slot.requested = false;
         drop(mailbox);
-        let progress = if let Some(conversion) = reply.conversion {
-            NativeWorkerControllerProgress::Conversion(Box::new(conversion))
-        } else if reply.changed {
-            NativeWorkerControllerProgress::Changed {
-                revision: reply.page.revision,
-                total: reply.page.total,
-            }
-        } else {
-            NativeWorkerControllerProgress::Page(Box::new(reply.page))
-        };
-        Ok(progress)
+        Ok(Poll::Ready(reply))
     }
 
     fn service_stopped_controller(&mut self) -> Result<(), &'static str> {
@@ -229,19 +300,27 @@ impl NativeWorker {
 }
 impl Slot {
     fn matches(&self, request: &NativeWorkerControllerQuery) -> bool {
-        self.requested && self.ordinal == request.ordinal && self.stopped == request.stopped
+        self.requested
+            && self.ordinal == request.ordinal
+            && self.stopped == request.stopped
+            && self.query.extension() == request.extension
     }
 }
 impl State {
     // Three existing control observations share one reader. Rotation bounds
-    // service to at most three eligible iterations even when PCM exchanges
+    // service to at most four eligible iterations even when PCM exchanges
     // take longer than the one-millisecond polling interval.
-    pub(super) fn advance_native_control(&mut self, signal: &Signal) -> Result<(), Error> {
-        for offset in 0..3 {
-            match (self.control_turn + offset) % 3 {
+    pub(super) fn advance_native_control(
+        &mut self,
+        signal: &Signal,
+        before_control: impl FnOnce() -> Result<(), Error>,
+    ) -> Result<(), Error> {
+        for offset in 0..4 {
+            match (self.control_turn + offset) % 4 {
                 0 if (signal.capture_requested.load(Acquire) || self.capture.is_in_flight())
                     && !self.capture.between_polls() =>
                 {
+                    before_control()?;
                     self.control_turn = 1;
                     return self.advance_capture(signal);
                 }
@@ -249,12 +328,19 @@ impl State {
                     || self.controller.is_in_flight())
                     && !self.controller.between_polls() =>
                 {
+                    before_control()?;
                     self.control_turn = 2;
                     return self.advance_controller(signal);
                 }
                 2 if signal.edits_requested.load(Acquire) => {
-                    self.control_turn = 0;
+                    before_control()?;
+                    self.control_turn = 3;
                     return self.advance_parameter_edits(signal);
+                }
+                3 if signal.parameter_change_requested.load(Acquire) => {
+                    before_control()?;
+                    self.control_turn = 0;
+                    return self.advance_idle_parameter_change(signal);
                 }
                 _ => {}
             }
@@ -281,32 +367,51 @@ impl State {
             }
             let (ordinal, query) = (slot.controller.ordinal, slot.controller.query);
             drop(slot);
-            instance.begin_parameter_page_on_worker(query)?;
+            self.controller.result = query.begin(instance)?;
+            self.controller.extension = query.extension();
             self.controller.ordinal = Some(ordinal);
         } else if self.controller.result.is_none() {
             if self.controller.between_polls() {
                 return Ok(());
             }
-            self.controller.result = match instance.poll_parameter_page_on_worker()? {
-                ParameterPageProgress::Pending => None,
-                ParameterPageProgress::Page(page) => Some(Reply {
-                    page: *page,
-                    changed: false,
-                    conversion: None,
-                }),
-                ParameterPageProgress::Conversion(conversion) => Some(Reply {
-                    conversion: Some(*conversion),
-                    ..Reply::default()
-                }),
-                ParameterPageProgress::Changed { revision, total } => {
-                    let mut page = ParameterPage::default();
-                    page.revision = revision;
-                    page.total = total;
-                    Some(Reply {
-                        page,
-                        changed: true,
+            self.controller.result = if self.controller.extension {
+                Reply::extension(instance.poll_authored_parameter_extension_on_worker()?)
+            } else {
+                match instance.poll_parameter_page_on_worker()? {
+                    ParameterPageProgress::Pending => None,
+                    ParameterPageProgress::Editor(editor) => Some(Reply {
+                        editor: Some(editor),
+                        ..Reply::default()
+                    }),
+                    ParameterPageProgress::EditorSeal(seal) => Some(Reply {
+                        editor_seal: Some(seal),
+                        ..Reply::default()
+                    }),
+                    ParameterPageProgress::Page(page) => Some(Reply {
+                        page: *page,
+                        changed: false,
                         conversion: None,
-                    })
+                        editor: None,
+                        editor_seal: None,
+                        extension: None,
+                    }),
+                    ParameterPageProgress::Conversion(conversion) => Some(Reply {
+                        conversion: Some(*conversion),
+                        ..Reply::default()
+                    }),
+                    ParameterPageProgress::Changed { revision, total } => {
+                        let mut page = ParameterPage::default();
+                        page.revision = revision;
+                        page.total = total;
+                        Some(Reply {
+                            page,
+                            changed: true,
+                            conversion: None,
+                            editor: None,
+                            editor_seal: None,
+                            extension: None,
+                        })
+                    }
                 }
             };
         }

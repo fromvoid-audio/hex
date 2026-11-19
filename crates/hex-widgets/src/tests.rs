@@ -1614,7 +1614,7 @@ fn selector_popup_flips_above_near_window_bottom(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn selector_popup_caps_many_choices_to_window_height(cx: &mut TestAppContext) {
-    let (handle, selector, _) = open_clipped_selector(cx, 0.0, 128);
+    let (handle, selector, _) = open_clipped_selector(cx, 0.0, 257);
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.simulate_resize(size(px(240.0), px(80.0)));
     visual.run_until_parked();
@@ -2736,9 +2736,7 @@ fn busy_controls_keep_available_paint_but_refuse_input(cx: &mut TestAppContext) 
         visual.run_until_parked();
         let before = visual.rendered_filled_quads("test-control");
         assert!(!before.is_empty());
-        control.update(cx, |control, cx| {
-            control.set_availability(ControlAvailability::Busy, cx)
-        });
+        control.update(cx, |control, cx| control.suspend_input(cx));
         let id = gpui::AccessibilityId(control.entity_id().as_u64());
         assert!(
             !visual.update(|window, app| window.perform_accessibility_action(
@@ -2765,11 +2763,14 @@ fn busy_controls_keep_available_paint_but_refuse_input(cx: &mut TestAppContext) 
         });
         control.update(cx, |control, cx| control.set_enabled(false, cx));
         visual.run_until_parked();
+        let disabled = visual.rendered_filled_quads("test-control");
         assert_ne!(
-            visual.rendered_filled_quads("test-control"),
-            before,
+            disabled, before,
             "semantic unavailable remains visibly disabled"
         );
+        control.update(cx, |control, cx| control.suspend_input(cx));
+        visual.run_until_parked();
+        assert_eq!(visual.rendered_filled_quads("test-control"), disabled);
         control.update(cx, |control, cx| control.set_enabled(true, cx));
         visual.run_until_parked();
         assert_eq!(visual.rendered_filled_quads("test-control"), before);

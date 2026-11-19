@@ -1,8 +1,14 @@
 //! Original zero-latency eight-band parametric equalizer.
 //!
-//! Coefficients are prepared on the control side from the RBJ audio-EQ
-//! cookbook equations. The callback owns only a fixed coefficient bank and
-//! transposed-direct-form-II histories.
+//! Canonical coefficients are prepared on control from the RBJ audio-EQ
+//! cookbook equations. The callback retains fixed coefficient banks and
+//! transposed-direct-form-II histories. Shared gain, frequency, Q, enable and
+//! filter-type automation designs active-bank targets in fixed inline storage
+//! and reuses the rate-scaled coefficient/gain smoother. Routing automation
+//! uses one outgoing fade and one pending latest target (see automation::routing).
+//! Compatible copies retain admitted trajectories; missing views restore canonical
+//! controls, and detached tails freeze their targets.
+mod automation;
 use hex_lattice::{
     NativeDeviceDefinition, NativeProcessorAudition, NativeProcessorRuntime, OutputTail,
     PreparedNativeProcessor, ProcessorAuditionSelection, StereoFrame, StereoMatrix,
@@ -244,6 +250,14 @@ impl NativeDeviceMetadata for Eq8Definition {
             _ => return Err(DeviceContractError::UnknownParameter),
         })
     }
+    fn parameter_semantics_for_state(
+        &self,
+        state: &NativeDeviceState,
+        id: ParameterId,
+    ) -> Result<Option<hex_lattice_contract::ParameterSemantics>, DeviceContractError> {
+        decode(state)?;
+        Ok(automation::semantics(id))
+    }
     fn patch_parameter(
         &self,
         state: &NativeDeviceState,
@@ -320,7 +334,49 @@ fn decode_parameter_id(id: ParameterId) -> Result<(usize, usize), DeviceContract
     Ok(((zero / 40) as usize, (zero % 40) as usize))
 }
 
+impl Eq8Definition {
+    /// Asset-free fixed-inline factory used by the sealed native constructor.
+    pub fn prepare_owned(
+        state: &NativeDeviceState,
+        sample_rate: u32,
+        parameters: &[ParameterId],
+    ) -> Result<PreparedEq8, DeviceContractError> {
+        if parameters.is_empty() {
+            state.require_asset_free_processing()?;
+            PreparedEq8::new(decode(state)?, sample_rate)
+        } else {
+            automation::prepare(state, sample_rate, parameters)
+        }
+    }
+}
+
 impl NativeDeviceDefinition for Eq8Definition {
+    fn source_effect_factory_bytes(&self) -> Option<usize> {
+        Some(crate::source_effect_arc_bytes::<PreparedEq8>())
+    }
+    fn supports_parameter_automation(
+        &self,
+        state: &NativeDeviceState,
+        id: ParameterId,
+    ) -> Result<bool, DeviceContractError> {
+        decode(state)?;
+        Ok(automation::slot(id).is_some())
+    }
+    fn prepare_automated_runtime_instance(
+        &self,
+        _identity: hex_lattice::ProcessorInstanceIdentity,
+        state: &NativeDeviceState,
+        context: &hex_lattice::DevicePreparationContext<'_>,
+        ids: &[ParameterId],
+    ) -> Result<hex_lattice::PreparedRuntimeDevice, DeviceContractError> {
+        let prepared = automation::prepare(state, context.sample_rate, ids)?;
+        Ok(hex_lattice::PreparedRuntimeDevice {
+            matrix: StereoMatrix::identity(),
+            processor: Some(hex_lattice::PreparedProcessorFactory::Legacy(Arc::new(
+                prepared,
+            ))),
+        })
+    }
     fn prepare_matrix(
         &self,
         _state: &NativeDeviceState,
@@ -368,13 +424,23 @@ impl Coefficients {
 }
 
 type BandStages = [Coefficients; 4];
+type CoefficientBank = [BandStages; BAND_COUNT];
+type CoefficientTarget = [CoefficientBank; 2];
 
+fn channels(target: &CoefficientTarget) -> [&CoefficientBank; 2] {
+    let [left, right] = target;
+    [left, right]
+}
+
+/// Prepared coefficients and admitted bindings for a closed EQ8 instance.
 #[derive(Clone)]
-struct PreparedEq8 {
+pub struct PreparedEq8 {
+    admitted: [bool; automation::COUNT],
+    control_values: automation::ControlValues,
+    canonical_banks: [CoefficientBank; 5],
     sample_rate: u32,
     mode: ChannelMode,
     output_gain: f64,
-    target: Arc<[[[Coefficients; 4]; BAND_COUNT]; 2]>,
     enabled_bands: [[bool; BAND_COUNT]; 2],
 }
 
@@ -392,49 +458,73 @@ impl PreparedEq8 {
                 }
             }
         }
-        let selected = match settings.mode {
-            ChannelMode::Stereo => [0, 0],
-            ChannelMode::LeftRight => [1, 2],
-            ChannelMode::MidSide => [3, 4],
-        };
-        let mut target = [[[Coefficients::IDENTITY; 4]; BAND_COUNT]; 2];
+        let selected = automation::selected(settings.mode);
         let mut enabled_bands = [[false; BAND_COUNT]; 2];
         for (channel, bank_index) in selected.into_iter().enumerate() {
-            target[channel] = banks[bank_index];
             for (band, enabled) in enabled_bands[channel].iter_mut().enumerate() {
                 *enabled = settings.banks[bank_index][band].enabled;
             }
         }
         Ok(Self {
+            admitted: [false; automation::COUNT],
+            control_values: automation::ControlValues::new(settings),
+            canonical_banks: banks,
             sample_rate,
             mode: settings.mode,
             output_gain: f64::from(settings.output_gain),
-            target: Arc::new(target),
             enabled_bands,
         })
     }
 
     fn runtime(&self) -> Eq8Runtime {
+        let coefficients = automation::selected(self.mode).map(|bank| self.canonical_banks[bank]);
         Eq8Runtime {
+            controls: crate::parameter_binding::Controls::new(self.control_values, self.admitted),
+            tail_controls_frozen: false,
+            routing: automation::routing::RoutingAutomation::new(self.canonical_banks),
+            automated_target: None,
+            band_automation_admitted: self.admitted[..automation::GAIN_SLOT].iter().any(|&v| v),
+            band_targets_pending: self.admitted[..automation::GAIN_SLOT].iter().any(|&v| v),
             sample_rate: self.sample_rate,
             mode: self.mode,
+            canonical_mode: self.mode,
             current_gain: self.output_gain,
             target_gain: self.output_gain,
-            coefficients: *self.target,
-            target: Arc::clone(&self.target),
+            coefficients,
             smooth_remaining: 0,
-            active_bands: active_band_flags(&self.target),
+            active_bands: active_band_flags(&coefficients),
             history: [[[[0.0; 2]; 4]; BAND_COUNT]; 2],
             enabled_bands: self.enabled_bands,
             audition_selection: None,
             audition_request: None,
             audition_mix: 0.0,
             audition_history: [[[0.0; 2]; 4]; 2],
+            mode_fade: ModeFade::INACTIVE,
         }
     }
 }
 
 impl PreparedNativeProcessor for PreparedEq8 {
+    fn supports_parameter_automation(&self, id: ParameterId) -> bool {
+        automation::slot(id).is_some_and(|i| self.admitted[i])
+    }
+    fn parameter_automation_descriptor(&self, id: ParameterId) -> Option<ParameterDescriptor> {
+        self.supports_parameter_automation(id)
+            .then(|| automation::descriptor(id))
+            .flatten()
+    }
+    fn parameter_modulation_semantics(
+        &self,
+        id: ParameterId,
+    ) -> Option<hex_lattice_contract::ParameterSemantics> {
+        automation::semantics(id).filter(|semantics| {
+            self.supports_parameter_automation(id)
+                && semantics.modulation == hex_lattice_contract::ParameterModulation::SampleRate
+        })
+    }
+    fn supports_smoothed_bypass(&self) -> bool {
+        true
+    }
     fn runtime_version(&self) -> u32 {
         1
     }
@@ -454,12 +544,13 @@ impl PreparedNativeProcessor for PreparedEq8 {
         {
             return None;
         }
+        let selected = automation::selected(self.mode);
         let response = std::array::from_fn(|channel| {
             let mut magnitude = self.output_gain;
             for band in 0..BAND_COUNT {
                 for stage in 0..4 {
                     magnitude *= response_magnitude(
-                        self.target[channel][band][stage],
+                        self.canonical_banks[selected[channel]][band][stage],
                         f64::from(frequency_hz),
                         f64::from(self.sample_rate),
                     );
@@ -476,12 +567,20 @@ impl PreparedNativeProcessor for PreparedEq8 {
 
 #[derive(Clone, Debug)]
 pub struct Eq8Runtime {
+    controls: crate::parameter_binding::Controls<automation::ControlValues, { automation::COUNT }>,
+    tail_controls_frozen: bool,
+    // One fixed canonical bank inventory serves both normal playback and
+    // mode changes. The primary and scratch runtime boxes own their storage.
+    routing: automation::routing::RoutingAutomation,
+    automated_target: Option<CoefficientTarget>,
+    band_automation_admitted: bool,
+    band_targets_pending: bool,
     sample_rate: u32,
     mode: ChannelMode,
+    canonical_mode: ChannelMode,
     current_gain: f64,
     target_gain: f64,
     coefficients: [[[Coefficients; 4]; BAND_COUNT]; 2],
-    target: Arc<[[[Coefficients; 4]; BAND_COUNT]; 2]>,
     smooth_remaining: u16,
     active_bands: [[bool; BAND_COUNT]; 2],
     history: [[[[f64; 2]; 4]; BAND_COUNT]; 2],
@@ -490,6 +589,7 @@ pub struct Eq8Runtime {
     audition_request: Option<Eq8AuditionSelection>,
     audition_mix: f64,
     audition_history: [[[f64; 2]; 4]; 2],
+    mode_fade: ModeFade,
 }
 
 /// Coefficient and output-gain smoothing lasts 256 frames at the 48 kHz
@@ -503,6 +603,179 @@ fn coefficient_smooth_frames(sample_rate: u32) -> u16 {
     let frames = u64::from(sample_rate) * u64::from(COEFFICIENT_SMOOTH_REFERENCE_FRAMES);
     let frames = frames.div_ceil(u64::from(COEFFICIENT_SMOOTH_REFERENCE_RATE));
     u16::try_from(frames).unwrap_or(u16::MAX).max(1)
+}
+
+/// Frames for a channel-mode crossfade: 256 at 48 kHz, scaled by rate.
+fn mode_fade_frames(sample_rate: u32) -> u32 {
+    let frames = (u64::from(sample_rate) * 256).div_ceil(48_000).max(1);
+    u32::try_from(frames).unwrap_or(u32::MAX)
+}
+
+/// The outgoing routing after a stereo/left-right/mid-side switch (Pulse
+/// #4106). Lane histories cannot be reinterpreted under a new routing, so the
+/// previous routing keeps filtering with its frozen effective coefficients,
+/// history, gain and band audition (at its frozen audition mix) while the
+/// output crossfades linearly into the new routing, which starts from empty
+/// history. The crossfade ends exactly on the new routing, then the outgoing
+/// history is cleared.
+///
+/// Capacity is one outgoing branch, in fixed inline storage with no
+/// allocation. Same-mode handoffs carry an active branch unchanged. A further
+/// ordinary canonical mode change while the branch is still fading is refused as transiently busy
+/// (`transition_busy_from`), so the host defers it for at most one fade
+/// (256 frames at 48 kHz, 16/3 ms) instead of dropping the older routing.
+#[derive(Clone, Copy, Debug)]
+struct ModeFade {
+    mode: ChannelMode,
+    gain: f64,
+    coefficients: [[[Coefficients; 4]; BAND_COUNT]; 2],
+    history: [[[[f64; 2]; 4]; BAND_COUNT]; 2],
+    audition_selection: Option<Eq8AuditionSelection>,
+    audition_mix: f64,
+    audition_history: [[[f64; 2]; 4]; 2],
+    remaining: u32,
+    total: u32,
+}
+
+impl ModeFade {
+    const INACTIVE: Self = Self {
+        mode: ChannelMode::Stereo,
+        gain: 1.0,
+        coefficients: [[[Coefficients::IDENTITY; 4]; BAND_COUNT]; 2],
+        history: [[[[0.0; 2]; 4]; BAND_COUNT]; 2],
+        audition_selection: None,
+        audition_mix: 0.0,
+        audition_history: [[[0.0; 2]; 4]; 2],
+        remaining: 0,
+        total: 0,
+    };
+
+    fn from_outgoing(previous: &Eq8Runtime, sample_rate: u32) -> Self {
+        let total = mode_fade_frames(sample_rate);
+        Self {
+            mode: previous.mode,
+            gain: previous.current_gain,
+            coefficients: previous.coefficients,
+            history: previous.history,
+            audition_selection: previous.audition_selection,
+            audition_mix: previous.audition_mix,
+            audition_history: previous.audition_history,
+            remaining: total,
+            total,
+        }
+    }
+
+    fn is_active(&self) -> bool {
+        self.remaining > 0
+    }
+
+    fn blend(&mut self, input: StereoFrame, current: StereoFrame) -> StereoFrame {
+        if !self.is_active() {
+            return current;
+        }
+        let source = route_input(self.mode, input);
+        let mut filtered = source;
+        for (channel, value) in filtered.iter_mut().enumerate() {
+            for band in 0..BAND_COUNT {
+                *value = process_band(
+                    *value,
+                    &self.coefficients[channel][band],
+                    &mut self.history[channel][band],
+                );
+            }
+        }
+        let output = route_output(self.mode, filtered);
+        let normal = [
+            finite_f32(output[0] * self.gain),
+            finite_f32(output[1] * self.gain),
+        ];
+        let outgoing = match self.audition_selection {
+            Some(selection) => {
+                let audition = audition_signal(
+                    self.mode,
+                    selection,
+                    &self.coefficients,
+                    &mut self.audition_history,
+                    source,
+                );
+                mix_audition(normal, audition, self.gain, self.audition_mix)
+            }
+            None => normal,
+        };
+        self.remaining -= 1;
+        if self.remaining == 0 {
+            self.history = [[[[0.0; 2]; 4]; BAND_COUNT]; 2];
+            self.audition_history = [[[0.0; 2]; 4]; 2];
+            self.audition_selection = None;
+            self.audition_mix = 0.0;
+            return current;
+        }
+        let weight = f64::from(self.remaining) / f64::from(self.total);
+        std::array::from_fn(|channel| {
+            let incoming = f64::from(current[channel]);
+            finite_f32(incoming + (f64::from(outgoing[channel]) - incoming) * weight)
+        })
+    }
+}
+
+/// The solo signal of one auditioned band under `mode`, before output gain.
+fn audition_signal(
+    mode: ChannelMode,
+    selection: Eq8AuditionSelection,
+    coefficients: &[[[Coefficients; 4]; BAND_COUNT]; 2],
+    history: &mut [[[f64; 2]; 4]; 2],
+    source: [f64; 2],
+) -> [f64; 2] {
+    let mut audition = source;
+    let channels: &[usize] = match mode {
+        ChannelMode::Stereo => &[0, 1],
+        ChannelMode::LeftRight | ChannelMode::MidSide => {
+            if selection.edit_lane() == 0 {
+                &[0]
+            } else {
+                &[1]
+            }
+        }
+    };
+    for &channel in channels {
+        audition[channel] = process_band(
+            audition[channel],
+            &coefficients[channel][selection.band()],
+            &mut history[channel],
+        );
+    }
+    match mode {
+        ChannelMode::Stereo | ChannelMode::LeftRight => audition,
+        ChannelMode::MidSide => [audition[0] + audition[1], audition[0] - audition[1]],
+    }
+}
+
+/// Crossfade the normal output toward the gained audition by `mix`.
+fn mix_audition(normal: StereoFrame, audition: [f64; 2], gain: f64, mix: f64) -> StereoFrame {
+    std::array::from_fn(|channel| {
+        let normal = f64::from(normal[channel]);
+        finite_f32(
+            (normal + (audition[channel] * gain - normal) * mix)
+                .clamp(-f64::from(f32::MAX), f64::from(f32::MAX)),
+        )
+    })
+}
+
+fn route_input(mode: ChannelMode, input: StereoFrame) -> [f64; 2] {
+    match mode {
+        ChannelMode::Stereo | ChannelMode::LeftRight => [f64::from(input[0]), f64::from(input[1])],
+        ChannelMode::MidSide => [
+            (f64::from(input[0]) + f64::from(input[1])) * 0.5,
+            (f64::from(input[0]) - f64::from(input[1])) * 0.5,
+        ],
+    }
+}
+
+fn route_output(mode: ChannelMode, filtered: [f64; 2]) -> [f64; 2] {
+    match mode {
+        ChannelMode::Stereo | ChannelMode::LeftRight => filtered,
+        ChannelMode::MidSide => [filtered[0] + filtered[1], filtered[0] - filtered[1]],
+    }
 }
 
 impl Eq8Runtime {
@@ -521,20 +794,21 @@ impl Eq8Runtime {
     }
 
     pub fn process_frame(&mut self, input: StereoFrame) -> StereoFrame {
+        self.advance_routing();
+        let current = self.process_current_routing(input);
+        self.mode_fade.blend(input, current)
+    }
+
+    fn process_current_routing(&mut self, input: StereoFrame) -> StereoFrame {
         self.advance_coefficients();
         self.advance_audition();
-        let source = match self.mode {
-            ChannelMode::Stereo | ChannelMode::LeftRight => {
-                [f64::from(input[0]), f64::from(input[1])]
-            }
-            ChannelMode::MidSide => [
-                (f64::from(input[0]) + f64::from(input[1])) * 0.5,
-                (f64::from(input[0]) - f64::from(input[1])) * 0.5,
-            ],
-        };
+        let source = route_input(self.mode, input);
         let mut filtered = source;
-        for (channel, filtered_channel) in filtered.iter_mut().enumerate() {
-            for band in 0..BAND_COUNT {
+        let targets = self
+            .routing
+            .effective_target(self.automated_target.as_ref(), self.canonical_mode);
+        for (channel, (filtered_channel, target)) in filtered.iter_mut().zip(targets).enumerate() {
+            for (band, target) in target.iter().enumerate() {
                 if !self.active_bands[channel][band] {
                     continue;
                 }
@@ -545,17 +819,14 @@ impl Eq8Runtime {
                 );
                 self.active_bands[channel][band] = (0..4).any(|stage| {
                     self.coefficients[channel][band][stage] != Coefficients::IDENTITY
-                        || self.target[channel][band][stage] != Coefficients::IDENTITY
+                        || target[stage] != Coefficients::IDENTITY
                         || self.history[channel][band][stage]
                             .iter()
                             .any(|value| *value != 0.0)
                 });
             }
         }
-        let output = match self.mode {
-            ChannelMode::Stereo | ChannelMode::LeftRight => filtered,
-            ChannelMode::MidSide => [filtered[0] + filtered[1], filtered[0] - filtered[1]],
-        };
+        let output = route_output(self.mode, filtered);
         let normal = [
             finite_f32(output[0] * self.current_gain),
             finite_f32(output[1] * self.current_gain),
@@ -563,41 +834,14 @@ impl Eq8Runtime {
         let Some(selection) = self.audition_selection else {
             return normal;
         };
-        let mut audition = source;
-        let channels: &[usize] = match self.mode {
-            ChannelMode::Stereo => &[0, 1],
-            ChannelMode::LeftRight | ChannelMode::MidSide => {
-                if selection.edit_lane() == 0 {
-                    &[0]
-                } else {
-                    &[1]
-                }
-            }
-        };
-        for &channel in channels {
-            audition[channel] = process_band(
-                audition[channel],
-                &self.coefficients[channel][selection.band()],
-                &mut self.audition_history[channel],
-            );
-        }
-        let audition = match self.mode {
-            ChannelMode::Stereo | ChannelMode::LeftRight => audition,
-            ChannelMode::MidSide => [audition[0] + audition[1], audition[0] - audition[1]],
-        };
-        let mix = self.audition_mix;
-        [
-            finite_f32(
-                (f64::from(normal[0])
-                    + (audition[0] * self.current_gain - f64::from(normal[0])) * mix)
-                    .clamp(-f64::from(f32::MAX), f64::from(f32::MAX)),
-            ),
-            finite_f32(
-                (f64::from(normal[1])
-                    + (audition[1] * self.current_gain - f64::from(normal[1])) * mix)
-                    .clamp(-f64::from(f32::MAX), f64::from(f32::MAX)),
-            ),
-        ]
+        let audition = audition_signal(
+            self.mode,
+            selection,
+            &self.coefficients,
+            &mut self.audition_history,
+            source,
+        );
+        mix_audition(normal, audition, self.current_gain, self.audition_mix)
     }
 
     pub fn process(&mut self, frames: &mut [StereoFrame]) {
@@ -607,31 +851,69 @@ impl Eq8Runtime {
     }
 
     pub fn reset(&mut self) {
+        self.controls.reset();
+        self.mode = self.controls.base().mode;
+        self.reset_routing();
+        self.target_gain = f64::from(self.controls.effective().gain);
+        self.automated_target = None;
+        self.band_targets_pending = self.band_automation_admitted;
+        self.tail_controls_frozen = false;
         self.history = [[[[0.0; 2]; 4]; BAND_COUNT]; 2];
         self.audition_history = [[[0.0; 2]; 4]; 2];
-        self.coefficients = *self.target;
+        self.coefficients = self.routing.canonical_target(self.mode).map(|bank| *bank);
         self.current_gain = self.target_gain;
         self.smooth_remaining = 0;
-        self.active_bands = active_band_flags(&self.target);
+        self.active_bands = active_band_flags(&self.coefficients);
         self.audition_selection = None;
         self.audition_request = None;
         self.audition_mix = 0.0;
+        self.mode_fade = ModeFade::INACTIVE;
+        self.install_enabled_bands(&self.controls.base().banks);
     }
 
     pub fn inherit_history_from(&mut self, previous: &Self) -> bool {
+        self.inherit_routing(previous);
+        if self.sample_rate == previous.sample_rate && self.mode == previous.mode {
+            self.inherit_enabled_bands(previous);
+            if (self.band_automation_admitted || self.controls.admitted(automation::GAIN_SLOT))
+                && (previous.band_automation_admitted
+                    || previous.controls.admitted(automation::GAIN_SLOT))
+            {
+                self.controls.inherit(&previous.controls);
+            }
+            if self.controls.admitted(automation::GAIN_SLOT)
+                && previous.controls.admitted(automation::GAIN_SLOT)
+                && previous.controls.has_value(automation::GAIN_SLOT)
+            {
+                self.target_gain = previous.target_gain;
+            }
+            if self.band_automation_admitted {
+                self.automated_target = Some(previous.current_target().map(|bank| *bank));
+                self.band_targets_pending = true;
+            }
+        }
         if self.sample_rate != previous.sample_rate {
             self.reset();
             false
         } else if self.mode != previous.mode {
             // The lane interpretation changes (stereo/LR/MS), so previous
-            // histories cannot be reused safely. The configuration handoff is
-            // still bounded and valid; begin the new routing with empty state.
+            // histories cannot be reused in the new routing. Start it empty
+            // and crossfade out of the previous routing (see `ModeFade`).
             self.reset();
+            // Lane histories are not inherited (false); only the fade is.
+            self.mode_fade = ModeFade::from_outgoing(previous, self.sample_rate);
             false
         } else {
+            // Copy the fading branch only while it is active; an inactive
+            // branch's storage is never read.
+            if previous.mode_fade.is_active() {
+                self.mode_fade = previous.mode_fade;
+            } else {
+                self.mode_fade.remaining = 0;
+            }
             self.current_gain = previous.current_gain;
-            let same_target =
-                *previous.target == *self.target && previous.target_gain == self.target_gain;
+            let same_target = previous.current_target() == self.current_target()
+                && previous.target_gain == self.target_gain;
             self.smooth_remaining = if same_target {
                 previous.smooth_remaining
             } else {
@@ -703,22 +985,21 @@ impl Eq8Runtime {
             return;
         }
         let divisor = f64::from(self.smooth_remaining);
-        for channel in 0..2 {
-            for band in 0..BAND_COUNT {
-                for stage in 0..4 {
-                    let current = &mut self.coefficients[channel][band][stage];
-                    let target = self.target[channel][band][stage];
-                    current.b0 += (target.b0 - current.b0) / divisor;
-                    current.b1 += (target.b1 - current.b1) / divisor;
-                    current.b2 += (target.b2 - current.b2) / divisor;
-                    current.a1 += (target.a1 - current.a1) / divisor;
-                    current.a2 += (target.a2 - current.a2) / divisor;
-                }
+        let targets = self
+            .routing
+            .effective_target(self.automated_target.as_ref(), self.canonical_mode);
+        for (current, target) in self.coefficients.iter_mut().zip(targets) {
+            for (current, target) in current.iter_mut().flatten().zip(target.iter().flatten()) {
+                current.b0 += (target.b0 - current.b0) / divisor;
+                current.b1 += (target.b1 - current.b1) / divisor;
+                current.b2 += (target.b2 - current.b2) / divisor;
+                current.a1 += (target.a1 - current.a1) / divisor;
+                current.a2 += (target.a2 - current.a2) / divisor;
             }
         }
         self.smooth_remaining -= 1;
         if self.smooth_remaining == 0 {
-            self.coefficients = *self.target;
+            self.coefficients = targets.map(|bank| *bank);
             self.current_gain = self.target_gain;
             self.refresh_active_bands();
         } else {
@@ -727,11 +1008,14 @@ impl Eq8Runtime {
     }
 
     fn refresh_active_bands(&mut self) {
-        for channel in 0..2 {
-            for band in 0..BAND_COUNT {
+        let targets = self
+            .routing
+            .effective_target(self.automated_target.as_ref(), self.canonical_mode);
+        for (channel, target) in targets.into_iter().enumerate() {
+            for (band, target) in target.iter().enumerate() {
                 self.active_bands[channel][band] = (0..4).any(|stage| {
                     self.coefficients[channel][band][stage] != Coefficients::IDENTITY
-                        || self.target[channel][band][stage] != Coefficients::IDENTITY
+                        || target[stage] != Coefficients::IDENTITY
                         || self.history[channel][band][stage]
                             .iter()
                             .any(|value| *value != 0.0)
@@ -741,7 +1025,8 @@ impl Eq8Runtime {
     }
 
     pub fn is_quiescent(&self) -> bool {
-        self.audition_selection.is_none()
+        !self.mode_fade.is_active()
+            && self.audition_selection.is_none()
             && self.audition_request.is_none()
             && self.audition_mix == 0.0
             && self
@@ -792,7 +1077,34 @@ impl NativeProcessorRuntime for Eq8Runtime {
         frames: &mut [StereoFrame],
         _resources: &dyn hex_lattice::DeviceResources,
     ) {
+        if !frames.is_empty() && !self.tail_controls_frozen {
+            self.restore_canonical_controls();
+        }
         self.process(frames);
+    }
+    fn begin_output_tail(&mut self) {
+        self.tail_controls_frozen = true;
+    }
+    fn supports_parameter_automation(&self, id: ParameterId) -> bool {
+        automation::slot(id).is_some_and(|i| self.controls.admitted(i))
+    }
+    fn process_block_with_automation(
+        &mut self,
+        frames: &mut [StereoFrame],
+        _: Option<&dyn hex_lattice::NativeInstrumentClock>,
+        values: &dyn hex_lattice::NativeParameterAutomation,
+        _: &dyn hex_lattice::DeviceResources,
+    ) -> Result<(), DeviceContractError> {
+        self.process_automation(frames, values, false)
+    }
+    fn process_bypassed_block_with_automation(
+        &mut self,
+        frames: &mut [StereoFrame],
+        _: Option<&dyn hex_lattice::NativeInstrumentClock>,
+        values: &dyn hex_lattice::NativeParameterAutomation,
+        _: &dyn hex_lattice::DeviceResources,
+    ) -> Result<(), DeviceContractError> {
+        self.process_automation(frames, values, true)
     }
     fn reset(&mut self) {
         Eq8Runtime::reset(self);
@@ -806,20 +1118,44 @@ impl NativeProcessorRuntime for Eq8Runtime {
             .downcast_ref::<Self>()
             .is_some_and(|previous| self.sample_rate == previous.sample_rate)
     }
+    /// A channel-mode change retargets through `ModeFade` instead of a reset,
+    /// so session playback keeps one chain rather than detaching the old
+    /// suffix as a ringing tail beside a fresh EQ. Within one mode, the
+    /// canonical enabled-band set must match except where either runtime has
+    /// admitted that exact enable control. Its fixed-stage smoother owns the
+    /// transition, including lane removal and canonical fallback.
     fn can_retarget_parameters_from(&self, previous: &dyn NativeProcessorRuntime) -> bool {
         previous
             .as_any()
             .downcast_ref::<Self>()
             .is_some_and(|previous| {
                 self.sample_rate == previous.sample_rate
-                    && self.mode == previous.mode
-                    && self.enabled_bands == previous.enabled_bands
+                    && if self.preserves_routing(previous) {
+                        self.enabled_layout_compatible(previous, previous.mode)
+                    } else {
+                        self.mode != previous.mode
+                            || self.enabled_layout_compatible(previous, self.mode)
+                    }
             })
     }
     fn copy_history_from(&mut self, previous: &dyn NativeProcessorRuntime) {
         if let Some(previous) = previous.as_any().downcast_ref::<Self>() {
             let _ = self.inherit_history_from(previous);
         }
+    }
+    /// Ordinary canonical mode changes wait for the occupied fade (Pulse #4106).
+    /// Two admitted routing runtimes preserve that branch instead; their own
+    /// latest validated target waits in fixed storage beside it.
+    fn transition_busy_from(&self, previous: &dyn NativeProcessorRuntime) -> bool {
+        previous
+            .as_any()
+            .downcast_ref::<Self>()
+            .is_some_and(|previous| {
+                self.sample_rate == previous.sample_rate
+                    && !self.preserves_routing(previous)
+                    && self.mode != previous.mode
+                    && previous.mode_fade.is_active()
+            })
     }
     fn as_any(&self) -> &dyn StdAny {
         self
@@ -1052,6 +1388,12 @@ fn shelf(
 
 pub static EQ8_DEFINITION: Eq8Definition = Eq8Definition;
 
+#[cfg(test)]
+#[path = "eq8/mode_fade_tests.rs"]
+mod mode_fade_tests;
+#[cfg(test)]
+#[path = "eq8/steady_state_digest_tests.rs"]
+mod steady_state_digest_tests;
 #[cfg(test)]
 #[path = "eq8/tests.rs"]
 mod tests;

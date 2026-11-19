@@ -449,9 +449,8 @@ fn delay_filter_refused_begin_retires_capture_without_moving_another_gesture(
 }
 
 #[gpui::test]
-fn delay_catalog_growth_keeps_all_add_choices_clickable_on_track_return_and_main(
-    cx: &mut TestAppContext,
-) {
+fn delay_catalog_growth_keeps_scrolling_choices_searchable_on_all_owners(cx: &mut TestAppContext) {
+    cx.update(hex_widgets::bind_text_input_keys);
     let (handle, editor, _, bus, _, _gate) = fixture(cx);
     let track = editor.read_with(cx, |v, _| v.selected_track.unwrap());
     let mut visual = VisualTestContext::from_window(handle, cx);
@@ -474,7 +473,7 @@ fn delay_catalog_growth_keeps_all_add_choices_clickable_on_track_return_and_main
                 cx.notify();
             });
             visual.run_until_parked();
-            let panel = visual.debug_bounds("device-panel").unwrap();
+            let panel = visual.debug_bounds("device-picker-modal").unwrap();
             let menu = visual.debug_bounds("device-add-menu").unwrap();
             assert!(
                 menu.left() >= panel.left()
@@ -483,48 +482,45 @@ fn delay_catalog_growth_keeps_all_add_choices_clickable_on_track_return_and_main
                     && menu.bottom() <= panel.bottom(),
                 "{width}/{owner:?}: {menu:?} in {panel:?}"
             );
-            let mut choices: Vec<Bounds<Pixels>> = Vec::new();
+            let search = visual.debug_bounds("device-picker-search").unwrap();
+            visual.simulate_click(search.center(), Modifiers::default());
             for class in [NativeDeviceClass::Instrument, NativeDeviceClass::Effect] {
                 if class == NativeDeviceClass::Instrument && owner.is_some() {
                     continue;
                 }
                 for entry in hex_engine::native_device_catalog_for_class(class).unwrap() {
+                    let type_name = entry.type_id.as_str().unwrap();
                     let selector = if let Some(owner) = owner {
-                        format!(
-                            "add-{}-effect-{}",
-                            owner.prefix(),
-                            entry.type_id.as_str().unwrap()
-                        )
+                        format!("add-{}-effect-{type_name}", owner.prefix())
                     } else {
                         format!(
-                            "add-native-{}-{}",
+                            "add-native-{}-{type_name}",
                             if class == NativeDeviceClass::Effect {
                                 "effect"
                             } else {
                                 "instrument"
-                            },
-                            entry.type_id.as_str().unwrap()
+                            }
                         )
                     };
+                    // Exercise the real input with one edit per query.
+                    visual.update(|_, cx| {
+                        cx.write_to_clipboard(gpui::ClipboardItem::new_string(
+                            type_name.to_owned(),
+                        ));
+                    });
+                    visual.simulate_keystrokes("cmd-a cmd-v");
+                    let menu = visual.debug_bounds("device-add-menu").unwrap();
                     let bounds = visual
                         .debug_bounds(Box::leak(selector.into_boxed_str()))
                         .unwrap();
                     assert!(
                         bounds.left() >= menu.left()
                             && bounds.right() <= menu.right()
+                            && bounds.size.height == px(20.0)
                             && bounds.top() >= menu.top()
                             && bounds.bottom() <= menu.bottom(),
                         "{width}/{owner:?}: {bounds:?} in {menu:?}"
                     );
-                    for other in &choices {
-                        assert!(
-                            bounds.right() <= other.left()
-                                || bounds.left() >= other.right()
-                                || bounds.bottom() <= other.top()
-                                || bounds.top() >= other.bottom()
-                        );
-                    }
-                    choices.push(bounds);
                 }
             }
             let count = |v: &EditorView| {
@@ -538,6 +534,11 @@ fn delay_catalog_growth_keeps_all_add_choices_clickable_on_track_return_and_main
             let before = editor.read_with(cx, |v, _| count(v));
             let before_project =
                 editor.read_with(cx, |v, _| v.state.as_ref().unwrap().project.clone());
+            let search = visual.debug_bounds("device-picker-search").unwrap();
+            visual.simulate_click(search.center(), Modifiers::default());
+            visual.simulate_keystrokes("cmd-a");
+            visual.simulate_keystrokes("hex.delay");
+            visual.run_until_parked();
             let selector = if let Some(owner) = owner {
                 format!("add-{}-effect-hex.delay", owner.prefix())
             } else {
@@ -546,6 +547,7 @@ fn delay_catalog_growth_keeps_all_add_choices_clickable_on_track_return_and_main
             let bounds = visual
                 .debug_bounds(Box::leak(selector.into_boxed_str()))
                 .unwrap();
+            assert!(bounds.top() >= menu.top() && bounds.bottom() <= menu.bottom());
             visual.simulate_click(bounds.center(), Modifiers::default());
             pump_until(&editor, cx, settled);
             editor.read_with(cx, |v, _| {

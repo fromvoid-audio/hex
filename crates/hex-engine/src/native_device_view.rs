@@ -49,6 +49,9 @@ fn sampler_control_error(error: hex_devices::sampler::control::ControlError) -> 
             SamplerParameter::Gain => "sampler gain must be between zero and four",
             SamplerParameter::Transpose => "sampler pitch must be between -48 and 48 semitones",
             SamplerParameter::LoopEnabled => "sampler loop must be off or on",
+            SamplerParameter::LoopCrossfadeMs => {
+                "sampler loop crossfade must be between zero and 10000 ms"
+            }
             SamplerParameter::StartFrame
             | SamplerParameter::EndFrame
             | SamplerParameter::LoopStartFrame
@@ -349,6 +352,22 @@ pub fn native_effect_frequency_response(
         .map_err(|error| Invalid(error.message()))
 }
 
+/// Authored Vector carrier-filter response from the provider's prepared law.
+/// Excludes oscillator/decimator transfer, live modulation and smoothing.
+/// Read-only control-side preparation; never call from an audio callback.
+pub fn native_operator_filter_frequency_response(
+    state: &NativeDeviceState,
+    sample_rate: u32,
+    frequencies_hz: &[f32],
+) -> Result<Vec<f32>, Invalid> {
+    hex_devices::operator_state::operator_filter_frequency_response(
+        state,
+        sample_rate,
+        frequencies_hz,
+    )
+    .map_err(|error| Invalid(error.message()))
+}
+
 /// Look up descriptors only in the explicitly selected class registry.
 pub fn native_device_descriptors_for_class(
     class: NativeDeviceClass,
@@ -448,6 +467,28 @@ fn display_name(type_id: DeviceTypeId, name: Option<&str>) -> Result<String, Inv
 mod tests {
     use super::*;
     use hex_lattice_contract::ParameterKind;
+
+    #[test]
+    fn operator_filter_response_facade_uses_validated_instrument_state() {
+        let definition = &hex_devices::operator_state::OPERATOR_METADATA;
+        let state = definition.default_state().unwrap();
+        assert_eq!(
+            native_operator_filter_frequency_response(&state, 48_000, &[100.0, 1000.0]).unwrap(),
+            [1.0; 2]
+        );
+        let state = definition
+            .patch_parameter(
+                &state,
+                hex_lattice_contract::ParameterId::from_static(20_001),
+                ParameterValue::Bool(true),
+            )
+            .unwrap();
+        let response =
+            native_operator_filter_frequency_response(&state, 48_000, &[100.0, 1000.0, 10_000.0])
+                .unwrap();
+        assert!(response[0] > response[1] && response[1] > response[2]);
+        assert!(native_operator_filter_frequency_response(&state, 48_000, &[0.0]).is_err());
+    }
 
     #[test]
     fn catalog_and_batched_values_use_registered_metadata_and_current_state() {
@@ -709,7 +750,7 @@ mod tests {
         let operator_view =
             native_device_view_for_class(NativeDeviceClass::Instrument, &operator_state).unwrap();
         assert_eq!(operator_view.name, "vector");
-        assert_eq!(operator_view.parameters.len(), 424);
+        assert_eq!(operator_view.parameters.len(), 432);
         let enables: Vec<_> = operator_view
             .parameters
             .iter()

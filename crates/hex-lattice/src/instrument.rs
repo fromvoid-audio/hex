@@ -9,7 +9,7 @@
 //! sandbox or host resource lease.
 use super::{MAX_NATIVE_DEVICE_TYPES, PreparedMutableInstrumentRuntime, StereoFrame};
 use hex_lattice_contract::{
-    DeviceContractError, DeviceTypeId, NativeDeviceMetadata, NativeDeviceState,
+    DeviceContractError, DeviceTypeId, ModulationSourceId, NativeDeviceMetadata, NativeDeviceState,
 };
 use std::fmt;
 
@@ -268,6 +268,16 @@ pub trait PreparedNativeInstrument: Send + Sync {
         &self,
     ) -> Result<Option<Box<dyn PreparedMutableInstrumentRuntime>>, DeviceContractError> {
         Ok(None)
+    }
+    /// Prepare the same mutable provider with one occurrence-pressure input.
+    /// A slot can collect pressure before any route is assigned. Unsupported
+    /// providers must refuse instead of silently falling back to stock playback.
+    fn prepare_mutable_note_pressure(
+        &self,
+        _source: ModulationSourceId,
+        _route: Option<crate::PreparedPressureRoute>,
+    ) -> Result<Box<dyn PreparedMutableInstrumentRuntime>, DeviceContractError> {
+        Err(DeviceContractError::UnsupportedProcessingClass)
     }
     /// Once opted in, the control compiler keeps this device's continuation
     /// runtime across subsequent revisions, including Undo to an analytic state.

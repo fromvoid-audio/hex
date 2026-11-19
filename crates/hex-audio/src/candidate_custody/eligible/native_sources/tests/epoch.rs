@@ -10,6 +10,136 @@ fn presentation() -> Option<hex_plugin_host::protocol::PresentationLatency> {
 
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn actual_root_reactivation_refreshes_only_the_returned_source() {
+    let Some(variant) = std::env::var_os("HEX_ROOT_REACTIVATION_DRIVER") else {
+        for variant in ["99", "100"] {
+            let result = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    std::thread::current().name().unwrap(),
+                    "--ignored",
+                    "--nocapture",
+                ])
+                .env("HEX_ROOT_REACTIVATION_DRIVER", variant)
+                .env("HEX_ORIGINAL_INSTANCE_VARIANT", variant)
+                .output()
+                .unwrap();
+            assert!(
+                result.status.success(),
+                "{variant}: {}\n{}",
+                String::from_utf8_lossy(&result.stdout),
+                String::from_utf8_lossy(&result.stderr)
+            );
+            assert!(String::from_utf8_lossy(&result.stdout).contains("1 passed"));
+        }
+        return;
+    };
+    let root = root();
+    root.configure_native_sources(1, source_reservation())
+        .unwrap();
+    let (build, source, preparation) = input();
+    let mut component = Vec::from(b"HXPS");
+    component.extend(3_u32.to_le_bytes());
+    component.extend(0.75_f32.to_le_bytes());
+    component.extend(48000_f64.to_le_bytes());
+    component.extend([2, 2, 0, 0]);
+    component.extend([0; 8]);
+    let saved = hex_plugin_state::encode(hex_plugin_state::State {
+        identity: source.identity(),
+        component: Some(&component),
+        controller: None,
+    })
+    .unwrap();
+    let old = root
+        .begin_native_source(
+            identity(),
+            12,
+            &build,
+            source,
+            preparation,
+            Some(saved.clone()),
+            native::TrustUserCode::Acknowledged,
+            None,
+        )
+        .unwrap();
+    root.complete_native_source(old, presentation()).unwrap();
+    let historical = root.native_source_prepared_state(old).unwrap();
+    let child = {
+        let work = lock(&root.work);
+        let Some(Owner::Prepared(owner)) = work.sources.cells[0].owner.as_ref() else {
+            panic!("original prepared source");
+        };
+        owner.child_id_on_control().unwrap()
+    };
+    root.start_native_effect(old).unwrap();
+    let endpoint = root.loan_native_endpoint(old).unwrap();
+    assert!(root.reactivate_native_source(old).is_err());
+    assert!(root.quiesce_native_source(old, old.graph).is_err());
+    assert!(root.ingest_native_endpoint(endpoint).is_ok());
+    let renewed = root.quiesce_native_source(old, old.graph).unwrap();
+    assert!(root.reactivate_native_source(old).is_err());
+    let Some(NativeSourcePreparationProgress::Facts(original)) =
+        root.native_source_progress(renewed)
+    else {
+        panic!("ordinary quiescence must report facts");
+    };
+    assert_eq!(original.algorithmic_latency_frames, 3);
+    let refreshed = root.reactivate_native_source(renewed).unwrap();
+    if variant == "100" {
+        assert!(refreshed.is_none());
+        assert!(
+            root.complete_native_source(renewed, presentation())
+                .is_err()
+        );
+        dispose(&root, renewed);
+        let returned = root.recover_native_source(renewed).unwrap();
+        assert!(matches!(
+            returned.error,
+            Some(hex_plugin_host::Error::Worker(15))
+        ));
+        assert!(matches!(
+            returned.disposal,
+            PreparationDisposal::Reaped(retired) if !retired.status.success()
+        ));
+        return;
+    }
+    let refreshed = refreshed.unwrap();
+    assert_eq!(refreshed.algorithmic_latency_frames, 7);
+    assert_eq!(
+        root.native_source_progress(renewed),
+        Some(NativeSourcePreparationProgress::Facts(refreshed))
+    );
+    assert!(root.loan_native_endpoint(renewed).is_err());
+    root.complete_native_source(renewed, presentation())
+        .unwrap();
+    assert_eq!(root.native_source_prepared_state(renewed), Some(historical));
+    {
+        let work = lock(&root.work);
+        let Some(Owner::Prepared(owner)) = work.sources.cells[0].owner.as_ref() else {
+            panic!("resumed source");
+        };
+        assert_eq!(owner.child_id_on_control(), Some(child));
+        assert_eq!(owner.configuration().restore.as_ref(), Some(&saved));
+        assert_eq!(owner.ready().algorithmic_latency_frames, 7);
+    }
+    root.start_native_effect(renewed).unwrap();
+    assert!(matches!(
+        root.native_source_progress(renewed),
+        Some(NativeSourcePreparationProgress::Effect { prepared })
+            if prepared.processor_latency_frames() == 7
+    ));
+    assert!(root.retire_native_source(renewed));
+    dispose(&root, renewed);
+    let returned = root.recover_native_source(renewed).unwrap();
+    assert!(returned.error.is_none());
+    assert!(matches!(
+        returned.disposal,
+        PreparationDisposal::Reaped(retired) if retired.status.success()
+    ));
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn actual_root_epoch_requires_original_endpoint_return_and_matching_resume_ack() {
     let root = root();
     root.configure_native_sources(2, source_reservation())
@@ -24,6 +154,7 @@ fn actual_root_epoch_requires_original_endpoint_return_and_matching_resume_ack()
             preparation,
             None,
             native::TrustUserCode::Acknowledged,
+            None,
         )
         .unwrap();
     root.complete_native_source(other, presentation()).unwrap();

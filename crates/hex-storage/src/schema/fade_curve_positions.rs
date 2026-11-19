@@ -171,7 +171,13 @@ mod tests {
             assert_eq!(std::fs::read(&path).unwrap(), bytes);
             std::fs::remove_dir_all(directory).unwrap();
             let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-            assert_eq!(value["version"], crate::CURRENT_SCHEMA_VERSION);
+            // The edited fixture's pitch renders with the v2 warp resampler.
+            let version = if edited {
+                crate::WARP_RESAMPLER_SCHEMA_VERSION
+            } else {
+                crate::CURRENT_SCHEMA_VERSION
+            };
+            assert_eq!(value["version"], version);
             for mutation in 0..9 {
                 let mut bad = value.clone();
                 match mutation {
@@ -211,7 +217,8 @@ mod tests {
     #[test]
     fn actual_schema37_encoder_opens_with_sample_exact_centered_defaults() {
         for edited in [false, true] {
-            let project = fixture(edited, 500);
+            // A schema37-era project rendered its pitch with the v1 law.
+            let project = super::super::warp_resampler::with_implied_laws(&fixture(edited, 500));
             // Frozen genuine prior encoder, rather than changing a current version tag.
             let old = crate::encode_document(
                 &super::super::tuning::DocumentV37::from_project(&project).unwrap(),

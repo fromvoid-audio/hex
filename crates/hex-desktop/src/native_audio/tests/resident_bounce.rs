@@ -48,7 +48,9 @@ fn loaded_resident_bounce_preserves_float_source_mix_single_history_and_native_p
         project_generation: 0,
         revision: added.state.revision,
         track,
-        empty_sampler: None,
+        slot: hex_session::service::SamplerLoadSlot::New(
+            hex_project::InstrumentLoadPlacement::First,
+        ),
         path: source.wav(48_000, 8192),
         cancel: Arc::new(AtomicBool::new(false)),
     });
@@ -190,7 +192,7 @@ fn loaded_resident_bounce_preserves_float_source_mix_single_history_and_native_p
         .to_owned();
     let raw = fs::read(&path).unwrap();
     assert_eq!(&raw[20..22], &3_u16.to_le_bytes());
-    let float = raw[44..]
+    let float = raw[hex_export::FLOAT32_WAV_HEADER_BYTES as usize..]
         .chunks_exact(8)
         .map(|frame| f32::from_le_bytes(frame[..4].try_into().unwrap()))
         .collect::<Vec<_>>();
@@ -306,8 +308,11 @@ fn loaded_resident_bounce_preserves_float_source_mix_single_history_and_native_p
         .to_owned();
     let bytes = fs::read(&session_path).unwrap();
     assert_eq!(&bytes[20..22], &3_u16.to_le_bytes());
-    assert_eq!(bytes.len(), 44 + session_frames as usize * 8);
-    for frame in bytes[44..].chunks_exact(8) {
+    assert_eq!(
+        bytes.len(),
+        hex_export::FLOAT32_WAV_HEADER_BYTES as usize + session_frames as usize * 8
+    );
+    for frame in bytes[hex_export::FLOAT32_WAV_HEADER_BYTES as usize..].chunks_exact(8) {
         assert!(
             (f32::from_le_bytes(frame[..4].try_into().unwrap()) - 0.25 / input_gain).abs() < 1e-6
         );

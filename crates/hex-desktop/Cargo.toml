@@ -8,11 +8,13 @@ publish.workspace = true
 [features]
 # Constructor/adapter integration only; no physical device is opened by fixtures.
 allocation-probe = ["hex-audio/allocation-probe", "hex-ui/ui-test-support"]
+# Explicit signed recording-failure fixtures only.
+recording-fault-test-support = ["hex-session/recording-fault-test-support"]
 
 [dependencies]
 fs2 = "=0.4.3"
 serde_json = "=1.0.151"
-sha2 = "=0.10.9"
+sha2 = "=0.11.0"
 hex-mts = { path = "../hex-mts" }
 hex-midi = { path = "../hex-midi" }
 hex-diagnostics = { path = "../hex-diagnostics" }
@@ -31,6 +33,8 @@ gpui = { version = "=0.2.2", default-features = false, features = ["font-kit", "
 nix = { version = "=0.31.3", features = ["signal", "process"] }
 
 [dev-dependencies]
+hex-audio = { path = "../hex-audio", features = ["stream-test-support"] }
+hex-session = { path = "../hex-session", features = ["recovery-checkpoint-test-support"] }
 hex-plugin-state = { path = "../hex-plugin-state" }
 hex-storage = { path = "../hex-storage" }
 hex-tuning = { path = "../hex-tuning" }

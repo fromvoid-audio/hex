@@ -108,22 +108,194 @@ fn events_placed_past_either_edge_are_kept_and_revealed_by_widening() {
 }
 
 #[test]
+fn duplicates_use_fresh_ids_without_moving_the_source_window() {
+    let (mut editor, clip) = imported(100);
+    let before = editor.project().clone();
+    let command = |start| Command::EditAudioEvents {
+        clip,
+        operation: AudioEventEdit::Duplicate { event: 1, start },
+    };
+    for invalid in [i64::MIN, -1, 0, 99, i64::MAX] {
+        assert!(editor.execute(command(invalid)).is_err());
+        assert_eq!(editor.project(), &before);
+    }
+    for start in [-100, 100] {
+        editor.execute(command(start)).unwrap();
+        let after = editor.project().clone();
+        let current = after.clip(clip).unwrap();
+        let root = current.audio_event_root();
+        let events = current.audio_events();
+        let original = events.events.iter().find(|item| item.id == 1).unwrap();
+        let copy = events.events.iter().find(|item| item.id == 2).unwrap();
+        assert_eq!((current.start(), current.duration()), (0, 100));
+        assert_eq!(original.start, root.view_start);
+        assert_eq!(
+            i128::from(copy.start) - i128::from(root.view_start),
+            i128::from(start)
+        );
+        assert_eq!(
+            (original.source, original.source_start),
+            (copy.source, copy.source_start)
+        );
+        assert_eq!(original.length(), copy.length());
+        assert_eq!(Project::from_snapshot(after.snapshot()).unwrap(), after);
+        editor
+            .execute(Command::EditAudioEvents {
+                clip,
+                operation: AudioEventEdit::SetGain {
+                    event: 2,
+                    gain: crate::ClipGain::new(-4500).unwrap(),
+                },
+            })
+            .unwrap();
+        assert_eq!(
+            editor
+                .project()
+                .clip(clip)
+                .unwrap()
+                .audio_events()
+                .events
+                .iter()
+                .find(|item| item.id == 1),
+            Some(original)
+        );
+        assert!(editor.undo());
+        assert_eq!(editor.project(), &after);
+        assert!(editor.undo());
+        assert_eq!(editor.project(), &before);
+        assert!(editor.redo());
+        assert_eq!(editor.project(), &after);
+        assert!(editor.undo());
+    }
+    editor
+        .execute(Command::DuplicateAliasClips(vec![clip]))
+        .unwrap();
+    let linked = editor.project().clone();
+    assert!(editor.execute(command(-100)).is_err());
+    assert_eq!(editor.project(), &linked);
+}
+
+#[test]
 fn placement_refuses_unsupported_roots_and_unbounded_timelines() {
     let (mut editor, clip) = imported(100);
     let before = editor.project().clone();
-    for start in [i64::MIN, i64::MAX, 16_777_216] {
+    for start in [
+        i64::MIN,
+        i64::MAX,
+        crate::MAX_SPARSE_AUDIO_TIMELINE_FRAMES as i64,
+    ] {
         assert!(place(&mut editor, clip, 1, start).is_err());
     }
     assert!(place(&mut editor, clip, 9, 10).is_err());
     editor
-        .execute(Command::SetClipLooping {
+        .execute(Command::SetAudioClipMusical {
             clip,
-            looping: true,
+            enabled: true,
         })
         .unwrap();
-    let looped = editor.project().clone();
-    assert!(place(&mut editor, clip, 1, 120).is_err());
-    assert_eq!(editor.project(), &looped);
+    let musical = editor.project().clone();
+    assert!(place(&mut editor, clip, 1, i64::MAX).is_err());
+    assert_eq!(editor.project(), &musical);
     assert!(editor.undo());
+    assert_eq!(editor.project(), &before);
+}
+
+#[test]
+fn signed_range_moves_keep_whole_ids_split_sources_and_replace_through_gaps() {
+    let (mut editor, clip) = imported(100);
+    for operation in [
+        AudioEventEdit::Split { at: 20 },
+        AudioEventEdit::Split { at: 40 },
+        AudioEventEdit::Split { at: 60 },
+        AudioEventEdit::Split { at: 80 },
+        AudioEventEdit::Delete { start: 40, end: 60 },
+    ] {
+        editor
+            .execute(Command::EditAudioEvents { clip, operation })
+            .unwrap();
+    }
+    let before = editor.project().clone();
+    for (start, end, destination) in [
+        (70, 10, 0),
+        (10, 101, 0),
+        (10, 70, i64::MIN),
+        (10, 70, i64::MAX),
+    ] {
+        let operation = AudioEventEdit::PlaceRange {
+            start,
+            end,
+            destination,
+        };
+        assert!(
+            editor
+                .execute(Command::EditAudioEvents { clip, operation })
+                .is_err()
+        );
+        assert_eq!(editor.project(), &before);
+    }
+    for destination in [-65_i64, 25, 130] {
+        let operation = AudioEventEdit::PlaceRange {
+            start: 10,
+            end: 70,
+            destination,
+        };
+        let preview = editor
+            .project()
+            .preview_audio_event_edit(clip, &operation)
+            .unwrap();
+        editor
+            .execute(Command::EditAudioEvents { clip, operation })
+            .unwrap();
+        let placed = editor.project().clip(clip).unwrap();
+        assert_eq!(placed, preview.clip());
+        assert_eq!((placed.start(), placed.duration()), (0, 100));
+        let events = placed.audio_events();
+        let view = placed.audio_event_root().view_start as i64;
+        let shape = |id| {
+            let e = events.events.iter().find(|e| e.id == id).unwrap();
+            assert_eq!(
+                preview.original_waveform_position(id, e.start),
+                Some(e.source_start)
+            );
+            (e.start as i64 - view, e.end as i64 - view, e.source_start)
+        };
+        assert_eq!(shape(1), (0, 10, 0));
+        assert_eq!(shape(6), (destination, destination + 10, 10));
+        assert_eq!(shape(2), (destination + 10, destination + 30, 20));
+        assert_eq!(shape(4), (destination + 50, destination + 60, 60));
+        if destination == 25 {
+            assert_eq!(shape(8), (85, 100, 85));
+            assert!(!events.events.iter().any(|e| e.id == 5 || e.id == 7));
+        } else {
+            assert_eq!(shape(7), (70, 80, 70));
+            assert_eq!(shape(5), (80, 100, 80));
+        }
+        let after = editor.project().clone();
+        assert!(editor.undo());
+        assert_eq!(editor.project(), &before);
+        assert!(editor.redo());
+        assert_eq!(editor.project(), &after);
+        assert!(editor.undo());
+    }
+}
+
+#[test]
+fn long_frame_event_roots_refuse_links_and_linked_roots_keep_the_dense_limit() {
+    let (mut editor, clip) = imported(100);
+    let destination = crate::MAX_AUDIO_DOMAIN_FRAMES as i64 + 10;
+    place(&mut editor, clip, 1, destination).unwrap();
+    let before = editor.project().clone();
+    assert!(
+        editor
+            .execute(Command::DuplicateAliasClips(vec![clip]))
+            .is_err()
+    );
+    assert_eq!(editor.project(), &before);
+    assert!(editor.undo());
+    editor
+        .execute(Command::DuplicateAliasClips(vec![clip]))
+        .unwrap();
+    let before = editor.project().clone();
+    assert!(place(&mut editor, clip, 1, destination).is_err());
     assert_eq!(editor.project(), &before);
 }

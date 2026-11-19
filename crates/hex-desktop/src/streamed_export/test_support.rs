@@ -4,18 +4,20 @@ use super::*;
 pub(crate) fn finish_action(
     request: &StreamedExportRequest<'_>,
     action: impl FnOnce(),
-) -> Result<ExportReport, String> {
+) -> Result<ExportReport, hex_session::service::ExportFailure> {
     render_action(request, true, false, action)
 }
 
 pub(crate) fn chunk_action(
     request: &StreamedExportRequest<'_>,
     action: impl FnOnce(),
-) -> Result<ExportReport, String> {
+) -> Result<ExportReport, hex_session::service::ExportFailure> {
     render_action(request, false, false, action)
 }
 
-pub(crate) fn missing_page(request: &StreamedExportRequest<'_>) -> Result<ExportReport, String> {
+pub(crate) fn missing_page(
+    request: &StreamedExportRequest<'_>,
+) -> Result<ExportReport, hex_session::service::ExportFailure> {
     render_action(request, true, true, || {})
 }
 
@@ -24,7 +26,7 @@ fn render_action(
     at_finish: bool,
     hide_pages: bool,
     action: impl FnOnce(),
-) -> Result<ExportReport, String> {
+) -> Result<ExportReport, hex_session::service::ExportFailure> {
     struct FinalAction<F> {
         pages: VerifiedPages,
         action: Option<F>,
@@ -55,10 +57,10 @@ fn render_action(
         }
         fn complete_chunk(&mut self) -> Result<(), ExportError> {
             self.pages.complete_chunk()?;
-            if !self.at_finish {
-                if let Some(action) = self.action.take() {
-                    action();
-                }
+            if !self.at_finish
+                && let Some(action) = self.action.take()
+            {
+                action();
             }
             Ok(())
         }
@@ -70,7 +72,7 @@ fn render_action(
         }
     }
     let pages = VerifiedPages::capture(request, StreamConfig::with_pool_pages(3))
-        .map_err(|error| error.to_string())?;
+        .map_err(hex_session::service::ExportFailure::from)?;
     let mut pages = FinalAction {
         pages,
         action: Some(action),
@@ -84,9 +86,10 @@ fn render_action(
         request.start(),
         request.frames(),
         request.signal().clone(),
+        request.format(),
         request.control(),
         request.publication(),
         &mut pages,
     )
-    .map_err(|error| error.to_string())
+    .map_err(Into::into)
 }

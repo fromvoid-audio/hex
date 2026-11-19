@@ -19,7 +19,11 @@
 //! checkpoints/tokens remain reader-owned, with no native footprint claim.
 //! Version 1 retains its original unknown-clock header for recovery. Version 2
 //! additionally retains an explicit configured capture clock; it does not infer
-//! that clock from the saved loop marker. Neither format proves live admission.
+//! that clock from the saved loop marker. Version3 adds raw VST3 targets to
+//! that clocked header, retaining their exact class in the embedded source.
+//! Historical1/2 reject the new target kind. Version4 groups exact VST3
+//! targets with one source header and a separate record kind for each actual
+//! per-parameter restoration. No format proves live admission.
 use crate::{FileToken, StorageError, decode, encode, files, replacement};
 use hex_project::{AutomationValue, DeviceAutomationTarget, DeviceId, Project, TrackId};
 use serde::{Deserialize, Serialize};
@@ -34,6 +38,17 @@ use std::{
 const MAGIC: &[u8; 8] = b"HEXADFT\0";
 const VERSION: u32 = 1;
 const CLOCK_VERSION: u32 = 2;
+// Version3 adds raw VST3 target kind4 to the explicit-clock header. The exact
+// class remains in the integrity-checked embedded source; versions1/2 never
+// reinterpret this kind. Native/track writers retain their historical format.
+const VST3_CLOCK_VERSION: u32 = 3;
+const VST3_GROUP_VERSION: u32 = 4;
+
+mod group;
+pub use group::{GroupApplication, GroupDraftEvent, MAX_GROUP_TARGETS, Vst3GroupTarget};
+use group::{GroupHeader, GroupState};
+mod target;
+use target::{metadata, resolve_target};
 const PREFIX_BYTES: usize = 32;
 const RECORD_BYTES: usize = 96;
 const PAYLOAD_BYTES: usize = 64;
@@ -41,13 +56,13 @@ const MAX_METADATA_BYTES: u64 = 1024;
 pub const MAX_APPEND_EVENTS: usize = 64;
 
 mod completed;
-pub use completed::CompletedDraft;
+pub use completed::{CompletedDraft, CompletedGroupedDraft};
 mod take;
 pub use take::{
     AutomationSharedData, CompletedAutomationTake, MAX_PREVIEW_QUERIES, MAX_SCALAR_RANGE_FRAMES,
     MAX_SPANS_PER_STEP, PreparedAutomationTake, PreparedAutomationTakeDataLayout,
-    ProjectedAutomationSpan, ProjectedSpanCursor, SpanReadProgress, SpanReadState, TakeOpenError,
-    automation_projection_fingerprint,
+    ProjectedAutomationSpan, ProjectedGroupLane, ProjectedSpanCursor, SpanReadProgress,
+    SpanReadState, TakeOpenError, automation_projection_fingerprint,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -59,6 +74,7 @@ pub enum DraftTarget {
         device: DeviceId,
         target: DeviceAutomationTarget,
     },
+    Vst3Group(Vst3GroupTarget),
 }
 
 /// Actual confirmed application, never an enqueue receipt or requested clock.
@@ -146,6 +162,20 @@ pub struct DraftProgress {
     pub durable_terminal: Option<DraftTerminal>,
 }
 
+/// Integrity identity of a writer's sync-acknowledged event prefix, including its header.
+/// This detects accidental replacement or damage; it is not an authentication mechanism.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DraftPrefixIdentity {
+    events: u64,
+    chain: [u8; 32],
+}
+impl DraftPrefixIdentity {
+    /// Number of sync-acknowledged events bound by this identity.
+    pub fn events(self) -> u64 {
+        self.events
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct DraftReadLimits {
     /// Checked against the framed length before source allocation or decoding.
@@ -210,7 +240,9 @@ pub struct DraftWriter {
     path: PathBuf,
     progress: DraftProgress,
     previous: Option<AppliedEvent>,
+    group: Option<GroupState>,
     chain: [u8; 32],
+    durable_chain: [u8; 32],
     failed: bool,
 }
 
@@ -274,18 +306,41 @@ impl DraftWriter {
         let result = (|| -> Result<Self, StorageError> {
             validate_source(source)?;
             validate_provenance(provenance)?;
-            let metadata = metadata(source, target, provenance)?;
-            let (version, meta) = if let Some(clock) = capture_clock {
+            let (version, meta, group) = if let DraftTarget::Vst3Group(target) = target {
+                let clock = capture_clock.ok_or(StorageError::Invalid(
+                    "grouped vst3 automation draft requires an explicit capture clock",
+                ))?;
+                target.validate_source(source)?;
                 validate_capture_clock(source, provenance, clock)?;
                 (
-                    CLOCK_VERSION,
-                    serde_json::to_vec(&ClockedMetadata {
-                        metadata,
-                        capture_clock: ClockMetadata::from(clock),
-                    })?,
+                    VST3_GROUP_VERSION,
+                    GroupHeader::encode(target, provenance, clock)?,
+                    Some(GroupState::new(target, clock)),
                 )
             } else {
-                (VERSION, serde_json::to_vec(&metadata)?)
+                let metadata = metadata(source, target, provenance)?;
+                if metadata.target_kind == 4 && capture_clock.is_none() {
+                    return Err(StorageError::Invalid(
+                        "vst3 automation draft requires an explicit capture clock",
+                    ));
+                }
+                if let Some(clock) = capture_clock {
+                    validate_capture_clock(source, provenance, clock)?;
+                    (
+                        if metadata.target_kind == 4 {
+                            VST3_CLOCK_VERSION
+                        } else {
+                            CLOCK_VERSION
+                        },
+                        serde_json::to_vec(&ClockedMetadata {
+                            metadata,
+                            capture_clock: ClockMetadata::from(clock),
+                        })?,
+                        None,
+                    )
+                } else {
+                    (VERSION, serde_json::to_vec(&metadata)?, None)
+                }
             };
             if path.file_name().is_none() {
                 return Err(StorageError::Invalid("automation draft needs a filename"));
@@ -327,7 +382,9 @@ impl DraftWriter {
                 .open(&temporary.path)?;
             fs2::FileExt::try_lock_exclusive(&file)?;
             file.seek(SeekFrom::End(0))?;
-            fs::hard_link(&temporary.path, path)?;
+            // The open locked handle must stay bound to the published draft,
+            // so a non-atomic copy is not an acceptable fallback here.
+            crate::publication::publish_new_atomic(&temporary.path, path)?;
             published = true;
             finish(&temporary.path, path).map_err(|(operation, source)| {
                 StorageError::PublishedButNotDurable {
@@ -341,7 +398,9 @@ impl DraftWriter {
                 path: path.to_path_buf(),
                 progress: DraftProgress::default(),
                 previous: None,
+                group,
                 chain,
+                durable_chain: chain,
                 failed: false,
             })
         })();
@@ -353,11 +412,23 @@ impl DraftWriter {
         })
     }
 
+    pub fn has_group_records(&self) -> bool {
+        self.group.is_some()
+    }
+
     pub fn path(&self) -> &Path {
         &self.path
     }
     pub fn progress(&self) -> DraftProgress {
         self.progress
+    }
+
+    /// Identity advances only when the event prefix has been sync-acknowledged.
+    pub fn durable_prefix_identity(&self) -> DraftPrefixIdentity {
+        DraftPrefixIdentity {
+            events: self.progress.durable_events,
+            chain: self.durable_chain,
+        }
     }
 
     pub fn append(&mut self, events: &[AppliedEvent]) -> Result<DraftProgress, DraftError> {
@@ -367,51 +438,104 @@ impl DraftWriter {
     fn append_with(
         &mut self,
         events: &[AppliedEvent],
-        mut write: impl FnMut(&mut File, &[u8]) -> io::Result<()>,
+        write: impl FnMut(&mut File, &[u8]) -> io::Result<()>,
         sync: impl FnOnce(&File) -> io::Result<()>,
     ) -> Result<DraftProgress, DraftError> {
         let result = (|| -> Result<(), StorageError> {
-            self.check_open()?;
-            if events.len() > MAX_APPEND_EVENTS {
+            self.check_batch(events.len())?;
+            if self.group.is_some() {
                 return Err(StorageError::Invalid(
-                    "automation draft append exceeds 64 events",
+                    "grouped take requires grouped records",
                 ));
             }
             let mut previous = self.previous;
-            for event in events {
-                validate_event(previous, *event)?;
-                previous = Some(*event);
+            for &event in events {
+                validate_event(previous, event)?;
+                previous = Some(event);
             }
-            let accepted = self
-                .progress
-                .accepted_events
-                .checked_add(events.len() as u64)
-                .ok_or(StorageError::Invalid(
-                    "automation draft event count overflow",
-                ))?;
-            if events.is_empty() {
-                return Ok(());
-            }
-            self.progress.accepted_events = accepted;
-            for event in events {
-                let record = event_record(*event, self.chain);
-                if let Err(error) = write(&mut self.file, &record) {
-                    self.failed = true;
-                    return Err(error.into());
-                }
-                self.chain.copy_from_slice(&record[PAYLOAD_BYTES..]);
-                self.previous = Some(*event);
-            }
-            if let Err(error) = sync(&self.file) {
-                self.failed = true;
-                return Err(error.into());
-            }
-            self.progress.durable_events = accepted;
+            self.write_batch(events, event_record, write, sync)?;
+            self.previous = previous;
             Ok(())
         })();
         result
             .map(|()| self.progress)
             .map_err(|source| self.error(source))
+    }
+
+    /// Validate the whole offered batch before publishing any record.
+    pub fn append_group(
+        &mut self,
+        events: &[GroupDraftEvent],
+    ) -> Result<DraftProgress, DraftError> {
+        self.append_group_with(events, |file, bytes| file.write_all(bytes), File::sync_all)
+    }
+
+    fn append_group_with(
+        &mut self,
+        events: &[GroupDraftEvent],
+        write: impl FnMut(&mut File, &[u8]) -> io::Result<()>,
+        sync: impl FnOnce(&File) -> io::Result<()>,
+    ) -> Result<DraftProgress, DraftError> {
+        let result = (|| -> Result<(), StorageError> {
+            self.check_batch(events.len())?;
+            let mut group = self.group.ok_or(StorageError::Invalid(
+                "single target draft refuses grouped records",
+            ))?;
+            for &event in events {
+                group.validate(event)?;
+            }
+            self.write_batch(events, group::encode, write, sync)?;
+            self.group = Some(group);
+            Ok(())
+        })();
+        result
+            .map(|()| self.progress)
+            .map_err(|source| self.error(source))
+    }
+
+    fn check_batch(&self, len: usize) -> Result<(), StorageError> {
+        self.check_open()?;
+        if len > MAX_APPEND_EVENTS {
+            return Err(StorageError::Invalid(
+                "automation draft append exceeds 64 events",
+            ));
+        }
+        Ok(())
+    }
+
+    fn write_batch<T: Copy>(
+        &mut self,
+        events: &[T],
+        encode: impl Fn(T, [u8; 32]) -> [u8; RECORD_BYTES],
+        mut write: impl FnMut(&mut File, &[u8]) -> io::Result<()>,
+        sync: impl FnOnce(&File) -> io::Result<()>,
+    ) -> Result<(), StorageError> {
+        let accepted = self
+            .progress
+            .accepted_events
+            .checked_add(events.len() as u64)
+            .ok_or(StorageError::Invalid(
+                "automation draft event count overflow",
+            ))?;
+        if events.is_empty() {
+            return Ok(());
+        }
+        self.progress.accepted_events = accepted;
+        for &event in events {
+            let record = encode(event, self.chain);
+            if let Err(error) = write(&mut self.file, &record) {
+                self.failed = true;
+                return Err(error.into());
+            }
+            self.chain.copy_from_slice(&record[PAYLOAD_BYTES..]);
+        }
+        if let Err(error) = sync(&self.file) {
+            self.failed = true;
+            return Err(error.into());
+        }
+        self.progress.durable_events = accepted;
+        self.durable_chain = self.chain;
+        Ok(())
     }
 
     pub fn finish(&mut self, terminal: DraftTerminal) -> Result<DraftProgress, DraftError> {
@@ -430,7 +554,11 @@ impl DraftWriter {
     ) -> Result<DraftProgress, DraftError> {
         let result = (|| -> Result<(), StorageError> {
             self.check_open()?;
-            validate_terminal(self.previous, terminal)?;
+            if let Some(group) = self.group {
+                group.finish(terminal)?;
+            } else {
+                validate_terminal(self.previous, terminal)?;
+            }
             let record = terminal_record(terminal, self.chain);
             if let Err(error) = write(&mut self.file, &record).and_then(|()| sync(&self.file)) {
                 self.failed = true;
@@ -516,14 +644,33 @@ impl DraftReader {
     /// prefix. Header damage/future versions refuse before exposing source state.
     pub fn open(path: impl AsRef<Path>, limits: DraftReadLimits) -> Result<Self, DraftError> {
         let path = path.as_ref();
-        Self::open_inner(path, limits).map_err(|source| DraftError {
+        Self::open_inner(path, limits, None).map_err(|source| DraftError {
             path: path.to_path_buf(),
             progress: DraftProgress::default(),
             published: true,
             source: Box::new(source),
         })
     }
-    fn open_inner(path: &Path, limits: DraftReadLimits) -> Result<Self, StorageError> {
+    /// Accept a validated prefix of at most `max_events`, inspecting one further
+    /// record to detect excess events, a terminal, or a damaged tail.
+    pub fn open_bounded(
+        path: impl AsRef<Path>,
+        limits: DraftReadLimits,
+        max_events: u64,
+    ) -> Result<Self, DraftError> {
+        let path = path.as_ref();
+        Self::open_inner(path, limits, Some(max_events)).map_err(|source| DraftError {
+            path: path.to_path_buf(),
+            progress: DraftProgress::default(),
+            published: true,
+            source: Box::new(source),
+        })
+    }
+    fn open_inner(
+        path: &Path,
+        limits: DraftReadLimits,
+        max_events: Option<u64>,
+    ) -> Result<Self, StorageError> {
         let metadata = fs::symlink_metadata(path)?;
         if !metadata.is_file() || metadata.file_type().is_symlink() {
             return Err(StorageError::Invalid(
@@ -546,7 +693,10 @@ impl DraftReader {
             return Err(StorageError::Invalid("invalid automation draft header"));
         }
         let version = u32_at(&prefix, 8);
-        if !matches!(version, VERSION | CLOCK_VERSION) {
+        if !matches!(
+            version,
+            VERSION | CLOCK_VERSION | VST3_CLOCK_VERSION | VST3_GROUP_VERSION
+        ) {
             return Err(StorageError::Invalid(
                 "unsupported automation draft version; preserve original file and open it with a compatible hex build",
             ));
@@ -585,16 +735,22 @@ impl DraftReader {
         }
         let source = decode(&source_bytes)?;
         validate_source(&source)?;
-        let (meta, capture_clock) = if version == VERSION {
-            (serde_json::from_slice::<Metadata>(&meta_bytes)?, None)
+        let (target, provenance, capture_clock) = if version == VST3_GROUP_VERSION {
+            let (target, provenance, clock) = GroupHeader::decode(&meta_bytes, &source)?;
+            (DraftTarget::Vst3Group(target), provenance, Some(clock))
         } else {
-            let clocked: ClockedMetadata = serde_json::from_slice(&meta_bytes)?;
-            let clock = CaptureClock::try_from(clocked.capture_clock)?;
-            validate_capture_clock(&source, clocked.metadata.provenance, clock)?;
-            (clocked.metadata, Some(clock))
+            let (meta, capture_clock) = if version == VERSION {
+                (serde_json::from_slice::<Metadata>(&meta_bytes)?, None)
+            } else {
+                let clocked: ClockedMetadata = serde_json::from_slice(&meta_bytes)?;
+                let clock = CaptureClock::try_from(clocked.capture_clock)?;
+                validate_capture_clock(&source, clocked.metadata.provenance, clock)?;
+                (clocked.metadata, Some(clock))
+            };
+            let target = resolve_target(&source, &meta, version)?;
+            (target, meta.provenance, capture_clock)
         };
-        validate_provenance(meta.provenance)?;
-        let target = resolve_target(&source, &meta)?;
+        validate_provenance(provenance)?;
         // Keep the source file bytes untouched. Identity uses the owning codec's
         // canonical current representation after any explicitly supported
         // migration, so a later project schema need not strand an older draft.
@@ -610,12 +766,12 @@ impl DraftReader {
             source,
             token,
             target,
-            provenance: meta.provenance,
+            provenance,
             capture_clock,
             outcome: DraftOutcome::Interrupted,
             complete_identity: None,
         };
-        let mut previous = None;
+        let mut validator = RecordValidation::new(target, capture_clock)?;
         loop {
             let mut record = [0; RECORD_BYTES];
             let count = read_record(&mut reader.records.file, &mut record)?;
@@ -633,8 +789,13 @@ impl DraftReader {
                 reader.outcome = DraftOutcome::Damaged { reason };
                 break;
             }
-            match decode_record(&record) {
-                Ok(Record::Event(event)) if validate_event(previous, event).is_ok() => {
+            match validator.inspect(&record) {
+                Ok(Record::Event(_) | Record::GroupEvent) => {
+                    if max_events.is_some_and(|max| reader.records.progress.durable_events >= max) {
+                        return Err(StorageError::Invalid(
+                            "automation draft exceeds caller event budget; preserve original file",
+                        ));
+                    }
                     let Some(count) = reader.records.progress.durable_events.checked_add(1) else {
                         reader.outcome = DraftOutcome::Damaged {
                             reason: DraftDamage::InvalidRecord,
@@ -643,10 +804,9 @@ impl DraftReader {
                     };
                     reader.records.progress.durable_events = count;
                     reader.records.progress.accepted_events = count;
-                    previous = Some(event);
                     chain.copy_from_slice(&record[PAYLOAD_BYTES..]);
                 }
-                Ok(Record::Terminal(terminal)) if validate_terminal(previous, terminal).is_ok() => {
+                Ok(Record::Terminal(terminal)) => {
                     reader.records.progress.durable_terminal = Some(terminal);
                     reader.outcome = match terminal {
                         DraftTerminal::Finished(clock) => DraftOutcome::Finished(clock),
@@ -701,6 +861,38 @@ impl DraftReader {
     pub fn path(&self) -> &Path {
         &self.records.path
     }
+    /// Revalidate and compare the writer's acknowledged prefix under the reader lock.
+    /// Work is proportional to the identity's event count and bounded by the opened prefix.
+    pub fn matches_prefix(&mut self, identity: DraftPrefixIdentity) -> Result<bool, DraftError> {
+        let result = (|| -> Result<bool, StorageError> {
+            if identity.events > self.records.progress.durable_events {
+                return Ok(false);
+            }
+            self.records
+                .file
+                .seek(SeekFrom::Start(self.records.records_start))?;
+            let mut chain = self.records.header_chain;
+            let mut validator = RecordValidation::new(self.target, self.capture_clock)?;
+            for _ in 0..identity.events {
+                let mut record = [0; RECORD_BYTES];
+                self.records.file.read_exact(&mut record)?;
+                if !valid_hash(&record, chain) {
+                    return Err(StorageError::Invalid(
+                        "automation draft prefix integrity changed",
+                    ));
+                }
+                if !matches!(
+                    validator.inspect(&record)?,
+                    Record::Event(_) | Record::GroupEvent
+                ) {
+                    return Err(StorageError::Invalid("automation draft prefix changed"));
+                }
+                chain.copy_from_slice(&record[PAYLOAD_BYTES..]);
+            }
+            Ok(chain == identity.chain)
+        })();
+        result.map_err(|source| self.error(source))
+    }
     /// Compare complete strict canonical project encoding, not volatile identity.
     pub fn source_matches(&self, source: &Project) -> Result<bool, DraftError> {
         encode(source)
@@ -716,8 +908,41 @@ impl DraftReader {
         first_ordinal: u64,
         output: &mut [Option<AppliedEvent>],
     ) -> Result<usize, DraftError> {
+        if matches!(self.target, DraftTarget::Vst3Group(_)) {
+            output.fill(None);
+            return Err(self.error(StorageError::Invalid(
+                "grouped draft requires grouped reads",
+            )));
+        }
         self.records.read_events(first_ordinal, output)
     }
+
+    /// Read only from the full validated group prefix under the same lock.
+    pub fn read_group_events(
+        &mut self,
+        first_ordinal: u64,
+        output: &mut [Option<GroupDraftEvent>],
+    ) -> Result<usize, DraftError> {
+        let DraftTarget::Vst3Group(group) = self.target else {
+            output.fill(None);
+            return Err(self.error(StorageError::Invalid(
+                "single target draft has no grouped records",
+            )));
+        };
+        self.records
+            .read_page(first_ordinal, output, |record, ordinal| {
+                let event = group::decode(record)?;
+                if event.ordinal.checked_sub(1) != Some(ordinal)
+                    || group.ids().binary_search(&event.parameter).is_err()
+                {
+                    return Err(StorageError::Invalid(
+                        "grouped automation draft page identity changed",
+                    ));
+                }
+                Ok(event)
+            })
+    }
+
     fn error(&self, source: StorageError) -> DraftError {
         self.records.error(source)
     }
@@ -728,6 +953,23 @@ impl RecordReader {
         &mut self,
         first_ordinal: u64,
         output: &mut [Option<AppliedEvent>],
+    ) -> Result<usize, DraftError> {
+        let mut previous = None;
+        self.read_page(first_ordinal, output, |record, _| {
+            let Record::Event(event) = decode_record(record)? else {
+                return Err(StorageError::Invalid("automation draft prefix changed"));
+            };
+            validate_event(previous, event)?;
+            previous = Some(event);
+            Ok(event)
+        })
+    }
+
+    fn read_page<T: Copy>(
+        &mut self,
+        first_ordinal: u64,
+        output: &mut [Option<T>],
+        mut decode: impl FnMut(&[u8; RECORD_BYTES], u64) -> Result<T, StorageError>,
     ) -> Result<usize, DraftError> {
         output.fill(None);
         let result = (|| -> Result<usize, StorageError> {
@@ -746,7 +988,6 @@ impl RecordReader {
                 return Ok(0);
             }
             let mut chain = self.header_chain;
-            let mut previous = None;
             if first_ordinal != 0 {
                 let predecessor =
                     offset
@@ -757,15 +998,11 @@ impl RecordReader {
                 self.file.seek(SeekFrom::Start(predecessor))?;
                 let mut record = [0; RECORD_BYTES];
                 self.file.read_exact(&mut record)?;
-                let Record::Event(event) = decode_record(&record)? else {
-                    return Err(StorageError::Invalid("automation draft prefix changed"));
-                };
-                validate_event(None, event)?;
+                decode(&record, first_ordinal - 1)?;
                 chain.copy_from_slice(&record[PAYLOAD_BYTES..]);
-                previous = Some(event);
             }
             self.file.seek(SeekFrom::Start(offset))?;
-            for slot in &mut output[..count] {
+            for (index, slot) in output[..count].iter_mut().enumerate() {
                 let mut record = [0; RECORD_BYTES];
                 self.file.read_exact(&mut record)?;
                 if !valid_hash(&record, chain) {
@@ -773,13 +1010,8 @@ impl RecordReader {
                         "automation draft page integrity changed; preserve original file",
                     ));
                 }
-                let Record::Event(event) = decode_record(&record)? else {
-                    return Err(StorageError::Invalid("automation draft prefix changed"));
-                };
-                validate_event(previous, event)?;
+                *slot = Some(decode(&record, first_ordinal + index as u64)?);
                 chain.copy_from_slice(&record[PAYLOAD_BYTES..]);
-                previous = Some(event);
-                *slot = Some(event);
             }
             Ok(count)
         })();
@@ -870,69 +1102,6 @@ fn validate_provenance(p: DraftProvenance) -> Result<(), StorageError> {
     }
     Ok(())
 }
-fn metadata(
-    source: &Project,
-    target: DraftTarget,
-    provenance: DraftProvenance,
-) -> Result<Metadata, StorageError> {
-    let (target_kind, owner, parameter) = match target {
-        DraftTarget::TrackGain { track } if source.track(track).is_some() => (0, track.value(), 0),
-        DraftTarget::Device { device, target } if source.device(device).is_some() => {
-            target
-                .validate()
-                .map_err(|_| StorageError::Invalid("invalid automation draft target"))?;
-            match target {
-                DeviceAutomationTarget::Parameter(p) => (1, device.value(), p.value()),
-                DeviceAutomationTarget::HostInputGain => (2, device.value(), 0),
-                DeviceAutomationTarget::HostOutputGain => (3, device.value(), 0),
-            }
-        }
-        _ => {
-            return Err(StorageError::Invalid(
-                "automation draft target is absent from source",
-            ));
-        }
-    };
-    Ok(Metadata {
-        target_kind,
-        owner,
-        parameter,
-        provenance,
-    })
-}
-fn resolve_target(source: &Project, meta: &Metadata) -> Result<DraftTarget, StorageError> {
-    let target = if meta.target_kind == 0 && meta.parameter == 0 {
-        source
-            .tracks()
-            .iter()
-            .find(|t| t.id().value() == meta.owner)
-            .map(|t| DraftTarget::TrackGain { track: t.id() })
-    } else {
-        let device = source
-            .tracks()
-            .iter()
-            .flat_map(|t| t.devices())
-            .chain(source.return_tracks().iter().flat_map(|t| t.devices()))
-            .chain(source.main_devices())
-            .chain(source.native_sources().iter().flat_map(|s| s.devices()))
-            .find(|d| d.id().value() == meta.owner);
-        let target = match (meta.target_kind, meta.parameter) {
-            (1, p) => hex_lattice_contract::ParameterId::new(p)
-                .ok()
-                .map(DeviceAutomationTarget::Parameter),
-            (2, 0) => Some(DeviceAutomationTarget::HostInputGain),
-            (3, 0) => Some(DeviceAutomationTarget::HostOutputGain),
-            _ => None,
-        };
-        device.zip(target).map(|(d, target)| DraftTarget::Device {
-            device: d.id(),
-            target,
-        })
-    };
-    target.ok_or(StorageError::Invalid(
-        "automation draft target is absent or invalid",
-    ))
-}
 fn validate_event(previous: Option<AppliedEvent>, event: AppliedEvent) -> Result<(), StorageError> {
     if event.sequence == 0 {
         return Err(StorageError::Invalid(
@@ -941,12 +1110,12 @@ fn validate_event(previous: Option<AppliedEvent>, event: AppliedEvent) -> Result
     }
     AutomationValue::new(event.value.get())
         .map_err(|_| StorageError::Invalid("invalid automation draft value"))?;
-    if let Some(previous) = previous {
-        if event.sequence <= previous.sequence || !clock_follows(clock(previous), clock(event)) {
-            return Err(StorageError::Invalid(
-                "automation draft sequence or clocks are out of order",
-            ));
-        }
+    if let Some(previous) = previous
+        && (event.sequence <= previous.sequence || !clock_follows(clock(previous), clock(event)))
+    {
+        return Err(StorageError::Invalid(
+            "automation draft sequence or clocks are out of order",
+        ));
     }
     Ok(())
 }
@@ -966,12 +1135,12 @@ fn validate_terminal(
     previous: Option<AppliedEvent>,
     terminal: DraftTerminal,
 ) -> Result<(), StorageError> {
-    if let (Some(previous), DraftTerminal::Finished(next)) = (previous, terminal) {
-        if !clock_follows(clock(previous), next) {
-            return Err(StorageError::Invalid(
-                "automation draft terminal clocks are out of order",
-            ));
-        }
+    if let (Some(previous), DraftTerminal::Finished(next)) = (previous, terminal)
+        && !clock_follows(clock(previous), next)
+    {
+        return Err(StorageError::Invalid(
+            "automation draft terminal clocks are out of order",
+        ));
     }
     Ok(())
 }
@@ -1059,7 +1228,57 @@ fn terminal_record(terminal: DraftTerminal, chain: [u8; 32]) -> [u8; RECORD_BYTE
 }
 enum Record {
     Event(AppliedEvent),
+    GroupEvent,
     Terminal(DraftTerminal),
+}
+
+/// Shared validator for the initial scan and later durable prefix verification.
+struct RecordValidation {
+    previous: Option<AppliedEvent>,
+    group: Option<GroupState>,
+}
+impl RecordValidation {
+    fn new(target: DraftTarget, clock: Option<CaptureClock>) -> Result<Self, StorageError> {
+        let group = if let DraftTarget::Vst3Group(target) = target {
+            let clock =
+                clock.ok_or(StorageError::Invalid("grouped automation clock is missing"))?;
+            Some(GroupState::new(target, clock))
+        } else {
+            None
+        };
+        Ok(Self {
+            previous: None,
+            group,
+        })
+    }
+    fn inspect(&mut self, bytes: &[u8; RECORD_BYTES]) -> Result<Record, StorageError> {
+        if let Some(group) = self.group.as_mut()
+            && matches!(bytes[0], 5 | 6)
+        {
+            group.validate(group::decode(bytes)?)?;
+            return Ok(Record::GroupEvent);
+        }
+        let record = decode_record(bytes)?;
+        match record {
+            Record::Event(event) if self.group.is_none() => {
+                validate_event(self.previous, event)?;
+                self.previous = Some(event);
+            }
+            Record::Terminal(terminal) => {
+                if let Some(group) = self.group {
+                    group.finish(terminal)?;
+                } else {
+                    validate_terminal(self.previous, terminal)?;
+                }
+            }
+            _ => {
+                return Err(StorageError::Invalid(
+                    "automation draft record differs from its format",
+                ));
+            }
+        }
+        Ok(record)
+    }
 }
 fn decode_record(record: &[u8; RECORD_BYTES]) -> Result<Record, StorageError> {
     let invalid = || StorageError::Invalid("invalid automation draft record");

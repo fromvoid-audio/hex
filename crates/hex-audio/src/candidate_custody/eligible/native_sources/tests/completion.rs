@@ -1,6 +1,6 @@
 //! Actual SDK completion and unchanged-source cancellation inside Root.
 use super::*;
-use hex_plugin_host::protocol::{Facts, Presentation};
+use hex_plugin_host::protocol::{Facts, Presentation, PresentationPlan};
 
 fn absent_input() -> (InstanceBuild, native::Source, native::Preparation) {
     input_for(
@@ -20,6 +20,7 @@ fn start_absent(root: &Custody, restore: Option<NativeDeviceState>) -> Binding {
         preparation,
         restore,
         native::TrustUserCode::Acknowledged,
+        None,
     )
     .unwrap()
 }
@@ -125,6 +126,34 @@ fn actual_root_missing_required_presentation_retains_refusal_instead_of_prepared
     let returned = root.recover_native_source(binding).unwrap();
     assert!(matches!(returned.disposal, PreparationDisposal::Reaped(_)));
     assert!(returned.error.unwrap().to_string().contains("presentation"));
+    assert!(root.complete());
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn actual_root_retains_explicitly_unknown_presentation_receipt() {
+    let root = root();
+    root.configure_native_sources(1, source_reservation())
+        .unwrap();
+    let binding = start(&root);
+    root.complete_native_source(binding, PresentationPlan::AllowUnknown)
+        .unwrap();
+    assert!(matches!(
+        root.native_source_progress(binding),
+        Some(NativeSourcePreparationProgress::Prepared {
+            facts: Facts {
+                presentation_available: true,
+                ..
+            },
+            presentation: Presentation::Unknown,
+        })
+    ));
+    assert!(root.retire_native_source(binding));
+    dispose(&root, binding);
+    assert!(matches!(
+        root.recover_native_source(binding).unwrap().disposal,
+        PreparationDisposal::Reaped(_)
+    ));
     assert!(root.complete());
 }
 

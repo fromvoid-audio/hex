@@ -1,11 +1,13 @@
 //! Arrangement-only layout state; resizing never edits the project or audio.
 //! Header overview has a separate transient height map: temporary resizing never
-//! overwrites normal custom heights. Option-wheel changes only the hovered row
-//! through the same height map and limits; nested controls and held input retain
-//! ownership. Main shares the row-height and rollback map;
-//! its top resize edge preserves the pinned bottom. Stable track IDs survive topology changes;
-//! project replacement clears both layouts. Plain H belongs to this workspace
-//! only while the computer MIDI keyboard is disabled. Held sizing uses the shared
+//! overwrites normal custom heights. Drag and Option-wheel use whole multiples
+//! of the compact height. Option-wheel changes only the hovered row, after
+//! nested controls have had a chance to consume the event. Main shares the
+//! row-height and rollback map. Its top resize edge preserves the pinned bottom.
+//! Stable track IDs survive topology changes. Project replacement clears both layouts.
+//! Plain H belongs to this workspace
+//! only while the computer MIDI keyboard is disabled. Command-H resets track
+//! heights and exits overview without changing the pinned main row. Held sizing uses the shared
 //! Window pointer lease; its local snapshot owns complete cancellation rollback.
 use super::{
     EditorView,
@@ -18,12 +20,17 @@ use gpui::{
 use hex_project::TrackId;
 use std::collections::BTreeMap;
 
-// Reuse the browser/workspace split's room budget. Default-height controls
-// still fit at the minimum header width; shorter rows render only their title.
+// Reuse the browser/workspace split's room budget. Mixer controls still fit
+// at the minimum header width.
 const MAX_HEADER_WIDTH: f32 = super::browser::DEFAULT_WIDTH;
 const MIN_LANE_WIDTH: f32 = super::browser::MIN_WORKSPACE_WIDTH - TRACK_HEADER_WIDTH;
-// Name line + separate 3px resize gutter, bottom border and centering room.
-pub(super) const HEADER_ONLY_HEIGHT: f32 = super::track_header::NAME_HEIGHT + 5.0;
+// Name and primary controls + separate 3px resize gutter and bottom border.
+pub(super) const HEADER_ONLY_HEIGHT: f32 = super::track_header::NAME_HEIGHT + 4.0;
+
+fn stepped_height(height: f32, maximum: f32) -> f32 {
+    let max_steps = (maximum / HEADER_ONLY_HEIGHT).floor().max(1.0);
+    (height / HEADER_ONLY_HEIGHT).round().clamp(1.0, max_steps) * HEADER_ONLY_HEIGHT
+}
 
 /// The pinned output row has layout identity without inventing a project TrackId.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -47,6 +54,8 @@ pub(super) struct TrackLayout {
     heights: BTreeMap<Row, f32>,
     overview: Option<BTreeMap<Row, f32>>,
     drag: Option<ResizeDrag>,
+    wheel_remainder: Option<(Row, f32)>,
+    wheel_scroll_start: Option<gpui::ListOffset>,
     generation: u64,
     tracks: Vec<TrackId>,
     revision: Option<u64>,
@@ -83,6 +92,7 @@ struct ResizeDrag {
     previous_width: Option<f32>,
     previous_heights: Option<BTreeMap<Row, f32>>,
     maximum: f32,
+    moved: bool,
 }
 
 /// Keep pan/autoscroll's pixel interface while GPUI owns variable-row layout.
@@ -164,18 +174,52 @@ fn single_row_move(old: &[TrackId], new: &[TrackId]) -> Option<(usize, usize)> {
     }
 }
 
+/// A contiguous insertion or removal preserves measurements on either side.
+fn row_count_change(old: &[TrackId], new: &[TrackId]) -> Option<(std::ops::Range<usize>, usize)> {
+    let start = old
+        .iter()
+        .zip(new)
+        .take_while(|(old, new)| old == new)
+        .count();
+    if new.len() > old.len() {
+        let inserted = new.len() - old.len();
+        (old[start..] == new[start + inserted..]).then_some((start..start, inserted))
+    } else if old.len() > new.len() {
+        let removed = old.len() - new.len();
+        let end = start + removed;
+        (old[end..] == new[start..]).then_some((start..end, 0))
+    } else {
+        None
+    }
+}
+
 impl EditorView {
-    /// Arrangement-only A/H/Q after child input; modifiers, text and capture retain ownership.
+    /// Arrangement-only A/Shift+A/H/Q after child input. Text and capture retain ownership.
     pub(super) fn arrangement_view_key(
         &mut self,
         event: &KeyDownEvent,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        if !matches!(event.keystroke.key.as_str(), "a" | "h" | "q")
-            || event.keystroke.modifiers != Modifiers::default()
+        let key = event.keystroke.key.as_str();
+        let modifiers = event.keystroke.modifiers;
+        let reset = key == "h"
+            && modifiers
+                == (Modifiers {
+                    platform: true,
+                    ..Modifiers::default()
+                });
+        let reveal_automation = key == "a"
+            && modifiers
+                == (Modifiers {
+                    shift: true,
+                    ..Modifiers::default()
+                });
+        let plain = matches!(key, "a" | "h" | "q")
+            && modifiers == Modifiers::default()
+            && !self.computer_keyboard.enabled;
+        if !(reset || plain || reveal_automation)
             || event.is_held
-            || self.computer_keyboard.enabled
             || !(self.focus.is_focused(window)
                 || self.track_header_focused(window)
                 || self.section_focus_toggle_focused(window, cx))
@@ -183,14 +227,26 @@ impl EditorView {
         {
             return false;
         }
-        if event.keystroke.key == "a" {
+        if reset {
+            self.track_layout.wheel_remainder = None;
+            self.track_layout.heights.retain(|row, _| *row == Row::Main);
+            self.track_layout.overview = None;
+            self.track_scroll.remeasure();
+            cx.notify();
+            return true;
+        }
+        if reveal_automation {
+            return self.reveal_arrangement_automation(cx);
+        }
+        if key == "a" {
             return self.toggle_automation_view(cx);
         }
-        if event.keystroke.key == "q" {
+        if key == "q" {
             self.toggle_arrangement_focus();
             cx.notify();
             return true;
         }
+        self.track_layout.wheel_remainder = None;
         if self.track_layout.overview.take().is_none() {
             self.track_layout.overview = Some(BTreeMap::new());
         }
@@ -221,6 +277,7 @@ impl EditorView {
             || self.gain_numeric_editing(cx)
             || self.sampler_parameter.numeric_draft_active()
             || self.track_gain_controls.has_pending_draft(cx)
+            || super::device_panel::pending_send(self, cx).is_some()
             || self.gain_lane.pointer_is_active()
             || self.automation_view.devices.pointer_active()
             || self.clip_numeric_editing(cx)
@@ -400,6 +457,11 @@ impl EditorView {
             && !event.modifiers.platform
             && !event.modifiers.function
     }
+
+    pub(super) fn remember_row_size_scroll(&mut self) {
+        self.track_layout.wheel_scroll_start = Some(self.track_scroll.list.logical_scroll_top());
+    }
+
     /// Bubbling dispatch lets nested controls own their wheel input first. Main
     /// shares normal/overview maps; Returns deliberately retain their fixed size.
     pub(super) fn resize_row_wheel(
@@ -420,24 +482,98 @@ impl EditorView {
         {
             return;
         }
-        // Physical upward motion grows the row regardless of natural-scroll
-        // preference. One wheel line = 16px; pixel deltas stay continuous and
-        // each event is bounded to 32px, including accelerated trackpads.
-        let delta = f32::from(event.physical_delta().pixel_delta(px(64.)).y) * 0.25;
+        if !matches!(event.touch_phase, gpui::TouchPhase::Moved) {
+            self.track_layout.wheel_remainder = None;
+        }
+        // One physical wheel tick is one height step. Collect small trackpad
+        // deltas on the hovered row before applying a step.
+        const WHEEL_PIXELS_PER_STEP: f32 = 64.0;
+        let delta = event.physical_wheel_ticks().map_or_else(
+            || {
+                f32::from(
+                    event
+                        .physical_delta()
+                        .pixel_delta(px(WHEEL_PIXELS_PER_STEP))
+                        .y,
+                ) / WHEEL_PIXELS_PER_STEP
+            },
+            |ticks| ticks.y,
+        );
         if !delta.is_finite() || delta == 0. {
             return;
         }
         cx.stop_propagation();
+        // GPUI's list applies its native wheel delta before row listeners run.
+        // Restore its captured position when sizing claims the input, including
+        // sub-step deltas and events at a height limit.
+        if let Some(scroll) = self.track_layout.wheel_scroll_start.take()
+            && track.is_some()
+        {
+            self.track_scroll.list.scroll_to(scroll);
+        }
+        if event.is_momentum
+            || matches!(
+                event.touch_phase,
+                gpui::TouchPhase::Ended | gpui::TouchPhase::Cancelled
+            )
+        {
+            return;
+        }
         let row = track.map_or(Row::Main, Row::Track);
+        let remainder = self
+            .track_layout
+            .wheel_remainder
+            .filter(|(owner, _)| *owner == row)
+            .map_or(0.0, |(_, remainder)| remainder);
+        let units = remainder + delta.clamp(-2.0, 2.0);
+        let steps = units.trunc();
+        self.track_layout.wheel_remainder = Some((row, units - steps));
+        if steps == 0.0 {
+            return;
+        }
         let (original, maximum) = self.row_resize_geometry(row);
-        let height = (original + delta.clamp(-32., 32.)).clamp(HEADER_ONLY_HEIGHT, maximum);
-        if height == original {
+        let height = stepped_height(original + steps * HEADER_ONLY_HEIGHT, maximum);
+        if (height - original) * steps <= 0.0 {
             return;
         }
         self.track_layout.active_heights_mut().insert(row, height);
         self.invalidate_track_size(track);
+        if let Some(track) = track {
+            self.center_resized_track(track);
+        }
         cx.notify();
     }
+
+    // Express the desired viewport top as a logical list position. Walking
+    // backwards only across rows that fit above the target avoids maintaining a
+    // second content-height inventory; GPUI clamps the final position at the end.
+    fn center_resized_track(&self, track: TrackId) {
+        let Some(mut index) = self.track_layout.tracks.iter().position(|id| *id == track) else {
+            return;
+        };
+        let viewport_height = f32::from(self.track_scroll.list.viewport_bounds().size.height);
+        let height = self.track_height(track);
+        if !viewport_height.is_finite() || viewport_height <= 0.0 || !height.is_finite() {
+            return;
+        }
+        let mut offset = (height - viewport_height) / 2.0;
+        while offset < 0.0 && index > 0 {
+            index -= 1;
+            let previous = self.track_height(self.track_layout.tracks[index]);
+            if !previous.is_finite() || previous <= 0.0 {
+                return;
+            }
+            offset += previous;
+        }
+        if !offset.is_finite() {
+            return;
+        }
+        self.track_scroll.list.scroll_to(gpui::ListOffset {
+            item_ix: index,
+            offset_in_item: px(offset.max(0.0)),
+        });
+    }
+
     fn row_resize_geometry(&self, row: Row) -> (f32, f32) {
         let original = if row == Row::Main {
             // Flex may reduce Main after window resizing; its painted lane
@@ -502,6 +638,8 @@ impl EditorView {
             self.track_layout.heights.clear();
             self.track_layout.overview = None;
             self.track_layout.drag = None;
+            self.track_layout.wheel_remainder = None;
+            self.track_layout.wheel_scroll_start = None;
             self.track_layout.generation = self.project_generation;
             self.track_layout.tracks.clear();
             self.track_scroll.list.reset(0);
@@ -547,10 +685,13 @@ impl EditorView {
                 self.track_scroll.list.splice(from..from + 1, 0);
                 self.track_scroll.list.splice(to..to, 1);
                 let _ = self.track_scroll.list.clone().measure_all();
+            } else if let Some((removed, inserted)) =
+                row_count_change(&self.track_layout.tracks, &ids)
+            {
+                self.track_scroll.list.splice(removed, inserted);
+                let _ = self.track_scroll.list.clone().measure_all();
             } else {
-                // Adds/removals or other structural changes keep the existing
-                // full measurement path. Width/height invalidations remain
-                // owned by their existing layout paths.
+                // Other structural changes keep the full measurement path.
                 self.track_scroll.list.reset(ids.len());
             }
             self.track_scroll.list.scroll_to(top);
@@ -566,10 +707,10 @@ impl EditorView {
         }
     }
     fn invalidate_track_size(&self, track: Option<TrackId>) {
-        if let Some(id) = track {
-            if let Some(index) = self.track_layout.tracks.iter().position(|t| *t == id) {
-                self.track_scroll.invalidate(index..index + 1, 1);
-            }
+        if let Some(id) = track
+            && let Some(index) = self.track_layout.tracks.iter().position(|t| *t == id)
+        {
+            self.track_scroll.invalidate(index..index + 1, 1);
         }
     }
     fn capture_track_resize(
@@ -688,6 +829,7 @@ impl EditorView {
         if !self.capture_track_resize(track, revision, window, cx) {
             return;
         }
+        self.track_layout.wheel_remainder = None;
         self.track_layout.drag = Some(ResizeDrag {
             track,
             pointer,
@@ -699,6 +841,7 @@ impl EditorView {
             // once so all live updates have one complete cancellation owner.
             previous_heights: track.map(|_| self.track_layout.active_heights().clone()),
             maximum,
+            moved: false,
         });
         self.focus.focus(window);
         cx.notify();
@@ -738,19 +881,24 @@ impl EditorView {
         }
         let target = drag.track;
         if let Some(track) = target {
-            let height = (drag.original
-                + if track == Row::Main {
-                    drag.pointer - pointer
-                } else {
-                    pointer - drag.pointer
-                })
-            .clamp(HEADER_ONLY_HEIGHT, drag.maximum);
+            if pointer == drag.pointer && !drag.moved {
+                return;
+            }
+            let delta = if track == Row::Main {
+                drag.pointer - pointer
+            } else {
+                pointer - drag.pointer
+            };
+            let height = stepped_height(drag.original + delta, drag.maximum);
+            if let Some(drag) = self.track_layout.drag.as_mut() {
+                drag.moved = true;
+            }
             if all_tracks {
                 if self
                     .track_layout
                     .tracks
                     .iter()
-                    .all(|id| self.track_height(*id) == height)
+                    .all(|id| self.track_body_height(*id) == height)
                     && self.main_track_height() == height
                 {
                     return;
@@ -898,7 +1046,8 @@ impl EditorView {
 #[cfg(all(test, feature = "ui-test-support"))]
 mod tests {
     use crate::editor::device_automation::host_tests::{
-        CMD, Slot, TestWave, header_assign, lane_point, lane_points, pump, window_with_gain,
+        CMD, Slot, TestWave, dotted_lane_point, header_assign, lane_points, lane_value_point, pump,
+        window_with_gain,
     };
     use gpui::{Modifiers, MouseButton, TestAppContext, px, size};
     use hex_lattice_contract::DeviceAutomationTarget;
@@ -1002,7 +1151,7 @@ mod tests {
                 "sampler text must be active before the automation press"
             )
         });
-        let at = lane_point(&mut visual, device, target, [0.6, 0.5]);
+        let at = dotted_lane_point(&mut visual, device, target, 0.6);
         editor.read_with(&visual, |view, _| {
             assert!(
                 view.sampler_parameter.numeric_draft_active(),
@@ -1027,5 +1176,23 @@ mod tests {
         visual.run_until_parked();
         pump(&mut visual, &editor);
         assert_eq!(lane_points(&visual, &editor, device, target).len(), 1);
+
+        // The reverse order must also preserve the first draft. A press over
+        // the sampler while automation owns the pointer cannot start text.
+        let first_value = lane_points(&visual, &editor, device, target)[0].value.get();
+        let next = lane_value_point(&mut visual, device, target, 0.3, first_value);
+        let sampler_at = visual.debug_bounds(selector).unwrap().center();
+        visual.simulate_mouse_down(next, MouseButton::Left, CMD);
+        editor.read_with(&visual, |view, _| {
+            assert!(view.automation_view.devices.point_draft_active());
+        });
+        visual.simulate_mouse_down(sampler_at, MouseButton::Left, Modifiers::default());
+        editor.read_with(&visual, |view, _| {
+            assert!(view.automation_view.devices.point_draft_active());
+            assert!(!view.sampler_parameter.numeric_draft_active());
+        });
+        visual.simulate_mouse_up(next, MouseButton::Left, CMD);
+        pump(&mut visual, &editor);
+        assert_eq!(lane_points(&visual, &editor, device, target).len(), 2);
     }
 }

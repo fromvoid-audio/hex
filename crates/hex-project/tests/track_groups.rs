@@ -43,6 +43,7 @@ fn nonadjacent_siblings_group_once_with_complete_undo_redo() {
         assert_eq!(e.project().track(child).unwrap().parent_group(), Some(g));
     }
     assert_eq!(e.project().track(g).unwrap().kind(), TrackKind::Group);
+    assert_eq!(e.project().track(g).unwrap().gain(), 1.0);
     assert_eq!(
         e.project()
             .track_hierarchy()
@@ -58,6 +59,73 @@ fn nonadjacent_siblings_group_once_with_complete_undo_redo() {
     assert_eq!(e.project().snapshot(), before);
     assert!(e.redo());
     assert_eq!(e.project().snapshot(), after);
+}
+
+#[test]
+fn mixed_parents_group_at_the_last_member_and_keep_display_order() {
+    for anchor_inside in [false, true] {
+        let (mut e, [a, b, c, d]) = fixture();
+        let parent = group(&mut e, &[a, b]);
+        let mut before = e.project().snapshot();
+        let selection = if anchor_inside { [d, a] } else { [a, d] };
+        let new = group(&mut e, &selection);
+        let expected = if anchor_inside {
+            [parent, new, a, d, b, c]
+        } else {
+            [parent, b, c, new, a, d]
+        };
+        assert_eq!(ids(&e), expected);
+        assert_eq!(
+            e.project().track(new).unwrap().parent_group(),
+            anchor_inside.then_some(parent)
+        );
+        for child in [a, d] {
+            assert_eq!(e.project().track(child).unwrap().parent_group(), Some(new));
+        }
+        assert_eq!(e.project().track(b).unwrap().parent_group(), Some(parent));
+        let after = e.project().snapshot();
+        before.next_id = after.next_id;
+        assert!(e.undo());
+        assert_eq!(e.project().snapshot(), before);
+        assert!(e.redo());
+        assert_eq!(e.project().snapshot(), after);
+    }
+}
+
+#[test]
+fn group_destination_uses_the_selected_ancestor_of_the_last_member() {
+    let (mut e, [a, b, c, d]) = fixture();
+    let inner = group(&mut e, &[a, b]);
+    let outer = group(&mut e, &[inner, d, a]);
+    assert_eq!(ids(&e), [outer, inner, a, b, d, c]);
+    assert_eq!(e.project().track(outer).unwrap().parent_group(), None);
+    assert_eq!(
+        e.project().track(inner).unwrap().parent_group(),
+        Some(outer)
+    );
+    assert_eq!(e.project().track(a).unwrap().parent_group(), Some(inner));
+    assert_eq!(e.project().track(d).unwrap().parent_group(), Some(outer));
+}
+
+#[test]
+fn grouping_across_parents_refuses_a_new_routing_cycle_atomically() {
+    let (mut e, [a, b, _, d]) = fixture();
+    let parent = group(&mut e, &[a, b]);
+    e.execute(Command::SetAudioFeed {
+        source: RoutingOwner::Track(parent),
+        destination: d,
+        gain: 1.0,
+    })
+    .unwrap();
+    let before = e.project().snapshot();
+    assert_eq!(
+        e.execute(Command::GroupTracks {
+            tracks: selection(&[d, a]),
+            name: "cycle".into(),
+        }),
+        Err(hex_project::Invalid("routing cycles are unsupported"))
+    );
+    assert_eq!(e.project().snapshot(), before);
 }
 
 #[test]
@@ -194,6 +262,14 @@ fn depth_limit_and_discontiguous_or_missing_parents_refuse_without_mutation() {
         e.execute(Command::GroupTracks {
             tracks: selection(&[root]),
             name: "too deep".into()
+        })
+        .is_err()
+    );
+    assert_eq!(e.project().snapshot(), before);
+    assert!(
+        e.execute(Command::GroupTracks {
+            tracks: selection(&[b, a]),
+            name: "too deep".into(),
         })
         .is_err()
     );

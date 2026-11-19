@@ -1,0 +1,1745 @@
+//! Coordinate input WAV writing and confirmed output timing off the callbacks.
+//!
+//! Both existing bounded recorder owners retain their own callback custody.
+//! These workers do not infer a shared clock, compensate latency or edit a project.
+use super::{InputCapture, InputStop, InputTake, InputTakeEnd, write_input_take};
+use crate::sample_recording::{End, OutputClockIndex, OutputClockIndexError, Reader};
+use std::{
+    fmt, io,
+    path::{Path, PathBuf},
+    sync::{
+        Arc,
+        atomic::{
+            AtomicBool, AtomicU8,
+            Ordering::{AcqRel, Acquire, Release},
+        },
+        mpsc::{self, Receiver, TryRecvError},
+    },
+    thread,
+    time::{Duration, Instant},
+};
+
+const POLL: Duration = Duration::from_millis(1);
+const PREPARE_TIMEOUT: Duration = Duration::from_secs(5);
+const STOP_TIMEOUT: Duration = Duration::from_secs(5);
+
+struct Timeouts {
+    prepare: Duration,
+    stop: Duration,
+}
+
+#[derive(Default)]
+struct PrerollOrder {
+    sequence: u64,
+    previous: Option<(cpal::StreamInstant, u32, u32)>,
+}
+impl PrerollOrder {
+    fn accept(&mut self, block: &super::Block<cpal::StreamInstant>) -> bool {
+        let count = block.frames;
+        let valid = count > 0
+            && count <= super::FRAMES
+            && block
+                .offset_frames
+                .checked_add(count as u32)
+                .is_some_and(|end| end <= super::MAX_CALLBACK_FRAMES as u32)
+            && block.sequence == self.sequence
+            && block.pcm[..count]
+                .iter()
+                .flatten()
+                .all(|sample| sample.is_finite())
+            && match self.previous {
+                None => block.offset_frames == 0,
+                Some((stamp, _, _)) if block.offset_frames == 0 => block.stamp >= stamp,
+                Some((stamp, offset, frames)) => {
+                    block.stamp == stamp && offset.checked_add(frames) == Some(block.offset_frames)
+                }
+            };
+        let Some(next) = self.sequence.checked_add(1) else {
+            return false;
+        };
+        if !valid {
+            return false;
+        }
+        self.sequence = next;
+        self.previous = Some((block.stamp, block.offset_frames, count as u32));
+        true
+    }
+}
+
+/// An explicit non-success reason. The result always retains the requested
+/// take path; a writer still being retired may finish that file later.
+#[derive(Debug)]
+pub enum CoordinatedFailure {
+    CancelledBeforeInput,
+    OutputNotReady,
+    OutputLatencyUnavailable,
+    OutputLatencyChanged,
+    OutputPrepareTimeout,
+    MonitorPrepareTimeout,
+    OutputStopped(End),
+    OutputIndex(OutputClockIndexError),
+    InputBeforeStart {
+        reason: super::InputEnd,
+        detail: Option<String>,
+    },
+    InputPrepareTimeout,
+    InvalidPreroll,
+    PrerollClock(super::ClockOverlapError),
+    InputWorkerStart(io::Error),
+    InputWorkerExited,
+    InputWrite(io::Error),
+    InputInterrupted,
+    InputStopTimeout,
+    OutputStopTimeout,
+}
+impl fmt::Display for CoordinatedFailure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::CancelledBeforeInput => f.write_str("recording was stopped before input began"),
+            Self::OutputNotReady => f.write_str("output timing recorder is unavailable"),
+            Self::OutputLatencyUnavailable => f.write_str("output graph latency is unavailable"),
+            Self::OutputLatencyChanged => {
+                f.write_str("output graph latency changed during recording")
+            }
+            Self::OutputPrepareTimeout => f.write_str("playback timing did not become available"),
+            Self::MonitorPrepareTimeout => {
+                f.write_str("input monitor did not become ready in time")
+            }
+            Self::OutputStopped(end) => f.write_str(match end {
+                End::Stopped => "output timing stopped before input finished",
+                End::OutputFailed => "audio output failed during recording",
+                End::SourceChanged => "audio output source changed during recording",
+                End::Backpressure => "output timing queue overflowed",
+                End::InvalidBlock => "audio output produced an invalid block",
+                End::UnsupportedOutput => "audio output cannot provide recording timing",
+                End::StorageFailed => "output recording storage failed",
+                End::TransportChanged => "audio transport changed during recording",
+            }),
+            Self::OutputIndex(error) => write!(f, "output timing failed: {error}"),
+            Self::InputBeforeStart { reason, detail } => {
+                if let Some(detail) = detail {
+                    write!(f, "audio input failed before recording: {detail}")
+                } else {
+                    write!(
+                        f,
+                        "audio input failed before recording: {}",
+                        match reason {
+                            super::InputEnd::Stopped => "stopped",
+                            super::InputEnd::Backpressure => "queue overflow",
+                            super::InputEnd::InvalidBuffer => "invalid audio buffer",
+                            super::InputEnd::ClockChanged => "clock changed",
+                            super::InputEnd::DeviceFailed => "device unavailable",
+                            super::InputEnd::OpenFailed => "device could not open",
+                            super::InputEnd::WorkerFailed => "input worker failed",
+                        }
+                    )
+                }
+            }
+            Self::InputPrepareTimeout => {
+                f.write_str("audio input did not reach output timing in time")
+            }
+            Self::InvalidPreroll => {
+                f.write_str("audio input preparation contained invalid packets")
+            }
+            Self::PrerollClock(error) => write!(f, "audio input preparation clock failed: {error}"),
+            Self::InputWorkerStart(error) => write!(f, "input writer could not start: {error}"),
+            Self::InputWorkerExited => f.write_str("input writer exited without a result"),
+            Self::InputWrite(error) => write!(f, "input take could not be written: {error}"),
+            Self::InputInterrupted => f.write_str("input recording was interrupted"),
+            Self::InputStopTimeout => f.write_str("input recording did not stop in time"),
+            Self::OutputStopTimeout => f.write_str("output timing did not stop in time"),
+        }
+    }
+}
+impl std::error::Error for CoordinatedFailure {}
+
+/// The recorded objects and their outcome. A failed outcome may retain an
+/// input prefix, but can never be mistaken for a completed recording.
+pub enum CoordinatedOutcome {
+    Completed {
+        path: PathBuf,
+        input: InputTake,
+        output: OutputClockIndex,
+    },
+    Failed {
+        path: PathBuf,
+        input: Option<InputTake>,
+        reason: CoordinatedFailure,
+    },
+}
+
+/// A retained take and its candidate frame for a source-bound session request.
+/// Device-buffer timestamps are estimated by CPAL; physical latency remains
+/// uncalibrated and requires native listening qualification.
+pub struct AlignedAudioTake<'a> {
+    pub path: &'a Path,
+    pub timeline_start: u64,
+    pub frames: u64,
+    /// Frames captured during preparation before the recording-ready signal.
+    pub preroll_frames: u64,
+}
+
+#[derive(Debug)]
+pub enum ArrangementTakeError {
+    Interrupted,
+    SourceChanged,
+    InconsistentInput,
+    UnsupportedClock,
+    Alignment(super::TakeAlignmentError),
+}
+impl fmt::Display for ArrangementTakeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Interrupted => f.write_str("audio take did not complete"),
+            Self::SourceChanged => f.write_str("audio recording source changed"),
+            Self::InconsistentInput => f.write_str("audio take source metadata is inconsistent"),
+            Self::UnsupportedClock => {
+                f.write_str("audio input and output do not have a verified common clock")
+            }
+            Self::Alignment(error) => write!(f, "audio take alignment failed: {error}"),
+        }
+    }
+}
+impl std::error::Error for ArrangementTakeError {}
+
+impl CoordinatedOutcome {
+    /// Check this exact completed take against the expected callback-applied
+    /// source and the pinned macOS CoreAudio host-time implementation. This
+    /// neither mutates the project nor proves physical device latency.
+    pub fn arrangement_take(
+        &self,
+        expected_source: crate::prepared::AppliedAudioSource,
+    ) -> Result<AlignedAudioTake<'_>, ArrangementTakeError> {
+        let Self::Completed {
+            path,
+            input,
+            output,
+        } = self
+        else {
+            return Err(ArrangementTakeError::Interrupted);
+        };
+        if output.source_binding() != Some(expected_source) {
+            return Err(ArrangementTakeError::SourceChanged);
+        }
+        if *path != input.path
+            || input.sample_rate != input.input_config.sample_rate
+            || !(1..=2).contains(&input.input_config.channels)
+        {
+            return Err(ArrangementTakeError::InconsistentInput);
+        }
+        #[cfg(target_os = "macos")]
+        let input_is_coreaudio = input.input_device.cpal_id().0 == cpal::HostId::CoreAudio;
+        #[cfg(not(target_os = "macos"))]
+        let input_is_coreaudio = false;
+        if !input_is_coreaudio
+            || (0..output.len()).any(|i| {
+                output.packet(i).is_none_or(|packet| {
+                    packet.clock.origin
+                        != crate::sample_recording::OutputClockOrigin::CoreAudioHostTime
+                })
+            })
+        {
+            return Err(ArrangementTakeError::UnsupportedClock);
+        }
+        let placement = super::align_audible_take(super::SharedClock, input, output)
+            .map_err(ArrangementTakeError::Alignment)?;
+        Ok(AlignedAudioTake {
+            path,
+            timeline_start: placement.timeline_start,
+            frames: placement.frames,
+            preroll_frames: input.preroll_frames,
+        })
+    }
+}
+
+/// Control-side job handle. Stop and Drop only request asynchronous stop; they
+/// never join a worker or wait for either native callback.
+pub struct CoordinatedJob {
+    input_stop: InputStop,
+    result: Receiver<CoordinatedOutcome>,
+    path: PathBuf,
+    ready: Arc<AtomicU8>,
+    start_permitted: Arc<AtomicBool>,
+}
+impl CoordinatedJob {
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+    /// True once capture is active and the WAV header exists. On CoreAudio,
+    /// preparation has also retained a packet covered by output history.
+    pub fn input_capturing_on_control(&self) -> bool {
+        self.ready.load(Acquire) & 1 != 0
+    }
+    /// Permit a gated job to start input after its monitor is acknowledged.
+    /// A concurrent stop may still win; this never waits for either worker.
+    pub fn permit_input_start_on_control(&self) {
+        self.start_permitted.store(true, Release);
+    }
+    pub fn stop_on_control(&self) {
+        self.ready.fetch_or(2, AcqRel);
+        self.input_stop.stop_on_control();
+    }
+    /// `Disconnected` means there is no unread result, either because the
+    /// coordinator exited without one or because it was already received.
+    pub fn try_result_on_control(&mut self) -> Result<Option<CoordinatedOutcome>, TryRecvError> {
+        match self.result.try_recv() {
+            Ok(result) => Ok(Some(result)),
+            Err(TryRecvError::Empty) => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+}
+impl Drop for CoordinatedJob {
+    fn drop(&mut self) {
+        self.stop_on_control();
+    }
+}
+
+/// Start one coordinator with an unstarted input and a newly reserved output
+/// reader bound to the exact applied output source. Output must actually deliver
+/// enough timed history for the applied graph delay before input writing starts.
+/// The requested file must not exist; no project or clock authority is inferred.
+pub fn spawn_coordinated_take(
+    input: InputCapture,
+    output: Reader,
+    path: PathBuf,
+) -> io::Result<CoordinatedJob> {
+    spawn_with_timeouts(input, output, path, PREPARE_TIMEOUT, STOP_TIMEOUT)
+}
+
+/// Spawn a job that drains and validates output timing but cannot start input
+/// until the caller has installed and observed its monitor, then grants the
+/// nonblocking permit. Stop and the normal preparation deadline remain active.
+pub fn spawn_coordinated_take_gated(
+    input: InputCapture,
+    output: Reader,
+    path: PathBuf,
+) -> io::Result<CoordinatedJob> {
+    spawn_with_writer_start(
+        input,
+        output,
+        path,
+        PREPARE_TIMEOUT,
+        STOP_TIMEOUT,
+        write_input_take,
+        false,
+    )
+}
+
+fn spawn_with_timeouts(
+    input: InputCapture,
+    output: Reader,
+    path: PathBuf,
+    prepare_timeout: Duration,
+    stop_timeout: Duration,
+) -> io::Result<CoordinatedJob> {
+    spawn_with_writer(
+        input,
+        output,
+        path,
+        prepare_timeout,
+        stop_timeout,
+        write_input_take,
+    )
+}
+
+fn spawn_with_writer(
+    input: InputCapture,
+    output: Reader,
+    path: PathBuf,
+    prepare_timeout: Duration,
+    stop_timeout: Duration,
+    writer: impl FnOnce(InputCapture, &Path) -> io::Result<InputTake> + Send + 'static,
+) -> io::Result<CoordinatedJob> {
+    spawn_with_writer_start(
+        input,
+        output,
+        path,
+        prepare_timeout,
+        stop_timeout,
+        writer,
+        true,
+    )
+}
+
+fn spawn_with_writer_start(
+    input: InputCapture,
+    output: Reader,
+    path: PathBuf,
+    prepare_timeout: Duration,
+    stop_timeout: Duration,
+    writer: impl FnOnce(InputCapture, &Path) -> io::Result<InputTake> + Send + 'static,
+    initially_permitted: bool,
+) -> io::Result<CoordinatedJob> {
+    if !matches!(
+        super::InputCapture::phase(&input),
+        super::InputPhase::Opening | super::InputPhase::Ready
+    ) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "input capture has already started or stopped",
+        ));
+    }
+    if input.source().1.sample_rate != output.sample_rate() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "input and output sample rates differ",
+        ));
+    }
+    if output.source_binding().is_none() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "output recording must be bound to an applied audio source",
+        ));
+    }
+    let input_stop = input.stop_handle_on_control();
+    let ready = Arc::new(AtomicU8::new(0));
+    let worker_ready = Arc::clone(&ready);
+    let start_permitted = Arc::new(AtomicBool::new(initially_permitted));
+    let worker_permitted = Arc::clone(&start_permitted);
+    let worker_path = path.clone();
+    let (sender, result) = mpsc::sync_channel(1);
+    thread::Builder::new()
+        .name("hex-input-take-coordinator".into())
+        .spawn(move || {
+            let outcome = coordinate(
+                input,
+                output,
+                worker_path,
+                worker_ready,
+                worker_permitted,
+                Timeouts {
+                    prepare: prepare_timeout,
+                    stop: stop_timeout,
+                },
+                writer,
+            );
+            let _ = sender.try_send(outcome);
+        })?;
+    Ok(CoordinatedJob {
+        input_stop,
+        result,
+        path,
+        ready,
+        start_permitted,
+    })
+}
+
+fn failure(
+    path: PathBuf,
+    input: Option<InputTake>,
+    reason: CoordinatedFailure,
+) -> CoordinatedOutcome {
+    CoordinatedOutcome::Failed {
+        path,
+        input,
+        reason,
+    }
+}
+
+fn coordinate(
+    mut input: InputCapture,
+    mut output: Reader,
+    path: PathBuf,
+    ready: Arc<AtomicU8>,
+    start_permitted: Arc<AtomicBool>,
+    timeouts: Timeouts,
+    writer: impl FnOnce(InputCapture, &Path) -> io::Result<InputTake> + Send + 'static,
+) -> CoordinatedOutcome {
+    let stop = input.stop_handle_on_control();
+    let mut index = OutputClockIndex::new(&output);
+    if !output.ready() {
+        return failure(path, None, CoordinatedFailure::OutputNotReady);
+    }
+    let prepare_start = Instant::now();
+    let mut checked = 0;
+    let mut timing_frames = 0_u64;
+    let mut graph_latency = None;
+    loop {
+        if ready.load(Acquire) & 2 != 0 {
+            output.stop();
+            return failure(path, None, CoordinatedFailure::CancelledBeforeInput);
+        }
+        if let super::InputPhase::Finished(reason) = input.phase() {
+            output.stop();
+            return failure(
+                path,
+                None,
+                CoordinatedFailure::InputBeforeStart {
+                    reason,
+                    detail: input.take_open_error_on_control(),
+                },
+            );
+        }
+        if input.failure() == Some(super::InputEnd::WorkerFailed) {
+            output.stop();
+            return failure(
+                path,
+                None,
+                CoordinatedFailure::InputBeforeStart {
+                    reason: super::InputEnd::WorkerFailed,
+                    detail: input.take_open_error_on_control(),
+                },
+            );
+        }
+        match index.poll(&mut output) {
+            Err(error) => return failure(path, None, CoordinatedFailure::OutputIndex(error)),
+            Ok(Some(end)) => return failure(path, None, CoordinatedFailure::OutputStopped(end)),
+            Ok(None) => {}
+        }
+        while checked < index.len() {
+            let Some(packet) = index.packet(checked) else {
+                output.stop();
+                return failure(path, None, CoordinatedFailure::OutputNotReady);
+            };
+            let Some(latency) = packet.clock.graph_latency_frames else {
+                output.stop();
+                return failure(path, None, CoordinatedFailure::OutputLatencyUnavailable);
+            };
+            if graph_latency.is_some_and(|previous| previous != latency) {
+                output.stop();
+                return failure(path, None, CoordinatedFailure::OutputLatencyChanged);
+            }
+            graph_latency = Some(latency);
+            if packet
+                .timing
+                .first()
+                .is_some_and(|span| span.take_start == 0)
+                && packet
+                    .timing
+                    .last()
+                    .is_some_and(|span| span.take_end == u64::from(packet.frames))
+            {
+                timing_frames = timing_frames.saturating_add(u64::from(packet.frames));
+            } else {
+                timing_frames = 0;
+            }
+            checked += 1;
+        }
+        let output_ready = graph_latency.is_some_and(|latency| timing_frames > u64::from(latency));
+        if output_ready && start_permitted.load(Acquire) {
+            break;
+        }
+        if prepare_start.elapsed() >= timeouts.prepare {
+            output.stop();
+            return failure(
+                path,
+                None,
+                if output_ready {
+                    CoordinatedFailure::MonitorPrepareTimeout
+                } else {
+                    CoordinatedFailure::OutputPrepareTimeout
+                },
+            );
+        }
+        thread::sleep(POLL);
+    }
+    if ready.load(Acquire) & 2 != 0 {
+        output.stop();
+        return failure(path, None, CoordinatedFailure::CancelledBeforeInput);
+    }
+    // CoreAudio reports input capture behind its callback and output playback
+    // ahead. Prepare and drain input until a complete packet starts within the
+    // retained output history. These are pre-recording frames: the UI is not
+    // told recording has begun until the WAV header is written below.
+    #[cfg(target_os = "macos")]
+    let same_clock = input.source().0.cpal_id().0 == cpal::HostId::CoreAudio
+        && index.packet(0).is_some_and(|packet| {
+            packet.clock.origin == crate::sample_recording::OutputClockOrigin::CoreAudioHostTime
+        });
+    #[cfg(not(target_os = "macos"))]
+    let same_clock = false;
+    if same_clock {
+        let Some((clock, output_start)) = (0..index.len()).find_map(|i| {
+            let packet = index.packet(i)?;
+            let span = packet.timing.first()?;
+            Some((packet.clock, span.take_start))
+        }) else {
+            output.stop();
+            return failure(path, None, CoordinatedFailure::OutputNotReady);
+        };
+        let Some(output_offset) = u64::from(clock.offset_frames)
+            .checked_add(output_start)
+            .and_then(|offset| offset.checked_add(u64::from(clock.graph_latency_frames?)))
+        else {
+            output.stop();
+            return failure(path, None, CoordinatedFailure::OutputLatencyUnavailable);
+        };
+        let mut order = PrerollOrder::default();
+        loop {
+            if ready.load(Acquire) & 2 != 0 {
+                output.stop();
+                return failure(path, None, CoordinatedFailure::CancelledBeforeInput);
+            }
+            match index.poll(&mut output) {
+                Err(error) => return failure(path, None, CoordinatedFailure::OutputIndex(error)),
+                Ok(Some(end)) => {
+                    return failure(path, None, CoordinatedFailure::OutputStopped(end));
+                }
+                Ok(None) => {}
+            }
+            match input.phase() {
+                super::InputPhase::Ready => {
+                    input.start_on_control();
+                }
+                super::InputPhase::Finished(reason) => {
+                    output.stop();
+                    return failure(
+                        path,
+                        None,
+                        CoordinatedFailure::InputBeforeStart {
+                            reason,
+                            detail: input.take_open_error_on_control(),
+                        },
+                    );
+                }
+                _ => {}
+            }
+            match input.read_block() {
+                Ok(Some(block)) => {
+                    let count = block.frames;
+                    if !order.accept(&block) {
+                        output.stop();
+                        return failure(path, None, CoordinatedFailure::InvalidPreroll);
+                    }
+                    let distance = match super::timeline_overlap::frame_offset(
+                        input.source().1.sample_rate,
+                        block.stamp,
+                        u64::from(block.offset_frames),
+                        clock.playback,
+                        output_offset,
+                    ) {
+                        Ok(distance) => distance,
+                        Err(error) => {
+                            output.stop();
+                            return failure(path, None, CoordinatedFailure::PrerollClock(error));
+                        }
+                    };
+                    if distance >= 0 {
+                        input.prefetched = Some(block);
+                        break;
+                    }
+                    let Some(total) = input.preroll_frames.checked_add(count as u64) else {
+                        output.stop();
+                        return failure(path, None, CoordinatedFailure::InvalidPreroll);
+                    };
+                    input.preroll_frames = total;
+                }
+                Ok(None) => {}
+                Err(reason) => {
+                    output.stop();
+                    return failure(
+                        path,
+                        None,
+                        CoordinatedFailure::InputBeforeStart {
+                            reason,
+                            detail: input.take_open_error_on_control(),
+                        },
+                    );
+                }
+            }
+            if prepare_start.elapsed() >= timeouts.prepare {
+                output.stop();
+                return failure(path, None, CoordinatedFailure::InputPrepareTimeout);
+            }
+            thread::sleep(POLL);
+        }
+    }
+    if ready.load(Acquire) & 2 != 0 {
+        output.stop();
+        return failure(path, None, CoordinatedFailure::CancelledBeforeInput);
+    }
+    input.recording_ready = Some(Arc::clone(&ready));
+    let (send_input, input_result) = mpsc::sync_channel(1);
+    let writer_path = path.clone();
+    if let Err(error) = thread::Builder::new()
+        .name("hex-input-take-writer".into())
+        .spawn(move || {
+            let result = writer(input, &writer_path);
+            let _ = send_input.try_send(result);
+        })
+    {
+        output.stop();
+        return failure(path, None, CoordinatedFailure::InputWorkerStart(error));
+    }
+    let mut stop_requested = None;
+    let take = loop {
+        if ready.load(Acquire) & 2 != 0 && ready.load(Acquire) & 1 == 0 {
+            stop.stop_on_control();
+            output.stop();
+            return failure(path, None, CoordinatedFailure::CancelledBeforeInput);
+        }
+        match index.poll(&mut output) {
+            Err(error) => {
+                stop.stop_on_control();
+                return failure(path, None, CoordinatedFailure::OutputIndex(error));
+            }
+            Ok(Some(end)) => {
+                stop.stop_on_control();
+                return failure(path, None, CoordinatedFailure::OutputStopped(end));
+            }
+            Ok(None) => {}
+        }
+        match input_result.try_recv() {
+            Ok(Ok(take)) => break take,
+            Ok(Err(error)) => {
+                output.stop();
+                return failure(path, None, CoordinatedFailure::InputWrite(error));
+            }
+            Err(TryRecvError::Disconnected) => {
+                output.stop();
+                return failure(path, None, CoordinatedFailure::InputWorkerExited);
+            }
+            Err(TryRecvError::Empty) => {}
+        }
+        if ready.load(Acquire) & 2 != 0 {
+            let at = stop_requested.get_or_insert_with(Instant::now);
+            if at.elapsed() >= timeouts.stop {
+                output.stop();
+                return failure(path, None, CoordinatedFailure::InputStopTimeout);
+            }
+        }
+        thread::sleep(POLL);
+    };
+    output.stop();
+    let stop_start = Instant::now();
+    loop {
+        match index.poll(&mut output) {
+            Err(error) => return failure(path, Some(take), CoordinatedFailure::OutputIndex(error)),
+            Ok(Some(End::Stopped)) => {
+                if matches!(take.end, InputTakeEnd::Stopped) {
+                    return CoordinatedOutcome::Completed {
+                        path,
+                        input: take,
+                        output: index,
+                    };
+                }
+                return failure(path, Some(take), CoordinatedFailure::InputInterrupted);
+            }
+            Ok(Some(end)) => {
+                return failure(path, Some(take), CoordinatedFailure::OutputStopped(end));
+            }
+            Ok(None) => {}
+        }
+        if stop_start.elapsed() >= timeouts.stop {
+            return failure(path, Some(take), CoordinatedFailure::OutputStopTimeout);
+        }
+        thread::sleep(POLL);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        input_capture::{self, Shared, Writer},
+        sample_recording::{self, OutputClock},
+    };
+    use cpal::StreamInstant;
+    use hex_engine::ProjectSignal;
+    use std::sync::atomic::{AtomicBool, Ordering::Release};
+    use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
+
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+    struct Temp(PathBuf);
+    impl Temp {
+        fn new() -> Self {
+            Self(std::env::temp_dir().join(format!(
+                "hex-coordinated-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            )))
+        }
+    }
+    impl Drop for Temp {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+
+    fn mock_input(fail: bool) -> (InputCapture, Receiver<()>) {
+        mock_input_at(fail, 0)
+    }
+    fn mock_input_at(fail: bool, nanos: u32) -> (InputCapture, Receiver<()>) {
+        let (producer, input) = rtrb::RingBuffer::new(input_capture::PACKETS);
+        let shared = Arc::new(Shared {
+            phase: AtomicU8::new(input_capture::READY),
+            stop: AtomicBool::new(false),
+            fault: AtomicU8::new(input_capture::NO_FAULT),
+            terminal: AtomicU8::new(0),
+        });
+        let state = Arc::clone(&shared);
+        let (started, signal) = mpsc::sync_channel(1);
+        let worker = thread::spawn(move || {
+            let mut writer = Writer {
+                output: input_capture::WriterOutput::Recording {
+                    output: producer,
+                    monitor: None,
+                },
+                shared: Arc::clone(&state),
+                channels: 1,
+                sequence: 0,
+                previous: None,
+            };
+            while state.phase.load(Acquire) != input_capture::STARTING && !state.stop.load(Acquire)
+            {
+                thread::park();
+            }
+            if !state.stop.load(Acquire) {
+                state.phase.store(input_capture::CAPTURING, Release);
+                writer.submit(&[0.25; 64], StreamInstant::new(50, nanos));
+                let _ = started.try_send(());
+                if fail {
+                    state.fail(input_capture::DEVICE_FAILED);
+                }
+                while !state.stop.load(Acquire) {
+                    thread::park();
+                }
+            }
+            drop(writer);
+            state.terminal.store(state.fault.load(Acquire) + 1, Release);
+            state.phase.store(input_capture::FINISHED, Release);
+        });
+        let (_, error) = mpsc::sync_channel(1);
+        (
+            InputCapture {
+                worker: input_capture::CaptureWorker {
+                    shared,
+                    handle: worker,
+                    error,
+                },
+                id: format!("{}:test-input", cpal::default_host().id())
+                    .parse()
+                    .unwrap(),
+                config: input_capture::InputConfig {
+                    sample_rate: 48_000,
+                    channels: 1,
+                },
+                input,
+                prefetched: None,
+                preroll_frames: 0,
+                recording_ready: None,
+            },
+            signal,
+        )
+    }
+    fn input_with_preroll() -> (InputCapture, Receiver<()>) {
+        let (producer, input) = rtrb::RingBuffer::new(input_capture::PACKETS);
+        let shared = Arc::new(Shared {
+            phase: AtomicU8::new(input_capture::READY),
+            stop: AtomicBool::new(false),
+            fault: AtomicU8::new(input_capture::NO_FAULT),
+            terminal: AtomicU8::new(0),
+        });
+        let state = Arc::clone(&shared);
+        let (started, signal) = mpsc::sync_channel(1);
+        let worker = thread::spawn(move || {
+            let mut writer = Writer {
+                output: input_capture::WriterOutput::Recording {
+                    output: producer,
+                    monitor: None,
+                },
+                shared: Arc::clone(&state),
+                channels: 1,
+                sequence: 0,
+                previous: None,
+            };
+            while state.phase.load(Acquire) != input_capture::STARTING && !state.stop.load(Acquire)
+            {
+                thread::park();
+            }
+            if !state.stop.load(Acquire) {
+                state.phase.store(input_capture::CAPTURING, Release);
+                writer.submit(&[0.25; 64], StreamInstant::new(50, 0));
+                writer.submit(&[0.5; 64], StreamInstant::new(50, 1_333_333));
+                let _ = started.try_send(());
+                while !state.stop.load(Acquire) {
+                    thread::park();
+                }
+            }
+            drop(writer);
+            state.terminal.store(state.fault.load(Acquire) + 1, Release);
+            state.phase.store(input_capture::FINISHED, Release);
+        });
+        let (_, error) = mpsc::sync_channel(1);
+        (
+            InputCapture {
+                worker: input_capture::CaptureWorker {
+                    shared,
+                    handle: worker,
+                    error,
+                },
+                id: format!("{}:test-input", cpal::default_host().id())
+                    .parse()
+                    .unwrap(),
+                config: input_capture::InputConfig {
+                    sample_rate: 48_000,
+                    channels: 1,
+                },
+                input,
+                prefetched: None,
+                preroll_frames: 0,
+                recording_ready: None,
+            },
+            signal,
+        )
+    }
+    fn output() -> (
+        sample_recording::Control,
+        sample_recording::Callback,
+        Reader,
+        hex_engine::PreparedTempoMap,
+    ) {
+        let (mut control, callback) = sample_recording::channel(48_000);
+        let reader = control.start_bound(source()).unwrap();
+        let project = hex_project::Project::new(48_000).unwrap();
+        let map =
+            hex_engine::PreparedTempoMap::prepare(project.tempo_map().clone(), 48_000).unwrap();
+        (control, callback, reader, map)
+    }
+    fn source() -> crate::prepared::AppliedAudioSource {
+        crate::prepared::AppliedAudioSource {
+            context: hex_engine::AudioSourceContext {
+                project_generation: 1,
+                editor_revision: 2,
+            },
+            audio_revision: 3,
+            output_identity: 4,
+        }
+    }
+
+    #[test]
+    fn preroll_checks_sequence_offsets_timestamps_and_samples() {
+        let packet = |sequence, stamp, offset, sample| super::super::Block {
+            stamp: StreamInstant::new(50, stamp),
+            offset_frames: offset,
+            sequence,
+            frames: 2,
+            pcm: [[sample; 2]; input_capture::FRAMES],
+        };
+        let mut order = PrerollOrder::default();
+        assert!(order.accept(&packet(0, 100, 0, 0.25)));
+        assert!(!order.accept(&packet(2, 100, 2, 0.25)));
+        assert!(!order.accept(&packet(1, 100, 3, 0.25)));
+        assert!(!order.accept(&packet(1, 100, 2, f32::NAN)));
+        assert!(order.accept(&packet(1, 100, 2, 0.5)));
+        assert!(!order.accept(&packet(2, 99, 0, 0.5)));
+        assert!(order.accept(&packet(2, 101, 0, 0.5)));
+    }
+    fn emit(
+        callback: &mut sample_recording::Callback,
+        map: &hex_engine::PreparedTempoMap,
+        offset: u32,
+        valid: bool,
+    ) -> bool {
+        emit_with_latency(callback, map, offset, valid, Some(0))
+    }
+    fn emit_with_latency(
+        callback: &mut sample_recording::Callback,
+        map: &hex_engine::PreparedTempoMap,
+        offset: u32,
+        valid: bool,
+        latency: Option<u32>,
+    ) -> bool {
+        callback.begin(64);
+        if let Some((layout, stage)) = callback.observation() {
+            stage.observe(layout, ProjectSignal::Master, 0, &[[0.1, 0.1]; 64]);
+            stage.observe_timing(0, u64::from(offset), 64, map);
+            callback.set_output_clock(Some(OutputClock {
+                playback: StreamInstant::new(50, 0),
+                offset_frames: offset,
+                graph_latency_frames: latency,
+                origin: crate::sample_recording::OutputClockOrigin::CoreAudioHostTime,
+            }));
+            callback.finish(valid);
+            true
+        } else {
+            false
+        }
+    }
+
+    #[test]
+    fn input_waits_for_output_graph_delay_history() {
+        let temp = Temp::new();
+        let (input, started) = mock_input_at(false, 6_000_000);
+        let (_control, mut callback, reader, map) = output();
+        let mut job = spawn(input, reader, &temp.0);
+        let deadline = Instant::now() + Duration::from_millis(500);
+        let mut offset = 0;
+        while offset < 256 {
+            if emit_with_latency(&mut callback, &map, offset, true, Some(256)) {
+                offset += 64;
+            }
+            assert!(Instant::now() < deadline);
+            thread::sleep(POLL);
+        }
+        assert!(started.recv_timeout(Duration::from_millis(15)).is_err());
+        while started.try_recv().is_err() {
+            if emit_with_latency(&mut callback, &map, offset, true, Some(256)) {
+                offset += 64;
+            }
+            assert!(Instant::now() < deadline);
+            thread::sleep(POLL);
+        }
+        while !job.input_capturing_on_control() {
+            if emit_with_latency(&mut callback, &map, offset, true, Some(256)) {
+                offset += 64;
+            }
+            assert!(Instant::now() < deadline);
+            thread::sleep(POLL);
+        }
+        job.stop_on_control();
+        let outcome = loop {
+            if let Some(outcome) = job.try_result_on_control().unwrap() {
+                break outcome;
+            }
+            if emit_with_latency(&mut callback, &map, offset, true, Some(256)) {
+                offset += 64;
+            }
+            assert!(Instant::now() < deadline);
+            thread::sleep(POLL);
+        };
+        assert!(matches!(outcome, CoordinatedOutcome::Completed { .. }));
+    }
+
+    #[test]
+    fn gated_input_waits_for_permit_while_output_history_continues() {
+        let temp = Temp::new();
+        let (input, started) = mock_input_at(false, 6_000_000);
+        let (_control, mut callback, reader, map) = output();
+        let mut job = spawn_with_writer_start(
+            input,
+            reader,
+            temp.0.clone(),
+            Duration::from_millis(500),
+            Duration::from_millis(500),
+            write_input_take,
+            false,
+        )
+        .unwrap();
+        let deadline = Instant::now() + Duration::from_millis(500);
+        let mut offset = 0;
+        while offset < 512 {
+            if emit(&mut callback, &map, offset, true) {
+                offset += 64;
+            }
+            assert!(started.try_recv().is_err());
+            assert!(Instant::now() < deadline);
+            thread::sleep(POLL);
+        }
+        assert!(!temp.0.exists());
+        assert!(!job.input_capturing_on_control());
+        job.permit_input_start_on_control();
+        wait_started(&mut callback, &map, &started, &mut offset);
+        while !job.input_capturing_on_control() {
+            if emit(&mut callback, &map, offset, true) {
+                offset += 64;
+            }
+            assert!(Instant::now() < deadline);
+            thread::sleep(POLL);
+        }
+        job.stop_on_control();
+        assert!(matches!(
+            wait_result(&mut job, &mut callback, &map, &mut offset),
+            CoordinatedOutcome::Completed { .. }
+        ));
+    }
+
+    #[test]
+    fn early_permit_still_waits_for_output_latency_history() {
+        let temp = Temp::new();
+        let (input, started) = mock_input_at(false, 6_000_000);
+        let (_control, mut callback, reader, map) = output();
+        let mut job = spawn_with_writer_start(
+            input,
+            reader,
+            temp.0.clone(),
+            Duration::from_millis(500),
+            Duration::from_millis(500),
+            write_input_take,
+            false,
+        )
+        .unwrap();
+        job.permit_input_start_on_control();
+        let deadline = Instant::now() + Duration::from_millis(500);
+        let mut offset = 0;
+        while offset < 256 {
+            if emit_with_latency(&mut callback, &map, offset, true, Some(256)) {
+                offset += 64;
+            }
+            assert!(Instant::now() < deadline);
+            thread::sleep(POLL);
+        }
+        assert!(started.recv_timeout(Duration::from_millis(15)).is_err());
+        while started.try_recv().is_err() {
+            if emit_with_latency(&mut callback, &map, offset, true, Some(256)) {
+                offset += 64;
+            }
+            assert!(Instant::now() < deadline);
+            thread::sleep(POLL);
+        }
+        job.stop_on_control();
+        let _ = wait_result(&mut job, &mut callback, &map, &mut offset);
+    }
+
+    #[test]
+    fn gated_input_stop_output_failure_and_timeout_do_not_start_capture() {
+        for case in 0..3 {
+            let temp = Temp::new();
+            let (input, started) = mock_input(false);
+            let (_control, mut callback, reader, map) = output();
+            let mut job = spawn_with_writer_start(
+                input,
+                reader,
+                temp.0.clone(),
+                Duration::from_millis(60),
+                Duration::from_millis(100),
+                write_input_take,
+                false,
+            )
+            .unwrap();
+            let deadline = Instant::now() + Duration::from_millis(500);
+            let mut offset = 0;
+            while !emit(&mut callback, &map, offset, true) {
+                assert!(Instant::now() < deadline);
+                thread::sleep(POLL);
+            }
+            offset += 64;
+            match case {
+                0 => job.stop_on_control(),
+                1 => callback.end(End::OutputFailed),
+                _ => {}
+            }
+            let reason = failed(wait_result(&mut job, &mut callback, &map, &mut offset)).0;
+            match case {
+                0 => assert!(matches!(reason, CoordinatedFailure::CancelledBeforeInput)),
+                1 => assert!(matches!(
+                    reason,
+                    CoordinatedFailure::OutputStopped(End::OutputFailed)
+                )),
+                _ => assert!(matches!(reason, CoordinatedFailure::MonitorPrepareTimeout)),
+            }
+            assert!(started.try_recv().is_err());
+            assert!(!temp.0.exists());
+        }
+    }
+
+    #[test]
+    fn input_does_not_start_when_graph_latency_is_unknown() {
+        let temp = Temp::new();
+        let (input, started) = mock_input(false);
+        let (_control, mut callback, reader, map) = output();
+        let mut job = spawn(input, reader, &temp.0);
+        let deadline = Instant::now() + Duration::from_millis(500);
+        while !emit_with_latency(&mut callback, &map, 0, true, None) {
+            assert!(Instant::now() < deadline);
+            thread::sleep(POLL);
+        }
+        let result = loop {
+            if let Some(result) = job.try_result_on_control().unwrap() {
+                break result;
+            }
+            assert!(Instant::now() < deadline);
+            thread::sleep(POLL);
+        };
+        assert!(matches!(
+            failed(result).0,
+            CoordinatedFailure::OutputLatencyUnavailable
+        ));
+        assert!(started.try_recv().is_err());
+        assert!(!temp.0.exists());
+    }
+    fn wait_started(
+        callback: &mut sample_recording::Callback,
+        map: &hex_engine::PreparedTempoMap,
+        started: &Receiver<()>,
+        offset: &mut u32,
+    ) {
+        let deadline = Instant::now() + Duration::from_millis(700);
+        loop {
+            if started.try_recv().is_ok() {
+                return;
+            }
+            if emit(callback, map, *offset, true) {
+                *offset += 64;
+            }
+            assert!(Instant::now() < deadline, "input did not start");
+            thread::sleep(POLL);
+        }
+    }
+    fn wait_result(
+        job: &mut CoordinatedJob,
+        callback: &mut sample_recording::Callback,
+        map: &hex_engine::PreparedTempoMap,
+        offset: &mut u32,
+    ) -> CoordinatedOutcome {
+        let deadline = Instant::now() + Duration::from_millis(700);
+        loop {
+            if let Some(outcome) = job.try_result_on_control().unwrap() {
+                return outcome;
+            }
+            if emit(callback, map, *offset, true) {
+                *offset += 64;
+            }
+            assert!(Instant::now() < deadline, "coordinator did not finish");
+            thread::sleep(POLL);
+        }
+    }
+    fn spawn(input: InputCapture, reader: Reader, path: &Path) -> CoordinatedJob {
+        spawn_with_timeouts(
+            input,
+            reader,
+            path.to_owned(),
+            Duration::from_millis(500),
+            Duration::from_millis(500),
+        )
+        .unwrap()
+    }
+
+    fn failed(outcome: CoordinatedOutcome) -> (CoordinatedFailure, Option<InputTake>) {
+        match outcome {
+            CoordinatedOutcome::Failed { reason, input, .. } => (reason, input),
+            CoordinatedOutcome::Completed { .. } => panic!("unexpected successful recording"),
+        }
+    }
+
+    #[test]
+    fn arrangement_candidate_refuses_mixed_clock_and_interruption_without_touching_take() {
+        let temp = Temp::new();
+        std::fs::write(&temp.0, b"original take").unwrap();
+        let project = hex_project::Project::new(48_000).unwrap();
+        let map =
+            hex_engine::PreparedTempoMap::prepare(project.tempo_map().clone(), 48_000).unwrap();
+        let (mut control, _callback) = sample_recording::channel(48_000);
+        let reader = control.start_bound(source()).unwrap();
+        let mut index = OutputClockIndex::new(&reader);
+        let tempo = map.capture_tempo(0).unwrap().0;
+        for (offset, origin) in [
+            (0, sample_recording::OutputClockOrigin::CoreAudioHostTime),
+            (64, sample_recording::OutputClockOrigin::Unknown),
+        ] {
+            index
+                .test_push(
+                    64,
+                    &[sample_recording::TimingSpan {
+                        take_start: 0,
+                        take_end: 64,
+                        timeline_start: u64::from(offset),
+                        tempo,
+                    }],
+                    OutputClock {
+                        playback: StreamInstant::new(50, 0),
+                        offset_frames: offset,
+                        graph_latency_frames: Some(0),
+                        origin,
+                    },
+                )
+                .unwrap();
+        }
+        index.test_finish(End::Stopped);
+        let take = InputTake {
+            path: temp.0.clone(),
+            input_device: format!("{}:test-input", cpal::default_host().id())
+                .parse()
+                .unwrap(),
+            input_config: input_capture::InputConfig {
+                sample_rate: 48_000,
+                channels: 1,
+            },
+            sample_rate: 48_000,
+            frames: 64,
+            preroll_frames: 0,
+            timing: vec![input_capture::InputTiming {
+                take_start: 0,
+                frames: 64,
+                captured_at: StreamInstant::new(50, 0),
+                offset_frames: 0,
+            }],
+            end: InputTakeEnd::Stopped,
+            open_error: None,
+        };
+        let mut outcome = CoordinatedOutcome::Completed {
+            path: temp.0.clone(),
+            input: take,
+            output: index,
+        };
+        assert!(matches!(
+            outcome.arrangement_take(source()),
+            Err(ArrangementTakeError::UnsupportedClock)
+        ));
+        if let CoordinatedOutcome::Completed { input, .. } = &mut outcome {
+            input.input_config.sample_rate = 44_100;
+        }
+        assert!(matches!(
+            outcome.arrangement_take(source()),
+            Err(ArrangementTakeError::InconsistentInput)
+        ));
+        let failed = CoordinatedOutcome::Failed {
+            path: temp.0.clone(),
+            input: None,
+            reason: CoordinatedFailure::CancelledBeforeInput,
+        };
+        assert!(matches!(
+            failed.arrangement_take(source()),
+            Err(ArrangementTakeError::Interrupted)
+        ));
+        assert_eq!(std::fs::read(&temp.0).unwrap(), b"original take");
+    }
+
+    #[test]
+    fn captures_both_owners_and_returns_a_complete_clock_candidate() {
+        let temp = Temp::new();
+        let (input, started) = mock_input(false);
+        let (_control, mut callback, reader, map) = output();
+        let mut job = spawn(input, reader, &temp.0);
+        let mut offset = 0;
+        wait_started(&mut callback, &map, &started, &mut offset);
+        let ready_deadline = Instant::now() + Duration::from_millis(500);
+        while !job.input_capturing_on_control() {
+            if emit(&mut callback, &map, offset, true) {
+                offset += 64;
+            }
+            assert!(Instant::now() < ready_deadline);
+            thread::sleep(POLL);
+        }
+        job.stop_on_control();
+        let result = wait_result(&mut job, &mut callback, &map, &mut offset);
+        #[cfg(target_os = "macos")]
+        {
+            let placement = result.arrangement_take(source()).unwrap();
+            assert_eq!(
+                (placement.path, placement.timeline_start, placement.frames),
+                (temp.0.as_path(), 0, 64)
+            );
+            let other = crate::prepared::AppliedAudioSource {
+                audio_revision: source().audio_revision + 1,
+                ..source()
+            };
+            assert!(matches!(
+                result.arrangement_take(other),
+                Err(ArrangementTakeError::SourceChanged)
+            ));
+        }
+        let (take, output) = match result {
+            CoordinatedOutcome::Completed { input, output, .. } => (input, output),
+            CoordinatedOutcome::Failed { reason, .. } => panic!("unexpected failure: {reason}"),
+        };
+        assert_eq!(take.frames, 64);
+        assert_eq!(
+            take.input_device.to_string(),
+            format!("{}:test-input", cpal::default_host().id())
+        );
+        assert_eq!(
+            take.input_config,
+            input_capture::InputConfig {
+                sample_rate: 48_000,
+                channels: 1
+            }
+        );
+        assert_eq!(output.source_binding(), Some(source()));
+        assert!(matches!(take.end, InputTakeEnd::Stopped));
+        assert_eq!(output.completion().unwrap(), Some(End::Stopped));
+        let placement =
+            input_capture::align_audible_take(input_capture::SharedClock, &take, &output).unwrap();
+        assert_eq!((placement.timeline_start, placement.frames), (0, 64));
+        assert!(std::fs::metadata(&temp.0).unwrap().len() > 44);
+        let mut wav = hex_media::WavFrameReader::open(
+            &temp.0,
+            hex_media::WavReaderLimits::new(4_096, 64, 32, 64),
+        )
+        .unwrap();
+        assert_eq!(wav.read_frames(0, 64).unwrap(), vec![[0.25, 0.25]; 64]);
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn output_lead_input_preroll_yields_alignable_recorded_samples() {
+        let temp = Temp::new();
+        let (input, started) = input_with_preroll();
+        let (_control, mut callback, reader, map) = output();
+        let mut job = spawn(input, reader, &temp.0);
+        let deadline = Instant::now() + Duration::from_millis(700);
+        let mut offset = 0;
+        let mut input_started = false;
+        loop {
+            callback.begin(64);
+            if let Some((layout, stage)) = callback.observation() {
+                stage.observe(layout, ProjectSignal::Master, 0, &[[0.1, 0.1]; 64]);
+                stage.observe_timing(0, u64::from(offset), 64, &map);
+                callback.set_output_clock(Some(OutputClock {
+                    playback: StreamInstant::new(50, 1_000_000),
+                    offset_frames: offset,
+                    graph_latency_frames: Some(0),
+                    origin: sample_recording::OutputClockOrigin::CoreAudioHostTime,
+                }));
+                callback.finish(true);
+                offset += 64;
+            }
+            if started.try_recv().is_ok() {
+                input_started = true;
+            }
+            if input_started && job.input_capturing_on_control() {
+                break;
+            }
+            assert!(Instant::now() < deadline);
+            thread::sleep(POLL);
+        }
+        // Keep the same timestamp origin while the coordinator finishes.
+        assert!(
+            std::fs::metadata(&temp.0).unwrap().len() >= 44,
+            "ready only after the WAV header exists"
+        );
+        job.stop_on_control();
+        let result = loop {
+            if let Some(result) = job.try_result_on_control().unwrap() {
+                break result;
+            }
+            callback.begin(64);
+            if let Some((layout, stage)) = callback.observation() {
+                stage.observe(layout, ProjectSignal::Master, 0, &[[0.1, 0.1]; 64]);
+                stage.observe_timing(0, u64::from(offset), 64, &map);
+                callback.set_output_clock(Some(OutputClock {
+                    playback: StreamInstant::new(50, 1_000_000),
+                    offset_frames: offset,
+                    graph_latency_frames: Some(0),
+                    origin: sample_recording::OutputClockOrigin::CoreAudioHostTime,
+                }));
+                callback.finish(true);
+                offset += 64;
+            }
+            assert!(Instant::now() < deadline);
+            thread::sleep(POLL);
+        };
+        let take = result.arrangement_take(source()).unwrap();
+        assert_eq!((take.timeline_start, take.frames), (16, 64));
+        assert_eq!(take.preroll_frames, 64);
+        let mut wav = hex_media::WavFrameReader::open(
+            take.path,
+            hex_media::WavReaderLimits::new(4_096, 64, 32, 64),
+        )
+        .unwrap();
+        assert_eq!(wav.read_frames(0, 64).unwrap(), vec![[0.5, 0.5]; 64]);
+    }
+
+    #[test]
+    fn unbound_output_is_refused_before_starting_input_or_creating_file() {
+        let temp = Temp::new();
+        let (input, started) = mock_input(false);
+        let (mut control, _callback) = sample_recording::channel(48_000);
+        let reader = control.start(1, &[], true).unwrap();
+        let error = match spawn_coordinated_take(input, reader, temp.0.clone()) {
+            Ok(_) => panic!("unbound output was accepted"),
+            Err(error) => error,
+        };
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert!(started.try_recv().is_err());
+        assert!(!temp.0.exists());
+    }
+
+    #[test]
+    fn early_stop_cancels_before_creating_a_take() {
+        let temp = Temp::new();
+        let (input, _) = mock_input(false);
+        let (_control, mut callback, reader, map) = output();
+        let mut job = spawn(input, reader, &temp.0);
+        job.stop_on_control();
+        let mut offset = 0;
+        let outcome = wait_result(&mut job, &mut callback, &map, &mut offset);
+        assert!(matches!(
+            Some(failed(outcome).0),
+            Some(CoordinatedFailure::CancelledBeforeInput)
+        ));
+        assert!(!temp.0.exists());
+    }
+
+    #[test]
+    fn stop_while_writer_is_preparing_is_not_a_completed_take() {
+        let temp = Temp::new();
+        let (input, _) = mock_input(false);
+        let (_control, mut callback, reader, map) = output();
+        let (entered, writer_entered) = mpsc::sync_channel(1);
+        let (release, wait_release) = mpsc::sync_channel(1);
+        let mut job = spawn_with_writer(
+            input,
+            reader,
+            temp.0.clone(),
+            Duration::from_millis(500),
+            Duration::from_millis(100),
+            move |input, _| {
+                entered.send(()).unwrap();
+                wait_release.recv().unwrap();
+                drop(input);
+                Err(io::Error::other("preparation cancelled"))
+            },
+        )
+        .unwrap();
+        let mut offset = 0;
+        wait_started(&mut callback, &map, &writer_entered, &mut offset);
+        assert!(!job.input_capturing_on_control());
+        job.stop_on_control();
+        let outcome = wait_result(&mut job, &mut callback, &map, &mut offset);
+        assert!(matches!(
+            failed(outcome).0,
+            CoordinatedFailure::CancelledBeforeInput
+        ));
+        release.send(()).unwrap();
+    }
+
+    #[test]
+    fn input_failure_and_existing_file_are_explicit() {
+        let temp = Temp::new();
+        let (input, started) = mock_input(true);
+        let (_control, mut callback, reader, map) = output();
+        let mut job = spawn(input, reader, &temp.0);
+        let mut offset = 0;
+        wait_started(&mut callback, &map, &started, &mut offset);
+        let outcome = wait_result(&mut job, &mut callback, &map, &mut offset);
+        let (reason, input) = failed(outcome);
+        assert!(matches!(reason, CoordinatedFailure::InputInterrupted));
+        assert!(matches!(
+            input.unwrap().end,
+            InputTakeEnd::Capture(input_capture::InputEnd::DeviceFailed)
+        ));
+        drop(job);
+        let existing = Temp::new();
+        std::fs::write(&existing.0, b"existing").unwrap();
+        let (input, _) = mock_input(false);
+        let (_control, mut callback, reader, map) = output();
+        let mut job = spawn(input, reader, &existing.0);
+        let mut offset = 0;
+        let outcome = wait_result(&mut job, &mut callback, &map, &mut offset);
+        assert!(matches!(
+            Some(failed(outcome).0),
+            Some(CoordinatedFailure::InputWrite(_))
+        ));
+        assert_eq!(std::fs::read(&existing.0).unwrap(), b"existing");
+    }
+
+    #[test]
+    fn output_failure_stops_input_and_is_not_success() {
+        let temp = Temp::new();
+        let (input, started) = mock_input(false);
+        let (_control, mut callback, reader, map) = output();
+        let mut job = spawn(input, reader, &temp.0);
+        let mut offset = 0;
+        wait_started(&mut callback, &map, &started, &mut offset);
+        assert!(emit(&mut callback, &map, offset, false));
+        let outcome = wait_result(&mut job, &mut callback, &map, &mut offset);
+        assert!(matches!(
+            Some(failed(outcome).0),
+            Some(CoordinatedFailure::OutputStopped(End::OutputFailed))
+        ));
+    }
+
+    #[test]
+    fn output_preparation_and_shutdown_timeouts_are_explicit() {
+        let temp = Temp::new();
+        let (input, _) = mock_input(false);
+        let (_control, _callback, reader, _map) = output();
+        let mut job = spawn_with_timeouts(
+            input,
+            reader,
+            temp.0.clone(),
+            Duration::from_millis(20),
+            Duration::from_millis(100),
+        )
+        .unwrap();
+        let deadline = Instant::now() + Duration::from_millis(500);
+        let outcome = loop {
+            if let Some(outcome) = job.try_result_on_control().unwrap() {
+                break outcome;
+            }
+            assert!(Instant::now() < deadline);
+            thread::sleep(POLL);
+        };
+        assert!(matches!(
+            Some(failed(outcome).0),
+            Some(CoordinatedFailure::OutputPrepareTimeout)
+        ));
+        assert!(!temp.0.exists());
+
+        let temp = Temp::new();
+        let (input, started) = mock_input(false);
+        let (_control, mut callback, reader, map) = output();
+        let mut job = spawn_with_timeouts(
+            input,
+            reader,
+            temp.0.clone(),
+            Duration::from_millis(500),
+            Duration::from_millis(25),
+        )
+        .unwrap();
+        let mut offset = 0;
+        wait_started(&mut callback, &map, &started, &mut offset);
+        let deadline = Instant::now() + Duration::from_millis(500);
+        while !job.input_capturing_on_control() {
+            emit(&mut callback, &map, offset, true);
+            offset += 64;
+            assert!(Instant::now() < deadline);
+            thread::sleep(POLL);
+        }
+        job.stop_on_control();
+        // Deliberately stop invoking the output callback; it cannot acknowledge
+        // Stop, but control must get an explicit timeout and retained input.
+        let deadline = Instant::now() + Duration::from_millis(500);
+        let outcome = loop {
+            if let Some(outcome) = job.try_result_on_control().unwrap() {
+                break outcome;
+            }
+            assert!(Instant::now() < deadline);
+            thread::sleep(POLL);
+        };
+        let (reason, input) = failed(outcome);
+        assert!(matches!(reason, CoordinatedFailure::OutputStopTimeout));
+        assert_eq!(input.unwrap().frames, 64);
+    }
+
+    #[test]
+    fn missing_output_clock_and_mismatched_rates_are_refused() {
+        let temp = Temp::new();
+        let (input, _) = mock_input(false);
+        let (_control, mut callback, reader, map) = output();
+        let mut job = spawn(input, reader, &temp.0);
+        let deadline = Instant::now() + Duration::from_millis(500);
+        loop {
+            callback.begin(64);
+            if let Some((layout, stage)) = callback.observation() {
+                stage.observe(layout, ProjectSignal::Master, 0, &[[0.1, 0.1]; 64]);
+                stage.observe_timing(0, 0, 64, &map);
+                callback.finish(true); // no native clock
+                break;
+            }
+            assert!(Instant::now() < deadline);
+            thread::sleep(POLL);
+        }
+        let outcome = loop {
+            if let Some(outcome) = job.try_result_on_control().unwrap() {
+                break outcome;
+            }
+            assert!(Instant::now() < deadline);
+            thread::sleep(POLL);
+        };
+        assert!(matches!(
+            Some(failed(outcome).0),
+            Some(CoordinatedFailure::OutputIndex(
+                OutputClockIndexError::MissingClock
+            ))
+        ));
+        assert!(!temp.0.exists());
+
+        let (input, _) = mock_input(false);
+        let (mut control, _callback) = sample_recording::channel(44_100);
+        let reader = control.start(1, &[], true).unwrap();
+        let error = match spawn_coordinated_take(input, reader, temp.0.clone()) {
+            Ok(_) => panic!("mismatched rates were accepted"),
+            Err(error) => error,
+        };
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn an_already_started_output_reader_is_refused() {
+        let temp = Temp::new();
+        let (input, _) = mock_input(false);
+        let (_control, mut callback, reader, map) = output();
+        assert!(reader.ready());
+        let mut job = spawn(input, reader, &temp.0);
+        let mut offset = 0;
+        let outcome = wait_result(&mut job, &mut callback, &map, &mut offset);
+        assert!(matches!(
+            Some(failed(outcome).0),
+            Some(CoordinatedFailure::OutputNotReady)
+        ));
+        assert!(!temp.0.exists());
+    }
+
+    #[test]
+    fn input_open_failure_is_reported_even_before_output_timing_arrives() {
+        let temp = Temp::new();
+        let (mut input, _) = mock_input(false);
+        let state = Arc::clone(&input.worker.shared);
+        let worker = input.worker.handle.thread().clone();
+        let (error_sender, error_receiver) = mpsc::sync_channel(1);
+        input.worker.error = error_receiver;
+        let (_control, _callback, reader, _map) = output();
+        let mut job = spawn(input, reader, &temp.0);
+        error_sender
+            .try_send("microphone unavailable".into())
+            .unwrap();
+        state.fail(input_capture::OPEN_FAILED);
+        worker.unpark();
+        let deadline = Instant::now() + Duration::from_millis(500);
+        let outcome = loop {
+            if let Some(outcome) = job.try_result_on_control().unwrap() {
+                break outcome;
+            }
+            assert!(Instant::now() < deadline);
+            thread::sleep(POLL);
+        };
+        match failed(outcome).0 {
+            CoordinatedFailure::InputBeforeStart { reason, detail } => {
+                assert_eq!(reason, input_capture::InputEnd::OpenFailed);
+                assert_eq!(detail.as_deref(), Some("microphone unavailable"));
+            }
+            _ => panic!("input open failure was not preserved"),
+        }
+        assert!(!temp.0.exists());
+    }
+
+    #[test]
+    fn writer_exit_and_stalled_stop_are_explicit() {
+        let temp = Temp::new();
+        let (input, _) = mock_input(false);
+        let (_control, mut callback, reader, map) = output();
+        let mut job = spawn_with_writer(
+            input,
+            reader,
+            temp.0.clone(),
+            Duration::from_millis(500),
+            Duration::from_millis(100),
+            |_, _| panic!("simulated writer failure"),
+        )
+        .unwrap();
+        let mut offset = 0;
+        let outcome = wait_result(&mut job, &mut callback, &map, &mut offset);
+        assert!(matches!(
+            Some(failed(outcome).0),
+            Some(CoordinatedFailure::InputWorkerExited)
+        ));
+
+        let temp = Temp::new();
+        let (input, _) = mock_input(false);
+        let (_control, mut callback, reader, map) = output();
+        let (entered, writer_entered) = mpsc::sync_channel(1);
+        let (release, wait_release) = mpsc::sync_channel(1);
+        let (exited, writer_exited) = mpsc::sync_channel(1);
+        let mut job = spawn_with_writer(
+            input,
+            reader,
+            temp.0.clone(),
+            Duration::from_millis(500),
+            Duration::from_millis(25),
+            move |input, _| {
+                input.recording_ready.as_ref().unwrap().store(1, Release);
+                entered.send(()).unwrap();
+                wait_release.recv().unwrap();
+                drop(input);
+                exited.send(()).unwrap();
+                Err(io::Error::other("simulated stalled writer"))
+            },
+        )
+        .unwrap();
+        let mut offset = 0;
+        wait_started(&mut callback, &map, &writer_entered, &mut offset);
+        job.stop_on_control();
+        let outcome = wait_result(&mut job, &mut callback, &map, &mut offset);
+        assert!(matches!(
+            Some(failed(outcome).0),
+            Some(CoordinatedFailure::InputStopTimeout)
+        ));
+        release.send(()).unwrap();
+        writer_exited
+            .recv_timeout(Duration::from_millis(500))
+            .unwrap();
+    }
+}

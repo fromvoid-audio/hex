@@ -788,7 +788,7 @@ impl App {
 
     /// Hex patch: answer a termination request deferred by [`App::on_should_quit`]:
     /// `true` terminates, `false` cancels. Ignored when no request is pending.
-    /// On macOS the reply is delivered on a later main-queue turn, outside any
+    /// On macOS the reply is delivered on a later main run-loop turn, outside any
     /// App borrow, because terminating runs the quit observers synchronously.
     pub fn reply_to_quit(&self, terminate: bool) {
         self.platform.reply_to_quit(terminate);

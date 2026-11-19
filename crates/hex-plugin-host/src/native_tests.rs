@@ -4,6 +4,27 @@ use crate::transport::Events;
 use hex_plugin_state::decode;
 use std::path::PathBuf;
 
+#[test]
+fn editor_transport_tokens_leave_the_independent_cancellation_direction_intact() {
+    use std::io::Write;
+    let PreparationCancellation {
+        token,
+        mut receiver,
+    } = PreparationCancellation::new_on_control().unwrap();
+    assert!(!token.take_transport_space_on_control());
+    receiver.write_all(&[1, 1]).unwrap();
+    assert!(token.take_transport_space_on_control());
+    assert!(token.take_transport_space_on_control());
+    assert!(!token.take_transport_space_on_control());
+    receiver.write_all(&[1]).unwrap();
+    token.cancel_on_control();
+    assert!(!token.take_transport_space_on_control());
+    receiver
+        .set_read_timeout(Some(Duration::from_millis(200)))
+        .unwrap();
+    assert_eq!(receiver.read(&mut [0]).unwrap(), 0);
+}
+
 fn build() -> InstanceBuild {
     InstanceBuild::inspect(&PathBuf::from(
         std::env::var_os("HEX_VST3_INSTANCE_RECEIPT").expect("explicit native instance receipt"),
@@ -59,6 +80,8 @@ fn request(config: &Configuration, n: u64) -> Block {
         pcm: [[0.0; 2]; 256],
         events: Events::default(),
         parameters: crate::transport::Parameters::default(),
+        timing: None,
+        timing_changes: Default::default(),
     };
     for (i, frame) in block.pcm[..usize::from(block.frames)]
         .iter_mut()
@@ -71,6 +94,69 @@ fn request(config: &Configuration, n: u64) -> Block {
         ];
     }
     block
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn offline_retirement_requires_stop_but_skips_sdk_deactivation() {
+    let build = build();
+    // Variant 100 refuses setActive(false). Variant 58 refuses setProcessing(false).
+    for (variant, clean) in [(100, true), (58, false)] {
+        let case = Case::new();
+        let events = case.root.join("module-events");
+        let child_events = events.clone();
+        let source = source();
+        let state = startup_state(&source, false, 0);
+        let setup = case.setup(variant);
+        let mut instance = Pending::prepare_with_restore(
+            &build,
+            source,
+            options().preparation,
+            Some(state),
+            PreparationCancellation::new_on_control().unwrap(),
+            move |command| {
+                setup(command);
+                command
+                    .arg("--offline")
+                    .env("HEX_ORIGINAL_INSTANCE_MODULE_EVENTS", child_events);
+            },
+        )
+        .unwrap()
+        .complete_with_plan_on_control(protocol::PresentationPlan::AllowUnknown)
+        .unwrap();
+        let input = request(instance.configuration(), 0);
+        let output = instance.exchange_on_worker(input).unwrap();
+        assert_eq!(
+            output.pcm[0],
+            [input.pcm[0][0] * 0.375, input.pcm[0][1] * 0.375]
+        );
+        let result = instance.stop_and_reap_on_control();
+        if clean {
+            let retired = result.unwrap();
+            assert!(retired.status.success());
+            assert_eq!(
+                retired.terminal.unwrap(),
+                Terminal {
+                    blocks: 1,
+                    frames: 8,
+                    failure: 0,
+                    closed: true,
+                    unloaded: false,
+                }
+            );
+        } else {
+            assert!(result.is_err());
+            let retired = instance.cancel_and_reap_on_control().unwrap();
+            assert!(!retired.status.success());
+            assert!(retired.terminal.unwrap().failure != 0);
+        }
+        assert!(instance.child_id_on_control().is_none());
+        assert_eq!(
+            fs::read(events).unwrap(),
+            b"E",
+            "offline worker must not deactivate or unload"
+        );
+    }
 }
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
@@ -380,6 +466,90 @@ impl Drop for Joining {
 fn source() -> Source {
     Source::inspect_on_control(&fixture("processing"), "Contents/MacOS/fixture", class()).unwrap()
 }
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn sdk_timing_follows_the_original_sliced_instrument_reply() {
+    use crate::transport::{ProcessTiming, SegmentTiming, channel};
+    let case = Case::new();
+    let mut options = options();
+    options.preparation.input_channels = 0;
+    let setup = case.setup(127);
+    let mut instance = Prepared::prepare(
+        &build(),
+        source(),
+        options,
+        PreparationCancellation::new_on_control().unwrap(),
+        move |command| {
+            setup(command);
+            command.env("HEX_ORIGINAL_SDK_TIMING_GATE", "1");
+        },
+    )
+    .unwrap();
+    let binding = instance.configuration().binding;
+    let (_control, mut callback, mut worker) = channel(binding, 8).unwrap();
+    callback.begin_physical_callback(8).unwrap();
+    for (offset, origin, playing) in [(0, 0, true), (4, 40, false)] {
+        callback
+            .stage_segment_with_timing(
+                offset,
+                &[[0.0; 2]; 4],
+                &[],
+                &[],
+                &mut [[0.0; 2]; 4],
+                SegmentTiming {
+                    playing: Some(playing),
+                    at: |i| {
+                        Some(ProcessTiming {
+                            playing,
+                            arrangement_frame: origin + i as i64,
+                            ..Default::default()
+                        })
+                    },
+                },
+            )
+            .unwrap();
+    }
+    callback.finish(true).unwrap();
+    let request = worker.receive_request().unwrap().unwrap().block;
+    assert_eq!(request.timing_changes.as_slice().len(), 1);
+    let (send, receive) = mpsc::sync_channel(1);
+    let task = thread::spawn(move || {
+        let reply = instance.exchange_timed_on_worker(request);
+        send.send((instance, reply)).unwrap();
+    });
+    let mut joining = Joining {
+        task: Some(task),
+        release: case.release(),
+    };
+    let until = Instant::now() + Duration::from_secs(3);
+    while case.observation().is_none_or(|values| values[0] != 9) {
+        assert!(Instant::now() < until, "SDK gate did not open");
+        thread::sleep(Duration::from_millis(1));
+    }
+    thread::sleep(Duration::from_millis(10));
+    fs::write(case.release(), b"release").unwrap();
+    let (mut instance, reply) = receive.recv_timeout(Duration::from_secs(3)).unwrap();
+    joining.task.take().unwrap().join().unwrap();
+    let reply = reply.unwrap();
+    assert_eq!(reply.block.binding, binding);
+    assert_eq!(reply.block.sequence, 0);
+    // The first slice is held for at least 10 ms; each of the two SDK calls
+    // then sleeps for 5 ms. A duration that omits either slice fails this bound.
+    assert!(reply.sdk_process_ns.unwrap() >= 18_000_000);
+    assert_eq!(
+        case.observation().unwrap()[10],
+        2,
+        "two SDK calls form one quantum"
+    );
+    assert!(
+        instance
+            .stop_and_reap_on_control()
+            .unwrap()
+            .status
+            .success()
+    );
+}
 fn cancelled_preparation<T>(result: Result<T>) {
     match result {
         Err(Error::Preparation {
@@ -553,15 +723,19 @@ fn actual_inherited_autoreap_refuses_before_foreign_entry_without_changing_calle
             "expected custody refusal, got {:?}",
             result.err()
         );
+        let mut timings = StartupTimings::default();
         let mut retained = Pending::prepare_retained_on_control(
             &build(),
             source(),
             options().preparation,
             PreparationCancellation::new_on_control().unwrap(),
             TrustUserCode::Acknowledged,
+            Some(&mut timings),
         )
         .err()
         .unwrap();
+        assert!(timings.waitable_probe.is_none());
+        assert!(timings.instance_to_facts.is_none());
         let Error::Custody(crate::CustodyError::Lost(original)) = retained.cause() else {
             panic!("actual waitability probe must retain its original OS error");
         };
@@ -884,6 +1058,7 @@ fn actual_retained_refusal_distinguishes_before_spawn_from_owned_native_failure(
         None,
         PreparationCancellation::new_on_control().unwrap(),
         case.setup(0),
+        None,
     )
     .err()
     .unwrap();
@@ -894,6 +1069,7 @@ fn actual_retained_refusal_distinguishes_before_spawn_from_owned_native_failure(
     ));
     assert!(!case.trace().exists());
     let case = Case::new();
+    let mut timings = StartupTimings::default();
     let mut failed = Pending::prepare_retained(
         &build(),
         source(),
@@ -901,14 +1077,17 @@ fn actual_retained_refusal_distinguishes_before_spawn_from_owned_native_failure(
         None,
         PreparationCancellation::new_on_control().unwrap(),
         case.setup(30),
+        Some(&mut timings),
     )
     .err()
     .unwrap();
+    assert!(timings.waitable_probe.is_some());
+    assert!(timings.instance_to_facts.is_none());
     assert!(matches!(failed.cause(), Error::Protocol(_)));
     assert!(matches!(
         &failed.custody,
         preparation_failure::Custody::Native(Lease {
-            child: ChildCustody::Owned(_),
+            child: ChildCustody::Owned(_, _),
             ..
         })
     ));
@@ -918,7 +1097,7 @@ fn actual_retained_refusal_distinguishes_before_spawn_from_owned_native_failure(
         matches!(
             &failed.custody,
             preparation_failure::Custody::Native(Lease {
-                child: ChildCustody::Owned(_),
+                child: ChildCustody::Owned(_, _),
                 ..
             })
         ),
@@ -956,6 +1135,7 @@ fn actual_retained_completion_failure_keeps_same_lease_until_observed_disposal()
                 state,
                 PreparationCancellation::new_on_control().unwrap(),
                 case.setup_restore(if restored { 37 } else { 0 }),
+                None,
             )
             .unwrap();
             assert_eq!(
@@ -963,7 +1143,7 @@ fn actual_retained_completion_failure_keeps_same_lease_until_observed_disposal()
                 options().preparation.binding
             );
             let original_child = match &pending.lease.child {
-                ChildCustody::Owned(child) => child.id(),
+                ChildCustody::Owned(child, _) => child.id(),
                 _ => panic!("actual pending lease"),
             };
             let dropped = Arc::new(AtomicI32::new(-99));
@@ -988,7 +1168,7 @@ fn actual_retained_completion_failure_keeps_same_lease_until_observed_disposal()
                 panic!("actual source is still retained")
             };
             assert!(
-                matches!(&lease.child, ChildCustody::Owned(child) if child.id() == original_child)
+                matches!(&lease.child, ChildCustody::Owned(child, _) if child.id() == original_child)
             );
             if terminal == "unknown" {
                 assert!(matches!(
@@ -1337,6 +1517,7 @@ fn actual_public_startup_restore_retains_saved_envelope_and_restores_real_pcm() 
         storage.data_bytes,
         instance.config.bundle.capacity()
             + instance.config.executable.capacity()
+            + crate::protocol::PACKET_LIMIT
             + instance.ready.initial_state.payload().len()
             + saved.payload().len()
             + std::mem::size_of::<UnixStream>()
@@ -1716,3 +1897,6 @@ fn actual_tail_change_during_resume_refuses_before_original_instance_restarts() 
     let observed = case.observation().unwrap();
     assert_eq!((observed[1], observed[8], observed[10]), (0, 1, 1));
 }
+
+#[path = "native_tests/presentation.rs"]
+mod presentation;

@@ -1,6 +1,20 @@
 //! Actual Session/desktop/native Root workflow; no device or app execution.
+mod automation;
+mod capture_source_guard;
+mod editor_recording;
+mod first_effect_take;
+mod installed_edits;
+mod instruments;
+mod latency_restart;
+mod live_stream;
+mod offline_bounce;
+mod paused_monitor;
+mod performance_profile;
 mod state;
+mod tempo;
 mod ui;
+mod unlaned_effect_commit;
+mod unsealed_admission;
 use super::resident_preview::ResidentHarness;
 use super::*;
 use hex_audio::plugin_effects::{EffectPresentation, Hosting};
@@ -10,17 +24,24 @@ use hex_session::service::{
 };
 
 fn host() -> Hosting {
+    if let Some(app) = std::env::var_os("HEX_TEST_VST3_LAUNCH_INSTANCE_APP") {
+        return Hosting::inspect_source_launch_fixture_on_control(&PathBuf::from(app)).unwrap();
+    }
     Hosting::inspect_fixture_on_control(&PathBuf::from(
         std::env::var_os("HEX_VST3_INSTANCE_RECEIPT").unwrap(),
     ))
     .unwrap()
 }
 fn selection() -> PluginEffectSelection {
+    signed_effect_selection("processing")
+}
+fn signed_effect_selection(name: &str) -> PluginEffectSelection {
     let receipt = PathBuf::from(std::env::var_os("HEX_VST3_MACOS_RECEIPT").unwrap());
     let module = receipt
         .parent()
         .unwrap()
-        .join("hex-vst3-host.app/Contents/Resources/fixtures/processing.vst3");
+        .join("hex-vst3-host.app/Contents/Resources/fixtures")
+        .join(format!("{name}.vst3"));
     let cid = [
         0x48, 0x45, 0x58, 0x50, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12,
     ];
@@ -35,6 +56,30 @@ fn selection() -> PluginEffectSelection {
         info_sha256: hex(info),
     }
 }
+fn installed_selection(
+    catalog: &std::path::Path,
+    bundle: &str,
+    role: hex_plugin_catalog::PluginRole,
+) -> PluginEffectSelection {
+    let catalog = hex_plugin_catalog::Catalog::load(catalog).unwrap();
+    let selected = catalog
+        .rows("")
+        .into_iter()
+        .find_map(|row| {
+            (row.module.file_name()?.to_str()? == bundle)
+                .then_some(row.selection?)
+                .filter(|selection| selection.role == role)
+        })
+        .unwrap();
+    PluginEffectSelection {
+        module: selected.module.clone(),
+        executable: selected.executable_relative_path.clone(),
+        cid: selected.cid,
+        executable_sha256: selected.executable_sha256.clone(),
+        info_sha256: selected.info_sha256.clone(),
+    }
+}
+
 fn request(
     state: &hex_session::service::ViewState,
     destination: PluginEffectDestination,
@@ -52,6 +97,7 @@ fn request(
         selection: selection(),
         destination,
         before: None,
+        track_device_name: None,
         control: Arc::new(PluginEffectControl::default()),
     }
 }
@@ -70,10 +116,10 @@ fn terminal(h: &mut ResidentHarness) -> Event {
     loop {
         h.pump();
         h.render();
-        if let Ok(event) = h.service.try_event() {
-            if !event.plugin_effect_complete.is_empty() {
-                return event;
-            }
+        if let Ok(event) = h.service.try_event()
+            && !event.plugin_effect_complete.is_empty()
+        {
+            return event;
         }
         assert!(
             Instant::now() < end,
@@ -121,22 +167,88 @@ fn same_source_edit(h: &mut ResidentHarness, request: Request) -> Event {
 
 #[test]
 #[ignore = "explicit original SDK helper and source fixtures required"]
+fn prepared_vst3_effect_drop_creates_one_track_and_undo_restores_the_project() {
+    let _native = native_fixture();
+    let mut h = ResidentHarness::with_plugins(
+        host(),
+        Some(EffectPresentation {
+            input_frames: 0,
+            output_frames: 512,
+        }),
+    );
+    assert!(h.next().error.is_none());
+    let (applied, _) = h.applied(0);
+    let original = h
+        .run(Request::Edit(Command::AddTrack {
+            name: "anchor".into(),
+        }))
+        .state;
+    let (applied, _) = h.applied(applied);
+    let anchor = &original.project.tracks()[0];
+    let identity = original.project.next_identity();
+    let destination = PluginEffectDestination::NewTrack {
+        before_track: Some(anchor.id()),
+        slot: hex_project::TrackDeviceSlot::Effect,
+        gain: 0.25,
+        track_identity: identity,
+    };
+    let mut invalid = request(&original, destination);
+    invalid.selection.executable_sha256 = "0".repeat(64);
+    h.service
+        .submit(Request::InsertPluginEffect(invalid))
+        .unwrap();
+    let refused = terminal(&mut h);
+    assert!(refused.error.is_some());
+    assert!(!refused.plugin_effect_complete[0].accepted);
+    assert_eq!(refused.state.revision, original.revision);
+    assert_eq!(refused.state.project, original.project);
+
+    h.service
+        .submit(Request::InsertPluginEffect(request(&original, destination)))
+        .unwrap();
+    let accepted = terminal(&mut h);
+    assert!(accepted.error.is_none(), "{:?}", accepted.error);
+    assert!(accepted.plugin_effect_complete[0].accepted);
+    let (applied, _) = h.applied(applied);
+    let [new, previous] = accepted.state.project.tracks() else {
+        panic!("one added track");
+    };
+    assert_eq!(previous, anchor);
+    assert_eq!(new.id().value(), identity);
+    assert_eq!(new.gain(), 0.25);
+    assert!(new.instrument().is_none());
+    assert_eq!(new.devices().len(), 1);
+    assert_eq!(new.devices()[0].id().value(), identity + 1);
+
+    let undone = h.run(Request::Undo);
+    assert_eq!(undone.state.project.tracks(), original.project.tracks());
+    let (applied, _) = h.applied(applied);
+    let redone = h.run(Request::Redo);
+    assert_eq!(redone.state.project, accepted.state.project);
+    h.applied(applied);
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
 fn native_effect_coordinator_waits_for_actual_endpoint_then_commits_track_return_main() {
     let _native = native_fixture();
     for location in 0..3 {
+        let files = Files::new();
+        let mut log = hex_diagnostics::SessionLog::start(files.0.join("logs")).unwrap();
         // A headless sink has no physical-device contribution. This original
         // zero-latency fixture has a known2Q copied bridge and no downstream
         // processor; file input acquisition contributes0. No hardware claim.
-        let mut h = ResidentHarness::with_plugins(
+        let mut h = ResidentHarness::with_plugins_at_rate_and_diagnostics(
             host(),
             Some(EffectPresentation {
                 input_frames: 0,
                 output_frames: 512,
             }),
+            48_000,
+            Some(log.handle()),
         );
         assert!(h.next().error.is_none());
         let (mut applied, _) = h.applied(0);
-        let files = Files::new();
         let mut state = h.run(Request::Import(files.wav(48_000, 2048))).state;
         (applied, _) = h.applied(applied);
         let track = state.project.tracks()[0].id();
@@ -245,7 +357,155 @@ fn native_effect_coordinator_waits_for_actual_endpoint_then_commits_track_return
                 .unwrap()
                 .render_fault_snapshot()
         );
+        let binding = h.plugin_progress.lock().unwrap().binding.unwrap();
+        drop(h);
+        log.shutdown().unwrap();
+        let diagnostics = fs::read_to_string(log.path()).unwrap();
+        let stages: Vec<_> = diagnostics
+            .lines()
+            .filter_map(|line| {
+                let (_, message) = line.split_once(" message=\"")?;
+                let message = message.strip_suffix('"')?;
+                message.starts_with("vst3_insert v=1 ").then_some(message)
+            })
+            .collect();
+        for stage in &stages {
+            assert!(stage.contains(&format!("binding={binding:?}")), "{stage}");
+        }
+        let names: Vec<_> = stages
+            .iter()
+            .map(|line| {
+                line.split_once("stage=")
+                    .unwrap()
+                    .1
+                    .split_whitespace()
+                    .next()
+                    .unwrap()
+            })
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "native_prepare_returned",
+                "native_facts",
+                "endpoint_ready",
+                "graph_terminal"
+            ]
+        );
+        for field in [
+            "elapsed_ns=",
+            "selection_inspection_ns=",
+            "revalidation_ns=",
+            "waitable_probe_ns=Some(",
+            "instance_to_facts_ns=Some(",
+        ] {
+            let elapsed = stages[0]
+                .split_whitespace()
+                .find_map(|word| word.strip_prefix(field))
+                .unwrap()
+                .trim_end_matches(')')
+                .parse::<u128>()
+                .unwrap();
+            assert!(elapsed > 0, "missing duration for {field}");
+        }
+        assert!(stages[3].contains("committed=true"));
     }
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
+fn retained_native_document_retires_the_outgoing_effect_after_exact_installation() {
+    let _native = native_fixture();
+    let files = Files::new();
+    let mut h = ResidentHarness::with_plugins(
+        host(),
+        Some(EffectPresentation {
+            input_frames: 0,
+            output_frames: 512,
+        }),
+    );
+    assert!(h.next().error.is_none());
+    let (initial, _) = h.applied(0);
+    let imported = h.run(Request::Import(files.wav(48_000, 2048)));
+    let (imported_revision, _) = h.applied(initial);
+    h.service
+        .submit(Request::InsertPluginEffect(request(
+            &imported.state,
+            PluginEffectDestination::Main,
+        )))
+        .unwrap();
+    assert!(h.next().error.is_none());
+    let inserted = terminal(&mut h);
+    assert!(inserted.plugin_effect_complete[0].accepted);
+    let (applied, metadata) = h.applied(imported_revision);
+    let old = h
+        .audio
+        .as_ref()
+        .unwrap()
+        .status()
+        .unwrap()
+        .recording_source()
+        .unwrap();
+    assert_eq!(old.audio_revision, applied);
+    assert_eq!(old.context, metadata.context);
+    wait(|| h.plugin_progress.lock().unwrap().accepted);
+    let original = h.plugin_progress.lock().unwrap().binding.unwrap();
+    let new_project = || Request::NewWithAudioMode {
+        mode: DocumentAudioMode::Resident,
+        reservation: None,
+    };
+
+    h.refuse.store(true, std::sync::atomic::Ordering::Release);
+    h.service.submit(new_project()).unwrap();
+    let refused = h.next();
+    assert!(!refused.project_replaced && refused.error.is_some());
+    assert_eq!(refused.state.project, inserted.state.project);
+    assert_eq!(
+        h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .recording_source(),
+        Some(old)
+    );
+    assert!(!h.plugin_progress.lock().unwrap().retiring);
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    for block in 0..3 {
+        let pcm = h.render_plugin_block();
+        wait(|| h.plugin_completed.load(Acquire) > block);
+        assert_eq!(pcm, [[if block == 2 { 0.125 } else { 0.0 }; 2]; 256]);
+    }
+    h.audio.as_ref().unwrap().control.stop();
+    h.render_plugin_block();
+
+    h.refuse.store(false, std::sync::atomic::Ordering::Release);
+    let new = h.run(new_project());
+    let before_installation = *h.plugin_progress.lock().unwrap();
+    assert_eq!(before_installation.binding, Some(original));
+    assert!(!before_installation.retiring);
+    let applied = super::resident_lifecycle::finish_replacement(&mut h, &new, old.output_identity);
+    let audio = h.audio.as_ref().unwrap();
+    assert_eq!(audio.control.output_identity(), Some(old.output_identity));
+    assert!(applied > old.audio_revision);
+    assert!(new.state.project.main_devices().is_empty());
+    wait(|| {
+        h.pump();
+        h.render_plugin_block();
+        h.plugin_records.load(Acquire) == 0 && h.plugin_progress.lock().unwrap().binding.is_none()
+    });
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    assert_eq!(h.render_plugin_block(), [[0.0; 2]; 256]);
 }
 
 #[test]
@@ -328,10 +588,10 @@ fn native_effect_coordinator_restores_committed_effect_after_stop() {
         let restored = loop {
             h.pump();
             h.render();
-            if let Ok(event) = h.service.try_event() {
-                if event.stopped_playback_restore_complete {
-                    break event;
-                }
+            if let Ok(event) = h.service.try_event()
+                && event.stopped_playback_restore_complete
+            {
+                break event;
             }
             assert!(Instant::now() < end, "stopped restore terminal timed out");
             std::thread::yield_now();
@@ -643,7 +903,9 @@ fn native_effect_coordinator_keeps_registered_sampler_and_file_pcm_across_stop()
         project_generation: 0,
         revision: added.state.revision,
         track,
-        empty_sampler: None,
+        slot: hex_session::service::SamplerLoadSlot::New(
+            hex_project::InstrumentLoadPlacement::First,
+        ),
         path: sampler_files.wav(48_000, 4096),
         cancel: Arc::new(AtomicBool::new(false)),
     });
@@ -778,6 +1040,14 @@ fn native_effect_coordinator_live_bypass_and_removal_keep_original_clock_and_tai
     h.render_plugin_block();
     wait(|| h.plugin_completed.load(Acquire) == 1);
     for bypassed in [true, false] {
+        let cut = h
+            .audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .performance_frame
+            .load(Acquire);
         let changed = same_source_edit(
             &mut h,
             Request::Edit(Command::SetDeviceBypass { device, bypassed }),
@@ -804,12 +1074,18 @@ fn native_effect_coordinator_live_bypass_and_removal_keep_original_clock_and_tai
                 let absolute = start + block * 256 + offset as u64;
                 let expected = if absolute < 512 {
                     0.0
-                } else if bypassed {
-                    0.25
                 } else {
-                    0.25 * (0.5 + ((absolute - 512) / 256) as f32 * 0.125)
+                    // The published bypass fades between the same wet and dry
+                    // histories over five milliseconds without moving the clock.
+                    let progress = ((absolute - cut + 1) as f32 / 240.0).min(1.0);
+                    let wet_gain = if bypassed { 1.0 - progress } else { progress };
+                    let wet = 0.25 * (0.5 + ((absolute - 512) / 256) as f32 * 0.125);
+                    0.25 + (wet - 0.25) * wet_gain
                 };
-                assert_eq!(frame, [expected; 2], "bypass={bypassed}, frame={absolute}");
+                assert!(
+                    frame.iter().all(|sample| (sample - expected).abs() < 1e-6),
+                    "bypass={bypassed}, frame={absolute}, actual={frame:?}, expected={expected}"
+                );
             }
         }
         assert_eq!(h.plugin_records.load(Acquire), 1);
@@ -1032,7 +1308,423 @@ fn native_effect_coordinator_reorder_waits_for_original_zero_input_prefix_and_un
 
 #[test]
 #[ignore = "explicit original SDK helper and source fixtures required"]
-fn native_effect_real_work_contention_waits_then_keeps_exact_accept_or_refusal() {
+fn parameter_inventory_reaches_session_from_the_hosted_controller() {
+    const CHILD: &str = "HEX_DESKTOP_TEST_PARAMETER_INVENTORY_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let name = std::thread::current().name().unwrap().to_owned();
+        let result = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", &name, "--ignored", "--nocapture"])
+            .env(CHILD, "1")
+            .env("HEX_ORIGINAL_INSTANCE_VARIANT", "37")
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+        return;
+    }
+    let _native = native_fixture();
+    let mut h = ResidentHarness::with_plugins(
+        host(),
+        Some(EffectPresentation {
+            input_frames: 0,
+            output_frames: 512,
+        }),
+    );
+    let initial = h.next();
+    h.applied(0);
+    h.run(Request::InsertPluginEffect(request(
+        &initial.state,
+        PluginEffectDestination::Main,
+    )));
+    let accepted = terminal(&mut h);
+    assert!(accepted.error.is_none(), "{:?}", accepted.error);
+    let (_, metadata) = h.applied(1);
+    let device = accepted.state.project.main_devices()[0].id();
+    let query = hex_session::service::PluginParameterQuery {
+        context: metadata.context,
+        device,
+        output_identity: h.audio.as_ref().unwrap().control.output_identity().unwrap(),
+        request_id: 1,
+        page_first: None,
+    };
+    let admitted = h.run(Request::QueryPluginParameters(query));
+    assert_eq!(admitted.state.revision, accepted.state.revision);
+    let received = h
+        .next()
+        .plugin_parameters
+        .expect("native controller inventory");
+    assert_eq!(received.query, query);
+    let source = received.source.expect("exact loaded controller source");
+    let signature = received
+        .descriptor_signature
+        .expect("complete descriptor signature");
+    assert_eq!(received.total, 1);
+    let rows = received.rows.expect("original controller reply");
+    assert_eq!(rows.len(), 1);
+    assert_eq!((rows[0].id, rows[0].name.as_str()), (7, "gain"));
+    assert!(!rows[0].value.is_empty());
+    let selected = hex_session::service::PluginParameterQuery {
+        page_first: Some(0),
+        request_id: 2,
+        ..query
+    };
+    h.run(Request::QueryPluginParameters(selected));
+    let page = h.next().plugin_parameters.expect("single live page");
+    assert_eq!(page.query, selected);
+    assert_eq!(page.source, Some(source));
+    assert_eq!(page.descriptor_signature, Some(signature));
+    assert_eq!(page.total, 1);
+    assert_eq!(page.rows.unwrap(), rows);
+    let stale = hex_session::service::PluginParameterQuery {
+        context: initial
+            .state
+            .canonical_audio_source
+            .as_ref()
+            .unwrap()
+            .context(),
+        request_id: 3,
+        ..query
+    };
+    let refused = h
+        .run(Request::QueryPluginParameters(stale))
+        .plugin_parameters
+        .unwrap();
+    assert_eq!(refused.query, stale);
+    assert!(refused.rows.is_err());
+    let conversion = hex_session::service::PluginParameterConversionQuery {
+        context: query.context,
+        device,
+        output_identity: query.output_identity,
+        request_id: 4,
+        source,
+        parameter: 7,
+        operation: hex_session::service::PluginParameterConversion::Parse(
+            hex_session::service::PluginParameterText::new("double").unwrap(),
+        ),
+    };
+    h.run(Request::QueryPluginParameterConversion(conversion));
+    assert_eq!(
+        h.next()
+            .plugin_parameter_conversion
+            .unwrap()
+            .value
+            .unwrap_err(),
+        "vst3 parameter conversion unsupported"
+    );
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
+fn parameter_conversion_reaches_the_exact_hosted_controller_without_editing() {
+    use hex_session::service::{
+        PluginParameterConversion as Conversion, PluginParameterConversionQuery,
+        PluginParameterText,
+    };
+    const CHILD: &str = "HEX_DESKTOP_TEST_PARAMETER_CONVERSION_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let name = std::thread::current().name().unwrap().to_owned();
+        let result = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", &name, "--ignored", "--nocapture"])
+            .env(CHILD, "1")
+            .env("HEX_ORIGINAL_INSTANCE_VARIANT", "91")
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+        return;
+    }
+    let _native = native_fixture();
+    let mut h = ResidentHarness::with_plugins(
+        host(),
+        Some(EffectPresentation {
+            input_frames: 0,
+            output_frames: 512,
+        }),
+    );
+    let initial = h.next();
+    h.applied(0);
+    h.run(Request::InsertPluginEffect(request(
+        &initial.state,
+        PluginEffectDestination::Main,
+    )));
+    let accepted = terminal(&mut h);
+    assert!(accepted.error.is_none());
+    let (_, metadata) = h.applied(1);
+    let device = accepted.state.project.main_devices()[0].id();
+    let output_identity = h.audio.as_ref().unwrap().control.output_identity().unwrap();
+    h.run(Request::QueryPluginParameters(
+        hex_session::service::PluginParameterQuery {
+            context: metadata.context,
+            device,
+            output_identity,
+            request_id: 1,
+            page_first: Some(0),
+        },
+    ));
+    let source = h.next().plugin_parameters.unwrap().source.unwrap();
+    let query = PluginParameterConversionQuery {
+        context: metadata.context,
+        device,
+        output_identity,
+        request_id: 2,
+        source,
+        parameter: 7,
+        operation: Conversion::Parse(PluginParameterText::new("double").unwrap()),
+    };
+    let admitted = h.run(Request::QueryPluginParameterConversion(query.clone()));
+    assert!(admitted.plugin_parameter_observation);
+    assert_eq!(admitted.state.revision, accepted.state.revision);
+    let result = h.next();
+    assert_eq!(result.state.project, accepted.state.project);
+    let converted = result.plugin_parameter_conversion.unwrap();
+    assert_eq!(converted.query, query);
+    let value = converted.value.unwrap();
+    assert_eq!(value.normalized, 0.5);
+    assert_eq!(value.display.as_deref(), Some("double"));
+
+    let format = PluginParameterConversionQuery {
+        request_id: 3,
+        operation: Conversion::Format(0.25),
+        ..query.clone()
+    };
+    h.run(Request::QueryPluginParameterConversion(format));
+    assert_eq!(
+        h.next()
+            .plugin_parameter_conversion
+            .unwrap()
+            .value
+            .unwrap()
+            .display
+            .as_deref(),
+        Some("unity")
+    );
+
+    let refused = PluginParameterConversionQuery {
+        request_id: 4,
+        operation: Conversion::Parse(PluginParameterText::new("not a value").unwrap()),
+        ..query.clone()
+    };
+    h.run(Request::QueryPluginParameterConversion(refused));
+    assert!(h.next().plugin_parameter_conversion.unwrap().value.is_err());
+
+    let missing = PluginParameterConversionQuery {
+        request_id: 5,
+        parameter: 8,
+        ..query.clone()
+    };
+    h.run(Request::QueryPluginParameterConversion(missing));
+    assert!(h.next().plugin_parameter_conversion.unwrap().value.is_err());
+
+    let invalid = PluginParameterConversionQuery {
+        request_id: 6,
+        operation: Conversion::Format(f64::NAN),
+        ..query.clone()
+    };
+    assert!(
+        h.run(Request::QueryPluginParameterConversion(invalid))
+            .plugin_parameter_conversion
+            .unwrap()
+            .value
+            .is_err()
+    );
+
+    // A background page and a user conversion share one controller mailbox.
+    // The page may complete or yield, but neither observation may be lost.
+    h.service
+        .submit(Request::QueryPluginParameters(
+            hex_session::service::PluginParameterQuery {
+                context: query.context,
+                device,
+                output_identity,
+                request_id: 7,
+                page_first: Some(0),
+            },
+        ))
+        .unwrap();
+    h.service
+        .submit(Request::QueryPluginParameterConversion(
+            PluginParameterConversionQuery {
+                request_id: 8,
+                operation: Conversion::Format(0.25),
+                ..query.clone()
+            },
+        ))
+        .unwrap();
+    let (mut page_seen, mut conversion_seen) = (false, false);
+    while !page_seen || !conversion_seen {
+        let event = h.next();
+        if let Some(page) = event.plugin_parameters {
+            assert_eq!(page.query.request_id, 7);
+            page_seen = true;
+        }
+        if let Some(conversion) = event.plugin_parameter_conversion {
+            assert_eq!(conversion.query.request_id, 8);
+            assert_eq!(conversion.value.unwrap().display.as_deref(), Some("unity"));
+            conversion_seen = true;
+        }
+    }
+    let mut stale = query;
+    stale.source.epoch += 1;
+    assert!(
+        h.run(Request::QueryPluginParameterConversion(stale))
+            .plugin_parameter_conversion
+            .unwrap()
+            .value
+            .is_err()
+    );
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
+fn admitted_parameter_conversion_survives_output_close() {
+    use hex_session::service::{
+        PluginParameterConversion, PluginParameterConversionQuery, PluginParameterQuery,
+    };
+    const CHILD: &str = "HEX_DESKTOP_TEST_CONVERSION_CLOSE_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let gates = Files::new();
+        std::fs::write(gates.0.join("release"), b"allow inventory").unwrap();
+        let result = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                std::thread::current().name().unwrap(),
+                "--ignored",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .env("HEX_ORIGINAL_INSTANCE_VARIANT", "93")
+            .env("HEX_ORIGINAL_INSTANCE_RELEASE", gates.0.join("release"))
+            .env("HEX_ORIGINAL_INSTANCE_TRACE", gates.0.join("trace"))
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+        return;
+    }
+    let _native = native_fixture();
+    let mut h = ResidentHarness::with_plugins(
+        host(),
+        Some(EffectPresentation {
+            input_frames: 0,
+            output_frames: 512,
+        }),
+    );
+    let initial = h.next();
+    h.applied(0);
+    h.run(Request::InsertPluginEffect(request(
+        &initial.state,
+        PluginEffectDestination::Main,
+    )));
+    let inserted = terminal(&mut h);
+    assert!(inserted.error.is_none());
+    let (_, metadata) = h.applied(1);
+    let device = inserted.state.project.main_devices()[0].id();
+    let output = h.audio.as_ref().unwrap().control.output_identity().unwrap();
+    h.run(Request::QueryPluginParameters(PluginParameterQuery {
+        context: metadata.context,
+        device,
+        output_identity: output,
+        request_id: 1,
+        page_first: Some(0),
+    }));
+    let source = h.next().plugin_parameters.unwrap().source.unwrap();
+    let release = PathBuf::from(std::env::var_os("HEX_ORIGINAL_INSTANCE_RELEASE").unwrap());
+    let trace = PathBuf::from(std::env::var_os("HEX_ORIGINAL_INSTANCE_TRACE").unwrap());
+    std::fs::remove_file(&release).unwrap();
+    let _ = std::fs::remove_file(&trace);
+    let query = PluginParameterConversionQuery {
+        context: metadata.context,
+        device,
+        output_identity: output,
+        request_id: 2,
+        source,
+        parameter: 7,
+        operation: PluginParameterConversion::Format(0.25),
+    };
+    assert!(
+        h.run(Request::QueryPluginParameterConversion(query.clone()))
+            .plugin_parameter_conversion
+            .is_none()
+    );
+    let until = Instant::now() + Duration::from_secs(5);
+    loop {
+        h.pump();
+        let stage = std::fs::read(&trace)
+            .ok()
+            .and_then(|bytes| Some(i32::from_ne_bytes(bytes.get(..4)?.try_into().ok()?)));
+        if stage == Some(26) {
+            break;
+        }
+        assert!(
+            Instant::now() < until,
+            "conversion did not enter the original controller"
+        );
+        std::thread::yield_now();
+    }
+    h.service
+        .submit(Request::RestartAudio {
+            project_generation: metadata.context.project_generation,
+            request_id: 3,
+        })
+        .unwrap();
+    let restarted = h.next();
+    assert!(restarted.plugin_parameter_conversion.is_none());
+    h.release_relinquished_output();
+    let held_until = Instant::now() + Duration::from_millis(50);
+    let mut terminal = None;
+    while Instant::now() < held_until {
+        h.pump();
+        while let Ok(event) = h.service.try_event() {
+            if let Some(result) = event.plugin_parameter_conversion {
+                assert!(
+                    terminal.replace(result).is_none(),
+                    "duplicate conversion terminal"
+                );
+            }
+        }
+        std::thread::yield_now();
+    }
+    std::fs::write(&release, b"release controller").unwrap();
+    h.wait_fresh_output(output);
+    let result = match terminal {
+        Some(result) => result,
+        None => loop {
+            let event = h.next();
+            if let Some(result) = event.plugin_parameter_conversion {
+                break result;
+            }
+        },
+    };
+    assert_eq!(result.query, query);
+    assert!(result.value.is_err());
+    let until = Instant::now() + Duration::from_millis(50);
+    while Instant::now() < until {
+        h.pump();
+        while let Ok(event) = h.service.try_event() {
+            assert!(
+                event.plugin_parameter_conversion.is_none(),
+                "late duplicate conversion terminal"
+            );
+        }
+        std::thread::yield_now();
+    }
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
+fn native_effect_real_work_contention_returns_through_session_for_both_timing_modes() {
     let _native = native_fixture();
     for known_presentation in [false, true] {
         let (reached, facts) = mpsc::sync_channel(1);
@@ -1044,10 +1736,12 @@ fn native_effect_real_work_contention_waits_then_keeps_exact_accept_or_refusal()
                 output_frames: 512,
             }),
             crate::native_audio::plugins::FactsGate::new(reached, resumed),
+            None,
         );
         let initial = h.next();
         assert!(initial.error.is_none());
         h.applied(0);
+        h.enable_confirmed_device_inserts();
         let input = request(&initial.state, PluginEffectDestination::Main);
         h.service
             .submit(Request::InsertPluginEffect(input.clone()))
@@ -1060,6 +1754,10 @@ fn native_effect_real_work_contention_waits_then_keeps_exact_accept_or_refusal()
         let before_attempt = h.plugin_progress.lock().unwrap().attempts;
         resume.send(()).unwrap();
         wait(|| h.plugin_progress.lock().unwrap().attempts > before_attempt);
+        assert!(
+            h.plugin_progress.lock().unwrap().facts_attempt_from_session,
+            "Facts must retry through the matching Session continuation"
+        );
         let pending = h.next();
         release.send(()).unwrap();
         holder.join().unwrap();
@@ -1076,30 +1774,42 @@ fn native_effect_real_work_contention_waits_then_keeps_exact_accept_or_refusal()
             &finished.plugin_effect_complete[0].control,
             &input.control
         ));
+        assert!(finished.plugin_effect_complete[0].accepted);
         assert_eq!(
-            finished.plugin_effect_complete[0].accepted,
-            known_presentation
+            finished.device_insert_complete.unwrap().outcome,
+            hex_session::service::DeviceInsertOutcome::Installed,
         );
-        if known_presentation {
-            assert!(finished.error.is_none(), "{:?}", finished.error);
-            assert_eq!(finished.state.revision, initial.state.revision + 1);
-            assert_eq!(finished.state.project.main_devices().len(), 1);
-        } else {
-            assert!(
-                finished.error.as_ref().unwrap().contains("presentation"),
-                "{:?}",
-                finished.error
-            );
-            assert_eq!(finished.state.project, initial.state.project);
-            assert_eq!(finished.state.revision, initial.state.revision);
-            assert!(!finished.state.can_undo);
-        }
+        assert!(finished.error.is_none(), "{:?}", finished.error);
+        assert_eq!(finished.state.revision, initial.state.revision + 1);
+        assert_eq!(finished.state.project.main_devices().len(), 1);
     }
 }
 
 #[test]
 #[ignore = "explicit original SDK helper and source fixtures required"]
-fn native_effect_coordinator_refuses_unknown_presentation_without_canonical_or_history_edit() {
+fn native_effect_coordinator_preserves_history_when_plugin_refuses_presentation() {
+    const CHILD: &str = "HEX_DESKTOP_PRESENTATION_REFUSAL_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                std::thread::current().name().unwrap(),
+                "--ignored",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .env("HEX_ORIGINAL_INSTANCE_VARIANT", "17")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+        return;
+    }
     let _native = native_fixture();
     let mut h = ResidentHarness::with_plugins(host(), None);
     let initial = h.next();
@@ -1210,6 +1920,67 @@ fn native_effect_coordinator_cancel_or_stop_before_ack_preserves_history_and_rec
 }
 
 #[test]
+#[ignore = "requires signed SDK receipts and an explicit installed effect catalog entry"]
+fn installed_vst3_effect_inserts_and_renders_in_desktop_audio_graph() {
+    let _native = native_fixture();
+    let bundle = std::env::var("HEX_TEST_VST3_EFFECT_BUNDLE").unwrap();
+    let catalog = PathBuf::from(std::env::var_os("HEX_TEST_VST3_EFFECT_CATALOG").unwrap());
+    let files = Files::new();
+    let rate = 44_100;
+    let mut h = ResidentHarness::with_plugins_at_rate(
+        host(),
+        Some(EffectPresentation {
+            input_frames: 0,
+            output_frames: 512,
+        }),
+        rate,
+    );
+    assert!(h.next().error.is_none());
+    let (applied, _) = h.applied(0);
+    let imported = h.run(Request::Import(files.wav(rate, 8192)));
+    let (applied, _) = h.applied(applied);
+    let track = imported.state.project.tracks()[0].id();
+    let mut insertion = request(&imported.state, PluginEffectDestination::Track(track));
+    insertion.selection =
+        installed_selection(&catalog, &bundle, hex_plugin_catalog::PluginRole::Effect);
+    h.service
+        .submit(Request::InsertPluginEffect(insertion))
+        .unwrap();
+    let accepted = terminal(&mut h);
+    assert!(accepted.error.is_none(), "{:?}", accepted.error);
+    assert!(accepted.plugin_effect_complete[0].accepted);
+    let target = &accepted.state.project.tracks()[0];
+    assert_eq!(target.id(), track);
+    assert!(accepted.state.project.main_devices().is_empty());
+    assert_eq!(target.devices().len(), 1);
+    let device = &target.devices()[0];
+    let state = hex_plugin_state::decode(device.state()).unwrap();
+    assert!(state.component.is_some());
+    h.applied(applied);
+    assert_eq!(
+        h.submitted_observation()
+            .unwrap()
+            .foreign_processor(device.id().value(), device.state().type_id()),
+        Some(true)
+    );
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    let mut peak = 0.0_f32;
+    for block in 0..24 {
+        for sample in h.render_plugin_block().iter().flatten() {
+            peak = peak.max(sample.abs());
+        }
+        wait(|| h.plugin_completed.load(Acquire) > block);
+    }
+    assert!(peak > 0.001, "{bundle} returned silent PCM");
+    println!("{bundle} arrangement effect at {rate} hz peak={peak}");
+}
+
+#[test]
 #[ignore = "explicit original SDK helper receipt required"]
 fn native_effect_metadata_hold_survives_profile_refusal_without_opening_a_device() {
     let (sender, _events) = mpsc::sync_channel(4);
@@ -1232,4 +2003,272 @@ fn native_effect_metadata_hold_survives_profile_refusal_without_opening_a_device
     let retained = sink.native_sampler_hold();
     assert_eq!(retained.retained_bytes, held.retained_bytes);
     assert_eq!(retained.construction_bytes, held.construction_bytes);
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
+fn staged_vst3_cancel_and_install_compete_while_the_session_worker_is_parked() {
+    use hex_session::service::{DeviceInsertCompletion, DeviceInsertOutcome};
+
+    let _native = native_fixture();
+    for cancel_first in [true, false] {
+        let mut h = ResidentHarness::with_plugins(
+            host(),
+            Some(EffectPresentation {
+                input_frames: 0,
+                output_frames: 512,
+            }),
+        );
+        let initial = h.next();
+        assert!(initial.error.is_none(), "{:?}", initial.error);
+        h.applied(0);
+        let predecessor = h
+            .audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .recording_source()
+            .unwrap();
+        let (prepared, enqueue, _busy) = h.probe_next_native_publication();
+        let (submitted, resume) = h.probe_next_submitted_device_insert();
+        let input = request(&initial.state, PluginEffectDestination::Main);
+        h.service
+            .submit(Request::InsertPluginEffect(input.clone()))
+            .unwrap();
+        let preparing = h.next();
+        assert!(preparing.error.is_none(), "{:?}", preparing.error);
+        assert_eq!(preparing.state.project, initial.state.project);
+        // Pump the original SDK endpoint to readiness. Stop driving the real
+        // callback at the pre-enqueue gate, then park the worker on the other
+        // side of enqueue so the test alone chooses the admission ordering.
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while prepared.try_recv().is_err() {
+            h.pump();
+            h.render_worker_step();
+            if let Ok(event) = h.service.try_event() {
+                panic!(
+                    "insert completed before preparing its graph: {:?}",
+                    event.error
+                );
+            }
+            assert!(Instant::now() < deadline, "graph preparation stalled");
+            std::thread::yield_now();
+        }
+        enqueue.send(()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let submission = loop {
+            if let Ok(submission) = submitted.try_recv() {
+                break submission;
+            }
+            h.pump();
+            if let Ok(event) = h.service.try_event() {
+                panic!(
+                    "insert completed before graph submission: {:?}",
+                    event.error
+                );
+            }
+            assert!(
+                Instant::now() < deadline,
+                "graph submission stalled: {:?}",
+                *h.plugin_failure.lock().unwrap(),
+            );
+            std::thread::yield_now();
+        };
+        assert_eq!(submission.output_identity, predecessor.output_identity);
+        assert!(submission.audio_revision > predecessor.audio_revision);
+        assert!(h.service.try_event().is_err());
+
+        if cancel_first {
+            assert!(input.control.cancel());
+        }
+        assert_eq!(h.render(), [[0.0; 2]; 64]);
+        let installed = h
+            .audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .recording_source()
+            .unwrap();
+        if cancel_first {
+            assert_eq!(installed, predecessor);
+        } else {
+            assert_eq!(installed.audio_revision, submission.audio_revision);
+            assert_eq!(installed.context, submission.context);
+            assert!(!input.control.cancel());
+        }
+        resume.send(()).unwrap();
+
+        let event = terminal(&mut h);
+        assert_eq!(
+            event.device_insert_complete,
+            Some(DeviceInsertCompletion {
+                submission,
+                outcome: if cancel_first {
+                    DeviceInsertOutcome::Cancelled
+                } else {
+                    DeviceInsertOutcome::Installed
+                },
+            }),
+        );
+        assert_eq!(event.plugin_effect_complete[0].accepted, !cancel_first);
+        assert_eq!(
+            event.state.project.main_devices().len(),
+            usize::from(!cancel_first)
+        );
+        assert_eq!(event.state.can_undo, !cancel_first);
+    }
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
+fn confirmed_vst3_insert_keeps_the_prepared_worker_and_output() {
+    use hex_session::service::DeviceInsertOutcome;
+
+    fn status(h: &ResidentHarness) -> &hex_audio::prepared::Status {
+        h.audio.as_ref().unwrap().status().unwrap()
+    }
+
+    let _native = native_fixture();
+    let files = Files::new();
+    let mut h = ResidentHarness::with_plugins(
+        host(),
+        Some(EffectPresentation {
+            input_frames: 0,
+            output_frames: 512,
+        }),
+    );
+    assert!(h.next().error.is_none());
+    let (applied, _) = h.applied(0);
+    assert!(
+        h.run(Request::Import(files.wav(48_000, 8192)))
+            .error
+            .is_none()
+    );
+    let (applied, _) = h.applied(applied);
+    let original = h
+        .run(Request::Edit(Command::SetLoopRegion {
+            start: 0,
+            end: 8192,
+            enabled: true,
+        }))
+        .state;
+    h.applied(applied);
+    let predecessor = status(&h).recording_source().unwrap();
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    assert_eq!(h.render(), [[0.25; 2]; 64]);
+
+    let (submitted, resume) = h.probe_next_submitted_device_insert();
+    let input = request(&original, PluginEffectDestination::Main);
+    h.run(Request::InsertPluginEffect(input.clone()));
+    let mut first = None;
+    wait(|| {
+        first = submitted.try_recv().ok();
+        if first.is_some() {
+            return true;
+        }
+        if let Ok(event) = h.service.try_event() {
+            panic!(
+                "hosted insert completed before graph admission: {:?}",
+                event.error
+            );
+        }
+        h.pump();
+        h.render();
+        false
+    });
+    let first = first.unwrap();
+    let binding = h.plugin_progress.lock().unwrap().binding.unwrap();
+    h.render();
+    resume.send(()).unwrap();
+    let offer = loop {
+        let offered = h.next();
+        assert!(offered.error.is_none(), "{:?}", offered.error);
+        assert_eq!(offered.state.project, original.project);
+        assert!(offered.device_insert_complete.is_none());
+        if let Some(offer) = offered.device_insert_confirmation {
+            break offer;
+        }
+    };
+    assert_eq!(offer.submission(), first);
+    assert_eq!(status(&h).recording_source(), Some(predecessor));
+    // Measure away from the source's own loop-edge fade, after a full pass
+    // so the Arrangement and performance clocks are demonstrably different.
+    let away_from_loop_edge = |h: &ResidentHarness| {
+        status(h).performance_frame.load(Acquire) >= 8192
+            && (512..7168).contains(&status(h).position.load(Acquire))
+    };
+    for _ in 0..256 {
+        if away_from_loop_edge(&h) {
+            break;
+        }
+        h.render();
+    }
+    assert!(away_from_loop_edge(&h));
+    assert_eq!(h.render(), [[0.25; 2]; 64]);
+
+    let (submitted, resume) = h.probe_next_submitted_device_insert();
+    assert!(offer.proceed());
+    let confirmed = submitted.recv_timeout(Duration::from_secs(2)).unwrap();
+    assert_eq!(confirmed.context, first.context);
+    assert_eq!(confirmed.output_identity, predecessor.output_identity);
+    assert_ne!(confirmed.audio_revision, first.audio_revision);
+    resume.send(()).unwrap();
+    let position = status(&h).position.load(Acquire);
+    let performance = status(&h).performance_frame.load(Acquire);
+    let faded = h.render_plugin_block();
+    assert_eq!(faded[0], [0.25 * 127.0 / 128.0; 2]);
+    assert!(faded[127..].iter().all(|frame| *frame == [0.0; 2]));
+    assert_eq!(status(&h).recording_source(), Some(predecessor));
+    assert_eq!(
+        status(&h).performance_frame.load(Acquire),
+        performance + 128
+    );
+    assert_eq!(status(&h).position.load(Acquire), (position + 128) % 8192);
+
+    let first_block = h.render_plugin_block();
+    let installed = h.next();
+    assert!(installed.error.is_none(), "{:?}", installed.error);
+    assert_eq!(
+        installed.device_insert_complete.unwrap().submission,
+        confirmed
+    );
+    assert_eq!(
+        installed.device_insert_complete.unwrap().outcome,
+        DeviceInsertOutcome::Installed
+    );
+    assert!(installed.plugin_effect_complete[0].accepted);
+    assert!(Arc::ptr_eq(
+        &installed.plugin_effect_complete[0].control,
+        &input.control
+    ));
+    assert_eq!(installed.state.revision, original.revision + 1);
+    let device = installed.state.project.main_devices()[0].id().value();
+    assert_eq!(status(&h).position.load(Acquire), (position + 384) % 8192);
+    assert_eq!(
+        status(&h).performance_frame.load(Acquire),
+        performance + 384
+    );
+    assert!(status(&h).playing.load(Acquire));
+    wait(|| {
+        h.plugin_progress
+            .lock()
+            .unwrap()
+            .source_bindings
+            .iter()
+            .flatten()
+            .any(|&(id, active, _)| id == device && active == binding)
+    });
+    assert_eq!(h.plugin_records.load(Acquire), 1);
+    assert_eq!(first_block, [[0.0; 2]; 256]);
+    wait(|| h.plugin_completed.load(Acquire) >= 1);
+    assert_eq!(h.render_plugin_block(), [[0.0; 2]; 256]);
+    wait(|| h.plugin_completed.load(Acquire) >= 2);
+    assert_eq!(h.render_plugin_block(), [[0.125; 2]; 256]);
 }

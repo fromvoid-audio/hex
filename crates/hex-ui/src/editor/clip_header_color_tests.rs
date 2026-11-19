@@ -131,6 +131,19 @@ fn fixture_with_environment(cx: &mut TestAppContext, environment: Arc<Environmen
 fn selector(prefix: &str, clip: ClipId) -> &'static str {
     Box::leak(format!("{prefix}-{}", clip.value()).into_boxed_str())
 }
+fn assert_header_geometry(visual: &mut VisualTestContext, clip: ClipId) {
+    let header = selector("clip-name", clip);
+    let bounds = visual.debug_bounds(header).unwrap();
+    assert_eq!(bounds.size.height, gpui::px(14.0));
+    let (_, widths, _) = visual.rendered_border(header).unwrap();
+    let scale = visual.update(|window, _| window.scale_factor());
+    assert_eq!(f64::from(widths.bottom), f64::from(scale));
+    let label = visual
+        .debug_bounds(selector("clip-name-label", clip))
+        .unwrap();
+    assert_eq!(label.size.height, gpui::px(14.0));
+    assert!((f32::from(label.center().y - bounds.center().y) + 0.5).abs() <= 0.5);
+}
 fn click(v: &mut VisualTestContext, clip: ClipId, modifiers: Modifiers) {
     let p = v
         .debug_bounds(selector("clip-name", clip))
@@ -171,6 +184,9 @@ fn clip_titles_paint_inherited_flavor_colors_through_selection_and_recolor(
     visual.run_until_parked();
     let bounds =
         [f.audio, f.midi].map(|id| visual.debug_bounds(selector("clip-name", id)).unwrap());
+    for clip in [f.audio, f.midi] {
+        assert_header_geometry(&mut visual, clip);
+    }
     let original_audio = f.editor.read_with(&visual, |v, _| {
         v.state
             .as_ref()
@@ -235,7 +251,7 @@ fn clip_titles_paint_inherited_flavor_colors_through_selection_and_recolor(
                 let actual = visual
                     .rendered_background(header)
                     .expect("actual completed title quad");
-                let expected = theme::clip_fill(color, flavor, select);
+                let expected = theme::clip_fill(color, flavor, false);
                 assert_eq!(
                     actual,
                     gpui::Background::from(gpui::rgb(expected)),
@@ -248,9 +264,24 @@ fn clip_titles_paint_inherited_flavor_colors_through_selection_and_recolor(
                 );
                 assert_eq!(
                     visual.rendered_background(selector(prefix, clip)).unwrap(),
-                    gpui::Background::from(gpui::rgb(expected)),
-                    "actual audio/MIDI body and title consume the same shared fill"
+                    gpui::Background::from(gpui::rgb(theme::arrangement_clip_body_fill(
+                        expected, select
+                    ))),
+                    "actual audio/MIDI body retains its selection fill"
                 );
+                let (divider_color, divider_widths, _) = visual.rendered_border(header).unwrap();
+                assert!(divider_widths.bottom > gpui::ScaledPixels::default());
+                assert!(
+                    divider_widths.bottom
+                        <= gpui::ScaledPixels::from(
+                            visual.update(|window, _| window.scale_factor())
+                        )
+                );
+                assert_eq!(divider_widths.top, gpui::ScaledPixels::default());
+                assert_eq!(divider_widths.left, gpui::ScaledPixels::default());
+                assert_eq!(divider_widths.right, gpui::ScaledPixels::default());
+                let ink = theme::readable_text(expected, theme::color(theme::PaletteRole::Text));
+                assert_eq!(divider_color, gpui::rgba((ink << 8) | 0x70).into());
                 assert_eq!(
                     visual.debug_bounds(header).unwrap(),
                     bounds[i],
@@ -290,6 +321,53 @@ fn clip_titles_paint_inherited_flavor_colors_through_selection_and_recolor(
     visual.simulate_input("title draft");
     visual.simulate_keystrokes("escape");
     visual.run_until_parked();
+    // The compact row still has a stable 14px name strip and a separately
+    // selected container surface; both members retain the same policy.
+    visual.simulate_keystrokes("h");
+    visual.run_until_parked();
+    for selected in [true, false] {
+        if selected {
+            click(&mut visual, f.audio, Modifiers::default());
+            click(
+                &mut visual,
+                f.midi,
+                Modifiers {
+                    platform: true,
+                    ..Modifiers::default()
+                },
+            );
+        } else {
+            f.editor.update(&mut visual, |v, cx| {
+                v.selected_clip = None;
+                v.reconcile_clip_selection();
+                cx.notify();
+            });
+        }
+        visual.run_until_parked();
+        for (clip, flavor, prefix) in [
+            (f.audio, ClipFlavor::Muted, "clip-visual"),
+            (f.midi, ClipFlavor::Accent, "midi-clip-visual"),
+        ] {
+            let header = theme::clip_fill(ElementColor::Rose, flavor, false);
+            let body = theme::arrangement_clip_body_fill(header, selected);
+            let outer = visual.debug_bounds(selector(prefix, clip)).unwrap();
+            assert!(f32::from(outer.size.height) <= super::super::track_layout::HEADER_ONLY_HEIGHT);
+            assert_eq!(
+                visual.rendered_background(selector("clip-name", clip)),
+                Some(gpui::rgb(header).into())
+            );
+            assert_eq!(
+                visual.rendered_background(selector(prefix, clip)),
+                Some(gpui::rgb(body).into())
+            );
+            if selected {
+                assert_ne!(
+                    body, header,
+                    "compact selection visibly lifts the container"
+                );
+            }
+        }
+    }
     f.editor.read_with(&visual, |v, _| {
         assert!(v.clip_name_edit.is_none());
         let project = &v.state.as_ref().unwrap().project;
@@ -345,18 +423,47 @@ fn console_audio_midi_flavors_follow_shared_fill_and_history_without_geometry_ch
                 hex_project::SessionCellContent::Stop => panic!("copied clip cell"),
             }
         });
-        cells.push((scene, clip));
+        cells.push((scene, clip, audio));
     }
     f.editor.update(&mut visual, |v, cx| {
         v.mode = super::super::EditorMode::Session;
         cx.notify();
     });
     visual.run_until_parked();
-    for (scene, clip) in cells {
+    for (scene, clip, audio) in cells {
         let cell = Box::leak(
             format!("console-cell-{}-{}", f.track.value(), scene.value()).into_boxed_str(),
         );
         let bounds = visual.debug_bounds(cell).unwrap();
+        let surface = selector("console-clip", clip);
+        let painted = visual.debug_bounds(surface).unwrap();
+        assert_eq!(bounds.size.height, gpui::px(31.0));
+        assert_eq!(painted.size.height, gpui::px(26.0));
+        assert!(painted.left() > bounds.left() && painted.right() < bounds.right());
+        super::super::clip_boundary::tests::assert_open_upper_right(
+            &mut visual,
+            surface,
+            selector("console-clip-trailing", clip),
+            None,
+        );
+        let label = visual
+            .debug_bounds(selector("clip-name-label", clip))
+            .unwrap();
+        let launch = Box::leak(
+            format!(
+                "launch-{}-{}-{}",
+                if audio { "audio" } else { "midi" },
+                f.track.value(),
+                scene.value(),
+            )
+            .into_boxed_str(),
+        );
+        let launch = visual.debug_bounds(launch).unwrap();
+        assert_eq!(launch.size, gpui::size(gpui::px(19.0), gpui::px(19.0)));
+        assert!(launch.left() >= painted.left() && launch.right() < label.left());
+        assert!(launch.top() >= painted.top() && launch.bottom() <= painted.bottom());
+        assert_eq!(label.size.height, gpui::px(14.0));
+        assert!((f32::from(label.center().y - bounds.center().y)).abs() <= 0.5);
         for hue in [ElementColor::Cyan, ElementColor::Rose] {
             f.editor.update(&mut visual, |v, _| {
                 assert!(v.enqueue(Request::Edit(Command::SetTrackColor {
@@ -380,7 +487,7 @@ fn console_audio_midi_flavors_follow_shared_fill_and_history_without_geometry_ch
                     });
                     visual.run_until_parked();
                     assert_eq!(
-                        visual.rendered_background(cell).unwrap(),
+                        visual.rendered_background(surface).unwrap(),
                         gpui::Background::from(gpui::rgb(theme::clip_fill(hue, flavor, selected)))
                     );
                     assert_eq!(visual.debug_bounds(cell).unwrap(), bounds);
@@ -411,7 +518,7 @@ fn console_audio_midi_flavors_follow_shared_fill_and_history_without_geometry_ch
                     v.selected_cell == Some((f.track, scene))
                 });
                 assert_eq!(
-                    visual.rendered_background(cell).unwrap(),
+                    visual.rendered_background(surface).unwrap(),
                     gpui::Background::from(gpui::rgb(theme::clip_fill(
                         hue,
                         flavor.toggled(),
@@ -419,6 +526,57 @@ fn console_audio_midi_flavors_follow_shared_fill_and_history_without_geometry_ch
                     )))
                 );
             }
+        }
+        f.editor.update(&mut visual, |v, _| {
+            assert!(v.enqueue(Request::Edit(Command::SetClipActive {
+                clip,
+                active: false
+            })));
+        });
+        pump(&f.editor, &mut visual);
+        let inactive_fill = f.editor.read_with(&visual, |v, _| {
+            let project = &v.state.as_ref().unwrap().project;
+            theme::clip_activity_fill(
+                project.track(f.track).unwrap().color(),
+                project.clip_flavor(clip).unwrap(),
+                v.selected_cell == Some((f.track, scene)),
+                false,
+            )
+        });
+        assert_eq!(
+            visual.rendered_background(surface),
+            Some(gpui::rgb(inactive_fill).into())
+        );
+        for command in [
+            Command::ClearSessionCell {
+                track: f.track,
+                scene,
+            },
+            Command::SetSessionStopCell {
+                track: f.track,
+                scene,
+            },
+        ] {
+            f.editor.update(&mut visual, |v, _| {
+                assert!(v.enqueue(Request::Edit(command)))
+            });
+            pump(&f.editor, &mut visual);
+            assert!(
+                visual.debug_bounds(surface).is_none(),
+                "empty/stop cells have no colored clip"
+            );
+            let role = f.editor.read_with(&visual, |v, _| {
+                if v.selected_cell == Some((f.track, scene)) {
+                    theme::PaletteRole::Raised
+                } else {
+                    theme::PaletteRole::Background
+                }
+            });
+            assert_eq!(
+                visual.rendered_background(cell),
+                Some(gpui::rgb(theme::color(role)).into())
+            );
+            assert_eq!(visual.debug_bounds(cell).unwrap(), bounds);
         }
     }
 }
@@ -435,7 +593,23 @@ fn disabled_audio_and_midi_clips_paint_neutral_bodies_and_titles_and_restore_col
         cx.notify();
     });
     visual.run_until_parked();
+    f.editor.update(&mut visual, |view, _| {
+        assert!(view.enqueue(Request::Edit(Command::AddMidiNote {
+            clip: f.midi,
+            start: BeatTime::ZERO,
+            duration: BeatTime::ONE,
+            pitch: 60,
+            channel: 0,
+            velocity: 100,
+        })));
+    });
+    pump(&f.editor, &mut visual);
     for active in [false, true] {
+        f.editor.update(&mut visual, |view, _| {
+            view.waveform_geometry_cache
+                .borrow_mut()
+                .clear_paint_samples();
+        });
         for clip in [f.audio, f.midi] {
             f.editor.update(&mut visual, |view, _| {
                 assert!(view.enqueue(Request::Edit(Command::SetClipActive { clip, active })));
@@ -461,6 +635,58 @@ fn disabled_audio_and_midi_clips_paint_neutral_bodies_and_titles_and_restore_col
                 visual.rendered_background(selector("clip-name", clip)),
                 Some(expected)
             );
+        }
+        let notes = visual.rendered_filled_quads(selector("clip-notes", f.midi));
+        let black: gpui::Background = gpui::rgb(0).into();
+        let expected_note = if active { black } else { black.opacity(0.28) };
+        assert!(
+            notes.iter().any(|(_, color)| *color == expected_note),
+            "MIDI note paint must reflect activation: {notes:?}",
+        );
+        if !active {
+            assert!(notes.iter().all(|(_, color)| *color != black));
+            let ink = f.editor.read_with(&visual, |view, _| {
+                view.waveform_geometry_cache
+                    .borrow()
+                    .painted_waveforms()
+                    .back()
+                    .expect("the muted clip still paints a waveform")
+                    .colors
+                    .waveform
+            });
+            let fill =
+                theme::clip_activity_fill(ElementColor::Cyan, ClipFlavor::Muted, false, false);
+            assert_eq!(ink >> 16, ink & 0xff);
+            assert_eq!(ink >> 16, (ink >> 8) & 0xff);
+            assert!(theme::contrast_ratio(ink, fill) < 3.0);
+            for (clip, prefix) in [(f.audio, "clip-visual"), (f.midi, "midi-clip-visual")] {
+                click(&mut visual, clip, Modifiers::default());
+                let surface = selector(prefix, clip);
+                assert_eq!(
+                    visual.rendered_background(surface),
+                    Some(
+                        gpui::rgb(theme::arrangement_clip_activity_body_fill(
+                            fill, true, false
+                        ))
+                        .into()
+                    )
+                );
+                let outline = visual.rendered_border(surface).unwrap().0;
+                assert_eq!(outline.s, 0.0, "muted selection remains neutral");
+                assert_eq!(
+                    outline,
+                    gpui::Hsla::from(gpui::rgb(theme::clip_activity_outline(
+                        false,
+                        theme::PaletteRole::Primary
+                    )))
+                );
+            }
+            f.editor.update(&mut visual, |view, cx| {
+                view.selected_clip = None;
+                view.reconcile_clip_selection();
+                cx.notify();
+            });
+            visual.run_until_parked();
         }
     }
 }

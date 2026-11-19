@@ -47,12 +47,14 @@ mod live_notes;
 mod live_runtime;
 pub(crate) mod ordered_keys;
 mod source_input;
+pub(crate) use live_notes::LiveNoteBatch;
 pub use live_notes::{LiveNoteActivation, LiveNoteEvent, LiveNoteInput, LiveNotePublishError};
 pub use ordered_keys::MidiKeyActivation;
 /// Full exact-velocity hardware banks are prepared only for opted-in roots.
 pub const MAX_LIVE_KEYBOARD_STORAGE_BYTES: usize = 9 * 1024 * 1024;
-mod note_audition;
+pub(crate) mod note_audition;
 pub use activation::KeyboardActivationClock;
+use note_audition::{AuditionGate, AuditionRequest};
 pub use note_audition::{MAX_NOTE_AUDITION_GATE_FRAMES, MAX_NOTE_AUDITION_NOTES};
 
 /// One transient input root with terminal lifecycle cancellation. An ordinary output-bound
@@ -69,6 +71,9 @@ pub struct ComputerKeyboardInput {
     sequence: AtomicU64,
     audition: Option<note_audition::NoteAudition>,
     live_notes: Option<LiveNoteInput>,
+    live_audition: Option<note_audition::LiveAudition>,
+    audition_started: AtomicU64,
+    audition_finished: AtomicU64,
     live_output_epoch: AtomicU64,
     pub(crate) ordered_keys: Option<Box<ordered_keys::OrderedKeys>>,
 }
@@ -83,6 +88,9 @@ impl Default for ComputerKeyboardInput {
             sequence: AtomicU64::new(0),
             audition: None,
             live_notes: None,
+            live_audition: None,
+            audition_started: AtomicU64::new(0),
+            audition_finished: AtomicU64::new(0),
             live_output_epoch: AtomicU64::new(0),
             ordered_keys: None,
         }
@@ -107,6 +115,7 @@ impl ComputerKeyboardInput {
             Release,
         );
         self.live_notes = Some(LiveNoteInput::default());
+        self.live_audition = Some(note_audition::LiveAudition::default());
         Ok(self)
     }
     /// Reconnect one hardware activation on control, retaining physical voices.
@@ -194,6 +203,9 @@ impl ComputerKeyboardInput {
             Some(_) => return Err(Invalid("computer keyboard note is out of range")),
         };
         let after = self.begin_write()?;
+        if word != 0 {
+            self.cancel_live_note_audition_on_control();
+        }
         let before = slot.swap(word, std::sync::atomic::Ordering::SeqCst);
         if let Some(queue) = &self.ordered_keys {
             queue.publish_change(key, before, word);
@@ -246,6 +258,7 @@ impl SupportedNotes {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum VoiceSource {
     Physical,
+    Audition,
     Hardware { channel: u8, pitch: u8 },
 }
 #[derive(Clone, Copy)]
@@ -258,6 +271,8 @@ struct Voice {
     age: u64,
     gate: Option<u64>,
     id: u64,
+    // Input-local proof only; source custody must be checked before replay.
+    muted_source_onset: bool,
 }
 
 pub(crate) enum KeyboardClock<'a> {
@@ -332,8 +347,8 @@ mod current_sampler;
 
 /// Native CURRENT has no UI input owner. Its copied desired words arrive only
 /// through the already-rooted output mailbox; ordinary playback keeps its lease.
-enum NoteSnapshot {
-    Active(u64, [u64; COMPUTER_KEY_COUNT]),
+pub(crate) enum NoteSnapshot {
+    Active(u64, [u64; COMPUTER_KEY_COUNT], Option<AuditionRequest>),
     Inactive,
     Deferred(u64),
 }
@@ -385,7 +400,7 @@ impl KeyboardInput {
                 if *cancelled {
                     NoteSnapshot::Inactive
                 } else {
-                    NoteSnapshot::Active(0, *words)
+                    NoteSnapshot::Active(0, *words, None)
                 }
             }
         }
@@ -418,8 +433,8 @@ pub(crate) struct ComputerKeyboardRuntime {
     scratch_next_id: u64,
     age: u64,
     scratch_age: u64,
-    audition_start: Option<u64>,
-    scratch_audition_start: Option<u64>,
+    audition_gate: AuditionGate,
+    scratch_audition_gate: AuditionGate,
     monitor_anchor: Option<(u64, u64, u32)>,
     scratch_monitor_anchor: Option<(u64, u64, u32)>,
     boundary: bool,
@@ -726,8 +741,8 @@ impl ComputerKeyboardRuntime {
             scratch_next_id: 0,
             age: 0,
             scratch_age: 0,
-            audition_start: None,
-            scratch_audition_start: None,
+            audition_gate: AuditionGate::default(),
+            scratch_audition_gate: AuditionGate::default(),
             monitor_anchor: None,
             scratch_monitor_anchor: None,
             boundary: false,
@@ -1119,8 +1134,8 @@ impl ComputerKeyboardRuntime {
         self.scratch_next_id = previous.next_id;
         self.age = previous.age;
         self.scratch_age = previous.age;
-        self.audition_start = previous.audition_start;
-        self.scratch_audition_start = previous.audition_start;
+        self.audition_gate = previous.audition_gate;
+        self.scratch_audition_gate = previous.audition_gate;
         self.monitor_anchor = previous.monitor_anchor;
         self.scratch_monitor_anchor = previous.monitor_anchor;
         self.boundary = previous.boundary;
@@ -1185,8 +1200,8 @@ impl ComputerKeyboardRuntime {
         self.scratch_next_id = self.next_id;
         self.age = 0;
         self.scratch_age = 0;
-        self.audition_start = None;
-        self.scratch_audition_start = None;
+        self.audition_gate = AuditionGate::default();
+        self.scratch_audition_gate = AuditionGate::default();
         self.monitor_anchor = None;
         self.scratch_monitor_anchor = None;
         if let Some(runtime) = &mut self.mutable {
@@ -1234,12 +1249,14 @@ impl ComputerKeyboardRuntime {
         };
         let deferred = matches!(&snapshot, NoteSnapshot::Deferred(_));
         match snapshot {
-            NoteSnapshot::Active(epoch, words) => {
+            NoteSnapshot::Active(epoch, words, audition) => {
                 if self.activation_epoch != Some(epoch) {
                     self.reset_voices();
                 }
                 self.activation_epoch = Some(epoch);
                 self.desired = words;
+                self.audition_gate
+                    .observe(audition, self.input.lease().map(Arc::as_ref));
                 if let Some(baseline) = self
                     .input
                     .lease()
@@ -1265,76 +1282,65 @@ impl ComputerKeyboardRuntime {
                 }
             }
         }
-        if let Some(capture) = &mut self.capture {
-            if capture
+        if let Some(capture) = &mut self.capture
+            && capture
                 .key_batch
                 .as_ref()
                 .is_some_and(|batch| Some(batch.output_epoch) != self.activation_epoch)
-            {
-                if !deferred {
-                    if let Some((queue, batch)) = self
-                        .input
-                        .lease()
-                        .and_then(|input| input.ordered_keys.as_ref())
-                        .zip(capture.key_batch.as_ref())
-                    {
-                        queue.fault(batch.activation);
-                    }
-                    if capture.active {
-                        capture.fail(crate::midi_capture::MidiCaptureFault::InputChanged);
-                    }
-                }
-                capture.key_batch = None;
-            }
-        }
-        if let Some(capture) = self.capture.as_mut().filter(|capture| capture.is_active()) {
-            if let Some(binding) = capture.binding {
-                let key_changed = self
+        {
+            if !deferred {
+                if let Some((queue, batch)) = self
                     .input
                     .lease()
                     .and_then(|input| input.ordered_keys.as_ref())
-                    .is_none_or(|queue| !queue.active(binding.keys))
-                    || capture
-                        .key_batch
-                        .as_ref()
-                        .is_some_and(|batch| batch.activation != binding.keys);
-                let hardware_changed = match binding.hardware {
-                    Some(token) => self
-                        .live_batch
-                        .as_ref()
-                        .is_none_or(|batch| batch.activation != token),
-                    None => self.live_batch.is_some(),
-                };
-                if key_changed || hardware_changed {
-                    let overflow = self.input.lease().is_some_and(|input| {
-                        !input.is_cancelled()
-                            && (input.ordered_keys_faulted(binding.keys)
-                                || binding.hardware.is_some_and(|token| {
-                                    input
-                                        .live_notes()
-                                        .is_some_and(|live| live.activation_rejected(token))
-                                }))
-                    });
-                    capture.fail(if overflow {
-                        crate::midi_capture::MidiCaptureFault::Capacity
-                    } else {
-                        crate::midi_capture::MidiCaptureFault::InputChanged
-                    });
+                    .zip(capture.key_batch.as_ref())
+                {
+                    queue.fault(batch.activation);
+                }
+                if capture.active {
+                    capture.fail(crate::midi_capture::MidiCaptureFault::InputChanged);
                 }
             }
+            capture.key_batch = None;
         }
-        // Expiration is audio-owned and overrides even a control writer stalled
-        // inside an odd sequence. Deferral must never extend a one-shot gate.
-        // A fresh graph without inherited age also cannot replay a consumed bank.
-        if self
-            .input
-            .lease()
-            .and_then(|input| input.audition.as_ref())
-            .is_some_and(|bank| {
-                bank.finished.load(Acquire)
-                    || (bank.started.load(Acquire) && self.audition_start.is_none())
-            })
+        if let Some(capture) = self.capture.as_mut().filter(|capture| capture.is_active())
+            && let Some(binding) = capture.binding
         {
+            let key_changed = self
+                .input
+                .lease()
+                .and_then(|input| input.ordered_keys.as_ref())
+                .is_none_or(|queue| !queue.active(binding.keys))
+                || capture
+                    .key_batch
+                    .as_ref()
+                    .is_some_and(|batch| batch.activation != binding.keys);
+            let hardware_changed = match binding.hardware {
+                Some(token) => self
+                    .live_batch
+                    .as_ref()
+                    .is_none_or(|batch| batch.activation != token),
+                None => self.live_batch.is_some(),
+            };
+            if key_changed || hardware_changed {
+                let overflow = self.input.lease().is_some_and(|input| {
+                    !input.is_cancelled()
+                        && (input.ordered_keys_faulted(binding.keys)
+                            || binding.hardware.is_some_and(|token| {
+                                input
+                                    .live_notes()
+                                    .is_some_and(|live| live.activation_rejected(token))
+                            }))
+                });
+                capture.fail(if overflow {
+                    crate::midi_capture::MidiCaptureFault::Capacity
+                } else {
+                    crate::midi_capture::MidiCaptureFault::InputChanged
+                });
+            }
+        }
+        // Deferred writes cannot keep a finite gate open.
+        if self.audition_gate.expired() {
             self.desired.fill(0);
         }
         self.scratch_live_activation = self.live_activation;
@@ -1342,7 +1348,7 @@ impl ComputerKeyboardRuntime {
         self.scratch = self.primary;
         self.scratch_next_id = self.next_id;
         self.scratch_age = self.age;
-        self.scratch_audition_start = self.audition_start;
+        self.scratch_audition_gate = self.audition_gate;
         self.scratch_monitor_anchor = self.monitor_anchor;
         self.boundary = true;
         if let Some(source) = &mut self.source_input {
@@ -1386,18 +1392,9 @@ impl ComputerKeyboardRuntime {
         self.primary = self.scratch;
         self.next_id = self.scratch_next_id;
         self.age = self.scratch_age;
-        self.audition_start = self.scratch_audition_start;
-        if let Some(bank) = self.input.lease().and_then(|input| input.audition.as_ref()) {
-            if let Some(start) = self.audition_start {
-                // Only successful audio transactions consume the trigger or gate.
-                bank.started.store(true, Release);
-                if self.age.saturating_sub(start) >= bank.gate_frames {
-                    bank.finished.store(true, Release);
-                }
-            } else if bank.started.load(Acquire) {
-                // A fresh, non-inherited runtime cannot replay a previously consumed bank.
-                bank.finished.store(true, Release);
-            }
+        self.audition_gate = self.scratch_audition_gate;
+        if let Some(input) = self.input.lease() {
+            self.audition_gate.commit(input);
         }
         self.monitor_anchor = self.scratch_monitor_anchor;
         if let Some(runtime) = &mut self.mutable {
@@ -1477,25 +1474,21 @@ impl ComputerKeyboardRuntime {
             events[len..len + 3].copy_from_slice(&expression.events());
             len += 3;
         }
-        if self.boundary
-            && self
+        if self.boundary {
+            let snapshot_physical = self
                 .capture
                 .as_ref()
-                .is_none_or(|capture| capture.key_batch.is_none())
-        {
-            if self
-                .input
-                .lease()
-                .is_some_and(|input| input.is_note_audition())
-                && self.desired.iter().any(|word| *word != 0)
-                && self.scratch_audition_start.is_none()
-            {
-                self.scratch_audition_start = Some(self.scratch_age);
-            }
+                .is_none_or(|capture| capture.key_batch.is_none());
+            let desired_source = if self.scratch_audition_gate.active() {
+                VoiceSource::Audition
+            } else {
+                VoiceSource::Physical
+            };
             for voice in self.scratch.iter_mut().flatten() {
-                if voice.source == VoiceSource::Physical
+                if (voice.source == VoiceSource::Audition
+                    || (snapshot_physical && voice.source == VoiceSource::Physical))
                     && voice.gate.is_none()
-                    && self.desired[voice.key] != voice.token
+                    && (voice.source != desired_source || self.desired[voice.key] != voice.token)
                 {
                     voice.gate = Some(voice.age);
                     events[len] = NativeInstrumentEvent::NoteOff {
@@ -1506,12 +1499,11 @@ impl ComputerKeyboardRuntime {
                 }
             }
             for (key, token) in self.desired.into_iter().enumerate() {
-                if token == 0
+                if !snapshot_physical
+                    || token == 0
                     || self.scratch_rejected_desired[key] == token
                     || self.scratch.iter().flatten().any(|voice| {
-                        voice.source == VoiceSource::Physical
-                            && voice.key == key
-                            && voice.token == token
+                        voice.source == desired_source && voice.key == key && voice.token == token
                     })
                 {
                     continue;
@@ -1519,8 +1511,15 @@ impl ComputerKeyboardRuntime {
                 let pitch = ((token & 255) as u8).saturating_sub(1);
                 let velocity = ((token >> 8) & 255) as u8;
                 let sampler = self.input.sampler_index(key, pitch, velocity)?;
+                let shared_audition = desired_source == VoiceSource::Audition
+                    && self
+                        .input
+                        .lease()
+                        .is_some_and(|input| input.live_notes.is_some());
                 if !self.supported[sampler] {
-                    self.input.reject();
+                    if !shared_audition {
+                        self.input.reject();
+                    }
                     continue;
                 }
                 let capacity = self.voice_capacity();
@@ -1529,6 +1528,10 @@ impl ComputerKeyboardRuntime {
                     NativeInstrumentRuntimePair::max_events_per_block,
                 );
                 if self.scratch.iter().flatten().count() >= capacity || len >= event_capacity {
+                    if shared_audition {
+                        self.scratch_audition_gate.finish();
+                        break;
+                    }
                     self.input.reject();
                     if self.source_input.is_some()
                         || self.input.lease().is_some_and(|input| {
@@ -1566,7 +1569,7 @@ impl ComputerKeyboardRuntime {
                     .checked_add(1)
                     .ok_or(Invalid("computer keyboard identity exhausted"))?;
                 *slot = Some(Voice {
-                    source: VoiceSource::Physical,
+                    source: desired_source,
                     inline_override: None,
                     key,
                     token,
@@ -1574,6 +1577,7 @@ impl ComputerKeyboardRuntime {
                     age: 0,
                     gate: None,
                     id: self.scratch_next_id,
+                    muted_source_onset: false,
                 });
                 events[len] = NativeInstrumentEvent::NoteOn {
                     frame_offset: 0,
@@ -1584,6 +1588,7 @@ impl ComputerKeyboardRuntime {
                 len += 1;
             }
         }
+        self.scratch_audition_gate.advance(output.len() as u64);
         self.boundary = false;
         if let Some(before) = before_voices {
             self.capture_voice_changes(&before, clock);
@@ -2593,7 +2598,7 @@ mod pitch_domain_tests {
 
 #[cfg(test)]
 #[path = "computer_keyboard_clock_admission_tests.rs"]
-mod clock_admission_tests;
+pub(crate) mod clock_admission_tests;
 
 #[cfg(test)]
 #[path = "computer_keyboard/tuning_tests.rs"]

@@ -210,7 +210,12 @@ fn delivered_fixture(cx: &mut TestAppContext, release: bool) -> DeliveredFixture
         }
     });
     if release {
-        backend.render_direct(&mut frames, &mut host).unwrap();
+        // Finished follows the complete 5 ms rejoin, rather than the first
+        // callback after release. Deliver that terminal before testing custody.
+        let release_frames = 48_000_usize.div_ceil(200);
+        for _ in 0..release_frames.div_ceil(frames.len()) {
+            backend.render_direct(&mut frames, &mut host).unwrap();
+        }
     }
     DeliveredFixture {
         visual,
@@ -945,6 +950,27 @@ fn explicit_discard_can_release_unresolved_capture_receipts_without_committing(
                 .spans()
                 .is_empty()
         );
+    });
+}
+
+#[gpui::test]
+fn os_quit_during_active_gain_recording_is_cancelled_with_the_error(cx: &mut TestAppContext) {
+    let (mut visual, editor, _, _) = draft_window(cx);
+    visual.update(|_, cx| super::super::close::install_quit_gate(cx));
+    editor.update(&mut visual, |view, _| {
+        view.gain_recorder.mode = Mode::Touching
+    });
+    assert!(visual.simulate_should_quit());
+    visual.run_until_parked();
+    assert!(!visual.has_pending_prompt());
+    assert!(!visual.quit_request_pending());
+    assert_eq!(visual.quit_replies(), [false]);
+    editor.update(&mut visual, |view, _| {
+        assert_eq!(
+            view.error.as_deref(),
+            Some("finish pending work or recover the automation take before closing")
+        );
+        view.gain_recorder.mode = Mode::Idle;
     });
 }
 

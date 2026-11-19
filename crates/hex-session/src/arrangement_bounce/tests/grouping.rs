@@ -56,6 +56,7 @@ fn audio_fixture(rate: u32) -> (Folder, Session, TrackId, ClipId, ClipId, Vec<Pa
             source_audio: audio.clone(),
             waveform: waveform::summarize(&audio, length).unwrap(),
             audio,
+            file_identity: None,
         };
         let (created, _) = s.import_prepared_revision(prepared, None).unwrap();
         let Created::Imported { track: t, clip, .. } = created else {
@@ -319,7 +320,7 @@ fn grouping_final_preparation_failure_removes_unpublished_render_and_preserves_c
             .map(Arc::new)
             .map_err(|e| e.to_string())
         },
-        |path, revision, item, tails, control| {
+        |path, revision, _, item, tails, control| {
             assert!(!tails);
             let report = hex_export::render_arrangement_bounce_new(
                 path,

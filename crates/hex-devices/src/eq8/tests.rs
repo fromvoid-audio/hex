@@ -113,7 +113,10 @@ fn each_filter_shape_has_finite_prepared_response_and_expected_gain_or_cut() {
 
 #[test]
 fn prepared_processor_is_fixed_bounded_zero_latency_and_rate_safe() {
-    const { assert!(EQ8_RUNTIME_BYTES <= 4_096) };
+    println!("fixed eq8 runtime bytes: {EQ8_RUNTIME_BYTES}");
+    // Fixed histories, one outgoing routing, 202 cached controls, canonical routing
+    // templates and one pending target fit in 24 KiB; factories quote actual size.
+    const { assert!(EQ8_RUNTIME_BYTES <= 24_576) };
     for rate in [8_000, 22_050, 44_100, 48_000, 96_000, 192_000] {
         let settings = decode(&EQ8_DEFINITION.default_state().unwrap()).unwrap();
         let prepared = PreparedEq8::new(settings, rate).unwrap();
@@ -312,7 +315,7 @@ fn channel_banks_are_independent_for_left_right_and_mid_side_modes() {
     }
 }
 
-fn patch_band(
+pub(super) fn patch_band(
     mut state: NativeDeviceState,
     bank: usize,
     band: usize,
@@ -640,7 +643,9 @@ fn changing_audition_selection_crossfades_through_normal_and_resets_history() {
 
 #[test]
 fn audition_history_crossfades_copies_and_partitions_with_live_coefficients() {
-    const { assert!(EQ8_RUNTIME_BYTES <= 4_096) };
+    // Fixed histories, one outgoing routing, 202 cached controls, canonical routing
+    // templates and one pending target fit in 24 KiB; factories quote actual size.
+    const { assert!(EQ8_RUNTIME_BYTES <= 24_576) };
     let mut old_state = EQ8_DEFINITION.default_state().unwrap();
     old_state = patch_band(old_state, 0, 1, 0, 450.0, 8.0);
     old_state = patch_band(old_state, 0, 5, 0, 3_200.0, -5.0);
@@ -719,7 +724,8 @@ fn audition_history_crossfades_copies_and_partitions_with_live_coefficients() {
 }
 
 #[test]
-fn parameter_retarget_accepts_filter_edits_but_requires_same_rate_mode_and_enabled_topology() {
+fn parameter_retarget_accepts_filter_edits_and_mode_crossfades_but_requires_same_rate_and_enabled_topology()
+ {
     let mut state = EQ8_DEFINITION.default_state().unwrap();
     state = EQ8_DEFINITION
         .patch_parameter(&state, parameter::enabled(0, 1), ParameterValue::Bool(true))
@@ -752,7 +758,8 @@ fn parameter_retarget_accepts_filter_edits_but_requires_same_rate_mode_and_enabl
     let mode_candidate = PreparedEq8::new(decode(&mode_changed).unwrap(), 48_000)
         .unwrap()
         .runtime();
-    assert!(!mode_candidate.can_retarget_parameters_from(&source));
+    // A mode change retargets through the ModeFade crossfade (Pulse #4106).
+    assert!(mode_candidate.can_retarget_parameters_from(&source));
 
     let enabled_changed = EQ8_DEFINITION
         .patch_parameter(
@@ -834,7 +841,9 @@ fn registered_runtime_chain_accepts_routing_change_and_resets_incompatible_lanes
     let mut next = chain_for(next_state);
     assert!(next.can_inherit_from(&old));
     next.inherit_from(&old);
-    assert!(next.committed_range_is_quiescent(0..1));
+    // The new lanes start empty, but the outgoing routing still crossfades
+    // out (Pulse #4106), so the entry is not quiescent until the fade ends.
+    assert!(!next.committed_range_is_quiescent(0..1));
     next.begin_block();
     let mut output = [[0.25, -0.1]; 32];
     next.process_block(&mut output).unwrap();

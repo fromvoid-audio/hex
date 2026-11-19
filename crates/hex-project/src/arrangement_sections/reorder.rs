@@ -401,6 +401,18 @@ pub(super) fn reorder_after(
     let preview = project.preview_section_reorder_after(section, after)?;
     reorder_preview(project, preview)
 }
+/// Control-side composition for a validated absolute append destination.
+pub(super) fn reorder_at(
+    project: &mut Project,
+    section: SectionId,
+    insertion: BeatTime,
+) -> Result<Created, Invalid> {
+    let source = project
+        .arrangement_section(section)
+        .ok_or(Invalid("arrangement section no longer exists"))?;
+    let preview = project.preview_section_reorder_at(source, insertion)?;
+    reorder_preview(project, preview)
+}
 fn reorder_preview(
     project: &mut Project,
     preview: SectionReorderPreview,
@@ -484,6 +496,10 @@ fn reorder_preview(
         track.content.midi_clips = midi;
         tracks.push(track);
     }
+    project.arrangement_locators =
+        crate::arrangement_locators::remap(project, &new_tempo, &mut next_id, |frame| {
+            Ok((Some(frame_permutation.map(frame)?), None))
+        })?;
     project.next_id = next_id;
     project.tracks = tracks;
     project.tempo_map = new_tempo;

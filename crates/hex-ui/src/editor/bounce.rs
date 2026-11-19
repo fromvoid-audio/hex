@@ -1,12 +1,13 @@
 //! Thin Arrangement bounce routing; rendering/adoption belong to the worker.
 //! Plain `b` bounces the selection to new tracks; `cmd-b` also deactivates the
 //! bounced sources in the same adoption edit, matching contextual `c`/`0`.
+//! Shift selects one mixed bounce for a time range with either shortcut.
 //! `b` held at the release of an Arrangement clip drag drops a bounce of the
 //! dragged clips at the drop position instead of moving them.
 use super::{EditorMode, EditorView, drag::ClipDrag, drag::DropPreview};
 use gpui::{KeyUpEvent, Window};
 use hex_project::{BounceAdoption, BounceDrop, BounceTarget, TrackId};
-use hex_session::service::{ExportControl, Request};
+use hex_session::service::{Event, ExportControl, Request};
 
 const DRAG_BOUNCE_HINT: &str = "b held · drop bounces the dragged clips · release b to move";
 
@@ -15,6 +16,16 @@ const DRAG_BOUNCE_HINT: &str = "b held · drop bounces the dragged clips · rele
 pub(super) struct PendingBounceDrop {
     drag: ClipDrag,
     control: ExportControl,
+    cursor_epoch: Option<u64>,
+}
+
+impl PendingBounceDrop {
+    pub(super) fn complete(self, event: &Event) -> Option<super::edit_cursor::DropCursor> {
+        let cursor =
+            super::pending_clip_move::committed_drop_cursor(&self.drag, self.cursor_epoch, event);
+        self.drag.retire();
+        cursor
+    }
 }
 
 impl EditorView {
@@ -46,9 +57,11 @@ impl EditorView {
         self.pending_bounce_drop
             .as_ref()
             .filter(|p| {
-                self.bounce_control
-                    .as_ref()
-                    .is_some_and(|active| active.same_job(&p.control))
+                p.drag.project_generation == self.project_generation
+                    && self
+                        .bounce_control
+                        .as_ref()
+                        .is_some_and(|active| active.same_job(&p.control))
             })
             .map(|p| &p.drag)
     }
@@ -86,6 +99,7 @@ impl EditorView {
             self.retire_active_clip_drag();
             return;
         }
+        self.cancel_held_clip_move_audition();
         // Input capture ends here; the bounce gate refuses while a drag is held.
         let Some(active) = self.active_clip_drag.take() else {
             return;
@@ -98,13 +112,19 @@ impl EditorView {
                 self.pending_bounce_drop = Some(PendingBounceDrop {
                     drag: active,
                     control,
+                    cursor_epoch: self.selection_intent_epoch,
                 });
             }
             None => active.retire(),
         }
     }
 
-    pub(super) fn bounce_arrangement_selection(&mut self, window: &Window, mute_sources: bool) {
+    pub(super) fn bounce_arrangement_selection(
+        &mut self,
+        window: &Window,
+        mute_sources: bool,
+        merged: bool,
+    ) {
         if self.mode != EditorMode::Arrangement
             || !self.focus.is_focused(window)
             || self.computer_keyboard.enabled
@@ -129,9 +149,16 @@ impl EditorView {
                     Some("bounce time selection no longer belongs to current tracks".into());
                 return;
             };
-            hex_project::BounceTarget::Range(range)
+            if merged {
+                BounceTarget::MergedRange(range)
+            } else {
+                BounceTarget::Range(range)
+            }
+        } else if merged {
+            self.error = Some("select an arrangement time range to bounce to one track".into());
+            return;
         } else {
-            hex_project::BounceTarget::Clips(self.selected_clip_ids())
+            BounceTarget::Clips(self.selected_clip_ids())
         };
         self.start_arrangement_bounce(
             target,
@@ -195,7 +222,11 @@ impl EditorView {
         let Some(state) = &self.state else {
             return;
         };
-        if let Err(reason) = state.project.plan_arrangement_bounce(&target, in_place) {
+        if let Err(reason) = state
+            .project
+            .validate_bounce_adoption(&target, in_place, adoption)
+            .and_then(|()| state.project.plan_arrangement_bounce(&target, in_place))
+        {
             self.error = Some(reason.to_string().into());
             return;
         }
@@ -221,12 +252,202 @@ impl EditorView {
         }
         false
     }
+
+    /// A refused or disconnected job has no terminal to release its UI.
+    pub(super) fn abandon_bounce(&mut self) -> bool {
+        let Some(control) = self.bounce_control.take() else {
+            return false;
+        };
+        control.cancel();
+        if let Some(drop) = self.pending_bounce_drop.take() {
+            drop.drag.retire();
+        }
+        true
+    }
 }
 
 #[cfg(all(test, feature = "ui-test-support"))]
 mod tests {
     use crate::editor::loop_selection_ui_test::{click, fixture_with_bounce_media, pump};
     use gpui::{Modifiers, MouseButton, TestAppContext, VisualTestContext};
+
+    #[gpui::test]
+    fn rendered_shift_b_bounces_a_multitrack_range_to_one_track(cx: &mut TestAppContext) {
+        let (handle, editor, _, _, _files) = fixture_with_bounce_media(cx, true);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        let (tracks, before) = editor.update(&mut visual, |view, cx| {
+            view.viewport = Some(crate::editor::viewport::Viewport {
+                start: 0,
+                length: 96_000,
+            });
+            view.snap_grid = crate::editor::musical_time::SnapGrid::Off;
+            cx.notify();
+            let project = &view.state.as_ref().unwrap().project;
+            let tracks = project
+                .tracks()
+                .iter()
+                .map(hex_project::Track::id)
+                .collect::<Vec<_>>();
+            (tracks, project.snapshot().tracks)
+        });
+        visual.run_until_parked();
+        let lane_id = |index: usize| -> &'static str {
+            Box::leak(format!("arrangement-lane-{}", tracks[index].value()).into_boxed_str())
+        };
+        let audio_id = lane_id(0);
+        let midi_id = lane_id(1);
+        for mute in [false, true] {
+            let midi = visual.debug_bounds(midi_id).unwrap();
+            let audio = visual.debug_bounds(audio_id).unwrap();
+            let from = gpui::point(midi.origin.x + midi.size.width * 0.3, midi.center().y);
+            let to = gpui::point(audio.origin.x + audio.size.width * 0.85, audio.center().y);
+            visual.simulate_mouse_down(from, MouseButton::Left, Modifiers::default());
+            visual.simulate_mouse_move(to, MouseButton::Left, Modifiers::default());
+            visual.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
+            visual.run_until_parked();
+            let range =
+                editor.read_with(&visual, |view, _| view.normalized_time_selection().unwrap());
+            assert_eq!(range.tracks(), tracks);
+            visual.simulate_keystrokes(if mute { "cmd-shift-b" } else { "shift-b" });
+            pump(&editor, &mut visual);
+            let after = editor.read_with(&visual, |view, _| {
+                assert!(view.error.is_none(), "{:?}", view.error);
+                let project = &view.state.as_ref().unwrap().project;
+                assert_eq!(project.tracks().len(), 3);
+                let [clip] = project.tracks()[2].clips() else {
+                    panic!("one bounced clip")
+                };
+                assert_eq!(
+                    (clip.start(), clip.duration()),
+                    (range.start(), range.duration())
+                );
+                assert_eq!(
+                    project.time_range_has_active_clips(&range).unwrap(),
+                    Some(!mute)
+                );
+                let snapshot = project.snapshot().tracks;
+                if !mute {
+                    assert_eq!(snapshot[..2], before);
+                }
+                snapshot
+            });
+            visual.simulate_keystrokes("cmd-z");
+            pump(&editor, &mut visual);
+            editor.read_with(&visual, |view, _| {
+                assert_eq!(
+                    view.state.as_ref().unwrap().project.snapshot().tracks,
+                    before
+                );
+            });
+            if mute {
+                visual.simulate_keystrokes("cmd-shift-z");
+                pump(&editor, &mut visual);
+                editor.read_with(&visual, |view, _| {
+                    assert_eq!(
+                        view.state.as_ref().unwrap().project.snapshot().tracks,
+                        after
+                    );
+                });
+            }
+        }
+    }
+
+    #[gpui::test]
+    fn rendered_b_bounces_a_group_range_without_touching_the_source_rows(cx: &mut TestAppContext) {
+        check_rendered_group_range(cx, false);
+    }
+
+    #[gpui::test]
+    fn rendered_cmd_b_commits_the_group_gate_and_bounce_in_one_undo(cx: &mut TestAppContext) {
+        check_rendered_group_range(cx, true);
+    }
+
+    fn check_rendered_group_range(cx: &mut TestAppContext, mute: bool) {
+        use hex_project::{Command, TrackSelectionIds};
+        use hex_session::service::Request;
+
+        let (handle, editor, _, _, _files) = fixture_with_bounce_media(cx, true);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        editor.update(&mut visual, |v, _| {
+            let tracks: Vec<_> = v
+                .state
+                .as_ref()
+                .unwrap()
+                .project
+                .tracks()
+                .iter()
+                .map(hex_project::Track::id)
+                .collect();
+            assert!(v.enqueue(Request::Edit(Command::GroupTracks {
+                tracks: TrackSelectionIds::new(&tracks).unwrap(),
+                name: "sources".into(),
+            })));
+        });
+        pump(&editor, &mut visual);
+        let (group, before) = editor.update(&mut visual, |v, cx| {
+            let project = &v.state.as_ref().unwrap().project;
+            let group = &project.tracks()[0];
+            assert!(group.is_group());
+            v.viewport = Some(crate::editor::viewport::Viewport {
+                start: 0,
+                length: 96_000,
+            });
+            v.snap_grid = crate::editor::musical_time::SnapGrid::Off;
+            cx.notify();
+            (group.id(), project.snapshot())
+        });
+        visual.run_until_parked();
+        let lane = visual
+            .debug_bounds(Box::leak(
+                format!("arrangement-lane-{}", group.value()).into_boxed_str(),
+            ))
+            .unwrap();
+        let from = gpui::point(lane.origin.x + lane.size.width * 0.4, lane.center().y);
+        let to = gpui::point(lane.origin.x + lane.size.width * 0.6, lane.center().y);
+        visual.simulate_mouse_down(from, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(to, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        let range = editor.read_with(&visual, |v, _| v.normalized_time_selection().unwrap());
+        assert_eq!(range.tracks(), &[group]);
+        assert!(range.start() < 48_000 && range.end() > 48_000);
+        visual.simulate_keystrokes(if mute { "cmd-b" } else { "b" });
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |v, _| {
+            assert!(v.error.is_none(), "{:?}", v.error);
+            let p = &v.state.as_ref().unwrap().project;
+            let mut tracks = p.snapshot().tracks;
+            let bounce = p.tracks().last().unwrap();
+            assert_eq!(bounce.parent_group(), None);
+            let clip = &bounce.clips()[0];
+            assert_eq!(
+                (clip.start(), clip.duration()),
+                (range.start(), range.duration())
+            );
+            tracks.pop();
+            if mute {
+                assert_eq!(
+                    tracks[0].group_output_mutes,
+                    vec![
+                        hex_project::GroupOutputMuteRange::new(range.start(), range.end()).unwrap()
+                    ]
+                );
+                tracks[0].group_output_mutes.clear();
+            }
+            assert_eq!(tracks, before.tracks);
+        });
+        if mute {
+            visual.simulate_keystrokes("cmd-z");
+            pump(&editor, &mut visual);
+            editor.read_with(&visual, |v, _| {
+                assert_eq!(
+                    v.state.as_ref().unwrap().project.snapshot().tracks,
+                    before.tracks
+                );
+            });
+        }
+    }
     #[gpui::test]
     fn rendered_b_bounces_and_cmd_b_also_mutes_sources_with_one_undo(cx: &mut TestAppContext) {
         let (handle, editor, audio, _, files) = fixture_with_bounce_media(cx, true);
@@ -337,6 +558,8 @@ mod tests {
             let preview = v.active_clip_drag.as_ref().unwrap().preview.get();
             preview.expect("lane preview").start_frame
         });
+        let x = visual.debug_bounds("clip-drop-preview").unwrap().left();
+        crate::editor::clip_drag_ui_test::assert_clip_move_guides(&mut visual, x);
         visual.simulate_mouse_up(release, MouseButton::Left, Modifiers::default());
         visual.run_until_parked();
         // Before the worker's terminal is received the frozen ghost still paints
@@ -348,6 +571,12 @@ mod tests {
             assert_eq!(p.snapshot().tracks, original.tracks);
         });
         assert!(visual.debug_bounds("clip-drop-preview").is_some());
+        let progress = visual
+            .debug_bounds("bounce-status-progress")
+            .expect("bounce shows progress before the terminal is received");
+        let status = visual.debug_bounds("editor-status-bar").unwrap();
+        assert!(progress.top() >= status.top() && progress.bottom() <= status.bottom());
+        crate::editor::clip_drag_ui_test::assert_clip_move_guides(&mut visual, x);
         assert!(
             visual
                 .debug_bounds(Box::leak(
@@ -360,6 +589,8 @@ mod tests {
         let dropped = editor.read_with(&visual, |v, _| {
             assert!(v.error.is_none(), "{:?}", v.error);
             assert!(v.pending_bounce_drop.is_none() && v.bounce_control.is_none());
+            let cursor = v.edit_cursor.expect("cursor at the adopted bounce");
+            assert_eq!((cursor.track, cursor.frame), (Some(target_track), start));
             let p = &v.state.as_ref().unwrap().project;
             assert_eq!(p.tracks().len(), original.tracks.len());
             let source = p.clip(audio).unwrap();
@@ -373,6 +604,8 @@ mod tests {
             p.snapshot()
         });
         assert!(visual.debug_bounds("clip-drop-preview").is_none());
+        assert!(visual.debug_bounds("bounce-status-progress").is_none());
+        assert!(visual.debug_bounds("clip-move-guide-line").is_none());
         visual.simulate_keystrokes("cmd-z");
         pump(&editor, &mut visual);
         editor.read_with(&visual, |v, _| {
@@ -467,8 +700,8 @@ mod tests {
             v.computer_keyboard.enabled = false;
             let track = v.state.as_ref().unwrap().project.tracks()[0].id();
             v.time_selection = Some(crate::editor::time_selection::TimeSelection {
-                anchor_track: track,
-                end_track: track,
+                anchor_track: Some(track),
+                end_track: Some(track),
                 anchor_frame: 36_007,
                 end_frame: 12_013,
             });
@@ -504,8 +737,8 @@ mod tests {
             assert!(p.tracks()[0].clips()[0].active());
             let track = p.tracks()[0].id();
             v.time_selection = Some(crate::editor::time_selection::TimeSelection {
-                anchor_track: track,
-                end_track: track,
+                anchor_track: Some(track),
+                end_track: Some(track),
                 anchor_frame: 12_013,
                 end_frame: 36_007,
             });
@@ -585,8 +818,8 @@ mod tests {
             assert_eq!(p.track(track).unwrap().clips().len(), 2);
             let original = p.snapshot();
             v.time_selection = Some(crate::editor::time_selection::TimeSelection {
-                anchor_track: track,
-                end_track: track,
+                anchor_track: Some(track),
+                end_track: Some(track),
                 anchor_frame: 12000,
                 end_frame: 24000,
             });
@@ -631,8 +864,8 @@ mod tests {
             // Header selection may clear a range. Keep a smaller range active
             // at dispatch to verify that the typed track intent never reads it.
             v.time_selection = Some(crate::editor::time_selection::TimeSelection {
-                anchor_track: track,
-                end_track: track,
+                anchor_track: Some(track),
+                end_track: Some(track),
                 anchor_frame: 12000,
                 end_frame: 24000,
             });

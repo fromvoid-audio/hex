@@ -1,4 +1,6 @@
 //! Control-worker rendering through one canonical linear Arrangement owner.
+#[cfg(test)]
+mod foreign_linear_tests;
 use super::*;
 use hex_engine::{Frame, OutputCapture, OutputCaptureId, OutputCapturePlan};
 use std::sync::atomic::{AtomicBool, AtomicU8};
@@ -189,10 +191,11 @@ pub fn control_storage_allowance(signal: Option<&ExportSignal>) -> Result<usize,
                 std::mem::size_of::<super::Stem>() + 4096 + std::mem::size_of::<OutputCaptureId>(),
             )
             .ok_or_else(overflow)?;
-        // One encoded PCM16 block reused for each stem; the full frame transaction is above.
+        // One encoded block (sized for the widest format) reused for each stem;
+        // the full frame transaction is above.
         bytes = bytes
             .checked_add(ordered)
-            .and_then(|bytes| bytes.checked_add(FRAMES_PER_BLOCK * 4))
+            .and_then(|bytes| bytes.checked_add(FRAMES_PER_BLOCK * super::format::MAX_FRAME_BYTES))
             .ok_or_else(overflow)?;
     }
     Ok(bytes)
@@ -257,7 +260,7 @@ pub fn controlled_frame_count(
     Ok(frames)
 }
 
-/// Render a selected half-open frame range to a new PCM16 WAV. Stateful history
+/// Render a selected half-open frame range to a new dithered PCM16 WAV. Stateful history
 /// is reconstructed from zero without Seek, in cancellable 256-frame blocks.
 /// Preroll has the existing bounded engine work ceiling; transport loop metadata
 /// is ignored by the canonical linear export owner. Source-loop restrictions
@@ -276,6 +279,7 @@ pub fn render_prepared_controlled(
         start,
         frames,
         signal,
+        ExportFormat::Pcm16,
         control,
         &Publication::CreateNew,
     )
@@ -288,13 +292,16 @@ pub fn render_prepared_controlled(
 /// reconstructed causally, then `frames + main latency` frames render and the
 /// first `main latency` output frames are discarded, so compensation consumes
 /// preroll rather than audio. Captured mixes and stems keep their causal
-/// pre-Main capture timing.
+/// pre-Main capture timing. `format` selects the WAV sample format of the file
+/// or of every stem file in a batch.
+#[allow(clippy::too_many_arguments)] // Range, scope, format, control and publication.
 pub fn render_prepared_with_policy(
     path: &Path,
     revision: Arc<PreparedRevision>,
     start: u64,
     frames: u64,
     signal: ExportSignal,
+    format: ExportFormat,
     control: &ExportControl,
     publication: &Publication,
 ) -> Result<ExportReport, ExportError> {
@@ -305,6 +312,7 @@ pub fn render_prepared_with_policy(
         start,
         frames,
         signal,
+        format,
         control,
         publication,
     )
@@ -329,6 +337,7 @@ pub fn render_prepared_controlled_with_device_resources(
         start,
         frames,
         signal,
+        ExportFormat::Pcm16,
         control,
         &Publication::CreateNew,
     )
@@ -343,6 +352,7 @@ pub fn render_prepared_with_device_resources_and_policy(
     start: u64,
     frames: u64,
     signal: ExportSignal,
+    format: ExportFormat,
     control: &ExportControl,
     publication: &Publication,
 ) -> Result<ExportReport, ExportError> {
@@ -353,6 +363,7 @@ pub fn render_prepared_with_device_resources_and_policy(
         start,
         frames,
         signal,
+        format,
         control,
         publication,
     )
@@ -366,6 +377,7 @@ fn render_prepared_using(
     start: u64,
     frames: u64,
     signal: ExportSignal,
+    format: ExportFormat,
     control: &ExportControl,
     publication: &Publication,
 ) -> Result<ExportReport, ExportError> {
@@ -376,6 +388,7 @@ fn render_prepared_using(
         start,
         frames,
         signal,
+        format,
         control,
         publication,
         None,
@@ -395,6 +408,7 @@ pub fn render_prepared_with_pages_and_policy(
     start: u64,
     frames: u64,
     signal: ExportSignal,
+    format: ExportFormat,
     control: &ExportControl,
     publication: &Publication,
     pages: &mut dyn PreparedExportPages,
@@ -406,10 +420,109 @@ pub fn render_prepared_with_pages_and_policy(
         start,
         frames,
         signal,
+        format,
         control,
         publication,
         Some(pages),
     )
+}
+
+/// Render linear Main through independently owned offline processors and,
+/// optionally, verified pages. Both owners finish before publication. Their
+/// custody remains with the caller and failures abort the staged export.
+#[allow(clippy::too_many_arguments)]
+pub fn render_linear_main_with_foreign(
+    path: &Path,
+    revision: Arc<PreparedRevision>,
+    resources: Option<&PreparedDeviceResources>,
+    start: u64,
+    frames: u64,
+    format: ExportFormat,
+    control: &ExportControl,
+    publication: &Publication,
+    pages: Option<&mut dyn PreparedExportPages>,
+    foreign: &mut dyn crate::ForeignBounceRenderer,
+) -> Result<ExportReport, ExportError> {
+    let block_frames = foreign.max_block_frames().min(FRAMES_PER_BLOCK);
+    if block_frames == 0 || frames == 0 {
+        return Err(ExportError::Invalid(
+            "invalid foreign export block or range",
+        ));
+    }
+    control.claim()?;
+    let sample_rate = revision.arrangement().sample_rate();
+    let latency = main_compensation(&revision, &ExportSignal::Main, frames);
+    let rendered_frames = compensated_frames(start, frames, latency)?;
+    publish_encoded(
+        path,
+        sample_rate,
+        start,
+        frames,
+        publication,
+        format,
+        || {
+            let mut inputs = crate::bounce::RenderInputs {
+                pages,
+                foreign: Some(foreign),
+            };
+            let playback = prepare_runtime_with_inputs(
+                revision,
+                resources,
+                start,
+                rendered_frames,
+                control,
+                foreign_linear_runtime,
+                || {},
+                &mut inputs,
+                block_frames,
+            )?;
+            let mut renderer = ForeignLinearRenderer {
+                playback,
+                inputs,
+                block_frames,
+                control: control.clone(),
+            };
+            discard_latency(&mut renderer, latency)?;
+            Ok(renderer)
+        },
+    )
+}
+
+fn foreign_linear_runtime(
+    revision: Arc<PreparedRevision>,
+    resources: Option<&PreparedDeviceResources>,
+    _frames: u64,
+) -> Result<SessionPlayback, hex_engine::SessionPlaybackError> {
+    SessionPlayback::new_linear_arrangement_export_with_foreign(revision, resources)
+}
+
+struct ForeignLinearRenderer<'p, 'pages, 'f> {
+    playback: SessionPlayback,
+    inputs: crate::bounce::RenderInputs<'p, 'pages, 'f>,
+    block_frames: usize,
+    control: ExportControl,
+}
+
+impl BlockRenderer for ForeignLinearRenderer<'_, '_, '_> {
+    fn render_block(&mut self, frames: &mut [Frame]) -> Result<(), ExportError> {
+        for chunk in frames.chunks_mut(self.block_frames) {
+            self.control.check()?;
+            self.inputs
+                .render(&mut self.playback, chunk, &self.control)?;
+            self.control.advance(chunk.len());
+        }
+        self.control.check()
+    }
+
+    fn before_publication(&mut self) -> Result<(), ExportError> {
+        if let Some(pages) = self.inputs.pages.as_deref_mut() {
+            pages.finish(&self.control)?;
+        }
+        if let Some(foreign) = self.inputs.foreign.as_deref_mut() {
+            foreign.finish(&self.control)?;
+        }
+        self.control.begin_publication()
+    }
 }
 
 #[allow(clippy::too_many_arguments)] // Same renderer; optional exact borrowed page preparation.
@@ -420,6 +533,7 @@ fn render_prepared_using_pages(
     start: u64,
     frames: u64,
     signal: ExportSignal,
+    format: ExportFormat,
     control: &ExportControl,
     publication: &Publication,
     mut pages: Option<&mut dyn PreparedExportPages>,
@@ -429,14 +543,14 @@ fn render_prepared_using_pages(
             return Err(ExportError::Invalid("stem batches require a new directory"));
         }
         return super::stems::render_stems_using_pages(
-            path, revision, resources, start, frames, stems, control, pages,
+            path, revision, resources, start, frames, stems, format, control, pages,
         );
     }
     control.claim()?;
     let sample_rate = revision.arrangement().sample_rate();
     let latency = main_compensation(&revision, &signal, frames);
     let rendered_frames = compensated_frames(start, frames, latency)?;
-    publish(path, sample_rate, start, frames, publication, || {
+    let prepare_renderer = || {
         let playback = prepare_runtime_with_pages(
             revision,
             resources,
@@ -477,7 +591,16 @@ fn render_prepared_using_pages(
         };
         discard_latency(&mut renderer, latency)?;
         Ok(renderer)
-    })
+    };
+    publish_encoded(
+        path,
+        sample_rate,
+        start,
+        frames,
+        publication,
+        format,
+        prepare_renderer,
+    )
 }
 
 /// Main latency to discard after causal preroll; captures keep causal timing.
@@ -510,6 +633,7 @@ pub fn render_control_sampler_with_policy(
     start: u64,
     frames: u64,
     signal: ExportSignal,
+    format: ExportFormat,
     control: &ExportControl,
     publication: &Publication,
 ) -> Result<ExportReport, ExportError> {
@@ -524,7 +648,7 @@ pub fn render_control_sampler_with_policy(
         .total
         .store(compensated_frames(0, frames, latency)?, Ordering::Release);
     let sample_rate = revision.arrangement().sample_rate();
-    publish(path, sample_rate, 0, frames, publication, || {
+    publish_encoded(path, sample_rate, 0, frames, publication, format, || {
         control.check()?;
         let mut playback = SessionPlayback::new_control_sampler_export(revision, &sources)
             .map_err(ExportError::SessionRender)?;
@@ -611,15 +735,44 @@ pub(super) fn prepare_bounce_runtime<'provider>(
     control: &ExportControl,
     pages: Option<&mut (dyn PreparedExportPages + 'provider)>,
 ) -> Result<SessionPlayback, ExportError> {
-    prepare_runtime_using_pages(
+    prepare_bounce_runtime_with_inputs(
         revision,
         resources,
         start,
         frames,
         control,
-        SessionPlayback::new_finite_arrangement_bounce,
+        &mut crate::bounce::RenderInputs {
+            pages,
+            foreign: None,
+        },
+        FRAMES_PER_BLOCK,
+    )
+}
+
+pub(super) fn prepare_bounce_runtime_with_inputs(
+    revision: Arc<PreparedRevision>,
+    resources: Option<&PreparedDeviceResources>,
+    start: u64,
+    frames: u64,
+    control: &ExportControl,
+    inputs: &mut crate::bounce::RenderInputs<'_, '_, '_>,
+    block_frames: usize,
+) -> Result<SessionPlayback, ExportError> {
+    let constructor: RuntimeConstructor = if inputs.foreign.is_some() {
+        SessionPlayback::new_finite_arrangement_bounce_with_foreign
+    } else {
+        SessionPlayback::new_finite_arrangement_bounce
+    };
+    prepare_runtime_with_inputs(
+        revision,
+        resources,
+        start,
+        frames,
+        control,
+        constructor,
         || {},
-        pages,
+        inputs,
+        block_frames,
     )
 }
 
@@ -659,11 +812,44 @@ fn prepare_runtime_using_pages<'provider>(
     frames: u64,
     control: &ExportControl,
     constructor: RuntimeConstructor,
+    after_block: impl FnMut(),
+    pages: Option<&mut (dyn PreparedExportPages + 'provider)>,
+) -> Result<SessionPlayback, ExportError> {
+    prepare_runtime_with_inputs(
+        revision,
+        resources,
+        start,
+        frames,
+        control,
+        constructor,
+        after_block,
+        &mut crate::bounce::RenderInputs {
+            pages,
+            foreign: None,
+        },
+        FRAMES_PER_BLOCK,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn prepare_runtime_with_inputs(
+    revision: Arc<PreparedRevision>,
+    resources: Option<&PreparedDeviceResources>,
+    start: u64,
+    frames: u64,
+    control: &ExportControl,
+    constructor: RuntimeConstructor,
     mut after_block: impl FnMut(),
-    mut pages: Option<&mut (dyn PreparedExportPages + 'provider)>,
+    inputs: &mut crate::bounce::RenderInputs<'_, '_, '_>,
+    block_frames: usize,
 ) -> Result<SessionPlayback, ExportError> {
     control.check()?;
-    let replay = start != 0 && revision.arrangement_seek_requires_preroll();
+    let replay = start != 0
+        && if inputs.foreign.is_some() {
+            revision.arrangement_bounce_requires_preroll()
+        } else {
+            revision.arrangement_seek_requires_preroll()
+        };
     if replay && start > hex_engine::MAX_ARRANGEMENT_PREROLL_FRAMES {
         return Err(ExportError::Invalid(
             "export preroll exceeds its frame budget",
@@ -691,18 +877,8 @@ fn prepare_runtime_using_pages<'provider>(
     let mut block = [[0.0; 2]; FRAMES_PER_BLOCK];
     while remaining > 0 {
         control.check()?;
-        let count = remaining.min(FRAMES_PER_BLOCK as u64) as usize;
-        if let Some(pages) = pages.as_deref_mut() {
-            pages.prepare_chunk(&playback, count, control)?;
-            playback
-                .render_with_pages(&mut block[..count], &mut crate::pages::PageView(pages))
-                .map_err(ExportError::SessionRender)?;
-            pages.complete_chunk()?;
-        } else {
-            playback
-                .render(&mut block[..count])
-                .map_err(ExportError::SessionRender)?;
-        }
+        let count = remaining.min(block_frames as u64) as usize;
+        inputs.render(&mut playback, &mut block[..count], control)?;
         remaining -= count as u64;
         control.advance(count);
         after_block();

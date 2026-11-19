@@ -9,18 +9,26 @@
 //! sleeps, so fence waits approximate, but are not, a physical device cadence.
 //! UI install, paint and present are not measured here.
 //!
-//! ```text
-//! HEX_SECTION_BENCH_PROJECT=/path/to/project.hex [HEX_SECTION_BENCH_REPS=5] \
-//!   [HEX_SECTION_BENCH_MEDIA_REMAP=/old/media/root=/new/media/root] \
-//!   cargo test --release -p hex-desktop --features allocation-probe --bin hex-desktop \
-//!   section_edit_benchmark -- --ignored --nocapture
+//! Run the generated reference workload in a fresh directory.
+//!
+//! ```sh
+//! fixture_dir="$(mktemp -d)/section-fixture"
+//! cargo run --release --locked -p hex-session --example create_section_benchmark -- "$fixture_dir"
+//! HEX_SECTION_BENCH_PROJECT="$fixture_dir/project.hex" HEX_SECTION_BENCH_REPS=7 \
+//!   cargo test --release --locked -p hex-desktop --features allocation-probe --bin hex-desktop \
+//!   -- native_audio::tests::section_benchmark::section_edit_benchmark \
+//!   --ignored --exact --nocapture --test-threads=1
 //! ```
 //!
-//! The project needs at least two song sections; the original is only read.
+//! A supplied saved project needs at least two song sections. The benchmark
+//! reads the original and applies edits to its temporary copy.
 //! `HEX_SECTION_BENCH_MEDIA_REMAP` rewrites one absolute media-path prefix in
 //! the temporary copy when the project's library has moved.
+//! `HEX_SECTION_BENCH_RECOVERY=1` enables a temporary recovery journal;
+//! `HEX_SECTION_BENCH_DUPLICATE_ONLY=1` limits the run to an early, playing
+//! section copy and its undo. Applied timing is the first observed matching
+//! callback revision, not a physical-device or UI measurement.
 use super::resident_preview::ResidentHarness;
-use super::resident_sections::run_callback;
 use super::*;
 use crate::audio_policy::MAX_RESIDENT_FRAMES;
 use hex_project::{BeatTime, Command, ElementColor, SectionId, TrimEdge};
@@ -29,22 +37,25 @@ use hex_session::service::{
     diagnostics::{DiagnosticObserver, DiagnosticStage},
 };
 
-const PHASES: [&str; 6] = [
+const PHASES: [&str; 8] = [
     "worker_us",
     "section_fence_us",
     "section_edit_us",
     "section_prepare_us",
     "section_publish_us",
     "section_finish_us",
+    "section_view_us",
+    "duplicate_recovery_us",
 ];
 
 /// One completed request: client-observed total and worker phase fields.
 struct Sample {
     total: Duration,
-    phases: [Option<u64>; 6],
+    applied: Option<Duration>,
+    phases: [Option<u64>; 8],
 }
 
-fn parse_phases(details: &str) -> [Option<u64>; 6] {
+fn parse_phases(details: &str) -> [Option<u64>; 8] {
     PHASES.map(|name| {
         details.split_whitespace().find_map(|field| {
             field
@@ -53,6 +64,15 @@ fn parse_phases(details: &str) -> [Option<u64>; 6] {
                 .and_then(|value| value.parse().ok())
         })
     })
+}
+
+#[test]
+fn section_benchmark_parses_view_phase() {
+    let phases = parse_phases("worker_us=20 section_view_us=7 duplicate_recovery_us=11");
+    assert_eq!(phases[0], Some(20));
+    assert_eq!(phases[6], Some(7));
+    assert_eq!(phases[1], None);
+    assert_eq!(phases[7], Some(11));
 }
 
 fn open_copy(h: &mut ResidentHarness, path: PathBuf) -> Event {
@@ -158,8 +178,50 @@ fn timed(
     request: Request,
 ) -> Result<(Event, Sample), String> {
     outcomes.lock().unwrap().clear();
+    let previous = applied(h);
+    let expected = match &request {
+        Request::EditArrangementSection {
+            project_generation,
+            revision,
+            ..
+        } => revision
+            .checked_add(1)
+            .map(|editor_revision| AudioSourceContext {
+                project_generation: *project_generation,
+                editor_revision,
+            }),
+        _ => None,
+    };
     let started = Instant::now();
-    let event = run_callback(h, request);
+    h.service
+        .submit(request)
+        .map_err(|error| format!("{error:?}"))?;
+    let mut installed = None;
+    let event = loop {
+        h.pump();
+        h.render();
+        if installed.is_none()
+            && h.audio.as_ref().is_some_and(|audio| {
+                audio
+                    .status()
+                    .and_then(|status| status.recording_source())
+                    .is_some_and(|source| {
+                        source.audio_revision > previous
+                            && Some(source.context) == expected
+                            && audio.control.output_identity() == Some(source.output_identity)
+                    })
+            })
+        {
+            installed = Some(started.elapsed());
+        }
+        if let Ok(event) = h.service.try_event() {
+            break event;
+        }
+        if started.elapsed() >= Duration::from_secs(10) {
+            return Err("section worker did not complete".into());
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    };
     let total = started.elapsed();
     if let Some(error) = &event.error {
         return Err(error.clone());
@@ -169,6 +231,7 @@ fn timed(
         event,
         Sample {
             total,
+            applied: installed,
             phases: parse_phases(&details),
         },
     ))
@@ -185,9 +248,15 @@ fn summarize(label: &str, samples: &[Sample]) {
         format!("{:.1}/{:.1}", median as f64 / 1000.0, max as f64 / 1000.0)
     };
     let mut line = format!(
-        "{label:<28} n={} total_ms={}",
+        "{label:<28} n={} total_ms={} applied_ms={}",
         samples.len(),
-        stat(samples.iter().map(|s| s.total.as_micros()).collect())
+        stat(samples.iter().map(|s| s.total.as_micros()).collect()),
+        stat(
+            samples
+                .iter()
+                .filter_map(|s| s.applied.map(|value| value.as_micros()))
+                .collect()
+        ),
     );
     for (index, name) in PHASES.iter().enumerate() {
         let values = samples
@@ -234,7 +303,17 @@ fn section_edit_benchmark() {
     permissions.set_readonly(true);
     fs::set_permissions(&copy, permissions).unwrap();
 
-    let mut h = ResidentHarness::with_frame_limit_at_rate(MAX_RESIDENT_FRAMES, 44_100);
+    let recovery = std::env::var_os("HEX_SECTION_BENCH_RECOVERY").is_some();
+    let duplicate_only = std::env::var_os("HEX_SECTION_BENCH_DUPLICATE_ONLY").is_some();
+    let mut h = if recovery {
+        ResidentHarness::with_recovery_at_rate(
+            MAX_RESIDENT_FRAMES,
+            directory.join("untitled.hex-journal"),
+            44_100,
+        )
+    } else {
+        ResidentHarness::with_frame_limit_at_rate(MAX_RESIDENT_FRAMES, 44_100)
+    };
     let outcomes = Arc::new(Mutex::new(Vec::new()));
     let sink = Arc::clone(&outcomes);
     h.service
@@ -249,11 +328,7 @@ fn section_edit_benchmark() {
     let old_output = h.audio.as_ref().unwrap().control.output_identity().unwrap();
     let loaded = Instant::now();
     let mut event = open_copy(&mut h, copy.clone());
-    // Opening replaces the document's output: release the old callback, then
-    // wait for the fresh output to apply the opened project.
-    h.release_relinquished_output();
-    h.wait_fresh_output(old_output);
-    wait_applied(&mut h, 0);
+    super::resident_lifecycle::finish_replacement(&mut h, &event, old_output);
     let song = sections(&event);
     assert!(song.len() >= 2, "benchmark needs at least two sections");
     let tempo = event.state.project.tempo_map().clone();
@@ -314,6 +389,10 @@ fn section_edit_benchmark() {
         for playing in [false, true] {
             let state = if playing { "playing" } else { "stopped" };
             for (name, command) in &operations {
+                if duplicate_only && (cursor_name != "early" || !playing || *name != "duplicate_at")
+                {
+                    continue;
+                }
                 let mut edits = Vec::new();
                 let mut undos = Vec::new();
                 let mut failure = None;
@@ -344,6 +423,16 @@ fn section_edit_benchmark() {
                     wait_applied(&mut h, before);
                     event = undo.0;
                     if rep > 0 {
+                        if recovery && *name == "duplicate_at" {
+                            assert!(
+                                edit.1.phases[7].is_some(),
+                                "missing duplicate recovery phase"
+                            );
+                            assert!(
+                                edit.1.applied.is_some(),
+                                "missing callback application before terminal"
+                            );
+                        }
                         edits.push(edit.1);
                         undos.push(undo.1);
                     }

@@ -72,7 +72,7 @@ impl SessionWriter {
     }
     fn header(&self) -> String {
         let mut line = format!(
-            "session_started log_schema=2 unix_nanos={} session={} pid={} hex_version={} segment={} max_segment_bytes={} retained_segments={} context_original_bytes={} context_truncated={} context=",
+            "session_started log_schema=3 unix_nanos={} session={} pid={} hex_version={} segment={} max_segment_bytes={} retained_segments={} context_original_bytes={} context_truncated={} context=",
             self.started_unix,
             self.path.file_stem().unwrap_or_default().to_string_lossy(),
             std::process::id(),
@@ -327,6 +327,8 @@ mod tests {
         for sequence in 1..=2 {
             sender
                 .send(event::Record {
+                    level: crate::Level::Info,
+                    category: crate::Category::Uncategorised,
                     sequence,
                     unix_nanos: 0,
                     elapsed_nanos: 0,
@@ -384,7 +386,7 @@ mod tests {
         for file in &files {
             assert!(fs::metadata(file).unwrap().len() <= MIN_SEGMENT_BYTES);
             let contents = fs::read_to_string(file).unwrap();
-            assert!(contents.starts_with("session_started log_schema=2"));
+            assert!(contents.starts_with("session_started log_schema=3"));
             assert!(contents.contains("build=original flags=actions"));
             assert!(contents.contains("context_truncated=true"));
             assert!(contents.contains(&format!("context_original_bytes={}", context.len())));

@@ -32,10 +32,11 @@ pub(crate) fn project_clip(clip: &mut Clip, tempo: &TempoMap) -> Result<(), Inva
         .ok_or(Invalid("audio placement end overflow"))?;
     clip.fade = ClipFade::neutral(clip.duration)?;
     let (_, full, start, end) = edit.projected_domain(tempo)?;
-    if full > MAX_AUDIO_DOMAIN_FRAMES || start >= end {
-        return Err(Invalid(
-            "full audio domain exceeds its 16777216 frame limit or has an empty crop",
-        ));
+    if !edit.accepts_projected_extent(full, clip) {
+        return Err(transform_domain_limit(tempo.sample_rate()));
+    }
+    if start >= end {
+        return Err(EMPTY_DOMAIN_CROP);
     }
     if edit.processing_projection.is_some()
         && edit.placement.is_none()
@@ -134,6 +135,52 @@ pub(crate) fn trim_view(
     frame: u64,
     tempo: &TempoMap,
 ) -> Result<Clip, Invalid> {
+    if edge == TrimEdge::Left && frame < clip.start {
+        if let Some(prefixed) = super::extend_frame_left(clip, frame)? {
+            return Ok(prefixed);
+        }
+        if let Some(edit) = clip.audio_edit().filter(|edit| {
+            matches!(edit.domain.clock, AudioDomainClock::Beats(_))
+                && edit.content_view.is_none()
+                && edit
+                    .placement
+                    .is_none_or(|p| p.mode != AudioViewMode::Repeat)
+        }) {
+            if edit.placement.is_some_and(|p| p.mode.leading_ticks() > 0) {
+                return clip.with_musical_leading_silence(frame, tempo);
+            }
+            let projection = AudioViewProjection::new(clip, tempo)?;
+            if projection.occurrence_count() > 0 {
+                let read = projection.occurrence(0)?;
+                let first = read.destination_start.saturating_sub(read.root_start);
+                if frame < first {
+                    // Rewind and add the lead in one retained clock. A
+                    // temporary live crop can cross a different tempo seam
+                    // and fail its endpoint check before the lead is added.
+                    if edit.processing_projection.is_some() {
+                        return trim_retained_outer(clip, edge, frame, tempo);
+                    }
+                    let rewound = if first == clip.start {
+                        clip.clone()
+                    } else {
+                        trim_retained_view(clip, edge, first, tempo)?
+                    };
+                    return rewound.with_musical_leading_silence(frame, tempo);
+                }
+            }
+        }
+    }
+    trim_retained_view(clip, edge, frame, tempo)
+}
+
+/// A directed carrier describes the read window's extent only. It cannot
+/// author a new source program as if it were an independent forward clip.
+pub(super) fn trim_retained_view(
+    clip: &Clip,
+    edge: TrimEdge,
+    frame: u64,
+    tempo: &TempoMap,
+) -> Result<Clip, Invalid> {
     let edit = clip
         .edit
         .as_ref()
@@ -204,6 +251,36 @@ pub(crate) fn trim_view(
     }
     project_clip(&mut result, tempo)?;
     Ok(result)
+}
+
+pub(crate) const DEFAULT_WARP_MODE: WarpMode = WarpMode::Beats {
+    preserve: BeatsPreserve::Transients,
+    tail: BeatsTail::Forward,
+    decay: 100,
+};
+
+/// Initial Warp settings for the clip panel and edge stretch. Eligible long
+/// clips start in a pitch-preserving mode that can read verified file pages.
+pub(crate) fn initial_audio_warp(
+    clip: &Clip,
+    tempo: &TempoMap,
+    asset_frames: u64,
+) -> Result<WarpSettings, Invalid> {
+    let long_neutral_source = clip.duration() > MAX_AUDIO_DOMAIN_FRAMES
+        && clip.source_offset() == 0
+        && clip.source_length() == clip.duration()
+        && clip.source_length() == asset_frames
+        && !clip.looping()
+        && clip.retained_fade().is_neutral()
+        && clip
+            .audio_edit()
+            .is_none_or(|edit| edit.is_plain_pitch_capture(clip));
+    let mode = if long_neutral_source {
+        WarpMode::Tones { grain_ms: 40 }
+    } else {
+        DEFAULT_WARP_MODE
+    };
+    default_audio_warp(clip, tempo, mode)
 }
 
 pub fn default_audio_warp(
@@ -306,6 +383,7 @@ pub(crate) fn apply(
         .clone()
         .unwrap_or_else(|| Arc::new(AudioClipEdit::capture(&clip)));
     let edit = Arc::make_mut(&mut owned_edit);
+    let reset_pitch = matches!(&command, Command::SetAudioClipPitch { cents: 0, .. });
     match command {
         Command::SetAudioClipPitch { cents, .. } => {
             if !(-4_800..=4_800).contains(&cents) {
@@ -371,7 +449,21 @@ pub(crate) fn apply(
         }
         _ => return Err(Invalid("unsupported audio editing command")),
     }
-    clip.edit = Some(owned_edit);
+    let reset_long_pitch = if reset_pitch && clip.duration > MAX_AUDIO_DOMAIN_FRAMES {
+        let mut expected = AudioClipEdit::capture(&clip);
+        let domain = Arc::make_mut(&mut expected.domain);
+        domain.warp_resampler = WarpResampler::V2;
+        domain.fade = owned_edit.domain.fade;
+        *owned_edit == expected
+    } else {
+        false
+    };
+    if reset_long_pitch {
+        clip.fade = owned_edit.domain.fade;
+        clip.edit = None;
+    } else {
+        clip.edit = Some(owned_edit);
+    }
     project_clip(&mut clip, project.tempo_map())?;
     validate_clip(project, &clip)?;
     crate::clip_group::replace_audio(project, clip)
@@ -408,6 +500,11 @@ pub(crate) fn reset_region(
         .edit
         .clone()
         .ok_or(Invalid("audio domain is missing"))?;
+    if old.repeat_period.is_some() {
+        return Err(Invalid(
+            "source replacement cannot yet preserve a silent repeat gap",
+        ));
+    }
     let changed_source =
         source_offset != old.domain.source_offset || source_length != old.domain.source_length;
     if changed_source && old.domain.warp.is_some() {
@@ -446,6 +543,7 @@ pub(crate) fn reset_region(
                     .map_or(edit.view_end - edit.view_start, |p| p.outer_length.length()),
                 view.window.reversed,
             )?,
+            read_resampler: view.read_resampler,
         });
     }
     clip.edit = Some(Arc::new(edit));
@@ -566,7 +664,9 @@ fn preview_source_policy(
     let edit = Arc::make_mut(&mut owned_edit);
     if let (Some(placement), Some(looping)) = (&mut edit.placement, looping) {
         if looping {
-            placement.cycle_phase %= edit.view_end - edit.view_start;
+            placement.cycle_phase %= edit
+                .repeat_period
+                .unwrap_or(edit.view_end - edit.view_start);
         }
         placement.mode = if looping {
             AudioViewMode::Repeat

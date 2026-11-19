@@ -130,6 +130,41 @@ fn confirming_the_prompt_recovers_exactly_the_readable_frames(cx: &mut TestAppCo
         assert!(view.error.is_none(), "{:?}", view.error);
         let project = &view.state.as_ref().unwrap().project;
         assert_eq!(project.tracks()[0].clips()[0].duration(), 96);
+        assert!((project.tracks()[0].gain() - 0.251_188_64).abs() < 1e-7);
     });
     assert_eq!(std::fs::read(&cut).unwrap(), bytes, "original untouched");
+}
+
+#[gpui::test]
+fn single_file_imports_use_captured_default_in_real_worker(cx: &mut TestAppContext) {
+    let files = BatchFiles::new();
+    let first = files.wav("first.wav", 48_000, 64);
+    let second = files.wav("second.wav", 48_000, 64);
+    let (handle, editor) = editor_window(
+        cx,
+        hex_project::Project::new(48_000).unwrap(),
+        Arc::default(),
+    );
+    settle(cx, handle, &editor);
+    import(cx, handle, &editor, &first);
+    let anchor = editor.read_with(cx, |view, _| {
+        let track = &view.state.as_ref().unwrap().project.tracks()[0];
+        assert!((track.gain() - 0.251_188_64).abs() < 1e-7);
+        track.id()
+    });
+    editor.update(cx, |view, _| {
+        assert!(view.enqueue(Request::ImportToNewTrack {
+            path: second,
+            before_track: Some(anchor),
+            start: 100,
+        }))
+    });
+    settle(cx, handle, &editor);
+    editor.read_with(cx, |view, _| {
+        let tracks = view.state.as_ref().unwrap().project.tracks();
+        assert_eq!(tracks.len(), 2);
+        assert_eq!(tracks[1].id(), anchor);
+        assert!((tracks[0].gain() - 0.251_188_64).abs() < 1e-7);
+        assert_eq!(tracks[0].clips()[0].start(), 100);
+    });
 }

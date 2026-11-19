@@ -11,6 +11,8 @@ use std::sync::atomic::Ordering::Relaxed;
 use std::{collections::BTreeMap, sync::Arc};
 
 const LATENCY: u64 = 288;
+/// The queued Pause/Stop declick at 48 kHz (#4151).
+const FADE: u64 = 128;
 
 /// 48 kHz project with a 288-frame Main limiter and an optional loop.
 fn revision(loop_region: Option<(u64, u64)>) -> Arc<PreparedRevision> {
@@ -128,10 +130,15 @@ fn seek_stop_and_pause_publish_defined_audible_positions() {
         control.command(PlaybackCommand::Play).unwrap();
         render(&mut callback, 960, block);
         assert_eq!(positions(&control), (960, 960 - LATENCY), "block {block}");
-        // Pause freezes the audible frame; it does not jump to scheduled.
+        // Pause fades over FADE frames, then freezes the audible frame; it
+        // does not jump to scheduled.
         control.command(PlaybackCommand::Pause).unwrap();
         render(&mut callback, 960, block);
-        assert_eq!(positions(&control), (960, 960 - LATENCY), "block {block}");
+        assert_eq!(
+            positions(&control),
+            (960 + FADE, 960 + FADE - LATENCY),
+            "block {block}"
+        );
         // A seek while paused shows the new position at once.
         control.command(PlaybackCommand::Seek(48_000)).unwrap();
         render(&mut callback, block, block);
@@ -143,9 +150,9 @@ fn seek_stop_and_pause_publish_defined_audible_positions() {
             (48_960, 48_960 - LATENCY),
             "block {block}"
         );
-        // Stop rewinds both.
+        // Stop rewinds both at the end of its fade.
         control.command(PlaybackCommand::Stop).unwrap();
-        render(&mut callback, block, block);
+        render(&mut callback, FADE as usize, block);
         assert_eq!(positions(&control), (0, 0), "block {block}");
     }
 }

@@ -474,11 +474,11 @@ impl TrackAssembly {
             return Err(AudioStorageError::SourceMismatch);
         }
         for (r, t) in self.rows.iter_mut().zip(project.tracks()) {
-            if let Some((metadata, contexts)) = samplers {
-                if let Some(config) = metadata.configuration(t.id()) {
-                    let _ = (config, contexts); // compile only after workspace admission
-                    r.source_mix = Some(PreparedTrackMix::identity());
-                }
+            if let Some((metadata, contexts)) = samplers
+                && let Some(config) = metadata.configuration(t.id())
+            {
+                let _ = (config, contexts); // compile only after workspace admission
+                r.source_mix = Some(PreparedTrackMix::identity());
             }
             r.gain
                 .fill(t.gain_envelope(), project.tempo_map())
@@ -490,6 +490,7 @@ impl TrackAssembly {
                 project.sample_rate(),
                 effects,
                 native_input,
+                Some(project),
             )?);
             self.growth = self
                 .growth
@@ -510,14 +511,14 @@ impl TrackAssembly {
                 .ok_or(AudioStorageError::UnsupportedConstructor)?;
         }
         #[cfg(test)]
-        if self.mismatch {
-            if let Some(plan) = self.rows.first_mut().and_then(|r| r.pairs.first_mut()) {
-                plan.origin.handle = plan
-                    .origin
-                    .handle
-                    .checked_add(1)
-                    .ok_or(AudioStorageError::Overflow)?;
-            }
+        if self.mismatch
+            && let Some(plan) = self.rows.first_mut().and_then(|r| r.pairs.first_mut())
+        {
+            plan.origin.handle = plan
+                .origin
+                .handle
+                .checked_add(1)
+                .ok_or(AudioStorageError::Overflow)?;
         }
         Ok(())
     }
@@ -641,6 +642,7 @@ impl TrackAssembly {
                     source_mix,
                     gain_envelope: r.prepared_gain.take(),
                     instrument: None,
+                    foreign_instrument: None,
                     instrument_position: 0,
                     ordered_prefix: None,
                     ordered_suffix: None,
@@ -689,10 +691,10 @@ impl TrackAssembly {
             return Ok(());
         }
         let r = &mut self.rows[self.cursor];
-        if let Some(t) = r.track.as_mut() {
-            if r.sampler.present() {
-                r.sampler.restore(t)?;
-            }
+        if let Some(t) = r.track.as_mut()
+            && r.sampler.present()
+        {
+            r.sampler.restore(t)?;
         }
         if let Some(t) = &r.track {
             if r.installed_ordinal != Some(r.ordinal)
@@ -754,6 +756,7 @@ impl TrackAssembly {
                 source_mix: _,
                 gain_envelope,
                 instrument: _,
+                foreign_instrument: _,
                 instrument_position: _,
                 ordered_prefix: _,
                 ordered_suffix: _,
@@ -910,7 +913,12 @@ impl TrackAssembly {
                     }
                     _ => false,
                 };
-                if !matches {
+                let packed = clip
+                    .metadata
+                    .as_deref()
+                    .and_then(|m| m.sparse.as_ref())
+                    .map(|map| map.packed_len());
+                if !matches || packed != slot.sparse_frames {
                     return Err(AudioStorageError::SourceMismatch);
                 }
             }
@@ -1101,6 +1109,7 @@ impl TrackAssembly {
                     source_mix: _,
                     gain_envelope,
                     instrument,
+                    foreign_instrument,
                     instrument_position: _,
                     ordered_prefix: _,
                     ordered_suffix: _,
@@ -1121,6 +1130,7 @@ impl TrackAssembly {
                 } = t;
                 if (!sampler.present() && (instrument.is_some() || *mutable_instrument))
                     || instrument_state.is_some()
+                    || foreign_instrument.is_some()
                     || (!sampler.present() && *mutable_looping_source)
                     || midi_source_index.is_some()
                 {

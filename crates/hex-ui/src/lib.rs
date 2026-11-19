@@ -5,6 +5,8 @@
 //! # Dependencies
 //! Uses hex-session/project/engine/audio contracts, hex-widgets, GPUI and the bounded library,
 //! preferences, tuning, MIDI, MTS, diagnostics and plugin-catalog services.
+//! fastrand supplies transient browser result ranks on the UI thread.
+//! Test-only storage access verifies complete control-side EQ upgrade round trips.
 //!
 //! # Does not own
 //! Does not own a second editable project, construct DSP or access files/audio devices from
@@ -28,10 +30,18 @@ pub use controller_input::install_controller_input;
 pub use diagnostics::{install_action_diagnostics, install_audio_diagnostics, install_session_log};
 mod editor;
 mod editor_backend;
-#[cfg(any(test, feature = "ui-test-support"))]
+#[cfg(feature = "ui-test-support")]
 mod test_wait;
 pub use editor_backend::{EditorAudio, EditorAudioEvent, EditorBackend, EditorPublicationState};
 mod layout;
+mod log_viewer;
+mod section_appearance;
+mod section_hit;
+mod section_input;
+mod section_reorder;
+mod section_resize;
+mod section_selection;
+mod section_surface;
 mod startup;
 pub use startup::open_or_report;
 pub mod output_meter;
@@ -117,6 +127,13 @@ pub fn exercise_midi_receipt_pressure(
     editor::midi_pressure_fixture(cx, root, reservation, output, render)
 }
 
+/// Exercise the real recorder header with native text shaping and a private fixture root.
+#[cfg(feature = "ui-test-support")]
+pub fn exercise_sample_recorder_layout(cx: &mut gpui::TestAppContext, root: std::path::PathBuf) {
+    assert!(root.is_absolute() && root.starts_with(std::env::temp_dir()));
+    editor::sample_recorder_layout_fixture(cx, root);
+}
+
 /// Read-only browser insertion evidence. Neither the view nor this query owns
 /// a native endpoint, and a pending request alone grants no applied source.
 #[cfg(feature = "ui-test-support")]
@@ -124,12 +141,22 @@ pub struct PluginEffectTestView {
     pub state: Option<std::sync::Arc<hex_session::service::ViewState>>,
     pub pending: bool,
     pub queued_requests: usize,
+    /// Source-bound VST3 parameter controls keyed by device and parameter ID.
+    pub parameter_controls: Vec<(u64, u32, gpui::EntityId)>,
+    /// A controller parameter enumeration/page query is awaiting its terminal.
+    pub parameter_query_pending: bool,
+    /// (device, parameter, displayed value, independent follow control, arranger lane).
+    pub parameter_touches: Vec<(u64, u32, f64, Option<gpui::EntityId>, bool)>,
+    /// Normalized plugin intent held by the existing keyed gesture owner.
+    pub parameter_gesture: Option<f64>,
     /// Weak request identity only; it retains no request or native owner.
     pub operation: Option<std::sync::Weak<hex_session::service::PluginEffectControl>>,
     pub error: Option<String>,
     pub selected_owner: Option<hex_session::service::PluginEffectDestination>,
     pub status: String,
     pub applied: Option<hex_audio::prepared::AppliedAudioSource>,
+    /// Original callback status, copied for native graph recovery tests.
+    pub transport: Option<(u64, bool)>,
 }
 
 #[cfg(feature = "ui-test-support")]

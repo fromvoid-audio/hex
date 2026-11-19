@@ -55,14 +55,11 @@ fn loop_edit_after_pausing_a_track_limiter_publishes_current_audio() {
     for _ in 0..12 {
         h.render();
     }
+    let mut fade = super::transport_loop::LoopFadeVerifier::new();
     for _ in 0..100 {
-        assert!(
-            h.render()
-                .iter()
-                .flatten()
-                .all(|v| (*v - 0.25).abs() < 1e-5)
-        );
+        fade.check(&h.render());
     }
+    fade.assert_wrap();
     let position = h
         .audio
         .as_ref()
@@ -500,7 +497,10 @@ fn paused_latency_change_then_new_instrument_track_applies_and_binds_live_input(
         h.render();
     }
     control(&mut h, PlaybackCommand::Pause);
-    h.render();
+    // The queued Pause settles after its declick fade.
+    for _ in 0..super::FADE_BLOCKS {
+        h.render();
+    }
     let status = h.audio.as_ref().unwrap().status().unwrap();
     let paused = status.position.load(Acquire);
     assert!(paused > 0 && !status.playing.load(Acquire));

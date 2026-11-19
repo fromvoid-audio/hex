@@ -1,5 +1,5 @@
 //! Retained numeric fields and global keyboard history through the real worker.
-use super::envelope::render;
+use super::envelope::{render, visible_control_center};
 use super::*;
 use gpui::{Modifiers, MouseButton, VisualTestContext};
 use hex_engine::SamplerParameter::{self, AttackMs, Gain, Transpose};
@@ -30,7 +30,8 @@ pub(super) fn exercise(
     let other_device_selector =
         Box::leak(format!("effect-device-{}", other_device.id().value()).into_boxed_str());
     let other_selector = Box::leak(format!("track-name-{}", other.value()).into_boxed_str());
-    let other_selected = Box::leak(format!("selected-track-{}", other.value()).into_boxed_str());
+    let other_selected =
+        Box::leak(format!("selected-track-lane-{}", other.value()).into_boxed_str());
     let pulse = |visual: &mut VisualTestContext| {
         cx.background_executor
             .advance_clock(Duration::from_millis(16));
@@ -87,7 +88,7 @@ pub(super) fn exercise(
     let mut states = vec![initial.device(device).unwrap().state().clone()];
     for (parameter, value) in [(Gain, 0.5), (Transpose, -12.0), (AttackMs, 0.125)] {
         let old = applied().unwrap();
-        let center = visual.debug_bounds(selector(parameter)).unwrap().center();
+        let center = visible_control_center(visual, selector(parameter));
         visual.simulate_mouse_down(center, MouseButton::Left, Modifiers::default());
         visual.simulate_mouse_up(center, MouseButton::Left, Modifiers::default());
         visual.simulate_keystrokes("cmd-a");
@@ -105,7 +106,7 @@ pub(super) fn exercise(
     }
     // First Undo cancels an uncommitted local draft and consumes the shortcut.
     let old = applied().unwrap();
-    let center = visual.debug_bounds(selector(Gain)).unwrap().center();
+    let center = visible_control_center(visual, selector(Gain));
     visual.simulate_mouse_down(center, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_up(center, MouseButton::Left, Modifiers::default());
     visual.simulate_keystrokes("cmd-a");
@@ -174,7 +175,7 @@ pub(super) fn exercise(
         }
         // Literal original8k/output16k at projectA880: base step1, pitch-12 step.5.
         let play = visual
-            .debug_bounds("play or pause · space")
+            .debug_bounds("play or pause · space · right-click for history playback")
             .unwrap()
             .center();
         visual.simulate_click(play, Modifiers::default());
@@ -245,7 +246,7 @@ pub(super) fn exercise(
             .matches_context(applied().unwrap().context)
     );
     let play = visual
-        .debug_bounds("play or pause · space")
+        .debug_bounds("play or pause · space · right-click for history playback")
         .unwrap()
         .center();
     visual.simulate_click(play, Modifiers::default());

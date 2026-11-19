@@ -4,16 +4,32 @@ use super::*;
 use hex_audio::plugin_effects::EffectBinding as Binding;
 use hex_audio::{
     NativeSourcePreparationProgress as Progress,
-    plugin_effects::{EffectSelection, Hosting},
+    plugin_effects::{
+        AuthoredSelection, EffectPresentation, EffectPresentationPlan, EffectSelection,
+        EffectStartupTimings, Hosting, PluginProfile,
+    },
 };
 use hex_engine::{PreparedRevision, ProcessorChainOwner};
 use hex_session::service::{NativeDeviceState, ResidentEffectPreparation};
 use hex_session::service::{
-    PluginEffectControl, PluginEffectPreparation, PluginEffectPreparationState,
+    PluginEffectControl, PluginEffectDestination, PluginEffectPreparation,
+    PluginEffectPreparationState,
 };
+mod degraded;
+mod editor;
+pub(super) mod editor_recording;
+mod parameter_conversion;
+mod parameter_gesture;
+mod parameters;
 mod restore;
 use restore::Restore;
 mod edits;
+mod offline_bounce;
+mod parameter_touches;
+mod paused_monitor;
+pub(super) use paused_monitor::{
+    PREPARATION_TIMEOUT, PausedEffects, PausedMonitorPreparation, paused_monitor_busy,
+};
 mod reopen;
 mod save;
 use reopen::Reopen;
@@ -40,9 +56,19 @@ struct Source {
     device: u64,
     project_generation: u64,
     operation: SourceOperation,
+    authored: Option<AuthoredSelection>,
     accepted: bool,
     retiring: bool,
     queued: bool,
+    observes_latency: bool,
+    editor_open: bool,
+    editor_transfer: bool,
+    editor_open_on_insert: bool,
+    edit_backlog: bool,
+    edit_recovery: Option<parameter_touches::PendingRead>,
+    pending_touch: Option<parameter_touches::Touch>,
+    #[cfg(all(test, feature = "allocation-probe"))]
+    observed_latency_receipt: bool,
     #[cfg(all(test, feature = "allocation-probe"))]
     attempts: u64,
 }
@@ -51,6 +77,10 @@ struct Pending {
     binding: Binding,
     context: AudioSourceContext,
     result: Option<Result<NativeDeviceState, String>>,
+    facts_ready_for_session: bool,
+    facts_observed: bool,
+    #[cfg(all(test, feature = "allocation-probe"))]
+    facts_attempt_from_session: bool,
 }
 #[cfg(all(test, feature = "allocation-probe"))]
 pub(super) struct FactsGate {
@@ -94,12 +124,20 @@ impl FactsGate {
 pub(super) struct PreparationObservation {
     pub(super) output: Option<u64>,
     pub(super) binding: Option<Binding>,
+    /// First two accepted (device, binding, completed prefix) facts; no custody authority.
+    pub(super) source_bindings: [Option<(u64, Binding, Option<u64>)>; 2],
+    /// Last prepared device and its accepted flag, including staged insertions.
+    pub(super) newest_source: Option<(u64, Binding, bool)>,
     pub(super) pending: bool,
     pub(super) accepted: bool,
     pub(super) retiring: bool,
     pub(super) native: Option<Progress>,
     pub(super) attempts: u64,
+    pub(super) facts_attempt_from_session: bool,
     pub(super) restore_refused: bool,
+    pub(super) observed_latency_receipt: bool,
+    pub(super) editor_receipts: [Option<hex_audio::plugin_worker::ParameterEdit>; 8],
+    pub(super) editor_receipt_count: usize,
 }
 #[cfg(all(test, feature = "allocation-probe"))]
 impl std::fmt::Debug for PreparationObservation {
@@ -118,17 +156,37 @@ impl std::fmt::Debug for PreparationObservation {
 #[derive(Default)]
 pub(super) struct Plugins {
     host: Option<Hosting>,
+    transport_space: bool,
     initialized: bool,
     unavailable: Option<String>,
     profile_failed: bool,
     configured: bool,
     pub(super) pool_held: bool,
     sources: Vec<Source>,
+    paused_monitor_sources: Vec<Binding>,
     pending: Option<Pending>,
+    editor: Option<editor::EditorOperation>,
+    queued_editor_toggle: Option<(Binding, u64)>,
+    editor_visibility_cursor: usize,
+    next_editor_visibility: Option<std::time::Instant>,
+    parameters: Option<parameters::Inventory>,
+    parameter_conversion: Option<parameter_conversion::Conversion>,
+    observed_parameters: Vec<parameters::ObservedInventory>,
+    parameter_gesture: Option<parameter_gesture::Gesture>,
+    editor_recording: Option<editor_recording::Recording>,
+    // At most two control records: a late prior point and the current point.
+    confirmed_parameters:
+        std::collections::VecDeque<hex_session::service::PluginParameterObservation>,
+    editor_checked: Option<AudioSourceContext>,
     restore: Option<Restore>,
     reopen: Option<Reopen>,
     edit: Option<AudioSourceContext>,
     pub(super) catalog: Option<std::path::PathBuf>,
+    degraded: degraded::DegradedReport<Binding>,
+    degraded_changed: Option<(u64, u64, Vec<u64>)>,
+    diagnostics: Option<hex_diagnostics::DiagnosticsHandle>,
+    parameter_poll: parameter_touches::PollSchedule,
+    latency_notice: Option<(hex_audio::prepared::AppliedAudioSource, std::time::Instant)>,
     #[cfg(all(test, feature = "allocation-probe"))]
     presentation: Option<hex_audio::plugin_effects::EffectPresentation>,
     #[cfg(all(test, feature = "allocation-probe"))]
@@ -141,8 +199,14 @@ pub(super) struct Plugins {
     pub(super) facts_gate: Option<FactsGate>,
     #[cfg(all(test, feature = "allocation-probe"))]
     pub(super) progress: Option<Arc<std::sync::Mutex<PreparationObservation>>>,
+    #[cfg(all(test, feature = "allocation-probe"))]
+    pub(super) failure_observation: Option<Arc<std::sync::Mutex<Option<String>>>>,
 }
 impl Plugins {
+    pub fn set_diagnostics(&mut self, log: Option<hex_diagnostics::DiagnosticsHandle>) {
+        self.diagnostics = log;
+    }
+
     #[cfg(all(test, feature = "allocation-probe"))]
     pub(super) fn with_fixture(
         host: Hosting,
@@ -166,8 +230,27 @@ impl Plugins {
                     .with_file_name("plugin-catalog.json")
             })
             .filter(|path| path.is_absolute() && path.as_os_str().len() <= 4096);
+        let preferences = std::env::var_os("HOME")
+            .map(|home| hex_preferences::vst3_editor_preferences_path(std::path::Path::new(&home)))
+            .map_or_else(hex_preferences::Vst3EditorPreferences::default, |path| {
+                match hex_preferences::load_vst3_editor_preferences(&path) {
+                    Ok(preferences) => preferences,
+                    Err(error) => {
+                        eprintln!("could not load vst3 editor preferences: {error}");
+                        hex_preferences::Vst3EditorPreferences::default()
+                    }
+                }
+            });
+        self.transport_space = preferences.spacebar_controls_transport;
         match Hosting::current_on_control() {
-            Ok(host) => self.host = Some(host),
+            Ok(host) => {
+                let host = host.with_grouped_editor_callbacks();
+                self.host = Some(if self.transport_space {
+                    host.with_transport_space()
+                } else {
+                    host
+                });
+            }
             Err(error) => self.unavailable = Some(error),
         }
     }
@@ -195,8 +278,66 @@ impl Plugins {
         self.sources.clear();
         self.pool_held = false;
     }
+    /// The newest changed degraded vst3 device set, project generation and output, once.
+    pub fn take_degraded_change(&mut self) -> Option<(u64, u64, Vec<u64>)> {
+        self.degraded_changed.take()
+    }
     pub fn output_closed(&mut self) {
+        // The relinquished output's Root retains every outstanding loan.
+        self.paused_monitor_sources.clear();
+        self.close_editor_recording();
+        if let Some(parameters) = &mut self.parameters {
+            parameters.output_closed();
+        }
+        if let Some(conversion) = &mut self.parameter_conversion {
+            conversion.output_closed();
+        }
         self.configured = false;
+        self.observed_parameters.clear();
+        if let Some(gesture) = self.parameter_gesture.as_mut() {
+            gesture.recording_output_closed();
+        }
+        self.collect_parameter_observations();
+        if !self
+            .parameter_gesture
+            .as_ref()
+            .is_some_and(parameter_gesture::Gesture::has_retired_delivery)
+        {
+            self.parameter_gesture = None;
+        }
+        for source in &mut self.sources {
+            source.edit_backlog = false;
+            source.edit_recovery = None;
+            source.pending_touch = None;
+            source.editor_open = false;
+            source.editor_transfer = false;
+            source.editor_open_on_insert = false;
+        }
+        self.editor_checked = None;
+        let queued_generation = self
+            .queued_editor_toggle
+            .take()
+            .map(|(_, generation)| generation);
+        let pending_generation = if let Some(editor::EditorOperation::Pending {
+            generation,
+            action: editor::EditorAction::Toggle,
+            ..
+        }) = &self.editor
+        {
+            Some(*generation)
+        } else {
+            None
+        };
+        self.next_editor_visibility = None;
+        self.editor_visibility_cursor = 0;
+        if let Some(generation) = pending_generation.or(queued_generation) {
+            self.editor = Some(editor::EditorOperation::Complete {
+                generation,
+                result: Err("vst3 editor closed · output changed".into()),
+            });
+        } else if matches!(self.editor, Some(editor::EditorOperation::Pending { .. })) {
+            self.editor = None;
+        }
         if let Some(restore) = self.restore.as_mut() {
             restore.output_closed();
         }
@@ -212,10 +353,7 @@ impl Plugins {
         if !self.wants_profile() {
             return Ok(());
         }
-        if control
-            .requested_physical_callback_frames_on_control()
-            .is_none()
-        {
+        if control.plugin_callback_quantum_on_control().is_none() {
             return Err("vst3 output profile is unavailable".into());
         }
         self.sources
@@ -224,10 +362,24 @@ impl Plugins {
         if self.sources.capacity() != policy.capacity {
             return Err("vst3 source record capacity differs".into());
         }
+        self.paused_monitor_sources
+            .try_reserve_exact(policy.capacity)
+            .map_err(|_| "vst3 monitor source records unavailable")?;
+        if self.paused_monitor_sources.capacity() != policy.capacity {
+            return Err("vst3 monitor source record capacity differs".into());
+        }
+        let monitor_bytes = policy
+            .capacity
+            .checked_mul(
+                std::mem::size_of::<Binding>()
+                    + std::mem::size_of::<hex_engine::PausedMonitorForeignBinding>(),
+            )
+            .ok_or("vst3 monitor control data overflow")?;
         let control_bytes = self
             .sources
             .capacity()
             .checked_mul(std::mem::size_of::<Source>())
+            .and_then(|n| n.checked_add(monitor_bytes))
             .and_then(|n| n.checked_add(std::mem::size_of::<Self>()))
             .and_then(|n| n.checked_add(self.host.as_ref()?.control_data_bytes()?))
             .and_then(|n| {
@@ -252,10 +404,110 @@ impl Plugins {
         self.pool_held = true;
         Ok(())
     }
+    /// No insertion, restore, reopen, edit, queued source or retirement is
+    /// waiting for a worker poll (#4574). Accepted sources stay warm, but
+    /// queued editor receipts need the busy cadence even with transport stopped.
+    pub fn idle(&self) -> bool {
+        self.pending.is_none()
+            && self.editor.is_none()
+            && self.queued_editor_toggle.is_none()
+            && self.editor_recording.is_none()
+            && self.parameters.is_none()
+            && self.parameter_conversion.is_none()
+            && self.restore.is_none()
+            && !self.parameter_override_cleanup_pending()
+            && self.reopen.is_none()
+            && self.edit.is_none()
+            && self.degraded_changed.is_none()
+            && !self.sources.iter().any(|source| {
+                source.retiring
+                    || source.edit_backlog
+                    || source.edit_recovery.is_some()
+                    || source.pending_touch.is_some()
+                    || source.editor_open
+                    || source.editor_open_on_insert
+                    || (source.queued && !source.accepted)
+            })
+    }
+    pub(super) fn can_retain_output_for_document(
+        &self,
+        control: &hex_audio::prepared::PublicationControl,
+        outgoing: u64,
+        incoming: ResidentEffectPreparation<'_>,
+    ) -> bool {
+        if !self.idle()
+            || !self
+                .sources
+                .iter()
+                .all(|source| source.accepted && source.project_generation == outgoing)
+        {
+            return false;
+        }
+        if !incoming.requires_plugin_profile() {
+            return true;
+        }
+        if !self.configured || self.host.is_none() || self.catalog.is_none() {
+            return false;
+        }
+        let capacity = self.sources.capacity() - self.sources.len();
+        let mut needed = 0;
+        incoming
+            .visit_plugin_devices(|_, _, _| {
+                if needed == capacity {
+                    return Err("retained vst3 source capacity exceeded".into());
+                }
+                needed += 1;
+                Ok(())
+            })
+            .is_ok()
+            && control.has_vacant_native_source_slots_on_control(needed)
+    }
+    /// The exact successor has applied. Keep the old bindings until Root
+    /// returns their graph, tail and endpoint obligations on control.
+    /// Copied source observation only; actual target SDK/delivery admission
+    /// remains in the parameter gesture adapter and Root.
+    pub(super) fn matches_capture_source(
+        &self,
+        context: AudioSourceContext,
+        target: hex_session::service::automation_draft::Vst3CaptureTarget,
+    ) -> bool {
+        self.matches_capture_binding(context, target.device.value(), target.binding)
+    }
+
+    pub(super) fn matches_capture_binding(
+        &self,
+        context: AudioSourceContext,
+        device: u64,
+        binding: Binding,
+    ) -> bool {
+        self.sources
+            .iter()
+            .rev()
+            .find(|source| {
+                source.accepted
+                    && !source.retiring
+                    && source.project_generation == context.project_generation
+                    && source.device == device
+            })
+            .is_some_and(|source| source.binding == binding)
+    }
+
+    pub(super) fn retire_document_sources(&mut self, generation: u64) {
+        for source in self
+            .sources
+            .iter_mut()
+            .filter(|source| source.project_generation == generation)
+        {
+            source.accepted = false;
+            source.retiring = true;
+        }
+    }
     pub fn ready(&self) -> bool {
         // Session queries this only for its held insertion. No Root binding yet
         // means a contended admission must retry, not wait for nonexistent facts.
-        self.pending.as_ref().is_none_or(|p| p.result.is_some())
+        self.pending
+            .as_ref()
+            .is_none_or(|p| p.result.is_some() || p.facts_ready_for_session)
     }
     pub fn prepare(
         &mut self,
@@ -300,6 +552,10 @@ impl Plugins {
                 .editor_revision
                 .checked_add(1)
                 .ok_or("vst3 graph revision exhausted")?;
+            let mut timing = self
+                .diagnostics
+                .as_ref()
+                .map(|_| (std::time::Instant::now(), EffectStartupTimings::default()));
             let binding = match host.begin_on_control(
                 control,
                 EffectSelection {
@@ -313,7 +569,9 @@ impl Plugins {
                 input.device_id,
                 graph,
                 output.sample_rate,
+                hosting_profile(input.insertion.destination),
                 None,
+                timing.as_mut().map(|(_, timings)| timings),
             ) {
                 Ok(binding) => binding,
                 // Root's contended Work mutex refuses before reserving a slot
@@ -325,6 +583,22 @@ impl Plugins {
                 }
                 Err(reason) => return Err(reason),
             };
+            if let Some((started, timing)) = timing {
+                record_insertion_stage(
+                    self.diagnostics.as_ref(),
+                    binding,
+                    input.insertion.context.project_generation,
+                    "native_prepare_returned",
+                    format_args!(
+                        " elapsed_ns={} selection_inspection_ns={} revalidation_ns={} waitable_probe_ns={:?} instance_to_facts_ns={:?}",
+                        started.elapsed().as_nanos(),
+                        timing.selection_inspection.as_nanos(),
+                        timing.revalidation.as_nanos(),
+                        timing.waitable_probe.map(|elapsed| elapsed.as_nanos()),
+                        timing.instance_to_facts.map(|elapsed| elapsed.as_nanos()),
+                    ),
+                );
+            }
             #[cfg(all(test, feature = "allocation-probe"))]
             if let Some(gate) = self.facts_gate.as_mut() {
                 gate.binding = Some(binding);
@@ -335,9 +609,19 @@ impl Plugins {
                 device: input.device_id,
                 project_generation: input.insertion.context.project_generation,
                 operation: SourceOperation::Insertion(Arc::clone(&input.insertion.control)),
+                authored: None,
                 accepted: false,
                 retiring: false,
                 queued: false,
+                observes_latency: false,
+                editor_open: false,
+                editor_transfer: false,
+                editor_open_on_insert: false,
+                edit_backlog: false,
+                edit_recovery: None,
+                pending_touch: None,
+                #[cfg(all(test, feature = "allocation-probe"))]
+                observed_latency_receipt: false,
                 #[cfg(all(test, feature = "allocation-probe"))]
                 attempts: 0,
             });
@@ -346,15 +630,31 @@ impl Plugins {
                 binding,
                 context: input.insertion.context,
                 result: None,
+                facts_ready_for_session: false,
+                facts_observed: false,
+                #[cfg(all(test, feature = "allocation-probe"))]
+                facts_attempt_from_session: false,
             });
         }
-        self.poll(output, Some(input.insertion.context));
+        self.poll_for_context(output, Some(input.insertion.context), None, Some(&input));
         match self.pending.as_ref().and_then(|p| p.result.as_ref()) {
             Some(Ok(state)) => Ok(PluginEffectPreparationState::Ready(state.clone())),
             Some(Err(error)) => Err(error.clone()),
             None => Ok(PluginEffectPreparationState::Preparing),
         }
     }
+    /// The ready hosted operation alone may bind the successor's receipt.
+    pub(super) fn device_insert_control(
+        &self,
+        context: AudioSourceContext,
+    ) -> Option<Arc<PluginEffectControl>> {
+        let pending = self.pending.as_ref()?;
+        (pending.context.project_generation == context.project_generation
+            && pending.context.editor_revision.checked_add(1) == Some(context.editor_revision)
+            && matches!(pending.result, Some(Ok(_))))
+        .then(|| Arc::clone(&pending.operation))
+    }
+
     pub fn finish(&mut self, operation: &Arc<PluginEffectControl>, accepted: bool) {
         if self
             .pending
@@ -380,14 +680,120 @@ impl Plugins {
                     .as_ref()
                     .is_some_and(|p| matches!(p.result, Some(Ok(_))));
             source.retiring |= !source.accepted;
+            source.editor_open_on_insert = source.accepted && operation.opens_editor();
+            record_insertion_stage(
+                self.diagnostics.as_ref(),
+                source.binding,
+                source.project_generation,
+                "graph_terminal",
+                format_args!(" committed={}", source.accepted),
+            );
         }
     }
-    pub fn poll(&mut self, output: &mut WorkerPreparedOutput, context: Option<AudioSourceContext>) {
+    pub fn poll(
+        &mut self,
+        output: &mut WorkerPreparedOutput,
+        desired: Option<&CanonicalAudioSourceSnapshot>,
+    ) {
+        self.poll_for_context(
+            output,
+            desired.map(CanonicalAudioSourceSnapshot::context),
+            desired,
+            None,
+        );
+    }
+
+    fn poll_for_context(
+        &mut self,
+        output: &mut WorkerPreparedOutput,
+        context: Option<AudioSourceContext>,
+        desired: Option<&CanonicalAudioSourceSnapshot>,
+        insertion: Option<&PluginEffectPreparation<'_>>,
+    ) {
         let Some(control) = output.publication.control() else {
             self.output_closed();
             return;
         };
+        self.poll_editor(control, context, desired);
+        self.poll_parameters(control, context);
+        self.poll_parameter_conversion(control, context);
+        self.poll_parameter_override(control, context);
         self.poll_restore(control, context);
+        if let Some(output) = control.output_identity()
+            && let Some(context) = context
+        {
+            let generation = context.project_generation;
+            let endpoints = self
+                .sources
+                .iter_mut()
+                .filter(|source| source.project_generation == generation)
+                .map(|source| {
+                    let status = control.native_source_endpoint_status(source.binding);
+                    if let Some(log) = &self.diagnostics
+                        && let Some(sample) = control.take_native_source_slow_exchange(source.binding)
+                    {
+                        let pickup_interval = sample
+                            .empty_poll_to_pickup_ns
+                            .map_or_else(|| "unavailable".to_owned(), |ns| ns.to_string());
+                        let _ = log.record_typed(
+                            hex_diagnostics::Level::Warn,
+                            hex_diagnostics::Category::Audio,
+                            &format!(
+                                "vst3 v=1 stage=slow_exchange generation={generation} output={output} device={} binding={:?} sequence={} exchange_ns={} sdk_process_ns={} quantum_ns={} dropped={} queue_ns=unavailable empty_poll_to_pickup_ns={pickup_interval}",
+                                source.device, sample.binding, sample.sequence, sample.exchange_ns,
+                                sample.sdk_process_ns, sample.quantum_ns, sample.dropped
+                            ),
+                        );
+                    }
+                    if let Some(log) = &self.diagnostics
+                        && let Some(sample) = control.take_native_source_concealed_output(source.binding)
+                    {
+                        let _ = log.record_typed(
+                            hex_diagnostics::Level::Warn,
+                            hex_diagnostics::Category::Audio,
+                            &format!(
+                                "vst3 v=1 stage=concealed_output generation={generation} output={output} device={} binding={:?} reply_sequence={} worker_phase={:?} overflowed={}",
+                                source.device, sample.binding, sample.miss.reply_sequence,
+                                sample.miss.worker_phase, sample.overflowed
+                            ),
+                        );
+                    }
+                    if status == Some((true, false)) {
+                        source.edit_backlog = false;
+                    }
+                    if status == Some((true, false)) {
+                        #[cfg(all(test, feature = "allocation-probe"))]
+                        let observe_failure = self.failure_observation.is_some();
+                        #[cfg(not(all(test, feature = "allocation-probe")))]
+                        let observe_failure = false;
+                        if (self.diagnostics.is_some() || observe_failure)
+                            && let Some(diagnostic) =
+                                control.take_native_source_failure_diagnostic(source.binding)
+                        {
+                            #[cfg(all(test, feature = "allocation-probe"))]
+                            if let Some(observation) = &self.failure_observation
+                                && let Ok(mut observed) = observation.lock()
+                            {
+                                *observed = Some(diagnostic.clone());
+                            }
+                            if let Some(log) = &self.diagnostics {
+                                let _ = log.record_typed(
+                                    hex_diagnostics::Level::Warn,
+                                    hex_diagnostics::Category::Audio,
+                                    &format!(
+                                        "vst3_editor v=1 stage=worker_failure generation={generation} output={output} device={} {diagnostic}",
+                                        source.device
+                                    ),
+                                );
+                            }
+                        }
+                    }
+                    (source.binding, source.device, status)
+                });
+            if let Some(devices) = self.degraded.observe(output, endpoints) {
+                self.degraded_changed = Some((generation, output, devices));
+            }
+        }
         #[cfg(all(test, feature = "allocation-probe"))]
         if let Some(observed) = self.completed.as_ref() {
             let count = self
@@ -400,61 +806,97 @@ impl Plugins {
                 observed.store(count, std::sync::atomic::Ordering::Release);
             }
         }
-        if let Some(pending) = self.pending.as_mut() {
-            if pending.result.is_none() {
-                if pending.operation.is_cancelled()
-                    || context.is_none_or(|current| {
-                        current.project_generation != pending.context.project_generation
-                    })
-                {
-                    pending.result = Some(Err("vst3 insertion cancelled · source changed".into()));
-                } else if let Some(source) = self
-                    .sources
-                    .iter_mut()
-                    .find(|s| s.binding == pending.binding)
-                {
-                    #[cfg(all(test, feature = "allocation-probe"))]
-                    let held = if matches!(
-                        control.native_source_preparation_progress(source.binding),
-                        Some(Progress::Facts(_))
-                    ) {
-                        let held = self
-                            .facts_gate
-                            .as_mut()
-                            .is_some_and(|gate| gate.held(source.binding));
-                        if !held {
-                            self.facts_gate = None;
-                        }
-                        held
-                    } else {
-                        false
-                    };
-                    #[cfg(not(all(test, feature = "allocation-probe")))]
-                    let held = false;
-                    #[cfg(not(all(test, feature = "allocation-probe")))]
-                    let presentation = None;
-                    #[cfg(all(test, feature = "allocation-probe"))]
-                    let presentation = self.presentation;
-                    let result = if held {
-                        Ok(None)
-                    } else {
-                        #[cfg(all(test, feature = "allocation-probe"))]
-                        {
-                            source.attempts = source.attempts.saturating_add(1);
-                        }
-                        self.host
-                            .as_ref()
-                            .ok_or_else(|| "qualified vst3 helper unavailable".to_owned())
-                            .and_then(|host| advance_source(host, presentation, control, source))
-                    };
-                    match result {
-                        Ok(Some(state)) => pending.result = Some(Ok(state)),
-                        Ok(None) => {}
-                        Err(error) => pending.result = Some(Err(bounded_error(error))),
-                    }
-                } else {
-                    pending.result = Some(Err("original vst3 source unavailable".into()));
+        if let Some(pending) = self.pending.as_mut()
+            && pending.result.is_none()
+        {
+            if pending.operation.is_cancelled()
+                || context.is_none_or(|current| {
+                    current.project_generation != pending.context.project_generation
+                })
+            {
+                pending.result = Some(Err("vst3 insertion cancelled · source changed".into()));
+            } else if let Some(source) = self
+                .sources
+                .iter_mut()
+                .find(|s| s.binding == pending.binding)
+            {
+                // Sample the progress once. Re-reading it after the continuation
+                // check could advance newly arrived Facts during background poll.
+                let progress = control.native_source_preparation_progress(source.binding);
+                let at_facts = matches!(progress, Some(Progress::Facts(_)));
+                if at_facts && !pending.facts_observed {
+                    pending.facts_observed = true;
+                    record_insertion_stage(
+                        self.diagnostics.as_ref(),
+                        source.binding,
+                        source.project_generation,
+                        "native_facts",
+                        format_args!(""),
+                    );
                 }
+                #[cfg(all(test, feature = "allocation-probe"))]
+                let held = if at_facts {
+                    let held = self
+                        .facts_gate
+                        .as_mut()
+                        .is_some_and(|gate| gate.held(source.binding));
+                    if !held {
+                        self.facts_gate = None;
+                    }
+                    held
+                } else {
+                    false
+                };
+                #[cfg(not(all(test, feature = "allocation-probe")))]
+                let held = false;
+
+                let matching_insertion = insertion.is_some_and(|input| {
+                    input.insertion.context == pending.context
+                        && Arc::ptr_eq(&input.insertion.control, &pending.operation)
+                        && input.device_id == source.device
+                        && input.insertion.destination.owner() == source.owner
+                });
+                // Only the Session continuation has the validated insertion and
+                // its prepared baseline borrow. Background poll wakes that
+                // continuation without taking the native source or its Facts.
+                pending.facts_ready_for_session = at_facts && !held && insertion.is_none();
+                let result = if held || pending.facts_ready_for_session {
+                    Ok(None)
+                } else if at_facts && !matching_insertion {
+                    Err("vst3 preparation differs from the pending insertion".into())
+                } else {
+                    #[cfg(not(all(test, feature = "allocation-probe")))]
+                    let plan = EffectPresentationPlan::AllowUnknown;
+                    #[cfg(all(test, feature = "allocation-probe"))]
+                    let plan = fixture_presentation_plan(self.presentation);
+                    #[cfg(all(test, feature = "allocation-probe"))]
+                    {
+                        source.attempts = source.attempts.saturating_add(1);
+                        pending.facts_attempt_from_session |= at_facts;
+                    }
+                    self.host
+                        .as_ref()
+                        .ok_or_else(|| "qualified vst3 helper unavailable".to_owned())
+                        .and_then(|host| {
+                            advance_source_at_progress(host, plan, control, source, progress)
+                        })
+                };
+                match result {
+                    Ok(Some(state)) => {
+                        record_insertion_stage(
+                            self.diagnostics.as_ref(),
+                            source.binding,
+                            source.project_generation,
+                            "endpoint_ready",
+                            format_args!(""),
+                        );
+                        pending.result = Some(Ok(state));
+                    }
+                    Ok(None) => {}
+                    Err(error) => pending.result = Some(Err(bounded_error(error))),
+                }
+            } else {
+                pending.result = Some(Err("original vst3 source unavailable".into()));
             }
         }
         // Refused operations retain their original binding until actual report
@@ -467,7 +909,7 @@ impl Plugins {
         // removing one here would shift a later source past its renewal stage.
         while self.restore.is_none() && index < self.sources.len() {
             let source = &self.sources[index];
-            if source.retiring {
+            if source.retiring && !source.editor_transfer && !self.editor_holds(source.binding) {
                 let _ = control.retire_native_source_preparation(source.binding);
                 if control
                     .recover_native_source_preparation(source.binding)
@@ -486,17 +928,44 @@ impl Plugins {
             {
                 let source = self.sources.first();
                 let restore_refused = observed.restore_refused;
+                let editor_receipts = observed.editor_receipts;
+                let editor_receipt_count = observed.editor_receipt_count;
+                let mut source_bindings = [None; 2];
+                for (entry, source) in source_bindings.iter_mut().zip(
+                    self.sources
+                        .iter()
+                        .filter(|source| source.accepted && !source.retiring),
+                ) {
+                    *entry = Some((
+                        source.device,
+                        source.binding,
+                        control.native_source_completed_blocks(source.binding),
+                    ));
+                }
                 *observed = PreparationObservation {
                     output: control.output_identity(),
                     binding: source.map(|source| source.binding),
+                    source_bindings,
+                    newest_source: self
+                        .sources
+                        .last()
+                        .map(|source| (source.device, source.binding, source.accepted)),
                     pending: self.pending.is_some(),
                     accepted: source.is_some_and(|source| source.accepted),
                     retiring: source.is_some_and(|source| source.retiring),
                     attempts: source.map_or(0, |source| source.attempts),
+                    facts_attempt_from_session: self
+                        .pending
+                        .as_ref()
+                        .is_some_and(|p| p.facts_attempt_from_session),
                     native: source.and_then(|source| {
                         control.native_source_preparation_progress(source.binding)
                     }),
                     restore_refused,
+                    observed_latency_receipt: source
+                        .is_some_and(|source| source.observed_latency_receipt),
+                    editor_receipts,
+                    editor_receipt_count,
                 };
             }
             if let Some(queued) = &self.queued {
@@ -530,11 +999,11 @@ impl Plugins {
         }
         let mut output = output;
         if input.preparing_edit() {
-            input.visit_plugin_effects(|owner, device, state| {
+            input.visit_plugin_devices(|destination, device, state| {
                 self.prepare_edit_source(
                     output.as_deref_mut().ok_or("native output closed")?,
                     &input,
-                    owner,
+                    destination,
                     device,
                     state,
                     desired,
@@ -549,7 +1018,8 @@ impl Plugins {
             .map_err(|_| "vst3 compiler selection unavailable")?;
         let context = input.context();
         let mut unavailable = Vec::new();
-        input.visit_plugin_effects(|owner, device, state| {
+        input.visit_plugin_devices(|destination, device, state| {
+            let owner = destination.owner();
             let source = match output
                 .as_deref_mut()
                 .and_then(|output| output.publication.control())
@@ -557,7 +1027,7 @@ impl Plugins {
                 Some(control) => self.matching_edit_source(
                     control,
                     &input,
-                    owner,
+                    destination,
                     device,
                     state,
                     desired,
@@ -579,9 +1049,9 @@ impl Plugins {
             if let Some(source) = desired
                 .filter(|source| source.context().project_generation == context.project_generation)
             {
-                source.effect_preparation().visit_plugin_effects(
-                    |old_owner, old_device, old_state| {
-                        preserved |= old_owner == owner
+                source.effect_preparation().visit_plugin_devices(
+                    |old_destination, old_device, old_state| {
+                        preserved |= old_destination == destination
                             && old_device == device
                             && old_state.processing_eq(state);
                         preserved |= input.preparing_edit() && old_state.processing_eq(state);
@@ -611,8 +1081,69 @@ impl Plugins {
         let control = output
             .and_then(|output| output.publication.control())
             .ok_or("native output closed")?;
+        let mut canonical = Vec::new();
+        canonical
+            .try_reserve_exact(bindings.len())
+            .map_err(|_| "vst3 canonical facts capacity unavailable")?;
+        input.visit_plugin_devices(|destination, device, state| {
+            let Some(source) = self.sources.iter().rev().find(|source| {
+                bindings.contains(&source.binding)
+                    && source.owner == destination.owner()
+                    && source.device == device
+            }) else {
+                return Ok(());
+            };
+            if !edits::original_state(control, source.binding, cancellation)?.processing_eq(state) {
+                let selection = match edits::armed_selection(control, source.binding, cancellation)?
+                {
+                    Some(selection) => selection,
+                    None => AuthoredSelection::for_no_parameters(
+                        Hosting::saved_identity_on_control(state)?.class.bytes(),
+                    )?,
+                };
+                canonical.push(edits::canonical_bases(
+                    self.host
+                        .as_ref()
+                        .ok_or("qualified vst3 helper unavailable")?,
+                    control,
+                    source.binding,
+                    state,
+                    &selection,
+                    cancellation,
+                    self.restored_canonical_source(input.context()),
+                )?);
+            }
+            Ok(())
+        })?;
+        for &binding in &bindings {
+            let revision = loop {
+                edits::check_cancel(cancellation)?;
+                match control.reserve_native_source_program_revision_on_control(binding) {
+                    Err(reason)
+                        if reason == "native preparation is busy"
+                            || reason == "native source is busy" =>
+                    {
+                        edits::poll_control(control)
+                    }
+                    result => break result?,
+                }
+            };
+            if let Some(gesture) = self
+                .parameter_gesture
+                .as_mut()
+                .filter(|gesture| gesture.binding == binding && gesture.commit.is_some())
+            {
+                gesture.next_program = Some(revision);
+            }
+        }
         loop {
-            match Hosting::prepare_on_control(control, &bindings, &unavailable, prepare) {
+            match Hosting::prepare_with_canonical_bases_on_control(
+                control,
+                &bindings,
+                &unavailable,
+                &canonical,
+                prepare,
+            ) {
                 Err(error)
                     if input.preparing_edit()
                         && matches!(
@@ -631,6 +1162,34 @@ impl Plugins {
     }
 }
 
+fn hosting_profile(destination: PluginEffectDestination) -> PluginProfile {
+    if destination.is_instrument() {
+        PluginProfile::Instrument
+    } else {
+        PluginProfile::Effect
+    }
+}
+
+/// Bounded worker-side correlation for one native insertion. The binding
+/// identifies the output, planned device, successor revision and lease.
+fn record_insertion_stage(
+    log: Option<&hex_diagnostics::DiagnosticsHandle>,
+    binding: Binding,
+    generation: u64,
+    stage: &'static str,
+    detail: std::fmt::Arguments<'_>,
+) {
+    if let Some(log) = log {
+        let _ = log.record_typed(
+            hex_diagnostics::Level::Debug,
+            hex_diagnostics::Category::Audio,
+            &format!(
+                "vst3_insert v=1 stage={stage} generation={generation} binding={binding:?}{detail}"
+            ),
+        );
+    }
+}
+
 fn bounded_error(error: String) -> String {
     if error.capacity() <= 8192 {
         return error;
@@ -644,11 +1203,35 @@ fn bounded_error(error: String) -> String {
 /// stopped renewal. Returning captured state never admits a canonical graph.
 fn advance_source(
     host: &Hosting,
-    presentation: Option<hex_audio::plugin_effects::EffectPresentation>,
+    presentation: Option<EffectPresentation>,
     control: &mut hex_audio::prepared::PublicationControl,
     source: &mut Source,
 ) -> Result<Option<NativeDeviceState>, String> {
-    match control.native_source_preparation_progress(source.binding) {
+    let progress = control.native_source_preparation_progress(source.binding);
+    advance_source_at_progress(
+        host,
+        fixture_presentation_plan(presentation),
+        control,
+        source,
+        progress,
+    )
+}
+
+fn fixture_presentation_plan(presentation: Option<EffectPresentation>) -> EffectPresentationPlan {
+    presentation.map_or(
+        EffectPresentationPlan::AllowUnknown,
+        EffectPresentation::plan,
+    )
+}
+
+fn advance_source_at_progress(
+    host: &Hosting,
+    presentation: EffectPresentationPlan,
+    control: &mut hex_audio::prepared::PublicationControl,
+    source: &mut Source,
+    progress: Option<Progress>,
+) -> Result<Option<NativeDeviceState>, String> {
+    match progress {
         Some(Progress::Facts(_)) => {
             match host.complete_on_control(control, source.binding, presentation) {
                 Ok(()) => {}
@@ -659,16 +1242,18 @@ fn advance_source(
                 Err(reason) => return Err(reason),
             }
         }
-        Some(Progress::Prepared { .. }) => match control.start_native_effect(source.binding) {
+        Some(Progress::Prepared { .. }) => match control
+            .start_native_effect_with_authored_selection(source.binding, source.authored.as_ref())
+        {
             Ok(()) => {}
             Err("native preparation is busy") => return Ok(None),
             Err(reason) => return Err(reason.to_owned()),
         },
         Some(Progress::Effect { .. }) => {
-            if let Some((loaned, live)) = control.native_source_endpoint_status(source.binding) {
-                if !live || (source.queued && !loaned) {
-                    return Err("vst3 endpoint returned or stopped before publication".into());
-                }
+            if let Some((loaned, live)) = control.native_source_endpoint_status(source.binding)
+                && (!live || (source.queued && !loaned))
+            {
+                return Err("vst3 endpoint returned or stopped before publication".into());
             }
             if !source.queued {
                 match control.publish_native_source_endpoint(source.binding) {
@@ -694,4 +1279,136 @@ fn advance_source(
         Some(Progress::Preparing) | None => {}
     }
     Ok(None)
+}
+
+#[cfg(test)]
+mod idle_tests {
+    use super::*;
+
+    #[test]
+    fn recording_source_observation_rejects_pending_retiring_and_replaced_bindings() {
+        let mut editor =
+            hex_project::Editor::new(hex_project::Project::new(48_000).unwrap(), 8).unwrap();
+        let mut insert = || {
+            let hex_project::Created::Device(device) = editor
+                .execute(hex_project::Command::InsertMainDevice {
+                    before: None,
+                    state: hex_engine::default_native_device_state(
+                        hex_engine::DeviceTypeId::from_static("hex.utility"),
+                    )
+                    .unwrap(),
+                })
+                .unwrap()
+            else {
+                panic!("device")
+            };
+            device
+        };
+        let device = insert();
+        let other = insert();
+        let mut plugins = Plugins::default();
+        let binding = Binding {
+            root: 1,
+            instance: 2,
+            graph: 3,
+            epoch: 4,
+        };
+        let context = AudioSourceContext {
+            project_generation: 1,
+            editor_revision: 7,
+        };
+        let target = hex_session::service::automation_draft::Vst3CaptureTarget {
+            device,
+            class: [9; 16],
+            parameter: 0,
+            binding,
+        };
+        plugins.sources.push(Source {
+            binding,
+            owner: ProcessorChainOwner::Main,
+            device: device.value(),
+            project_generation: 1,
+            operation: SourceOperation::Reopen,
+            authored: None,
+            accepted: false,
+            retiring: false,
+            queued: true,
+            observes_latency: true,
+            editor_open: false,
+            editor_transfer: false,
+            editor_open_on_insert: false,
+            edit_backlog: false,
+            edit_recovery: None,
+            pending_touch: None,
+            #[cfg(feature = "allocation-probe")]
+            observed_latency_receipt: false,
+            #[cfg(feature = "allocation-probe")]
+            attempts: 0,
+        });
+        assert!(!plugins.matches_capture_source(context, target));
+        plugins.sources[0].accepted = true;
+        assert!(plugins.matches_capture_source(context, target));
+        plugins.sources[0].retiring = true;
+        assert!(!plugins.matches_capture_source(context, target));
+        plugins.sources[0].retiring = false;
+        plugins.sources[0].binding.epoch += 1;
+        assert!(!plugins.matches_capture_source(context, target));
+        plugins.sources[0].binding = binding;
+        assert!(!plugins.matches_capture_source(
+            AudioSourceContext {
+                project_generation: 2,
+                ..context
+            },
+            target
+        ));
+        assert!(!plugins.matches_capture_source(
+            context,
+            hex_session::service::automation_draft::Vst3CaptureTarget {
+                device: other,
+                ..target
+            }
+        ));
+    }
+
+    #[test]
+    fn stopped_editor_backlog_keeps_polling_busy_until_drained_or_output_closes() {
+        let mut plugins = Plugins::default();
+        plugins.sources.push(Source {
+            binding: Binding {
+                root: 1,
+                instance: 2,
+                graph: 3,
+                epoch: 4,
+            },
+            owner: ProcessorChainOwner::Main,
+            device: 2,
+            project_generation: 1,
+            operation: SourceOperation::Reopen,
+            authored: None,
+            accepted: true,
+            retiring: false,
+            queued: true,
+            observes_latency: true,
+            editor_open: true,
+            editor_transfer: false,
+            editor_open_on_insert: false,
+            edit_backlog: false,
+            edit_recovery: None,
+            pending_touch: None,
+            #[cfg(feature = "allocation-probe")]
+            observed_latency_receipt: false,
+            #[cfg(feature = "allocation-probe")]
+            attempts: 0,
+        });
+        assert!(!plugins.idle());
+        plugins.sources[0].editor_open = false;
+        assert!(plugins.idle());
+        plugins.sources[0].edit_backlog = true;
+        assert!(!plugins.idle());
+        plugins.sources[0].edit_backlog = false;
+        assert!(plugins.idle());
+        plugins.sources[0].edit_backlog = true;
+        plugins.output_closed();
+        assert!(plugins.idle());
+    }
 }

@@ -3,13 +3,11 @@
 //! membership as view state; this module owns only the pixel rectangle, the
 //! click/drag threshold, inclusive hit-testing, modifier policy and painting.
 //!
-//! Gesture law (user decision, 31 October 2026): adding points comes first. A
-//! plain blank press keeps its owner's meaning (add a point and drag it). Only a
-//! Shift blank press can start a marquee: it becomes one after moving at least
-//! [`MARQUEE_DRAG_THRESHOLD`] pixels, while a stationary Shift click keeps the
-//! owner's click meaning. The modifiers are read once at the press. Shift
-//! marquee hits replace the selection present at the press; Shift+Cmd toggles
-//! them against it. Cancelling restores the selection present at the press.
+//! The owner chooses which blank presses can start a marquee. It becomes one
+//! after moving at least [`MARQUEE_DRAG_THRESHOLD`] pixels. Shift can reserve
+//! marquee selection on surfaces that add points on a plain click. The EQ
+//! reserves double-click for creation and uses plain drag for marquee. Owners
+//! capture modifiers at press time and restore the selection on cancellation.
 use gpui::{Bounds, Modifiers, PathBuilder, Pixels, Window, point, px, rgb, rgba};
 
 /// Pixel distance a blank press must travel before it becomes a marquee.
@@ -18,7 +16,7 @@ pub const MARQUEE_DRAG_THRESHOLD: f32 = 3.0;
 /// How marquee hits combine with the selection present at the press.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MarqueeMode {
-    /// Shift: the hits become the selection.
+    /// The hits become the selection.
     Replace,
     /// Union with the press-time selection.
     Add,
@@ -27,7 +25,7 @@ pub enum MarqueeMode {
 }
 
 impl MarqueeMode {
-    /// Whether a blank press with these modifiers starts a marquee at all.
+    /// Whether a blank press starts a marquee on a Shift-only surface.
     pub fn starts(modifiers: Modifiers) -> bool {
         modifiers.shift
     }

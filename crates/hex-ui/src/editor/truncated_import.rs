@@ -35,6 +35,12 @@ pub(super) enum ImportIntent {
         before_track: Option<TrackId>,
         start: u64,
     },
+    ToNewTrackWithGain {
+        path: PathBuf,
+        before_track: Option<TrackId>,
+        start: u64,
+        gain_bits: u32,
+    },
     ToSession {
         path: PathBuf,
         track: TrackId,
@@ -67,6 +73,17 @@ impl ImportIntent {
                 before_track: *before_track,
                 start: *start,
             },
+            Request::ImportToNewTrackWithGain {
+                path,
+                before_track,
+                start,
+                gain,
+            } => Self::ToNewTrackWithGain {
+                path: path.clone(),
+                before_track: *before_track,
+                start: *start,
+                gain_bits: gain.to_bits(),
+            },
             Request::ImportToSession { path, track, scene } => Self::ToSession {
                 path: path.clone(),
                 track: *track,
@@ -81,6 +98,7 @@ impl ImportIntent {
             Self::Import(path)
             | Self::ToTrack { path, .. }
             | Self::ToNewTrack { path, .. }
+            | Self::ToNewTrackWithGain { path, .. }
             | Self::ToSession { path, .. } => path,
         }
     }
@@ -108,6 +126,17 @@ impl ImportIntent {
                 path,
                 before_track,
                 start,
+            },
+            Self::ToNewTrackWithGain {
+                path,
+                before_track,
+                start,
+                gain_bits,
+            } => Request::ImportToNewTrackWithGain {
+                path,
+                before_track,
+                start,
+                gain: f32::from_bits(gain_bits),
             },
             Self::ToSession { path, track, scene } => {
                 Request::ImportToSession { path, track, scene }
@@ -295,3 +324,25 @@ fn recovery_detail(truncation: &ImportTruncation) -> String {
 #[cfg(all(test, feature = "ui-test-support"))]
 #[path = "truncated_import_tests.rs"]
 mod tests;
+
+#[cfg(all(test, not(feature = "ui-test-support")))]
+mod unit_tests {
+    use super::{ImportIntent, Request, TruncatedImportRecovery};
+
+    #[test]
+    fn recovery_intent_retains_the_exact_captured_gain_and_destination() {
+        let path = std::path::PathBuf::from("/mixed Case/source.wav");
+        let request = Request::ImportToNewTrackWithGain {
+            path: path.clone(),
+            before_track: None,
+            start: 37,
+            gain: 0.25,
+        };
+        let intent = ImportIntent::capture(&request).expect("single-file intent");
+        let recovered = intent.into_request();
+        assert!(
+            matches!(&recovered, Request::ImportToNewTrackWithGain { path: actual, before_track: None, start: 37, gain } if actual == &path && *gain == 0.25)
+        );
+        assert!(TruncatedImportRecovery::new(recovered).is_ok());
+    }
+}

@@ -2,7 +2,8 @@
 //! its terminal.
 use super::{EditorMode, EditorView};
 use hex_project::{ClipGroupPosition, ClipId, Command, Project, TrackId};
-use hex_session::service::{Event, Request};
+use hex_session::service::{ArrangementEditViewObservation, Event, Request, ViewState};
+use std::sync::Arc;
 
 /// The request whose acknowledged copy births become the selection.
 enum Kind {
@@ -11,6 +12,12 @@ enum Kind {
         track: TrackId,
         position: ClipGroupPosition,
         count: usize,
+        alias: bool,
+    },
+    NewTrack {
+        clip: ClipId,
+        before_track: Option<TrackId>,
+        position: ClipGroupPosition,
     },
     /// A clip-clipboard paste or insert. Its reported `first..=last` range
     /// holds only pasted clips (hex-project's paste contract), so the expected
@@ -42,25 +49,45 @@ impl Pending {
         })
     }
     pub(super) fn capture(view: &EditorView, command: &Command) -> Option<Self> {
-        let Command::MoveClipsWithOverwrite {
-            clips,
-            anchor,
-            track,
-            position,
-            copy: true,
-        } = command
-        else {
-            return None;
-        };
-        Self::new(
-            view,
-            Kind::Move {
+        let kind = match command {
+            Command::MoveClipsWithOverwrite {
+                clips,
+                anchor,
+                track,
+                position,
+                copy: true,
+            } => Kind::Move {
                 anchor: *anchor,
                 track: *track,
                 position: *position,
                 count: clips.len(),
+                alias: false,
             },
-        )
+            Command::DuplicateAliasClipsAt {
+                clips,
+                anchor,
+                track,
+                position,
+            } => Kind::Move {
+                anchor: *anchor,
+                track: *track,
+                position: *position,
+                count: clips.len(),
+                alias: true,
+            },
+            Command::DuplicateAliasClipToNewTrack {
+                clip,
+                before_track,
+                position,
+                ..
+            } => Kind::NewTrack {
+                clip: *clip,
+                before_track: *before_track,
+                position: *position,
+            },
+            _ => return None,
+        };
+        Self::new(view, kind)
     }
     /// Capture a time-selection paste/insert request. A range clipboard paste
     /// reports no clip births, so its completion selects nothing.
@@ -86,6 +113,8 @@ impl Pending {
     pub(super) fn expected_count(&self, project: &Project, first: ClipId, last: ClipId) -> usize {
         match self.kind {
             Kind::Move { count, .. } => count,
+            Kind::NewTrack { .. } => 1,
+            Kind::Paste { .. } if first == last => 1,
             Kind::Paste { .. } => project
                 .tracks()
                 .iter()
@@ -120,7 +149,7 @@ impl Pending {
                     _ => false,
                 };
             }
-            Kind::Move { .. } => {}
+            Kind::Move { .. } | Kind::NewTrack { .. } => {}
         }
         let command = match request {
             Request::Edit(command) => command,
@@ -131,17 +160,37 @@ impl Pending {
             } if *project_generation == self.generation && *revision == self.revision => command,
             _ => return false,
         };
-        let Kind::Move {
-            anchor,
-            track,
-            position,
-            count,
-        } = self.kind
-        else {
-            return false;
-        };
-        matches!(command, Command::MoveClipsWithOverwrite { clips, anchor: a, track: t, position: p, copy: true }
-            if *a == anchor && *t == track && *p == position && clips.len() == count)
+        match self.kind {
+            Kind::Move {
+                anchor,
+                track,
+                position,
+                count,
+                alias: false,
+            } => {
+                matches!(command, Command::MoveClipsWithOverwrite { clips, anchor: a, track: t, position: p, copy: true }
+                    if *a == anchor && *t == track && *p == position && clips.len() == count)
+            }
+            Kind::Move {
+                anchor,
+                track,
+                position,
+                count,
+                alias: true,
+            } => {
+                matches!(command, Command::DuplicateAliasClipsAt { clips, anchor: a, track: t, position: p }
+                    if *a == anchor && *t == track && *p == position && clips.len() == count)
+            }
+            Kind::NewTrack {
+                clip,
+                before_track,
+                position,
+            } => {
+                matches!(command, Command::DuplicateAliasClipToNewTrack { clip: c, before_track: b, position: p, .. }
+                    if *c == clip && *b == before_track && *p == position)
+            }
+            Kind::Paste { .. } => false,
+        }
     }
     pub(super) fn is_current(&self, view: &EditorView) -> bool {
         self.generation == view.project_generation
@@ -158,6 +207,43 @@ impl Pending {
     }
 }
 impl EditorView {
+    /// The worker has committed these rows. Painting them does not acknowledge
+    /// the paste or give its selection receipt ownership of later input.
+    pub(super) fn observe_paste_view(
+        &mut self,
+        observation: ArrangementEditViewObservation,
+    ) -> bool {
+        let Some(installed) = self.state.as_ref().map(|state| state.revision) else {
+            return false;
+        };
+        let predecessor = self
+            .committed_paste_view
+            .as_ref()
+            .map_or(installed, |view| view.revision.max(installed));
+        if self.project_generation != observation.project_generation
+            || observation.first_previous_revision > observation.previous_revision
+            || predecessor < observation.first_previous_revision
+            || predecessor > observation.previous_revision
+        {
+            return false;
+        }
+        let Some(state) = observation.state.upgrade() else {
+            return false;
+        };
+        if observation.previous_revision.checked_add(1) != Some(state.revision) {
+            return false;
+        }
+        self.committed_paste_view = Some(state);
+        self.arrangement_paste_view().is_some()
+    }
+
+    pub(super) fn arrangement_paste_view(&self) -> Option<&Arc<ViewState>> {
+        if self.mode != EditorMode::Arrangement || self.opening_project || self.close_prompt_open {
+            return None;
+        }
+        self.committed_paste_view.as_ref()
+    }
+
     pub(super) fn retire_abandoned_group_copy(&mut self) -> bool {
         let abandoned = self.pending_group_copy.as_ref().is_some_and(|p| {
             p.generation != self.project_generation
@@ -203,3 +289,6 @@ impl EditorView {
         None
     }
 }
+
+#[cfg(all(test, feature = "ui-test-support"))]
+mod tests;

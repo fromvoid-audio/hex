@@ -6,7 +6,9 @@
 //! Schema36 reused a version in two branches: absence of sections identifies the
 //! valid tempo branch; deletion of that whole inventory cannot be distinguished.
 use hex_project::{Command, Editor};
-use hex_storage::{CURRENT_SCHEMA_VERSION, decode, encode, load_with_token, save_new};
+use hex_storage::{
+    CURRENT_SCHEMA_VERSION, NEWEST_SCHEMA_VERSION, decode, encode, load_with_token, save_new,
+};
 use serde_json::{Value, json};
 mod common;
 
@@ -262,7 +264,7 @@ fn migration_never_defaults_missing_required_fields_or_discards_unknown_data() {
     wrong_lineage["midi_clip_volumes"] = json!({"clips":[]});
     assert!(decode(&bytes(&wrong_lineage)).is_err());
     let mut future = value(V35);
-    future["version"] = (CURRENT_SCHEMA_VERSION + 1).into();
+    future["version"] = (NEWEST_SCHEMA_VERSION + 1).into();
     assert!(
         decode(&bytes(&future))
             .unwrap_err()

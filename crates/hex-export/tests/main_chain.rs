@@ -16,6 +16,7 @@ use std::{
 };
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
+const MAIN_SATURATOR_LATENCY: usize = 11;
 struct Directory(PathBuf);
 impl Directory {
     fn new() -> Self {
@@ -136,19 +137,14 @@ fn prepared(f: &Fixture) -> Arc<PreparedRevision> {
     )
 }
 /// Independent Main oracle. The raw pre-Main sum is rendered with the Main
-/// Saturator bypassed (a bypassed device declares no latency), then fed once
+/// Saturator removed, then fed once
 /// through the same oversampled Saturator state on a lone track, before the
 /// same master gain. Running Main per source instead (2 x sat(0.6)) differs.
 fn main_oracle(compensated: bool, frames: usize) -> Vec<[f32; 2]> {
     let mut raw = fixture(compensated);
     let main = raw.editor.project().main_devices()[0].id();
     let state = raw.editor.project().main_devices()[0].state().clone();
-    raw.editor
-        .execute(Command::SetDeviceBypass {
-            device: main,
-            bypassed: true,
-        })
-        .unwrap();
+    raw.editor.execute(Command::RemoveDevice(main)).unwrap();
     let mut session = SessionPlayback::new(prepared(&raw)).unwrap();
     session.apply(SessionPlaybackCommand::Play).unwrap();
     let mut sum = vec![[0.0; 2]; 320];
@@ -211,6 +207,15 @@ fn main_oracle(compensated: bool, frames: usize) -> Vec<[f32; 2]> {
     assert_eq!(expected[319], [0.5, -0.5]);
     expected
 }
+/// PCM16 export applies ±1 LSB TPDF dither, so each sample lands within one
+/// LSB of plain rounding.
+fn assert_pcm16_near(actual: i16, expected: f32, context: &str) {
+    let rounded = (expected.clamp(-1.0, 1.0) * 32_767.0).round() as i32;
+    assert!(
+        (i32::from(actual) - rounded).abs() <= 1,
+        "{context}: {actual} not within one lsb of {rounded}"
+    );
+}
 fn assert_pcm(path: &Path, expected: &[[f32; 2]]) {
     let bytes = fs::read(path).unwrap();
     assert_eq!(&bytes[0..4], b"RIFF");
@@ -219,8 +224,7 @@ fn assert_pcm(path: &Path, expected: &[[f32; 2]]) {
     for (sample, expected) in bytes[44..].chunks_exact(4).zip(expected) {
         for channel in 0..2 {
             let actual = i16::from_le_bytes([sample[channel * 2], sample[channel * 2 + 1]]);
-            let expected = (expected[channel] * 32767.0).round() as i16;
-            assert_eq!(actual, expected, "actual serialized PCM");
+            assert_pcm16_near(actual, expected[channel], "actual serialized PCM");
         }
     }
 }
@@ -296,8 +300,8 @@ fn actual_linear_prepared_wav_and_stems_preserve_main_boundary() {
         // declared 11-frame latency is rendered and dropped, so the file's
         // first frame is the oracle's frame 11 and its tail includes the
         // band-limited release after the clip ends.
-        const MAIN_LATENCY: usize = 11;
-        let expected = main_oracle(compensated, 320 + MAIN_LATENCY).split_off(MAIN_LATENCY);
+        let expected = main_oracle(compensated, 320 + MAIN_SATURATOR_LATENCY)
+            .split_off(MAIN_SATURATOR_LATENCY);
         assert_pcm(&linear, &expected);
         assert_pcm(&shared, &expected);
         assert_eq!(fs::read(&linear).unwrap(), fs::read(&shared).unwrap());
@@ -335,26 +339,34 @@ fn main_bypass_and_remove_restore_raw_sum_with_exact_undo_redo() {
     let mut f = fixture(false);
     let main = f.editor.project().main_devices()[0].id();
     let original = f.editor.project().snapshot();
-    for command in [
-        Command::SetDeviceBypass {
-            device: main,
-            bypassed: true,
-        },
-        Command::RemoveDevice(main),
+    for (command, latency) in [
+        (
+            Command::SetDeviceBypass {
+                device: main,
+                bypassed: true,
+            },
+            MAIN_SATURATOR_LATENCY,
+        ),
+        (Command::RemoveDevice(main), 0),
     ] {
         f.editor.execute(command).unwrap();
         let changed = f.editor.project().snapshot();
         let revision = prepared(&f);
+        assert_eq!(
+            usize::try_from(revision.arrangement().main_latency_frames()).unwrap(),
+            latency
+        );
         let mut session = SessionPlayback::new(revision).unwrap();
         session.apply(SessionPlaybackCommand::Play).unwrap();
         let mut frames = [[0.0; 2]; 64];
         session.render(&mut frames).unwrap();
-        assert_eq!(frames, [[0.6, -0.6]; 64]);
-        assert!(f.editor.undo());
+        assert!(frames[..latency].iter().all(|frame| *frame == [0.0; 2]));
+        assert!(frames[latency..].iter().all(|frame| *frame == [0.6, -0.6]));
+        assert!(f.editor.try_undo().unwrap());
         assert_eq!(f.editor.project().snapshot(), original);
-        assert!(f.editor.redo());
+        assert!(f.editor.try_redo().unwrap());
         assert_eq!(f.editor.project().snapshot(), changed);
-        assert!(f.editor.undo());
+        assert!(f.editor.try_undo().unwrap());
     }
 }
 
@@ -405,10 +417,7 @@ fn controlled_range_export_reconstructs_stateful_main_history_from_zero() {
         for (sample, expected) in bytes[44..].chunks_exact(4).zip(&full[128..192]) {
             for channel in 0..2 {
                 let actual = i16::from_le_bytes([sample[channel * 2], sample[channel * 2 + 1]]);
-                assert_eq!(
-                    actual,
-                    (expected[channel].clamp(-1.0, 1.0) * 32767.0).round() as i16
-                );
+                assert_pcm16_near(actual, expected[channel], "selected range PCM");
             }
         }
         assert_eq!(control.progress().processed_frames, 192);
