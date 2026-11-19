@@ -44,6 +44,26 @@ pub(super) fn compensated_long_source_bypass(
         })
 }
 
+/// Give the existing Power Off cut sole custody until it becomes silent.
+pub(super) fn power_off_fade_blocks_reenable(
+    revision: &PreparedRevision,
+    previous: &SessionPlayback,
+) -> bool {
+    previous
+        .tail_mutable_instruments
+        .iter()
+        .flatten()
+        .any(|tail| {
+            tail.is_powering_off()
+                && !tail.committed_is_quiescent()
+                && tail.runtime.expression_identity.is_some_and(|device| {
+                    revision.arrangement().tracks().iter().any(|track| {
+                        track.instrument_slot_enabled() && track.instrument_id == Some(device)
+                    })
+                })
+        })
+}
+
 /// A short, already-releasing source must finish before another kernel for
 /// the same device is admitted. The callback can retry while the old graph
 /// renders; held live inputs and long releases retain the existing policy.
@@ -61,7 +81,8 @@ pub(super) fn short_source_release_blocks_reenable(
                     .iter()
                     .flatten()
                     .any(|tail| {
-                        tail.runtime.expression_identity == Some(device)
+                        !tail.is_powering_off()
+                            && tail.runtime.expression_identity == Some(device)
                             && tail.runtime.max_release_tail_frames() <= limit
                             && !tail.runtime.has_committed_live_occurrences()
                             && tail.runtime.proofs().all(|note| {
@@ -89,7 +110,8 @@ pub(super) fn reenabled_release_receivers(
     let short_limit = u64::from(candidate.revision.arrangement().sample_rate().div_ceil(200));
     for (slot, tail) in previous.tail_mutable_instruments.iter().enumerate() {
         let Some(tail) = tail.as_ref().filter(|tail| {
-            !tail.runtime.committed_is_quiescent() || tail.runtime.has_committed_live_occurrences()
+            !tail.is_powering_off()
+                && (!tail.committed_is_quiescent() || tail.runtime.has_committed_live_occurrences())
         }) else {
             continue;
         };
@@ -2871,7 +2893,7 @@ mod tests {
     }
 
     #[test]
-    fn live_sampler_long_release_survives_reenable_without_reusing_input_ids() {
+    fn live_sampler_power_cycles_without_reusing_old_input_ids() {
         on_control(|| {
             use crate::computer_keyboard::ComputerKeyboardInput;
             use crate::playback::PlaybackCommand;
@@ -2953,8 +2975,6 @@ mod tests {
                     input.set_key(0, None).unwrap();
                     oracle_input.set_key(0, None).unwrap();
                     compare(&mut actual, &mut oracle, 13, "physical release");
-                } else {
-                    oracle_input.set_key(0, None).unwrap();
                 }
                 f.editor
                     .execute(Command::SetDeviceBypass {
@@ -2966,18 +2986,31 @@ mod tests {
                 disabled
                     .try_inherit_runtime_in_control_context(&mut actual, Some(19), Some(19))
                     .unwrap();
-                compare(&mut disabled, &mut oracle, 32, "disable release");
+                let mut actual_fade = [[0.0; 2]; 32];
+                let mut expected_fade = actual_fade;
+                disabled.render(&mut actual_fade).unwrap();
+                oracle.render(&mut expected_fade).unwrap();
+                apply_power_fade(&mut expected_fade, 0, 40);
+                for (actual, expected) in actual_fade
+                    .iter()
+                    .flatten()
+                    .zip(expected_fade.iter().flatten())
+                {
+                    assert!((actual - expected).abs() < 0.000_001);
+                }
                 assert!(input.is_cancelled(), "disabled input is terminal");
                 if key_up == "while-disabled" {
                     input.set_key(0, None).unwrap();
                 }
                 input.set_key(1, Some((67, 127, 2))).unwrap();
-                compare(
-                    &mut disabled,
-                    &mut oracle,
-                    7,
-                    "disabled key up and new press",
-                );
+                let mut settled = [[0.0; 2]; 32];
+                let mut expected = settled;
+                disabled.render(&mut settled).unwrap();
+                oracle.render(&mut expected).unwrap();
+                apply_power_fade(&mut expected, 32, 40);
+                for (actual, expected) in settled.iter().flatten().zip(expected.iter().flatten()) {
+                    assert!((actual - expected).abs() < 0.000_001);
+                }
                 f.editor
                     .execute(Command::SetDeviceBypass {
                         device,
@@ -2991,7 +3024,10 @@ mod tests {
                 enabled
                     .try_inherit_runtime_in_control_context(&mut disabled, Some(19), Some(19))
                     .unwrap();
-                compare(&mut enabled, &mut oracle, 13, "reenable release");
+                let oracle_input = Arc::new(ComputerKeyboardInput::default());
+                let (mut oracle, _) = live_playback(&f, &oracle_input);
+                oracle.apply(PlaybackCommand::Play);
+                compare(&mut enabled, &mut oracle, 13, "fresh kernel");
                 for keys in [&fresh, &oracle_input] {
                     keys.set_key(1, Some((67, 127, 1))).unwrap();
                 }
@@ -3299,9 +3335,7 @@ mod tests {
                 })
                 .unwrap();
             let mut disabled = playback(&f);
-            let mut oracle = playback(&f);
             disabled.try_inherit_state_from(&mut old).unwrap();
-            oracle.try_inherit_state_from(&mut reference).unwrap();
             assert!(disabled.mutable_instruments.iter().all(Option::is_none));
             assert_eq!(
                 disabled.tail_mutable_instruments.iter().flatten().count(),
@@ -3321,12 +3355,13 @@ mod tests {
             assert_eq!(
                 reenabled.try_inherit_state_live_from(&mut disabled),
                 Err(SessionPlaybackError::DeviceTransitionBusy),
-                "live publication must wait for the short original release"
+                "live publication must wait for the original power fade"
             );
-            let mut actual = [[0.0; 2]; 32];
+            let mut actual = [[0.0; 2]; 64];
             let mut expected = actual;
             disabled.render(&mut actual).unwrap();
-            oracle.render(&mut expected).unwrap();
+            reference.render(&mut expected).unwrap();
+            apply_power_fade(&mut expected, 0, 40);
             assert_eq!(
                 actual, expected,
                 "refusal preserves the only original tail owner"
@@ -3337,7 +3372,7 @@ mod tests {
                     .flatten()
                     .any(|sample| sample.abs() > 0.001)
             );
-            assert_eq!(actual[16..], [[0.0; 2]; 16]);
+            assert_eq!(actual[40..], [[0.0; 2]; 24]);
             reenabled
                 .try_inherit_state_live_from(&mut disabled)
                 .unwrap();
@@ -3373,17 +3408,99 @@ mod tests {
         device
     }
 
-    #[test]
-    fn rapid_shared_source_reenable_preserves_the_original_long_release() {
-        on_control(|| {
-            let mut f = fixture();
-            let device = long_sampler_release(&mut f);
-            check_rapid_source_toggles(&mut f, device, None);
-        });
+    fn apply_power_fade(pcm: &mut [Frame], elapsed: usize, fade: usize) {
+        for (offset, frame) in pcm.iter_mut().enumerate() {
+            let gain = fade.saturating_sub(elapsed + offset) as f32 / fade as f32;
+            *frame = frame.map(|sample| sample * gain);
+        }
     }
 
     #[test]
-    fn rapid_static_utility_receiver_reenable_preserves_the_original_release() {
+    fn shared_mutable_power_off_fades_the_held_waveform_and_starts_fresh() {
+        on_control(|| {
+            let mut f = fixture();
+            let device = long_sampler_release(&mut f);
+            check_mutable_power_restart(&mut f, device);
+        });
+    }
+
+    fn check_mutable_power_restart(f: &mut Fixture, device: hex_project::DeviceId) {
+        const FADE: usize = 40;
+        let mut previous = playback(f);
+        let mut reference = playback(f);
+        for runtime in [&mut previous, &mut reference] {
+            runtime.apply(SessionPlaybackCommand::Play).unwrap();
+            runtime.render(&mut [[0.0; 2]; 7]).unwrap();
+        }
+        f.editor
+            .execute(Command::SetDeviceBypass {
+                device,
+                bypassed: true,
+            })
+            .unwrap();
+        let mut disabled = playback(f);
+        disabled.try_inherit_state_from(&mut previous).unwrap();
+
+        let mut actual = [[0.0; 2]; 64];
+        let mut expected = actual;
+        disabled.render(&mut actual[..13]).unwrap();
+
+        // An ordinary following revision carries the remaining fade only.
+        let mut successor = playback(f);
+        successor
+            .try_inherit_state_live_from(&mut disabled)
+            .unwrap();
+        f.editor
+            .execute(Command::SetDeviceBypass {
+                device,
+                bypassed: false,
+            })
+            .unwrap();
+        let mut enabled = playback(f);
+        assert_eq!(
+            enabled.try_inherit_state_live_from(&mut successor),
+            Err(SessionPlaybackError::DeviceTransitionBusy),
+        );
+        successor.render(&mut actual[13..]).unwrap();
+        reference.render(&mut expected).unwrap();
+        assert!(
+            actual[FADE..].iter().all(|frame| *frame == [0.0; 2]),
+            "old mutable DSP rendered past the 5 ms power-off deadline"
+        );
+        assert_ne!(expected[0], [0.0; 2]);
+        apply_power_fade(&mut expected, 0, FADE);
+        for (actual, expected) in actual.iter().flatten().zip(expected.iter().flatten()) {
+            assert!((actual - expected).abs() < 0.000_001);
+        }
+        // The provider would still render the held note. The host has ended
+        // its authority and keeps the allocation parked for control retirement.
+        let tail = successor
+            .tail_mutable_instruments
+            .iter()
+            .flatten()
+            .next()
+            .unwrap();
+        assert!(!tail.runtime.committed_is_quiescent());
+        assert!(tail.committed_is_quiescent());
+
+        enabled.try_inherit_state_live_from(&mut successor).unwrap();
+        enabled.render(&mut actual).unwrap();
+        assert_eq!(
+            actual, [[0.0; 2]; 64],
+            "the preceding note onset stays silent"
+        );
+        assert!(
+            enabled
+                .mutable_instruments
+                .iter()
+                .flatten()
+                .all(|runtime| runtime.committed_is_quiescent())
+        );
+        assert!(enabled.tail_mutable_instruments.iter().all(Option::is_none));
+    }
+
+    #[test]
+    fn static_utility_receiver_preserves_its_processing_during_power_fade() {
         on_control(|| {
             use hex_devices::utility::{UTILITY_DEFINITION as utility, parameter as p};
             use hex_lattice_contract::ParameterValue;
@@ -3426,7 +3543,7 @@ mod tests {
                         })
                         .unwrap();
                 }
-                check_rapid_source_toggles(&mut f, device, None);
+                check_mutable_power_restart(&mut f, device);
             }
         });
     }
@@ -3452,14 +3569,14 @@ mod tests {
                 .unwrap();
             assert!(playback(&f).mutable_instruments.iter().all(Option::is_none));
             let maximum_tail = f.editor.project().sample_rate().div_ceil(200) as usize;
-            check_rapid_source_toggles(&mut f, device, Some(maximum_tail));
+            check_rapid_source_toggles(&mut f, device, maximum_tail);
         });
     }
 
     fn check_rapid_source_toggles(
         f: &mut Fixture,
         device: hex_project::DeviceId,
-        maximum_tail: Option<usize>,
+        maximum_tail: usize,
     ) {
         const BLOCK: usize = 13;
         const TOGGLES: [bool; 4] = [true, false, true, false];
@@ -3498,18 +3615,16 @@ mod tests {
             current = candidate;
         }
         let mut settled = [[1.0; 2]; 256];
-        if let Some(maximum_tail) = maximum_tail {
-            let mut expected = settled;
-            current.render(&mut settled).unwrap();
-            reference.render(&mut expected).unwrap();
-            assert_eq!(settled, expected, "rapid toggles cannot restart the fade");
-            assert!(
-                settled[maximum_tail - BLOCK * TOGGLES.len()..]
-                    .iter()
-                    .all(|frame| *frame == [0.0; 2]),
-                "the original receiver cut sets the power-off deadline"
-            );
-        }
+        let mut expected = settled;
+        current.render(&mut settled).unwrap();
+        reference.render(&mut expected).unwrap();
+        assert_eq!(settled, expected, "rapid toggles cannot restart the fade");
+        assert!(
+            settled[maximum_tail - BLOCK * TOGGLES.len()..]
+                .iter()
+                .all(|frame| *frame == [0.0; 2]),
+            "the original receiver cut sets the power-off deadline"
+        );
         for _ in 0..4 {
             current.render(&mut settled).unwrap();
         }

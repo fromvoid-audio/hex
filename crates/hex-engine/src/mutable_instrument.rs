@@ -304,6 +304,125 @@ pub(crate) struct MutableInstrumentTail {
     pub(crate) track_id: TrackId,
     pub(crate) runtime: MutableInstrumentTrackRuntime,
     pub(crate) sends: DetachedSourceSends,
+    power_off: Option<PowerOffFade>,
+}
+
+struct PowerOffFade {
+    frames: u32,
+    remaining: u32,
+    scratch: u32,
+}
+
+impl MutableInstrumentTail {
+    pub(crate) fn new(
+        track_id: TrackId,
+        mut runtime: MutableInstrumentTrackRuntime,
+        sends: DetachedSourceSends,
+        power_off_rate: Option<u32>,
+    ) -> Self {
+        let power_off = power_off_rate.map(|rate| {
+            // Keep already-applied expression inside the kernel. This tail
+            // no longer accepts new controller events.
+            runtime.expression = None;
+            let frames = rate.div_ceil(200).max(1);
+            PowerOffFade {
+                frames,
+                remaining: frames,
+                scratch: frames,
+            }
+        });
+        Self {
+            track_id,
+            runtime,
+            sends,
+            power_off,
+        }
+    }
+
+    pub(crate) fn is_powering_off(&self) -> bool {
+        self.power_off.is_some()
+    }
+
+    pub(crate) fn committed_is_quiescent(&self) -> bool {
+        self.power_expired() || self.runtime.committed_is_quiescent()
+    }
+
+    pub(crate) fn speculative_is_quiescent(&self) -> bool {
+        self.power_off
+            .as_ref()
+            .is_some_and(|fade| fade.scratch == 0)
+            || self.runtime.speculative_is_quiescent()
+    }
+
+    fn power_expired(&self) -> bool {
+        self.power_off
+            .as_ref()
+            .is_some_and(|fade| fade.remaining == 0)
+    }
+
+    pub(crate) fn begin_block(&mut self) {
+        if self.power_expired() {
+            return;
+        }
+        self.runtime.begin_block();
+        if let Some(fade) = &mut self.power_off {
+            fade.scratch = fade.remaining;
+        }
+    }
+
+    pub(crate) fn commit_block(&mut self) {
+        if self.power_expired() {
+            return;
+        }
+        self.runtime.commit_block();
+        if let Some(fade) = &mut self.power_off {
+            fade.remaining = fade.scratch;
+        }
+    }
+
+    pub(crate) fn rollback_block(&mut self) {
+        if self.power_expired() {
+            return;
+        }
+        self.runtime.rollback_block();
+        if let Some(fade) = &mut self.power_off {
+            fade.scratch = fade.remaining;
+        }
+    }
+
+    pub(crate) fn cancel(&mut self) {
+        if let Some(fade) = &mut self.power_off {
+            fade.remaining = 0;
+            fade.scratch = 0;
+        } else {
+            self.runtime.reset();
+        }
+    }
+
+    /// Render only the departing instrument's contribution. A block that
+    /// straddles the deadline processes no samples beyond it.
+    pub(crate) fn render_source<E>(
+        &mut self,
+        output: &mut [[f32; 2]],
+        over_budget: E,
+        render: impl FnOnce(&mut MutableInstrumentTrackRuntime, &mut [[f32; 2]]) -> Result<(), E>,
+    ) -> Result<(), E> {
+        let Some(fade) = &mut self.power_off else {
+            return render(&mut self.runtime, output);
+        };
+        let width = output.len().min(fade.scratch as usize);
+        if width == 0 {
+            return Ok(());
+        }
+        output_trim::render_contribution(
+            &mut output[..width],
+            |offset| (fade.scratch - offset as u32) as f32 / fade.frames as f32,
+            over_budget,
+            |contribution| render(&mut self.runtime, contribution),
+        )?;
+        fade.scratch -= width as u32;
+        Ok(())
+    }
 }
 
 /// Post-fader Return destinations for one detached source release. Stable

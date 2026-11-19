@@ -132,7 +132,7 @@ impl SessionPlayback {
                         runtime.cut_gate_deadlines_at(self.performance_frame);
                     }
                     for tail in self.tail_mutable_instruments.iter_mut().flatten() {
-                        if tail.runtime.is_source_owner() {
+                        if !tail.is_powering_off() && tail.runtime.is_source_owner() {
                             tail.runtime.cut_gate_deadlines_at(self.performance_frame);
                         }
                     }
@@ -189,7 +189,7 @@ impl SessionPlayback {
                 runtime.cut_gate_deadlines_at(self.performance_frame);
             }
             for tail in self.tail_mutable_instruments.iter_mut().flatten() {
-                if tail.runtime.is_source_owner() {
+                if !tail.is_powering_off() && tail.runtime.is_source_owner() {
                     tail.runtime.cut_gate_deadlines_at(self.performance_frame);
                 }
             }
@@ -251,7 +251,7 @@ impl SessionPlayback {
             runtime.reset();
         }
         for tail in self.tail_mutable_instruments.iter_mut().flatten() {
-            tail.runtime.reset();
+            tail.cancel();
         }
         for route in &mut self.routes {
             route.current_first_frame = false;
@@ -285,7 +285,7 @@ impl SessionPlayback {
             .tail_mutable_instruments
             .iter()
             .flatten()
-            .any(|tail| !tail.runtime.committed_is_quiescent())
+            .any(|tail| !tail.committed_is_quiescent())
         {
             return Err(SessionPlaybackError::MutableInstrumentActive);
         }
@@ -498,7 +498,7 @@ impl SessionPlayback {
             runtime.reset();
         }
         for tail in self.tail_mutable_instruments.iter_mut().flatten() {
-            tail.runtime.reset();
+            tail.cancel();
         }
     }
 

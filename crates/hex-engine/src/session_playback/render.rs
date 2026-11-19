@@ -836,7 +836,7 @@ impl SessionPlayback {
                     .tail_mutable_instruments
                     .iter()
                     .flatten()
-                    .all(|tail| tail.runtime.committed_is_quiescent()))
+                    .all(|tail| tail.committed_is_quiescent()))
         {
             if let Some(capture) = capture.as_mut() {
                 capture.commit(output.len());
@@ -883,6 +883,9 @@ impl SessionPlayback {
             }
         }
         for tail in self.tail_mutable_instruments.iter_mut().flatten() {
+            if tail.is_powering_off() {
+                continue;
+            }
             tail.runtime.expression = match if tail.runtime.is_source_owner() {
                 source_selected
             } else {
@@ -990,7 +993,7 @@ impl SessionPlayback {
                 runtime.rollback_block();
             }
             for tail in self.tail_mutable_instruments.iter_mut().flatten() {
-                tail.runtime.rollback_block();
+                tail.rollback_block();
             }
             self.return_effect_tails.rollback_block();
             if let Some(capture) = capture.as_mut() {
@@ -1117,7 +1120,7 @@ impl SessionPlayback {
             runtime.begin_block();
         }
         for tail in self.tail_mutable_instruments.iter_mut().flatten() {
-            tail.runtime.begin_block();
+            tail.begin_block();
         }
         for chain in self.tail_groups.iter_mut().flatten() {
             chain.begin_block();
@@ -1616,7 +1619,7 @@ impl SessionPlayback {
             runtime.commit_block();
         }
         for tail in self.tail_mutable_instruments.iter_mut().flatten() {
-            tail.runtime.commit_block();
+            tail.commit_block();
         }
         for chain in self.tail_groups.iter_mut().flatten() {
             chain.commit_block();
@@ -2745,7 +2748,7 @@ impl SessionPlayback {
                     .get_mut(group_index)
                     .ok_or(SessionPlaybackError::DeviceRuntime)?;
                 *rendered = true;
-                if !tail.runtime.speculative_is_quiescent() {
+                if !tail.speculative_is_quiescent() {
                     process_mutable_tail(
                         tail,
                         &mut self.mutable_onsets,
@@ -2833,7 +2836,7 @@ impl SessionPlayback {
             else {
                 continue;
             };
-            if tail.runtime.speculative_is_quiescent() {
+            if tail.speculative_is_quiescent() {
                 continue;
             }
             let mut tail_buffer = [[0.0; 2]; 256];
@@ -3072,51 +3075,58 @@ fn process_mutable_tail<T: MidiTiming + ?Sized>(
     timing: &T,
     playing: bool,
 ) -> Result<(), SessionPlaybackError> {
-    onsets.clear();
-    tail.runtime
-        .with_frozen_parameters(|runtime, values| {
-            if !playing && runtime.is_source_owner() {
-                let clock = runtime
-                    .source_monitor_clock(
-                        timing
-                            .frame_to_beat(performance_frame)
-                            .map_err(|_| SessionPlaybackError::TempoConversion)?
-                            .raw(),
-                        timing
-                            .tempo_micro_bpm_at_frame(performance_frame)
-                            .ok_or(SessionPlaybackError::TempoConversion)?,
-                        timing.sample_rate(),
-                    )
-                    .map_err(|error| error.render_error())?;
-                runtime
-                    .process_frozen_tail_segment(
-                        None,
-                        performance_frame,
-                        output,
-                        onsets,
-                        events,
-                        Some(&clock),
-                        values,
-                    )
-                    .map_err(|error| error.render_error())
-            } else {
-                runtime
-                    .process_frozen_tail_segment(
-                        Some(tail.track_id),
-                        performance_frame,
-                        output,
-                        onsets,
-                        events,
-                        Some(&InstrumentClock {
-                            timing,
-                            start: performance_frame,
-                        }),
-                        values,
-                    )
-                    .map_err(|error| error.render_error())
-            }
-        })
-        .map_err(|error| error.render_error())?
+    let track = tail.track_id;
+    tail.render_source(
+        output,
+        SessionPlaybackError::DeviceRuntime,
+        |runtime, output| {
+            onsets.clear();
+            runtime
+                .with_frozen_parameters(|runtime, values| {
+                    if !playing && runtime.is_source_owner() {
+                        let clock = runtime
+                            .source_monitor_clock(
+                                timing
+                                    .frame_to_beat(performance_frame)
+                                    .map_err(|_| SessionPlaybackError::TempoConversion)?
+                                    .raw(),
+                                timing
+                                    .tempo_micro_bpm_at_frame(performance_frame)
+                                    .ok_or(SessionPlaybackError::TempoConversion)?,
+                                timing.sample_rate(),
+                            )
+                            .map_err(|error| error.render_error())?;
+                        runtime
+                            .process_frozen_tail_segment(
+                                None,
+                                performance_frame,
+                                output,
+                                onsets,
+                                events,
+                                Some(&clock),
+                                values,
+                            )
+                            .map_err(|error| error.render_error())
+                    } else {
+                        runtime
+                            .process_frozen_tail_segment(
+                                Some(track),
+                                performance_frame,
+                                output,
+                                onsets,
+                                events,
+                                Some(&InstrumentClock {
+                                    timing,
+                                    start: performance_frame,
+                                }),
+                                values,
+                            )
+                            .map_err(|error| error.render_error())
+                    }
+                })
+                .map_err(|error| error.render_error())?
+        },
+    )
 }
 
 struct MutableInstrumentChunkContext<'a, T: ?Sized> {
