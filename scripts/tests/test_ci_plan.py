@@ -333,16 +333,18 @@ class ScopeTests(unittest.TestCase):
                                      ci.ci_plan.UI_UNIT_FEATURES[target])
 
 
-    def test_ui_library_and_midi_pressure_feature_targets_are_disjoint(self):
+    def test_ui_library_and_standalone_rendered_feature_targets_are_disjoint(self):
         for scope in ("full", "ui"):
             with self.subTest(scope=scope):
                 steps = {step.step_id: step for step in ci.planned_steps({"scope": scope})}
                 self.assertIn("--lib", steps["ui-feature-tests"].argv)
                 self.assertNotIn("--test", steps["ui-feature-tests"].argv)
-                self.assertEqual(steps["ui-midi-pressure-boundary-tests"].argv,
-                                 ("cargo", "test", "-p", "hex-ui", "--features", "ui-test-support",
-                                  "--test", "midi_pressure_boundary", "--locked"))
-                self.assertTrue(steps["ui-midi-pressure-boundary-tests"].requires_tests)
+                for target in ("midi_pressure_boundary", "sample_recorder_layout"):
+                    step = steps[f"ui-{target.replace('_', '-')}-tests"]
+                    self.assertEqual(step.argv,
+                                     ("cargo", "test", "-p", "hex-ui", "--features",
+                                      "ui-test-support", "--test", target, "--locked"))
+                    self.assertTrue(step.requires_tests)
                 self.assertIn("--doc", steps["ui-feature-doctests"].argv)
                 self.assertIn("--example", steps["device-gallery-tests"].argv)
                 self.assertNotIn("ui-default-standalone-tests", steps)
@@ -350,7 +352,8 @@ class ScopeTests(unittest.TestCase):
         health = {"python": False, "workspace_inputs": False, "packages": ["hex-ui"]}
         steps = {step.step_id: step for step in ci.planned_steps({"scope": "rust", "health": health})}
         self.assertEqual(steps["health-tests"].argv, ("cargo", "test", "-p", "hex-ui", "--locked"))
-        self.assertFalse(any("midi_pressure_boundary" in step.argv for step in steps.values()))
+        for target in ("midi_pressure_boundary", "sample_recorder_layout"):
+            self.assertFalse(any(target in step.argv for step in steps.values()))
 
     def test_hex_ui_standalone_targets_require_the_reviewed_features(self):
         root = SCRIPTS.parent
@@ -366,7 +369,7 @@ class ScopeTests(unittest.TestCase):
             (): {"unit_editor_state", "track_group_focus", "browser_disclosure_assets",
                  "browser_place_assets", "cursor_assets", "midi_audition_icon", "transport_icon_assets"},
             ("ui-unit-tier",): set(plan.UI_UNIT_FEATURES),
-            ("ui-test-support",): {"midi_pressure_boundary"},
+            ("ui-test-support",): {"midi_pressure_boundary", "sample_recorder_layout"},
         })
 
     def test_shared_theme_selects_unit_and_path_consumer_configurations(self):
@@ -2988,6 +2991,33 @@ class ModuleScopeTests(unittest.TestCase):
         steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner, "hex-session"],
                                   "boundary": consumer_only, "cargo_inventory": [*inventory, other], "paths": []})
         self.assertFalse(any(step.step_id == "ui-consumer-track_group_focus" for step in steps))
+
+    def test_sample_recorder_layout_is_selected_from_its_owner_and_target(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        cases = ("src/editor/sample_recorder.rs",
+                 "src/editor/sample_recorder/layout_fixture.rs",
+                 "src/editor/rendered_test_fixture.rs",
+                 "tests/sample_recorder_layout.rs", "src/editor/user_errors.rs")
+        for path in cases:
+            with self.subTest(path=path):
+                paths = [f"crates/hex-ui/{path}"]
+                filters = plan.module_test_filters(root, paths, inventory, [owner])
+                boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
+                            "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
+                            "module_filters": filters}
+                steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner],
+                                          "boundary": boundary, "cargo_inventory": inventory,
+                                          "paths": paths})
+                matches = [step for step in steps if "sample_recorder_layout" in step.argv]
+                self.assertEqual(len(matches), int(path != cases[-1]))
+                if matches:
+                    self.assertEqual(matches[0].step_id, "ui-consumer-sample_recorder_layout")
+                    self.assertTrue(matches[0].requires_tests)
+                    self.assertIn("ui-test-support", matches[0].argv)
 
     def test_midi_pressure_boundary_source_target_feature_and_full_run_selection(self):
         root = SCRIPTS.parent

@@ -211,9 +211,13 @@ mod recovery_state_integration_tests;
 mod refresh;
 mod refresh_state;
 mod render;
+#[cfg(feature = "ui-test-support")]
+mod rendered_test_fixture;
 mod return_tracks;
 mod routing_controls;
 mod sample_recorder;
+#[cfg(feature = "ui-test-support")]
+pub(crate) use sample_recorder::layout_fixture::exercise as sample_recorder_layout_fixture;
 mod sampler_load;
 mod sampler_parameter;
 mod save;

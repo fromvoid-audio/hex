@@ -190,21 +190,31 @@ harnesses runs the owning unit targets and keeps the reviewed feature Clippy
 checks. Changes to product source still select its unit and rendered support
 coverage.
 
-The windowed library and standalone MIDI pressure test use
-`ui-test-support` in separate invocations:
+The windowed library and the standalone MIDI pressure and recorder layout tests
+use `ui-test-support` in separate invocations:
 
 ```sh
 cargo test -p hex-ui --features ui-test-support --lib --locked
 cargo test -p hex-ui --features ui-test-support --test midi_pressure_boundary --locked
+cargo test -p hex-ui --features ui-test-support --test sample_recorder_layout --locked
 ```
 
 Run `cargo test -p hex-ui --tests --locked` for the default library and
 default standalone unit targets. The six `ui-unit-tier` targets above complete
-the unit tier. The two `ui-test-support` invocations form the integration tier,
+the unit tier. These `ui-test-support` invocations form the integration tier,
 including rendered focus and shortcuts, pending-edit receipts, delayed
 acknowledgement repaint, and open/save flows. For each tier, time the combined
 setup and test execution with compilation measured separately. The unit limit
 is 30 seconds and the integration limit is three minutes.
+
+For focused recorder layout timing on macOS arm64, build
+`sample_recorder_layout` with `--release --no-run --message-format=json`.
+Copy Cargo's reported test executable to a local artifact directory and prepare
+that copy with `xcrun strip -S -x`, `codesign --force --sign -`, and
+`codesign --verify --strict`. Time a fresh APFS copy of the prepared executable
+and run `recorder_header_fits_the_button_labels_and_hit_targets` with
+`--exact --test-threads=1`. Repeat on the same executable for warm timing and
+report compilation and one-time signature preparation separately.
 
 Plans containing self-tests run the existing changelog, architecture, dependency,
 UI/layout and formatting checks first, once each, before Python self-tests and
