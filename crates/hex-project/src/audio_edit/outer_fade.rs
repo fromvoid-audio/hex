@@ -142,6 +142,47 @@ impl AudioClipDomain {
 }
 
 impl ProjectedOuterAudioFade<'_> {
+    /// Project a finite Frame envelope into the playback scalar fade slot.
+    /// Positive prefix shifts both ramps. Padding after the authored end
+    /// preserves its silent tail, and the retained offset stays unwrapped.
+    /// Musical placement requires a separate prepared representation.
+    pub fn frame_playback_envelope(&self) -> Result<ClipFade, Invalid> {
+        if self.author.is_some() {
+            return Err(Invalid(
+                "musical outer fade requires musical playback preparation",
+            ));
+        }
+        let (start, end) = self.view.outer_frame_bounds();
+        let duration = end - start;
+        let fade = self.fade;
+        if fade.is_neutral() {
+            return ClipFade::neutral(duration);
+        }
+        let prefix = self.fade_start;
+        if prefix >= duration {
+            return ClipFade::new(duration, 0, 0, 1)?.with_shape(0, duration - 1, 0, 0);
+        }
+        let shifted_span = fade
+            .span()
+            .checked_add(prefix)
+            .ok_or(Invalid("outer frame fade prefix exceeds its playback span"))?;
+        let required_span = fade
+            .offset()
+            .checked_add(duration)
+            .ok_or(Invalid("outer frame fade playback span overflow"))?;
+        let span = shifted_span.max(required_span);
+        let out_end = shifted_span - fade.out_end_offset();
+        ClipFade::new(span, fade.offset(), fade.fade_in(), fade.fade_out())?
+            .with_shape(
+                fade.in_start() + prefix,
+                span - out_end,
+                fade.in_curve(),
+                fade.out_curve(),
+            )?
+            .with_curve_positions(fade.in_position(), fade.out_position())
+            .map(|placed| placed.with_curve_laws(fade.curve_laws()))
+    }
+
     fn author_clock(&self) -> Option<(&TempoMap, i128)> {
         self.author.map(|author| match author {
             Author::Stored(author) => (&author.tempo, author.origin_beat_raw),

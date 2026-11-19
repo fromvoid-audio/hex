@@ -8,7 +8,7 @@
 use super::*;
 use hex_project::{
     AudioClipTiming, AudioDomainClock, AudioProcessingProjection, AudioViewOccurrence,
-    AudioViewProjection, MAX_AUDIO_DOMAIN_FRAMES,
+    AudioViewProjection, MAX_AUDIO_DOMAIN_FRAMES, ProjectedOuterAudioFade,
 };
 
 /// Bound metadata traversal independently from PCM size. Total processed root
@@ -198,10 +198,6 @@ impl AudioTransformPreparation {
         source: PreparedAudioSourceRef<'_>,
         projection: AudioViewProjection<'_>,
     ) -> Result<Clip, Invalid> {
-        edit.domain
-            .fade_clock
-            .require_supported()
-            .map_err(|error| Invalid(error.0))?;
         if self.cancelled() {
             return Err(Invalid("audio preparation cancelled"));
         }
@@ -220,6 +216,46 @@ impl AudioTransformPreparation {
         {
             return Err(Invalid("audio projection differs from its clip"));
         }
+        let outer = clip.projected_outer_fade(tempo_map)?;
+        self.compile_view_with_outer_fade(
+            tempo_map,
+            clip,
+            edit,
+            asset,
+            source,
+            projection,
+            outer.as_ref(),
+        )
+    }
+
+    /// Assemble a checked finite placement on control. Its scalar envelope
+    /// belongs to the resulting playback Clip. The cached view PCM retains
+    /// only its processing-root law, including the repeated event fades.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn compile_view_with_outer_fade(
+        &self,
+        tempo_map: &hex_project::TempoMap,
+        clip: &hex_project::Clip,
+        edit: &AudioClipEdit,
+        asset: &Asset,
+        source: PreparedAudioSourceRef<'_>,
+        projection: AudioViewProjection<'_>,
+        outer: Option<&ProjectedOuterAudioFade<'_>>,
+    ) -> Result<Clip, Invalid> {
+        if outer.is_some() != (edit.domain.fade_clock == hex_project::AudioClipFadeClock::Outer) {
+            return Err(Invalid(
+                "audio placement fade differs from its processing clock",
+            ));
+        }
+        let fade = outer
+            .map(ProjectedOuterAudioFade::frame_playback_envelope)
+            .transpose()?;
+        let attach_fade = |compiled: Clip| match fade {
+            Some(fade) => compiled.with_fade(fade),
+            None => Ok(compiled),
+        };
+        let processing = super::processing_root::unfaded_outer_edit(edit, tempo_map)?;
+        let edit = processing.as_ref();
         let canonical_cache = !projection.has_silent_repeat_gap();
         if clip.duration() > MAX_AUDIO_DOMAIN_FRAMES
             || projection.occurrence_count() > MAX_VIEW_OCCURRENCES
@@ -262,20 +298,20 @@ impl AudioTransformPreparation {
             let first = projection.occurrence(0)?;
             let root_edit = occurrence_edit(edit, first.root_origin, self, tempo_map)?;
             let root = self.prepare_audio_at_tempo(tempo_map, &root_edit, asset, source)?;
-            return looped_clip(root, clip, shape);
+            return looped_clip(root, clip, shape).and_then(attach_fade);
         }
         if matches!(edit.domain.clock, AudioDomainClock::Beats(_))
             && let Some((root, shape)) =
                 self.shared_musical_root(tempo_map, clip, edit, asset, source, &projection)?
         {
-            return looped_clip(root, clip, shape);
+            return looped_clip(root, clip, shape).and_then(attach_fade);
         }
         if canonical_cache
             && let Some(audio) = self.lookup_key(source, asset, |key| {
                 key.matches_view(edit, tempo_map, clip.start(), clip.duration())
             })?
         {
-            return placed_clip(audio, clip);
+            return placed_clip(audio, clip).and_then(attach_fade);
         }
         let length = usize::try_from(clip.duration())
             .map_err(|_| Invalid("audio placement exceeds addressable frames"))?;
@@ -351,7 +387,7 @@ impl AudioTransformPreparation {
                 bytes,
             })?;
         }
-        placed_clip(audio, clip)
+        placed_clip(audio, clip).and_then(attach_fade)
     }
 }
 

@@ -560,3 +560,69 @@ fn hidden_retained_knots_near_upper_frame_limit_do_not_overflow_visible_projecti
 mod crop_tests;
 
 mod route_tests;
+
+#[test]
+fn scalar_frame_playback_matches_the_outer_query_including_prefix_and_tail() {
+    use crate::FadeCurveLaw::{Linear, SmoothStep};
+
+    let (mut clip, tempo) = repeated();
+    let duration = clip.duration();
+    for (offset, prefix) in [(997, 0), (0, 2_049), (0, duration)] {
+        let domain = Arc::make_mut(&mut clip.audio_edit_mut().unwrap().domain);
+        domain.fade = ClipFade::new(30_000, offset, 4_321, 12_345)
+            .unwrap()
+            .with_shape(117, 209, 515, -410)
+            .unwrap()
+            .with_curve_positions(380, 573)
+            .unwrap()
+            .with_curve_laws([SmoothStep, Linear]);
+        domain.fade_start = prefix;
+        let projection = clip.projected_outer_fade(&tempo).unwrap().unwrap();
+        let slot = projection.frame_playback_envelope().unwrap();
+        slot.validate_segment(duration).unwrap();
+        for frame in 0..duration {
+            assert_eq!(
+                slot.gain_at(frame),
+                projection.gain_at(frame).unwrap(),
+                "frame {frame}, offset {offset}, prefix {prefix}"
+            );
+        }
+    }
+
+    let domain = Arc::make_mut(&mut clip.audio_edit_mut().unwrap().domain);
+    domain.fade = ClipFade::neutral(1).unwrap();
+    let projection = clip.projected_outer_fade(&tempo).unwrap().unwrap();
+    assert_eq!(
+        projection.frame_playback_envelope().unwrap(),
+        ClipFade::neutral(duration).unwrap()
+    );
+}
+
+#[test]
+fn scalar_frame_playback_rejects_overflow_and_a_musical_author_clock() {
+    let (mut clip, tempo) = repeated();
+    let domain = Arc::make_mut(&mut clip.audio_edit_mut().unwrap().domain);
+    domain.fade = ClipFade::new(u64::MAX, 0, 16, 0).unwrap();
+    domain.fade_start = 1;
+    assert!(
+        clip.projected_outer_fade(&tempo)
+            .unwrap()
+            .unwrap()
+            .frame_playback_envelope()
+            .is_err()
+    );
+
+    let (mut clip, tempo) = repeated();
+    clip.audio_edit_mut()
+        .unwrap()
+        .anchor_at_reference(0, 0, &tempo)
+        .unwrap();
+    crate::audio_edit::project_clip(&mut clip, &tempo).unwrap();
+    assert!(
+        clip.projected_outer_fade(&tempo)
+            .unwrap()
+            .unwrap()
+            .frame_playback_envelope()
+            .is_err()
+    );
+}
