@@ -439,7 +439,7 @@ impl SessionPlayback {
         self.pending_shared_live = None;
         self.historical_floor = None;
         self.route_historical_floors.fill(None);
-        self.restart_audio_history();
+        self.restart_audio_history(&[false; MAX_TRACKS]);
         for route in &mut self.routes {
             route.pending = None;
             if let RouteOwner::Session { clip, .. } = route.owner {
@@ -463,9 +463,9 @@ impl SessionPlayback {
 
     /// The seek law's audio cut without moving the transport: analytic
     /// releases/continuations, device chains, return/effect tails, the
-    /// compensation epoch and mutable voices start empty. Allocation-free:
-    /// existing owners are cleared or reset in place.
-    pub(super) fn restart_audio_history(&mut self) {
+    /// compensation epoch start empty. A confirmed publication can keep
+    /// already-staged generators at the same clock. Allocation-free.
+    pub(super) fn restart_audio_history(&mut self, retained_instruments: &[bool; MAX_TRACKS]) {
         self.foreign_arrangement.cut();
         for route in &mut self.routes {
             route.audio_release = None;
@@ -494,8 +494,14 @@ impl SessionPlayback {
         }
         self.tail_output_active.fill(false);
         self.tail_output_scratch.fill(false);
-        for runtime in self.mutable_instruments.iter_mut().flatten() {
-            runtime.reset();
+        for (runtime, retained) in self
+            .mutable_instruments
+            .iter_mut()
+            .zip(retained_instruments)
+        {
+            if !retained && let Some(runtime) = runtime {
+                runtime.reset();
+            }
         }
         for tail in self.tail_mutable_instruments.iter_mut().flatten() {
             tail.cancel();

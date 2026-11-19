@@ -3293,9 +3293,10 @@ fn render_mutable_instrument_inner<T: crate::prepared_tempo::MidiTempoBreaks + ?
         loop_region,
         timing,
     } = context;
-    if runtimes.get(index).and_then(Option::as_ref).is_none() {
+    let Some(runtime) = runtimes.get_mut(index).and_then(Option::as_mut) else {
         return Ok(());
-    }
+    };
+    let chase_at_start = chase_at_start && !runtime.retained_at_latency_cut(performance_frame);
     let track = revision
         .arrangement()
         .tracks()
@@ -3392,10 +3393,6 @@ fn render_mutable_instrument_inner<T: crate::prepared_tempo::MidiTempoBreaks + ?
         }
         RouteOwner::SessionAudio { .. } | RouteOwner::Silence => {}
     }
-    let runtime = runtimes
-        .get_mut(index)
-        .and_then(Option::as_mut)
-        .ok_or(SessionPlaybackError::MutableInstrumentRuntime)?;
     let scoped = sources
         .filter(|s| s.has_track(track_id))
         .map(|s| s.resources(track_id))
