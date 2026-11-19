@@ -125,6 +125,14 @@ fn check_insert(insert: Insert) {
             data.owner_mut().unwrap().run(|callback, _| {
                 callback.begin_block();
                 callback.render(&mut pcm).unwrap();
+                if callback.device_insert_fade_pins.is_some() {
+                    let current = callback
+                        .reserve_current_stream_window(pcm.len())
+                        .expect("the old fade must coexist with a current window")
+                        .expect("page-backed predecessor");
+                    assert!(current.complete());
+                    current.release(&mut callback.domain_pages);
+                }
             });
         });
         assert_eq!(
@@ -321,6 +329,9 @@ fn check_insert(insert: Insert) {
     assert_eq!(receipt.state(), expected_state);
     assert_eq!(control.status.applied_audio_source(), Some(expected_source));
     assert_eq!(control.status.playing.load(Acquire), !stop);
+    data.owner_mut().unwrap().run(|callback, _| {
+        assert!(callback.device_insert_fade_pins.is_none());
+    });
     crate::lifecycle::test_dispose_backend(
         &mut Some(()),
         &mut false,

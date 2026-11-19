@@ -19,8 +19,8 @@ use std::hash::{Hash, Hasher};
 // Installed roles use bits 0–2, legacy pinning uses bit 3, and pending
 // readiness roles use bits 4–6, and the current quantum uses bit 7.
 // Legacy pins retain their replacement policy.
-pub(crate) const CURRENT_QUANTUM_PIN: u8 = 0b1000_0000;
-const INSTALLED_PINS: u8 = 0b0000_0111 | CURRENT_QUANTUM_PIN;
+pub(crate) const RENDER_HOLD_PIN: u8 = 0b1000_0000;
+const INSTALLED_PINS: u8 = 0b0000_0111 | RENDER_HOLD_PIN;
 const PENDING_PINS: u8 = 0b0111_0000;
 
 #[derive(Clone, Copy, Debug)]
@@ -476,12 +476,21 @@ impl Endpoint {
     /// The caller validates the entire extent set before this nonfallible role
     /// replacement. Other roles and legacy pins remain independent.
     pub(crate) fn replace_protection(&mut self, mask: u8, extents: &[crate::StreamResourceExtent]) {
+        self.replace_protection_union(mask, [extents]);
+    }
+
+    /// Rebuild one cache bit from the union of independently held extents.
+    pub(crate) fn replace_protection_union<const N: usize>(
+        &mut self,
+        mask: u8,
+        extents: [&[crate::StreamResourceExtent]; N],
+    ) {
         for slot in &mut self.cache {
             if let CacheSlot::Occupied { pinned, .. } = slot {
                 *pinned &= !mask;
             }
         }
-        for extent in extents {
+        for extent in extents.into_iter().flatten() {
             if let Some(index) = self.cache_lookup(ResourcePageKey {
                 source: extent.source,
                 page_index: extent.page_index,
@@ -1561,14 +1570,14 @@ mod tests {
             CacheSlot::Occupied { pinned: 0, .. }
         ));
         test.endpoint
-            .replace_protection(CURRENT_QUANTUM_PIN, &[extent.into()]);
+            .replace_protection(RENDER_HOLD_PIN, &[extent.into()]);
         let mut longer = page(key);
         longer.valid_frames = 9;
         assert!(!test.endpoint.insert_ready_with_mask(longer, 16));
         assert!(
-            matches!(&test.endpoint.cache[index], CacheSlot::Occupied { page, pinned } if page.frames.as_ptr() == original && *pinned == CURRENT_QUANTUM_PIN)
+            matches!(&test.endpoint.cache[index], CacheSlot::Occupied { page, pinned } if page.frames.as_ptr() == original && *pinned == RENDER_HOLD_PIN)
         );
-        test.endpoint.replace_protection(CURRENT_QUANTUM_PIN, &[]);
+        test.endpoint.replace_protection(RENDER_HOLD_PIN, &[]);
     }
 
     #[test]
