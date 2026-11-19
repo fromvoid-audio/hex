@@ -627,9 +627,12 @@ impl EditorView {
         self.request_prepared_seek_with_kind(frame, true, SeekKind::History);
     }
 
-    pub(super) fn request_section_launch(
+    /// The section/loop owner already captured the gesture's policy before its loop edit.
+    /// Keep the existing adjacent-refused-loop admission proof; do not re-gate this receipt.
+    pub(super) fn request_section_launch_with_note_chase(
         &mut self,
         section: hex_session::arrangement_seek::SectionLaunch,
+        note_chase: hex_engine::NoteChase,
     ) {
         if !section.matches_loop(
             self.state
@@ -639,10 +642,26 @@ impl EditorView {
             self.error = Some("section launch requires its arrangement loop state".into());
             return;
         }
-        self.request_prepared_seek_with_kind(
-            section.region.start(),
-            true,
-            SeekKind::Section(section),
+        let Some((prepared_revision, audio_revision, project_revision)) =
+            self.current_prepared_seek_source()
+        else {
+            self.error = Some("section playback source is unavailable".into());
+            return;
+        };
+        self.wake_poll();
+        self.submit_prepared_seek_intent(
+            SeekIntent {
+                note_chase,
+                kind: SeekKind::Section(section),
+                recovery_generation: None,
+                destination_frame: section.region.start(),
+                start_playing: true,
+                project_generation: self.project_generation,
+                project_revision,
+                prepared_revision,
+                device_preview_identity: self.active_seek_preview(),
+            },
+            audio_revision,
         );
     }
 

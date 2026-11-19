@@ -9,6 +9,9 @@ use hex_preferences::PlaybackPreferences;
 use std::path::PathBuf;
 
 pub(super) enum Start {
+    Section {
+        section: hex_session::arrangement_seek::SectionLaunch,
+    },
     Session {
         command: hex_engine::SessionPlaybackCommand,
         revision: u64,
@@ -82,9 +85,18 @@ impl EditorView {
         self.playback_settings.pending = None;
         let source = match &start {
             Start::Source { source, .. } => self
-                .normal_start_source()
-                .filter(|current| current == source)
-                .map(StartSource::Applied),
+                .start_source_is_current(&start, *source)
+                .then_some(StartSource::Applied(*source)),
+            Start::Prepared {
+                intent:
+                    SeekIntent {
+                        kind: super::arrangement_seek::SeekKind::CommittedLocator { source, .. },
+                        ..
+                    },
+                ..
+            } => self
+                .committed_locator_seek_source_is_current(*source)
+                .then_some(StartSource::Applied(*source)),
             Start::Play { .. } if self.recovery.generation().is_some() => {
                 self.recovery.generation().map(StartSource::Recovery)
             }
@@ -160,6 +172,31 @@ impl EditorView {
         .then_some(source)
     }
 
+    /// Supplied actions retain the existing receipt owner's exact installed-source proof,
+    /// including a committed copy/locator view whose ordinary UI terminal is still pending.
+    fn start_source_is_current(&self, start: &Start, source: AppliedAudioSource) -> bool {
+        match start {
+            Start::Source {
+                source: expected, ..
+            } => {
+                *expected == source
+                    && self.pending_audio_commands.is_empty()
+                    && self.stopped_playback_restore.is_none()
+                    && self.recovery.generation().is_none()
+                    && (self.normal_start_source() == Some(source)
+                        || self.section_copy_play_source() == Some(source)
+                        || self.committed_locator_seek_source_is_current(source))
+            }
+            Start::Prepared { intent, .. } => match intent.kind {
+                super::arrangement_seek::SeekKind::CommittedLocator {
+                    source: expected, ..
+                } => expected == source && self.committed_locator_seek_source_is_current(source),
+                _ => self.normal_start_source() == Some(source),
+            },
+            _ => self.normal_start_source() == Some(source),
+        }
+    }
+
     fn dispatch_normal_start(&mut self, mut pending: PendingStart) {
         let current = pending.generation == self.project_generation
             && self
@@ -177,7 +214,11 @@ impl EditorView {
             .note_chase
             .get_or_insert_with(|| self.playback_settings.policy());
         let source = match pending.source {
-            StartSource::Applied(source) if self.normal_start_source() == Some(source) => source,
+            StartSource::Applied(source)
+                if self.start_source_is_current(&pending.start, source) =>
+            {
+                source
+            }
             StartSource::Recovery(generation) if self.recovery.generation() == Some(generation) => {
                 self.playback_settings.pending = Some(pending);
                 self.status = "restarting audio output · playback starts when ready".into();
@@ -190,6 +231,9 @@ impl EditorView {
             }
         };
         match pending.start {
+            Start::Section { section } => {
+                self.prepare_section_launch_with_note_chase(section, note_chase);
+            }
             Start::Session { command, revision } => {
                 self.queue_session_launch_with_note_chase(command, revision, note_chase);
             }

@@ -12,6 +12,21 @@ fn editor(cx: &mut TestAppContext) -> gpui::Entity<EditorView> {
     .1
 }
 
+fn open_applied_source(
+    cx: &mut TestAppContext,
+    commands: Vec<hex_project::Command>,
+) -> super::super::worker_ui_fixture::WorkerUiFixture {
+    let fixture =
+        super::super::worker_ui_fixture::open_with_section_support(cx, commands, false, true);
+    fixture.editor.read_with(cx, |view, _| {
+        assert!(
+            view.normal_start_source().is_some(),
+            "fixture requires an installed source witness"
+        );
+    });
+    fixture
+}
+
 fn reload_off(view: &mut EditorView, cx: &mut Context<EditorView>) {
     hex_preferences::save_playback_preferences(
         &view.playback_settings.path,
@@ -38,7 +53,7 @@ fn finish_load(editor: &gpui::Entity<EditorView>, cx: &mut TestAppContext) {
 fn real_loader_keeps_latest_captured_start_and_never_admits_placeholder_on(
     cx: &mut TestAppContext,
 ) {
-    let mut fixture = super::super::worker_ui_fixture::open(cx, Vec::new());
+    let mut fixture = open_applied_source(cx, Vec::new());
     let editor = fixture.editor.clone();
     editor.update(cx, |view, cx| {
         reload_off(view, cx);
@@ -83,7 +98,7 @@ fn real_loader_keeps_latest_captured_start_and_never_admits_placeholder_on(
 fn loading_start_is_cancelled_by_second_toggle_stop_history_and_raw_action(
     cx: &mut TestAppContext,
 ) {
-    let fixture = super::super::worker_ui_fixture::open(cx, Vec::new());
+    let fixture = open_applied_source(cx, Vec::new());
     let editor = fixture.editor.clone();
     for cancel in ["toggle", "stop", "history", "raw"] {
         editor.update(cx, |view, cx| {
@@ -110,7 +125,7 @@ fn loading_start_is_cancelled_by_second_toggle_stop_history_and_raw_action(
 
 #[gpui::test]
 fn loading_start_refuses_changed_revision_and_real_applied_source_loss(cx: &mut TestAppContext) {
-    let first = super::super::worker_ui_fixture::open(cx, Vec::new());
+    let first = open_applied_source(cx, Vec::new());
     let editor = first.editor.clone();
     editor.update(cx, |view, cx| {
         reload_off(view, cx);
@@ -144,7 +159,7 @@ fn loading_start_refuses_changed_revision_and_real_applied_source_loss(cx: &mut 
     });
 
     first.finish(cx);
-    let mut fixture = super::super::worker_ui_fixture::open(cx, Vec::new());
+    let mut fixture = open_applied_source(cx, Vec::new());
     fixture.editor.update(cx, |view, cx| {
         reload_off(view, cx);
         assert!(view.normal_start_source().is_some());
@@ -196,7 +211,7 @@ fn real_save_changes_policy_only_after_success_and_preserves_failed_bytes(cx: &m
 
 #[gpui::test]
 fn malformed_real_load_preserves_bytes_and_drops_waiting_start(cx: &mut TestAppContext) {
-    let fixture = super::super::worker_ui_fixture::open(cx, Vec::new());
+    let fixture = open_applied_source(cx, Vec::new());
     let editor = fixture.editor.clone();
     editor.update(cx, |view, cx| {
         std::fs::write(&view.playback_settings.path, b"malformed original").unwrap();
@@ -222,7 +237,7 @@ fn malformed_real_load_preserves_bytes_and_drops_waiting_start(cx: &mut TestAppC
 
 #[gpui::test]
 fn real_loader_captures_session_scene_launch_policy_before_queueing(cx: &mut TestAppContext) {
-    let mut fixture = super::super::worker_ui_fixture::open(
+    let mut fixture = open_applied_source(
         cx,
         vec![hex_project::Command::AddScene {
             name: "scene".into(),
@@ -274,7 +289,7 @@ fn real_loader_captures_session_scene_launch_policy_before_queueing(cx: &mut Tes
 
 #[gpui::test]
 fn plugin_space_uses_saved_off_after_real_load_and_callback(cx: &mut TestAppContext) {
-    let mut fixture = super::super::worker_ui_fixture::open(cx, Vec::new());
+    let mut fixture = open_applied_source(cx, Vec::new());
     let editor = fixture.editor.clone();
     editor.update(cx, |view, cx| {
         reload_off(view, cx);
@@ -319,7 +334,7 @@ fn plugin_space_uses_saved_off_after_real_load_and_callback(cx: &mut TestAppCont
 
 #[gpui::test]
 fn unknown_or_temporarily_ineligible_gesture_never_adopts_a_later_source(cx: &mut TestAppContext) {
-    let fixture = super::super::worker_ui_fixture::open(cx, Vec::new());
+    let fixture = open_applied_source(cx, Vec::new());
     let editor = fixture.editor.clone();
     for blocked in ["missing", "queued", "stopped"] {
         editor.update(cx, |view, cx| {
@@ -367,7 +382,7 @@ fn unknown_or_temporarily_ineligible_gesture_never_adopts_a_later_source(cx: &mu
 
 #[gpui::test]
 fn waiting_start_cannot_attach_to_a_replacement_recovery_generation(cx: &mut TestAppContext) {
-    let fixture = super::super::worker_ui_fixture::open(cx, Vec::new());
+    let fixture = open_applied_source(cx, Vec::new());
     let editor = fixture.editor.clone();
     editor.update(cx, |view, cx| {
         reload_off(view, cx);
@@ -393,7 +408,7 @@ fn waiting_start_cannot_attach_to_a_replacement_recovery_generation(cx: &mut Tes
 fn ordinary_fresh_playing_seek_captures_off_while_stopped_positioning_keeps_on(
     cx: &mut TestAppContext,
 ) {
-    let fixture = super::super::worker_ui_fixture::open(cx, Vec::new());
+    let fixture = open_applied_source(cx, Vec::new());
     let editor = fixture.editor.clone();
     editor.update(cx, |view, cx| {
         reload_off(view, cx);
@@ -409,7 +424,7 @@ fn ordinary_fresh_playing_seek_captures_off_while_stopped_positioning_keeps_on(
         assert!(pending.start_playing);
     });
     fixture.finish(cx);
-    let fixture = super::super::worker_ui_fixture::open(cx, Vec::new());
+    let fixture = open_applied_source(cx, Vec::new());
     let editor = fixture.editor.clone();
     editor.update(cx, |view, cx| {
         reload_off(view, cx);
@@ -475,7 +490,7 @@ fn saved_off_toggle_waits_for_exact_prepared_recovery_ack_before_silent_start(
     cx: &mut TestAppContext,
 ) {
     use std::sync::atomic::Ordering::Acquire;
-    let mut fixture = super::super::worker_ui_fixture::open(cx, feedback_recovery_commands());
+    let mut fixture = open_applied_source(cx, feedback_recovery_commands());
     let editor = fixture.editor.clone();
     let (generation, request, predecessor) = editor.update(cx, |view, cx| {
         reload_off(view, cx);
@@ -711,7 +726,7 @@ fn stopped_edit_pending_gesture_is_not_replayed_on_the_installed_successor(
 #[gpui::test]
 fn toggle_during_loading_cancels_the_future_seek_and_pauses_active_audio(cx: &mut TestAppContext) {
     use std::sync::atomic::Ordering::Acquire;
-    let mut fixture = super::super::worker_ui_fixture::open(cx, Vec::new());
+    let mut fixture = open_applied_source(cx, Vec::new());
     let editor = fixture.editor.clone();
     editor.update(cx, |view, cx| {
         view.queue_audio_command(PlaybackCommand::Play);
@@ -738,5 +753,158 @@ fn toggle_during_loading_cancels_the_future_seek_and_pauses_active_audio(cx: &mu
         assert!(view.prepared_seek.is_none());
         assert!(view.latched_seek_intent.is_none());
     });
+    fixture.finish(cx);
+}
+
+#[gpui::test]
+fn section_gesture_keeps_its_loaded_policy_through_a_held_loop_receipt(cx: &mut TestAppContext) {
+    use hex_project::{BeatTime, Command, ElementColor};
+    use std::sync::atomic::Ordering::Acquire;
+    let mut commands = feedback_recovery_commands();
+    commands.push(Command::AddArrangementSection {
+        name: "held note".into(),
+        color: ElementColor::Blue,
+        start: BeatTime::from_ratio(1, 16).unwrap(),
+        end: BeatTime::from_ratio(1, 8).unwrap(),
+    });
+    let mut fixture = open_applied_source(cx, commands);
+    let editor = fixture.editor.clone();
+    let section = editor.update(cx, |view, cx| {
+        reload_off(view, cx);
+        let section = view.state.as_ref().unwrap().project.arrangement_sections()[0].id();
+        view.session_quantization = hex_engine::LaunchQuantization::Immediate;
+        view.launch_section(section, true);
+        assert!(view.playback_settings.pending.is_some());
+        assert!(
+            view.pending_loop_region().is_none(),
+            "loading cannot begin a canonical loop edit"
+        );
+        assert!(view.state.as_ref().unwrap().project.loop_region().is_none());
+        assert_eq!(view.worker_requests_pending, 0);
+        section
+    });
+    finish_load(&editor, cx);
+    editor.read_with(cx, |view, _| {
+        assert!(!view.playback_settings.preferences.note_chase);
+        assert!(view.pending_loop_launch());
+        assert!(view.prepared_seek.is_none());
+    });
+
+    // Retain the actual worker terminal while allowing its graph handoff to ACK.
+    // The existing pending-loop receipt, not another policy slot, still owns the launch.
+    let deadline = crate::test_wait::hang_deadline();
+    let terminal = loop {
+        fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+        if let Ok(event) = editor.read_with(cx, |view, _| view.service.try_event()) {
+            assert!(event.request_complete);
+            assert!(event.error.is_none(), "{:?}", event.error);
+            break event;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "loop terminal was not produced"
+        );
+        std::thread::yield_now();
+    };
+    let region = terminal.state.project.loop_region().unwrap();
+    editor.update(cx, |view, cx| {
+        assert!(view.pending_loop_launch());
+        assert!(view.state.as_ref().unwrap().project.loop_region().is_none());
+        view.save_note_chase(true, cx);
+        view.session_quantization = hex_engine::LaunchQuantization::FourQuarter;
+    });
+    while editor.read_with(cx, |view, _| view.playback_settings.saving) {
+        cx.run_until_parked();
+        assert!(
+            std::time::Instant::now() < deadline,
+            "later preference save did not finish"
+        );
+    }
+    editor.update(cx, |view, _| {
+        assert!(view.playback_settings.preferences.note_chase);
+        assert!(view.pending_loop_launch());
+        assert!(view.prepared_seek.is_none());
+        view.receive(terminal);
+        assert!(view.section_launch_waiting());
+    });
+
+    loop {
+        fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+        let submitted = editor.update(cx, |view, cx| {
+            view.tick(cx);
+            let Some(pending) = view.prepared_seek.as_ref() else {
+                return false;
+            };
+            assert_eq!(pending.note_chase, NoteChase::Off);
+            let launch = pending.kind.section().unwrap();
+            assert_eq!(launch.region, region);
+            assert_eq!(
+                launch.quantization,
+                hex_engine::LaunchQuantization::Immediate
+            );
+            true
+        });
+        if submitted {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "captured section was not submitted"
+        );
+        std::thread::yield_now();
+    }
+    loop {
+        let mut block = [[0.0; 2]; 64];
+        fixture.backend.render(&mut block).unwrap();
+        let playing = editor.update(cx, |view, cx| {
+            view.tick(cx);
+            view.audio_status().unwrap().playing.load(Acquire)
+        });
+        assert!(block.iter().flatten().all(|sample| *sample == 0.0));
+        if playing {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "Off section was not installed"
+        );
+        std::thread::yield_now();
+    }
+    for _ in 0..4 {
+        let mut block = [[0.0; 2]; 64];
+        fixture.backend.render(&mut block).unwrap();
+        assert!(
+            block.iter().flatten().all(|sample| *sample == 0.0),
+            "the old Off gesture cannot chase after a later On preference"
+        );
+    }
+
+    // A subsequent gesture captures the now-active On choice using the same loop and notes.
+    editor.update(cx, |view, cx| {
+        view.tick(cx);
+        view.session_quantization = hex_engine::LaunchQuantization::Immediate;
+        view.launch_section(section, true);
+    });
+    let mut heard_on = false;
+    loop {
+        let mut block = [[0.0; 2]; 64];
+        fixture.backend.render(&mut block).unwrap();
+        heard_on |= block.iter().flatten().any(|sample| sample.abs() > 1.0e-6);
+        let installed = editor.update(cx, |view, cx| {
+            view.tick(cx);
+            if let Some(pending) = view.prepared_seek.as_ref() {
+                assert_eq!(pending.note_chase, NoteChase::On);
+            }
+            !view.section_launch_waiting() && view.prepared_seek.is_none()
+        });
+        if installed && heard_on {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "new On gesture did not chase the held note"
+        );
+        std::thread::yield_now();
+    }
     fixture.finish(cx);
 }
