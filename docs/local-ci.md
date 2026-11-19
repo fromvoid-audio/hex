@@ -688,6 +688,35 @@ time and the test harness duration. Report compilation separately. A fresh
 copy of the desktop executable can spend measurable time before libtest
 produces its first output, including on a listing-only run.
 
+### Long Re-Pitch regression timing
+
+The verified-worker Re-Pitch regression imports a file past the resident limit,
+applies history, seeks to audio beyond that limit, and saves and reopens the
+project. Use the compact macOS arm64 test build for focused first-launch timing.
+
+```sh
+cargo --config 'profile.release.package.hex-desktop.opt-level="z"' \
+  --config 'profile.release.package.hex-desktop.strip="symbols"' \
+  --config 'profile.release.package.hex-ui.opt-level="z"' \
+  --config 'profile.release.package.gpui.opt-level="z"' \
+  --config 'profile.release.package.hex-engine.opt-level="z"' \
+  --config 'profile.release.package.hex-audio.opt-level="z"' \
+  test --release --locked -p hex-desktop --features allocation-probe \
+  --bin hex-desktop --no-run --message-format=json
+```
+
+Use the executable from Cargo's `hex-desktop` test artifact. Prepare a local
+APFS copy, sign that copy with `codesign --force --sign -` and verify it with
+`codesign --verify --strict`. Run the following exact test with
+`--exact --test-threads=1` on a fresh APFS copy of the signed executable, then
+repeat on the same executable for warm timing.
+
+`native_audio::tests::resident_lifecycle::ordinary_long_repitch_plays_and_reopens_through_verified_workers`
+
+Record executable copy setup, process wall time and harness time. Report the
+compilation and one-time signature preparation separately. The fresh copy tests
+a new executable identity on the current filesystem cache.
+
 ### Dense playback baseline
 
 The opt-in macOS arm64 profile uses the resident Session and prepared callback
