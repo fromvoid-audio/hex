@@ -284,6 +284,7 @@ fn source_for_profile_with_authored_mode(
             48_000,
             mode,
             restore,
+            None,
         )
         .unwrap();
     hosting
@@ -393,6 +394,7 @@ fn actual_selected_effect_revalidation_refuses_changed_metadata_before_root_rese
                     12,
                     48_000,
                     crate::plugin_effects::PluginProfile::Effect,
+                    None,
                     None,
                 )
                 .is_err()
