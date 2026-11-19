@@ -2708,6 +2708,17 @@ pub struct PreparedAudioClipView {
     pub repeat: Option<PreparedAudioRepeat>,
     /// Maps logical root frames to packed PCM for a non-repeating source.
     pub sparse: Option<Arc<SparseFrameMap>>,
+    /// Unweighted destination bins captured before a baked musical outer fade.
+    pub neutral_musical_peaks: Vec<PreparedAudioPeak>,
+}
+
+/// Exact extrema of one consecutive stereo destination range before outer
+/// fade and clip gain. Bins partition the view's length as evenly as possible,
+/// with one extra frame in each of the first `length % bins.len()` bins.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PreparedAudioPeak {
+    pub min: Frame,
+    pub max: Frame,
 }
 
 /// Loop geometry of a prepared clip that plays a shared root instead of outer PCM.

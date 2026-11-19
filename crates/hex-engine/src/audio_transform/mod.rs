@@ -30,8 +30,8 @@ mod group;
 pub use granular_requirements::{StreamedGranularRequirement, StreamedGranularRequirements};
 pub(crate) use group::{GroupSource, sparse_group_plan};
 mod instance_fade;
-use instance_fade::OuterPlaybackFade;
 pub(crate) use instance_fade::materializes_musical_outer_fade;
+use instance_fade::{MusicalPeakCapture, OuterPlaybackFade};
 mod mapping;
 mod processing_root;
 mod view;
@@ -513,6 +513,7 @@ pub struct AudioTransformPreparation {
     cache: RefCell<Cache>,
     pending: RefCell<Option<Vec<Entry>>>,
     tempo: RefCell<Option<Arc<hex_project::TempoMap>>>,
+    musical_peak_capture: RefCell<Option<MusicalPeakCapture>>,
     shutdown: Arc<AtomicBool>,
     preview_cancel: RefCell<Option<Arc<AtomicBool>>>,
     budget: Arc<budget::Budget>,
@@ -547,6 +548,7 @@ impl AudioTransformPreparation {
             }),
             pending: RefCell::new(None),
             tempo: RefCell::new(None),
+            musical_peak_capture: RefCell::new(None),
             shutdown,
             preview_cancel: RefCell::new(None),
             budget: budget::production_budget(),

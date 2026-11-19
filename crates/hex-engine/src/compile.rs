@@ -1,7 +1,8 @@
 //! Control-side compilation of a canonical edit snapshot into offline playback.
 //! This allocates and retains PCM references; it must never run in a callback.
 use crate::{
-    Audio, Invalid, Project, StreamedSourceMetadata, Track, serial_effect_power::EffectPower,
+    Audio, Invalid, Project, StreamedSourceMetadata, Track,
+    audio_transform::materializes_musical_outer_fade, serial_effect_power::EffectPower,
 };
 use hex_project::{Asset, AssetId, DeviceId};
 use std::{collections::BTreeMap, sync::Arc};
@@ -696,6 +697,18 @@ fn compile_project_inner<'a>(
     let source_instruments =
         prepare_source_instruments(snapshot, instrument_registry, &shared_contexts, samplers)?;
     let mut audio_clip_views = Vec::new();
+    // At most 4 MiB of neutral leaf bins per Arrangement revision. Allocate
+    // them evenly among candidates, independently of the audio PCM budget.
+    let musical_peak_candidates = snapshot
+        .tracks()
+        .iter()
+        .flat_map(|track| track.clips())
+        .filter(|clip| {
+            clip.audio_edit()
+                .is_some_and(materializes_musical_outer_fade)
+        })
+        .count();
+    let musical_peak_limit = (262_144 / musical_peak_candidates.max(1)).min(1_024);
     let solo = crate::TrackSoloSelection::prepare(snapshot);
     let any_soloed = solo.any;
     let mut tracks = Vec::new();
@@ -790,7 +803,7 @@ fn compile_project_inner<'a>(
                 {
                     return Ok(None);
                 }
-                let mut compiled = if let Some(events) = clip.audio_edit()
+                let (mut compiled, neutral_musical_peaks) = if let Some(events) = clip.audio_edit()
                     .and_then(|edit| edit.domain.events.as_ref())
                     .filter(|events| !events.sources.is_empty())
                 {
@@ -807,10 +820,16 @@ fn compile_project_inner<'a>(
                         };
                         sources.push(crate::audio_transform::GroupSource { root, asset, audio });
                     }
-                    Some(transforms.compile_arrangement_group(clip, &sources)?)
+                    (Some(transforms.compile_arrangement_group(clip, &sources)?), Vec::new())
                 } else {
                     let source = resolve_source(asset, snapshot.sample_rate())?;
-                    transforms.compile_clip(snapshot, clip, asset, source)?
+                    if clip.audio_edit().is_some_and(materializes_musical_outer_fade) {
+                        transforms.capture_musical_peaks(musical_peak_limit, || {
+                            transforms.compile_clip(snapshot, clip, asset, source)
+                        })?
+                    } else {
+                        (transforms.compile_clip(snapshot, clip, asset, source)?, Vec::new())
+                    }
                 };
                 if let Some(compiled) = compiled.as_mut() {
                     compiled.active = clip.active();
@@ -828,6 +847,7 @@ fn compile_project_inner<'a>(
                         offset: compiled.source_offset as u64,
                         length: compiled.end - compiled.start,
                         sparse: compiled.metadata.as_deref().and_then(|m| m.sparse.clone()),
+                        neutral_musical_peaks,
                         repeat: compiled.looping.then(|| crate::PreparedAudioRepeat {
                             period: compiled.source_length as u64,
                             phase: compiled
