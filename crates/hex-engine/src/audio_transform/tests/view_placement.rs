@@ -1089,42 +1089,27 @@ fn assert_musical_outer_pcm(
     );
     for (fade_in, block) in [(duration / 2, 31), (duration / 6, 256)] {
         let fade = ClipFade::new(duration, 0, fade_in, duration / 3).unwrap();
-        let outer = clip.projected_outer_fade_preview(tempo, fade).unwrap();
-        let mut edit = clip.audio_edit().unwrap().clone();
-        let domain = Arc::make_mut(&mut edit.domain);
-        domain.fade_clock = hex_project::AudioClipFadeClock::Outer;
-        domain.fade = fade;
+        let held = clip.projected_outer_fade_preview(tempo, fade).unwrap();
+        let authored = clip.with_authored_outer_fade(tempo, fade).unwrap();
+        let outer = authored.projected_outer_fade(tempo).unwrap().unwrap();
+        let edit = authored.audio_edit().unwrap();
+        assert_eq!(outer.breakpoints().unwrap(), held.breakpoints().unwrap());
         let hits = context.cache_hits();
-        let source = PreparedAudioSourceRef::Resident(&media[&clip.asset()]);
+        let source = PreparedAudioSourceRef::Resident(&media[&authored.asset()]);
         let compiled = if edit.content_view.is_some() {
             context
-                .compile_content_with_outer_fade(
-                    tempo,
-                    clip,
-                    &edit,
-                    asset,
-                    source,
-                    Some(OuterPlaybackFade::Musical(&outer)),
-                )
+                .compile_content(tempo, &authored, edit, asset, source)
                 .unwrap()
         } else if edit.placement.is_some() {
             context
-                .compile_view_with_outer_fade(
-                    tempo,
-                    clip,
-                    &edit,
-                    asset,
-                    source,
-                    hex_project::AudioViewProjection::new(clip, tempo).unwrap(),
-                    Some(&outer),
-                )
+                .compile_view(tempo, &authored, edit, asset, source)
                 .unwrap()
         } else {
             context
                 .compile_captured_clip_at_tempo(
                     tempo,
-                    clip,
-                    &edit,
+                    &authored,
+                    edit,
                     asset,
                     source,
                     Some(OuterPlaybackFade::Musical(&outer)),
@@ -1157,7 +1142,7 @@ fn assert_musical_outer_pcm(
             renderer.render(part).unwrap();
         }
         for (index, (actual, raw)) in output.iter().zip(&expected_source).enumerate() {
-            let gain = outer.gain_at(clip.start() + index as u64).unwrap();
+            let gain = held.gain_at(clip.start() + index as u64).unwrap();
             assert_eq!(*actual, raw.map(|sample| sample * gain), "frame {index}");
         }
     }

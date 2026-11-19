@@ -595,6 +595,13 @@ pub(crate) fn set_clip_fade_envelope(
     fade: ClipFade,
     tempo: &TempoMap,
 ) -> Result<(), Invalid> {
+    if clip
+        .audio_edit()
+        .is_some_and(|edit| edit.domain.fade_clock == AudioClipFadeClock::Outer)
+    {
+        *clip = clip.with_authored_outer_fade(tempo, fade)?;
+        return Ok(());
+    }
     let mut owned_edit = clip
         .edit
         .clone()

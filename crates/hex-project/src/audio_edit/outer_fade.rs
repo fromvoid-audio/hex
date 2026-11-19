@@ -97,6 +97,37 @@ impl Clip {
             author,
         })
     }
+
+    /// Capture an explicit fade gesture in the same clock as its held preview.
+    /// A plain clip uses its ordinary frame envelope. A retained edit owns a
+    /// new instance fade with zero age and a captured destination authoring
+    /// map for musical placements. This constructs a candidate clip; project
+    /// admission, source preparation and save compatibility are separate.
+    pub fn with_authored_outer_fade(
+        &self,
+        tempo: &TempoMap,
+        fade: ClipFade,
+    ) -> Result<Self, Invalid> {
+        let preview = self.projected_outer_fade_preview(tempo, fade)?;
+        let author = preview
+            .author_clock()
+            .map(|(tempo, origin_beat_raw)| AudioFadeProjection {
+                tempo: tempo.clone(),
+                origin_beat_raw,
+                local_start_raw: 0,
+            });
+        let mut clip = self.clone();
+        if let Some(edit) = clip.audio_edit_mut() {
+            let domain = std::sync::Arc::make_mut(&mut edit.domain);
+            domain.fade = fade;
+            domain.fade_clock = AudioClipFadeClock::Outer;
+            domain.fade_start = 0;
+            domain.fade_projection = author;
+        } else {
+            clip.fade = fade;
+        }
+        Ok(clip)
+    }
 }
 
 impl AudioClipDomain {
