@@ -5096,7 +5096,7 @@ fn browser_limiter_insertion(cx: &mut gpui::TestAppContext, frame_limit: u64, ma
     );
     let offered = read(cx);
     assert_eq!(offered.state.unwrap().project, before.project);
-    assert_eq!(offered.applied, Some(previous));
+    assert_eq!(offered.resident_applied, Some(previous));
     assert!(offered.pending);
     assert_eq!(step(cx, &mut visual), [[0.25; 2]; 64]);
 
@@ -5120,7 +5120,7 @@ fn browser_limiter_insertion(cx: &mut gpui::TestAppContext, frame_limit: u64, ma
                 hex_engine::DeviceTypeId::from_static("hex.limiter")
             );
             assert_eq!(state.revision, before.revision + 1);
-            let installed = view.applied.expect("installed audio source");
+            let installed = view.resident_applied.expect("installed audio source");
             assert_eq!(installed.output_identity, previous.output_identity);
             assert_eq!(installed.context.editor_revision, state.revision);
             assert_ne!(installed.audio_revision, previous.audio_revision);

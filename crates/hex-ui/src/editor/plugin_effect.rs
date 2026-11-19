@@ -80,6 +80,11 @@ pub(crate) fn fixture_view(
                     .as_ref()
                     .and_then(|audio| audio.status())
                     .and_then(|status| status.native_effect_source()),
+                resident_applied: view
+                    .audio
+                    .as_ref()
+                    .and_then(|audio| audio.status())
+                    .and_then(|status| status.recording_source()),
                 transport: view
                     .audio
                     .as_ref()
