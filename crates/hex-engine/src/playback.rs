@@ -2353,6 +2353,36 @@ impl Playback {
         }
     }
 
+    /// Advance the Engine's stage-local fade for an exact staged resident
+    /// removal. The publication owner authenticates the source and command fence.
+    pub fn advance_native_removal_from(
+        &mut self,
+        previous: &mut Self,
+    ) -> Result<crate::session_playback::NativeRemovalProgress, PlaybackHandoffError> {
+        use crate::session_playback::NativeRemovalProgress;
+        let (Some(next), Some(old)) = (&mut self.session_runtime, &mut previous.session_runtime)
+        else {
+            return Ok(NativeRemovalProgress::NotApplicable);
+        };
+        next.advance_native_removal_from(old)
+            .map_err(PlaybackHandoffError::Session)
+    }
+
+    /// Restore the original stage of an abandoned removal on its donor.
+    pub fn cancel_native_removal_from(&mut self, previous: &mut Self) {
+        if let (Some(next), Some(old)) = (&mut self.session_runtime, &mut previous.session_runtime)
+        {
+            next.cancel_native_removal_from(old);
+        }
+    }
+
+    /// A previously armed stage must be restored if its route becomes ineligible.
+    pub fn native_removal_pending(&self) -> bool {
+        self.session_runtime
+            .as_deref()
+            .is_some_and(crate::SessionPlayback::native_removal_pending)
+    }
+
     /// Ordinary publication may rebind a fresh monitor to the same physical input client in
     /// the same explicitly known project generation. This carries no voice/DSP history or
     /// source compatibility. Unknown generations (including legacy defaults) authorize nothing.

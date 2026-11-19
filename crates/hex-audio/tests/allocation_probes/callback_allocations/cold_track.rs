@@ -1049,7 +1049,7 @@ enum NativeInsertLocation {
 #[test]
 fn return_delay_append_keeps_reverb_history_and_exact_publication_without_allocations()
 -> Result<(), Box<dyn Error>> {
-    native_insert_case(NativeInsertLocation::Return, false)
+    native_effect_edit_case(NativeInsertLocation::Return, NativeEdit::Append)
 }
 
 #[test]
@@ -1060,7 +1060,7 @@ fn track_group_and_main_delay_append_keeps_reverb_history_and_exact_publication_
         NativeInsertLocation::Group,
         NativeInsertLocation::Main,
     ] {
-        native_insert_case(location, false)?;
+        native_effect_edit_case(location, NativeEdit::Append)?;
     }
     Ok(())
 }
@@ -1074,13 +1074,56 @@ fn native_mid_insert_keeps_both_effect_histories_and_exact_callback_receipt()
         NativeInsertLocation::Return,
         NativeInsertLocation::Main,
     ] {
-        native_insert_case(location, true)?;
+        native_effect_edit_case(location, NativeEdit::Insert)?;
     }
     Ok(())
 }
 
-fn native_insert_case(location: NativeInsertLocation, middle: bool) -> Result<(), Box<dyn Error>> {
-    use hex_audio::prepared::{AppliedAudioSource, PublicationPolicy, PublicationReceiptState};
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum NativeEdit {
+    Append,
+    Insert,
+    Remove,
+    CancelRemoval,
+    StopRemoval,
+    StaleRemoval,
+}
+
+#[test]
+fn fitting_native_removal_keeps_the_old_source_until_its_fade_commits() -> Result<(), Box<dyn Error>>
+{
+    for location in [
+        NativeInsertLocation::Track,
+        NativeInsertLocation::Group,
+        NativeInsertLocation::Return,
+        NativeInsertLocation::Main,
+    ] {
+        native_effect_edit_case(location, NativeEdit::Remove)?;
+    }
+    Ok(())
+}
+
+#[test]
+fn cancelled_stopped_and_stale_native_removals_restore_the_original_source()
+-> Result<(), Box<dyn Error>> {
+    for edit in [
+        NativeEdit::CancelRemoval,
+        NativeEdit::StopRemoval,
+        NativeEdit::StaleRemoval,
+    ] {
+        native_effect_edit_case(NativeInsertLocation::Return, edit)?;
+    }
+    Ok(())
+}
+
+fn native_effect_edit_case(
+    location: NativeInsertLocation,
+    edit: NativeEdit,
+) -> Result<(), Box<dyn Error>> {
+    use hex_audio::prepared::{
+        AppliedAudioSource, FreshRuntimeCancellationResult, PublicationPolicy,
+        PublicationReceiptState,
+    };
     use hex_devices::delay::{
         DEFINITION, DRY_WET, FEEDBACK, FILTER, HIGH_QUALITY, LEFT_SYNC, TIME,
     };
@@ -1092,6 +1135,10 @@ fn native_insert_case(location: NativeInsertLocation, middle: bool) -> Result<()
     const DELAY: usize = 480;
     const RAMP: usize = 240;
     const SUFFIX_DELAY: usize = 960;
+    const HALF_RAMP: usize = RAMP / 2;
+    let removal = !matches!(edit, NativeEdit::Append | NativeEdit::Insert);
+    let middle = matches!(edit, NativeEdit::Insert | NativeEdit::Remove);
+    let abort = removal && edit != NativeEdit::Remove;
     let delay = |milliseconds| {
         let mut state = DEFINITION.default_state()?;
         for parameter in [LEFT_SYNC, FILTER, HIGH_QUALITY] {
@@ -1158,10 +1205,28 @@ fn native_insert_case(location: NativeInsertLocation, middle: bool) -> Result<()
         hex_devices::reverb::parameter::DRY_WET,
         ParameterValue::Float(100.0),
     )?;
-    editor.execute(insert(None, reverb))?;
+    let Created::Device(reverb) = editor.execute(insert(None, reverb))? else {
+        return Err("expected Reverb device".into());
+    };
     let mut source = vec![[0.0; 2]; 12_000];
     source[..BLOCK].fill([0.25, -0.125]);
-    let media = BTreeMap::from([(asset, Audio::new(RATE, source)?)]);
+    let mut media = BTreeMap::from([(asset, Audio::new(RATE, source)?)]);
+    let peer = if removal && owner.is_some() {
+        let Created::Imported { asset, .. } = editor.execute(Command::ImportAudioTrack {
+            name: "unaffected".into(),
+            path: "memory/unaffected.wav".into(),
+            sample_rate: RATE,
+            frames: 12_000,
+        })?
+        else {
+            return Err("expected independent source".into());
+        };
+        let frame = [0.0, 0.0625];
+        media.insert(asset, Audio::new(RATE, vec![frame; 12_000])?);
+        frame
+    } else {
+        [0.0; 2]
+    };
     let table = Arc::new(SineTable::new());
     let prepare = |project: &Project| {
         PreparedRevision::prepare(project, &media, Arc::clone(&table), None).map(Arc::new)
@@ -1197,7 +1262,7 @@ fn native_insert_case(location: NativeInsertLocation, middle: bool) -> Result<()
     };
     let initial = control
         .publish_with_admission_and_source_on_control(
-            Playback::try_from_prepared_with_session(original)?,
+            Playback::try_from_prepared_with_session(Arc::clone(&original))?,
             PublicationPolicy::InheritRuntime,
             context,
             |_| Ok::<_, ()>(()),
@@ -1221,7 +1286,11 @@ fn native_insert_case(location: NativeInsertLocation, middle: bool) -> Result<()
     );
     let cut = control.status.position.load(Ordering::Acquire);
 
-    editor.execute(insert(before, delay(10.0)?))?;
+    if removal {
+        editor.execute(Command::RemoveDevice(reverb))?;
+    } else {
+        editor.execute(insert(before, delay(10.0)?))?;
+    }
     let mut next = Playback::try_from_prepared_with_session(prepare(editor.project())?)?;
     next.require_continuous_device_insert();
     let context = hex_engine::AudioSourceContext {
@@ -1245,12 +1314,80 @@ fn native_insert_case(location: NativeInsertLocation, middle: bool) -> Result<()
     let mut actual = [[0.0; 2]; BLOCK * 4];
     let mut baseline = actual;
     let mut dry = actual;
-    for ((actual, baseline), dry) in actual
-        .chunks_mut(BLOCK)
-        .zip(baseline.chunks_mut(BLOCK))
-        .zip(dry.chunks_mut(BLOCK))
-    {
-        measured_block(&mut callback, actual);
+    if removal {
+        measured_block(&mut callback, &mut actual[..HALF_RAMP]);
+        assert_eq!(
+            receipt.state(),
+            PublicationReceiptState::Pending,
+            "{location:?} {edit:?}"
+        );
+        assert_eq!(control.status.recording_source(), Some(predecessor));
+        assert_eq!(control.reclaim(), 0);
+        assert_eq!(
+            control.status.position.load(Ordering::Acquire),
+            cut + HALF_RAMP as u64
+        );
+        if abort {
+            oracle.render(&mut baseline[..HALF_RAMP])?;
+            assert_ne!(actual[..HALF_RAMP], baseline[..HALF_RAMP]);
+            match edit {
+                NativeEdit::CancelRemoval => {
+                    assert_eq!(receipt.cancel(), FreshRuntimeCancellationResult::Cancelled);
+                }
+                NativeEdit::StopRemoval => {
+                    control.command(PlaybackCommand::Stop).map_err(|_| "stop")?;
+                }
+                NativeEdit::StaleRemoval => {
+                    control
+                        .action_with_ticket(hex_engine::PlaybackAction::SetMetronome(false))
+                        .map_err(|_| "stale command")?;
+                }
+                _ => return Err("expected removal abort".into()),
+            }
+            measured_block(&mut callback, &mut warm);
+            let expected_receipt = if edit == NativeEdit::CancelRemoval {
+                PublicationReceiptState::Cancelled
+            } else {
+                PublicationReceiptState::Refused(
+                    hex_engine::PlaybackHandoffRejection::RuntimeFenceChanged,
+                )
+            };
+            assert_eq!(receipt.state(), expected_receipt, "{edit:?}");
+            assert_eq!(control.status.recording_source(), Some(predecessor));
+            assert_eq!(control.reclaim(), 1);
+            let mut expected = [[0.0; 2]; BLOCK];
+            if edit == NativeEdit::StopRemoval {
+                assert!(!control.status.playing.load(Ordering::Acquire));
+                control
+                    .command(PlaybackCommand::Play)
+                    .map_err(|_| "play after stop")?;
+                measured_block(&mut callback, &mut warm);
+                let mut restarted = Playback::try_from_prepared_with_session(original)?;
+                restarted.apply(PlaybackCommand::Play);
+                restarted.render(&mut expected)?;
+                assert_eq!(warm, expected);
+            } else {
+                oracle.render(&mut expected)?;
+                assert_eq!(warm[RAMP..], expected[RAMP..]);
+                assert!(expected[RAMP..].iter().any(|frame| frame[0].abs() > 1e-6));
+            }
+            control.request_shutdown();
+            measured_shutdown(&mut callback, &mut warm);
+            control.reclaim();
+            return Ok(());
+        }
+        measured_block(&mut callback, &mut actual[HALF_RAMP..RAMP]);
+        assert_eq!(receipt.state(), PublicationReceiptState::Pending);
+        assert_eq!(control.status.recording_source(), Some(predecessor));
+    }
+    let end_of_fade = if removal { RAMP } else { 0 };
+    for block in actual[end_of_fade..].chunks_mut(BLOCK) {
+        measured_block(&mut callback, block);
+    }
+    if removal {
+        assert_eq!(control.reclaim(), 1);
+    }
+    for (baseline, dry) in baseline.chunks_mut(BLOCK).zip(dry.chunks_mut(BLOCK)) {
         oracle.render(baseline)?;
         if let Some(prefix) = prefix.as_mut() {
             prefix.render(dry)?;
@@ -1261,7 +1398,7 @@ fn native_insert_case(location: NativeInsertLocation, middle: bool) -> Result<()
     assert_eq!(
         receipt.state(),
         PublicationReceiptState::Installed,
-        "{location:?} middle={middle}"
+        "{location:?} {edit:?}"
     );
     assert_eq!(
         control.status.recording_source(),
@@ -1286,7 +1423,13 @@ fn native_insert_case(location: NativeInsertLocation, middle: bool) -> Result<()
                 .map(|tap| dry[frame - tap * DELAY][lane] * 0.5_f32.powi(tap as i32 - 1))
                 .sum();
             let input = dry[frame][lane];
-            output[lane] = input + (wet - input) * mix;
+            output[lane] = if removal {
+                // The original branch is silent at the cut. Only the separate
+                // direct-to-Main peer was included in the dry oracle.
+                peer[lane] + (input - peer[lane]) * (1.0 - mix)
+            } else {
+                input + (wet - input) * mix
+            };
         }
     }
     if middle {
@@ -1312,7 +1455,7 @@ fn native_insert_case(location: NativeInsertLocation, middle: bool) -> Result<()
         for lane in 0..2 {
             assert!(
                 (actual[lane] - expected[lane]).abs() < 2e-6,
-                "location={location:?} middle={middle} frame={frame} lane={lane}",
+                "location={location:?} {edit:?} frame={frame} lane={lane}",
             );
         }
     }

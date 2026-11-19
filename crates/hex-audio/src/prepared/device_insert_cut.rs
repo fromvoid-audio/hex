@@ -31,6 +31,58 @@ impl Callback {
         )
     }
 
+    /// A source-free fitting removal renders its predecessor until the
+    /// stage-local ramp commits. The exact receipt stays pending throughout.
+    /// Called only after the ordinary source and command fence has been checked.
+    pub(super) fn advance_native_device_removal(
+        &mut self,
+        next: &mut Publication,
+    ) -> Result<bool, PlaybackHandoffRejection> {
+        use hex_engine::session_playback::NativeRemovalProgress;
+
+        let rendering_revoked = self.native_effects_revoked();
+        let Some(active) = self.active.as_mut().and_then(ActivePublication::legacy_mut) else {
+            return Ok(true);
+        };
+        let source_free = |graph: &Publication| {
+            !graph.playback.contains_streamed_sources()
+                && graph
+                    .streams
+                    .as_ref()
+                    .is_none_or(|streams| streams.permits_paused_monitor())
+        };
+        // A previously accepted Session action keeps its original render cut.
+        // It must not cross a newly armed stage fade.
+        let pending_action = (0..active.playback.session_route_count()).any(|index| {
+            active
+                .playback
+                .session_route_status(index)
+                .is_some_and(|route| route.pending.is_some())
+        });
+        if rendering_revoked || pending_action || !source_free(active) || !source_free(next) {
+            return if next.playback.native_removal_pending() {
+                Err(PlaybackHandoffRejection::RuntimeFenceChanged)
+            } else {
+                Ok(true)
+            };
+        }
+        next.playback
+            .advance_native_removal_from(&mut active.playback)
+            .map(|progress| progress != NativeRemovalProgress::Fading)
+            .map_err(PlaybackHandoffRejection::from_error)
+    }
+
+    /// The rejected candidate may restore only the exact active predecessor.
+    pub(super) fn restore_refused_native_removal(&mut self, next: &mut Publication) {
+        if let PublicationPolicy::DeviceInsert { predecessor, .. } = next.policy
+            && self.recording_source() == Some(predecessor)
+            && let Some(active) = self.active.as_mut().and_then(ActivePublication::legacy_mut)
+        {
+            next.playback
+                .cancel_native_removal_from(&mut active.playback);
+        }
+    }
+
     pub(super) fn retain_device_insert_cut(
         &self,
         predecessor: AppliedAudioSource,
