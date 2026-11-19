@@ -280,6 +280,7 @@ impl EditorView {
     }
 
     pub(super) fn cancel_section_launch_wait(&mut self) {
+        self.playback_settings.pending = None;
         self.section_launch_after_loop = None;
         self.cancel_pending_loop_launch();
     }

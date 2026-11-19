@@ -164,6 +164,7 @@ mod midi_recording;
 mod midi_viewport_grid;
 mod missing_media;
 mod native_automation_recording;
+mod playback_settings;
 mod track_defaults;
 mod user_errors;
 #[cfg(feature = "ui-test-support")]
@@ -1145,6 +1146,7 @@ pub(super) struct EditorView {
     theme_settings: theme_settings::ThemeSettingsState,
     project_rate_settings: project_rate_settings::State,
     audio_import_settings: audio_import_settings::State,
+    playback_settings: playback_settings::State,
     track_defaults: track_defaults::State,
     tuning: tuning::TuningState,
     context_menu: Option<crate::context_menu::PopupMenu<context_menu::EditorContextAction>>,
@@ -1647,6 +1649,8 @@ impl EditorView {
         );
         let recent_projects = RecentProjectsState::new(recent_projects_path);
         let project_directory = project_directory::State::new(project_directory_path);
+        let playback_settings =
+            playback_settings::State::new(theme_preferences_path.with_file_name("playback.json"));
         let audio_import_settings = audio_import_settings::State::new(
             theme_preferences_path.with_file_name("audio-import.json"),
         );
@@ -1955,6 +1959,7 @@ impl EditorView {
             theme_settings,
             project_rate_settings: project_rate_settings::State::default(),
             audio_import_settings,
+            playback_settings,
             track_defaults,
             tuning: tuning::TuningState::new(cx),
             context_menu: None,
@@ -1993,6 +1998,7 @@ impl EditorView {
         view.start_project_directory_load(cx);
         view.start_theme_preferences_load(cx);
         view.start_audio_import_preferences_load(cx);
+        view.start_playback_preferences_load(cx);
         view.start_track_defaults_load(cx);
         view.start_controller_preferences_load(cx);
         view
@@ -2060,8 +2066,11 @@ impl EditorView {
             self.error = Some("project change pending · playback is paused".into());
             return;
         }
+        if self.playback_settings.pending.take().is_some() {
+            return;
+        }
         if self.recovery.generation().is_some() {
-            self.defer_play_until_audio_recovers();
+            self.queue_normal_play(self.playback_start_frame());
             return;
         }
         if self.section_install_pending() {
@@ -2096,9 +2105,14 @@ impl EditorView {
         let start_frame = self.playback_start_frame();
         let command = match self.play_toggle_action(device_playing, start_frame) {
             arrangement_seek::ToggleAction::Pause => PlaybackCommand::Pause,
-            arrangement_seek::ToggleAction::PlayFrom(frame) => PlaybackCommand::PlayFrom(frame),
+            arrangement_seek::ToggleAction::PlayFrom(frame) => {
+                self.queue_normal_play(frame);
+                return;
+            }
             arrangement_seek::ToggleAction::Unavailable => {
-                if !self.recover_degraded_play_at(start_frame) {
+                if self.has_degraded_vst3_output() {
+                    self.queue_normal_play(start_frame);
+                } else {
                     self.error = Some("playback source is unavailable · cannot seek safely".into());
                 }
                 return;

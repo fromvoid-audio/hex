@@ -616,10 +616,14 @@ impl EditorView {
         };
         self.wake_poll();
         self.latency_rebuild = None;
-        self.admit_prepared_seek(intent, source.audio_revision);
+        self.queue_normal_start(super::playback_settings::Start::Prepared {
+            intent,
+            audio_revision: source.audio_revision,
+        });
     }
 
     pub(super) fn request_history_playback(&mut self, frame: u64) {
+        self.playback_settings.pending = None;
         self.request_prepared_seek_with_kind(frame, true, SeekKind::History);
     }
 
@@ -705,6 +709,17 @@ impl EditorView {
             prepared_revision,
             device_preview_identity: self.active_seek_preview(),
         };
+        if matches!(kind, SeekKind::Section(_) | SeekKind::Locator(_)) {
+            self.queue_normal_start(super::playback_settings::Start::Prepared {
+                intent,
+                audio_revision,
+            });
+            return;
+        }
+        self.submit_prepared_seek_intent(intent, audio_revision);
+    }
+
+    pub(super) fn submit_prepared_seek_intent(&mut self, intent: SeekIntent, audio_revision: u64) {
         if intent.kind.quantization().is_some() && self.prepared_seek.is_some() {
             self.invalidate_prepared_seek();
         }
@@ -796,7 +811,7 @@ impl EditorView {
         )
     }
 
-    fn admit_prepared_seek(
+    pub(super) fn admit_prepared_seek(
         &mut self,
         mut intent: super::arrangement_seek::SeekIntent,
         mut audio_revision: u64,
