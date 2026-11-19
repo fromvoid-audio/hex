@@ -207,6 +207,14 @@ acknowledgement repaint, and open/save flows. For each tier, time the combined
 setup and test execution with compilation measured separately. The unit limit
 is 30 seconds and the integration limit is three minutes.
 
+To time the tiers independently, add `--no-run --message-format=json` to each
+Cargo command and collect the test-profile `compiler-artifact` executables.
+Measure wall time for running all distinct executables in each tier, including
+process startup and fixture setup. Run them from the package directory, as Cargo
+does, and keep the default harness arguments so the same tests run. Record the
+source, toolchain, test counts, build times and the two tier totals. Timing the
+feature-enabled library executable measures the windowed integration suite.
+
 For focused recorder layout timing on macOS arm64, build
 `sample_recorder_layout` with `--release --no-run --message-format=json`.
 Copy Cargo's reported test executable to a local artifact directory and prepare
