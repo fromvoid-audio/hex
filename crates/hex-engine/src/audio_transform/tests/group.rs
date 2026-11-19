@@ -1357,3 +1357,6 @@ fn grouped_transforms_charge_each_distinct_source_once() {
     );
     assert!(context.cache_hits() > 0);
 }
+
+#[path = "group_outer_fade.rs"]
+mod outer_fade;
