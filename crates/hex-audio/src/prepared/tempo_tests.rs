@@ -10,7 +10,7 @@ fn compensated_tempo_edits_publish_without_callback_allocations() {
 }
 
 #[test]
-fn looped_compensated_tempo_restart_publishes_without_callback_allocations() {
+fn looped_compensated_tempo_edits_publish_without_callback_allocations() {
     run_tempo_cases(&[(1, true, true), (257, true, true)]);
 }
 
@@ -183,8 +183,8 @@ fn run_tempo_cases(cases: &[(usize, bool, bool)]) {
         oracle.apply(PlaybackCommand::PlayFrom(800));
         let mut expected = [[0.0; 2]; 1024];
         oracle.render(&mut expected).unwrap();
-        if compensated && !looped {
-            // The ordinary linear publication keeps the predecessor's
+        if compensated {
+            // The live publication keeps the predecessor's
             // in-flight samples. Once they drain, the edited source supplies
             // the same samples as the candidate started at the new beat.
             let latency = candidate.arrangement().main_latency_frames() as usize;

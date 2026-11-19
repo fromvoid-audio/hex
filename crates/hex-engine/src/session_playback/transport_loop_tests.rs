@@ -389,6 +389,88 @@ fn compensated_tempo_anchor_preserves_samples_and_clock_inner() {
 }
 
 #[test]
+fn live_loop_tempo_edit_keeps_pending_pcm_and_wraps_the_retimed_loop() {
+    std::thread::Builder::new()
+        .stack_size(16 * 1024 * 1024)
+        .spawn(|| {
+            let (_, looped, media) = limiter_loop_fixture();
+            let prepare = |project: &Project| {
+                Arc::new(
+                    PreparedRevision::prepare(
+                        project,
+                        &media,
+                        Arc::new(hex_devices::SineTable::new()),
+                        None,
+                    )
+                    .unwrap(),
+                )
+            };
+            let original = prepare(&looped);
+            for (tempo, bounds, new_cut, after_wrap) in [
+                (90_000_000, (533, 3200), 3093, 938),
+                (180_000_000, (267, 1600), 1547, 726),
+            ] {
+                let mut editor = Editor::new(looped.clone(), 1).unwrap();
+                editor
+                    .execute(Command::SetProjectTempo {
+                        tempo: Tempo::new(tempo).unwrap(),
+                    })
+                    .unwrap();
+                let edited = prepare(editor.project());
+                let new_region = editor.project().loop_region().unwrap();
+                assert_eq!((new_region.start(), new_region.end()), bounds);
+                let latency = original.arrangement().main_latency_frames() as usize;
+                assert!(latency > 0);
+                for block in [1, 257] {
+                    let from_running = || {
+                        let mut playback = SessionPlayback::new(Arc::clone(&original)).unwrap();
+                        playback.apply(SessionPlaybackCommand::Play).unwrap();
+                        for chunk in [[0.0; 2]; 6320].chunks_mut(block) {
+                            playback.render(chunk).unwrap();
+                        }
+                        assert_eq!(playback.arrangement_frame(), 2320);
+                        assert_eq!(playback.arrangement_loop_state().pass, 2);
+                        playback
+                    };
+                    let mut donor = from_running();
+                    let old_beat =
+                        crate::MidiTiming::frame_to_beat(&donor.timing_view(), 6320).unwrap();
+                    let mut uninterrupted = from_running();
+                    let mut candidate = SessionPlayback::new(Arc::clone(&edited)).unwrap();
+                    let report = candidate.try_inherit_state_live_from(&mut donor).unwrap();
+                    assert!(!report.running_audio_restart(), "partition {block}");
+                    assert_eq!(candidate.performance_frame(), 6320);
+                    assert_eq!(candidate.arrangement_frame(), new_cut);
+                    assert_eq!(
+                        crate::MidiTiming::frame_to_beat(&candidate.timing_view(), 6320).unwrap(),
+                        old_beat
+                    );
+                    assert_eq!(candidate.arrangement_loop_state().pass, 2);
+
+                    let mut expected = [[0.0; 2]; 512];
+                    let mut fresh = SessionPlayback::new(Arc::clone(&edited)).unwrap();
+                    fresh.play_from(new_cut).unwrap();
+                    fresh.render(&mut expected).unwrap();
+                    uninterrupted.render(&mut expected[..latency]).unwrap();
+                    assert!(expected[..latency].iter().any(|frame| *frame != [0.0; 2]));
+                    let mut output = [[0.0; 2]; 512];
+                    for chunk in output.chunks_mut(block) {
+                        candidate.render(chunk).unwrap();
+                    }
+                    for (offset, (sample, expected)) in output.iter().zip(expected).enumerate() {
+                        assert_eq!(*sample, expected, "partition {block}, sample {offset}");
+                    }
+                    assert_eq!(candidate.arrangement_frame(), after_wrap);
+                    assert_eq!(candidate.arrangement_loop_state().pass, 3);
+                }
+            }
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+#[test]
 fn prepared_tempo_anchor_follows_multiple_loop_passes() {
     run_prepared_loop_anchor(false);
 }

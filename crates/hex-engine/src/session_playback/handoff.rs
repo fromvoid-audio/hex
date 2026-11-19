@@ -1894,7 +1894,52 @@ impl SessionPlayback {
         let old_base = previous.revision.session().timing();
         let new_base = self.revision.session().timing();
         let same_base = old_base.same_map(new_base);
-        let candidate_periodic = self.periodic_tempo_at(previous.arrangement_frame);
+        // In-flight audio retains its original tempo, beat and frame stamps.
+        // With the same delay layout and musical loop bounds, copy that
+        // history and anchor new Arrangement audio at the actual cut.
+        let carries_arrangement_audio_tempo = !same_base
+            && previous.playing
+            && clock_transfer == 1
+            && fresh_history.is_none()
+            && previous.transient_loop.is_none()
+            && self.transient_loop.is_none()
+            && match (old_loop, new_loop) {
+                (None, None) => true,
+                (Some(old), Some(new)) => [(old.start(), new.start()), (old.end(), new.end())]
+                    .into_iter()
+                    .all(|(before, after)| {
+                        old_base
+                            .frame_to_beat(before)
+                            .and_then(|beat| new_base.beat_to_frame(beat))
+                            .is_ok_and(|mapped| mapped == after)
+                    }),
+                _ => false,
+            }
+            && self
+                .routes
+                .iter()
+                .chain(&previous.routes)
+                .all(|route| route.owner == RouteOwner::Arrangement && route.pending.is_none())
+            && self
+                .revision
+                .arrangement()
+                .tracks()
+                .iter()
+                .chain(previous.revision.arrangement().tracks())
+                .all(|track| track.instrument.is_none() && track.foreign_instrument.is_none());
+        // Resolve the retimed cursor before choosing its periodic clock. A
+        // faster tempo can put the donor's frame past the candidate loop end.
+        let carried_cut = if carries_arrangement_audio_tempo {
+            Some(candidate_arrangement_cut(
+                previous,
+                new_base,
+                self.loop_region(),
+            )?)
+        } else {
+            None
+        };
+        let candidate_periodic = self
+            .periodic_tempo_at(carried_cut.map_or(previous.arrangement_frame, |(frame, _)| frame));
         let same_periodic = previous.periodic_tempo() == candidate_periodic;
         let old_clock = previous.timing_view();
         let old_beat = old_clock
@@ -1931,7 +1976,9 @@ impl SessionPlayback {
         // keeps the cursor's beat, not its frame (Pulse #3935). Old-revision
         // queries keep `previous.arrangement_frame`; candidate queries and the
         // installed cursor use this cut. An unchanged map keeps the same frame.
-        let (arrangement_cut, arrangement_cut_pass) = if same_base {
+        let (arrangement_cut, arrangement_cut_pass) = if let Some(cut) = carried_cut {
+            cut
+        } else if same_base {
             (previous.arrangement_frame, previous.arrangement_loop_pass)
         } else {
             candidate_arrangement_cut(previous, &new_base_view, self.loop_region())?
@@ -1960,32 +2007,8 @@ impl SessionPlayback {
                     .map(hex_project::LoopRegion::start),
             }
         };
-        // In-flight audio retains the tempo, beat and frame stamps it had
-        // when rendered. When the linear Arrangement still has the same
-        // delay layout, copy that history and anchor new audio at the cut.
-        // Session routes, mutable gates and loop timing retain their existing
-        // change-specific handoff and restart rules.
-        let carries_linear_audio_tempo = !same_base
-            && previous.playing
-            && clock_transfer == 1
-            && fresh_history.is_none()
-            && same_periodic
-            && old_loop.is_none()
-            && new_loop.is_none()
-            && self
-                .routes
-                .iter()
-                .chain(&previous.routes)
-                .all(|route| route.owner == RouteOwner::Arrangement && route.pending.is_none())
-            && self
-                .revision
-                .arrangement()
-                .tracks()
-                .iter()
-                .chain(previous.revision.arrangement().tracks())
-                .all(|track| track.instrument.is_none() && track.foreign_instrument.is_none());
         if !same_base
-            && !carries_linear_audio_tempo
+            && !carries_arrangement_audio_tempo
             && (self.revision.arrangement().main_latency_frames() > 0
                 || previous.revision.arrangement().main_latency_frames() > 0)
             && (previous.playing
