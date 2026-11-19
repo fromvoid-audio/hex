@@ -12,7 +12,7 @@ use hex_session::service::{
     DeviceInsertAudioReceipt, DeviceInsertAudioState, ResidentGraphSubmission,
     ResidentPublicationAcceptance, ResidentPublicationMetadata, ResidentPublicationPolicy,
     ResidentPublicationReadiness, ResidentPublicationRefusal, ResidentRuntimeLoop,
-    ResidentTempoEdit,
+    ResidentTempoEdit, ResidentTempoEditOutcome,
 };
 
 #[derive(Debug)]
@@ -98,12 +98,29 @@ fn prepare_resident_tempo_cut(
     let lead = control
         .plugin_callback_quantum_on_control()
         .map_or(256, |quantum| u64::from(quantum) * 2);
+    let candidate = playback.prepared_revision()?;
+    if let Some(missed) = edit.retry_of {
+        if missed.output_identity != edit.source.output_identity {
+            return None;
+        }
+        // Leave additional lead after a proven miss, on the same clock fence.
+        return control
+            .reprepare_missed_tempo_cut(
+                missed.audio_revision,
+                missed.context,
+                edit.previous,
+                candidate,
+                observation.performance_frame.checked_add(lead * 2)?,
+            )
+            .ok()
+            .flatten();
+    }
     control
         .prepare_fenced_tempo_anchor(
             edit.source.audio_revision,
             edit.source.context.project_generation,
             Arc::clone(edit.previous),
-            Arc::clone(playback.prepared_revision()?),
+            Arc::clone(candidate),
             observation.performance_frame.checked_add(lead)?,
         )
         .ok()
@@ -340,7 +357,7 @@ impl NativeAudioSink {
         &mut self,
         context: AudioSourceContext,
         acceptance: ResidentPublicationAcceptance,
-    ) -> Result<(), String> {
+    ) -> Result<ResidentTempoEditOutcome, String> {
         use hex_audio::prepared::PublicationReceiptState as Receipt;
         use std::time::{Duration, Instant};
         let ResidentPublicationAcceptance::Submitted {
@@ -348,7 +365,7 @@ impl NativeAudioSink {
             audio_revision,
         } = acceptance
         else {
-            return Ok(());
+            return Ok(ResidentTempoEditOutcome::Confirmed);
         };
         let control = self
             .output
@@ -358,7 +375,7 @@ impl NativeAudioSink {
             .ok_or("tempo edit lost its audio output")?;
         let Some(receipt) = control.fresh_runtime_receipt(audio_revision) else {
             // Stopped or out-of-scope scheduling uses ordinary publication.
-            return Ok(());
+            return Ok(ResidentTempoEditOutcome::Confirmed);
         };
         if receipt.context() != Some(context) || receipt.output_identity() != output_identity {
             return Err("tempo edit receipt differs from its submission".into());
@@ -367,7 +384,24 @@ impl NativeAudioSink {
         let deadline = Instant::now() + Duration::from_secs(2);
         loop {
             match receipt.state() {
-                Receipt::Installed => return Ok(()),
+                Receipt::Installed => return Ok(ResidentTempoEditOutcome::Confirmed),
+                Receipt::Refused(hex_engine::PlaybackHandoffRejection::TempoCutMissed) => {
+                    let control = self
+                        .output
+                        .as_mut()
+                        .and_then(|output| output.publication.control())
+                        .filter(|control| control.output_identity() == Some(output_identity))
+                        .ok_or("tempo edit lost its audio output")?;
+                    // The receipt can be terminal just before the callback
+                    // returns the graph and releases the publication slot.
+                    if !control.status.publication_in_flight() {
+                        control.reclaim();
+                        return Ok(ResidentTempoEditOutcome::MissedCut);
+                    }
+                    if Instant::now() >= deadline {
+                        return Err("missed tempo publication did not release its slot".into());
+                    }
+                }
                 Receipt::Refused(reason) => return Err(reason.message().into()),
                 Receipt::Cancelled | Receipt::Expired => {
                     return Err("tempo edit cancelled before installation".into());
@@ -921,7 +955,9 @@ impl NativeAudioSink {
             .request_cancellation
             .as_ref()
             .filter(|cancellation| {
-                native_publication || cancellation.requires_publication_admission_check()
+                native_publication
+                    || tempo_edit.is_some()
+                    || cancellation.requires_publication_admission_check()
             })
             .cloned();
         let cancellation_error = if native_publication {
@@ -1310,20 +1346,22 @@ impl NativeAudioSink {
                 },
             );
             let mut retained_playback = playback;
-            #[cfg(all(test, feature = "allocation-probe"))]
-            if let Some((ready, resume)) = self.native_graph_gate.take()
-                && (ready.send(()).is_err()
-                    || resume
-                        .recv_timeout(std::time::Duration::from_secs(10))
-                        .is_err())
-            {
-                return Err(ResidentPublicationRefusal {
-                    kind: hex_session::service::ResidentPublicationFailure::Other,
-                    playback: retained_playback,
-                    error: "fixture native graph publication gate closed".into(),
-                });
-            }
             let result = loop {
+                let cut = tempo_edit
+                    .and_then(|edit| prepare_resident_tempo_cut(control, &retained_playback, edit));
+                #[cfg(all(test, feature = "allocation-probe"))]
+                if let Some((ready, resume)) = self.native_graph_gate.take()
+                    && (ready.send(()).is_err()
+                        || resume
+                            .recv_timeout(std::time::Duration::from_secs(10))
+                            .is_err())
+                {
+                    return Err(ResidentPublicationRefusal {
+                        kind: hex_session::service::ResidentPublicationFailure::Other,
+                        playback: retained_playback,
+                        error: "fixture native graph publication gate closed".into(),
+                    });
+                }
                 if let Some(deadline) = replacement_deadline
                     && let Err(error) =
                         super::document_output::check_deadline(deadline, request_cancellation)
@@ -1354,8 +1392,6 @@ impl NativeAudioSink {
                             }));
                         }
                     };
-                let cut = tempo_edit
-                    .and_then(|edit| prepare_resident_tempo_cut(control, &retained_playback, edit));
                 let published = match (policy, cut) {
                     (hex_audio::prepared::PublicationPolicy::DeviceInsert { .. }, _) => {
                         let admit_resources = |prospective: DeviceResourceAdmission<'_>| {
@@ -1377,6 +1413,12 @@ impl NativeAudioSink {
                                 admit_resources,
                             )
                         }
+                    }
+                    (_, None) if tempo_edit.is_some_and(|edit| edit.retry_of.is_some()) => {
+                        Err(hex_audio::prepared::AdmittedPublishError::Admission {
+                            reason: "tempo retry lost its original running source".into(),
+                            playback: retained_playback,
+                        })
                     }
                     (_, Some(cut)) => control.publish_tempo_cut_with_admission_on_control(
                         retained_playback,

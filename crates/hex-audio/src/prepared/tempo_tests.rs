@@ -463,7 +463,7 @@ fn missed_cancelled_or_stopped_tempo_cut_keeps_the_exact_predecessor() {
         }
         let revision = control
             .publish_tempo_cut_with_admission_on_control(
-                Playback::try_from_prepared_with_session(candidate).unwrap(),
+                Playback::try_from_prepared_with_session(Arc::clone(&candidate)).unwrap(),
                 cut,
                 RETIMED_SOURCE,
                 |_| Ok::<_, ()>(()),
@@ -504,7 +504,8 @@ fn missed_cancelled_or_stopped_tempo_cut_keeps_the_exact_predecessor() {
         if matches!(interruption, Interruption::Stop) {
             assert!(!control.status.playing.load(Acquire));
         } else {
-            let mut uninterrupted = Playback::try_from_prepared_with_session(old).unwrap();
+            let mut uninterrupted =
+                Playback::try_from_prepared_with_session(Arc::clone(&old)).unwrap();
             uninterrupted.apply(PlaybackCommand::Play);
             uninterrupted.render(&mut vec![[0.0; 2]; origin]).unwrap();
             let mut expected = [[0.0; 2]; 257];
@@ -514,6 +515,22 @@ fn missed_cancelled_or_stopped_tempo_cut_keeps_the_exact_predecessor() {
         if matches!(interruption, Interruption::StopAtCut) {
             render_tempo_probe(&mut callback, &mut actual);
             assert!(!control.status.playing.load(Acquire));
+        }
+        if matches!(interruption, Interruption::Late) {
+            let prepare_retry = |control: &Control, successor: &Arc<PreparedRevision>| {
+                let next_cut = control.status.performance_frame.load(Acquire) + 128;
+                control
+                    .reprepare_missed_tempo_cut(revision, RETIMED_SOURCE, &old, successor, next_cut)
+                    .unwrap()
+            };
+            assert!(prepare_retry(&control, &candidate).is_some());
+            let [_, wrong_candidate] = tempo_revisions(true, false);
+            assert!(prepare_retry(&control, &wrong_candidate).is_none());
+            control.command(PlaybackCommand::Seek(601)).unwrap();
+            render_tempo_probe(&mut callback, &mut actual);
+            assert!(control.capture_running_transport_fence().is_some());
+            assert_eq!(control.status.applied_revision.load(Acquire), active);
+            assert!(prepare_retry(&control, &candidate).is_none());
         }
         control.reclaim();
     }

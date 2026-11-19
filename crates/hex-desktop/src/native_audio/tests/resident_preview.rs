@@ -1857,7 +1857,7 @@ impl WorkerAudioSink for ResidentSink {
         &mut self,
         context: AudioSourceContext,
         acceptance: ResidentPublicationAcceptance,
-    ) -> Result<(), String> {
+    ) -> Result<hex_session::service::ResidentTempoEditOutcome, String> {
         self.file_publication_waiting
             .store(true, std::sync::atomic::Ordering::Release);
         let result = self.inner.confirm_resident_tempo_edit(context, acceptance);
