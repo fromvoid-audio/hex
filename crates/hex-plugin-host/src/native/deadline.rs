@@ -3,7 +3,7 @@
 //! quiescence, restart, and failed disposal. No callback holds a permit.
 
 use std::{
-    sync::atomic::{AtomicUsize, Ordering::AcqRel},
+    sync::atomic::{AtomicUsize, Ordering::Relaxed},
     time::Duration,
 };
 
@@ -13,6 +13,7 @@ use crate::protocol::Configuration;
 // effects. Further sources still load and process using ordinary scheduling.
 const MAX_DEADLINE_PAIRS: usize = 12;
 
+// Only the scalar count is shared between child owners.
 static RESERVED_PAIRS: AtomicUsize = AtomicUsize::new(0);
 
 pub(super) struct Permit {
@@ -27,7 +28,7 @@ impl Permit {
             return None;
         }
         RESERVED_PAIRS
-            .fetch_update(AcqRel, AcqRel, |reserved| {
+            .fetch_update(Relaxed, Relaxed, |reserved| {
                 (reserved < MAX_DEADLINE_PAIRS).then_some(reserved + 1)
             })
             .ok()?;
@@ -37,6 +38,6 @@ impl Permit {
 
 impl Drop for Permit {
     fn drop(&mut self) {
-        RESERVED_PAIRS.fetch_sub(1, AcqRel);
+        RESERVED_PAIRS.fetch_sub(1, Relaxed);
     }
 }
