@@ -1,8 +1,13 @@
 //! Forward musical event reads over the accepted pre-event peak clock.
 use super::*;
 use crate::PreparedAudioRepeat;
-use crate::audio_transform::{PreparedMusicalEventSourceClock, events::event_source_frame};
-use hex_project::{AudioEventFade, BeatTime, ProjectedAudioFade};
+use crate::audio_transform::{
+    PreparedEventOccurrence, PreparedMusicalEventSourceClock,
+    events::event_source_frame,
+    view::{bind_occurrence_clock, validate_copy},
+};
+use hex_project::{AudioClipEdit, AudioEventFade, BeatTime};
+use std::borrow::Cow;
 mod placement;
 use placement::{ArrangementRead, repeat_ranges};
 
@@ -11,14 +16,13 @@ use placement::{ArrangementRead, repeat_ranges};
 /// the forward destination root. Both use composition's retained source clock.
 pub struct MusicalEventFadePreview<'a> {
     clip: &'a Clip,
-    edit: &'a hex_project::AudioClipEdit,
+    edit: Cow<'a, AudioClipEdit>,
     tempo: &'a TempoMap,
     source: &'a PreparedMusicalEventSourceClock,
     root_frames: u64,
     read: ArrangementRead,
     clip_end: u64,
     events: Vec<MusicalEvent>,
-    legacy: Option<ProjectedAudioFade<'a>>,
     outer: Option<ProjectedOuterAudioFade<'a>>,
     gain: f32,
 }
@@ -40,21 +44,9 @@ impl<'a> MusicalEventFadePreview<'a> {
         gain: ClipGain,
         repeat: Option<PreparedAudioRepeat>,
     ) -> Result<Option<Self>, Invalid> {
-        let Some(edit) = clip.audio_edit().filter(|edit| {
-            matches!(edit.domain.clock, AudioDomainClock::Beats(_)) && edit.content_view.is_none()
-        }) else {
+        let Some(edit) = Self::musical_edit(clip) else {
             return Ok(None);
         };
-        if events.len() > MAX_AUDIO_EVENTS
-            || events.iter().any(|event| {
-                event.source != 0
-                    || event.start >= event.end
-                    || event.end > edit.domain.clock.length()
-            })
-            || events.windows(2).any(|pair| pair[0].end > pair[1].start)
-        {
-            return Ok(None);
-        }
         let (_, root_frames, crop_start, crop_end) = edit.projected_domain(tempo)?;
         let clip_end = clip
             .start()
@@ -72,16 +64,102 @@ impl<'a> MusicalEventFadePreview<'a> {
         else {
             return Ok(None);
         };
+        Self::from_root(clip, tempo, source, events, gain, Cow::Borrowed(edit), read)
+    }
+
+    /// Project the accepted forward root as it is laid out in the event pane.
+    /// The other occurrences, and their Arrangement crop, are independent.
+    pub fn for_editor(
+        clip: &'a Clip,
+        tempo: &'a TempoMap,
+        source: &'a PreparedMusicalEventSourceClock,
+        event: &AudioEvent,
+        gain: ClipGain,
+    ) -> Result<Option<Self>, Invalid> {
+        let Some(edit) = Self::musical_edit(clip) else {
+            return Ok(None);
+        };
+        Self::from_root(
+            clip,
+            tempo,
+            source,
+            std::slice::from_ref(event),
+            gain,
+            Cow::Borrowed(edit),
+            ArrangementRead::EventOnly,
+        )
+    }
+
+    /// Bind one destination occurrence to its accepted root clock and crop.
+    /// The display owns metadata only and preserves the clip's outer fade.
+    pub fn for_occurrence(
+        clip: &'a Clip,
+        tempo: &'a TempoMap,
+        occurrence: &'a PreparedEventOccurrence,
+        events: &[AudioEvent],
+        gain: ClipGain,
+    ) -> Result<Option<Self>, Invalid> {
+        let Some(edit) = Self::musical_edit(clip) else {
+            return Ok(None);
+        };
+        let Some(source) = occurrence.source.musical_clock() else {
+            return Ok(None);
+        };
+        let placement = occurrence.placement;
+        validate_copy(clip, placement)?;
+        let edit =
+            bind_occurrence_clock(edit, placement.root_origin, || Ok(source.shared_tempo()))?;
+        if edit.projected_domain(tempo)?.1 != placement.root_frame_length {
+            return Ok(None);
+        }
+        let read = ArrangementRead::Once {
+            destination: placement.destination_start..placement.destination_end,
+            root_start: placement.root_start,
+        };
+        Self::from_root(clip, tempo, source, events, gain, Cow::Owned(edit), read)
+    }
+
+    fn musical_edit(clip: &Clip) -> Option<&AudioClipEdit> {
+        clip.audio_edit().filter(|edit| {
+            matches!(edit.domain.clock, AudioDomainClock::Beats(_)) && edit.content_view.is_none()
+        })
+    }
+
+    fn from_root(
+        clip: &'a Clip,
+        tempo: &'a TempoMap,
+        source: &'a PreparedMusicalEventSourceClock,
+        events: &[AudioEvent],
+        gain: ClipGain,
+        edit: Cow<'a, AudioClipEdit>,
+        read: ArrangementRead,
+    ) -> Result<Option<Self>, Invalid> {
+        if events.len() > MAX_AUDIO_EVENTS
+            || events.iter().any(|event| {
+                event.source != 0
+                    || event.start >= event.end
+                    || event.end > edit.domain.clock.length()
+            })
+            || events.windows(2).any(|pair| pair[0].end > pair[1].start)
+        {
+            return Ok(None);
+        }
+        let (_, root_frames, _, _) = edit.projected_domain(tempo)?;
+        let clip_end = clip
+            .start()
+            .checked_add(clip.duration())
+            .ok_or(Invalid("musical waveform clip end overflow"))?;
         let outer = clip.projected_outer_fade(tempo)?;
-        let legacy = (outer.is_none() && !edit.domain.fade.is_neutral())
-            .then(|| edit.projected_fade(tempo))
-            .transpose()?;
         let zero = edit
             .domain
             .musical_event_source
             .map_or(0, |source| source.zero_in_destination);
-        let aligned_zero = source.aligned_destination_zero(edit, tempo, zero)?;
-        if edit.placement.is_some() && aligned_zero.is_none() {
+        let aligned_zero = source.aligned_destination_zero(&edit, tempo, zero)?;
+        if clip
+            .audio_edit()
+            .is_some_and(|edit| edit.placement.is_some())
+            && aligned_zero.is_none()
+        {
             return Ok(None);
         }
         let mut spans = Vec::new();
@@ -126,7 +204,6 @@ impl<'a> MusicalEventFadePreview<'a> {
             read,
             clip_end,
             events: spans,
-            legacy,
             outer,
             gain: gain.linear(),
         }))
@@ -145,6 +222,7 @@ impl<'a> MusicalEventFadePreview<'a> {
             return Err(Invalid("musical waveform range is reversed"));
         }
         let (read_start, read_end) = match &self.read {
+            ArrangementRead::EventOnly => return Ok(None),
             ArrangementRead::Once { destination, .. } => (destination.start, destination.end),
             ArrangementRead::Repeat(_) => (self.clip.start(), self.clip_end),
         };
@@ -157,6 +235,7 @@ impl<'a> MusicalEventFadePreview<'a> {
         }
         let silence = first != range.start || last != range.end;
         match &self.read {
+            ArrangementRead::EventOnly => Ok(None),
             ArrangementRead::Once { root_start, .. } => {
                 let root_first = root_start + (first - read_start);
                 let root = root_first..root_first + (last - first);
@@ -224,6 +303,9 @@ impl<'a> MusicalEventFadePreview<'a> {
         mut outer_gain: impl FnMut(u64) -> Result<f32, Invalid>,
         mut visit: impl FnMut(FrameFadeRange),
     ) -> Result<Option<FrameFadeCoverage>, Invalid> {
+        let legacy = (self.outer.is_none() && !self.edit.domain.fade.is_neutral())
+            .then(|| self.edit.projected_fade(self.tempo))
+            .transpose()?;
         let mut cursor = root.start;
         let index = self
             .events
@@ -258,7 +340,7 @@ impl<'a> MusicalEventFadePreview<'a> {
                 }
                 None => 1.0,
             };
-            let clip_fade = if let Some(legacy) = &self.legacy {
+            let clip_fade = if let Some(legacy) = &legacy {
                 legacy.gain_at(midpoint)?
             } else {
                 outer_gain(midpoint)?
@@ -286,7 +368,7 @@ impl<'a> MusicalEventFadePreview<'a> {
                 .checked_add(frame - span.frames.start)
                 .ok_or(Invalid("audio event source position overflow"));
         }
-        event_source_frame(self.edit, self.tempo, &span.event, frame, |position| {
+        event_source_frame(&self.edit, self.tempo, &span.event, frame, |position| {
             self.source.frame_at(BeatTime::from_raw(position))
         })
     }

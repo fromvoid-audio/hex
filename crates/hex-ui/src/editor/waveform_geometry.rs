@@ -1200,7 +1200,7 @@ fn build_waveform_geometry(
         _ => None,
     };
     let mut range_budget = waveform_frame::RANGE_BUDGET;
-    let event_fade = match mapping {
+    let mut event_fade = match mapping {
         WaveformMapping::MusicalEventFade {
             projection, clock, ..
         } => Some(projection.query(clock)?),
@@ -1266,15 +1266,12 @@ fn build_waveform_geometry(
                     };
                 Some(peaks)
             }
-            WaveformMapping::MusicalEventFade { clock, .. } => {
-                Some(super::waveform_musical_event::peaks(
-                    event_fade.as_ref()?,
-                    *clock,
-                    waveform,
-                    start..end,
-                    &mut range_budget,
-                )?)
-            }
+            WaveformMapping::MusicalEventFade { .. } => Some(super::waveform_musical_event::peaks(
+                event_fade.as_mut()?,
+                waveform,
+                start..end,
+                &mut range_budget,
+            )?),
             WaveformMapping::PreparedFade(fade) => {
                 Some(fade.peaks(waveform, start..end, layout.frame_detail_budget())?)
             }

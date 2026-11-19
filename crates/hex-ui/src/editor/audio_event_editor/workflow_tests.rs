@@ -1797,15 +1797,26 @@ fn event_fade_escape_blur_stale_and_nonfinite_capture_never_commit(cx: &mut Test
 
 #[gpui::test]
 fn event_fade_warped_moved_source_uses_local_clock_after_zoom_and_pan(cx: &mut TestAppContext) {
-    warped_event_fade_workflow(cx, false);
+    warped_event_fade_workflow(cx, WarpedFadeFixture::Single);
 }
 
 #[gpui::test]
 fn event_fade_warped_shared_repeat_keeps_both_waveforms_through_ack(cx: &mut TestAppContext) {
-    warped_event_fade_workflow(cx, true);
+    warped_event_fade_workflow(cx, WarpedFadeFixture::SharedRepeat);
 }
 
-fn warped_event_fade_workflow(cx: &mut TestAppContext, repeat: bool) {
+#[gpui::test]
+fn event_fade_warped_tempo_repeat_keeps_both_waveforms_through_ack(cx: &mut TestAppContext) {
+    warped_event_fade_workflow(cx, WarpedFadeFixture::TempoRepeat);
+}
+
+enum WarpedFadeFixture {
+    Single,
+    SharedRepeat,
+    TempoRepeat,
+}
+
+fn warped_event_fade_workflow(cx: &mut TestAppContext, fixture: WarpedFadeFixture) {
     use crate::editor::waveform_geometry::painted_clip_waveform_outline;
     let (_files, mut visual, editor, clip) = open(cx);
     editor.update(&mut visual, |v, _| {
@@ -1834,7 +1845,7 @@ fn warped_event_fade_workflow(cx: &mut TestAppContext, repeat: bool) {
             .length()
     });
     assert!(length > 96_000, "fixture must use Q32.32 beats");
-    if !repeat {
+    if !matches!(fixture, WarpedFadeFixture::SharedRepeat) {
         editor.update(&mut visual, |v, _| {
             assert!(v.enqueue(Request::Edit(Command::SetTempoPoint {
                 beat: hex_project::BeatTime::from_raw(length / 2),
@@ -1858,7 +1869,7 @@ fn warped_event_fade_workflow(cx: &mut TestAppContext, repeat: bool) {
             start: length / 2,
         },
     );
-    if repeat {
+    if matches!(fixture, WarpedFadeFixture::SharedRepeat) {
         let track = editor.read_with(&visual, |v, _| {
             v.state.as_ref().unwrap().project.tracks()[0].id()
         });
@@ -1902,9 +1913,40 @@ fn warped_event_fade_workflow(cx: &mut TestAppContext, repeat: bool) {
                 .unwrap();
             assert_eq!(view.repeat.unwrap().phase, 24_000);
         });
+    } else if matches!(fixture, WarpedFadeFixture::TempoRepeat) {
+        editor.update(&mut visual, |v, _| {
+            assert!(v.enqueue(Request::Edit(Command::ResizeAudioClipView {
+                clip,
+                operation: hex_project::AudioViewResizeOperation::RepeatOuterEnd {
+                    project_frame: 216_000
+                },
+            })));
+        });
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |v, _| {
+            assert!(v.error.is_none(), "{:?}", v.error);
+            let state = v.state.as_ref().unwrap();
+            let source = state.audio_clip_waveforms[&clip]
+                .event_source
+                .as_ref()
+                .unwrap();
+            assert!(source.repeat.is_none());
+            let reads = source.occurrences.as_ref().unwrap().reads();
+            assert!(reads.len() >= 3);
+            assert_ne!(
+                reads[0].placement.root_frame_length,
+                reads[1].placement.root_frame_length
+            );
+        });
     }
     editor.update(&mut visual, |v, cx| {
-        v.viewport = Some(Viewport::fit(if repeat { 384_000 } else { 96_000 }));
+        v.viewport = Some(Viewport::fit(
+            if matches!(fixture, WarpedFadeFixture::Single) {
+                96_000
+            } else {
+                384_000
+            },
+        ));
         v.audio_event_editor.viewport = Some(crate::editor::viewport::Viewport {
             start: 24_000,
             length: 72_000,

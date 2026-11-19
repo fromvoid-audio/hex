@@ -79,6 +79,10 @@ pub struct PreparedMusicalEventSourceClock {
 }
 
 impl PreparedMusicalEventSourceClock {
+    pub(super) fn shared_tempo(&self) -> Arc<TempoMap> {
+        Arc::clone(&self.tempo)
+    }
+
     /// Affine composition can use a sample-for-sample read at the retained
     /// zero. Exact constant-tempo translations may share the cached clock.
     pub(super) fn aligned_destination_zero(
@@ -239,7 +243,7 @@ mod tests {
     #[test]
     fn distinct_musical_occurrences_keep_neutral_source_clocks_and_cache_identity() {
         use crate::audio_transform::{
-            AudioTransformPreparation,
+            AudioTransformPreparation, MusicalEventFadePreview,
             tests::{fixture, isolated, prepare},
         };
         use hex_project::{
@@ -360,6 +364,43 @@ mod tests {
             baked_view.event_source_occurrences.as_ref().unwrap()
         ));
         assert_ne!(baked_view.audio.frames(), faded_view.audio.frames());
+        let project = editor.project();
+        let row = project.clip(clip).unwrap();
+        let events = row.audio_events();
+        for occurrence in event_table.reads() {
+            let preview = MusicalEventFadePreview::for_occurrence(
+                row,
+                project.tempo_map(),
+                occurrence,
+                &events.events,
+                row.gain(),
+            )
+            .unwrap()
+            .unwrap();
+            let read = occurrence.placement;
+            for frame in read.destination_start..read.destination_end {
+                let mut sample = None;
+                let coverage = preview
+                    .visit_arrangement(frame..frame + 1, &mut 1, |part| {
+                        assert!(sample.is_none());
+                        assert_eq!(
+                            part.sample.source_frame(),
+                            read.root_start + frame - read.destination_start
+                        );
+                        sample = Some(part.sample);
+                    })
+                    .unwrap()
+                    .unwrap();
+                assert!(!coverage.has_silence);
+                let index = frame as usize;
+                assert_eq!(
+                    sample.unwrap().apply_to(view.audio.frames()[index]),
+                    baked_view.audio.frames()[index],
+                    "destination frame {frame} in occurrence {:?}",
+                    read.root_origin
+                );
+            }
+        }
 
         let uncached_context = isolated(1_000_000, 0, 0);
         let uncached = prepare(&editor, &media, &uncached_context);

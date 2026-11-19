@@ -3,6 +3,7 @@ use super::*;
 use crate::PreparedAudioRepeat;
 
 pub(super) enum ArrangementRead {
+    EventOnly,
     Once {
         destination: Range<u64>,
         root_start: u64,
