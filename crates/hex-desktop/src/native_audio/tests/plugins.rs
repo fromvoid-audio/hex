@@ -2326,7 +2326,7 @@ fn resident_vst3_insertion_keeps_an_eq_write_accepted_while_native_facts_wait() 
     let edited = h.run(Request::SetDeviceParameter {
         device,
         parameter: hex_lattice_contract::ParameterId::from_static(202),
-        value: hex_lattice_contract::ParameterValue::Float(-6.0),
+        value: hex_lattice_contract::ParameterValue::Float(0.5),
     });
     assert!(edited.plugin_effect_complete.is_empty());
     assert_eq!(edited.state.revision, before.state.revision + 1);
@@ -2335,7 +2335,7 @@ fn resident_vst3_insertion_keeps_an_eq_write_accepted_while_native_facts_wait() 
     for _ in 0..8 {
         h.render();
     }
-    let expected = 0.25 * 10.0_f32.powf(-6.0 / 20.0);
+    let expected = 0.125;
     assert!(
         h.render()
             .into_iter()
