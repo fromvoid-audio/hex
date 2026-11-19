@@ -198,6 +198,8 @@ pub struct AudioClipWaveform {
     pub preview_root: Option<AudioPreviewWaveform>,
     /// Neutral destination peaks and their accepted musical placement clock.
     pub neutral_musical: Option<AudioMusicalWaveform>,
+    /// Peak-only transformed frame source before event composition and fades.
+    pub event_source: Option<Arc<Waveform>>,
 }
 
 #[derive(Clone)]

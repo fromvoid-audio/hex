@@ -1,7 +1,7 @@
-//! Exact original-source reads for unprocessed frame-clock fade visualization.
+//! Source reads for frame-clock fade visualization.
 //! This control-only metadata query owns no PCM, cache, preparation or playback
-//! authority. The caller binds the returned asset/frame to its accepted resident
-//! waveform, then applies gains before aggregating exact visible extrema.
+//! authority. The caller binds frames to an accepted asset or pre-event
+//! processing-root waveform, then applies the ordered gains.
 use crate::{Frame, Invalid};
 use hex_project::{
     Asset, AssetId, AudioClipTiming, AudioDomainClock, AudioEvent, AudioEvents,
@@ -10,7 +10,7 @@ use hex_project::{
 };
 use std::ops::Range;
 
-/// One original converted-asset sample and its playback-ordered amplitude laws.
+/// One source frame and its playback-ordered amplitude laws.
 /// It contains no source owner. Clip activation remains a separate display style.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FrameFadeSample {
@@ -56,7 +56,7 @@ pub struct FrameFadeOverrides<'a> {
     pub gain: Option<ClipGain>,
 }
 
-/// One active destination-root interval and its original-source interval union.
+/// One active destination-root interval and its source interval union.
 /// The source union has at most two pieces even across many source loop cycles.
 /// `sample` holds gains sampled at the destination interval midpoint: applying
 /// them to cached extrema is the established coarse display approximation,
@@ -78,12 +78,12 @@ pub struct FrameFadeCoverage {
 /// Unsupported source processing returns `None` at construction, independently
 /// from a supported query returning `None` for a hole or exhausted source.
 ///
-/// No warp, pitch, source envelope, musical/frozen clock, retained child or
-/// directed content read is represented. Those retain their prepared waveform
-/// path. Source conversion has already happened in the caller's resident asset;
-/// its immutable waveform must belong to `asset()` and cover `source_frames()`.
-/// A held/pending clip may replace the canonical clip without replacing that
-/// original source. This query never divides baked peaks by an old fade.
+/// Unprocessed reads use the converted asset. Transformed frame events use
+/// the accepted, pre-event processing root after warp, pitch and source gain.
+/// Musical/frozen clocks, retained children and directed views use their
+/// existing display paths. The caller binds the immutable waveform to the
+/// chosen source and its `source_frames()`. Held/pending edits use that same
+/// basis without dividing baked peaks by an old fade.
 /// Construction validates on control and may allocate validation metadata;
 /// individual sample/range queries do not allocate or prepare audio, excluding
 /// caller-supplied callbacks.
@@ -93,12 +93,22 @@ pub struct FrameFadePreview<'a> {
     projection: Option<AudioViewProjection<'a>>,
     outer_fade: Option<ProjectedOuterAudioFade<'a>>,
     source_frames: u64,
+    source: SourceRead,
     overrides: FrameFadeOverrides<'a>,
     events: Option<&'a AudioEvents>,
     // Prepare scalar coefficients once, not inside visible sample loops.
     event_gains: [f32; MAX_AUDIO_EVENTS],
     clip_gain: f32,
 }
+
+#[derive(Clone, Copy)]
+struct SourceRead {
+    offset: u64,
+    length: u64,
+    phase: u64,
+    looping: bool,
+}
+
 impl<'a> FrameFadePreview<'a> {
     pub fn new(
         clip: &'a Clip,
@@ -113,18 +123,47 @@ impl<'a> FrameFadePreview<'a> {
         asset: &Asset,
         overrides: FrameFadeOverrides<'a>,
     ) -> Result<Option<Self>, Invalid> {
+        Self::mapped(clip, tempo, asset, overrides, None)
+    }
+
+    /// Resolve coordinates against the accepted pre-event summary of this
+    /// single-source frame clip. The caller supplies its root extent, with the
+    /// source offset, phase and source processing already realized.
+    pub fn with_prepared_source(
+        clip: &'a Clip,
+        tempo: &'a TempoMap,
+        asset: &Asset,
+        overrides: FrameFadeOverrides<'a>,
+        source_frames: u64,
+    ) -> Result<Option<Self>, Invalid> {
+        Self::mapped(clip, tempo, asset, overrides, Some(source_frames))
+    }
+
+    fn mapped(
+        clip: &'a Clip,
+        tempo: &'a TempoMap,
+        asset: &Asset,
+        overrides: FrameFadeOverrides<'a>,
+        prepared_frames: Option<u64>,
+    ) -> Result<Option<Self>, Invalid> {
         if clip.asset() != asset.id() {
             return Err(Invalid("fade preview asset differs from clip"));
         }
-        let source_frames = asset.playback_frames();
+        let asset_frames = asset.playback_frames();
         let projection = if let Some(edit) = clip.audio_edit() {
+            let supported_source = if let Some(frames) = prepared_frames {
+                frames == edit.domain.clock.length()
+                    && super::previews_transformed_frame_events(edit)
+            } else {
+                !edit.domain.warp_enabled
+                    && edit.domain.pitch_cents == 0
+                    && edit.domain.source_gain.is_empty()
+                    && edit.processing_projection.is_none()
+            };
             if !matches!(edit.domain.clock, AudioDomainClock::Frames(_))
                 || !matches!(edit.timing, AudioClipTiming::Frames)
-                || edit.domain.warp_enabled
-                || edit.domain.pitch_cents != 0
-                || !edit.domain.source_gain.is_empty()
+                || !supported_source
                 || edit.domain.musical_event_source.is_some()
-                || edit.processing_projection.is_some()
                 || edit.content_view.is_some()
                 || edit.domain.events.as_ref().is_some_and(|events| {
                     !events.sources.is_empty()
@@ -133,16 +172,19 @@ impl<'a> FrameFadePreview<'a> {
             {
                 return Ok(None);
             }
-            edit.validate(clip, tempo, source_frames)
+            edit.validate(clip, tempo, asset_frames)
                 .map_err(|error| Invalid(error.0))?;
             Some(AudioViewProjection::new(clip, tempo).map_err(|error| Invalid(error.0))?)
         } else {
+            if prepared_frames.is_some() {
+                return Ok(None);
+            }
             if clip.duration() == 0
                 || clip.source_length() == 0
                 || clip
                     .source_offset()
                     .checked_add(clip.source_length())
-                    .is_none_or(|end| end > source_frames)
+                    .is_none_or(|end| end > asset_frames)
                 || (clip.looping() && clip.source_phase() >= clip.source_length())
                 || (!clip.looping() && clip.source_phase() != 0)
                 || clip.start().checked_add(clip.duration()).is_none()
@@ -193,12 +235,28 @@ impl<'a> FrameFadePreview<'a> {
             }
         }
         let clip_gain = overrides.gain.unwrap_or_else(|| clip.gain()).linear();
+        let source = if let Some(length) = prepared_frames {
+            SourceRead {
+                offset: 0,
+                length,
+                phase: 0,
+                looping: false,
+            }
+        } else {
+            SourceRead {
+                offset: clip.source_offset(),
+                length: clip.source_length(),
+                phase: clip.source_phase(),
+                looping: clip.looping(),
+            }
+        };
         Ok(Some(Self {
             clip,
             tempo,
             projection,
             outer_fade,
-            source_frames,
+            source_frames: prepared_frames.unwrap_or(asset_frames),
+            source,
             overrides,
             events,
             event_gains,
@@ -336,29 +394,29 @@ impl<'a> FrameFadePreview<'a> {
         } else {
             1.0
         };
-        self.original_sample(
+        self.source_sample(
             read,
             event.map(|event| event.id),
             [event_fade, event_gain, clip_fade, self.clip_gain],
         )
     }
-    fn original_sample(
+    fn source_sample(
         &self,
         read: u64,
         event: Option<u64>,
         gains: [f32; 4],
     ) -> Result<Option<FrameFadeSample>, Invalid> {
-        let local = if self.clip.looping() {
-            ((u128::from(self.clip.source_phase()) + u128::from(read))
-                % u128::from(self.clip.source_length())) as u64
-        } else if read < self.clip.source_length() {
+        let local = if self.source.looping {
+            ((u128::from(self.source.phase) + u128::from(read)) % u128::from(self.source.length))
+                as u64
+        } else if read < self.source.length {
             read
         } else {
             return Ok(None);
         };
         let source_frame = self
-            .clip
-            .source_offset()
+            .source
+            .offset
             .checked_add(local)
             .filter(|frame| *frame < self.source_frames)
             .ok_or(Invalid("fade preview sample exceeds source"))?;
@@ -378,8 +436,8 @@ pub struct FrameFadeEvent<'p, 'a> {
 }
 impl FrameFadeEvent<'_, '_> {
     /// `source_position` is the event's retained source-root frame
-    /// (`event.source_start + age`), NOT an original asset frame. Returned
-    /// `source_frame()` includes the domain's source offset, loop and phase.
+    /// (`event.source_start + age`). Returned `source_frame()` addresses the
+    /// bound asset or the already transformed processing root.
     pub fn sample(&self, source_position: u64) -> Result<Option<FrameFadeSample>, Invalid> {
         let Some(event) = self.event else {
             return self.preview.root_sample(source_position);
