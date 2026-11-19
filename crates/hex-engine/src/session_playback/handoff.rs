@@ -5921,6 +5921,7 @@ impl SessionPlayback {
                 });
             }
         }
+        let resident_mute = self.resident_mute_index(previous);
         for (index, route) in self.route_scratch.iter().enumerate() {
             let old_index = previous
                 .routes
@@ -5931,7 +5932,11 @@ impl SessionPlayback {
             if let Some(old_index) = old_index {
                 self.track_faders[index] = previous.track_faders[old_index];
                 let track = &self.revision.arrangement().tracks()[index];
-                if !track.has_gain_automation() {
+                self.track_faders[index].revoke_resident_input();
+                if resident_mute == Some(index) {
+                    self.track_faders[index]
+                        .retire_resident_input(self.revision.arrangement().sample_rate());
+                } else if !track.has_gain_automation() {
                     self.track_faders[index].retarget(
                         track.mix().channel_gain(),
                         self.revision.arrangement().sample_rate(),

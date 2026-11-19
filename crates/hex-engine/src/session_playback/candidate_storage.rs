@@ -44,6 +44,7 @@ impl SessionPlayback {
             stream_miss_fades: _,
             routes,
             route_scratch,
+            resident_mute: _,
             track_faders: _,
             track_fader_scratch: _,
             source_effects,

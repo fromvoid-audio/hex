@@ -31,6 +31,7 @@ mod foreign_arrangement;
 mod midi_capture;
 mod mutable_checkpoint;
 mod render_work;
+mod resident_mute;
 mod track_fader;
 mod transport_loop_admission;
 pub use mutable_checkpoint::{
@@ -558,6 +559,7 @@ pub struct SessionPlayback {
     stream_miss_fades: crate::StreamMissFades,
     routes: Vec<TrackRoute>,
     route_scratch: Vec<TrackRoute>,
+    resident_mute: Option<resident_mute::ResidentMuteBasis>,
     track_faders: [track_fader::TrackFader; MAX_TRACKS],
     track_fader_scratch: [track_fader::TrackFader; MAX_TRACKS],
     source_effects: crate::source_effect_stage::SourceEffectStages,
@@ -1001,6 +1003,7 @@ impl SessionPlayback {
             source_voice_envelopes: _,
             routes: _,
             route_scratch: _,
+            resident_mute: _,
             track_faders: _,
             track_fader_scratch: _,
             source_effects: _, // retained by the Session container, not separately transferred
@@ -2288,6 +2291,7 @@ impl SessionPlayback {
             stream_miss_fades,
             routes,
             route_scratch,
+            resident_mute: None,
             track_faders,
             track_fader_scratch: track_faders,
             source_effects,

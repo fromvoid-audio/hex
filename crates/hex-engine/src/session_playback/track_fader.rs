@@ -1,11 +1,12 @@
 //! Audio-owned gain transition for a track's post-device fader.
-use crate::Frame;
+use crate::{Frame, PreparedTrackMix};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct TrackFader {
     current: Frame,
     target: Frame,
     remaining: u32,
+    resident_mute: bool,
 }
 
 impl TrackFader {
@@ -14,6 +15,7 @@ impl TrackFader {
             current: gain,
             target: gain,
             remaining: 0,
+            resident_mute: false,
         }
     }
 
@@ -22,6 +24,28 @@ impl TrackFader {
             self.target = target;
             self.remaining = sample_rate.div_ceil(200).max(1);
         }
+    }
+
+    pub(super) fn retire_resident_input(&mut self, sample_rate: u32) {
+        self.retarget([0.0; 2], sample_rate);
+        self.resident_mute = self.active();
+    }
+
+    pub(super) fn retiring_resident_input(self) -> bool {
+        self.resident_mute && self.active()
+    }
+
+    pub(super) fn revoke_resident_input(&mut self) {
+        if self.resident_mute {
+            self.follow([0.0; 2]);
+        }
+    }
+
+    pub(super) fn apply_ramp(&mut self, mut mix: PreparedTrackMix) -> PreparedTrackMix {
+        if self.retiring_resident_input() {
+            mix.muted = false;
+        }
+        mix.with_channel_gain(self.next())
     }
 
     pub(super) fn active(self) -> bool {

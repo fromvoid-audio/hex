@@ -815,7 +815,7 @@ impl SessionPlayback {
                     fader.follow(mix.channel_gain());
                     mix
                 } else {
-                    mix.with_channel_gain(fader.next())
+                    fader.apply_ramp(mix)
                 };
                 *frame = mix.apply_frame(*frame);
             }
@@ -1069,9 +1069,8 @@ impl SessionPlayback {
                             // The current stamp was just pushed. Admission proves
                             // zero fader arrival, no gain automation and no group
                             // mute, so its mix is exactly the static track mix.
-                            track
-                                .mix()
-                                .with_channel_gain(self.track_fader_scratch[index].next())
+                            self.track_fader_scratch[index]
+                                .apply_ramp(track.mix())
                                 .apply_frame(frame)
                         }
                     } else {
@@ -1458,7 +1457,7 @@ impl SessionPlayback {
                                 fader.follow(mix.channel_gain());
                                 mix
                             } else {
-                                mix.with_channel_gain(fader.next())
+                                fader.apply_ramp(mix)
                             };
                             mix.apply_frame(processed)
                         } else {

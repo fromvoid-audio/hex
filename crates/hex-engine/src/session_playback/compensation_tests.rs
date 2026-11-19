@@ -2231,16 +2231,23 @@ fn resident_mute_feeds_the_same_pcm_as_a_fader_cut() {
         .unwrap();
     let before = prepare(&f).unwrap();
     assert_eq!(before.arrangement().main_latency_frames(), 7);
-    f.editor.execute(Command::Mute { track, muted: true }).unwrap();
+    f.editor
+        .execute(Command::Mute { track, muted: true })
+        .unwrap();
     let muted = prepare(&f).unwrap();
     assert!(f.editor.undo());
-    f.editor.execute(Command::Gain { track, gain: 0.0 }).unwrap();
+    f.editor
+        .execute(Command::Gain { track, gain: 0.0 })
+        .unwrap();
     let fader_cut = prepare(&f).unwrap();
 
     for partition in [1, 257] {
         let render = |after: &Arc<PreparedRevision>| {
             let mut old = SessionPlayback::new(Arc::clone(&before)).unwrap();
             let mut next = SessionPlayback::new(Arc::clone(after)).unwrap();
+            if Arc::ptr_eq(after, &muted) {
+                assert!(next.prepare_resident_mute_on_control(&before, track));
+            }
             old.apply(SessionPlaybackCommand::Play).unwrap();
             old.render(&mut [[0.0; 2]; 32]).unwrap();
             next.try_inherit_state_from(&mut old).unwrap();
@@ -2258,6 +2265,61 @@ fn resident_mute_feeds_the_same_pcm_as_a_fader_cut() {
             assert_eq!(actual, expected, "partition {partition}, frame {index}");
         }
     }
+}
+
+#[test]
+fn resident_mute_refuses_a_replacement_source_and_revalidates_the_handoff() {
+    use hex_project::Command;
+
+    let mut f = fixture(&[&[], &[7]], 1024);
+    let track = f.tracks[0];
+    let asset = f.editor.project().track(track).unwrap().clips()[0].asset();
+    f.media
+        .insert(asset, Audio::new(48_000, vec![[1.0, -0.5]; 1024]).unwrap());
+    f.editor
+        .execute(Command::Gain {
+            track: f.tracks[1],
+            gain: 0.0,
+        })
+        .unwrap();
+    let before = prepare(&f).unwrap();
+    let other_owner = prepare(&f).unwrap();
+    f.editor
+        .execute(Command::Mute { track, muted: true })
+        .unwrap();
+    let muted = prepare(&f).unwrap();
+
+    let mut next = SessionPlayback::new(Arc::clone(&muted)).unwrap();
+    assert!(next.prepare_resident_mute_on_control(&before, track));
+    // Another prepared owner can share every clip and PCM sample. It still
+    // cannot serve as the predecessor captured by this candidate.
+    let mut actual = SessionPlayback::new(other_owner).unwrap();
+    actual.apply(SessionPlaybackCommand::Play).unwrap();
+    actual.render(&mut [[0.0; 2]; 32]).unwrap();
+    next.try_inherit_state_from(&mut actual).unwrap();
+    let mut output = [[0.0; 2]; 32];
+    next.render(&mut output).unwrap();
+    assert_eq!(&output[7..], &[[0.0; 2]; 25]);
+
+    let mut actual = SessionPlayback::new(Arc::clone(&before)).unwrap();
+    let mut next = SessionPlayback::new(muted).unwrap();
+    assert!(next.prepare_resident_mute_on_control(&before, track));
+    actual.apply(SessionPlaybackCommand::Play).unwrap();
+    actual.render(&mut [[0.0; 2]; 32]).unwrap();
+    next.try_inherit_state_from(&mut actual).unwrap();
+    next.render(&mut output).unwrap();
+    assert!(output[7][0] > 0.5);
+    next.apply(SessionPlaybackCommand::Stop).unwrap();
+    next.apply(SessionPlaybackCommand::Play).unwrap();
+    next.render(&mut output).unwrap();
+    assert_eq!(output, [[0.0; 2]; 32]);
+
+    f.media.insert(
+        asset,
+        Audio::new(48_000, vec![[-0.25, 0.25]; 1024]).unwrap(),
+    );
+    let mut replaced = SessionPlayback::new(prepare(&f).unwrap()).unwrap();
+    assert!(!replaced.prepare_resident_mute_on_control(&before, track));
 }
 
 #[test]

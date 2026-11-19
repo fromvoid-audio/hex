@@ -2297,7 +2297,7 @@ impl SessionPlayback {
                         self.track_fader_scratch[index].follow(mix.channel_gain());
                         mix
                     } else if smoothing {
-                        mix.with_channel_gain(self.track_fader_scratch[index].next())
+                        self.track_fader_scratch[index].apply_ramp(mix)
                     } else {
                         mix
                     };

@@ -203,6 +203,9 @@ impl SessionPlayback {
     }
 
     pub(super) fn stop_transport(&mut self) -> bool {
+        for fader in &mut self.track_faders[..self.routes.len()] {
+            fader.revoke_resident_input();
+        }
         self.browser_audition.voices = Default::default();
         self.foreign_arrangement.cut();
         let mut changed = self.performance_frame != 0;
