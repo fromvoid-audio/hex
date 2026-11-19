@@ -1,5 +1,6 @@
 //! Browser intent and cancellation only. Session retains the admitted request;
 //! the audio owner retains native resources through its exact terminal.
+use super::track_proposals::{Anchor, TrackProposal};
 use super::*;
 use gpui::{Div, div, prelude::*, rgb};
 use hex_session::service::{
@@ -110,6 +111,7 @@ pub(super) struct PluginProposal {
     pub(super) before: Option<hex_project::DeviceId>,
     name: String,
     loading: &'static str,
+    before_empty: u64,
 }
 
 pub(super) struct FailedPluginProposal {
@@ -173,9 +175,15 @@ impl EditorView {
         })
     }
 
-    pub(super) fn proposed_plugin_track_anchor(&self) -> Option<Option<TrackId>> {
-        match self.plugin_proposal()?.0.destination {
-            PluginEffectDestination::NewTrack { before_track, .. } => Some(before_track),
+    pub(super) fn proposed_plugin_track(&self) -> Option<Anchor> {
+        let proposal = self.plugin_proposal()?.0;
+        match proposal.destination {
+            PluginEffectDestination::NewTrack { before_track, .. } => Some((
+                before_track,
+                TrackProposal::Device {
+                    before_empty: proposal.before_empty,
+                },
+            )),
             _ => None,
         }
     }
@@ -214,7 +222,9 @@ impl EditorView {
                 EditorMode::Arrangement => true,
                 EditorMode::Session => self.state.as_ref().is_some_and(|state| {
                     self.session_track_page(&state.project, self.session_visible_columns)
-                        .proposal_index()
+                        .proposal_index(TrackProposal::Device {
+                            before_empty: proposal.before_empty,
+                        })
                         .is_some()
                 }),
             },
@@ -459,9 +469,9 @@ impl EditorView {
         if terminal.accepted
             && !event.project_replaced
             && self.mode == EditorMode::Session
-            && self.proposed_plugin_track_anchor().is_some()
+            && let Some((_, proposal)) = self.proposed_plugin_track()
         {
-            self.retain_session_track_proposal_page();
+            self.retain_session_track_proposal_page(proposal);
         }
         self.retire_plugin_effect(&terminal.control, terminal.accepted, event.error.as_deref());
     }
@@ -720,6 +730,7 @@ impl EditorView {
                 before,
                 name,
                 loading: "loading device",
+                before_empty: self.next_empty_track_id,
             },
         });
         self.failed_plugin_proposal = None;
@@ -821,6 +832,7 @@ impl EditorView {
                     before,
                     name: selection.class_name.clone(),
                     loading: "loading vst3",
+                    before_empty: self.next_empty_track_id,
                 },
             });
             self.failed_plugin_proposal = None;

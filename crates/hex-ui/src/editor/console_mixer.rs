@@ -53,7 +53,11 @@ impl EditorView {
         let Some(state) = &self.state else {
             return false;
         };
-        if let Some(page) = self.pending_console_reorder_page() {
+        let projected = self.pending_console_reorder_page().or_else(|| {
+            (!self.pending_empty_tracks.is_empty() || self.proposed_plugin_track().is_some())
+                .then(|| self.session_track_page(&state.project, self.session_visible_columns))
+        });
+        if let Some(page) = projected {
             return page.columns.iter().any(|column| {
                 column.id == id
                     && state

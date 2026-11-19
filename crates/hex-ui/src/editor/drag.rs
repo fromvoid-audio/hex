@@ -1386,18 +1386,16 @@ impl super::EditorView {
         self.painted_arrangement_timeline()
             .filter(|&lane| lane_contains_pointer(x, y, lane))
             .filter(|_| {
-                self.arrangement_proposal_row()
-                    .and_then(|row| self.track_scroll.list.bounds_for_item(row))
-                    .is_none_or(|bounds| {
-                        y < f32::from(bounds.top()) || y >= f32::from(bounds.bottom())
-                    })
+                self.arrangement_proposal_rows()
+                    .filter_map(|row| self.track_scroll.list.bounds_for_item(row))
+                    .all(|bounds| y < f32::from(bounds.top()) || y >= f32::from(bounds.bottom()))
             })
     }
 
     // Use the last painted full row, including attached automation lanes.
     // A virtualized or stale last row cannot claim the trailing hit region.
     fn painted_arrangement_tail_boundary(&self, pointer_y: f32) -> Option<f32> {
-        if let Some(row) = self.arrangement_proposal_row()
+        if let Some(row) = self.arrangement_proposal_rows().next_back()
             && row + 1 == self.track_scroll.list.item_count()
         {
             let bottom = f32::from(self.track_scroll.list.bounds_for_item(row)?.bottom());

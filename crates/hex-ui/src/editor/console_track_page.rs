@@ -4,6 +4,7 @@
 //! folded projection. A proposed track occupies a display column without
 //! a canonical ID. Callers fence the page with their source revision and
 //! layout frame; this projection does not own or mutate project state.
+use super::track_proposals::{Anchor, ProposalRows, TrackProposal};
 use hex_project::{Project, TrackId};
 use std::ops::Range;
 
@@ -18,7 +19,7 @@ pub(super) struct TrackPage {
     pub range: Range<usize>,
     pub columns: Vec<Column>,
     pub next: Option<TrackId>,
-    proposal: Option<usize>,
+    proposals: ProposalRows,
 }
 
 pub(super) fn visible_track_range(
@@ -32,51 +33,39 @@ pub(super) fn visible_track_range(
 }
 
 impl TrackPage {
+    #[cfg(all(test, feature = "ui-unit-tier"))]
     pub fn capture(project: &Project, visible: &[usize], start: usize, count: usize) -> Self {
-        let range = visible_track_range(visible.len(), start, count);
-        Self::from_range(project, visible, range, None)
+        Self::capture_with_proposals(project, visible, start, count, &[])
     }
 
-    pub(super) fn proposal_ordinal(
+    pub(super) fn capture_with_proposals(
         project: &Project,
         visible: &[usize],
-        before: Option<TrackId>,
-    ) -> Option<usize> {
-        match before {
-            Some(id) => {
-                let index = project.tracks().iter().position(|track| track.id() == id)?;
-                Some(visible.partition_point(|&track_index| track_index < index))
-            }
-            None => Some(visible.len()),
-        }
-    }
-
-    pub(super) fn with_track_proposal(
-        self,
-        project: &Project,
-        visible: &[usize],
+        start: usize,
         count: usize,
-        before: Option<TrackId>,
+        anchors: &[Anchor],
     ) -> Self {
-        let Some(index) = Self::proposal_ordinal(project, visible, before) else {
-            return self;
+        let base = visible_track_range(visible.len(), start, count);
+        let rows = ProposalRows::project(project.tracks(), visible, anchors, |ordinal| {
+            (base.start..=base.end).contains(&ordinal)
+        });
+        let Some(latest) = rows.latest_row() else {
+            return Self::from_range(project, visible, base, rows);
         };
-        if index < self.range.start || index > self.range.end {
-            return self;
-        }
         let count = count.max(1);
-        // A drop on a full page's tail keeps its column on screen. Once the
-        // track commits, the same start paints the canonical replacement.
-        let start = self.range.start + usize::from(index == self.range.start + count);
-        let end = (start + count - 1).min(visible.len());
-        Self::from_range(project, visible, start..end, Some(index - start))
+        // Browse in canonical ordinals and spend display columns on proposals
+        // that land on this page. If they fill the viewport, reveal the newest.
+        let start = base.start.max((latest + 1).saturating_sub(count));
+        let end = (start + count).min(rows.track_row(visible.len()));
+        let canonical = rows.tracks_before(start)..rows.tracks_before(end);
+        Self::from_range(project, visible, canonical, rows.within(start..end))
     }
 
     fn from_range(
         project: &Project,
         visible: &[usize],
         range: Range<usize>,
-        proposal: Option<usize>,
+        proposals: ProposalRows,
     ) -> Self {
         let columns = visible
             .get(range.clone())
@@ -97,12 +86,16 @@ impl TrackPage {
             range,
             columns,
             next,
-            proposal,
+            proposals,
         }
     }
 
-    pub(super) fn proposal_index(&self) -> Option<usize> {
-        self.proposal
+    pub(super) fn proposal_index(&self, proposal: TrackProposal) -> Option<usize> {
+        self.proposals.row_of(proposal)
+    }
+
+    pub(super) fn proposal_at(&self, column: usize) -> Option<TrackProposal> {
+        self.proposals.at(column)
     }
 
     pub(super) fn displayed_columns(&self) -> impl Iterator<Item = Option<&Column>> {
@@ -113,21 +106,17 @@ impl TrackPage {
     }
 
     pub(super) fn display_index(&self, track_index: usize) -> usize {
-        track_index + usize::from(self.proposal.is_some_and(|index| index <= track_index))
+        self.proposals.track_row(track_index)
     }
 
     pub(super) fn track_index(&self, display_index: usize) -> Option<usize> {
-        match self.proposal {
-            Some(index) if display_index == index => None,
-            Some(index) if display_index > index => Some(display_index - 1),
-            _ => Some(display_index),
-        }
+        self.proposals.track_ordinal(display_index)
     }
 }
 
 #[cfg(all(test, feature = "ui-unit-tier"))]
 mod tests {
-    use super::{TrackPage, visible_track_range};
+    use super::{TrackPage, TrackProposal, visible_track_range};
     use hex_project::{Command, Created, Editor, Project};
 
     #[test]
@@ -206,14 +195,20 @@ mod tests {
         }
         let project = editor.project();
         let visible = [0, 2, 3];
+        let proposal = TrackProposal::Empty(0);
         let show = |start, count, before| {
-            TrackPage::capture(project, &visible, start, count)
-                .with_track_proposal(project, &visible, count, before)
+            TrackPage::capture_with_proposals(
+                project,
+                &visible,
+                start,
+                count,
+                &[(before, proposal)],
+            )
         };
         let id = |index: usize| project.tracks()[index].id();
         let folded = show(0, 2, Some(id(1)));
         assert_eq!(folded.range, 0..1);
-        assert_eq!(folded.proposal_index(), Some(1));
+        assert_eq!(folded.proposal_index(proposal), Some(1));
         assert_eq!(folded.next, Some(id(2)));
 
         let tail = show(1, 2, None);
@@ -229,8 +224,41 @@ mod tests {
         assert_eq!(tail.track_index(2), Some(1));
         assert_eq!(tail.display_index(1), 2);
 
-        assert_eq!(show(0, 1, None).proposal_index(), None);
-        assert_eq!(show(2, 1, None).proposal_index(), Some(0));
+        assert_eq!(show(0, 1, None).proposal_index(proposal), None);
+        assert_eq!(show(2, 1, None).proposal_index(proposal), Some(0));
         assert!(show(2, 1, None).columns.is_empty());
+    }
+
+    #[test]
+    fn shared_anchor_preserves_admission_order_and_narrow_page_reveals_the_latest_birth() {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        for n in 0..3 {
+            editor
+                .execute(Command::AddTrack {
+                    name: format!("track {n}"),
+                })
+                .unwrap();
+        }
+        let project = editor.project();
+        let before = Some(project.tracks()[1].id());
+        let one = TrackProposal::Empty(1);
+        let device = TrackProposal::Device { before_empty: 2 };
+        let two = TrackProposal::Empty(2);
+        let anchors = [(before, device), (before, one), (before, two)];
+        let show =
+            |width| TrackPage::capture_with_proposals(project, &[0, 1, 2], 0, width, &anchors);
+
+        let wide = show(6);
+        assert_eq!(wide.proposal_at(1), Some(one));
+        assert_eq!(wide.proposal_at(2), Some(device));
+        assert_eq!(wide.proposal_at(3), Some(two));
+        assert_eq!(wide.track_index(4), Some(1));
+        assert_eq!(wide.display_index(1), 4);
+
+        let narrow = show(2);
+        assert_eq!(narrow.proposal_at(0), Some(device));
+        assert_eq!(narrow.proposal_at(1), Some(two));
+        assert_eq!(narrow.range, 1..1);
+        assert_eq!(narrow.next, before);
     }
 }

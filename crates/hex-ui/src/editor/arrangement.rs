@@ -261,11 +261,14 @@ impl EditorView {
         let rows = list(self.track_scroll.list.clone(), move |index, _, cx| {
             rows_entity
                 .update(cx, |this, cx| {
-                    if this.arrangement_proposal_row() == Some(index) {
-                        return if this.proposed_plugin_track_anchor().is_some() {
-                            this.proposed_plugin_track_row(cx)
-                        } else {
-                            this.proposed_arrangement_empty_track()
+                    if let Some(proposal) = this.arrangement_proposal_at(index) {
+                        return match proposal {
+                            super::track_proposals::TrackProposal::Device { .. } => {
+                                this.proposed_plugin_track_row(cx)
+                            }
+                            super::track_proposals::TrackProposal::Empty(id) => {
+                                this.proposed_arrangement_empty_track(id)
+                            }
                         };
                     }
                     let Some(state) = this.arrangement_rows_state() else {

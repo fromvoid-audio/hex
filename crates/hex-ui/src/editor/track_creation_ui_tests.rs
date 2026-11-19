@@ -391,3 +391,71 @@ fn empty_track_preview_waits_for_its_own_reply_even_if_another_edit_finishes_fir
     assert!(visual.debug_bounds(preview).is_none());
     assert_eq!(snapshot(&editor, &visual).tracks.len(), ids.len() + 1);
 }
+
+#[gpui::test]
+fn repeated_empty_track_requests_keep_each_preview_until_its_own_reply(cx: &mut TestAppContext) {
+    for mode in [EditorMode::Arrangement, EditorMode::Session] {
+        let (mut visual, editor, _environment, ids) = setup(cx);
+        visual.simulate_resize(gpui::size(gpui::px(1400.0), gpui::px(900.0)));
+        editor.update(&mut visual, |v, cx| {
+            v.set_mode(mode);
+            cx.notify();
+        });
+        focus(&editor, &mut visual, Some(ids[0]));
+        let prefix = if mode == EditorMode::Arrangement {
+            "arrangement-track-header"
+        } else {
+            "session-track"
+        };
+        let next = Box::leak(format!("{prefix}-{}", ids[1].value()).into_boxed_str());
+        let offset = |visual: &mut VisualTestContext| {
+            let bounds = visual.debug_bounds(next).unwrap();
+            if mode == EditorMode::Arrangement {
+                bounds.top()
+            } else {
+                bounds.left()
+            }
+        };
+        let initial = offset(&mut visual);
+        let before = snapshot(&editor, &visual);
+        visual.simulate_keystrokes("t");
+        visual.run_until_parked();
+        let first = offset(&mut visual);
+        assert!(first > initial);
+        visual.simulate_keystrokes("t");
+        visual.run_until_parked();
+        let both = offset(&mut visual);
+        assert_eq!(
+            both - first,
+            first - initial,
+            "each birth claims a row or column"
+        );
+        assert_eq!(snapshot(&editor, &visual), before);
+
+        editor.update(&mut visual, |v, cx| {
+            v.receive(super::track_reorder_ui_test::next(&v.service));
+            cx.notify();
+        });
+        visual.run_until_parked();
+        assert_eq!(
+            offset(&mut visual),
+            both,
+            "the first real track takes over its preview"
+        );
+        assert_eq!(snapshot(&editor, &visual).tracks.len(), ids.len() + 1);
+        pump(&editor, &mut visual);
+        assert_eq!(
+            offset(&mut visual),
+            both,
+            "the second real track takes over its preview"
+        );
+        assert_eq!(snapshot(&editor, &visual).tracks.len(), ids.len() + 2);
+
+        for count in [ids.len() + 1, ids.len()] {
+            editor.update(&mut visual, |v, _| assert!(v.enqueue(Request::Undo)));
+            pump(&editor, &mut visual);
+            assert_eq!(snapshot(&editor, &visual).tracks.len(), count);
+        }
+        history_matches(snapshot(&editor, &visual), &before);
+    }
+}

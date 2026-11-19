@@ -268,6 +268,7 @@ mod track_layout;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod track_layout_ui_test;
 mod track_name;
+mod track_proposals;
 mod track_reorder;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod track_reorder_ui_test;
@@ -980,7 +981,8 @@ pub(super) struct EditorView {
     requested_audio_mode: Option<hex_session::DocumentAudioMode>,
     duplicate_intent: DuplicateIntent,
     pending_track_clipboard: Option<track_clipboard::Pending>,
-    pending_empty_track: Option<track_defaults::PendingEmptyTrack>,
+    pending_empty_tracks: Vec<track_defaults::PendingEmptyTrack>,
+    next_empty_track_id: u64,
     // Input context only: a committed cut can remove its focused header.
     // The next real selection intent or document generation invalidates it.
     track_clipboard_context: Option<(u64, u64)>,
@@ -1799,7 +1801,8 @@ impl EditorView {
             requested_audio_mode: None,
             duplicate_intent: DuplicateIntent::default(),
             pending_track_clipboard: None,
-            pending_empty_track: None,
+            pending_empty_tracks: Vec::new(),
+            next_empty_track_id: 0,
             track_clipboard_context: None,
             pending_scene_duplicate: None,
             pending_group_copy: None,

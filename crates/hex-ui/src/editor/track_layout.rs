@@ -11,6 +11,7 @@
 //! Window pointer lease; its local snapshot owns complete cancellation rollback.
 use super::{
     EditorView,
+    track_proposals::{Anchor, ProposalRows, TrackProposal},
     tracks::{DEFAULT_TRACK_HEADER_WIDTH, TRACK_HEADER_WIDTH, TRACK_ROW_HEIGHT},
 };
 use gpui::{
@@ -58,8 +59,8 @@ pub(super) struct TrackLayout {
     wheel_scroll_start: Option<gpui::ListOffset>,
     generation: u64,
     tracks: Vec<TrackId>,
-    proposal_row: Option<usize>,
-    proposal_anchor: Option<Option<TrackId>>,
+    proposals: ProposalRows,
+    proposal_anchors: Vec<Anchor>,
     revision: Option<u64>,
     focus_ranges: std::rc::Rc<[(u64, u64)]>,
 }
@@ -364,10 +365,12 @@ impl EditorView {
         let last = rows.next_back().unwrap_or(first);
         let tracks = &self.track_layout.tracks[first..=last];
         let first_row = self.arrangement_list_row(first);
+        let last_row = self.arrangement_list_row(last);
         let proposal_height = self
-            .arrangement_proposal_row()
-            .filter(|row| (first_row..self.arrangement_list_row(last)).contains(row))
-            .map_or(0.0, |_| TRACK_ROW_HEIGHT);
+            .arrangement_proposal_rows()
+            .filter(|row| (first_row..last_row).contains(row))
+            .count() as f32
+            * TRACK_ROW_HEIGHT;
         let extra: f32 = tracks
             .iter()
             .map(|id| self.track_height(*id) - self.track_body_height(*id))
@@ -642,22 +645,14 @@ impl EditorView {
         self.track_layout.revision = None;
     }
 
-    // The virtual list includes one proposed row. Canonical visible ordinals
-    // still index only real tracks for editing, selection, and navigation.
+    // The virtual list counts provisional rows. Editing and selection keep
+    // using the canonical ordinals and IDs.
     pub(super) fn arrangement_list_row(&self, ordinal: usize) -> usize {
-        ordinal
-            + usize::from(
-                self.arrangement_proposal_row()
-                    .is_some_and(|row| row <= ordinal),
-            )
+        self.track_layout.proposals.track_row(ordinal)
     }
 
     pub(super) fn arrangement_list_ordinal(&self, row: usize) -> Option<usize> {
-        match self.arrangement_proposal_row() {
-            Some(proposal) if proposal == row => None,
-            Some(proposal) if proposal < row => Some(row - 1),
-            _ => Some(row),
-        }
+        self.track_layout.proposals.track_ordinal(row)
     }
 
     pub(super) fn arrangement_list_track_index(&self, row: usize) -> Option<usize> {
@@ -665,7 +660,7 @@ impl EditorView {
     }
 
     pub(super) fn arrangement_list_row_height(&self, row: usize) -> Option<f32> {
-        if self.arrangement_proposal_row() == Some(row) {
+        if self.arrangement_proposal_at(row).is_some() {
             return Some(TRACK_ROW_HEIGHT);
         }
         let id = *self
@@ -675,8 +670,14 @@ impl EditorView {
         Some(self.track_height(id))
     }
 
-    pub(super) fn arrangement_proposal_row(&self) -> Option<usize> {
-        self.track_layout.proposal_row
+    pub(super) fn arrangement_proposal_at(&self, row: usize) -> Option<TrackProposal> {
+        self.track_layout.proposals.at(row)
+    }
+
+    pub(super) fn arrangement_proposal_rows(
+        &self,
+    ) -> impl DoubleEndedIterator<Item = usize> + ExactSizeIterator + '_ {
+        self.track_layout.proposals.indices()
     }
 
     pub(super) fn sync_track_layout(&mut self, tracks: &[hex_project::Track]) {
@@ -688,17 +689,17 @@ impl EditorView {
             self.track_layout.wheel_scroll_start = None;
             self.track_layout.generation = self.project_generation;
             self.track_layout.tracks.clear();
-            self.track_layout.proposal_row = None;
-            self.track_layout.proposal_anchor = None;
+            self.track_layout.proposals = ProposalRows::default();
+            self.track_layout.proposal_anchors.clear();
             self.track_scroll.list.reset(0);
             self.track_layout.revision = None;
         }
         let revision = self.state.as_ref().map(|state| state.revision);
         let focus_ranges = self.arrangement_focus_ranges();
-        let proposal_anchor = self.displayed_track_proposal_anchor();
+        let proposal_anchors = self.track_proposal_anchors();
         if self.track_layout.revision == revision
             && self.track_layout.focus_ranges == focus_ranges
-            && self.track_layout.proposal_anchor == proposal_anchor
+            && self.track_layout.proposal_anchors == proposal_anchors
         {
             return;
         }
@@ -709,16 +710,13 @@ impl EditorView {
             .filter(|t| self.arrangement_track_visible(t.id()))
             .map(|t| t.id())
             .collect::<Vec<_>>();
-        let proposal_row = proposal_anchor.map(|anchor| {
-            anchor
-                .and_then(|id| tracks.iter().position(|track| track.id() == id))
-                .map_or(ids.len(), |index| {
-                    self.arrangement_track_indices()
-                        .partition_point(|row| *row < index)
-                })
-        });
-        let old_proposal_row = self.arrangement_proposal_row();
-        self.track_layout.proposal_anchor = proposal_anchor;
+        let proposals = ProposalRows::project(
+            tracks,
+            self.arrangement_track_indices(),
+            &proposal_anchors,
+            |_| true,
+        );
+        self.track_layout.proposal_anchors = proposal_anchors;
         let tracks_changed = self.track_layout.tracks != ids;
         if tracks_changed {
             if let Some(drag) = self.track_layout.drag.take() {
@@ -735,7 +733,7 @@ impl EditorView {
                 });
             }
         }
-        if tracks_changed || old_proposal_row != proposal_row {
+        if tracks_changed || self.track_layout.proposals != proposals {
             let mut top = self.track_scroll.list.logical_scroll_top();
             let old_ordinal = self.arrangement_list_ordinal(top.item_ix);
             let anchor = old_ordinal.and_then(|row| self.track_layout.tracks.get(row).copied());
@@ -746,24 +744,27 @@ impl EditorView {
                         .unwrap_or(top.item_ix)
                         .min(ids.len().saturating_sub(1)),
                 );
-            self.track_layout.proposal_row = proposal_row;
+            let prior = std::mem::replace(&mut self.track_layout.proposals, proposals);
+            let new = &self.track_layout.proposals;
+            let count = ids.len() + new.indices().len();
             top.item_ix = if old_ordinal.is_none() {
-                proposal_row.unwrap_or(new_ordinal)
+                prior
+                    .at(top.item_ix)
+                    .and_then(|item| new.row_of(item))
+                    .unwrap_or(top.item_ix.min(count.saturating_sub(1)))
             } else {
                 self.arrangement_list_row(new_ordinal)
             };
             if !tracks_changed {
-                if let Some(row) = old_proposal_row {
+                for row in prior.indices().rev() {
                     self.track_scroll.list.splice(row..row + 1, 0);
                 }
-                if let Some(row) = proposal_row {
+                for row in new.indices() {
                     self.track_scroll.list.splice(row..row, 1);
                 }
                 let _ = self.track_scroll.list.clone().measure_all();
-            } else if old_proposal_row.is_some() || proposal_row.is_some() {
-                self.track_scroll
-                    .list
-                    .reset(ids.len() + usize::from(proposal_row.is_some()));
+            } else if prior.indices().len() > 0 || new.indices().len() > 0 {
+                self.track_scroll.list.reset(count);
             } else if let Some((from, to)) = single_row_move(&self.track_layout.tracks, &ids) {
                 // Cached sizes belong to stable TrackIds. Preserve every
                 // unchanged row; only the inserted moved row loses its size.
@@ -782,8 +783,8 @@ impl EditorView {
                 self.track_scroll.list.reset(ids.len());
             }
             self.track_scroll.list.scroll_to(top);
-            if old_proposal_row.is_none()
-                && let Some(row) = proposal_row
+            if let Some(row) = new.latest_row()
+                && new.at(row).is_some_and(|item| prior.row_of(item).is_none())
             {
                 self.track_scroll.list.scroll_to_reveal_item(row);
             }
