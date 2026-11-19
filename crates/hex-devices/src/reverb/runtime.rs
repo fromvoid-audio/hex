@@ -1056,6 +1056,41 @@ mod tests {
     }
 
     #[test]
+    fn cleared_and_copied_ring_reads_match_fresh_history_through_wrap() {
+        let mut source = Ring::new(9);
+        let mut target = Ring::new(9);
+        for i in 1..26 {
+            source.push(i as f32);
+            target.push(-(i as f32));
+        }
+        source.clear();
+
+        let mut history = Vec::new();
+        for i in 0..22 {
+            target.copy(&source);
+            for delay in [1.0_f32, 1.5, 4.5, 7.0] {
+                let whole = delay.floor() as usize;
+                let read = |lag| {
+                    history
+                        .len()
+                        .checked_sub(lag)
+                        .and_then(|index| history.get(index))
+                        .copied()
+                        .unwrap_or(0.0)
+                };
+                let newer = read(whole);
+                let older = read(whole + 1);
+                let expected = newer + (delay - whole as f32) * (older - newer);
+                assert_eq!(source.read(delay), expected);
+                assert_eq!(target.read(delay), expected);
+            }
+            let new_sample = i as f32 * -0.25;
+            source.push(new_sample);
+            history.push(new_sample);
+        }
+    }
+
+    #[test]
     fn settled_tank_matches_per_frame_recalculation_through_retarget_and_freeze() {
         let original = Settings::default_values();
         let mut frozen = original;
