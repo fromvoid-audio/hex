@@ -106,6 +106,80 @@ fn block(callback: &mut Callback) -> [Frame; 32] {
     output
 }
 
+#[cfg(feature = "allocation-probe")]
+#[test]
+fn resident_mute_prepared_owner_is_checked_in_the_actual_callback() {
+    let mut editor = Editor::new(Project::new(8_000).unwrap(), 16).unwrap();
+    let Created::Imported { track, asset, .. } = editor
+        .execute(Command::ImportPreparedAudioTrack {
+            name: "source".into(),
+            path: "source.wav".into(),
+            source_sample_rate: 8_000,
+            source_frames: 1_024,
+            playback_frames: 1_024,
+            conversion_version: hex_project::IDENTITY_CONVERSION,
+        })
+        .unwrap()
+    else {
+        panic!("import")
+    };
+    let audio = hex_engine::Audio::new(8_000, vec![[0.5, -0.25]; 1_024]).unwrap();
+    let media = BTreeMap::from([(asset, audio)]);
+    let table = Arc::new(SineTable::new());
+    let prepare = |editor: &Editor| {
+        Arc::new(
+            PreparedRevision::prepare(editor.project(), &media, Arc::clone(&table), None).unwrap(),
+        )
+    };
+    let original = prepare(&editor);
+    let same_pcm_other_owner = prepare(&editor);
+    editor
+        .execute(Command::Mute { track, muted: true })
+        .unwrap();
+    let muted = prepare(&editor);
+    for expected in [&original, &same_pcm_other_owner] {
+        let (mut control, mut callback) = channel(8_000).unwrap();
+        control
+            .publish_with_policy_and_context_generation(
+                Playback::try_from_prepared_with_session(Arc::clone(&original)).unwrap(),
+                PublicationPolicy::InheritRuntime,
+                1,
+            )
+            .unwrap();
+        control.command(PlaybackCommand::Play).unwrap();
+        block(&mut callback);
+        assert_eq!(block(&mut callback), [[0.5, -0.25]; 32]);
+        control.reclaim();
+
+        let mut successor = Playback::try_from_prepared_with_session(Arc::clone(&muted)).unwrap();
+        assert!(successor.prepare_resident_mute_on_control(expected, track));
+        let installed = control
+            .publish_with_policy_and_context_generation(
+                successor,
+                PublicationPolicy::InheritRuntime,
+                1,
+            )
+            .unwrap();
+        let first = block(&mut callback);
+        assert_eq!(control.status.applied_revision.load(Acquire), installed);
+        let second = block(&mut callback);
+        if Arc::ptr_eq(expected, &original) {
+            for (index, actual) in first.into_iter().chain(second).enumerate() {
+                let gain = 1.0 - (index + 1).min(40) as f32 / 40.0;
+                assert!((actual[0] - 0.5 * gain).abs() < 1e-6);
+                assert!((actual[1] + 0.25 * gain).abs() < 1e-6);
+            }
+        } else {
+            assert_eq!(first, [[0.0; 2]; 32]);
+            assert_eq!(second, [[0.0; 2]; 32]);
+        }
+        control.reclaim();
+        control.request_shutdown();
+        block(&mut callback);
+        control.reclaim();
+    }
+}
+
 #[test]
 fn shared_sampler_scalar_retarget_keeps_live_and_authored_history_without_callback_allocation() {
     let mut editor = Editor::new(Project::new(8000).unwrap(), 16).unwrap();

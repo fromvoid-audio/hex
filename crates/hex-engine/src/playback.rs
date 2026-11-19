@@ -1458,6 +1458,18 @@ impl Playback {
         self.prepared_revision.as_ref()
     }
 
+    /// Prepare a resident Arrangement mute against a specific prior compiled
+    /// owner. The output publisher must also bind the actual submission.
+    pub fn prepare_resident_mute_on_control(
+        &mut self,
+        previous: &Arc<PreparedRevision>,
+        track: hex_project::TrackId,
+    ) -> bool {
+        self.session_runtime
+            .as_mut()
+            .is_some_and(|runtime| runtime.prepare_resident_mute_on_control(previous, track))
+    }
+
     /// Borrow the actual prepared foreign nodes on control. These immutable
     /// facts grant no native source or endpoint custody: publication must match
     /// them to the host's retained instances and protect their graph lifetime.
