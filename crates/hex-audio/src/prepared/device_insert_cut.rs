@@ -83,6 +83,19 @@ impl Callback {
         }
     }
 
+    /// Preserve the predecessor's already-admitted audible route cut before
+    /// asking the Engine to classify the edit. A retained cut is an end
+    /// boundary for the old output. It never seeds the successor.
+    ///
+    /// In linear resident playback after the pipeline fills, the donor at
+    /// processing frame C emits source frame C - old latency. Priming the
+    /// successor to that source origin would leave its processing clock at
+    /// C - old latency + new latency. Session quantization and Arrangement
+    /// automation use the processing coordinates. A command admitted against
+    /// the primed coordinates could fall on a different grid. During playback
+    /// a changed main clock takes the refusal/consent path with the predecessor
+    /// still active. Matching main latency proceeds to the Engine's normal
+    /// route and history validation.
     pub(super) fn retain_device_insert_cut(
         &self,
         predecessor: AppliedAudioSource,

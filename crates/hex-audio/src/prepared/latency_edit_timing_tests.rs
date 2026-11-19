@@ -13,6 +13,12 @@ const BLOCK: usize = 257;
 const SIGNAL: Frame = [0.25; 2];
 
 pub(super) fn revisions() -> ([Arc<hex_engine::PreparedRevision>; 2], hex_project::TrackId) {
+    latency_revisions(vec![SIGNAL; 8192])
+}
+
+fn latency_revisions(
+    pcm: Vec<Frame>,
+) -> ([Arc<hex_engine::PreparedRevision>; 2], hex_project::TrackId) {
     let limiter = &hex_devices::limiter::DEFINITION;
     let state = limiter
         .patch_parameter(
@@ -21,7 +27,7 @@ pub(super) fn revisions() -> ([Arc<hex_engine::PreparedRevision>; 2], hex_projec
             ParameterValue::Choice(0),
         )
         .unwrap();
-    let ([dry, delayed], track) = insert_revisions(state);
+    let ([dry, delayed], track) = insert_revisions_with_pcm(state, pcm);
     assert_eq!(dry.arrangement().main_latency_frames(), 0);
     assert_eq!(delayed.arrangement().main_latency_frames() as usize, DELAY);
     ([dry, delayed], track)
@@ -30,24 +36,29 @@ pub(super) fn revisions() -> ([Arc<hex_engine::PreparedRevision>; 2], hex_projec
 fn insert_revisions(
     state: hex_lattice_contract::NativeDeviceState,
 ) -> ([Arc<hex_engine::PreparedRevision>; 2], hex_project::TrackId) {
+    insert_revisions_with_pcm(state, vec![SIGNAL; 8192])
+}
+
+fn insert_revisions_with_pcm(
+    state: hex_lattice_contract::NativeDeviceState,
+    pcm: Vec<Frame>,
+) -> ([Arc<hex_engine::PreparedRevision>; 2], hex_project::TrackId) {
     let mut editor = Editor::new(Project::new(RATE).unwrap(), 8).unwrap();
+    let frames = pcm.len() as u64;
     let Created::Imported { track, asset, .. } = editor
         .execute(Command::ImportPreparedAudioTrack {
-            name: "constant input".into(),
-            path: "memory/constant.wav".into(),
+            name: "resident input".into(),
+            path: "memory/resident.wav".into(),
             source_sample_rate: RATE,
-            source_frames: 8192,
-            playback_frames: 8192,
+            source_frames: frames,
+            playback_frames: frames,
             conversion_version: hex_project::IDENTITY_CONVERSION,
         })
         .unwrap()
     else {
         panic!("audio import");
     };
-    let media = BTreeMap::from([(
-        asset,
-        hex_engine::Audio::new(RATE, vec![SIGNAL; 8192]).unwrap(),
-    )]);
+    let media = BTreeMap::from([(asset, hex_engine::Audio::new(RATE, pcm).unwrap())]);
     let table = Arc::new(hex_engine::SineTable::new());
     let prepare = |project: &Project| {
         Arc::new(
@@ -155,8 +166,11 @@ fn begin_quantized_insert(
 
 #[test]
 fn incompatible_latency_insert_preserves_the_admitted_action_and_pcm() {
-    let (revisions, track) = revisions();
-    for (old, next, position, audible_prefix) in [(0, 1, 2990, 10), (1, 0, 2980, 92)] {
+    let sample = |frame: usize| [0.125 + frame as f32 / 65_536.0; 2];
+    let (revisions, track) = latency_revisions((0..8192).map(sample).collect());
+    for (old, next, position, delay, audible_prefix) in
+        [(0, 1, 2990, 0, 10), (1, 0, 2980, DELAY, 92)]
+    {
         for partition in [1, BLOCK] {
             let (control, mut callback, predecessor, receipt) = begin_insert(
                 Arc::clone(&revisions[old]),
@@ -166,6 +180,11 @@ fn incompatible_latency_insert_preserves_the_admitted_action_and_pcm() {
             );
             let mut actual = [[0.0; 2]; BLOCK];
             let original_generation = receipt.retained_route_generation();
+            assert!(
+                control
+                    .offer_resident_device_insert_consent(&receipt)
+                    .is_none()
+            );
             let mut render = || {
                 callback.begin_block();
                 assert_eq!(receipt.state(), PublicationReceiptState::Pending);
@@ -210,16 +229,22 @@ fn incompatible_latency_insert_preserves_the_admitted_action_and_pcm() {
                 receipt.retained_route_generation(),
                 routes.route_state_generation
             );
-            assert!(
-                actual[..audible_prefix]
-                    .iter()
-                    .all(|frame| *frame == SIGNAL)
+            assert_eq!(
+                control.status.performance_frame.load(Acquire),
+                (position + BLOCK) as u64
             );
+            for (offset, frame) in actual[..audible_prefix].iter().enumerate() {
+                assert_eq!(*frame, sample(position - delay + offset));
+            }
             assert!(
                 actual[audible_prefix..]
                     .iter()
                     .all(|frame| *frame == [0.0; 2])
             );
+            let consent = control
+                .offer_resident_device_insert_consent(&receipt)
+                .unwrap();
+            assert_eq!(consent.predecessor(), predecessor);
         }
     }
 }
@@ -256,6 +281,11 @@ fn device_insert_keeps_a_non_imminent_action_when_no_bounded_cut_is_available() 
             assert_eq!(snapshot.route_state_generation, generation);
             assert_eq!(routes[0].pending.unwrap().performance_frame, 24_000);
             assert_eq!(control.status.recording_source(), Some(predecessor));
+            assert!(
+                control
+                    .offer_resident_device_insert_consent(&receipt)
+                    .is_none()
+            );
         }
     }
 }
@@ -812,6 +842,11 @@ fn device_insert_expires_at_callback_without_control_polling() {
 
     assert_eq!(control.status.recording_source(), Some(predecessor));
     assert_eq!(receipt.state(), PublicationReceiptState::Expired);
+    assert!(
+        control
+            .offer_resident_device_insert_consent(&receipt)
+            .is_none()
+    );
     assert!(pcm[..10].iter().all(|frame| *frame == SIGNAL));
     assert!(pcm[10..].iter().all(|frame| *frame == [0.0; 2]));
 }
