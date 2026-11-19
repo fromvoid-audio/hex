@@ -1039,7 +1039,7 @@ fn verify_silent_track_latency_edit(
 }
 
 #[derive(Clone, Copy, Debug)]
-enum NativeAppendLocation {
+enum NativeInsertLocation {
     Return,
     Track,
     Group,
@@ -1049,23 +1049,37 @@ enum NativeAppendLocation {
 #[test]
 fn return_delay_append_keeps_reverb_history_and_exact_publication_without_allocations()
 -> Result<(), Box<dyn Error>> {
-    native_append_case(NativeAppendLocation::Return)
+    native_insert_case(NativeInsertLocation::Return, false)
 }
 
 #[test]
 fn track_group_and_main_delay_append_keeps_reverb_history_and_exact_publication_without_allocations()
 -> Result<(), Box<dyn Error>> {
     for location in [
-        NativeAppendLocation::Track,
-        NativeAppendLocation::Group,
-        NativeAppendLocation::Main,
+        NativeInsertLocation::Track,
+        NativeInsertLocation::Group,
+        NativeInsertLocation::Main,
     ] {
-        native_append_case(location)?;
+        native_insert_case(location, false)?;
     }
     Ok(())
 }
 
-fn native_append_case(location: NativeAppendLocation) -> Result<(), Box<dyn Error>> {
+#[test]
+fn native_mid_insert_keeps_both_effect_histories_and_exact_callback_receipt()
+-> Result<(), Box<dyn Error>> {
+    for location in [
+        NativeInsertLocation::Track,
+        NativeInsertLocation::Group,
+        NativeInsertLocation::Return,
+        NativeInsertLocation::Main,
+    ] {
+        native_insert_case(location, true)?;
+    }
+    Ok(())
+}
+
+fn native_insert_case(location: NativeInsertLocation, middle: bool) -> Result<(), Box<dyn Error>> {
     use hex_audio::prepared::{AppliedAudioSource, PublicationPolicy, PublicationReceiptState};
     use hex_devices::delay::{
         DEFINITION, DRY_WET, FEEDBACK, FILTER, HIGH_QUALITY, LEFT_SYNC, TIME,
@@ -1077,6 +1091,17 @@ fn native_append_case(location: NativeAppendLocation) -> Result<(), Box<dyn Erro
     const BLOCK: usize = 512;
     const DELAY: usize = 480;
     const RAMP: usize = 240;
+    const SUFFIX_DELAY: usize = 960;
+    let delay = |milliseconds| {
+        let mut state = DEFINITION.default_state()?;
+        for parameter in [LEFT_SYNC, FILTER, HIGH_QUALITY] {
+            state = DEFINITION.patch_parameter(&state, parameter, ParameterValue::Bool(false))?;
+        }
+        for (parameter, value) in [(TIME, milliseconds), (FEEDBACK, 0.5), (DRY_WET, 1.0)] {
+            state = DEFINITION.patch_parameter(&state, parameter, ParameterValue::Float(value))?;
+        }
+        Ok::<_, hex_lattice_contract::DeviceContractError>(state)
+    };
     let mut editor = Editor::new(Project::new(RATE)?, 8)?;
     let Created::Imported { track, asset, .. } = editor.execute(Command::ImportAudioTrack {
         name: "reverb input".into(),
@@ -1088,7 +1113,7 @@ fn native_append_case(location: NativeAppendLocation) -> Result<(), Box<dyn Erro
         return Err("expected source".into());
     };
     let owner = match location {
-        NativeAppendLocation::Return => {
+        NativeInsertLocation::Return => {
             let Created::ReturnTrack(bus) = editor.execute(Command::AddReturnTrack {
                 name: "room".into(),
             })?
@@ -1102,8 +1127,8 @@ fn native_append_case(location: NativeAppendLocation) -> Result<(), Box<dyn Erro
             })?;
             Some(OutputCaptureId::Return(bus))
         }
-        NativeAppendLocation::Track => Some(OutputCaptureId::Track(track)),
-        NativeAppendLocation::Group => {
+        NativeInsertLocation::Track => Some(OutputCaptureId::Track(track)),
+        NativeInsertLocation::Group => {
             let Created::Track(group) = editor.execute(Command::GroupTracks {
                 tracks: TrackSelectionIds::new(&[track])?,
                 name: "room group".into(),
@@ -1113,36 +1138,45 @@ fn native_append_case(location: NativeAppendLocation) -> Result<(), Box<dyn Erro
             };
             Some(OutputCaptureId::Track(group))
         }
-        NativeAppendLocation::Main => None,
+        NativeInsertLocation::Main => None,
     };
-    let append = |state| match owner {
+    let insert = |before, state| match owner {
         Some(OutputCaptureId::Return(return_track)) => Command::InsertReturnDevice {
             return_track,
-            before: None,
+            before,
             state,
         },
         Some(OutputCaptureId::Track(track)) => Command::InsertDevice {
             track,
-            before: None,
+            before,
             state,
         },
-        None => Command::InsertMainDevice {
-            before: None,
-            state,
-        },
+        None => Command::InsertMainDevice { before, state },
     };
     let reverb = hex_engine::patch_native_device_parameter(
         &hex_engine::default_native_device_state(DeviceTypeId::from_static("hex.reverb"))?,
         hex_devices::reverb::parameter::DRY_WET,
         ParameterValue::Float(100.0),
     )?;
-    editor.execute(append(reverb))?;
+    editor.execute(insert(None, reverb))?;
     let mut source = vec![[0.0; 2]; 12_000];
     source[..BLOCK].fill([0.25, -0.125]);
     let media = BTreeMap::from([(asset, Audio::new(RATE, source)?)]);
     let table = Arc::new(SineTable::new());
     let prepare = |project: &Project| {
         PreparedRevision::prepare(project, &media, Arc::clone(&table), None).map(Arc::new)
+    };
+    let mut prefix = None;
+    let before = if middle {
+        let mut playback = Playback::try_from_prepared_with_session(prepare(editor.project())?)?;
+        playback.apply(PlaybackCommand::Play);
+        prefix = Some(playback);
+        let Created::Device(suffix) = editor.execute(insert(None, delay(20.0)?))? else {
+            return Err("expected downstream device".into());
+        };
+        Some(suffix)
+    } else {
+        None
     };
     let original = prepare(editor.project())?;
     let mut oracle = Playback::try_from_prepared_with_session(Arc::clone(&original))?;
@@ -1174,6 +1208,9 @@ fn native_append_case(location: NativeAppendLocation) -> Result<(), Box<dyn Erro
     for _ in 0..12 {
         oracle.render(&mut warm)?;
         let mut actual = [[0.0; 2]; BLOCK];
+        if let Some(prefix) = prefix.as_mut() {
+            prefix.render(&mut actual)?;
+        }
         measured_block(&mut callback, &mut actual);
         assert_eq!(actual, warm);
     }
@@ -1184,14 +1221,7 @@ fn native_append_case(location: NativeAppendLocation) -> Result<(), Box<dyn Erro
     );
     let cut = control.status.position.load(Ordering::Acquire);
 
-    let mut state = DEFINITION.default_state()?;
-    for parameter in [LEFT_SYNC, FILTER, HIGH_QUALITY] {
-        state = DEFINITION.patch_parameter(&state, parameter, ParameterValue::Bool(false))?;
-    }
-    for (parameter, value) in [(TIME, 10.0), (FEEDBACK, 0.5), (DRY_WET, 1.0)] {
-        state = DEFINITION.patch_parameter(&state, parameter, ParameterValue::Float(value))?;
-    }
-    editor.execute(append(state))?;
+    editor.execute(insert(before, delay(10.0)?))?;
     let mut next = Playback::try_from_prepared_with_session(prepare(editor.project())?)?;
     next.require_continuous_device_insert();
     let context = hex_engine::AudioSourceContext {
@@ -1212,13 +1242,27 @@ fn native_append_case(location: NativeAppendLocation) -> Result<(), Box<dyn Erro
     let receipt = control
         .fresh_runtime_receipt(submitted)
         .ok_or("append receipt")?;
-    let mut actual = [[0.0; 2]; BLOCK * 3];
+    let mut actual = [[0.0; 2]; BLOCK * 4];
+    let mut baseline = actual;
     let mut dry = actual;
-    for (actual, dry) in actual.chunks_mut(BLOCK).zip(dry.chunks_mut(BLOCK)) {
+    for ((actual, baseline), dry) in actual
+        .chunks_mut(BLOCK)
+        .zip(baseline.chunks_mut(BLOCK))
+        .zip(dry.chunks_mut(BLOCK))
+    {
         measured_block(&mut callback, actual);
-        oracle.render(dry)?;
+        oracle.render(baseline)?;
+        if let Some(prefix) = prefix.as_mut() {
+            prefix.render(dry)?;
+        } else {
+            dry.copy_from_slice(baseline);
+        }
     }
-    assert_eq!(receipt.state(), PublicationReceiptState::Installed);
+    assert_eq!(
+        receipt.state(),
+        PublicationReceiptState::Installed,
+        "{location:?} middle={middle}"
+    );
     assert_eq!(
         control.status.recording_source(),
         Some(AppliedAudioSource {
@@ -1234,16 +1278,41 @@ fn native_append_case(location: NativeAppendLocation) -> Result<(), Box<dyn Erro
     assert!(control.status.playing.load(Ordering::Acquire));
     assert!(dry[..RAMP].iter().flatten().any(|v| v.abs() > 1e-6));
     assert!(actual[DELAY..].iter().flatten().any(|v| v.abs() > 1e-6));
-    for (frame, output) in actual.iter().enumerate() {
+    let mut upstream = [[0.0; 2]; BLOCK * 4];
+    for (frame, output) in upstream.iter_mut().enumerate() {
         let mix = (frame + 1).min(RAMP) as f32 / RAMP as f32;
         for lane in 0..2 {
             let wet: f32 = (1..=frame / DELAY)
                 .map(|tap| dry[frame - tap * DELAY][lane] * 0.5_f32.powi(tap as i32 - 1))
                 .sum();
-            let dry = dry[frame][lane];
+            let input = dry[frame][lane];
+            output[lane] = input + (wet - input) * mix;
+        }
+    }
+    if middle {
+        assert!(
+            baseline[..SUFFIX_DELAY]
+                .iter()
+                .flatten()
+                .any(|v| v.abs() > 1e-6)
+        );
+        for (frame, output) in baseline.iter_mut().enumerate() {
+            for lane in 0..2 {
+                for tap in 1..=frame / SUFFIX_DELAY {
+                    let source = frame - tap * SUFFIX_DELAY;
+                    output[lane] +=
+                        (upstream[source][lane] - dry[source][lane]) * 0.5_f32.powi(tap as i32 - 1);
+                }
+            }
+        }
+    } else {
+        baseline = upstream;
+    }
+    for (frame, (actual, expected)) in actual.iter().zip(&baseline).enumerate() {
+        for lane in 0..2 {
             assert!(
-                (output[lane] - (dry + (wet - dry) * mix)).abs() < 2e-6,
-                "location={location:?} frame={frame} lane={lane}",
+                (actual[lane] - expected[lane]).abs() < 2e-6,
+                "location={location:?} middle={middle} frame={frame} lane={lane}",
             );
         }
     }

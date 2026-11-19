@@ -2056,7 +2056,7 @@ fn disconnect_send_stops_live_input_without_cutting_the_tail() {
 }
 
 #[derive(Clone, Copy, Debug)]
-enum NativeAppendLocation {
+enum NativeInsertLocation {
     Return,
     Track,
     Group,
@@ -2065,21 +2065,33 @@ enum NativeAppendLocation {
 
 #[test]
 fn staged_return_append_preserves_reverb_and_uses_the_native_transition() {
-    native_append_case(NativeAppendLocation::Return);
+    native_insert_case(NativeInsertLocation::Return, false);
 }
 
 #[test]
 fn staged_track_group_and_main_append_preserves_reverb_and_uses_the_native_transition() {
     for location in [
-        NativeAppendLocation::Track,
-        NativeAppendLocation::Group,
-        NativeAppendLocation::Main,
+        NativeInsertLocation::Track,
+        NativeInsertLocation::Group,
+        NativeInsertLocation::Main,
     ] {
-        native_append_case(location);
+        native_insert_case(location, false);
     }
 }
 
-fn native_append_case(location: NativeAppendLocation) {
+#[test]
+fn staged_native_mid_insert_preserves_the_running_prefix_and_suffix() {
+    for location in [
+        NativeInsertLocation::Track,
+        NativeInsertLocation::Group,
+        NativeInsertLocation::Return,
+        NativeInsertLocation::Main,
+    ] {
+        native_insert_case(location, true);
+    }
+}
+
+fn native_insert_case(location: NativeInsertLocation, middle: bool) {
     use crate::{OutputCapture, OutputCaptureId};
     use hex_devices::delay::{
         DEFINITION, DRY_WET, FEEDBACK, FILTER, HIGH_QUALITY, LEFT_SYNC, TIME,
@@ -2089,11 +2101,27 @@ fn native_append_case(location: NativeAppendLocation) {
     const CUT: usize = 6_000;
     const DELAY: usize = 480;
     const RAMP: usize = 240;
+    const SUFFIX_DELAY: usize = 960;
+    const OUTPUT_FRAMES: usize = DELAY * 4;
+    let delay = |milliseconds| {
+        let mut state = DEFINITION.default_state().unwrap();
+        for parameter in [LEFT_SYNC, FILTER, HIGH_QUALITY] {
+            state = DEFINITION
+                .patch_parameter(&state, parameter, ParameterValue::Bool(false))
+                .unwrap();
+        }
+        for (parameter, value) in [(TIME, milliseconds), (FEEDBACK, 0.5), (DRY_WET, 1.0)] {
+            state = DEFINITION
+                .patch_parameter(&state, parameter, ParameterValue::Float(value))
+                .unwrap();
+        }
+        state
+    };
     let (mut editor, track, bus, reverb, media, table) = real_main_limiter_reverb_fixture();
     let capture_id = match location {
-        NativeAppendLocation::Return => Some(OutputCaptureId::Return(bus)),
-        NativeAppendLocation::Track => Some(OutputCaptureId::Track(track)),
-        NativeAppendLocation::Group => {
+        NativeInsertLocation::Return => Some(OutputCaptureId::Return(bus)),
+        NativeInsertLocation::Track => Some(OutputCaptureId::Track(track)),
+        NativeInsertLocation::Group => {
             let Created::Track(group) = editor
                 .execute(Command::GroupTracks {
                     tracks: TrackSelectionIds::new(&[track]).unwrap(),
@@ -2105,36 +2133,47 @@ fn native_append_case(location: NativeAppendLocation) {
             };
             Some(OutputCaptureId::Track(group))
         }
-        NativeAppendLocation::Main => None,
+        NativeInsertLocation::Main => None,
     };
-    let append = |state| match capture_id {
+    let insert = |before, state| match capture_id {
         Some(OutputCaptureId::Return(return_track)) => Command::InsertReturnDevice {
             return_track,
-            before: None,
+            before,
             state,
         },
         Some(OutputCaptureId::Track(track)) => Command::InsertDevice {
             track,
-            before: None,
+            before,
             state,
         },
-        None => Command::InsertMainDevice {
-            before: None,
-            state,
-        },
+        None => Command::InsertMainDevice { before, state },
     };
-    if !matches!(location, NativeAppendLocation::Return) {
+    if !matches!(location, NativeInsertLocation::Return) {
         let state = editor.project().device(reverb).unwrap().state().clone();
         editor.execute(Command::RemoveReturnTrack(bus)).unwrap();
-        editor.execute(append(state)).unwrap();
+        editor.execute(insert(None, state)).unwrap();
     }
     let prepare = |project: &Project| {
         Arc::new(PreparedRevision::prepare(project, &media, Arc::clone(&table), None).unwrap())
     };
-    let original = prepare(editor.project());
+    let prefix = prepare(editor.project());
+    let before = if middle {
+        let Created::Device(suffix) = editor.execute(insert(None, delay(20.0))).unwrap() else {
+            panic!("suffix");
+        };
+        Some(suffix)
+    } else {
+        None
+    };
+    let original = if middle {
+        prepare(editor.project())
+    } else {
+        Arc::clone(&prefix)
+    };
     let mut incompatible = Editor::new(editor.project().clone(), 8).unwrap();
     incompatible
-        .execute(append(
+        .execute(insert(
+            before,
             crate::default_native_device_state(DeviceTypeId::from_static("hex.limiter")).unwrap(),
         ))
         .unwrap();
@@ -2143,28 +2182,18 @@ fn native_append_case(location: NativeAppendLocation) {
         higher_latency.arrangement().main_latency_frames()
             > original.arrangement().main_latency_frames()
     );
-    let mut state = DEFINITION.default_state().unwrap();
-    for parameter in [LEFT_SYNC, FILTER, HIGH_QUALITY] {
-        state = DEFINITION
-            .patch_parameter(&state, parameter, ParameterValue::Bool(false))
-            .unwrap();
-    }
-    for (parameter, value) in [(TIME, 10.0), (FEEDBACK, 0.5), (DRY_WET, 1.0)] {
-        state = DEFINITION
-            .patch_parameter(&state, parameter, ParameterValue::Float(value))
-            .unwrap();
-    }
-    editor.execute(append(state)).unwrap();
-    let appended = prepare(editor.project());
+    editor.execute(insert(before, delay(10.0))).unwrap();
+    let inserted = prepare(editor.project());
     assert_eq!(
-        appended.arrangement().main_latency_frames(),
+        inserted.arrangement().main_latency_frames(),
         original.arrangement().main_latency_frames()
     );
 
     for partition in [1, 257] {
         let mut old = SessionPlayback::new(Arc::clone(&original)).unwrap();
-        let mut oracle = SessionPlayback::new(Arc::clone(&original)).unwrap();
-        for runtime in [&mut old, &mut oracle] {
+        let mut oracle = SessionPlayback::new(Arc::clone(&prefix)).unwrap();
+        let mut retained = middle.then(|| SessionPlayback::new(Arc::clone(&original)).unwrap());
+        for runtime in [&mut old, &mut oracle].into_iter().chain(retained.as_mut()) {
             runtime.apply(SessionPlaybackCommand::Play).unwrap();
             runtime.render(&mut vec![[0.0; 2]; CUT]).unwrap();
         }
@@ -2176,9 +2205,11 @@ fn native_append_case(location: NativeAppendLocation) {
             Err(SessionPlaybackError::DeviceInsertNeedsConfirmation)
         ));
 
-        let mut candidate = SessionPlayback::new(Arc::clone(&appended)).unwrap();
+        let mut candidate = SessionPlayback::new(Arc::clone(&inserted)).unwrap();
         candidate.require_continuous_insert = true;
-        let result = candidate.try_inherit_state_live_from(&mut old).unwrap();
+        let result = candidate
+            .try_inherit_state_live_from(&mut old)
+            .unwrap_or_else(|error| panic!("{location:?} middle={middle} {error:?}"));
         assert!(!result.running_audio_restart);
         assert_eq!(candidate.performance_frame(), CUT as u64);
         assert!(candidate.playing());
@@ -2193,7 +2224,7 @@ fn native_append_case(location: NativeAppendLocation) {
         assert!(candidate.tail_groups.iter().all(Option::is_none));
         let capture = |playback: &mut SessionPlayback| {
             let plan = capture_id.map(|id| playback.output_capture_plan(&[id], partition).unwrap());
-            let mut main = vec![[0.0; 2]; DELAY * 3];
+            let mut main = vec![[0.0; 2]; OUTPUT_FRAMES];
             let mut output = main.clone();
             for (main, output) in main.chunks_mut(partition).zip(output.chunks_mut(partition)) {
                 if let Some(plan) = &plan {
@@ -2220,17 +2251,51 @@ fn native_append_case(location: NativeAppendLocation) {
                 .flatten()
                 .any(|sample| sample.abs() > 1e-6)
         );
-        for (frame, output) in actual.iter().enumerate() {
+        let mut expected = vec![[0.0; 2]; OUTPUT_FRAMES];
+        for (frame, output) in expected.iter_mut().enumerate() {
             let mix = (frame + 1).min(RAMP) as f32 / RAMP as f32;
             for lane in 0..2 {
                 let wet: f32 = (1..=frame / DELAY)
                     .map(|tap| input[frame - tap * DELAY][lane] * 0.5_f32.powi(tap as i32 - 1))
                     .sum();
                 let dry = input[frame][lane];
-                let expected = dry + (wet - dry) * mix;
+                output[lane] = dry + (wet - dry) * mix;
+            }
+        }
+        if let Some(retained) = retained.as_mut() {
+            // The uninterrupted suffix already owns every sample admitted
+            // before the cut. Feed it only the change in input after the cut
+            // to calculate the independently expected edited output.
+            let baseline = capture(retained);
+            assert!(
+                baseline[..SUFFIX_DELAY]
+                    .iter()
+                    .flatten()
+                    .any(|sample| sample.abs() > 1e-6)
+            );
+            let upstream = std::mem::replace(&mut expected, baseline);
+            let mut heard_insert_through_suffix = false;
+            for (frame, output) in expected.iter_mut().enumerate() {
+                let unchanged = *output;
+                for lane in 0..2 {
+                    for tap in 1..=frame / SUFFIX_DELAY {
+                        let source = frame - tap * SUFFIX_DELAY;
+                        output[lane] += (upstream[source][lane] - input[source][lane])
+                            * 0.5_f32.powi(tap as i32 - 1);
+                    }
+                }
+                heard_insert_through_suffix |= output
+                    .iter()
+                    .zip(unchanged)
+                    .any(|(edited, old)| (edited - old).abs() > 2e-6);
+            }
+            assert!(heard_insert_through_suffix);
+        }
+        for (frame, (actual, expected)) in actual.iter().zip(&expected).enumerate() {
+            for lane in 0..2 {
                 assert!(
-                    (output[lane] - expected).abs() < 2e-6,
-                    "location={location:?} partition={partition} frame={frame} lane={lane}"
+                    (actual[lane] - expected[lane]).abs() < 2e-6,
+                    "location={location:?} middle={middle} partition={partition} frame={frame} lane={lane}"
                 );
             }
         }
@@ -2876,4 +2941,257 @@ fn removing_the_return_keeps_its_real_detached_tail() {
         );
         assert!(actual.iter().flatten().any(|sample| *sample != 0.0));
     }
+}
+
+#[test]
+fn native_return_removal_without_a_stage_fade_requires_confirmation() {
+    use hex_project::{Command, Project};
+
+    let (mut editor, _, _, reverb, media, table) = real_main_limiter_reverb_fixture();
+    let prepare = |project: &Project| {
+        Arc::new(PreparedRevision::prepare(project, &media, Arc::clone(&table), None).unwrap())
+    };
+    let mut old = SessionPlayback::new(prepare(editor.project())).unwrap();
+    old.apply(SessionPlaybackCommand::Play).unwrap();
+    old.render(&mut vec![[0.0; 2]; 6_000]).unwrap();
+    editor.execute(Command::RemoveDevice(reverb)).unwrap();
+    let mut candidate = SessionPlayback::new(prepare(editor.project())).unwrap();
+    candidate.require_continuous_insert = true;
+    assert!(matches!(
+        candidate.try_inherit_state_live_from(&mut old),
+        Err(SessionPlaybackError::DeviceInsertNeedsConfirmation)
+    ));
+    assert_eq!(old.performance_frame(), 6_000);
+}
+
+#[test]
+fn native_removal_fades_its_stage_and_keeps_the_running_downstream_delay() {
+    use crate::{OutputCapture, OutputCaptureId};
+    use hex_devices::delay::{
+        DEFINITION, DRY_WET, FEEDBACK, FILTER, HIGH_QUALITY, LEFT_SYNC, TIME,
+    };
+    use hex_project::{Command, Created, Project, TrackSelectionIds};
+
+    const CUT: u64 = 6_000;
+    const RAMP: usize = 240;
+    const DELAY: usize = 480;
+    const SAMPLE_COUNT: usize = DELAY * 3;
+
+    for location in [
+        NativeInsertLocation::Track,
+        NativeInsertLocation::Group,
+        NativeInsertLocation::Return,
+        NativeInsertLocation::Main,
+    ] {
+        let (mut editor, track, bus, reverb, media, table) = real_main_limiter_reverb_fixture();
+        let owner = match location {
+            NativeInsertLocation::Return => Some(OutputCaptureId::Return(bus)),
+            NativeInsertLocation::Track => Some(OutputCaptureId::Track(track)),
+            NativeInsertLocation::Group => {
+                let Created::Track(group) = editor
+                    .execute(Command::GroupTracks {
+                        tracks: TrackSelectionIds::new(&[track]).unwrap(),
+                        name: "room group".into(),
+                    })
+                    .unwrap()
+                else {
+                    panic!("group");
+                };
+                Some(OutputCaptureId::Track(group))
+            }
+            NativeInsertLocation::Main => None,
+        };
+        let append = |state| match owner {
+            Some(OutputCaptureId::Track(track)) => Command::InsertDevice {
+                track,
+                before: None,
+                state,
+            },
+            Some(OutputCaptureId::Return(return_track)) => Command::InsertReturnDevice {
+                return_track,
+                before: None,
+                state,
+            },
+            None => Command::InsertMainDevice {
+                before: None,
+                state,
+            },
+        };
+        let removed = if matches!(location, NativeInsertLocation::Return) {
+            reverb
+        } else {
+            let state = editor.project().device(reverb).unwrap().state().clone();
+            editor.execute(Command::RemoveReturnTrack(bus)).unwrap();
+            let Created::Device(device) = editor.execute(append(state)).unwrap() else {
+                panic!("reverb");
+            };
+            device
+        };
+
+        let prepare = |project: &Project| {
+            Arc::new(PreparedRevision::prepare(project, &media, Arc::clone(&table), None).unwrap())
+        };
+        let mut upstream = SessionPlayback::new(prepare(editor.project())).unwrap();
+        let mut delay = DEFINITION.default_state().unwrap();
+        for parameter in [LEFT_SYNC, FILTER, HIGH_QUALITY] {
+            delay = DEFINITION
+                .patch_parameter(&delay, parameter, ParameterValue::Bool(false))
+                .unwrap();
+        }
+        for (parameter, value) in [(TIME, 10.0), (FEEDBACK, 0.5), (DRY_WET, 1.0)] {
+            delay = DEFINITION
+                .patch_parameter(&delay, parameter, ParameterValue::Float(value))
+                .unwrap();
+        }
+        editor.execute(append(delay)).unwrap();
+        let original = prepare(editor.project());
+        let mut old = SessionPlayback::new(Arc::clone(&original)).unwrap();
+        let mut untouched = SessionPlayback::new(original).unwrap();
+        for runtime in [&mut upstream, &mut old, &mut untouched] {
+            runtime.apply(SessionPlaybackCommand::Play).unwrap();
+            runtime.render(&mut vec![[0.0; 2]; CUT as usize]).unwrap();
+        }
+        let capture = |runtime: &mut SessionPlayback, output: &mut [[f32; 2]]| {
+            let plan = owner.map(|owner| runtime.output_capture_plan(&[owner], 127).unwrap());
+            for output in output.chunks_mut(127) {
+                if let Some(plan) = &plan {
+                    runtime
+                        .render_with_capture(
+                            &mut [[0.0; 2]; 127][..output.len()],
+                            &mut OutputCapture::new(plan, &mut [output]),
+                        )
+                        .unwrap();
+                } else {
+                    runtime.render(output).unwrap();
+                }
+            }
+        };
+        editor.execute(Command::RemoveDevice(removed)).unwrap();
+        let mut candidate = SessionPlayback::new(prepare(editor.project())).unwrap();
+        candidate.require_continuous_insert = true;
+        assert_eq!(
+            candidate.advance_native_removal_from(&mut old),
+            Ok(NativeRemovalProgress::Fading),
+            "{location:?}"
+        );
+        assert!(matches!(
+            candidate.try_inherit_state_live_from(&mut old),
+            Err(SessionPlaybackError::DeviceTransitionBusy)
+        ));
+        let mut actual = [[0.0; 2]; SAMPLE_COUNT];
+        capture(&mut old, &mut actual[..RAMP - 1]);
+        assert_eq!(
+            candidate.advance_native_removal_from(&mut old),
+            Ok(NativeRemovalProgress::Fading)
+        );
+        capture(&mut old, &mut actual[RAMP - 1..RAMP]);
+        assert_eq!(
+            candidate.advance_native_removal_from(&mut old),
+            Ok(NativeRemovalProgress::Ready)
+        );
+        let report = candidate.try_inherit_state_live_from(&mut old).unwrap();
+        assert!(!report.running_audio_restart);
+        assert_eq!(candidate.performance_frame(), CUT + RAMP as u64);
+        assert!(candidate.playing());
+        assert!(candidate.tail_groups.iter().all(Option::is_none));
+        assert!(
+            candidate
+                .return_effect_tails
+                .slots()
+                .iter()
+                .all(Option::is_none)
+        );
+        capture(&mut candidate, &mut actual[RAMP..]);
+
+        let mut wet = [[0.0; 2]; SAMPLE_COUNT];
+        let mut expected = wet;
+        capture(&mut upstream, &mut wet);
+        capture(&mut untouched, &mut expected);
+        assert!(
+            expected[..DELAY]
+                .iter()
+                .flatten()
+                .any(|sample| sample.abs() > 1e-6)
+        );
+        let mut heard_fade = false;
+        for (frame, (actual, reference)) in actual.iter().zip(&expected).enumerate() {
+            for lane in 0..2 {
+                // The retained delay plays admitted samples, then the
+                // independently derived fade starts reaching its taps.
+                let delta: f32 = (1..=frame / DELAY)
+                    .map(|tap| {
+                        let source = frame - tap * DELAY;
+                        let fade = (source + 1).min(RAMP) as f32 / RAMP as f32;
+                        -wet[source][lane] * fade * 0.5_f32.powi(tap as i32 - 1)
+                    })
+                    .sum();
+                heard_fade |= delta.abs() > 2e-6;
+                assert!(
+                    (actual[lane] - (reference[lane] + delta)).abs() < 2e-6,
+                    "location={location:?} frame={frame} lane={lane}"
+                );
+            }
+        }
+        assert!(heard_fade);
+    }
+}
+
+#[test]
+fn cancelling_a_native_removal_restores_the_wet_predecessor() {
+    use hex_project::{Command, Editor, Project};
+
+    let (mut editor, _, _, reverb, media, table) = real_main_limiter_reverb_fixture();
+    let prepare = |project: &Project| {
+        Arc::new(PreparedRevision::prepare(project, &media, Arc::clone(&table), None).unwrap())
+    };
+    let initial = prepare(editor.project());
+    let mut old = SessionPlayback::new(Arc::clone(&initial)).unwrap();
+    let mut reference = SessionPlayback::new(initial).unwrap();
+    for runtime in [&mut old, &mut reference] {
+        runtime.apply(SessionPlaybackCommand::Play).unwrap();
+        runtime.render(&mut vec![[0.0; 2]; 6_000]).unwrap();
+    }
+    let mut different_clock = Editor::new(editor.project().clone(), 8).unwrap();
+    let limiter = different_clock.project().main_devices()[0].id();
+    different_clock
+        .execute(Command::RemoveDevice(limiter))
+        .unwrap();
+    let mut ineligible = SessionPlayback::new(prepare(different_clock.project())).unwrap();
+    ineligible.require_continuous_insert = true;
+    assert_eq!(
+        ineligible.advance_native_removal_from(&mut old),
+        Ok(NativeRemovalProgress::NotApplicable)
+    );
+    let mut unchanged = [[0.0; 2]; 127];
+    let mut baseline = unchanged;
+    old.render(&mut unchanged).unwrap();
+    reference.render(&mut baseline).unwrap();
+    assert_eq!(unchanged, baseline);
+    editor.execute(Command::RemoveDevice(reverb)).unwrap();
+    let mut candidate = SessionPlayback::new(prepare(editor.project())).unwrap();
+    candidate.require_continuous_insert = true;
+    assert_eq!(
+        candidate.advance_native_removal_from(&mut old),
+        Ok(NativeRemovalProgress::Fading)
+    );
+    let mut fading = [[0.0; 2]; 120];
+    let mut original = fading;
+    old.render(&mut fading).unwrap();
+    reference.render(&mut original).unwrap();
+    assert_ne!(fading, original);
+    candidate.cancel_native_removal_from(&mut old);
+    let mut restored = [[0.0; 2]; 512];
+    let mut expected = restored;
+    old.render(&mut restored).unwrap();
+    reference.render(&mut expected).unwrap();
+    assert_eq!(old.performance_frame(), reference.performance_frame());
+    // The rollback ramp and the unchanged Main limiter both have time to
+    // drain before comparing the continuing original Reverb history.
+    assert_eq!(restored[400..], expected[400..]);
+    assert!(
+        restored[400..]
+            .iter()
+            .flatten()
+            .any(|sample| sample.abs() > 1e-6)
+    );
 }
