@@ -340,10 +340,6 @@ impl EditorView {
     }
 
     /// Serialize an explicit preference edit; the active policy changes only on success.
-    #[allow(
-        dead_code,
-        reason = "settings publication is independent of menu composition"
-    )]
     pub(super) fn save_note_chase(&mut self, enabled: bool, cx: &mut Context<Self>) {
         let state = &mut self.playback_settings;
         if state.loading || state.saving || !state.writable {
