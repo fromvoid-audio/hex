@@ -312,11 +312,11 @@ impl Callback {
                 })
         };
         if current {
-            self.prewarm_outgoing_fade_for_render(frames, cold.frames);
+            self.prewarm_outgoing_fade_for_render(frames, cold);
         }
     }
 
-    fn prewarm_outgoing_fade_for_render(&mut self, frames: usize, fade_frames: usize) {
+    fn prewarm_outgoing_fade_for_render(&mut self, frames: usize, cold: ColdDeviceFade) {
         let Ok(Some(current)) = self.reserve_current_stream_window(frames) else {
             return;
         };
@@ -332,7 +332,7 @@ impl Callback {
             .as_mut()
             .and_then(ActivePublication::stream_view)
             && let Ok(Some(complete)) =
-                active.reserve_outgoing_fade(&mut self.domain_pages, fade_frames)
+                active.reserve_outgoing_fade(&mut self.domain_pages, cold.frames, cold.revision)
         {
             complete.release(&mut self.domain_pages);
         }
@@ -477,13 +477,7 @@ impl Callback {
                 .as_mut()
                 .and_then(ActivePublication::stream_view)
                 .ok_or(PlaybackHandoffRejection::StreamedPagesNotReady)?
-                .reserve_outgoing_fade(&mut self.domain_pages, fade as usize)
-                .map_err(|error| match error {
-                    crate::candidate_custody::QuantumFailure::Capacity => {
-                        PlaybackHandoffRejection::StreamedPageCapacity
-                    }
-                    _ => PlaybackHandoffRejection::StreamedPagesNotReady,
-                })?;
+                .reserve_outgoing_fade(&mut self.domain_pages, fade as usize, next.revision)?;
             let Some(pins) = pins else {
                 if let Some(streams) = next.streams.as_mut() {
                     streams.cancel_install(&mut self.domain_pages);

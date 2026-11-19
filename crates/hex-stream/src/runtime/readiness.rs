@@ -648,7 +648,11 @@ impl ConstructorPageLoan {
     /// After all contributing loans have checked the exact span's capacity,
     /// request a missing page. A complete current hold permits one eviction
     /// outside the fade and pending roles. This never grants a fade hold.
-    pub fn prewarm_fitting_outgoing_fade(&mut self, extents: &[StreamResourceExtent]) {
+    pub fn prewarm_fitting_outgoing_fade(
+        &mut self,
+        extents: &[StreamResourceExtent],
+        revision: u64,
+    ) {
         if let Some(&missing) = extents
             .iter()
             .find(|&&extent| !self.pages.endpoint.has_extent(extent))
@@ -664,6 +668,7 @@ impl ConstructorPageLoan {
             self.pages.endpoint.prewarm_fade_extent(
                 missing,
                 (current.epoch.is_some() && current.complete).then_some(&retained),
+                revision,
             );
         }
     }
@@ -919,9 +924,8 @@ impl ConstructorPageLoan {
         self.readiness
             .service(&mut self.pages, role, stamp, pump_limit, request_limit)
     }
-    /// Test-only observation of a resident extent; it does not grant protection.
-    #[cfg(feature = "test-support")]
-    pub fn test_has_resource_extent(&self, extent: StreamResourceExtent) -> bool {
+    /// Observe a resident extent without granting protection.
+    pub fn has_resource_extent(&self, extent: StreamResourceExtent) -> bool {
         self.pages.endpoint.has_extent(extent)
     }
 
@@ -1092,6 +1096,11 @@ impl ConstructorPageLoan {
     /// protection is dropped or certified by this observation.
     pub fn take_failure(&mut self) -> Option<StreamFailure> {
         self.pages.endpoint.take_failure()
+    }
+    /// Observe the correlation supplied when an outgoing lookahead queued this
+    /// read. The correlation expires with the speculative request itself.
+    pub fn take_failure_with_outgoing_revision(&mut self) -> Option<(StreamFailure, Option<u64>)> {
+        self.pages.endpoint.take_failure_with_outgoing_revision()
     }
     pub fn take_failures(&mut self, output: &mut [StreamFailure]) -> usize {
         self.pages.take_failures(output)
