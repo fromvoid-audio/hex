@@ -669,6 +669,25 @@ native UI, listening, device deadline or release acceptance. Keep SDK paths and
 local receipts out of Git; record the exact receipt hashes and result with the
 issue or PR being verified.
 
+### Signed VST3 editor regression timing
+
+Use the optimized desktop test target to time the signed regression that
+checks whether a late editor value reaches the original worker across graph
+publication. Use the verified fixture receipts from the commands above.
+
+```sh
+HEX_VST3_MACOS_RECEIPT="$PWD/artifacts/vst3-local-controlled/controlled-macos.json" \
+HEX_VST3_INSTANCE_RECEIPT="$PWD/artifacts/vst3-local-instance/controlled-macos.json" \
+  cargo test --locked --release -p hex-desktop --features allocation-probe --bin hex-desktop \
+  -- --ignored --exact --test-threads=1 \
+  native_audio::tests::plugins::capture_source_guard::late_editor_value_remains_on_original_worker_after_unlaned_publication
+```
+
+Measure first and repeated invocations separately and record both process wall
+time and the test harness duration. Report compilation separately. A fresh
+copy of the desktop executable can spend measurable time before libtest
+produces its first output, including on a listing-only run.
+
 ### Dense playback baseline
 
 The opt-in macOS arm64 profile uses the resident Session and prepared callback
