@@ -919,7 +919,7 @@ impl Inputs<'_> {
                     && witness.section_loop.is_none()
                     && snapshot
                         .prepared
-                        .can_schedule_resident_tempo_edit_from(&previous.prepared) =>
+                        .can_schedule_ordinary_tempo_edit_from(&previous.prepared) =>
             {
                 previous
                     .submission

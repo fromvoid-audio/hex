@@ -2084,6 +2084,20 @@ fn ordinary_tempo_cut_previews_the_committed_stream_pages_after_a_loop_wrap() {
         );
         assert!(demanded.is_empty());
 
+        let mut forecasted = Vec::new();
+        let forecast = next
+            .stream_playback(new_context)
+            .forecast_ordinary_tempo_cut(
+                &old.stream_playback(old_context),
+                partition,
+                &mut |extent| {
+                    forecasted.push(extent);
+                    Ok(())
+                },
+                &anchor,
+            )
+            .unwrap();
+
         let mut buffer = [[0.0; 2]; 257];
         while old.performance_frame() < due {
             let mut extents = Vec::new();
@@ -2149,6 +2163,8 @@ fn ordinary_tempo_cut_previews_the_committed_stream_pages_after_a_loop_wrap() {
                 old.arrangement_loop_state()
             )
         );
+        assert_eq!(forecast, preview);
+        assert_eq!(forecasted, demanded);
         assert_eq!(preview.performance_frame, due);
         assert!(!demanded.is_empty());
         assert!(demanded.iter().all(|extent| extent.page_index == 2));

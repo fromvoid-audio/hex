@@ -25,7 +25,7 @@ enum CandidateRole {
     Publication,
     LaunchPrewarm { ticket: u64, due: u64 },
 }
-pub(crate) use demand::{StreamInstall, StreamOutcome, StreamProgress};
+pub(crate) use demand::{StreamInstall, StreamOutcome, StreamProgress, TempoStreamWindow};
 struct PendingAction {
     prepared: hex_engine::PreparedStreamAction,
     ticket: u64,

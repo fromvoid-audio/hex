@@ -111,7 +111,7 @@ impl Callback {
                 fenced_restart: false,
                 foreign_continuation: false,
                 confirmed_fade: Some(fade),
-                tempo_anchor: None,
+                tempo_cut: None,
             },
         )?;
         if !ready {
