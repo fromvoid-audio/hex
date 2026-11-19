@@ -273,6 +273,23 @@ impl Endpoint {
         self.ready_rx.peek().is_ok_and(|page| page.key == Some(key))
     }
 
+    #[cfg(feature = "test-support")]
+    pub(crate) fn test_next_failure(&self) -> Option<StreamFailure> {
+        self.failure_rx.peek().ok().copied()
+    }
+
+    /// Reserve one extra pool buffer for a dedicated granular loan. Cache
+    /// geometry/backing stays fixed; one ordinary turnover buffer remains free
+    /// even with a held granular job and a full unpinned cache.
+    pub(crate) fn reserve_granular_loan_on_control(&mut self) -> Result<(), ()> {
+        let limit = self
+            .max_cached_pages
+            .checked_sub(1)
+            .filter(|n| *n > 0)
+            .ok_or(())?;
+        self.max_cached_pages = limit;
+        Ok(())
+    }
     pub fn pump_ready(&mut self, limit: usize) -> usize {
         self.pump_ready_for_pending(limit, &[])
     }
@@ -1096,6 +1113,90 @@ mod tests {
         page.valid_frames = 1;
         page.frames[0] = [key.page_index as f32, -(key.page_index as f32)];
         page
+    }
+
+    #[test]
+    fn same_asset_derived_identities_do_not_alias_in_page_cache() {
+        let mut test = endpoint(8, 8, 8);
+        let raw = source();
+        let up = StreamSourceKey::plain_pitch(73, raw.asset(), 700, hex_project::WarpResampler::V2)
+            .unwrap();
+        let down =
+            StreamSourceKey::plain_pitch(73, raw.asset(), -700, hex_project::WarpResampler::V2)
+                .unwrap();
+        let metadata = hex_engine::StreamedSourceMetadata::new(
+            raw,
+            48_000,
+            48_000,
+            4096,
+            4096,
+            hex_project::IDENTITY_CONVERSION,
+            [7; 32],
+        )
+        .unwrap();
+        let map = |source_end| {
+            hex_warp::TimeMap::new(
+                vec![hex_warp::MapSegment {
+                    output_start: 0,
+                    output_end: 4096,
+                    source_start_q32: 0,
+                    source_end_q32: source_end,
+                }],
+                4096,
+            )
+            .unwrap()
+        };
+        let a = hex_engine::RepitchStreamIdentity::new(
+            &metadata,
+            &map(4096_i128 << 32),
+            hex_warp::Resampler::V2,
+        )
+        .unwrap();
+        let b = hex_engine::RepitchStreamIdentity::new(
+            &metadata,
+            &map(2048_i128 << 32),
+            hex_warp::Resampler::V2,
+        )
+        .unwrap();
+        let warped = StreamSourceKey::repitch(a);
+        let other_warp = StreamSourceKey::repitch(b);
+        let entries = [
+            (raw, 1.0),
+            (up, 2.0),
+            (down, 3.0),
+            (warped, 4.0),
+            (other_warp, 5.0),
+        ];
+        test.endpoint.source_keys = entries.iter().map(|(key, _)| (*key).into()).collect();
+        test.endpoint.source_keys.sort_unstable();
+        for (key, _) in entries {
+            test.endpoint.request_page(key, 0);
+        }
+        for (key, _) in entries {
+            assert_eq!(
+                test.requests.pop().unwrap().0,
+                PageKey {
+                    source: key,
+                    page_index: 0
+                }
+                .into()
+            );
+        }
+        assert!(test.requests.pop().is_err());
+        for (key, value) in entries {
+            let mut buffer = page(PageKey {
+                source: key,
+                page_index: 0,
+            });
+            buffer.frames[0] = [value, -value];
+            assert!(test.endpoint.insert_ready(buffer));
+        }
+        for (key, value) in entries {
+            assert_eq!(
+                test.endpoint.page(key, 0).unwrap().frames,
+                &[[value, -value]]
+            );
+        }
     }
 
     #[test]

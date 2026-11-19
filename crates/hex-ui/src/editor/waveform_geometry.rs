@@ -1,6 +1,7 @@
 //! Bounded retained waveform paths for the visible editor working set.
 use gpui::{Bounds, Pixels, Point, point, px};
 use hex_project::Clip;
+use hex_session::CachedOverrange as Overrange;
 use hex_session::{CachedPeak, CachedWaveform};
 use hex_widgets::{
     MAX_WAVEFORM_COLUMNS, MAX_WAVEFORM_ENVELOPE_POINTS, WaveformChannel, WaveformEnvelope,
@@ -47,6 +48,7 @@ impl Drop for ReferenceStereo {
 // thousand columns. Retain that working set without lifting the geometry budget.
 const MAX_CACHED_WAVEFORM_ENTRIES: usize = 512;
 const MAX_CACHED_WAVEFORM_COLUMNS: usize = 65_536;
+const MAX_PENDING_OVERRANGE: usize = 8;
 
 /// A view's scale and its shared, bounded geometry store.
 #[derive(Default)]
@@ -87,8 +89,246 @@ pub(super) struct WaveformGeometryCache {
     entries: VecDeque<WaveformGeometryEntry>,
     columns: usize,
     coarse_entry_counts: HashMap<CoarseEntryKey, usize>,
+    overrange: OverrangeCache,
     #[cfg(all(test, feature = "ui-test-support"))]
     painted: VecDeque<WaveformPaintSample>,
+}
+
+#[derive(Default)]
+struct OverrangeCache {
+    worker: Option<super::waveform_overrange::Worker>,
+    requested: bool,
+    retry: bool,
+    unavailable: bool,
+    next_id: u64,
+    columns: usize,
+    pending: usize,
+    entries: VecDeque<OverrangeEntry>,
+}
+
+struct OverrangeEntry {
+    id: u64,
+    key: WaveformGeometryKey,
+    source: Arc<CachedWaveform>,
+    columns: usize,
+    state: OverrangeState,
+}
+
+enum OverrangeState {
+    Pending,
+    Unavailable,
+    Ready(Arc<Vec<Option<Overrange>>>),
+}
+
+/// Decision snapshot corresponding to this exact source and display projection.
+/// `None` columns remain unknown; they never mean silence or a safe signal.
+#[derive(Clone)]
+pub(super) enum WaveformOverrange {
+    NotApplicable,
+    Pending,
+    Unavailable,
+    Ready(Arc<Vec<Option<Overrange>>>),
+}
+
+impl WaveformOverrange {
+    fn same_snapshot(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::NotApplicable, Self::NotApplicable)
+            | (Self::Pending, Self::Pending)
+            | (Self::Unavailable, Self::Unavailable) => true,
+            (Self::Ready(a), Self::Ready(b)) => Arc::ptr_eq(a, b),
+            _ => false,
+        }
+    }
+}
+
+impl OverrangeCache {
+    fn schedule(
+        &mut self,
+        key: &WaveformGeometryKey,
+        waveform: &Arc<CachedWaveform>,
+        mapping: &WaveformMapping,
+        layout: WaveformLayout,
+    ) -> WaveformOverrange {
+        // The cached peaks repaint for every gain value. Exact sample checks
+        // use the committed gain so a drag cannot flood the worker.
+        let WaveformMapping::Clip {
+            clip,
+            timeline_origin,
+            gain: None,
+            fade: Some(fade),
+        } = mapping
+        else {
+            return WaveformOverrange::NotApplicable;
+        };
+        if let Some(index) = self
+            .entries
+            .iter()
+            .position(|entry| entry.key == *key && Arc::ptr_eq(&entry.source, waveform))
+        {
+            if let Some(mut entry) = self.entries.remove(index) {
+                if let OverrangeState::Ready(columns) = &entry.state
+                    && columns.len() != entry.columns
+                {
+                    entry.state = OverrangeState::Unavailable;
+                }
+                let snapshot = match &entry.state {
+                    OverrangeState::Pending => WaveformOverrange::Pending,
+                    OverrangeState::Unavailable => WaveformOverrange::Unavailable,
+                    OverrangeState::Ready(columns) => WaveformOverrange::Ready(Arc::clone(columns)),
+                };
+                self.entries.push_back(entry);
+                return snapshot;
+            }
+            return WaveformOverrange::Unavailable;
+        }
+        if self.unavailable {
+            return WaveformOverrange::Unavailable;
+        }
+        if self.pending >= MAX_PENDING_OVERRANGE {
+            return WaveformOverrange::Pending;
+        }
+        let Some(worker) = self.worker.as_mut() else {
+            self.requested = true;
+            return WaveformOverrange::Pending;
+        };
+        let count = layout.last.saturating_sub(layout.first);
+        if count == 0 || count > MAX_CACHED_WAVEFORM_COLUMNS {
+            return WaveformOverrange::Unavailable;
+        }
+        let Some(id) = self.next_id.checked_add(1) else {
+            self.unavailable = true;
+            return WaveformOverrange::Unavailable;
+        };
+        let mut columns = Vec::new();
+        if columns.try_reserve_exact(count).is_err() {
+            return WaveformOverrange::Unavailable;
+        }
+        for column in layout.first..layout.last {
+            let start = layout.grid.start.saturating_add(fraction_u64(
+                layout.frames,
+                column,
+                layout.grid.columns,
+            ));
+            let end = layout
+                .grid
+                .start
+                .saturating_add(fraction_u64(layout.frames, column + 1, layout.grid.columns))
+                .max(start.saturating_add(1));
+            if start >= end {
+                return WaveformOverrange::Unavailable;
+            }
+            columns.push(start..end);
+        }
+        let request = super::waveform_overrange::Request {
+            id,
+            slot: id,
+            clip: clip.clone(),
+            waveform: Arc::clone(waveform),
+            timeline_origin: *timeline_origin,
+            fade: Some(*fade),
+            columns,
+        };
+        match worker.submit(request) {
+            super::waveform_overrange::Admission::Queued => {}
+            super::waveform_overrange::Admission::Full => {
+                // A recently cancelled request may still occupy the bounded
+                // worker queue after the cache was cleared. Retry on the next
+                // repaint even if no current job remains to wake the editor.
+                self.retry = true;
+                return WaveformOverrange::Pending;
+            }
+            super::waveform_overrange::Admission::Unavailable => {
+                return WaveformOverrange::Unavailable;
+            }
+        }
+        self.next_id = id;
+        while self.entries.len() >= MAX_CACHED_WAVEFORM_ENTRIES
+            || self.columns.saturating_add(count) > MAX_CACHED_WAVEFORM_COLUMNS
+        {
+            let Some(old) = self.entries.pop_front() else {
+                break;
+            };
+            self.columns -= old.columns;
+            if matches!(old.state, OverrangeState::Pending) {
+                worker.cancel(old.id);
+                self.pending -= 1;
+            }
+        }
+        self.columns += count;
+        self.pending += 1;
+        self.entries.push_back(OverrangeEntry {
+            id,
+            key: key.clone(),
+            source: Arc::clone(waveform),
+            columns: count,
+            state: OverrangeState::Pending,
+        });
+        WaveformOverrange::Pending
+    }
+
+    fn poll(&mut self) -> bool {
+        if self.requested && self.worker.is_none() && !self.unavailable {
+            self.requested = false;
+            match super::waveform_overrange::Worker::new() {
+                Ok(worker) => self.worker = Some(worker),
+                Err(_) => self.unavailable = true,
+            }
+            return true;
+        }
+        let Some(worker) = self.worker.as_mut() else {
+            return false;
+        };
+        // Consume this wake once. A still-full, still-visible request sets it
+        // again during the resulting paint; an offscreen request cannot spin.
+        let mut changed = std::mem::take(&mut self.retry);
+        loop {
+            match worker.try_recv() {
+                Ok(reply) => {
+                    if let Some(entry) = self.entries.iter_mut().find(|entry| entry.id == reply.id)
+                    {
+                        self.pending -= 1;
+                        entry.state = match reply.columns {
+                            Some(columns) if columns.len() == entry.columns => {
+                                OverrangeState::Ready(Arc::new(columns))
+                            }
+                            _ => OverrangeState::Unavailable,
+                        };
+                        changed = true;
+                    }
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.unavailable = true;
+                    self.entries.clear();
+                    self.columns = 0;
+                    self.pending = 0;
+                    changed = true;
+                    break;
+                }
+            }
+        }
+        changed
+    }
+
+    fn busy(&self) -> bool {
+        self.requested || self.retry || self.pending > 0
+    }
+
+    fn clear(&mut self) {
+        if let Some(worker) = self.worker.as_mut() {
+            for entry in &self.entries {
+                if matches!(entry.state, OverrangeState::Pending) {
+                    worker.cancel(entry.id);
+                }
+            }
+        }
+        self.entries.clear();
+        self.columns = 0;
+        self.pending = 0;
+        self.requested = false;
+        self.retry = false;
+    }
 }
 
 struct WaveformGeometryEntry {
@@ -149,7 +389,7 @@ enum WaveformMappingKey {
     },
     GainedSource {
         timeline_origin: u64,
-        gain: i32,
+        gain: u32,
         detail: bool,
     },
     Clip {
@@ -162,7 +402,7 @@ enum WaveformMappingKey {
         source_phase: u64,
         looping: bool,
         timeline_origin: u64,
-        gain: i32,
+        gain: u32,
         fade: Option<hex_project::ClipFade>,
     },
     Source {
@@ -172,6 +412,7 @@ enum WaveformMappingKey {
 
 pub(super) struct WaveformGeometry {
     display: hex_widgets::WaveformGeometry,
+    pub(super) overrange: WaveformOverrange,
     #[cfg(test)]
     pub(super) channels: [WaveformChannelGeometry; 2],
     // X positions per channel, including both edges of coarse bins. Charge
@@ -205,9 +446,35 @@ pub(super) struct WaveformPaintSample {
     pub(super) ordinates: [(f32, f32); 2],
     pub(super) envelope_points: usize,
     pub(super) outline_fingerprint: [u64; 2],
+    pub(super) overrange_ready: bool,
 }
 
 impl WaveformGeometryCache {
+    pub(super) fn poll_overrange(&mut self) -> bool {
+        self.overrange.poll()
+    }
+
+    pub(super) fn overrange_busy(&self) -> bool {
+        self.overrange.busy()
+    }
+
+    #[cfg(all(test, feature = "ui-test-support"))]
+    pub(super) fn overrange_ready_count(&self) -> usize {
+        self.overrange
+            .entries
+            .iter()
+            .filter(|entry| matches!(entry.state, OverrangeState::Ready(_)))
+            .count()
+    }
+
+    #[cfg(all(test, feature = "ui-test-support"))]
+    pub(super) fn overrange_exit_observer(&self) -> Option<Arc<std::sync::atomic::AtomicBool>> {
+        self.overrange
+            .worker
+            .as_ref()
+            .map(|worker| worker.exit_observer())
+    }
+
     fn get(
         &mut self,
         key: &WaveformGeometryKey,
@@ -228,6 +495,18 @@ impl WaveformGeometryCache {
         let geometry = Arc::clone(&entry.geometry);
         self.entries.push_back(entry);
         Some(geometry)
+    }
+
+    fn invalidate(&mut self, key: &WaveformGeometryKey, source: &Arc<CachedWaveform>) {
+        if let Some(index) = self
+            .entries
+            .iter()
+            .position(|entry| Arc::ptr_eq(&entry.source, source) && &entry.key == key)
+            && let Some(entry) = self.entries.remove(index)
+        {
+            self.columns -= entry.columns;
+            self.remove_coarse_entry(coarse_entry_key(&entry.key, &entry.source));
+        }
     }
 
     fn insert(
@@ -276,6 +555,7 @@ impl WaveformGeometryCache {
     }
 
     pub(super) fn clear(&mut self) {
+        self.overrange.clear();
         self.entries.clear();
         self.columns = 0;
         self.coarse_entry_counts.clear();
@@ -322,6 +602,7 @@ impl WaveformGeometryCache {
                 .map(|channel| channel.outline.len())
                 .sum(),
             outline_fingerprint: observations.map(|(_, _, fingerprint)| fingerprint),
+            overrange_ready: matches!(&geometry.overrange, WaveformOverrange::Ready(_)),
         });
     }
 
@@ -425,12 +706,14 @@ pub(super) enum WaveformMapping {
     },
     GainedSource {
         timeline_origin: u64,
-        gain: hex_project::ClipGain,
+        gain: f32,
         detail: bool,
     },
     Clip {
         clip: Clip,
         timeline_origin: u64,
+        /// Held or pending display gain. The source peaks are unchanged.
+        gain: Option<f32>,
         /// Arrangement fade to display, including a held or pending preview.
         /// Source-editing waveforms may omit this independent clip envelope.
         fade: Option<hex_project::ClipFade>,
@@ -607,15 +890,34 @@ pub(super) fn cached_waveform_geometry(
     if let WaveformPlacementKey::Window { grid, .. } = &mut key.placement {
         *grid = request.grid.map(WaveformGrid::key);
     }
+    let mut overrange = WaveformOverrange::NotApplicable;
+    if matches!(request.mapping, WaveformMapping::Clip { fade: Some(_), .. }) {
+        let current = layout.or_else(|| WaveformLayout::new(request))?;
+        if let Ok(mut cache) = cache.try_borrow_mut() {
+            overrange = cache
+                .overrange
+                .schedule(&key, waveform, request.mapping, current);
+        } else {
+            overrange = WaveformOverrange::Unavailable;
+        }
+        layout = Some(current);
+    }
     if let Some(geometry) = cache
         .try_borrow_mut()
         .ok()
         .and_then(|mut cache| cache.get(&key, waveform))
     {
-        return Some((geometry, offset));
+        if geometry.overrange.same_snapshot(&overrange) {
+            return Some((geometry, offset));
+        }
+        if let Ok(mut cache) = cache.try_borrow_mut() {
+            cache.invalidate(&key, waveform);
+        }
     }
     let layout = layout.or_else(|| WaveformLayout::new(request))?;
-    let geometry = Arc::new(build_waveform_geometry(waveform, request, layout, pitch)?);
+    let geometry = Arc::new(build_waveform_geometry(
+        waveform, request, layout, pitch, overrange,
+    )?);
     if let Ok(mut cache) = cache.try_borrow_mut() {
         cache.insert(
             key,
@@ -655,17 +957,18 @@ fn waveform_geometry_key(
             detail,
         } => WaveformMappingKey::GainedSource {
             timeline_origin: *timeline_origin,
-            gain: gain.millidb(),
+            gain: gain.to_bits(),
             detail: *detail,
         },
         WaveformMapping::Clip {
             clip,
             timeline_origin,
+            gain,
             fade,
         } => WaveformMappingKey::Clip {
             id: Some(clip.id().value()),
             transformed: clip.audio_edit().is_some(),
-            gain: clip.gain().millidb(),
+            gain: gain.unwrap_or_else(|| clip.gain().linear()).to_bits(),
             start: clip.start(),
             duration: clip.duration(),
             source_offset: clip.source_offset(),
@@ -726,7 +1029,18 @@ pub(super) fn prepare_waveform_geometry_with_scale(
     waveform: &CachedWaveform,
     request: &WaveformGeometryRequest<'_>,
 ) -> Option<WaveformGeometry> {
-    build_waveform_geometry(waveform, request, WaveformLayout::new(request)?, None)
+    let overrange = if matches!(request.mapping, WaveformMapping::Clip { fade: Some(_), .. }) {
+        WaveformOverrange::Unavailable
+    } else {
+        WaveformOverrange::NotApplicable
+    };
+    build_waveform_geometry(
+        waveform,
+        request,
+        WaveformLayout::new(request)?,
+        None,
+        overrange,
+    )
 }
 
 fn build_waveform_geometry(
@@ -734,6 +1048,7 @@ fn build_waveform_geometry(
     request: &WaveformGeometryRequest<'_>,
     layout: WaveformLayout,
     local_pitch: Option<f32>,
+    overrange: WaveformOverrange,
 ) -> Option<WaveformGeometry> {
     let WaveformGeometryRequest {
         mapping,
@@ -761,10 +1076,9 @@ fn build_waveform_geometry(
         WaveformMapping::MusicalEvent(projection) => projection.gain().linear(),
         WaveformMapping::Stretch(projection) => projection.gain().linear(),
         WaveformMapping::Loop(projection) => projection.gain().linear(),
-        WaveformMapping::Clip { clip, .. } => clip.gain().linear(),
-        WaveformMapping::GainedSource { gain, .. } | WaveformMapping::Prepared { gain, .. } => {
-            gain.linear()
-        }
+        WaveformMapping::Clip { clip, gain, .. } => gain.unwrap_or_else(|| clip.gain().linear()),
+        WaveformMapping::GainedSource { gain, .. } => *gain,
+        WaveformMapping::Prepared { gain, .. } => gain.linear(),
         WaveformMapping::Source { .. } => 1.0,
     };
     let clip_fade = match mapping {
@@ -969,11 +1283,16 @@ fn build_waveform_geometry(
             };
         }
     }
+    let decision_columns = match &overrange {
+        WaveformOverrange::Ready(columns) => columns.len(),
+        _ => 0,
+    };
     Some(WaveformGeometry {
         display: hex_widgets::WaveformGeometry::stereo(channels.try_into().ok()?),
+        overrange,
         #[cfg(test)]
         channels: outlines,
-        columns: point_count,
+        columns: point_count.saturating_add(decision_columns),
     })
 }
 
@@ -1014,6 +1333,566 @@ mod tests {
         Bounds::new(point(px(12.0), px(34.0)), size(px(1200.0), px(180.0)))
     }
 
+    #[cfg(all(test, feature = "ui-unit-tier"))]
+    #[test]
+    fn full_queue_retry_wakes_once_without_spinning_offscreen() {
+        use hex_project::{Command, Created, Editor, Project};
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 2).unwrap();
+        let Created::Imported { clip, .. } = editor
+            .execute(Command::ImportAudioTrack {
+                name: "clip".into(),
+                path: "clip.wav".into(),
+                sample_rate: 48_000,
+                frames: 8,
+            })
+            .unwrap()
+        else {
+            panic!("clip")
+        };
+        let clip = editor.project().clip(clip).unwrap().clone();
+        let source = Arc::new(
+            hex_media::waveform::summarize(
+                &hex_engine::Audio::new(48_000, vec![[0.5; 2]; 8]).unwrap(),
+                1,
+            )
+            .unwrap(),
+        );
+        let mapping = WaveformMapping::Clip {
+            timeline_origin: 0,
+            gain: None,
+            fade: Some(clip.retained_fade()),
+            clip: clip.clone(),
+        };
+        let request = WaveformGeometryRequest {
+            mapping: &mapping,
+            amplitude_scale: WaveformAmplitudeScale::default(),
+            visible_start: 0,
+            visible_end: 8,
+            bounds: bounds(),
+            scale: 1.0,
+            columns: 2,
+            grid: None,
+        };
+        let layout = WaveformLayout::new(&request).unwrap();
+        let key = waveform_geometry_key(&mapping, 0, 8, bounds(), 1.0);
+        let filler = super::super::waveform_overrange::Request {
+            id: 0,
+            slot: 0,
+            clip,
+            waveform: Arc::clone(&source),
+            timeline_origin: 0,
+            fade: None,
+            columns: std::iter::once(0..1).collect(),
+        };
+        let (worker, jobs, _replies) =
+            super::super::waveform_overrange::Worker::saturated_for_test(&filler);
+        let mut cache = OverrangeCache {
+            worker: Some(worker),
+            ..Default::default()
+        };
+        cache.schedule(&key, &source, &mapping, layout);
+        assert!(cache.busy());
+        assert!(cache.poll());
+        assert!(!cache.busy());
+        assert!(!cache.poll());
+        jobs.try_recv().unwrap_or_else(|_| panic!("queued filler"));
+        cache.schedule(&key, &source, &mapping, layout);
+        assert_eq!(cache.pending, 1);
+        cache.clear();
+        assert!(!cache.busy());
+    }
+
+    #[cfg(all(test, feature = "ui-unit-tier"))]
+    #[test]
+    #[ignore = "optimized scheduling profile"]
+    fn overrange_scheduling_profile() {
+        use hex_project::{Command, Created, Editor, Project};
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 2).unwrap();
+        let Created::Imported { clip, .. } = editor
+            .execute(Command::ImportAudioTrack {
+                name: "profile".into(),
+                path: "profile.wav".into(),
+                sample_rate: 48_000,
+                frames: 96_000,
+            })
+            .unwrap()
+        else {
+            panic!("clip")
+        };
+        let clip = editor.project().clip(clip).unwrap().clone();
+        let source = Arc::new(
+            hex_media::waveform::summarize(
+                &hex_engine::Audio::new(48_000, vec![[0.75; 2]; 96_000]).unwrap(),
+                1024,
+            )
+            .unwrap(),
+        );
+        let mapping = WaveformMapping::Clip {
+            timeline_origin: 0,
+            gain: None,
+            fade: Some(clip.retained_fade()),
+            clip,
+        };
+        let inputs: Vec<_> = (0..350)
+            .map(|index| {
+                let bounds = Bounds::new(
+                    point(px(index as f32 * 14.0), px(0.0)),
+                    size(px(9.3), px(44.0)),
+                );
+                let request = WaveformGeometryRequest {
+                    mapping: &mapping,
+                    amplitude_scale: WaveformAmplitudeScale::default(),
+                    visible_start: 0,
+                    visible_end: 96_000,
+                    bounds,
+                    scale: 2.0,
+                    columns: 19,
+                    grid: None,
+                };
+                (
+                    waveform_geometry_key(&mapping, 0, 96_000, bounds, 2.0),
+                    WaveformLayout::new(&request).unwrap(),
+                )
+            })
+            .collect();
+        let run = |enabled: bool| {
+            let mut cache = OverrangeCache::default();
+            if enabled {
+                cache.requested = true;
+                cache.poll();
+            } else {
+                cache.unavailable = true;
+            }
+            if enabled {
+                let deadline = Instant::now() + std::time::Duration::from_secs(2);
+                while cache.entries.len() < inputs.len() && Instant::now() < deadline {
+                    for (key, layout) in &inputs {
+                        cache.schedule(key, &source, &mapping, *layout);
+                    }
+                    cache.poll();
+                    std::thread::yield_now();
+                }
+                assert_eq!(cache.entries.len(), inputs.len(), "profile working set");
+            }
+            let mut times = Vec::new();
+            for _ in 0..20 {
+                let start = Instant::now();
+                for (key, layout) in &inputs {
+                    cache.schedule(key, &source, &mapping, *layout);
+                }
+                times.push(start.elapsed().as_secs_f64() * 1000.0);
+                cache.poll();
+            }
+            times.sort_by(f64::total_cmp);
+            (times[10], times[19], cache.entries.len())
+        };
+        let baseline = run(false);
+        let candidate = run(true);
+        eprintln!(
+            "350 waveform schedules, 20 frames: baseline p50/max {:.3}/{:.3} ms; candidate {:.3}/{:.3} ms, retained {}",
+            baseline.0, baseline.1, candidate.0, candidate.1, candidate.2
+        );
+    }
+
+    #[cfg(all(test, feature = "ui-unit-tier"))]
+    #[test]
+    #[ignore = "optimized retained geometry handoff profile"]
+    fn overrange_ready_rebuild_profile() {
+        use hex_project::{Command, Created, Editor, Project};
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 2).unwrap();
+        let Created::Imported { clip, .. } = editor
+            .execute(Command::ImportAudioTrack {
+                name: "profile".into(),
+                path: "profile.wav".into(),
+                sample_rate: 48_000,
+                frames: 96_000,
+            })
+            .unwrap()
+        else {
+            panic!("clip")
+        };
+        let clip = editor.project().clip(clip).unwrap().clone();
+        let source = Arc::new(
+            hex_media::waveform::summarize(
+                &hex_engine::Audio::new(48_000, vec![[0.75; 2]; 96_000]).unwrap(),
+                1024,
+            )
+            .unwrap(),
+        );
+        let mapping = WaveformMapping::Clip {
+            timeline_origin: 0,
+            gain: None,
+            fade: Some(clip.retained_fade()),
+            clip,
+        };
+        let bounds: Vec<_> = (0..350)
+            .map(|index| {
+                Bounds::new(
+                    point(px(index as f32 * 14.0), px(0.0)),
+                    size(px(9.3), px(44.0)),
+                )
+            })
+            .collect();
+        let cache = RefCell::new(WaveformGeometryCache::default());
+        for (index, bounds) in bounds.iter().copied().enumerate() {
+            let key = waveform_geometry_key(&mapping, 0, 96_000, bounds, 2.0);
+            cache
+                .borrow_mut()
+                .overrange
+                .entries
+                .push_back(OverrangeEntry {
+                    id: index as u64 + 1,
+                    key,
+                    source: Arc::clone(&source),
+                    columns: 19,
+                    state: OverrangeState::Pending,
+                });
+        }
+        let render = || {
+            for bounds in &bounds {
+                let request = WaveformGeometryRequest {
+                    mapping: &mapping,
+                    amplitude_scale: WaveformAmplitudeScale::default(),
+                    visible_start: 0,
+                    visible_end: 96_000,
+                    bounds: *bounds,
+                    scale: 2.0,
+                    columns: 19,
+                    grid: None,
+                };
+                assert!(cached_waveform_geometry(&cache, &source, &request).is_some());
+            }
+        };
+        let start = Instant::now();
+        render();
+        let initial = start.elapsed().as_secs_f64() * 1000.0;
+        for entry in &mut cache.borrow_mut().overrange.entries {
+            entry.state = OverrangeState::Ready(Arc::new(vec![Some(Overrange::default()); 19]));
+        }
+        let start = Instant::now();
+        render();
+        let rebuild = start.elapsed().as_secs_f64() * 1000.0;
+        let mut warm = Vec::new();
+        for _ in 0..20 {
+            let start = Instant::now();
+            render();
+            warm.push(start.elapsed().as_secs_f64() * 1000.0);
+        }
+        warm.sort_by(f64::total_cmp);
+        eprintln!(
+            "350 waveform geometries: initial pending {initial:.3} ms, ready rebuild {rebuild:.3} ms, warm p50/max {:.3}/{:.3} ms",
+            warm[10], warm[19]
+        );
+    }
+
+    #[cfg(all(test, feature = "ui-unit-tier"))]
+    #[test]
+    fn overrange_cache_keeps_preview_and_replaced_source_results_separate() {
+        use hex_project::{Command, Created, Editor, Project};
+        use std::time::Duration;
+
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 4).unwrap();
+        let Created::Imported { clip, .. } = editor
+            .execute(Command::ImportAudioTrack {
+                name: "clip".into(),
+                path: "clip.wav".into(),
+                sample_rate: 48_000,
+                frames: 8,
+            })
+            .unwrap()
+        else {
+            panic!("imported clip")
+        };
+        let clip = editor.project().clip(clip).unwrap().clone();
+        let fade = hex_project::ClipFade::new(8, 0, 8, 0).unwrap();
+        let canonical = WaveformMapping::Clip {
+            clip: clip.clone(),
+            timeline_origin: 0,
+            gain: None,
+            fade: Some(clip.retained_fade()),
+        };
+        let preview = WaveformMapping::Clip {
+            clip,
+            timeline_origin: 0,
+            gain: None,
+            fade: Some(fade),
+        };
+        let source = |sample| {
+            Arc::new(
+                hex_media::waveform::summarize(
+                    &hex_engine::Audio::new(48_000, vec![[sample; 2]; 8]).unwrap(),
+                    1,
+                )
+                .unwrap(),
+            )
+        };
+        let old = source(2.0);
+        let replacement = source(0.5);
+        let cache = RefCell::new(WaveformGeometryCache::default());
+        let request = |mapping| WaveformGeometryRequest {
+            mapping,
+            amplitude_scale: WaveformAmplitudeScale::default(),
+            visible_start: 0,
+            visible_end: 8,
+            bounds: bounds(),
+            scale: 1.0,
+            columns: 2,
+            grid: None,
+        };
+        let unrelated_mapping = WaveformMapping::Source { timeline_origin: 0 };
+        let unrelated = cached_waveform_geometry(&cache, &old, &request(&unrelated_mapping))
+            .unwrap()
+            .0;
+        let pending = cached_waveform_geometry(&cache, &old, &request(&canonical))
+            .unwrap()
+            .0;
+        assert!(matches!(&pending.overrange, WaveformOverrange::Pending));
+        assert!(cache.borrow().overrange_busy());
+        assert!(cache.borrow_mut().poll_overrange()); // Starts the worker, outside paint.
+        for (waveform, mapping) in [
+            (&old, &canonical),
+            (&old, &preview),
+            (&replacement, &canonical),
+        ] {
+            cached_waveform_geometry(&cache, waveform, &request(mapping)).unwrap();
+        }
+        assert_eq!(cache.borrow().overrange.entries.len(), 3);
+        let deadline = Instant::now() + Duration::from_millis(500);
+        while cache.borrow().overrange_busy() {
+            assert!(Instant::now() < deadline, "worker results did not arrive");
+            cache.borrow_mut().poll_overrange();
+            std::thread::yield_now();
+        }
+        let cache_ref = cache.borrow();
+        let entries = &cache_ref.overrange.entries;
+        assert_eq!(entries.len(), 3);
+        let OverrangeState::Ready(canonical_columns) = &entries[0].state else {
+            panic!("canonical result")
+        };
+        let OverrangeState::Ready(preview_columns) = &entries[1].state else {
+            panic!("preview result")
+        };
+        assert_eq!(
+            canonical_columns[0],
+            Some(Overrange {
+                positive: [true; 2],
+                negative: [false; 2]
+            })
+        );
+        assert_eq!(preview_columns[0], Some(Overrange::default()));
+        for entry in entries {
+            let OverrangeState::Ready(columns) = &entry.state else {
+                panic!("ready result")
+            };
+            assert_eq!(columns.len(), 2);
+            if Arc::ptr_eq(&entry.source, &replacement) {
+                assert!(
+                    columns
+                        .iter()
+                        .all(|column| *column == Some(Overrange::default()))
+                );
+            }
+        }
+        drop(cache_ref);
+        let installed = cached_waveform_geometry(&cache, &old, &request(&canonical))
+            .unwrap()
+            .0;
+        assert!(!Arc::ptr_eq(&pending, &installed));
+        assert_eq!(
+            installed.columns, 4,
+            "decision columns count against the geometry budget"
+        );
+        let WaveformOverrange::Ready(columns) = &installed.overrange else {
+            panic!("installed canonical decision")
+        };
+        assert_eq!(
+            columns[0],
+            Some(Overrange {
+                positive: [true; 2],
+                negative: [false; 2]
+            })
+        );
+        let installed_preview = cached_waveform_geometry(&cache, &old, &request(&preview))
+            .unwrap()
+            .0;
+        let WaveformOverrange::Ready(columns) = &installed_preview.overrange else {
+            panic!("installed preview decision")
+        };
+        assert_eq!(columns[0], Some(Overrange::default()));
+        let installed_replacement =
+            cached_waveform_geometry(&cache, &replacement, &request(&canonical))
+                .unwrap()
+                .0;
+        let WaveformOverrange::Ready(columns) = &installed_replacement.overrange else {
+            panic!("installed replacement decision")
+        };
+        assert_eq!(columns[0], Some(Overrange::default()));
+        assert!(Arc::ptr_eq(
+            &installed,
+            &cached_waveform_geometry(&cache, &old, &request(&canonical))
+                .unwrap()
+                .0
+        ));
+        assert!(Arc::ptr_eq(
+            &unrelated,
+            &cached_waveform_geometry(&cache, &old, &request(&unrelated_mapping))
+                .unwrap()
+                .0
+        ));
+        cache.borrow_mut().clear();
+        assert!(!cache.borrow().overrange_busy());
+        assert!(cache.borrow().overrange.entries.is_empty());
+
+        let unavailable_cache = RefCell::new(WaveformGeometryCache::default());
+        unavailable_cache.borrow_mut().overrange.unavailable = true;
+        let unavailable = cached_waveform_geometry(&unavailable_cache, &old, &request(&canonical))
+            .unwrap()
+            .0;
+        assert!(matches!(
+            &unavailable.overrange,
+            WaveformOverrange::Unavailable
+        ));
+
+        let peak_only = Arc::new(CachedWaveform::from_peaks(8, old.bins().to_vec()).unwrap());
+        let peak_cache = RefCell::new(WaveformGeometryCache::default());
+        let pending = cached_waveform_geometry(&peak_cache, &peak_only, &request(&canonical))
+            .unwrap()
+            .0;
+        assert!(matches!(&pending.overrange, WaveformOverrange::Pending));
+        assert!(peak_cache.borrow_mut().poll_overrange());
+        cached_waveform_geometry(&peak_cache, &peak_only, &request(&canonical)).unwrap();
+        let deadline = Instant::now() + Duration::from_millis(500);
+        while peak_cache.borrow().overrange_busy() {
+            assert!(Instant::now() < deadline, "peak-only result did not arrive");
+            peak_cache.borrow_mut().poll_overrange();
+            std::thread::yield_now();
+        }
+        let result = cached_waveform_geometry(&peak_cache, &peak_only, &request(&canonical))
+            .unwrap()
+            .0;
+        let WaveformOverrange::Ready(columns) = &result.overrange else {
+            panic!("peak-only result")
+        };
+        assert_eq!(columns.as_slice(), &[None, None]);
+    }
+
+    #[cfg(all(test, feature = "ui-unit-tier"))]
+    #[test]
+    fn delayed_old_decision_rebuilds_only_its_own_geometry() {
+        use hex_project::{Command, Created, Editor, Project};
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 2).unwrap();
+        let Created::Imported { clip, .. } = editor
+            .execute(Command::ImportAudioTrack {
+                name: "clip".into(),
+                path: "clip.wav".into(),
+                sample_rate: 48_000,
+                frames: 8,
+            })
+            .unwrap()
+        else {
+            panic!("clip")
+        };
+        let clip = editor.project().clip(clip).unwrap().clone();
+        let old = WaveformMapping::Clip {
+            timeline_origin: 0,
+            gain: None,
+            fade: Some(clip.retained_fade()),
+            clip: clip.clone(),
+        };
+        let current = WaveformMapping::Clip {
+            timeline_origin: 0,
+            gain: None,
+            fade: Some(hex_project::ClipFade::new(8, 0, 8, 0).unwrap()),
+            clip,
+        };
+        let source = Arc::new(
+            hex_media::waveform::summarize(
+                &hex_engine::Audio::new(48_000, vec![[2.0; 2]; 8]).unwrap(),
+                1,
+            )
+            .unwrap(),
+        );
+        let cache = RefCell::new(WaveformGeometryCache::default());
+        let grid = WaveformGrid {
+            start: 0,
+            end: 8,
+            left: 12.0,
+            width: 1200.0,
+            columns: 2,
+            binned: true,
+        };
+        let request = |mapping| WaveformGeometryRequest {
+            mapping,
+            amplitude_scale: WaveformAmplitudeScale::default(),
+            visible_start: 0,
+            visible_end: 8,
+            bounds: bounds(),
+            scale: 1.0,
+            columns: 2,
+            grid: Some(grid),
+        };
+        for (id, mapping) in [(1, &old), (2, &current)] {
+            let mut key = waveform_geometry_key(mapping, 0, 8, bounds(), 1.0);
+            key.amplitude_scale = WaveformAmplitudeScale::default();
+            if let WaveformMappingKey::Clip { id, .. } = &mut key.mapping {
+                *id = None;
+            }
+            key.placement = WaveformLayout::new(&request(mapping))
+                .unwrap()
+                .coarse_placement(bounds())
+                .unwrap()
+                .key;
+            cache
+                .borrow_mut()
+                .overrange
+                .entries
+                .push_back(OverrangeEntry {
+                    id,
+                    key,
+                    source: Arc::clone(&source),
+                    columns: 2,
+                    state: OverrangeState::Pending,
+                });
+        }
+        let before_old = cached_waveform_geometry(&cache, &source, &request(&old))
+            .unwrap()
+            .0;
+        let before_current = cached_waveform_geometry(&cache, &source, &request(&current))
+            .unwrap()
+            .0;
+        {
+            let mut cache = cache.borrow_mut();
+            let old_entry = cache
+                .overrange
+                .entries
+                .iter_mut()
+                .find(|entry| entry.id == 1)
+                .unwrap();
+            old_entry.state =
+                OverrangeState::Ready(Arc::new(vec![Some(Overrange::default()), None]));
+        }
+        let after_current = cached_waveform_geometry(&cache, &source, &request(&current))
+            .unwrap()
+            .0;
+        assert!(Arc::ptr_eq(&before_current, &after_current));
+        assert!(matches!(
+            &after_current.overrange,
+            WaveformOverrange::Pending
+        ));
+        let after_old = cached_waveform_geometry(&cache, &source, &request(&old))
+            .unwrap()
+            .0;
+        assert!(!Arc::ptr_eq(&before_old, &after_old));
+        let WaveformOverrange::Ready(columns) = &after_old.overrange else {
+            panic!("old decision")
+        };
+        assert_eq!(columns.as_slice(), &[Some(Overrange::default()), None]);
+        assert_eq!(
+            cache.borrow().coarse_entry_counts.values().sum::<usize>(),
+            2
+        );
+    }
+
     #[cfg(all(test, not(feature = "ui-test-support")))]
     #[test]
     fn plain_clip_fade_shapes_peaks_and_changes_cache_identity() {
@@ -1049,11 +1928,13 @@ mod tests {
         let mapping = |clip: &Clip| WaveformMapping::Clip {
             clip: clip.clone(),
             timeline_origin: 0,
+            gain: None,
             fade: Some(clip.retained_fade()),
         };
         let held = WaveformMapping::Clip {
             clip: neutral.clone(),
             timeline_origin: 0,
+            gain: None,
             fade: Some(faded.retained_fade()),
         };
         let cache = RefCell::new(WaveformGeometryCache::default());
@@ -1326,6 +2207,7 @@ mod tests {
             &WaveformMapping::Clip {
                 clip: editor.project().clip(id).unwrap().clone(),
                 timeline_origin: 0,
+                gain: None,
                 fade: None,
             },
             0,
@@ -1366,7 +2248,7 @@ mod tests {
                 &waveform,
                 &WaveformMapping::GainedSource {
                     timeline_origin: 0,
-                    gain: hex_project::ClipGain::UNITY,
+                    gain: hex_project::ClipGain::UNITY.linear(),
                     detail: true,
                 },
                 start,
@@ -1397,7 +2279,7 @@ mod tests {
             &long_waveform,
             &WaveformMapping::GainedSource {
                 timeline_origin: 0,
-                gain: hex_project::ClipGain::UNITY,
+                gain: hex_project::ClipGain::UNITY.linear(),
                 detail: true,
             },
             0,
@@ -1701,6 +2583,7 @@ mod tests {
             let mapping = WaveformMapping::Clip {
                 clip: editor.project().clip(id).unwrap().clone(),
                 timeline_origin,
+                gain: None,
                 fade: None,
             };
             cached_waveform_geometry(
@@ -1760,6 +2643,7 @@ mod tests {
         let mapping = WaveformMapping::Clip {
             clip: editor.project().clip(clip).unwrap().clone(),
             timeline_origin: 40_000,
+            gain: None,
             fade: None,
         };
         let source = waveform();
@@ -2051,6 +2935,7 @@ mod tests {
                     &WaveformMapping::Clip {
                         clip: clip.clone(),
                         timeline_origin: start,
+                        gain: None,
                         fade: Some(clip.retained_fade()),
                     },
                     start,
@@ -2228,17 +3113,17 @@ mod tests {
         let cache = RefCell::new(WaveformGeometryCache::default());
         let neutral = WaveformMapping::GainedSource {
             timeline_origin: 0,
-            gain: hex_project::ClipGain::UNITY,
+            gain: hex_project::ClipGain::UNITY.linear(),
             detail: false,
         };
         let quiet = WaveformMapping::GainedSource {
             timeline_origin: 0,
-            gain: hex_project::ClipGain::new(-6_000).unwrap(),
+            gain: hex_project::ClipGain::new(-6_000).unwrap().linear(),
             detail: false,
         };
         let detailed = WaveformMapping::GainedSource {
             timeline_origin: 0,
-            gain: hex_project::ClipGain::UNITY,
+            gain: hex_project::ClipGain::UNITY.linear(),
             detail: true,
         };
         let geometry = |mapping| {

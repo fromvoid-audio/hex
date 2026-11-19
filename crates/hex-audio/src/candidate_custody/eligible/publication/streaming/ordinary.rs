@@ -105,6 +105,11 @@ impl OrdinaryStreams {
             .as_mut()
             .is_some_and(Workspace::retry_capacity_conflict)
     }
+    pub(crate) fn retry_candidate_capacity_conflict(&mut self) -> bool {
+        self.workspace
+            .as_mut()
+            .is_some_and(Workspace::retry_candidate_capacity_conflict)
+    }
     #[cfg(all(test, feature = "stream-test-support", feature = "allocation-probe"))]
     pub(crate) fn test_coalesced_prefetch(
         &self,
@@ -135,6 +140,22 @@ impl OrdinaryStreams {
                 .is_some_and(|loan| {
                     rows.iter()
                         .any(|row| row.source == source && loan.test_has_resource_extent(*row))
+                })
+        })
+    }
+    #[cfg(all(test, feature = "stream-test-support", feature = "allocation-probe"))]
+    pub(crate) fn test_candidate_role_idle(
+        &self,
+        domains: &mut [Option<DomainEnvelope>; 2],
+        source: hex_engine::StreamResourceKey,
+    ) -> bool {
+        self.refs.iter().flatten().any(|token| {
+            super::demand::envelope(domains, *token)
+                .ok()
+                .and_then(|pages| pages.inner.loan.as_ref())
+                .is_some_and(|loan| {
+                    loan.covers_resource_key(source)
+                        && loan.test_role_is_idle(hex_stream::ProtectionRole::Candidate)
                 })
         })
     }
@@ -203,6 +224,9 @@ impl OrdinaryStreams {
         prefix: u64,
         frames: usize,
         fenced_restart: bool,
+        foreign_continuation: bool,
+        confirmed_fade: Option<u32>,
+        tempo_cut: Option<super::TempoStreamWindow<'_>>,
     ) -> Result<Option<hex_engine::StreamChunkWindow>, hex_engine::Invalid> {
         let mut empty = None;
         let mut old = previous.map(|(runtime, context, revision)| StateView {
@@ -225,6 +249,9 @@ impl OrdinaryStreams {
                 command_prefix: prefix,
                 frames,
                 fenced_restart,
+                foreign_continuation,
+                confirmed_fade,
+                tempo_cut,
             },
             hex_stream::ProtectionRole::Candidate,
         )
@@ -284,11 +311,40 @@ impl OrdinaryStreams {
             .as_ref()
             .is_some_and(|w| w.pending_action.is_some())
     }
+
+    /// The source-free ordinary workspace has no page loans or action stages
+    /// to service while a separately owned paused monitor renders.
+    pub(crate) fn permits_paused_monitor(&self) -> bool {
+        self.refs.iter().all(Option::is_none)
+            && self.workspace.as_ref().is_some_and(|workspace| {
+                workspace.valid()
+                    && workspace.pending_action.is_none()
+                    && workspace.scheduled.is_none()
+                    && !workspace.source_changed
+                    && !workspace.read_failed
+                    && !workspace.capacity_conflict
+            })
+    }
 }
 impl Custody {
     pub(in crate::candidate_custody) fn configure_ordinary_streams(
         &self,
         reservation: OrdinaryReservation,
+    ) -> Result<(), &'static str> {
+        self.configure_ordinary_streams_for_owner(reservation, false)
+    }
+
+    pub(in crate::candidate_custody) fn configure_combined_ordinary_streams(
+        &self,
+        reservation: OrdinaryReservation,
+    ) -> Result<(), &'static str> {
+        self.configure_ordinary_streams_for_owner(reservation, true)
+    }
+
+    fn configure_ordinary_streams_for_owner(
+        &self,
+        reservation: OrdinaryReservation,
+        combined: bool,
     ) -> Result<(), &'static str> {
         let reservation = reservation.validate_requested()?;
         let workspace = Workspace::prepare(reservation.extents)?;
@@ -303,7 +359,7 @@ impl Custody {
         if !self.enabled()
             || bank.closing
             || bank.ordinary.is_some()
-            || bank.publication.reservation.is_some()
+            || (bank.publication.reservation.is_some() != combined)
             || bank.domains.iter().any(|d| d.phase != Phase::Vacant)
         {
             return Err("ordinary streams require a vacant source root");

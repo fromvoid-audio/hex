@@ -20,7 +20,7 @@ use hex_widgets::{
 };
 use std::{
     collections::{HashMap, HashSet},
-    sync::Arc,
+    sync::{Arc, atomic::Ordering::Acquire},
 };
 
 mod auto_pan_panel;
@@ -74,6 +74,8 @@ mod numeric_display;
 pub(super) use navigation::{bottom_bar, capture_pointer_down as capture_navigation_pointer_down};
 mod modulators;
 pub(super) use modulators::AddModulatorAction;
+#[cfg(feature = "ui-test-support")]
+pub(super) mod operator_focus_fixture;
 mod operator_panel;
 mod parameter_rows;
 pub(super) mod vst3_parameters;
@@ -478,9 +480,20 @@ pub(super) fn device_layout_style() -> ControlStyle {
     theme::device_style(theme::DeviceStyleRole::Layout)
 }
 
+/// A source-owned Sampler edit retains its visible owner until its terminal.
+pub(super) fn source_sampler_edit_active(view: &EditorView) -> bool {
+    matches!(view.device_panel.owner, Some(DevicePanelOwner::Source(_)))
+        && (view.sampler_parameter_pending() || view.sampler_parameter.numeric_draft_active())
+}
+
 /// Commit every live numeric draft before a save, panel transition, or destructive edit.
 /// A bad typed value stays in its field and blocks the caller.
 pub(super) fn finalize_controls(view: &mut EditorView, cx: &mut Context<EditorView>) -> bool {
+    if source_sampler_edit_active(view) {
+        view.error = Some("finish the sampler edit before changing the source view".into());
+        cx.notify();
+        return false;
+    }
     if source_manager::naming(view) {
         view.error = Some("finish or cancel the source name before continuing".into());
         cx.notify();
@@ -751,7 +764,9 @@ pub(super) fn view(
                 .is_some_and(|definition| {
                     matches!(
                         definition.instrument().state().type_id().as_str(),
-                        Ok("hex.instrument.fm4" | "hex.instrument.operator")
+                        Ok("hex.instrument.fm4"
+                            | "hex.instrument.operator"
+                            | "hex.instrument.sampler")
                     )
                 })
             || state
@@ -891,6 +906,33 @@ fn render_owner(
     }
 }
 
+/// Whether a retained source is still the visible, unassigned panel owner.
+pub(super) fn source_owner_current(view: &EditorView, source: hex_project::SourceId) -> bool {
+    if !view.clip_view_open
+        || !view.device_panel_active
+        || view.device_panel.owner != Some(DevicePanelOwner::Source(source))
+    {
+        return false;
+    }
+    let Some(state) = view.state.as_ref() else {
+        return false;
+    };
+    view.device_panel
+        .source_manager
+        .source_view
+        .is_some_and(|(generation, selected, anchor)| {
+            generation == view.project_generation
+                && selected == source
+                && anchor == effect_bus::selected_track_owner(view, state)
+        })
+        && state.project.native_source(source).is_some()
+        && !state
+            .project
+            .tracks()
+            .iter()
+            .any(|track| track.source_id() == Some(source))
+}
+
 fn render_source(
     view: &mut EditorView,
     window: Option<&Window>,
@@ -923,7 +965,78 @@ fn render_source(
         device.id(),
         (identity.class, device.state().clone(), Ok(metadata.clone())),
     );
-    let body = if metadata.type_id.as_str() == Ok("hex.instrument.operator") {
+    let sampler_source = metadata.type_id.as_str() == Ok("hex.instrument.sampler");
+    let body = if sampler_source {
+        if hex_engine::is_empty_sampler_state_on_control(device.state()) {
+            div()
+                .id("source-sampler-empty")
+                .debug_selector(|| "source-sampler-empty".into())
+                .p(px(8.0))
+                .child(theme::text("empty sampler · drop a browser sample here"))
+        } else {
+            let owner = hex_session::service::SamplerParameterOwner::Source(source);
+            let mut fields = [
+                hex_engine::SamplerParameter::Gain,
+                hex_engine::SamplerParameter::Transpose,
+                hex_engine::SamplerParameter::StartFrame,
+                hex_engine::SamplerParameter::EndFrame,
+            ]
+            .into_iter()
+            .map(|parameter| view.sampler_parameter_control(owner, device, parameter, cx))
+            .collect::<Vec<_>>();
+            let loop_available = hex_engine::sampler_parameter_value_on_control(
+                hex_engine::SamplerParameter::LoopEnabled,
+                device.state(),
+            )
+            .is_ok();
+            if loop_available {
+                for parameter in [
+                    hex_engine::SamplerParameter::LoopEnabled,
+                    hex_engine::SamplerParameter::LoopStartFrame,
+                    hex_engine::SamplerParameter::LoopEndFrame,
+                    hex_engine::SamplerParameter::LoopCrossfadeMs,
+                ] {
+                    fields.push(view.sampler_parameter_control(owner, device, parameter, cx));
+                }
+            }
+            for parameter in [
+                hex_engine::SamplerParameter::AttackMs,
+                hex_engine::SamplerParameter::DecayMs,
+                hex_engine::SamplerParameter::SustainPercent,
+                hex_engine::SamplerParameter::ReleaseMs,
+            ] {
+                fields.push(view.sampler_parameter_control(owner, device, parameter, cx));
+            }
+            let overview = sampler_overview::render(view, owner, device, "sampler", cx);
+            div()
+                .id("source-sampler-scroll")
+                .debug_selector(|| "source-sampler-scroll".into())
+                .flex_1()
+                .min_h_0()
+                .w_full()
+                .overflow_x_scroll()
+                .overflow_y_hidden()
+                .child(
+                    div()
+                        .w(px(crate::device_composition::SAMPLER_FRAME_WIDTH))
+                        .h(px(DEVICE_PANEL_HEIGHT - DEVICE_PANEL_HEADER_HEIGHT))
+                        .flex_shrink_0()
+                        .flex()
+                        .flex_col()
+                        .gap(px(4.0))
+                        .p(px(4.0))
+                        .child(overview)
+                        .child(theme::text("drop a browser sample here to replace"))
+                        .child(
+                            div()
+                                .grid()
+                                .grid_cols(if loop_available { 12 } else { 8 })
+                                .gap(px(2.0))
+                                .children(fields),
+                        ),
+                )
+        }
+    } else if metadata.type_id.as_str() == Ok("hex.instrument.operator") {
         let body = operator_panel::render_body(view, cx, device.id(), &metadata);
         let width = operator_panel::frame_width(
             view.device_panel
@@ -955,6 +1068,13 @@ fn render_source(
         .flex()
         .flex_col()
         .bg(rgb(theme::color(theme::PaletteRole::Surface)))
+        .when(sampler_source, |panel| {
+            panel.on_drop(
+                cx.listener(move |view, drag: &drag::BrowserAudioDrag, _, cx| {
+                    view.drop_browser_sample_on_source(drag, source, cx);
+                }),
+            )
+        })
         .child(
             div()
                 .h(px(DEVICE_PANEL_HEADER_HEIGHT))
@@ -2196,22 +2316,102 @@ fn device_selection_listener(
     })
 }
 
-fn audible_vst3_processor(view: &EditorView, device_id: DeviceId) -> Option<bool> {
-    let device = view.state.as_ref()?.project.device(device_id)?;
-    view.audible_playback
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Vst3PanelPending {
+    CurrentDeviceMissing,
+    AppliedGraphMissing,
+    AppliedGenerationChanged,
+    AppliedDeviceMissing,
+    ProcessingStateChanged,
+    ObservationMissing,
+    ProcessorMissing,
+}
+
+fn audible_vst3_processor(
+    view: &EditorView,
+    device_id: DeviceId,
+) -> Result<bool, Vst3PanelPending> {
+    use Vst3PanelPending::*;
+    let device = view
+        .state
         .as_ref()
-        .filter(|audible| audible.project_generation == view.project_generation)
-        .filter(|audible| {
-            audible
-                .state
-                .project
-                .device(device_id)
-                .is_some_and(|current| current.state().processing_eq(device.state()))
+        .and_then(|state| state.project.device(device_id))
+        .ok_or(CurrentDeviceMissing)?;
+    let audible = view.audible_playback.as_ref().ok_or(AppliedGraphMissing)?;
+    if audible.project_generation != view.project_generation {
+        return Err(AppliedGenerationChanged);
+    }
+    let applied_device = audible
+        .state
+        .project
+        .device(device_id)
+        .ok_or(AppliedDeviceMissing)?;
+    if !applied_device.state().processing_eq(device.state()) {
+        return Err(ProcessingStateChanged);
+    }
+    audible
+        .observation
+        .as_ref()
+        .ok_or(ObservationMissing)?
+        .foreign_processor(device_id.value(), device.state().type_id())
+        .ok_or(ProcessorMissing)
+}
+
+/// Report the same observation that gates the displayed track's VST3 card.
+/// The existing view trace retains only changed snapshots and records no
+/// preset data or private module paths.
+pub(super) fn trace_vst3_track_panel(view: &EditorView, snapshot: &mut String) {
+    use std::fmt::Write as _;
+    if !view.clip_view_open || !view.device_panel_active {
+        return;
+    }
+    let Some(DevicePanelOwner::Track(id)) = displayed_owner(view) else {
+        return;
+    };
+    let Some(track) = view.state.as_ref().and_then(|s| s.project.track(id)) else {
+        return;
+    };
+    let devices = || {
+        track.ordered_device_chain().filter_map(|node| {
+            let device = match node {
+                hex_project::TrackDeviceRef::Instrument(device)
+                | hex_project::TrackDeviceRef::Effect(device) => device,
+            };
+            (device.state().type_id().as_str() == Ok("hex.vst3")).then_some(device.id())
         })
-        .and_then(|audible| audible.observation.as_ref())
-        .and_then(|observation| {
-            observation.foreign_processor(device_id.value(), device.state().type_id())
-        })
+    };
+    let Some(device) = view
+        .device_panel
+        .selected_device
+        .and_then(|selected| devices().find(|id| *id == selected))
+        .or_else(|| devices().next())
+    else {
+        return;
+    };
+    let applied_audio = view
+        .audio
+        .as_ref()
+        .and_then(|audio| audio.control.status())
+        .map(|status| status.applied_revision.load(Acquire));
+    let _ = write!(
+        snapshot,
+        " vst3_device={} vst3_applied_audio={applied_audio:?} vst3_observed_audio={:?}",
+        device.value(),
+        view.audible_playback
+            .as_ref()
+            .map(|view| view.audio_revision)
+    );
+    if view.degraded_plugins.contains(device.value()) {
+        snapshot.push_str(" vst3_panel=degraded");
+    } else {
+        match audible_vst3_processor(view, device) {
+            Ok(true) => snapshot.push_str(" vst3_panel=active"),
+            Ok(false) => snapshot.push_str(" vst3_panel=unavailable"),
+            Err(reason) => {
+                let _ = write!(snapshot, " vst3_panel=pending vst3_wait={reason:?}");
+            }
+        }
+    }
 }
 
 fn vst3_status_body(
@@ -2223,22 +2423,32 @@ fn vst3_status_body(
     if view.degraded_plugins.contains(device_id.value()) {
         return vst3_degraded_body(device_id);
     }
-    let (message, status) = match audible_vst3_processor(view, device_id) {
-        Some(true) => {
-            let body = vst3_parameters::body(view, device_id, cx);
-            let body = div()
-                .debug_selector(move || format!("device-vst3-active-{}", device_id.value()))
-                .child(body);
-            return div()
-                .id(("device-body", device_id.value()))
-                .debug_selector(move || format!("device-body-{}", device_id.value()))
-                .child(body);
-        }
-        Some(false) => (
+    let availability = audible_vst3_processor(view, device_id);
+    let parameters = match availability {
+        Ok(true) => Some(vst3_parameters::body(view, device_id, cx)),
+        Ok(false) => None,
+        Err(_) => vst3_parameters::pending_body(view, device_id, cx),
+    };
+    if let Some(body) = parameters {
+        let status = if availability.is_ok() {
+            "active"
+        } else {
+            "pending"
+        };
+        let body = div()
+            .debug_selector(move || format!("device-vst3-{status}-{}", device_id.value()))
+            .child(body);
+        return div()
+            .id(("device-body", device_id.value()))
+            .debug_selector(move || format!("device-body-{}", device_id.value()))
+            .child(body);
+    }
+    let (message, status) = match availability {
+        Ok(_) => (
             theme::text("vst3 unavailable · saved state preserved"),
             "unavailable",
         ),
-        None => (theme::text("vst3 · awaiting audio status"), "pending"),
+        Err(_) => (theme::text("vst3 · awaiting audio status"), "pending"),
     };
     let content = crate::device_composition::unsupported_body(message)
         .debug_selector(move || format!("device-vst3-{status}-{}", device_id.value()));
@@ -3049,8 +3259,12 @@ fn render_instrument(
         } else {
             "audio not ready · offline export supported"
         };
-        let gain =
-            view.sampler_parameter_control(track, device, hex_engine::SamplerParameter::Gain, cx);
+        let gain = view.sampler_parameter_control(
+            hex_session::service::SamplerParameterOwner::Track(track),
+            device,
+            hex_engine::SamplerParameter::Gain,
+            cx,
+        );
         let modulation_view = device_view.as_ref().ok().filter(|_| {
             view.document_audio_mode == hex_session::DocumentAudioMode::Resident
                 && device.state().asset_references().len() == 1
@@ -3074,19 +3288,19 @@ fn render_instrument(
             .children(gain_overlay)
             .into_any_element();
         let pitch = view.sampler_parameter_control(
-            track,
+            hex_session::service::SamplerParameterOwner::Track(track),
             device,
             hex_engine::SamplerParameter::Transpose,
             cx,
         );
         let start = view.sampler_parameter_control(
-            track,
+            hex_session::service::SamplerParameterOwner::Track(track),
             device,
             hex_engine::SamplerParameter::StartFrame,
             cx,
         );
         let end = view.sampler_parameter_control(
-            track,
+            hex_session::service::SamplerParameterOwner::Track(track),
             device,
             hex_engine::SamplerParameter::EndFrame,
             cx,
@@ -3103,7 +3317,12 @@ fn render_instrument(
                     hex_engine::SamplerParameter::LoopEndFrame,
                     hex_engine::SamplerParameter::LoopCrossfadeMs,
                 ] {
-                    fields.push(view.sampler_parameter_control(track, device, parameter, cx));
+                    fields.push(view.sampler_parameter_control(
+                        hex_session::service::SamplerParameterOwner::Track(track),
+                        device,
+                        parameter,
+                        cx,
+                    ));
                 }
                 None
             }
@@ -3115,7 +3334,12 @@ fn render_instrument(
             hex_engine::SamplerParameter::SustainPercent,
             hex_engine::SamplerParameter::ReleaseMs,
         ] {
-            fields.push(view.sampler_parameter_control(track, device, parameter, cx));
+            fields.push(view.sampler_parameter_control(
+                hex_session::service::SamplerParameterOwner::Track(track),
+                device,
+                parameter,
+                cx,
+            ));
         }
         let controls = div()
             .grid()
@@ -3138,7 +3362,13 @@ fn render_instrument(
                 "{readiness} · * release inactive in trigger mode{}",
                 loop_error.map_or_else(String::new, |error| format!(" · {error}"))
             )));
-        let overview = sampler_overview::render(view, track, device, &name, cx);
+        let overview = sampler_overview::render(
+            view,
+            hex_session::service::SamplerParameterOwner::Track(track),
+            device,
+            &name,
+            cx,
+        );
         let body = crate::device_composition::body()
             .flex()
             .flex_col()
@@ -3304,7 +3534,7 @@ fn instrument_actions(
     let actions = if device.state().type_id().as_str() == Ok("hex.vst3")
         && !view.degraded_plugins.contains(id.value())
     {
-        actions.child(vst3_editor_button(id, selected, cx))
+        actions.child(vst3_editor_button(view, id, selected, cx))
     } else {
         actions
     };
@@ -3403,7 +3633,7 @@ fn device_actions(
     if device.state().type_id().as_str() == Ok("hex.vst3")
         && !view.degraded_plugins.contains(id.value())
     {
-        actions = actions.child(vst3_editor_button(id, selected, cx));
+        actions = actions.child(vst3_editor_button(view, id, selected, cx));
     }
     if presets_available {
         actions = actions.child(super::device_comparison::actions(
@@ -3433,12 +3663,26 @@ fn device_actions(
     )
 }
 
-fn vst3_editor_button(id: DeviceId, selected: bool, cx: &mut Context<EditorView>) -> Stateful<Div> {
+fn vst3_editor_button(
+    view: &EditorView,
+    id: DeviceId,
+    selected: bool,
+    cx: &mut Context<EditorView>,
+) -> Stateful<Div> {
+    let open = view.plugin_editor_windows.contains(&id.value());
     action_button(
         format!("device-vst3-editor-{}", id.value()),
         "↗",
-        "show or hide plugin editor",
-        theme::DeviceActionRole::Normal,
+        if open {
+            "hide plugin editor"
+        } else {
+            "show plugin editor"
+        },
+        if open {
+            theme::DeviceActionRole::Enabled
+        } else {
+            theme::DeviceActionRole::Normal
+        },
         selected,
     )
     .on_click(cx.listener(move |view, _, _, cx| {

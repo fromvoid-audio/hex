@@ -166,18 +166,39 @@ fn prepare_instruments(
     instrument_profile: bool,
     epoch: u64,
 ) -> Result<Arc<PreparedRevision>, Invalid> {
+    prepare_instruments_with_media(
+        editor,
+        identity,
+        second,
+        instrument_profile,
+        epoch,
+        &std::collections::BTreeMap::new(),
+    )
+}
+
+fn prepare_instruments_with_media(
+    editor: &Editor,
+    identity: ProcessorInstanceIdentity,
+    second: Option<ProcessorInstanceIdentity>,
+    instrument_profile: bool,
+    epoch: u64,
+    media: &std::collections::BTreeMap<hex_project::AssetId, crate::Audio>,
+) -> Result<Arc<PreparedRevision>, Invalid> {
     let definition = InstrumentDefinition {
         identity,
         second,
         instrument_profile,
         epoch,
     };
-    let definitions: [&dyn NativeDeviceDefinition; 2] =
-        [&definition, &hex_devices::delay::DelayDefinition];
+    let definitions: [&dyn NativeDeviceDefinition; 3] = [
+        &definition,
+        &hex_devices::delay::DelayDefinition,
+        &hex_devices::limiter::LimiterDefinition,
+    ];
     let registry = NativeDeviceRegistry::new(&definitions).unwrap();
     PreparedRevision::prepare_with_effect_registry(
         editor.project(),
-        &std::collections::BTreeMap::new(),
+        media,
         Arc::new(SineTable::new()),
         None,
         &registry,
@@ -249,11 +270,13 @@ fn live_new_track_and_second_instrument_keep_the_first_gate_and_clock() {
         let crate::signal_graph::TrackOutput::Main { edge } = donor.graph.tracks[1].output else {
             panic!("direct main route");
         };
-        assert!(target.can_copy_from(donor, Some(track)));
+        assert!(target.can_copy_from(donor, Some(crate::signal_graph::FreshHistory::Track(track))));
         donor.delays.begin_transaction().unwrap();
         donor.edge(edge, [1.0, 0.0]).unwrap();
         donor.delays.commit_transaction().unwrap();
-        assert!(!target.can_copy_from(donor, Some(track)));
+        assert!(
+            !target.can_copy_from(donor, Some(crate::signal_graph::FreshHistory::Track(track)))
+        );
         donor.delays.begin_transaction().unwrap();
         let mut pending = [[0.0; 2]; 19];
         donor.edge_block(edge, &mut pending).unwrap();
@@ -324,6 +347,87 @@ fn live_new_track_and_second_instrument_keep_the_first_gate_and_clock() {
             }
         )]
     );
+}
+
+#[test]
+fn silent_group_child_edit_keeps_a_hosted_instrument_gate_and_compensated_pcm() {
+    for partition in [1, 257] {
+        let (mut editor, first) = fixture_with_duration(BeatTime::from_ratio(1, 50).unwrap());
+        let track = editor.project().tracks()[0].id();
+        let Created::Track(group) = editor
+            .execute(Command::GroupTracks {
+                tracks: hex_project::TrackSelectionIds::new(&[track]).unwrap(),
+                name: "group".into(),
+            })
+            .unwrap()
+        else {
+            panic!("group");
+        };
+        let original = prepare(&editor, first, true).unwrap();
+        assert_eq!(original.arrangement().main_latency_frames(), 19);
+        let mut playing = SessionPlayback::new(Arc::clone(&original)).unwrap();
+        let mut reference = SessionPlayback::new(original).unwrap();
+        let mut endpoint = NoteEndpoint {
+            instrument_sample: 0.25,
+            ..Default::default()
+        };
+        let mut reference_endpoint = NoteEndpoint {
+            instrument_sample: 0.25,
+            ..Default::default()
+        };
+        playing.apply(SessionPlaybackCommand::Play).unwrap();
+        reference.apply(SessionPlaybackCommand::Play).unwrap();
+        let mut warm = [[0.0; 2]; 32];
+        endpoint.render(&mut playing, &mut warm).unwrap();
+        reference_endpoint
+            .render(&mut reference, &mut [[0.0; 2]; 32])
+            .unwrap();
+        let [(_, onset)] = endpoint.notes.as_slice() else {
+            panic!("one original note-on");
+        };
+        assert!(onset.on && warm[31] == [0.25; 2]);
+        let onset = *onset;
+        let Created::Track(empty) = editor
+            .execute(Command::InsertTrack {
+                name: "empty".into(),
+                before_track: Some(track),
+            })
+            .unwrap()
+        else {
+            panic!("track");
+        };
+        assert_eq!(
+            editor.project().track(empty).unwrap().parent_group(),
+            Some(group)
+        );
+        let mut released = 0;
+        for removed in [false, true] {
+            if removed {
+                editor.execute(Command::RemoveTrack(empty)).unwrap();
+            }
+            let mut next = SessionPlayback::new(prepare(&editor, first, true).unwrap()).unwrap();
+            next.try_inherit_state_from(&mut playing)
+                .expect("unchanged hosted gate and clock must admit a silent child edit");
+            let mut actual = [[0.0; 2]; 257];
+            let mut expected = actual;
+            for (actual, expected) in actual
+                .chunks_mut(partition)
+                .zip(expected.chunks_mut(partition))
+            {
+                endpoint.render(&mut next, actual).unwrap();
+                reference_endpoint.render(&mut reference, expected).unwrap();
+                assert_eq!(actual, expected, "partition {partition}, removed {removed}");
+                assert_eq!(endpoint.notes, reference_endpoint.notes);
+                for &(_, note) in &endpoint.notes {
+                    assert!(removed && !note.on && note.note_id == onset.note_id);
+                    released += 1;
+                }
+            }
+            assert_eq!(next.performance_frame(), reference.performance_frame());
+            playing = next;
+        }
+        assert_eq!(released, 1);
+    }
 }
 
 #[test]
@@ -432,6 +536,105 @@ impl NoteEndpoint {
 }
 
 #[test]
+fn paused_vst3_instrument_preserves_downstream_arrangement_pcm() {
+    use crate::computer_keyboard::ComputerKeyboardInput;
+    use crate::playback::{Playback, PlaybackCommand};
+
+    let (mut editor, identity) = fixture();
+    let track = editor.project().tracks()[0].id();
+    let Created::Imported { asset, .. } = editor
+        .execute(Command::ImportPreparedAudioTrack {
+            name: "audio".into(),
+            path: "pause-marker.wav".into(),
+            source_sample_rate: 48_000,
+            source_frames: 1024,
+            playback_frames: 1024,
+            conversion_version: hex_project::IDENTITY_CONVERSION,
+        })
+        .unwrap()
+    else {
+        panic!("audio marker")
+    };
+    let mut samples = vec![[0.0; 2]; 1024];
+    samples[253] = [0.25, -0.5];
+    let media =
+        std::collections::BTreeMap::from([(asset, crate::Audio::new(48_000, samples).unwrap())]);
+    let revision =
+        prepare_instruments_with_media(&editor, identity, None, true, 1, &media).unwrap();
+    assert_eq!(revision.arrangement().main_latency_frames(), 19);
+
+    for partition in [1, 257] {
+        let mut paused = Playback::try_from_prepared_with_session(Arc::clone(&revision)).unwrap();
+        let mut reference =
+            Playback::try_from_prepared_with_session(Arc::clone(&revision)).unwrap();
+        let keys = Arc::new(ComputerKeyboardInput::default());
+        paused
+            .prepare_computer_keyboard(editor.project(), track, Arc::clone(&keys))
+            .unwrap();
+        paused.prepare_resident_paused_source_monitor(None).unwrap();
+        let mut endpoint = NoteEndpoint {
+            instrument_sample: 0.125,
+            ..Default::default()
+        };
+        let mut reference_endpoint = NoteEndpoint {
+            instrument_sample: 0.125,
+            ..Default::default()
+        };
+        let render = |player: &mut Playback, endpoint: &mut NoteEndpoint, pcm: &mut [Frame]| {
+            endpoint.next_offset = 0;
+            endpoint.notes.clear();
+            player
+                .render_with_foreign_processors(pcm, None, None, None, endpoint)
+                .unwrap();
+        };
+        for (player, endpoint) in [
+            (&mut paused, &mut endpoint),
+            (&mut reference, &mut reference_endpoint),
+        ] {
+            player.apply(PlaybackCommand::Play);
+            render(player, endpoint, &mut [[0.0; 2]; 257]);
+            player.apply(PlaybackCommand::Pause);
+        }
+        let [(0, original)] = endpoint.notes[..] else {
+            panic!("authored onset")
+        };
+        assert!(original.on && original.pitch == 60);
+        keys.set_key(0, Some((67, 100, 1))).unwrap();
+        let mut pcm = [[0.0; 2]; 257];
+        let mut events = Vec::new();
+        for (index, block) in pcm.chunks_mut(partition).enumerate() {
+            render(&mut paused, &mut endpoint, block);
+            events.extend(
+                endpoint
+                    .notes
+                    .iter()
+                    .map(|(offset, note)| (index * partition + offset, *note)),
+            );
+        }
+        let [(0, off), (7, on)] = events[..] else {
+            panic!("one authored release and the next native-quantum live onset: {events:?}");
+        };
+        assert!(!off.on && off.note_id == original.note_id);
+        assert!(on.on && on.pitch == 67 && on.note_id != original.note_id);
+        assert_eq!(paused.position(), 257);
+        assert!(pcm.iter().any(|frame| *frame != [0.0; 2]));
+        let mut resumed = [[0.0; 2]; 19];
+        let mut expected = resumed;
+        paused.apply(PlaybackCommand::Play);
+        reference.apply(PlaybackCommand::Play);
+        render(&mut paused, &mut endpoint, &mut resumed);
+        render(&mut reference, &mut reference_endpoint, &mut expected);
+        assert!(
+            endpoint.notes.is_empty(),
+            "the retained source must not chase the old onset"
+        );
+        assert_eq!(expected[15][0] - expected[15][1], 0.75);
+        assert_eq!(resumed, expected, "partition {partition}");
+        assert!(pcm.iter().all(|frame| frame[0] == frame[1]));
+    }
+}
+
+#[test]
 fn finite_bounce_requires_an_explicit_foreign_instrument_renderer() {
     let (editor, identity) = fixture();
     let revision = prepare(&editor, identity, true).unwrap();
@@ -448,6 +651,64 @@ fn finite_bounce_requires_an_explicit_foreign_instrument_renderer() {
         panic!("expected one authored MIDI note");
     };
     assert_eq!((*offset, note.frame, note.pitch, note.on), (0, 0, 60, true));
+}
+
+#[test]
+fn linear_foreign_export_requires_a_renderer_and_delivers_authored_notes() {
+    use crate::native_device_resources::{PreparedDeviceResources, ResidentDeviceAssets};
+    use std::sync::atomic::AtomicBool;
+
+    let (mut editor, identity) = fixture();
+    editor
+        .execute(Command::SetLoopRegion {
+            start: 0,
+            end: 1024,
+            enabled: true,
+        })
+        .unwrap();
+    let revision = prepare(&editor, identity, true).unwrap();
+    assert!(SessionPlayback::new_linear_arrangement_export(Arc::clone(&revision)).is_err());
+    let resources = PreparedDeviceResources::prepare_on_control(
+        &ResidentDeviceAssets::default(),
+        editor.project(),
+        1_000_000,
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    assert!(
+        SessionPlayback::new_linear_arrangement_export_with_foreign(
+            Arc::clone(&revision),
+            Some(&resources),
+        )
+        .is_err()
+    );
+    let mut without_renderer =
+        SessionPlayback::new_linear_arrangement_export_with_foreign(Arc::clone(&revision), None)
+            .unwrap();
+    without_renderer
+        .apply(SessionPlaybackCommand::Play)
+        .unwrap();
+    assert!(without_renderer.render(&mut [[0.0; 2]; 8]).is_err());
+
+    let mut playback =
+        SessionPlayback::new_linear_arrangement_export_with_foreign(revision, None).unwrap();
+    assert!(playback.is_linear_arrangement_export());
+    playback.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut endpoint = NoteEndpoint::default();
+    endpoint.render(&mut playback, &mut [[0.0; 2]; 8]).unwrap();
+    let [(offset, note)] = endpoint.notes.as_slice() else {
+        panic!("expected one authored MIDI note");
+    };
+    assert_eq!((*offset, note.frame, note.pitch, note.on), (0, 0, 60, true));
+    playback.apply(SessionPlaybackCommand::Seek(1023)).unwrap();
+    endpoint.render(&mut playback, &mut [[0.0; 2]; 8]).unwrap();
+    assert_eq!(playback.arrangement_frame(), 1031);
+    let long_frame = MAX_FINITE_BOUNCE_FRAMES + 1;
+    playback
+        .apply(SessionPlaybackCommand::Seek(long_frame))
+        .unwrap();
+    endpoint.render(&mut playback, &mut [[0.0; 2]; 8]).unwrap();
+    assert_eq!(playback.arrangement_frame(), long_frame + 8);
 }
 
 #[test]
@@ -910,8 +1171,7 @@ fn hardware_midi_keeps_ordered_taps_exact_release_and_activation_scope() {
     assert_eq!(queue.snapshot().unwrap().events(), &[on]);
 }
 
-#[test]
-fn session_play_from_releases_and_restarts_foreign_note_across_partitions() {
+fn session_held_note_fixture() -> (Arc<PreparedRevision>, hex_project::ClipId) {
     let (mut editor, identity) = fixture();
     let track = editor.project().tracks()[0].id();
     let Created::Scene(scene) = editor
@@ -944,6 +1204,12 @@ fn session_play_from_releases_and_restarts_foreign_note_across_partitions() {
         })
         .unwrap();
     let revision = prepare(&editor, identity, true).unwrap();
+    (revision, clip)
+}
+
+#[test]
+fn session_play_from_releases_and_restarts_foreign_note_across_partitions() {
+    let (revision, clip) = session_held_note_fixture();
 
     for block in [1, 7, 64, 128, 256, 512] {
         let mut playback = SessionPlayback::new(Arc::clone(&revision)).unwrap();
@@ -995,6 +1261,65 @@ fn session_play_from_releases_and_restarts_foreign_note_across_partitions() {
             !ended.on && ended.note_id == restarted.note_id,
             "block {block}"
         );
+    }
+}
+
+#[test]
+fn timed_play_from_releases_and_restarts_a_held_session_note() {
+    use crate::TimedTransportCommand;
+    use crate::playback::{Playback, PlaybackAction, PlaybackCommand};
+
+    let (revision, clip) = session_held_note_fixture();
+
+    for block in [1, 7, 64, 128, 256, 512] {
+        let mut playback = Playback::from_prepared(Arc::clone(&revision));
+        playback
+            .try_apply_action(PlaybackAction::LaunchAndPlay(
+                SessionPlaybackCommand::LaunchClip {
+                    clip,
+                    quantization: LaunchQuantization::Immediate,
+                },
+            ))
+            .unwrap();
+        let mut endpoint = NoteEndpoint::default();
+        let mut output = [[0.0; 2]; 512];
+        let mut events = Vec::new();
+        for (index, part) in output.chunks_mut(block).enumerate() {
+            let start = index * block;
+            let end = start + part.len();
+            let commands = if start <= 16 && 16 < end {
+                vec![TimedTransportCommand {
+                    offset: 16 - start,
+                    command: PlaybackCommand::PlayFrom(12_000),
+                }]
+            } else {
+                Vec::new()
+            };
+            endpoint.next_offset = 0;
+            endpoint.notes.clear();
+            playback
+                .render_with_timed_transport_and_foreign_processors(part, &commands, &mut endpoint)
+                .unwrap();
+            assert!(!endpoint.rejected, "block {block}");
+            events.extend(
+                endpoint
+                    .notes
+                    .iter()
+                    .map(|(offset, note)| (start + offset, *note)),
+            );
+        }
+        let [(0, original), (16, released), (16, restarted), (391, ended)] = events.as_slice()
+        else {
+            panic!("block {block}: unexpected events {events:?}")
+        };
+        assert!(original.on && original.pitch == 64 && original.channel == 3);
+        assert!(!released.on && released.note_id == original.note_id);
+        assert!(restarted.on && restarted.note_id != original.note_id);
+        assert_eq!(
+            (restarted.pitch, restarted.channel, restarted.velocity),
+            (64, 3, 98)
+        );
+        assert!(!ended.on && ended.note_id == restarted.note_id);
     }
 }
 
@@ -1192,6 +1517,225 @@ fn compatible_gain_edit_keeps_the_accepted_instrument_note_until_release() {
 }
 
 #[test]
+fn running_tempo_edit_keeps_the_foreign_gate_and_moves_its_deadline() {
+    for (looped, tempo, donor_cut, arrangement_cut, gate_end) in [
+        (false, 90_000_000, 256, 341, 1000),
+        (true, 90_000_000, 256, 341, 1000),
+        // The attack rounds to the candidate cut and must not retrigger.
+        (false, 1_000_000_000, 1, 0, 90),
+        // The authored release belongs to the candidate's first sample.
+        (false, 90_000_000, 750, 1000, 1000),
+    ] {
+        let (mut editor, identity) = fixture_with_duration(BeatTime::from_ratio(1, 32).unwrap());
+        if looped {
+            editor
+                .execute(Command::SetLoopRegion {
+                    start: 0,
+                    end: 1024,
+                    enabled: true,
+                })
+                .unwrap();
+        }
+        let original = prepare(&editor, identity, true).unwrap();
+        let latency = original.arrangement().main_latency_frames() as usize;
+        assert!(latency > 0);
+        let mut playing = SessionPlayback::new(original).unwrap();
+        let mut endpoint = NoteEndpoint {
+            instrument_sample: 0.25,
+            ..Default::default()
+        };
+        playing.apply(SessionPlaybackCommand::Play).unwrap();
+        if looped {
+            endpoint
+                .render(&mut playing, &mut [[0.0; 2]; 1024])
+                .unwrap();
+        }
+        endpoint
+            .render(&mut playing, &mut vec![[0.0; 2]; donor_cut])
+            .unwrap();
+        let [(0, onset)] = endpoint.notes.as_slice() else {
+            panic!("one held note at the start of this pass");
+        };
+        assert!(onset.on);
+        let onset = *onset;
+        let cut = playing.performance_frame();
+
+        editor
+            .execute(Command::SetProjectTempo {
+                tempo: hex_project::Tempo::new(tempo).unwrap(),
+            })
+            .unwrap();
+        let mut changed_worker =
+            SessionPlayback::new(prepare_epoch(&editor, identity, true, 2).unwrap()).unwrap();
+        assert!(matches!(
+            changed_worker.try_inherit_state_live_from(&mut playing),
+            Err(super::super::foreign_arrangement::INCOMPATIBLE_HANDOFF)
+        ));
+        let mut edited = SessionPlayback::new(prepare(&editor, identity, true).unwrap()).unwrap();
+        let report = edited.try_inherit_state_live_from(&mut playing).unwrap();
+        assert!(!report.running_audio_restart());
+        assert_eq!(edited.performance_frame(), cut);
+        assert_eq!(edited.arrangement_frame(), arrangement_cut as u64);
+        assert_eq!(edited.arrangement_loop_state().pass, u64::from(looped));
+
+        let release = gate_end - arrangement_cut;
+        let mut output = vec![[0.0; 2]; release + 1];
+        endpoint.render(&mut edited, &mut output).unwrap();
+        let silence = latency.saturating_sub(donor_cut);
+        assert!(output[..silence].iter().all(|frame| *frame == [0.0; 2]));
+        assert!(output[silence..].iter().all(|frame| *frame == [0.25; 2]));
+        assert_eq!(
+            endpoint.notes,
+            [(
+                release,
+                hex_lattice::ForeignNote {
+                    on: false,
+                    velocity: 0,
+                    ..onset
+                }
+            )]
+        );
+    }
+}
+
+#[test]
+fn confirmed_main_limiter_keeps_the_foreign_gate_on_the_original_worker() {
+    let (mut editor, identity) = fixture_with_duration(BeatTime::from_ratio(1, 32).unwrap());
+    let original = prepare(&editor, identity, true).unwrap();
+    let mut deadline = None;
+    original.arrangement().tracks()[0]
+        .for_each_mutable_midi_span(0, 1, |span| deadline = Some(span.gate_end))
+        .unwrap();
+    let mut playing = SessionPlayback::new(original).unwrap();
+    let mut endpoint = NoteEndpoint::default();
+    playing.apply(SessionPlaybackCommand::Play).unwrap();
+    endpoint.render(&mut playing, &mut [[0.0; 2]; 256]).unwrap();
+    let [(0, onset)] = endpoint.notes.as_slice() else {
+        panic!("one original note-on");
+    };
+    assert!(onset.on);
+    let onset = *onset;
+
+    editor
+        .execute(Command::InsertMainDevice {
+            before: None,
+            state: hex_devices::limiter::LimiterDefinition
+                .default_state()
+                .unwrap(),
+        })
+        .unwrap();
+    playing.set_playing_at_device_insert_cut(false);
+    let mut replacement =
+        SessionPlayback::new(prepare_epoch(&editor, identity, true, 2).unwrap()).unwrap();
+    assert!(matches!(
+        replacement.try_inherit_state_at_device_insert_cut(&mut playing),
+        Err(super::super::foreign_arrangement::INCOMPATIBLE_HANDOFF)
+    ));
+
+    let mut edited = SessionPlayback::new(prepare(&editor, identity, true).unwrap()).unwrap();
+    edited
+        .try_inherit_state_at_device_insert_cut(&mut playing)
+        .unwrap();
+    assert_eq!(edited.performance_frame(), 256);
+    assert_eq!(edited.arrangement_frame(), 256);
+    edited.set_playing_at_device_insert_cut(true);
+    let release = usize::try_from(deadline.unwrap() - 256).unwrap();
+    endpoint
+        .render(&mut edited, &mut vec![[0.0; 2]; release + 1])
+        .unwrap();
+    assert_eq!(
+        endpoint.notes,
+        [(
+            release,
+            hex_lattice::ForeignNote {
+                on: false,
+                velocity: 0,
+                ..onset
+            }
+        )]
+    );
+}
+
+#[test]
+fn confirmed_hosted_main_append_keeps_the_original_instrument_gate() {
+    let (mut editor, instrument) = fixture_with_duration(BeatTime::from_ratio(1, 32).unwrap());
+    let original = prepare(&editor, instrument, true).unwrap();
+    let mut deadline = None;
+    original.arrangement().tracks()[0]
+        .for_each_mutable_midi_span(0, 1, |span| deadline = Some(span.gate_end))
+        .unwrap();
+    let mut playing = SessionPlayback::new(original).unwrap();
+    let mut endpoint = NoteEndpoint::default();
+    playing.apply(SessionPlaybackCommand::Play).unwrap();
+    endpoint.render(&mut playing, &mut [[0.0; 2]; 256]).unwrap();
+    let [(0, onset)] = endpoint.notes.as_slice() else {
+        panic!("one original note-on");
+    };
+    assert!(onset.on);
+    let onset = *onset;
+
+    let Created::Device(device) = editor
+        .execute(Command::InsertMainDevice {
+            before: None,
+            state: state(19).unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("one hosted Main effect");
+    };
+    let owner = ProcessorChainOwner::Main;
+    let effect = BorrowedDefinition {
+        binding_epoch: Some(1),
+        unbounded_tail: false,
+        instances: vec![(
+            ProcessorInstanceIdentity::new(owner, device.value()).unwrap(),
+            3,
+        )],
+    };
+    let synth = InstrumentDefinition {
+        identity: instrument,
+        second: None,
+        instrument_profile: true,
+        epoch: 1,
+    };
+    let definitions: [&dyn NativeDeviceDefinition; 2] = [&synth, &effect];
+    let registry = NativeDeviceRegistry::new(&definitions).unwrap();
+    let prepared = PreparedRevision::prepare_with_effect_registry(
+        editor.project(),
+        &std::collections::BTreeMap::new(),
+        Arc::new(SineTable::new()),
+        None,
+        &registry,
+    )
+    .unwrap();
+    let mut edited = SessionPlayback::new(Arc::new(prepared)).unwrap();
+
+    playing.set_playing_at_device_insert_cut(false);
+    edited
+        .try_inherit_state_at_device_insert_cut(&mut playing)
+        .unwrap();
+    assert_eq!(edited.performance_frame(), 256);
+    assert_eq!(edited.arrangement_frame(), 256);
+    edited.set_playing_at_device_insert_cut(true);
+    endpoint.effect = Some(Borrowed::new(owner, device.value()));
+    let release = usize::try_from(deadline.unwrap() - 256).unwrap();
+    endpoint
+        .render(&mut edited, &mut vec![[0.0; 2]; release + 1])
+        .unwrap();
+    assert_eq!(
+        endpoint.notes,
+        [(
+            release,
+            hex_lattice::ForeignNote {
+                on: false,
+                velocity: 0,
+                ..onset
+            }
+        )]
+    );
+}
+
+#[test]
 fn adding_delay_during_a_loop_keeps_the_foreign_instrument_gate_and_clock() {
     let (mut editor, identity) = fixture_with_duration(BeatTime::from_ratio(1, 128).unwrap());
     let track = editor.project().tracks()[0].id();
@@ -1356,6 +1900,7 @@ fn moving_a_wrapped_loop_keeps_foreign_gates_through_live_effect_edits() {
         };
         let effect = BorrowedDefinition {
             binding_epoch: Some(1),
+            unbounded_tail: false,
             instances: vec![(
                 ProcessorInstanceIdentity::new(owner, device.value()).unwrap(),
                 3,

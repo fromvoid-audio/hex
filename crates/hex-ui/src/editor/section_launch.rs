@@ -1,6 +1,6 @@
 //! Launch a section with the quantized seek worker. L-click enables the
 //! canonical Arrangement loop. A plain launch disables an enabled loop in
-//! place and plays to the section end on the transport's content clock.
+//! place and continues through the Arrangement from the section start.
 //! A refused live loop handoff can still launch from the worker's committed
 //! revision. Only the adjacent loop change can use the prior audible graph as
 //! its quantization source, under the same fresh-runtime fence as a normal launch.

@@ -1,5 +1,9 @@
 //! Compact Arrangement loop-range rail with a control-side preview gesture.
-use super::{EditorMode, EditorView, ViewState, musical_time::GridLine, viewport::Viewport};
+use super::{
+    EditorMode, EditorView, ViewState,
+    musical_time::{GridLine, SnapGrid},
+    viewport::Viewport,
+};
 use crate::theme;
 use gpui::{
     Bounds, Context, CursorStyle, Div, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent,
@@ -31,6 +35,15 @@ enum EditMode {
     ResizeEnd { fixed_start: u64, enabled: bool },
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ProjectionInput {
+    frame: u64,
+    grid: SnapGrid,
+    unsnapped: bool,
+    stepped: bool,
+    moved: bool,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub(super) struct LoopRailGesture {
     generation: u64,
@@ -43,6 +56,7 @@ pub(super) struct LoopRailGesture {
     preview: Option<LoopRegion>,
     pointer_down: gpui::Point<gpui::Pixels>,
     last_pointer: gpui::Point<gpui::Pixels>,
+    last_projection: Option<ProjectionInput>,
     moved: bool,
     click_disqualified: bool,
     toggle_on_click: bool,
@@ -115,6 +129,7 @@ impl EditorView {
                 preview: Some(region),
                 pointer_down: position,
                 last_pointer: position,
+                last_projection: None,
                 moved: false,
                 click_disqualified: false,
                 toggle_on_click: modifiers.platform,
@@ -144,6 +159,7 @@ impl EditorView {
             preview: None,
             pointer_down: position,
             last_pointer: position,
+            last_projection: None,
             moved: false,
             click_disqualified: false,
             toggle_on_click: false,
@@ -187,18 +203,30 @@ impl EditorView {
             gesture.viewport,
         ) else {
             self.loop_rail_gesture = Some(gesture);
-            return true;
+            return false;
         };
         gesture.last_pointer = position;
         gesture.moved |= (x - f32::from(gesture.pointer_down.x)).abs() > 3.0;
         // Vertical travel disqualifies a click without qualifying a horizontal move.
         gesture.click_disqualified |= gesture.moved
             || (f32::from(position.y) - f32::from(gesture.pointer_down.y)).abs() > 3.0;
+        let input = ProjectionInput {
+            frame,
+            grid: self.snap_grid,
+            unsnapped: modifiers.platform,
+            stepped: modifiers.shift,
+            moved: gesture.moved,
+        };
+        if gesture.last_projection == Some(input) {
+            self.loop_rail_gesture = Some(gesture);
+            return false;
+        }
+        gesture.last_projection = Some(input);
+        let previous = gesture.preview;
         if let EditMode::Move { original, anchor } = gesture.mode {
             if !gesture.moved {
-                gesture.preview = Some(original);
                 self.loop_rail_gesture = Some(gesture);
-                return true;
+                return false;
             }
             let delta = i128::from(frame) - i128::from(anchor);
             let start = if modifiers.shift {
@@ -226,8 +254,9 @@ impl EditorView {
                 )
                 .ok()
             });
+            let changed = gesture.preview != previous;
             self.loop_rail_gesture = Some(gesture);
-            return true;
+            return changed;
         }
         let Some(frame) = snap_frame(
             self,
@@ -238,7 +267,7 @@ impl EditorView {
             modifiers.platform,
         ) else {
             self.loop_rail_gesture = Some(gesture);
-            return true;
+            return false;
         };
         gesture.preview = match gesture.mode {
             EditMode::Move { .. } => gesture.preview,
@@ -259,8 +288,9 @@ impl EditorView {
                 LoopRegion::new(fixed_start, candidate, enabled).ok()
             }
         };
+        let changed = gesture.preview != previous;
         self.loop_rail_gesture = Some(gesture);
-        true
+        changed
     }
 
     fn finish_loop_rail_gesture(
@@ -304,7 +334,7 @@ impl EditorView {
             return true;
         }
         let Some(region) = gesture.preview else {
-            self.error = Some("loop region needs a non-empty time range".into());
+            self.error = Some("scope needs a non-empty time range".into());
             return true;
         };
         if Some(region) == gesture.loop_region {
@@ -382,8 +412,8 @@ pub(super) fn view(
                 .min_w_0()
                 .cursor(view.loop_rail_cursor)
                 .tooltip(|_, cx| {
-                    cx.new(|_| super::transport::MiniTooltip { kind: crate::tooltips::Kind::control("loop range"),
-                        description: "drag empty rail to set loop · drag bar to move · shift-click selects range · shift-drag steps loop length · cmd-click toggles · cmd-drag is free".into(),
+                    cx.new(|_| super::transport::MiniTooltip { kind: crate::tooltips::Kind::control("scope bar"),
+                        description: "drag empty rail to set scope · drag scope bar to move · shift-click selects scope · shift-drag steps scope length · cmd-click toggles · cmd-drag is free".into(),
                     })
                     .into()
                 })
@@ -460,15 +490,19 @@ pub(super) fn view(
                                         }
                                         return;
                                     }
-                                    let changed = move_entity.update(cx, |view, _| {
-                                        if !view.focus.is_focused(window) { return view.cancel_loop_rail_gesture(); }
-                                        view.update_loop_rail_gesture(
-                                            event.position,
-                                            event.modifiers,
-                                        )
+                                    let (owned, changed) = move_entity.update(cx, |view, _| {
+                                        let owned = view.loop_rail_gesture.is_some();
+                                        let changed = if view.focus.is_focused(window) {
+                                            view.update_loop_rail_gesture(event.position, event.modifiers)
+                                        } else {
+                                            view.cancel_loop_rail_gesture()
+                                        };
+                                        (owned, changed)
                                     });
-                                    if changed {
+                                    if owned {
                                         cx.stop_propagation();
+                                    }
+                                    if changed {
                                         window.refresh();
                                     }
                                 },

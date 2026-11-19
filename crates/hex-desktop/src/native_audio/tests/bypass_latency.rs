@@ -851,6 +851,7 @@ fn publication_observation_tracks_worker_callback_admission_and_application() {
         output_identity: audio.control.output_identity().unwrap(),
         audio_revision: revision,
         source_context: Some(metadata.context),
+        source_origin: metadata.source_origin,
         section_loop: None,
     };
     let observe = |h: &ResidentHarness| {

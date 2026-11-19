@@ -114,6 +114,9 @@ impl EditorView {
         target: GestureTarget,
         initial: ParameterValue,
     ) -> Result<(), &'static str> {
+        if self.audio_recorder.blocks_edits() {
+            return Err("finish the audio recording before changing a device");
+        }
         if self.automation_close_preflight.frozen() {
             return Err("close is pending · device gestures are unavailable");
         }
@@ -132,6 +135,9 @@ impl EditorView {
         second: hex_lattice_contract::ParameterId,
         initial: ParameterPairValue,
     ) -> Result<(), &'static str> {
+        if self.audio_recorder.blocks_edits() {
+            return Err("finish the audio recording before changing a device");
+        }
         if self.automation_close_preflight.frozen() {
             return Err("close is pending · device gestures are unavailable");
         }
@@ -220,20 +226,20 @@ impl EditorView {
         ack: &hex_session::device_gesture::GestureAck,
         snapshot: Option<hex_session::device_gesture::GestureSnapshot>,
     ) -> bool {
-        let committed_plugin = (ack.phase == GesturePhase::Commit
+        let committed_display = (ack.phase == GesturePhase::Commit
             && ack.accepted
             && !ack.preview_retained
-            && !ack.source_lost
-            && !self.owns_vst3_recording(ack.key))
-        .then(|| {
-            let active = self.device_gesture.snapshot()?;
-            (active.key == ack.key
-                && active.sequence == ack.sequence
-                && active.plugin_value.is_some()
-                && self.device_gesture.terminal() == Some((GesturePhase::Commit, ack.sequence)))
-            .then_some(active)
-        })
-        .flatten();
+            && !ack.source_lost)
+            .then(|| {
+                let active = self.device_gesture.snapshot()?;
+                (active.key == ack.key
+                    && active.sequence == ack.sequence
+                    && active.plugin_value.is_some()
+                    && self.device_gesture.terminal() == Some((GesturePhase::Commit, ack.sequence)))
+                .then_some(active)
+            })
+            .flatten();
+        let committed_plugin = committed_display.filter(|_| !self.owns_vst3_recording(ack.key));
         let terminal =
             matches!(ack.phase, GesturePhase::Commit | GesturePhase::Cancel) || ack.source_lost;
         let plugin = self.device_gesture.snapshot().is_some_and(|active| {
@@ -253,7 +259,7 @@ impl EditorView {
             && !ack.preview_retained
             && (terminal || ack.phase == GesturePhase::Begin && !ack.accepted)
         {
-            super::device_panel::vst3_parameters::refresh(self);
+            super::device_panel::vst3_parameters::refresh_after_gesture(self, committed_display);
         }
         if terminal {
             self.settle_effect_bus_barriers(ack);

@@ -19,6 +19,82 @@ struct Pages {
     missing: Option<u64>,
 }
 
+#[test]
+fn reversed_page_renderer_does_not_allocate_or_free() {
+    let mut editor = Editor::new(Project::new(RATE).unwrap(), 8).unwrap();
+    let Created::Imported { asset, .. } = editor
+        .execute(Command::ImportAudioTrack {
+            name: "source".into(),
+            path: "source.wav".into(),
+            sample_rate: RATE,
+            frames: CLIP as u64,
+        })
+        .unwrap()
+    else {
+        panic!("import result");
+    };
+    let key = StreamSourceKey::new(31, asset);
+    let metadata = Arc::new(
+        StreamedSourceMetadata::new(
+            key,
+            RATE,
+            RATE,
+            CLIP as u64,
+            CLIP as u64,
+            hex_project::IDENTITY_CONVERSION,
+            [31; 32],
+        )
+        .unwrap(),
+    );
+    let clip =
+        hex_engine::Clip::streamed_region_reversed(metadata, 0, CLIP as u64, 0, CLIP as u64, false)
+            .unwrap();
+    let track = hex_engine::Track::new(vec![clip], 1.0, false).unwrap();
+    let mut visited = 0;
+    let mut demand = Ok(());
+    let measured = allocation_counter::measure(|| {
+        demand = track.probe_stream_demand(0, 128, &mut |_| {
+            visited += 1;
+            Ok(())
+        });
+    });
+    demand.unwrap();
+    assert!(visited > 0);
+    assert_eq!(
+        (
+            measured.count_total,
+            measured.bytes_total,
+            measured.count_current,
+            measured.bytes_current
+        ),
+        (0, 0, 0, 0)
+    );
+    let project = hex_engine::Project::new(RATE, vec![track]).unwrap();
+    let mut playback = Playback::new(project);
+    playback.apply(PlaybackCommand::Play);
+    let mut pages = Pages {
+        key,
+        samples: vec![[LEVEL; 2]; CLIP],
+        missing: None,
+    };
+    let mut output = [[0.0; 2]; 128];
+    let mut result = Ok(());
+    let measured = allocation_counter::measure(|| {
+        result = playback.render_with_pages(&mut output, &mut pages);
+    });
+    result.unwrap();
+    assert_eq!(
+        (
+            measured.count_total,
+            measured.bytes_total,
+            measured.count_current,
+            measured.bytes_current
+        ),
+        (0, 0, 0, 0)
+    );
+    assert!(output.iter().any(|frame| frame[0] != 0.0));
+}
+
 impl MediaPages for Pages {
     fn page(&mut self, key: StreamSourceKey, index: u64) -> Option<BorrowedMediaPage<'_>> {
         if key != self.key || self.missing == Some(index) {

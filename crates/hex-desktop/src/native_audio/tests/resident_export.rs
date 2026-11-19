@@ -3,7 +3,7 @@ use super::resident_preview::ResidentHarness;
 use super::*;
 use hex_project::{BeatTime, Command, Created};
 use hex_session::service::{ExportControl, ExportSignal, Stem};
-fn completed(h: &mut ResidentHarness) -> hex_session::service::ExportEvent {
+pub(super) fn completed(h: &mut ResidentHarness) -> hex_session::service::ExportEvent {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         h.pump();
@@ -295,4 +295,208 @@ fn loaded_resident_export_case(frame_limit: u64) {
             .load(Acquire),
         applied
     );
+}
+
+#[test]
+fn streamed_long_repitch_export_matches_resident_prefix() {
+    use std::io::Write;
+    let _native = native_fixture();
+    let files = Files::new();
+    fn source(path: &std::path::Path, frames: u32) {
+        let mut file = fs::File::create(path).unwrap();
+        file.write_all(b"RIFF").unwrap();
+        file.write_all(&(36 + frames).to_le_bytes()).unwrap();
+        file.write_all(b"WAVEfmt ").unwrap();
+        file.write_all(&16u32.to_le_bytes()).unwrap();
+        file.write_all(&1u16.to_le_bytes()).unwrap();
+        file.write_all(&1u16.to_le_bytes()).unwrap();
+        file.write_all(&48_000u32.to_le_bytes()).unwrap();
+        file.write_all(&48_000u32.to_le_bytes()).unwrap();
+        file.write_all(&1u16.to_le_bytes()).unwrap();
+        file.write_all(&8u16.to_le_bytes()).unwrap();
+        file.write_all(b"data").unwrap();
+        file.write_all(&frames.to_le_bytes()).unwrap();
+        let prefix: Vec<u8> = (0..8192).map(|i| 96 + ((i / 8) % 64) as u8).collect();
+        file.write_all(&prefix).unwrap();
+        file.set_len(44 + u64::from(frames)).unwrap();
+    }
+    let long = files.0.join("long.wav");
+    let short = files.0.join("short.wav");
+    source(&long, 20_000_000);
+    source(&short, 8192);
+    fn export(
+        path: std::path::PathBuf,
+        output: std::path::PathBuf,
+        streamed: bool,
+    ) -> Vec<[i16; 2]> {
+        let mut h = ResidentHarness::with_frame_limit(65_536);
+        h.next();
+        let (mut applied, _) = h.applied(0);
+        let imported = h.run(Request::ImportToNewTrack {
+            path,
+            before_track: None,
+            start: 0,
+        });
+        (applied, _) = h.applied(applied);
+        let has_stream = imported
+            .state
+            .canonical_audio_source
+            .as_ref()
+            .unwrap()
+            .sources()
+            .values()
+            .any(|source| matches!(source, hex_session::AudioSourceBinding::VerifiedFile(_)));
+        assert_eq!(has_stream, streamed);
+        let clip = imported.state.project.tracks()[0].clips()[0].id();
+        let neutral = h.run(Request::Edit(Command::SetClipFades {
+            clip,
+            fade_in: 0,
+            fade_out: 0,
+        }));
+        (applied, _) = h.applied(applied);
+        let warp = hex_project::default_audio_warp(
+            neutral.state.project.clip(clip).unwrap(),
+            neutral.state.project.tempo_map(),
+            hex_project::WarpMode::RePitch,
+        )
+        .unwrap();
+        h.run(Request::Edit(Command::SetAudioClipWarp {
+            clip,
+            settings: Some(warp),
+        }));
+        (applied, _) = h.applied(applied);
+        h.run(Request::Edit(Command::SetProjectTempo {
+            tempo: hex_project::Tempo::new(240_000_000).unwrap(),
+        }));
+        h.applied(applied);
+        if streamed {
+            let existing = output.with_file_name("existing-output.wav");
+            fs::write(&existing, b"existing file").unwrap();
+            let control = ExportControl::default();
+            assert!(control.cancel());
+            h.run(Request::ExportRange {
+                path: existing.clone(),
+                start: 128,
+                frames: Some(512),
+                signal: ExportSignal::Main,
+                control,
+                format: hex_export::ExportFormat::Pcm16,
+                overwrite: true,
+            });
+            assert!(completed(&mut h).result.is_err());
+            assert_eq!(fs::read(existing).unwrap(), b"existing file");
+        }
+        h.run(Request::ExportRange {
+            path: output.clone(),
+            start: 128,
+            frames: Some(512),
+            signal: ExportSignal::Main,
+            control: ExportControl::default(),
+            format: hex_export::ExportFormat::Pcm16,
+            overwrite: false,
+        });
+        let result = completed(&mut h);
+        assert!(result.result.is_ok(), "{:?}", result.result);
+        pcm(&output)
+    }
+    let reference = export(short, files.0.join("short-output.wav"), false);
+    let actual = export(long, files.0.join("long-output.wav"), true);
+    assert_pcm_near(&actual, &reference);
+}
+
+#[test]
+fn streamed_long_pitch_fade_export_matches_resident_prefix() {
+    use std::io::Write;
+    let _native = native_fixture();
+    let files = Files::new();
+    fn source(path: &std::path::Path, frames: u32) {
+        let mut file = fs::File::create(path).unwrap();
+        file.write_all(b"RIFF").unwrap();
+        file.write_all(&(36 + frames).to_le_bytes()).unwrap();
+        file.write_all(b"WAVEfmt ").unwrap();
+        file.write_all(&16u32.to_le_bytes()).unwrap();
+        file.write_all(&1u16.to_le_bytes()).unwrap();
+        file.write_all(&1u16.to_le_bytes()).unwrap();
+        file.write_all(&48_000u32.to_le_bytes()).unwrap();
+        file.write_all(&48_000u32.to_le_bytes()).unwrap();
+        file.write_all(&1u16.to_le_bytes()).unwrap();
+        file.write_all(&8u16.to_le_bytes()).unwrap();
+        file.write_all(b"data").unwrap();
+        file.write_all(&frames.to_le_bytes()).unwrap();
+        let prefix: Vec<u8> = (0..8192).map(|i| 96 + ((i / 8) % 64) as u8).collect();
+        file.write_all(&prefix).unwrap();
+        file.set_len(44 + u64::from(frames)).unwrap();
+    }
+    let long = files.0.join("long.wav");
+    let short = files.0.join("short.wav");
+    source(&long, 20_000_000);
+    source(&short, 8192);
+    fn export(
+        path: std::path::PathBuf,
+        output: std::path::PathBuf,
+        streamed: bool,
+    ) -> Vec<[i16; 2]> {
+        let mut h = ResidentHarness::with_frame_limit(65_536);
+        h.next();
+        let (mut applied, _) = h.applied(0);
+        let imported = h.run(Request::ImportToNewTrack {
+            path,
+            before_track: None,
+            start: 0,
+        });
+        (applied, _) = h.applied(applied);
+        let has_stream = imported
+            .state
+            .canonical_audio_source
+            .as_ref()
+            .unwrap()
+            .sources()
+            .values()
+            .any(|source| matches!(source, hex_session::AudioSourceBinding::VerifiedFile(_)));
+        assert_eq!(has_stream, streamed);
+        let clip = imported.state.project.tracks()[0].clips()[0].id();
+        h.run(Request::Edit(Command::SetClipFades {
+            clip,
+            fade_in: 2048,
+            fade_out: 0,
+        }));
+        (applied, _) = h.applied(applied);
+        h.run(Request::Edit(Command::SetAudioClipPitch {
+            clip,
+            cents: 700,
+        }));
+        h.applied(applied);
+        if streamed {
+            let existing = output.with_file_name("existing-output.wav");
+            fs::write(&existing, b"existing file").unwrap();
+            let control = ExportControl::default();
+            assert!(control.cancel());
+            h.run(Request::ExportRange {
+                path: existing.clone(),
+                start: 128,
+                frames: Some(512),
+                signal: ExportSignal::Main,
+                control,
+                format: hex_export::ExportFormat::Pcm16,
+                overwrite: true,
+            });
+            assert!(completed(&mut h).result.is_err());
+            assert_eq!(fs::read(existing).unwrap(), b"existing file");
+        }
+        h.run(Request::ExportRange {
+            path: output.clone(),
+            start: 128,
+            frames: Some(512),
+            signal: ExportSignal::Main,
+            control: ExportControl::default(),
+            format: hex_export::ExportFormat::Pcm16,
+            overwrite: false,
+        });
+        let result = completed(&mut h);
+        assert!(result.result.is_ok(), "{:?}", result.result);
+        pcm(&output)
+    }
+    let reference = export(short, files.0.join("short-output.wav"), false);
+    let actual = export(long, files.0.join("long-output.wav"), true);
+    assert_pcm_near(&actual, &reference);
 }

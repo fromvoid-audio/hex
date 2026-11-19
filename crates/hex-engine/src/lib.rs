@@ -179,16 +179,17 @@ mod stream_miss_fade;
 pub use stream_miss_fade::{STREAM_MISS_FADE_VOICES, StreamMissFades};
 mod return_feed_plan;
 mod signal_graph;
-pub use signal_graph::OutputLatency;
 #[cfg(feature = "instrument-test-support")]
 pub use signal_graph::PrintedBranchProbe;
+pub use signal_graph::{OutputLatency, ProcessorGraphLatency};
 mod stream_demand;
 pub use stream_demand::{
     StreamChunkWindow, StreamPageExtent, StreamResourceExtent, visit_scalar_page_range,
 };
 mod streamed;
 pub use streamed::{
-    BorrowedMediaPage, MediaPages, STREAM_PAGE_FRAMES, StreamSourceKey, StreamedSourceMetadata,
+    BorrowedMediaPage, GranularStreamIdentity, MediaPages, RepitchStreamIdentity,
+    STREAM_PAGE_FRAMES, StreamSourceKey, StreamedSourceMetadata,
 };
 
 pub type Frame = [f32; 2];
@@ -248,6 +249,7 @@ pub const MAX_SESSION_ROUTE_TRACKS: usize = hex_project::MAX_TRACKS;
 #[derive(Clone, Copy)]
 pub(crate) struct StreamedPageSpan<'a> {
     pub source_frame: u64,
+    pub reversed: bool,
     pub timeline_frame: u64,
     pub output_offset: usize,
     pub count: usize,
@@ -265,7 +267,7 @@ pub(crate) fn render_streamed_page_span(
     render_streamed_page_span_captured(mix, source, span, output, pages, None)
 }
 
-pub(crate) fn render_streamed_page_span_captured(
+fn render_forward_streamed_page_span_captured(
     mix: PreparedTrackMix,
     source: &StreamedSourceMetadata,
     span: StreamedPageSpan<'_>,
@@ -275,6 +277,7 @@ pub(crate) fn render_streamed_page_span_captured(
 ) -> usize {
     let StreamedPageSpan {
         source_frame,
+        reversed: _,
         timeline_frame,
         output_offset,
         count: requested_count,
@@ -299,7 +302,7 @@ pub(crate) fn render_streamed_page_span_captured(
         _ => (&[][..], false),
     };
     let available = frames.len().saturating_sub(page_offset).min(count);
-    let mut voice = fades.map(|fades| fades.voice(source.key(), source_frame));
+    let mut voice = fades.map(|fades| fades.directed_voice(source.key(), source_frame, false));
     for (offset, destination) in destination.iter_mut().take(available).enumerate() {
         let mut sample = frames[page_offset + offset];
         if let Some((fade, fade_start)) = fade
@@ -360,6 +363,96 @@ pub(crate) fn render_streamed_page_span_captured(
     if incomplete {
         pages.request_page(source.key(), page_index);
     } else if prefetch && let Some(next) = next_page {
+        pages.prefetch_page(source.key(), next);
+    }
+    count
+}
+
+pub(crate) fn render_streamed_page_span_captured(
+    mix: PreparedTrackMix,
+    source: &StreamedSourceMetadata,
+    span: StreamedPageSpan<'_>,
+    output: &mut [Frame],
+    pages: &mut (impl MediaPages + ?Sized),
+    mut capture: Option<&mut [Frame]>,
+) -> usize {
+    if !span.reversed {
+        return render_forward_streamed_page_span_captured(
+            mix, source, span, output, pages, capture,
+        );
+    }
+    let StreamedPageSpan {
+        source_frame,
+        reversed: _,
+        timeline_frame,
+        output_offset,
+        count: requested_count,
+        fade,
+        gain: clip_gain,
+    } = span;
+    if requested_count == 0 {
+        return 0;
+    }
+    let page_index = source_frame / STREAM_PAGE_FRAMES as u64;
+    let page_offset = (source_frame % STREAM_PAGE_FRAMES as u64) as usize;
+    let count = requested_count.min(page_offset + 1);
+    let Some(output_end) = output_offset.checked_add(count) else {
+        return 0;
+    };
+    let Some(destination) = output.get_mut(output_offset..output_end) else {
+        return 0;
+    };
+    let (page, fades) = pages.page_and_miss_fades(source.key(), page_index);
+    let (frames, valid) = match page {
+        Some(page) if page.page_index == page_index => (page.frames, true),
+        _ => (&[][..], false),
+    };
+    let mut voice = fades.map(|fades| fades.directed_voice(source.key(), source_frame, true));
+    let mut incomplete = !valid;
+    for (offset, destination) in destination.iter_mut().enumerate() {
+        let source_offset = page_offset - offset;
+        let sample = if let Some(&sample) = frames.get(source_offset).filter(|_| valid) {
+            let mut sample = sample;
+            if let Some((fade, fade_start)) = fade
+                && let Some(frame) = timeline_frame.checked_add(offset as u64)
+            {
+                let gain = fade.gain_at(frame.saturating_sub(fade_start));
+                sample[0] *= gain;
+                sample[1] *= gain;
+            }
+            if clip_gain != 1.0 {
+                sample[0] *= clip_gain;
+                sample[1] *= clip_gain;
+            }
+            voice.as_mut().map_or(sample, |voice| voice.present(sample))
+        } else if valid {
+            // A short valid page denotes source-end silence, not a missing page.
+            incomplete = true;
+            if let Some(voice) = voice.take() {
+                voice.end();
+            }
+            continue;
+        } else {
+            let sample = voice.as_mut().map_or([0.0; 2], |voice| voice.missing());
+            if sample == [0.0; 2] {
+                continue;
+            }
+            sample
+        };
+        mix.add_captured(
+            destination,
+            sample,
+            capture
+                .as_deref_mut()
+                .and_then(|frames| frames.get_mut(output_offset + offset)),
+        );
+    }
+    let prefetch_page = (page_offset + 1 - count <= STREAM_PAGE_FRAMES / 2)
+        .then(|| page_index.checked_sub(1))
+        .flatten();
+    if incomplete {
+        pages.request_page(source.key(), page_index);
+    } else if valid && let Some(next) = prefetch_page {
         pages.prefetch_page(source.key(), next);
     }
     count
@@ -621,6 +714,7 @@ pub struct Clip {
 struct ClipMetadata {
     gain: f32,
     source_phase: u64,
+    reversed: bool,
     fade: Option<hex_project::ClipFade>,
     streamed: Option<Arc<StreamedSourceMetadata>>,
     sparse: Option<Arc<SparseFrameMap>>,
@@ -701,6 +795,7 @@ impl Clip {
             Some(Box::new(ClipMetadata {
                 gain: 1.0,
                 source_phase: 0,
+                reversed: false,
                 fade: Some(fade),
                 streamed: None,
                 sparse: None,
@@ -738,6 +833,7 @@ impl Clip {
             self.metadata = Some(Box::new(ClipMetadata {
                 gain: 1.0,
                 source_phase: phase,
+                reversed: false,
                 fade: None,
                 streamed: None,
                 sparse: None,
@@ -762,6 +858,7 @@ impl Clip {
             self.metadata = Some(Box::new(ClipMetadata {
                 gain: linear,
                 source_phase: 0,
+                reversed: false,
                 fade: None,
                 streamed: None,
                 sparse: None,
@@ -803,6 +900,7 @@ impl Clip {
             metadata: Some(Box::new(ClipMetadata {
                 gain: 1.0,
                 source_phase: 0,
+                reversed: false,
                 fade: None,
                 streamed: None,
                 sparse: Some(sparse),
@@ -925,6 +1023,53 @@ impl Clip {
         )
     }
 
+    /// Build a reverse-reading streamed region. This is a playback boundary;
+    /// it does not admit or change any saved clip edit.
+    pub fn streamed_region_reversed(
+        source: Arc<StreamedSourceMetadata>,
+        start: u64,
+        duration: u64,
+        source_offset: u64,
+        source_length: u64,
+        looping: bool,
+    ) -> Result<Self, Invalid> {
+        let fade = hex_project::ClipFade::neutral(duration).map_err(|error| Invalid(error.0))?;
+        Self::streamed_region_reversed_with_fade(
+            source,
+            start,
+            duration,
+            source_offset,
+            source_length,
+            looping,
+            fade,
+        )
+    }
+
+    /// Build a reverse-reading streamed region with a destination fade.
+    pub fn streamed_region_reversed_with_fade(
+        source: Arc<StreamedSourceMetadata>,
+        start: u64,
+        duration: u64,
+        source_offset: u64,
+        source_length: u64,
+        looping: bool,
+        fade: hex_project::ClipFade,
+    ) -> Result<Self, Invalid> {
+        let mut clip = Self::streamed_region_with_fade(
+            source,
+            start,
+            duration,
+            source_offset,
+            source_length,
+            looping,
+            fade,
+        )?;
+        if let Some(metadata) = clip.metadata.as_mut() {
+            metadata.reversed = true;
+        }
+        Ok(clip)
+    }
+
     /// Build a streamed clip with the canonical fixed-domain fade envelope.
     pub fn streamed_region_with_fade(
         source: Arc<StreamedSourceMetadata>,
@@ -962,6 +1107,7 @@ impl Clip {
             metadata: Some(Box::new(ClipMetadata {
                 gain: 1.0,
                 source_phase: 0,
+                reversed: false,
                 fade: (!fade.is_neutral()).then_some(fade),
                 streamed: Some(source),
                 sparse: None,
@@ -4231,10 +4377,12 @@ pub use session_inventory::{
 pub use session_playback::{
     ArrangementPrerollError, LaunchQuantization, MAX_ARRANGEMENT_PREROLL_FRAMES,
     MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES, MAX_OUTPUT_CAPTURE_FRAMES, MAX_OUTPUT_CAPTURES,
-    OutputCapture, OutputCaptureError, OutputCaptureId, OutputCapturePlan, PreparedPrerollPages,
-    PreparedStreamAction, ProjectOutputTap, ProjectSignal, ProjectSignalObserver,
-    SessionHandoffReport, SessionPendingRouteStatus, SessionPlayback, SessionPlaybackCommand,
-    SessionPlaybackError, SessionPlaybackOwner, SessionRouteStatus, SessionRouteTarget,
+    OutputCapture, OutputCaptureError, OutputCaptureId, OutputCapturePlan, PausedKeyboardMonitor,
+    PausedMonitorAdmissionError, PausedMonitorForeignBinding, PausedMonitorStorageHold,
+    PausedSourceMonitor, PausedTrackMonitor, PreparedPrerollPages, PreparedStreamAction,
+    ProjectOutputTap, ProjectSignal, ProjectSignalObserver, SessionHandoffReport,
+    SessionPendingRouteStatus, SessionPlayback, SessionPlaybackCommand, SessionPlaybackError,
+    SessionPlaybackOwner, SessionRouteStatus, SessionRouteTarget,
 };
 
 #[cfg(test)]

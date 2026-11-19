@@ -47,7 +47,7 @@ impl EditorView {
             .is_some_and(|status| status.playing.load(std::sync::atomic::Ordering::Relaxed));
         let can_undo = self.state().is_some_and(|state| state.can_undo);
         let can_redo = self.state().is_some_and(|state| state.can_redo);
-        let loop_hint = "toggle loop · cmd+l · l/w set selection or toggle matching loop";
+        let loop_hint = "toggle looping · cmd+l · l/w set scope or toggle matching scope";
         let loop_enabled = self
             .pending_loop_region()
             .or_else(|| self.state().and_then(|state| state.project.loop_region()))
@@ -77,6 +77,9 @@ impl EditorView {
             self.computer_keyboard.base_pitch, self.computer_keyboard.velocity
         );
         let field = self.project_tempo_input(cx);
+        // Reserve room for transient recording and automation controls on the
+        // first row at the minimum window width.
+        let compact = f32::from(window.viewport_size().width) < 1_000.0;
         let controls = div()
             .id("transport-primary-controls")
             .on_click(|_, _, cx| cx.stop_propagation())
@@ -132,6 +135,66 @@ impl EditorView {
                     cx,
                 )
                 .rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS)),
+            )
+            .child(
+                self.control_icon_description(
+                    "in",
+                    "audio input",
+                    format!(
+                        "audio input · {}",
+                        hex_session::service::text::verbatim(self.audio_recorder.input_label())
+                    )
+                    .into(),
+                    theme::action_style(),
+                    |view, window, cx| view.open_audio_input_menu(window, cx),
+                    cx,
+                )
+                .rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS))
+                .debug_selector(|| "audio-input-picker".into()),
+            )
+            .child(
+                self.control_icon(
+                    "mon",
+                    if self.audio_recorder.software_monitor {
+                        "software monitor for armed input · click for hardware"
+                    } else {
+                        "hardware monitoring · click for software"
+                    },
+                    |view, _, cx| {
+                        view.toggle_software_monitor();
+                        cx.notify();
+                    },
+                    cx,
+                )
+                .rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS))
+                .debug_selector(|| "audio-monitor-toggle".into())
+                .text_color(rgb(theme::color(
+                    if self.audio_recorder.software_monitor {
+                        theme::PaletteRole::Primary
+                    } else {
+                        theme::PaletteRole::Muted
+                    },
+                ))),
+            )
+            .child(
+                self.control_icon(
+                    "●a",
+                    self.audio_recorder.label(),
+                    |view, _, cx| {
+                        view.toggle_audio_recording();
+                        cx.notify();
+                    },
+                    cx,
+                )
+                .rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS))
+                .debug_selector(|| "audio-record-toggle".into())
+                .text_color(rgb(theme::color(
+                    if self.audio_recorder.blocks_edits() {
+                        theme::PaletteRole::Recording
+                    } else {
+                        theme::PaletteRole::Muted
+                    },
+                ))),
             )
             .child(
                 self.control_icon(
@@ -307,10 +370,16 @@ impl EditorView {
                 .debug_selector(|| "reenable-device-automation".into())
             }))
             .children([self.snap_control(cx)])
-            .children([self.section_focus_toggle(cx)])
-            .children([self.track_tag_filter_control(cx)])
-            .child(self.zoom_fit_button(super::zoom_fit::Target::Arrange, false, cx))
-            .child(self.zoom_fit_button(super::zoom_fit::Target::Arrange, true, cx));
+            .children((!compact).then(|| self.section_focus_toggle(cx)))
+            .children((!compact).then(|| self.track_tag_filter_control(cx)))
+            .children(
+                (!compact)
+                    .then(|| self.zoom_fit_button(super::zoom_fit::Target::Arrange, false, cx)),
+            )
+            .children(
+                (!compact)
+                    .then(|| self.zoom_fit_button(super::zoom_fit::Target::Arrange, true, cx)),
+            );
         let mut status = div()
             .id("transport-status-controls")
             .on_click(|_, _, cx| cx.stop_propagation())
@@ -318,6 +387,14 @@ impl EditorView {
             .items_center()
             .min_w_0()
             .flex_1()
+            .children(compact.then(|| self.section_focus_toggle(cx)))
+            .children(compact.then(|| self.track_tag_filter_control(cx)))
+            .children(
+                compact.then(|| self.zoom_fit_button(super::zoom_fit::Target::Arrange, false, cx)),
+            )
+            .children(
+                compact.then(|| self.zoom_fit_button(super::zoom_fit::Target::Arrange, true, cx)),
+            )
             .child(
                 div()
                     .debug_selector(|| "project position".into())

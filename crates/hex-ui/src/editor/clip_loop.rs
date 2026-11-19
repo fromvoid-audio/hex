@@ -17,6 +17,22 @@ pub(super) struct State {
     audio_gesture: Option<audio::Gesture>,
     audio_bounds: Option<gpui::Bounds<gpui::Pixels>>,
 }
+impl State {
+    pub(super) fn retire_deferred_play_start(&mut self) {
+        if self.pending.as_ref().is_some_and(|pending| {
+            pending.receipt.is_queued()
+                && matches!(
+                    pending.preview,
+                    Preview::Audio {
+                        edit: AudioEdit::Resize(AudioViewResizeOperation::PlayStart { .. }),
+                        ..
+                    }
+                )
+        }) {
+            self.pending = None;
+        }
+    }
+}
 struct Pending {
     generation: u64,
     clip: ClipId,
@@ -40,6 +56,7 @@ impl EditorView {
             && self.document_audio_mode == hex_session::DocumentAudioMode::Resident
             && self.clip_view_open
             && !self.device_panel_active
+            && self.recovery.generation().is_none()
             && !self.edit_pending()
             && self
                 .audio_status()
@@ -49,7 +66,21 @@ impl EditorView {
                 .or_else(|| self.held_midi_play_start_audition())
         })
         .flatten();
-        if target.is_some() || self.clip_loop.play_start_audition_held {
+        if let Some(target) = &target
+            && let hex_session::service::PlayStartEdit::Audio { clip, .. } = target.edit
+            && self.has_degraded_vst3_output()
+        {
+            if self.clip_loop.play_start_audition_held {
+                self.set_held_play_start_audition(None);
+            }
+            if self.pending_restart_request.is_none() && self.claim_audio_play_start_recovery() {
+                self.recover_audio();
+                if self.recovery.generation().is_some() {
+                    self.recovery.bind_clip_play_start(target.context, clip);
+                    self.defer_play_until_audio_recovers();
+                }
+            }
+        } else if target.is_some() || self.clip_loop.play_start_audition_held {
             self.set_held_play_start_audition(target);
         }
     }
@@ -123,7 +154,7 @@ impl EditorView {
             if let Some((a, b)) = self.midi_time_selection_bounds().filter(|(a, b)| a != b) {
                 let (first, last) = (a.min(b), a.max(b));
                 if last > values.source_length {
-                    self.error = Some("clip loop selection exceeds its source".into());
+                    self.error = Some("clip scope selection exceeds its source".into());
                     return true;
                 }
                 values.looping = if (first, last) == (values.loop_start, values.loop_end) {
@@ -165,7 +196,7 @@ impl EditorView {
                 {
                     AudioEdit::Toggle(!active)
                 }
-                Some((start, end)) => AudioEdit::Resize(AudioViewResizeOperation::CycleRange {
+                Some((start, end)) => AudioEdit::Resize(AudioViewResizeOperation::ScopeRange {
                     start,
                     end,
                     looping: true,
@@ -226,7 +257,15 @@ impl EditorView {
         self.commit_audio_loop_edit(clip, AudioEdit::Resize(operation));
     }
     fn commit_audio_loop_edit(&mut self, clip: ClipId, edit: AudioEdit) {
-        if self.edit_pending() || self.clip_loop.pending.is_some() {
+        let play_start = matches!(
+            edit,
+            AudioEdit::Resize(AudioViewResizeOperation::PlayStart { .. })
+        );
+        let recovering = play_start && self.recovering_clip_play_start(clip);
+        if (play_start && self.recovery.generation().is_some() && !recovering)
+            || (self.edit_pending() && !recovering)
+            || self.clip_loop.pending.is_some()
+        {
             return;
         }
         let preview = self.state.as_ref().and_then(|s| match edit {

@@ -210,6 +210,7 @@ impl Action {
             Operation::Rename(source) => begin_name(view, source, window, cx),
             Operation::Edit(source) => {
                 if view.edit_pending()
+                    || view.sampler_parameter.numeric_draft_active()
                     || view.tuning.client.snapshot().is_some()
                     || view.tuning.client.has_pending_requests()
                 {
@@ -221,7 +222,9 @@ impl Action {
                         .is_some_and(|definition| {
                             matches!(
                                 definition.instrument().state().type_id().as_str(),
-                                Ok("hex.instrument.fm4" | "hex.instrument.operator")
+                                Ok("hex.instrument.fm4"
+                                    | "hex.instrument.operator"
+                                    | "hex.instrument.sampler")
                             )
                         })
                         && !state
@@ -241,6 +244,7 @@ impl Action {
             }
             Operation::Navigate(_, track) => {
                 if view.edit_pending()
+                    || view.sampler_parameter.numeric_draft_active()
                     || view.tuning.client.snapshot().is_some()
                     || view.tuning.client.has_pending_requests()
                 {
@@ -464,7 +468,7 @@ fn details(
     ];
     if matches!(
         definition.instrument().state().type_id().as_str(),
-        Ok("hex.instrument.fm4" | "hex.instrument.operator")
+        Ok("hex.instrument.fm4" | "hex.instrument.operator" | "hex.instrument.sampler")
     ) && !state
         .project
         .tracks()

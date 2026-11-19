@@ -82,7 +82,9 @@ fn held_controller_query_keeps_pcm_running_and_cancels_without_sdk_teardown() {
                     }
                     ParameterPageProgress::Pending => {}
                     ParameterPageProgress::Changed { .. } => panic!("unversioned first query"),
-                    ParameterPageProgress::Conversion(_) | ParameterPageProgress::Editor(_) => {
+                    ParameterPageProgress::Conversion(_)
+                    | ParameterPageProgress::Editor(_)
+                    | ParameterPageProgress::EditorSeal(_) => {
                         panic!("expected metadata page")
                     }
                 }
@@ -310,7 +312,9 @@ fn page(instance: &mut Prepared, query: ParameterPageQuery) -> Box<ParameterPage
             ParameterPageProgress::Page(page) => return page,
             ParameterPageProgress::Pending => {}
             ParameterPageProgress::Changed { .. } => panic!("unchanged fixture metadata"),
-            ParameterPageProgress::Conversion(_) | ParameterPageProgress::Editor(_) => {
+            ParameterPageProgress::Conversion(_)
+            | ParameterPageProgress::Editor(_)
+            | ParameterPageProgress::EditorSeal(_) => {
                 panic!("expected metadata page")
             }
         }
@@ -506,7 +510,8 @@ fn actual_controller_pages_use_sdk_conversions_without_processing_or_replacing_s
                 }
                 ParameterPageProgress::Page(_)
                 | ParameterPageProgress::Conversion(_)
-                | ParameterPageProgress::Editor(_) => {
+                | ParameterPageProgress::Editor(_)
+                | ParameterPageProgress::EditorSeal(_) => {
                     panic!("stale metadata must invalidate enumeration")
                 }
             }
@@ -521,7 +526,9 @@ fn actual_controller_pages_use_sdk_conversions_without_processing_or_replacing_s
                 ParameterPageProgress::Page(page) => break page,
                 ParameterPageProgress::Pending => {}
                 ParameterPageProgress::Changed { .. } => panic!("same stopped metadata"),
-                ParameterPageProgress::Conversion(_) | ParameterPageProgress::Editor(_) => {
+                ParameterPageProgress::Conversion(_)
+                | ParameterPageProgress::Editor(_)
+                | ParameterPageProgress::EditorSeal(_) => {
                     panic!("expected stopped metadata page")
                 }
             }
@@ -882,6 +889,91 @@ fn authored_quantum_partition_preserves_signed_pcm_after_pipeline_latency() {
 
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn live_editor_detach_waits_for_real_gesture_without_stopping_pcm() {
+    use crate::protocol::{ControllerRequest, PluginEditorState};
+    let case = Case::new();
+    let end = case.root.join("end");
+    let end_for_child = end.clone();
+    let setup = case.setup(147);
+    let mut instance = Prepared::prepare(
+        &build(),
+        source(),
+        options(),
+        PreparationCancellation::new_on_control().unwrap(),
+        move |command| {
+            setup(command);
+            command.env("HEX_ORIGINAL_EDITOR_END_RELEASE", end_for_child);
+        },
+    )
+    .unwrap();
+    let child = instance.child_id_on_control();
+    fs::write(case.release(), b"begin gesture").unwrap();
+    let until = Instant::now() + Duration::from_millis(850);
+    while case.observation().is_none_or(|trace| trace[0] != 25) {
+        assert!(Instant::now() < until, "SDK gesture did not begin");
+        thread::yield_now();
+    }
+    let query = |instance: &mut Prepared| {
+        instance
+            .begin_controller_request_on_worker(ControllerRequest::DetachEditorWhenIdle)
+            .unwrap();
+        loop {
+            match instance.poll_parameter_page_on_worker().unwrap() {
+                ParameterPageProgress::Pending => {}
+                ParameterPageProgress::Editor(state) => return state,
+                _ => panic!("unexpected guarded detach reply"),
+            }
+            assert!(Instant::now() < until, "guarded detach did not complete");
+            thread::yield_now();
+        }
+    };
+    assert_eq!(query(&mut instance), PluginEditorState::GestureActive);
+    let input = request(instance.configuration(), 0);
+    let output = instance.exchange_on_worker(input).unwrap();
+    assert!(output.pcm[..8].iter().any(|frame| *frame != [0.0; 2]));
+    assert_eq!(instance.child_id_on_control(), child);
+    fs::write(end, b"end gesture").unwrap();
+    loop {
+        match query(&mut instance) {
+            PluginEditorState::GestureActive => {}
+            PluginEditorState::Closed => break,
+            other => panic!("unexpected detach terminal: {other:?}"),
+        }
+        assert!(Instant::now() < until, "SDK gesture did not finish");
+    }
+    let input = request(instance.configuration(), 1);
+    let output = instance.exchange_on_worker(input).unwrap();
+    assert!(output.pcm[..8].iter().any(|frame| *frame != [0.0; 2]));
+    assert_eq!(instance.child_id_on_control(), child);
+    let mut edits = Vec::new();
+    while edits.len() < 3 {
+        edits.extend_from_slice(
+            instance
+                .poll_parameter_edits_on_worker()
+                .unwrap()
+                .as_slice(),
+        );
+        assert!(
+            Instant::now() < until,
+            "accepted editor receipts did not arrive"
+        );
+        thread::yield_now();
+    }
+    assert_eq!(edits.len(), 3);
+    assert_eq!(edits[0].kind, crate::protocol::ParameterEditKind::Begin);
+    assert_eq!(edits[1].kind, crate::protocol::ParameterEditKind::Perform);
+    assert_eq!(edits[2].kind, crate::protocol::ParameterEditKind::End);
+    assert!(
+        instance
+            .stop_and_reap_on_control()
+            .unwrap()
+            .status
+            .success()
+    );
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn replacement_editor_commands_report_closed_and_unavailable_without_opening_windows() {
     use crate::protocol::{ControllerRequest, PluginEditorPosition, PluginEditorState};
     let case = Case::new();
@@ -893,7 +985,13 @@ fn replacement_editor_commands_report_closed_and_unavailable_without_opening_win
         case.setup(0),
     )
     .unwrap();
+    // Enter the native helper's closed-editor quiet interval before querying.
+    thread::sleep(Duration::from_millis(60));
     for (request, expected) in [
+        (
+            ControllerRequest::EditorVisibility,
+            PluginEditorState::Closed,
+        ),
         (ControllerRequest::DetachEditor, PluginEditorState::Closed),
         (
             ControllerRequest::ReopenEditor(PluginEditorPosition::new(-204.25, 300.5)),
@@ -924,4 +1022,159 @@ fn replacement_editor_commands_report_closed_and_unavailable_without_opening_win
             .status
             .success()
     );
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn editor_seal_preserves_burst_and_refuses_an_active_sdk_gesture() {
+    use crate::protocol::{ControllerRequest, EditorSealState, ParameterEditKind};
+
+    fn seal(instance: &mut Prepared) -> EditorSealState {
+        instance
+            .begin_controller_request_on_worker(ControllerRequest::SealEditorEdits)
+            .unwrap();
+        let until = Instant::now() + Duration::from_millis(750);
+        loop {
+            match instance.poll_parameter_page_on_worker().unwrap() {
+                ParameterPageProgress::EditorSeal(result) => return result,
+                ParameterPageProgress::Pending => {}
+                other => panic!("unexpected editor seal terminal: {other:?}"),
+            }
+            assert!(
+                Instant::now() < until,
+                "original helper did not answer the seal"
+            );
+            thread::yield_now();
+        }
+    }
+    for (variant, count) in [(116, 14), (147, 3)] {
+        let case = Case::new();
+        let setup = case.setup_restore(variant);
+        let end = case.root.join("end");
+        let end_gate = end.clone();
+        let mut instance = Prepared::prepare(
+            &build(),
+            source(),
+            options(),
+            PreparationCancellation::new_on_control().unwrap(),
+            move |command| {
+                setup(command);
+                if variant == 147 {
+                    command.env("HEX_ORIGINAL_EDITOR_END_RELEASE", end_gate);
+                }
+            },
+        )
+        .unwrap();
+        let child = instance.child_id_on_control();
+        fs::write(case.release(), b"emit actual SDK editor callbacks").unwrap();
+        let until = Instant::now() + Duration::from_millis(750);
+        while case.observation().is_none_or(|trace| trace[0] != 25) {
+            assert!(
+                Instant::now() < until,
+                "actual editor callbacks must arrive"
+            );
+            thread::yield_now();
+        }
+        if variant == 147 {
+            assert_eq!(seal(&mut instance), EditorSealState::NotSealed);
+            fs::write(end, b"finish actual SDK gesture").unwrap();
+            while seal(&mut instance) != EditorSealState::Sealed {
+                assert!(
+                    Instant::now() < until,
+                    "completed SDK gesture must permit sealing"
+                );
+                thread::yield_now();
+            }
+        } else {
+            assert_eq!(seal(&mut instance), EditorSealState::Sealed);
+        }
+        let mut edits = Vec::new();
+        while edits.len() < count {
+            let batch = instance.service_idle_editor_edits_on_worker().unwrap();
+            edits.extend_from_slice(batch.edits.as_slice());
+            assert!(
+                Instant::now() < until,
+                "sealed source must drain accepted callbacks"
+            );
+            thread::yield_now();
+        }
+        assert_eq!(edits.len(), count);
+        for (index, edit) in edits.iter().enumerate() {
+            assert_eq!(
+                (edit.sequence, edit.gesture, edit.id),
+                (index as u64 + 1, 1, 7)
+            );
+            let kind = if index == 0 {
+                ParameterEditKind::Begin
+            } else if index + 1 == count {
+                ParameterEditKind::End
+            } else {
+                ParameterEditKind::Perform
+            };
+            assert_eq!(edit.kind, kind);
+        }
+        assert_eq!(instance.child_id_on_control(), child);
+        assert_eq!(instance.completed_blocks_on_control(), 0);
+        assert!(
+            instance
+                .stop_and_reap_on_control()
+                .unwrap()
+                .status
+                .success()
+        );
+    }
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn sealed_helper_must_not_resume_as_editable_source() {
+    use crate::protocol::{ControllerRequest, EditorSealState};
+    let case = Case::new();
+    let mut instance = Prepared::prepare(
+        &build(),
+        source(),
+        options(),
+        PreparationCancellation::new_on_control().unwrap(),
+        case.setup_restore(116),
+    )
+    .unwrap();
+    instance
+        .begin_controller_request_on_worker(ControllerRequest::SealEditorEdits)
+        .unwrap();
+    let until = Instant::now() + Duration::from_millis(600);
+    loop {
+        match instance.poll_parameter_page_on_worker().unwrap() {
+            ParameterPageProgress::EditorSeal(EditorSealState::Sealed) => break,
+            ParameterPageProgress::Pending => {}
+            other => panic!("seal terminal: {other:?}"),
+        }
+        assert!(Instant::now() < until);
+        thread::yield_now();
+    }
+    let old = instance.configuration().binding;
+    let stopped = instance.quiesce_on_control().unwrap();
+    let mut failure = match stopped.resume_retained_on_control(
+        Binding {
+            epoch: old.epoch + 1,
+            ..old
+        },
+        Some(options().presentation),
+    ) {
+        Err(failure) => failure,
+        Ok(_) => panic!("sealed helper must not report a reusable epoch"),
+    };
+    assert!(matches!(failure.cause(), Error::Worker(16)));
+    loop {
+        match failure.poll_disposal_on_control().unwrap() {
+            Some(PreparationDisposal::Reaped(retired)) => {
+                assert!(!retired.status.success());
+                assert!(retired.terminal.is_none());
+                break;
+            }
+            Some(PreparationDisposal::NoInstance) => panic!("original child custody disappeared"),
+            None => {}
+        }
+        assert!(Instant::now() < until);
+        thread::yield_now();
+    }
 }

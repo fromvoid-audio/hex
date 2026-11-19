@@ -24,6 +24,11 @@ use std::{
     time::Instant,
 };
 
+#[cfg(target_os = "macos")]
+mod output_presentation;
+#[cfg(target_os = "macos")]
+pub use output_presentation::PluginOutputObservation;
+
 pub struct PreparedOutput {
     _stream: lifecycle::StreamOwner,
     pub control: prepared::Control,
@@ -154,7 +159,10 @@ impl WorkerPreparedOutput {
     }
     pub fn take_client(&mut self) -> Option<prepared::Client> {
         let mut client = self.client.take()?;
-        client.activate();
+        if !client.activate() {
+            self.client = Some(client);
+            return None;
+        }
         Some(client)
     }
 }
@@ -426,7 +434,7 @@ where
     let rate = config.sample_rate;
     let bounded_bridge =
         bridge.and_then(|plan| Some((plan.converting_device_rate?, plan.project_quantum)));
-    let data_callback = move |data: &mut [T], _: &cpal::OutputCallbackInfo| {
+    let data_callback = move |data: &mut [T], info: &cpal::OutputCallbackInfo| {
         let Some(owner) = data_guard.owner_mut() else {
             data.fill(T::from_sample(0.0));
             return;
@@ -466,10 +474,15 @@ where
                 callback.report_render_fault(Some(&error), status.position.load(Relaxed));
                 return;
             }
-            for chunk in data[..complete].chunks_mut(channels * block.len()) {
+            for (index, chunk) in data[..complete]
+                .chunks_mut(channels * block.len())
+                .enumerate()
+            {
                 let frames = chunk.len() / channels;
                 let block_start_frame = status.position.load(Relaxed);
                 let rendered = callback.render(&mut block[..frames]);
+                let clock = sample_output_clock(info, index, block.len());
+                callback.set_sample_recording_output_clock(clock);
                 finish_host_chunk(
                     callback,
                     chunk,
@@ -522,6 +535,67 @@ where
         }
     }
     device.build_output_stream(config, data_callback, error_callback, None)
+}
+
+fn sample_output_clock(
+    info: &cpal::OutputCallbackInfo,
+    chunk: usize,
+    chunk_frames: usize,
+) -> Option<crate::sample_recording::OutputClock> {
+    Some(crate::sample_recording::OutputClock {
+        playback: info.timestamp().playback,
+        offset_frames: u32::try_from(chunk.checked_mul(chunk_frames)?).ok()?,
+        graph_latency_frames: None,
+        origin: if cfg!(target_os = "macos") {
+            crate::sample_recording::OutputClockOrigin::CoreAudioHostTime
+        } else {
+            crate::sample_recording::OutputClockOrigin::Unknown
+        },
+    })
+}
+
+#[cfg(test)]
+mod output_clock_tests {
+    use super::*;
+
+    #[test]
+    fn preserves_native_playback_instant_and_checked_chunk_offsets() {
+        let playback = cpal::StreamInstant::new(25, 123);
+        let info = cpal::OutputCallbackInfo::new(cpal::OutputStreamTimestamp {
+            callback: cpal::StreamInstant::new(25, 100),
+            playback,
+        });
+        assert_eq!(sample_output_clock(&info, 0, 256).unwrap().offset_frames, 0);
+        let second = sample_output_clock(&info, 1, 256).unwrap();
+        assert_eq!((second.playback, second.offset_frames), (playback, 256));
+        #[cfg(target_os = "macos")]
+        assert_eq!(
+            second.origin,
+            crate::sample_recording::OutputClockOrigin::CoreAudioHostTime
+        );
+        #[cfg(not(target_os = "macos"))]
+        assert_eq!(
+            second.origin,
+            crate::sample_recording::OutputClockOrigin::Unknown
+        );
+        assert!(sample_output_clock(&info, usize::MAX, 256).is_none());
+        assert!(sample_output_clock(&info, u32::MAX as usize, 2).is_none());
+        #[cfg(feature = "allocation-probe")]
+        {
+            let measured = allocation_counter::measure(|| {
+                assert!(sample_output_clock(&info, 1, 256).is_some());
+            });
+            assert_eq!(
+                (
+                    measured.count_total,
+                    measured.bytes_total,
+                    measured.count_current,
+                    measured.bytes_current
+                ),
+                (0, 0, 0, 0)
+            );
+        }
+    }
 }
 
 pub(crate) fn valid_transport_buffer(

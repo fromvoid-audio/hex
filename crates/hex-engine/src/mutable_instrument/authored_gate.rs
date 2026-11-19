@@ -82,6 +82,7 @@ pub(crate) struct AuthoredGateContext<'a> {
     pub(crate) source_start: u64,
     pub(crate) width: u64,
     pub(crate) source_age: Option<u64>,
+    pub(crate) contributor_fade_rate: Option<u32>,
     pub(crate) tail_frames: u64,
     pub(crate) max_active: usize,
     pub(crate) steals_releasing: bool,
@@ -106,6 +107,7 @@ pub(crate) fn stage_authored_gates(
         source_start,
         width,
         source_age,
+        contributor_fade_rate,
         tail_frames,
         max_active,
         steals_releasing,
@@ -159,6 +161,23 @@ pub(crate) fn stage_authored_gates(
         if onset_delta >= width {
             continue;
         }
+        let contributor_fade = if onset.contributor_fade_in {
+            if onset_delta != 0 {
+                return Err(MutableInstrumentRuntimeError::InvalidSourceSpan);
+            }
+            let start_age = source_age.ok_or(MutableInstrumentRuntimeError::InvalidSourceSpan)?;
+            let fade = contributor_fade_rate
+                .and_then(ContributorFadeIn::new)
+                .ok_or(MutableInstrumentRuntimeError::InvalidSourceSpan)?;
+            Some(ContributorFade {
+                start_age,
+                frames: fade.frames(),
+                start_bits: 0.0_f64.to_bits(),
+                muted: false,
+            })
+        } else {
+            None
+        };
         let onset_frame = performance_start
             .checked_add(onset_delta)
             .ok_or(MutableInstrumentRuntimeError::Arithmetic)?;
@@ -257,7 +276,7 @@ pub(crate) fn stage_authored_gates(
             note_off_sent,
             gain_at_end_bits: 1.0_f64.to_bits(),
             gain_frozen: false,
-            contributor_fade: None,
+            contributor_fade,
         });
     }
 

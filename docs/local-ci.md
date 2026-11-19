@@ -190,21 +190,76 @@ harnesses runs the owning unit targets and keeps the reviewed feature Clippy
 checks. Changes to product source still select its unit and rendered support
 coverage.
 
-The windowed library and standalone MIDI pressure test use
-`ui-test-support` in separate invocations:
+The windowed library and the standalone MIDI pressure, recorder layout and
+Operator focus tests use `ui-test-support` in separate invocations:
 
 ```sh
 cargo test -p hex-ui --features ui-test-support --lib --locked
 cargo test -p hex-ui --features ui-test-support --test midi_pressure_boundary --locked
+cargo test -p hex-ui --features ui-test-support --test sample_recorder_layout --locked
+cargo test -p hex-ui --features ui-test-support --test operator_focus --locked
 ```
+
+For first-process Operator timing, build just the optimized test executable:
+
+```sh
+mkdir -p artifacts
+cargo test -p hex-ui --features ui-test-support --test operator_focus \
+  --release --locked --no-run --message-format=json > artifacts/operator-focus-build.jsonl
+```
+
+Set `operator_test` to the absolute `executable` path in the `operator_focus`
+Cargo artifact record. On macOS, prepare a stripped, ad hoc signed copy on the
+internal APFS volume, then launch a fresh copy of that file:
+
+```sh
+measurement_dir=$(mktemp -d "$PWD/artifacts/operator-focus.XXXXXX")
+prepared="$measurement_dir/operator-focus"
+cp -c "$operator_test" "$prepared"
+xcrun strip -S -x "$prepared"
+codesign --force --sign - "$prepared"
+codesign --verify --strict "$prepared"
+cp -c "$prepared" "$measurement_dir/operator-focus-run"
+/usr/bin/time -p "$measurement_dir/operator-focus-run" \
+  operator_tab_cycles_rendered_controls_in_both_directions_without_project_edits \
+  --exact --test-threads=1
+```
+
+Use a new copy for each first-process measurement and confirm one test passed.
+Record preparation and compilation separately from the test-process wall time.
+The default debug and optimized executions should be reported separately.
 
 Run `cargo test -p hex-ui --tests --locked` for the default library and
 default standalone unit targets. The six `ui-unit-tier` targets above complete
-the unit tier. The two `ui-test-support` invocations form the integration tier,
+the unit tier. These `ui-test-support` invocations form the integration tier,
 including rendered focus and shortcuts, pending-edit receipts, delayed
 acknowledgement repaint, and open/save flows. For each tier, time the combined
 setup and test execution with compilation measured separately. The unit limit
 is 30 seconds and the integration limit is three minutes.
+
+To time the tiers independently, add `--no-run --message-format=json` to each
+Cargo command and collect the test-profile `compiler-artifact` executables.
+Measure wall time for running all distinct executables in each tier, including
+process startup and fixture setup. Run them from the package directory, as Cargo
+does, and keep the default harness arguments so the same tests run. Record the
+source, toolchain, test counts, build times and the two tier totals. Timing the
+feature-enabled library executable measures the windowed integration suite.
+
+For a focused first-launch comparison, time the first exact test invocation on
+the newly linked executable, then repeat it on the same file. Run `--list` on
+separate fresh APFS copies to sample launch and discovery without executing the
+test. Keep the executable format, signing preparation, toolchain and system
+settings consistent between comparisons. Record the process wall time and
+harness time separately. This establishes the launch cost on that configuration.
+
+For focused recorder layout timing on macOS arm64, build
+`sample_recorder_layout` with `--release --no-run --message-format=json`.
+Copy Cargo's reported test executable to a local artifact directory and prepare
+that copy with `xcrun strip -S -x`, `codesign --force --sign -`, and
+`codesign --verify --strict`. Time a fresh APFS copy of the prepared executable
+and run `recorder_header_fits_the_button_labels_and_hit_targets` with
+`--exact --test-threads=1`. Repeat on the same executable for warm timing and
+report compilation and one-time signature preparation separately.
 
 Plans containing self-tests run the existing changelog, architecture, dependency,
 UI/layout and formatting checks first, once each, before Python self-tests and
@@ -259,18 +314,27 @@ carries a doc example (a fenced block in `///` or `//!` comments). A reviewed ru
 consumer that is itself the changed owner (for example hex-storage) is
 module-scoped like any owner.
 
+For a module-scoped `hex-session` automation-take adoption change, the
+planner also runs the `automation_take_density` integration target when it is
+present. It exercises the real durable overflow boundary and must run at least
+one test. Whole-package checks already include it; unrelated modules stay scoped.
+
 Python tooling follows the same rule. A changed `scripts/NAME.py` (or
 `scripts/NAME`) runs its own `test_NAME` module, and a changed
 `scripts/tests/test_X.py` runs itself. Both add the shared planner invariants.
 Scripts without their own test module, config files and unknown inputs keep
-comprehensive discovery. Merge checks without explicit native acceptance inputs
+comprehensive discovery. Ordinary unscoped full audits and comprehensive merge
+checks without explicit native acceptance inputs
 run that inventory through `scripts/python_shards.py --discover` with up to
 eight workers and batches of up to eight ordinary cases from the same
 module or package. When Git on the
 original PATH is Apple's `/usr/bin/git` launcher, sharded runs resolve the
 selected Git once with `xcrun` and put only that executable ahead of the
-original PATH for its child processes. Comprehensive full, release and health runs
-remain serial. Owner selections run through `scripts/python_shards.py`:
+original PATH for its child processes. Full audits with explicit native
+acceptance inputs, scoped full plans, and the release and health profiles
+retain serial comprehensive discovery. Unscoped full reports record sharded
+discovery explicitly. Reports predating that marker retain their serial
+configuration for certificate validation. Owner selections run through `scripts/python_shards.py`:
 ordinary cases from the same module are batched up to eight per process in a
 shared work queue with a default cap of 12 workers.
 Subprocess-heavy test methods explicitly marked `__hex_shard_bounded__ = True`
@@ -458,16 +522,20 @@ the previous target and failed report; changing the location is not evidence tha
 every test meets its time limit. Measure test setup and execution, including any
 copying or other setup, and investigate any remaining slow test separately.
 
-For a one-time dev target admission, set an explicit absolute `CARGO_TARGET_DIR`
-with existing ancestors and pass `--fresh-target` to a full or scoped run.
+For a one-time dev target admission, first create an empty target directory,
+set its explicit absolute path as `CARGO_TARGET_DIR`, and pass `--fresh-target`
+to a full or scoped run.
 
 ```sh
-mkdir -p artifacts
+mkdir -p artifacts/cargo-ci-target
 CARGO_TARGET_DIR="$PWD/artifacts/cargo-ci-target" \
   python3 scripts/cargo-slot.py python3 scripts/local-ci.py --profile full --fresh-target
 ```
 
-The target must be absent or empty and have no existing owner. The reservation
+The target must already exist, be empty and have no existing owner. An absent
+target is refused before Cargo metadata: the runner cannot yet prove the identity
+of a directory it creates before opening it. Create an empty directory yourself
+and retry; existing target contents are never removed. The reservation
 pins directory ancestry and holds the same lock across planner metadata, runner
 metadata, create-only owner publication and guarded checks. Metadata temporarily
 disables the rustc information cache, then must report the selected workspace
@@ -498,8 +566,8 @@ before its first Cargo operation and retain it through the later custody
 decision. Metadata must report exactly the explicit target and leave it fresh;
 resolution alone neither admits the target nor publishes ownership. A target
 inferred only from Cargo configuration does not meet this API's proof contract.
-The dev publisher uses the existing owner schema for absent and empty targets.
-An absent target is materialized under the held lock before owner publication.
+The dev publisher uses the existing owner schema for pre-existing empty targets.
+Identity-bound creation for absent targets remains unsupported.
 
 The summary records the identified filesystem, probe duration and dev cleanup
 duration (including failed cleanup). A target
@@ -598,14 +666,43 @@ PY
 Use one persistent Cargo target per executor, with no concurrent raw Cargo writer.
 Repository tools acquire an advisory target lock. Unknown/foreign/pending cache
 ownership refuses before normal checks. Read the diagnostic before recovery.
+The lock file is opened without following a final symlink and its existing bytes
+are left unchanged. Contention reports that the target is in use without reading
+or displaying the untrusted lock-file contents as a holder identity. Older
+runner versions may still display stale holder information from that file.
 `--adopt-target` explicitly invalidates supported workspace development outputs
 and establishes the checkout's development owner; it is not permission to remove
 another executor's active cache, release artifacts or user data.
 
-Development and release ownership are separate markers: a target populated by
-local CI has no release owner, so packaging refuses it unless it is empty or
-explicitly adopted. Set separate `CARGO_TARGET_DIR` values for local CI and
-release packaging when both are needed; see [native macOS builds](test-builds.md).
+If a development cache handoff needs cleanup and any dependency outside the
+workspace runs a Cargo build script or procedural macro, the runner requires an
+empty target. Use a separate existing empty directory with `--fresh-target`.
+The first build recompiles dependencies. The old cache and its owner remain
+available for their original inputs. Cargo can only track declared inputs and
+the runner's recorded witnesses, so arbitrary reads outside them remain
+nonhermetic.
+
+Development and release ownership use separate markers. Packaging needs an empty
+target or a release owner that records an empty origin and matches the current
+checkout, exact source and build inputs. Explicit recovery can resume a matching
+pending owner. Set separate Cargo target paths for local CI and release packaging.
+See [native macOS builds](test-builds.md).
+
+### Selector changes
+
+Keep `scripts/ci_plan.py` in the guarded Cargo input fingerprint. A build
+script can read it without a Cargo watch and leave old generated output in the
+cache after a selector-only edit. Procedural macros also run with the compiler's
+filesystem access. Cargo watch declarations and a source scan do not restrict
+which files these programs can read. The current runner executes Cargo directly
+in the checkout. A narrower fingerprint requires a build boundary that can
+enforce or account for those reads. See [Cargo build-script change detection](https://doc.rust-lang.org/cargo/reference/build-scripts.html#change-detection)
+and [Rust procedural macros](https://doc.rust-lang.org/reference/procedural-macros.html).
+
+Use the existing target when its guard admits it. If the guard refuses the
+changed selector, follow the [fresh-target workflow](#macos-target-storage)
+and keep the previous target intact. This preserves the old cache at the cost
+of compiling dependencies in the new target.
 
 Package-scoped handoffs use Cargo-supported plain package names only after
 complete metadata proves each selected workspace/path name is unique across
@@ -651,6 +748,54 @@ inputs change. This controlled helper test does not establish installed plug-in,
 native UI, listening, device deadline or release acceptance. Keep SDK paths and
 local receipts out of Git; record the exact receipt hashes and result with the
 issue or PR being verified.
+
+### Signed VST3 editor regression timing
+
+Use the optimized desktop test target to time the signed regression that
+checks whether a late editor value reaches the original worker across graph
+publication. Use the verified fixture receipts from the commands above.
+
+```sh
+HEX_VST3_MACOS_RECEIPT="$PWD/artifacts/vst3-local-controlled/controlled-macos.json" \
+HEX_VST3_INSTANCE_RECEIPT="$PWD/artifacts/vst3-local-instance/controlled-macos.json" \
+  cargo test --locked --release -p hex-desktop --features allocation-probe --bin hex-desktop \
+  -- --ignored --exact --test-threads=1 \
+  native_audio::tests::plugins::capture_source_guard::late_editor_value_remains_on_original_worker_after_unlaned_publication
+```
+
+Measure first and repeated invocations separately and record both process wall
+time and the test harness duration. Report compilation separately. A fresh
+copy of the desktop executable can spend measurable time before libtest
+produces its first output, including on a listing-only run.
+
+### Long Re-Pitch regression timing
+
+The verified-worker Re-Pitch regression imports a file past the resident limit,
+applies history, seeks to audio beyond that limit, and saves and reopens the
+project. Use the compact macOS arm64 test build for focused first-launch timing.
+
+```sh
+cargo --config 'profile.release.package.hex-desktop.opt-level="z"' \
+  --config 'profile.release.package.hex-desktop.strip="symbols"' \
+  --config 'profile.release.package.hex-ui.opt-level="z"' \
+  --config 'profile.release.package.gpui.opt-level="z"' \
+  --config 'profile.release.package.hex-engine.opt-level="z"' \
+  --config 'profile.release.package.hex-audio.opt-level="z"' \
+  test --release --locked -p hex-desktop --features allocation-probe \
+  --bin hex-desktop --no-run --message-format=json
+```
+
+Use the executable from Cargo's `hex-desktop` test artifact. Prepare a local
+APFS copy, sign that copy with `codesign --force --sign -` and verify it with
+`codesign --verify --strict`. Run the following exact test with
+`--exact --test-threads=1` on a fresh APFS copy of the signed executable, then
+repeat on the same executable for warm timing.
+
+`native_audio::tests::resident_lifecycle::ordinary_long_repitch_plays_and_reopens_through_verified_workers`
+
+Record executable copy setup, process wall time and harness time. Report the
+compilation and one-time signature preparation separately. The fresh copy tests
+a new executable identity on the current filesystem cache.
 
 ### Dense playback baseline
 

@@ -381,7 +381,7 @@ fn source_hints_and_paint_require_same_view_source_facts_and_context(cx: &mut Te
             let target = Target {
                 generation: 2,
                 revision: 7,
-                track,
+                owner: hex_session::service::SamplerParameterOwner::Track(track),
                 device,
                 parameter: SamplerParameter::StartFrame,
             };
@@ -520,7 +520,7 @@ pub(in crate::editor) fn pending_request(
         request_id: pending.id,
         project_generation: target.generation,
         revision: target.revision,
-        owner: hex_session::service::SamplerParameterOwner::Track(target.track),
+        owner: target.owner,
         device: target.device,
         parameter: target.parameter,
         value: pending.value?,
@@ -537,4 +537,90 @@ pub(in crate::editor) fn rendered_control_value(
         .controls
         .get(&parameter)
         .map(|control| control.entity.read(cx).value())
+}
+
+#[gpui::test]
+fn scalar_sampler_preview_survives_repaints_until_matching_terminal(cx: &mut TestAppContext) {
+    let (mut visual, editor, track, device) = numeric_sampler_fixture(cx);
+    let selector = Box::leak(format!("sampler-attack-{}-value", device.value()).into_boxed_str());
+    let position = visual.debug_bounds(selector).unwrap().center();
+    visual.simulate_click(position, gpui::Modifiers::default());
+    visual.simulate_keystrokes("cmd-a");
+    visual.simulate_input("100");
+    visual.simulate_keystrokes("enter");
+    visual.run_until_parked();
+    for _ in 0..3 {
+        editor.update(&mut visual, |_, cx| cx.notify());
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, cx| {
+            let pending = pending_request(view).expect("pending sampler edit");
+            assert_eq!(
+                pending.owner,
+                hex_session::service::SamplerParameterOwner::Track(track)
+            );
+            assert_eq!(pending.value, 100.0);
+            assert_eq!(
+                rendered_control_value(view, SamplerParameter::AttackMs, cx),
+                Some(100.0)
+            );
+        });
+    }
+    editor.update(&mut visual, |view, _| {
+        let pending = pending_request(view).unwrap();
+        view.finish_sampler_parameter(Some(pending.request_id + 1));
+        assert!(view.sampler_parameter_pending());
+        let old = view.state.as_ref().unwrap();
+        let mut event = super::super::arrangement_main_track_ui_test::completed_event(old);
+        let installed = Arc::get_mut(&mut event.state).unwrap();
+        let current = installed.project.device(device).unwrap().state();
+        let patched = hex_engine::patch_sampler_parameter_on_control(
+            SamplerParameter::AttackMs,
+            current,
+            100.0,
+        )
+        .unwrap();
+        let mut model = Editor::new((*installed.project).clone(), 16).unwrap();
+        model
+            .execute(Command::ReplaceDeviceState {
+                device,
+                state: patched,
+            })
+            .unwrap();
+        installed.project = Arc::new(model.project().clone());
+        event.sampler_edit_complete = Some(pending.request_id);
+        view.receive(event);
+        assert!(!view.sampler_parameter_pending());
+    });
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, cx| {
+        assert_eq!(
+            rendered_control_value(view, SamplerParameter::AttackMs, cx),
+            Some(100.0)
+        );
+        assert_eq!(
+            hex_engine::sampler_parameter_value_on_control(
+                SamplerParameter::AttackMs,
+                view.state
+                    .as_ref()
+                    .unwrap()
+                    .project
+                    .device(device)
+                    .unwrap()
+                    .state()
+            )
+            .unwrap(),
+            100.0
+        );
+    });
+}
+
+pub(in crate::editor) fn control_editing(
+    view: &EditorView,
+    parameter: SamplerParameter,
+    cx: &gpui::App,
+) -> bool {
+    view.sampler_parameter
+        .controls
+        .get(&parameter)
+        .is_some_and(|control| control.entity.read(cx).is_editing())
 }

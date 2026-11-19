@@ -60,6 +60,7 @@ impl StreamPlayback<'_> {
                 position: r.position(),
                 performance_frame: r.performance_frame(),
                 playing: r.playing(),
+                arrangement_loop_state: r.arrangement_loop_state(),
                 metronome_enabled: r.metronome_enabled(),
                 session_capability: r.session_capability_status(),
                 sampler_console: false,
@@ -225,6 +226,31 @@ impl StreamPlayback<'_> {
         self.preview_stream_handoff_with_report(previous, maximum_frames, playing, visit)
             .map(|(window, _)| window)
     }
+
+    /// Enumerate the successor's first running chunk at a confirmed cut
+    /// without changing either committed runtime or its owner.
+    pub fn preview_device_insert(
+        &mut self,
+        previous: &mut StreamPlayback<'_>,
+        fade_remaining: u32,
+        maximum_frames: usize,
+        visit: &mut impl FnMut(StreamResourceExtent) -> Result<(), Invalid>,
+    ) -> Result<StreamChunkWindow, PlaybackHandoffError> {
+        match (&mut self.runtime, &mut previous.runtime) {
+            (Runtime::Ordinary(next, _), Runtime::Ordinary(old, _)) => {
+                next.preview_stream_device_insert(old, fade_remaining, maximum_frames, true, visit)
+            }
+            (Runtime::Constructor(next), Runtime::Constructor(old))
+                if next.identity() != old.identity() =>
+            {
+                let stale = PlaybackHandoffError::RuntimeFenceChanged;
+                let next = next.device_insert_runtime().ok_or(stale)?;
+                let old = old.device_insert_runtime().ok_or(stale)?;
+                next.preview_stream_device_insert(old, fade_remaining, maximum_frames, false, visit)
+            }
+            _ => Err(PlaybackHandoffError::RuntimeFenceChanged),
+        }
+    }
     /// Preview stream demand and the running-audio handoff classification.
     /// The report does not authorize admission or a later publication.
     pub fn preview_stream_handoff_with_report(
@@ -276,6 +302,118 @@ impl StreamPlayback<'_> {
             false,
         )
     }
+    /// Preview an ordinary graph continuation using an exact borrowed matcher.
+    /// The host must separately authenticate the actual endpoint, source,
+    /// predecessor, candidate, transport and custody at preview and commit.
+    /// This projection does not admit a graph or transfer any resource.
+    #[cfg(test)]
+    pub(crate) fn preview_ordinary_with_foreign_continuation(
+        &mut self,
+        previous: &mut StreamPlayback<'_>,
+        maximum_frames: usize,
+        playing: Option<bool>,
+        visit: &mut impl FnMut(StreamResourceExtent) -> Result<(), Invalid>,
+        continuation: &hex_lattice::ForeignConfigurationContinuation<'_>,
+    ) -> Result<StreamChunkWindow, PlaybackHandoffError> {
+        match (&mut self.runtime, &mut previous.runtime) {
+            (Runtime::Ordinary(next, _), Runtime::Ordinary(old, _)) => next
+                .preview_stream_handoff_with_continuation_and_report(
+                    old,
+                    maximum_frames,
+                    playing,
+                    visit,
+                    true,
+                    false,
+                    Some(continuation),
+                )
+                .map(|(window, _)| window),
+            _ => Err(PlaybackHandoffError::RuntimeFenceChanged),
+        }
+    }
+
+    /// Forecast Arrangement demand on the exact revisions before the named
+    /// cut. This may warm pages and grants no authority to commit.
+    pub fn forecast_tempo_cut(
+        &mut self,
+        previous: &mut StreamPlayback<'_>,
+        maximum_frames: usize,
+        visit: &mut impl FnMut(StreamResourceExtent) -> Result<(), Invalid>,
+        anchor: &crate::session_playback::PreparedTempoAnchor,
+    ) -> Result<StreamChunkWindow, PlaybackHandoffError> {
+        let (next, old, claimed) = self.tempo_cut_pair(previous)?;
+        next.forecast_tempo_cut(old, maximum_frames, visit, anchor, claimed)
+    }
+
+    /// Plan the first page window at the exact prepared tempo cut. The donor
+    /// must already be at the named running frame and loop pass. This checks
+    /// revision identities but leaves transport, DSP and page custody unchanged.
+    pub fn preview_tempo_cut(
+        &mut self,
+        previous: &mut StreamPlayback<'_>,
+        maximum_frames: usize,
+        visit: &mut impl FnMut(StreamResourceExtent) -> Result<(), Invalid>,
+        anchor: &crate::session_playback::PreparedTempoAnchor,
+    ) -> Result<StreamChunkWindow, PlaybackHandoffError> {
+        let (next, old, claimed) = self.tempo_cut_pair(previous)?;
+        next.preview_tempo_cut(old, maximum_frames, visit, anchor, claimed)
+    }
+
+    fn tempo_cut_pair<'next, 'old>(
+        &'next mut self,
+        previous: &'old mut StreamPlayback<'_>,
+    ) -> Result<
+        (
+            &'next mut Playback,
+            &'old mut Playback,
+            Option<crate::session_playback::ClaimedTempoPair>,
+        ),
+        PlaybackHandoffError,
+    > {
+        let unavailable = PlaybackHandoffError::RuntimeFenceChanged;
+        match (&mut self.runtime, &mut previous.runtime) {
+            (Runtime::Ordinary(next, _), Runtime::Ordinary(old, _)) => Ok((next, old, None)),
+            (Runtime::Constructor(next), Runtime::Constructor(old))
+                if next.identity() != old.identity() =>
+            {
+                let pair = crate::session_playback::ClaimedTempoPair {
+                    previous: old.identity(),
+                    candidate: next.identity(),
+                };
+                let next = next
+                    .current_runtime_mut()
+                    .filter(|runtime| runtime.sampler_sources.is_none())
+                    .ok_or(unavailable)?;
+                let old = old
+                    .current_runtime_mut()
+                    .filter(|runtime| runtime.sampler_sources.is_none())
+                    .ok_or(unavailable)?;
+                Ok((&mut next.playback, &mut old.playback, Some(pair)))
+            }
+            _ => Err(unavailable),
+        }
+    }
+
+    /// Preview with state retained by this ordinary candidate. The host must
+    /// independently validate the source and transaction at preview and commit.
+    pub fn preview_ordinary_with_stored_foreign_continuation(
+        &mut self,
+        previous: &mut StreamPlayback<'_>,
+        maximum_frames: usize,
+        playing: Option<bool>,
+        visit: &mut impl FnMut(StreamResourceExtent) -> Result<(), Invalid>,
+    ) -> Result<StreamChunkWindow, PlaybackHandoffError> {
+        match (&mut self.runtime, &mut previous.runtime) {
+            (Runtime::Ordinary(next, _), Runtime::Ordinary(old, _)) => next
+                .preview_stream_handoff_with_stored_foreign_continuation(
+                    old,
+                    maximum_frames,
+                    playing,
+                    visit,
+                ),
+            _ => Err(PlaybackHandoffError::RuntimeFenceChanged),
+        }
+    }
+
     /// Preview only: the publication owner must validate the actual live fence
     /// and protect these pages before committing the corresponding reset.
     pub fn preview_ordinary_fenced_restart(
@@ -307,6 +445,27 @@ impl StreamPlayback<'_> {
                     true,
                 ),
             _ => Err(PlaybackHandoffError::RuntimeFenceChanged),
+        }
+    }
+    /// Borrow live track input through the current streamed runtime.
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_with_live_track_audio(
+        &mut self,
+        output: &mut [crate::Frame],
+        track: hex_project::TrackId,
+        input: &[crate::Frame],
+        pages: Option<&mut dyn crate::MediaPages>,
+        observer: Option<&mut crate::NodeSignalObserver<'_>>,
+        project: Option<&mut crate::ProjectOutputTap<'_, '_>>,
+        foreign: &mut dyn hex_lattice::ForeignProcessors,
+    ) -> Result<(), Invalid> {
+        match &mut self.runtime {
+            Runtime::Constructor(runtime) => runtime.render_with_live_track_audio(
+                output, track, input, pages, observer, project, foreign,
+            ),
+            Runtime::Ordinary(runtime, _) => runtime.render_with_live_track_audio(
+                output, track, input, pages, observer, project, foreign,
+            ),
         }
     }
     /// Borrow the existing admitted foreign endpoints through the same runtime
