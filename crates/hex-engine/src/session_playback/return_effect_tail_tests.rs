@@ -2056,6 +2056,133 @@ fn disconnect_send_stops_live_input_without_cutting_the_tail() {
 }
 
 #[test]
+fn staged_zero_latency_return_append_feeds_the_retained_reverb_through_fresh_delay() {
+    use crate::{OutputCapture, OutputCaptureId};
+    use hex_devices::delay::{
+        DEFINITION, DRY_WET, FEEDBACK, FILTER, HIGH_QUALITY, LEFT_SYNC, TIME,
+    };
+    use hex_project::{Command, Editor, Project};
+
+    const CUT: usize = 6_000;
+    const DELAY: usize = 480;
+    const RAMP: usize = 240;
+    let (mut editor, _, bus, _, media, table) = real_main_limiter_reverb_fixture();
+    let prepare = |project: &Project| {
+        Arc::new(PreparedRevision::prepare(project, &media, Arc::clone(&table), None).unwrap())
+    };
+    let original = prepare(editor.project());
+    let mut incompatible = Editor::new(editor.project().clone(), 8).unwrap();
+    incompatible
+        .execute(Command::InsertReturnDevice {
+            return_track: bus,
+            before: None,
+            state: crate::default_native_device_state(DeviceTypeId::from_static("hex.limiter"))
+                .unwrap(),
+        })
+        .unwrap();
+    let higher_latency = prepare(incompatible.project());
+    assert!(
+        higher_latency.arrangement().main_latency_frames()
+            > original.arrangement().main_latency_frames()
+    );
+    let mut state = DEFINITION.default_state().unwrap();
+    for parameter in [LEFT_SYNC, FILTER, HIGH_QUALITY] {
+        state = DEFINITION
+            .patch_parameter(&state, parameter, ParameterValue::Bool(false))
+            .unwrap();
+    }
+    for (parameter, value) in [(TIME, 10.0), (FEEDBACK, 0.5), (DRY_WET, 1.0)] {
+        state = DEFINITION
+            .patch_parameter(&state, parameter, ParameterValue::Float(value))
+            .unwrap();
+    }
+    editor
+        .execute(Command::InsertReturnDevice {
+            return_track: bus,
+            before: None,
+            state,
+        })
+        .unwrap();
+    let appended = prepare(editor.project());
+    assert_eq!(
+        appended.arrangement().main_latency_frames(),
+        original.arrangement().main_latency_frames()
+    );
+
+    for partition in [1, 257] {
+        let mut old = SessionPlayback::new(Arc::clone(&original)).unwrap();
+        let mut oracle = SessionPlayback::new(Arc::clone(&original)).unwrap();
+        for runtime in [&mut old, &mut oracle] {
+            runtime.apply(SessionPlaybackCommand::Play).unwrap();
+            runtime.render(&mut vec![[0.0; 2]; CUT]).unwrap();
+        }
+
+        let mut refused = SessionPlayback::new(Arc::clone(&higher_latency)).unwrap();
+        refused.require_continuous_insert = true;
+        assert!(matches!(
+            refused.try_inherit_state_live_from(&mut old),
+            Err(SessionPlaybackError::DeviceInsertNeedsConfirmation)
+        ));
+
+        let mut candidate = SessionPlayback::new(Arc::clone(&appended)).unwrap();
+        candidate.require_continuous_insert = true;
+        let result = candidate.try_inherit_state_live_from(&mut old).unwrap();
+        assert!(!result.running_audio_restart);
+        assert_eq!(candidate.performance_frame(), CUT as u64);
+        assert!(candidate.playing());
+        assert!(
+            candidate
+                .return_effect_tails
+                .slots()
+                .iter()
+                .all(Option::is_none)
+        );
+
+        let capture = |playback: &mut SessionPlayback| {
+            let plan = playback
+                .output_capture_plan(&[OutputCaptureId::Return(bus)], partition)
+                .unwrap();
+            let mut main = vec![[0.0; 2]; DELAY * 3];
+            let mut output = main.clone();
+            for (main, output) in main.chunks_mut(partition).zip(output.chunks_mut(partition)) {
+                playback
+                    .render_with_capture(main, &mut OutputCapture::new(&plan, &mut [output]))
+                    .unwrap();
+            }
+            output
+        };
+        let input = capture(&mut oracle);
+        let actual = capture(&mut candidate);
+        assert!(
+            input[..RAMP]
+                .iter()
+                .flatten()
+                .any(|sample| sample.abs() > 1e-6)
+        );
+        assert!(
+            actual[DELAY..]
+                .iter()
+                .flatten()
+                .any(|sample| sample.abs() > 1e-6)
+        );
+        for (frame, output) in actual.iter().enumerate() {
+            let mix = (frame + 1).min(RAMP) as f32 / RAMP as f32;
+            for lane in 0..2 {
+                let wet: f32 = (1..=frame / DELAY)
+                    .map(|tap| input[frame - tap * DELAY][lane] * 0.5_f32.powi(tap as i32 - 1))
+                    .sum();
+                let dry = input[frame][lane];
+                let expected = dry + (wet - dry) * mix;
+                assert!(
+                    (output[lane] - expected).abs() < 2e-6,
+                    "partition={partition} frame={frame} lane={lane}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn main_only_latency_preserves_real_return_reverb_and_captures() {
     use hex_project::{Command, Editor, Project};
     let (mut editor, track, bus, device, media, table) = real_main_limiter_reverb_fixture();

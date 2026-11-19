@@ -360,10 +360,17 @@ impl DeviceEditTailPolicy {
 pub(super) struct ReturnEffectTailPlan {
     carry: [Option<(usize, usize)>; RETURN_EFFECT_TAIL_CAPACITY],
     capture: [Option<(usize, usize)>; MAX_RETURN_TRACKS],
-    inherit_bus: [bool; MAX_RETURN_TRACKS],
+    bus_history: [ReturnBusHistory; MAX_RETURN_TRACKS],
     main_capture: Option<(usize, usize, u32)>,
     // A completed suffix needs no old DSP history and no retained tail owner.
     main_quiet_suffix: Option<usize>,
+}
+
+#[derive(Clone, Copy)]
+enum ReturnBusHistory {
+    Fresh,
+    Inherit,
+    SmoothAppend,
 }
 
 impl ReturnEffectTailPlan {
@@ -472,7 +479,7 @@ impl ReturnEffectTailPlan {
         let mut plan = Self {
             carry: [None; RETURN_EFFECT_TAIL_CAPACITY],
             capture: [None; MAX_RETURN_TRACKS],
-            inherit_bus: [false; MAX_RETURN_TRACKS],
+            bus_history: [ReturnBusHistory::Fresh; MAX_RETURN_TRACKS],
             main_capture: None,
             main_quiet_suffix: None,
         };
@@ -522,14 +529,27 @@ impl ReturnEffectTailPlan {
                 let retargetable_configuration = !same_configuration
                     && same_topology
                     && new_chain.can_retarget_parameters_from_range(old_chain, 0..old_chain.len());
-                if (same_configuration || retargetable_configuration)
+                let history = if (same_configuration || retargetable_configuration)
                     && new_chain.can_inherit_from(old_chain)
                 {
-                    if let Some(should_inherit) = plan.inherit_bus.get_mut(new_index) {
-                        *should_inherit = true;
-                    } else {
-                        return Err(SessionPlaybackError::DeviceRuntime);
-                    }
+                    Some(ReturnBusHistory::Inherit)
+                } else if tail_policy == DeviceEditTailPolicy::RequireConfirmation
+                    && new_chain.can_smooth_native_append_from(old_chain)
+                    && super::handoff::configuration_matches_continuation(
+                        old_chain,
+                        new_chain,
+                        0..old_chain.len(),
+                        continuation,
+                    )
+                {
+                    // The caller has proved continuous graph timing. Feed
+                    // the retained prefix into the new stage on this route.
+                    Some(ReturnBusHistory::SmoothAppend)
+                } else {
+                    None
+                };
+                if let Some(history) = history {
+                    plan.bus_history[new_index] = history;
                     true
                 } else {
                     false
@@ -557,7 +577,7 @@ impl ReturnEffectTailPlan {
                 if !new_chain.can_inherit_from(old_chain) {
                     return Err(SessionPlaybackError::DeviceRuntime);
                 }
-                plan.inherit_bus[index] = true;
+                plan.bus_history[index] = ReturnBusHistory::Inherit;
                 continue;
             }
 
@@ -748,8 +768,19 @@ impl ReturnEffectTailPlan {
     pub(super) fn captures_bus(&self) -> bool {
         self.capture.iter().any(Option::is_some)
     }
-    pub(super) fn inherit_bus(&self, index: usize) -> bool {
-        self.inherit_bus.get(index).copied().unwrap_or(false)
+    pub(super) fn transfer_bus_history(
+        &self,
+        index: usize,
+        current: &mut NativeRuntimeChain,
+        old: &mut NativeRuntimeChain,
+    ) {
+        match self.bus_history.get(index) {
+            Some(ReturnBusHistory::Inherit) => current.transfer_history_from(old),
+            Some(ReturnBusHistory::SmoothAppend) => {
+                current.transfer_history_with_smoothed_native_append_from(old);
+            }
+            Some(ReturnBusHistory::Fresh) | None => {}
+        }
     }
 
     /// Validate every source and destination together before the owner commit

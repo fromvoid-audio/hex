@@ -2527,6 +2527,44 @@ impl NativeRuntimeChain {
         self.transfer_history_excluding_unchecked(previous, 0..0);
     }
 
+    /// Check that a newly appended native stage can start dry and ramp to wet
+    /// without changing sample origin. The host must separately prove that
+    /// the prefix configuration, route and clock can continue.
+    pub fn can_smooth_native_append_from(&self, previous: &Self) -> bool {
+        previous.len().checked_add(1) == Some(self.len())
+            && self.entries.last().is_some_and(|entry| {
+                !entry.bypassed
+                    && entry.algorithmic_latency_frames == Some(0)
+                    && entry.supports_smoothed_bypass
+                    && matches!(
+                        entry.runtime,
+                        RuntimeOwnership::Legacy { .. } | RuntimeOwnership::Owned(_)
+                    )
+                    && previous
+                        .entries
+                        .iter()
+                        .all(|old| old.device_id != entry.device_id)
+            })
+            && self.can_inherit_from(previous)
+    }
+
+    /// Commit a native append after preflighting the same pair with
+    /// [`Self::can_smooth_native_append_from`]. The fresh final stage ramps
+    /// from dry to wet on the same signal. Only the new graph processes.
+    pub fn transfer_history_with_smoothed_native_append_from(&mut self, previous: &mut Self) {
+        self.transfer_history_from(previous);
+        if let Some(entry) = self.entries.last_mut() {
+            let ramp = bypass_ramp::BypassRamp::inherited(
+                bypass_ramp::BypassRamp::INACTIVE,
+                true,
+                false,
+                entry.sample_rate,
+            );
+            entry.committed_bypass_ramp = ramp;
+            entry.scratch_bypass_ramp = ramp;
+        }
+    }
+
     /// Transfer only histories not retained by the donor's old output suffix.
     pub fn transfer_history_excluding_old_range(
         &mut self,
