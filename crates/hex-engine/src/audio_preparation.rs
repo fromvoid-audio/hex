@@ -1741,6 +1741,12 @@ impl AudioPreparationCustody {
                 clip.fade()
                     .validate_segment(clip.duration())
                     .map_err(|_| AudioStorageError::SourceMismatch)?;
+                let direct_fade = if transformed {
+                    None
+                } else {
+                    crate::audio_transform::checked_frame_outer_fade(clip, project.tempo_map())
+                        .map_err(|_| AudioStorageError::UnsupportedGraph)?
+                };
                 slots.push(SourceSlot {
                     active: clip.active(),
                     track: track.id(),
@@ -1773,7 +1779,9 @@ impl AudioPreparationCustody {
                     gain: clip.gain().linear(),
                     looping: !transformed && stream_view.is_none() && clip.looping(),
                     reversed: reverse_view.is_some(),
-                    fade: if pitch_source.is_some() {
+                    fade: if let Some(fade) = direct_fade {
+                        fade
+                    } else if pitch_source.is_some() {
                         clip.audio_edit()
                             .ok_or(AudioStorageError::SourceMismatch)?
                             .domain
