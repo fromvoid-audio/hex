@@ -108,11 +108,7 @@ impl EditorView {
                     } else {
                         TransportIcon::Play
                     },
-                    if self.mode == EditorMode::Arrangement {
-                        "play or pause · space · right-click for history playback"
-                    } else {
-                        "play or pause · space"
-                    },
+                    "play or pause · space · right-click for playback options",
                     |_| TogglePlay,
                     cx,
                 )
@@ -120,7 +116,7 @@ impl EditorView {
                 .on_mouse_down(
                     gpui::MouseButton::Right,
                     cx.listener(|view, event: &gpui::MouseDownEvent, window, cx| {
-                        view.open_history_playback_menu(event.position, window, cx);
+                        view.open_playback_options_menu(event.position, window, cx);
                         cx.stop_propagation();
                     }),
                 ),
