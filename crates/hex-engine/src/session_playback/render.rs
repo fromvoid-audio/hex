@@ -1929,17 +1929,17 @@ impl SessionPlayback {
                 || !matches!(self.route_scratch[index].owner, RouteOwner::Silence)
                 || self.route_scratch[index].audio_release.is_some()
                 || !matches!(midi_route.owner, RouteOwner::Silence);
-            let has_current_effect_tail = !has_current_route
+            let has_current_effect_work = !has_current_route
                 && !has_current_release
-                && (self.source_effects.has_tail(index)
+                && (self.source_effects.needs_zero_input_render(index)
                     || self
                         .device_chains
                         .get(index)
-                        .is_some_and(|chain| !chain.committed_range_is_quiescent(0..chain.len())));
+                        .is_some_and(|chain| chain.needs_zero_input_render()));
             if (buffered || ordered)
                 && (has_current_route
                     || has_current_release
-                    || has_current_effect_tail
+                    || has_current_effect_work
                     || live_target)
             {
                 let mut track_buffer = [[0.0; 2]; 256];

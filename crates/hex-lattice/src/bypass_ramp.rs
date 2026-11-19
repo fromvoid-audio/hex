@@ -292,6 +292,50 @@ mod tests {
     }
 
     #[test]
+    fn memoryless_removal_fades_and_preserves_the_authored_bypass() {
+        const RATE: u32 = 8_000;
+        const FADE: usize = 40;
+        let candidate = NativeRuntimeChain::empty();
+        for partition in [1, 13, 257] {
+            let mut running = chain(RATE, false);
+            let removal = candidate.native_removal_transition_from(&running).unwrap();
+            assert!(running.begin_native_removal(removal));
+            assert!(!running.native_removal_ready(removal));
+            let output = render(&mut running, FADE + 1, partition);
+            assert!(running.native_removal_ready(removal));
+            assert_eq!(output[FADE..], [[0.25; 2]]);
+            for (index, sample) in output[..FADE].iter().enumerate() {
+                let wet = 1.0 - (index + 1) as f32 / FADE as f32;
+                assert_eq!(*sample, [0.25 + 0.25 * wet; 2]);
+            }
+        }
+
+        let mut already_dry = chain(RATE, true);
+        let removal = candidate
+            .native_removal_transition_from(&already_dry)
+            .unwrap();
+        assert!(already_dry.begin_native_removal(removal));
+        assert!(already_dry.native_removal_ready(removal));
+        already_dry.cancel_native_removal(removal);
+        assert_eq!(render(&mut already_dry, 1, 1), [[0.25; 2]]);
+
+        let mut bypassing = switched(RATE, false);
+        let mut reference = switched(RATE, false);
+        let removal = candidate
+            .native_removal_transition_from(&bypassing)
+            .unwrap();
+        assert!(bypassing.begin_native_removal(removal));
+        assert!(!bypassing.native_removal_ready(removal));
+        let before_cancel = render(&mut bypassing, 11, 7);
+        assert!(!bypassing.native_removal_ready(removal));
+        bypassing.cancel_native_removal(removal);
+        let after_cancel = render(&mut bypassing, FADE - 11, 7);
+        assert!(bypassing.native_removal_ready(removal));
+        let actual: Vec<_> = before_cancel.into_iter().chain(after_cancel).collect();
+        assert_eq!(actual, render(&mut reference, FADE, 1));
+    }
+
+    #[test]
     fn reversal_and_rollback_continue_from_the_committed_audible_mix() {
         let mut first = switched(48_000, false);
         let before = render(&mut first, 80, 64);
