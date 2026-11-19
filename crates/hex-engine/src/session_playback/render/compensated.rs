@@ -534,8 +534,7 @@ impl SessionPlayback {
                     {
                         track
                             .render_raw_instrument(
-                                arrangement_frame,
-                                performance_frame,
+                                (arrangement_frame, performance_frame),
                                 output,
                                 &self.suppression_scratch,
                                 &self.analytic_continuations,

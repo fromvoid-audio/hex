@@ -2088,16 +2088,17 @@ impl Track {
         );
         Ok(())
     }
+    /// Frame coordinates are (Arrangement source start, performance start).
     pub(crate) fn render_raw_instrument(
         &self,
-        start: u64,
-        performance: u64,
+        frames: (u64, u64),
         output: &mut [Frame],
         suppressions: &[midi_template::MidiOccurrenceSuppression],
         continuations: &[Option<hex_lattice::AnalyticContinuation>],
         timing: Option<&dyn prepared_tempo::MidiTempoBreaks>,
         interactive_onset_floor: Option<u64>,
     ) -> Result<(), Invalid> {
+        let (start, performance) = frames;
         let end = start
             .checked_add(output.len() as u64)
             .ok_or(Invalid("raw instrument range overflow"))?;

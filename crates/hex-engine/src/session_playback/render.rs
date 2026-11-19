@@ -3838,8 +3838,7 @@ fn render_route_owner_chunk<P: MediaPages + ?Sized, T: crate::prepared_tempo::Mi
             if raw && matches!(stage, SourceStage::Instrument) {
                 return track
                     .render_raw_instrument(
-                        arrangement_frame,
-                        performance_frame,
+                        (arrangement_frame, performance_frame),
                         output,
                         suppressions,
                         continuations,
