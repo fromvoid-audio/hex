@@ -157,6 +157,9 @@ class Host final : public IHostApplication, public IComponentHandler, public ICo
     // Main publishes accepted editor edits; the worker samples this frontier
     // before a host-authored SDK exchange. No controller pointer crosses lanes.
     std::atomic<uint64> editor_frontier{0};
+    // Editor admission also orders gesture and group boundaries. DSP feedback
+    // retains its separate fence for the last meaningful value transition.
+    std::atomic<uint64> editor_admission_sequence{0};
     const bool advertises_editor_groups;
     uint64 cohort=0;
     bool refused_cohort=false;
@@ -342,6 +345,7 @@ public:
         cohort=++sequence;refused_cohort=false;cohort_gestures.fill(0);cohort_value_count=0;
         requests[(first+count++)%requests.size()]={sequence,cohort,0,0,GroupBegin,false,cohort};
         pending_edits.fetch_add(1,std::memory_order_release);
+        editor_admission_sequence.store(sequence,std::memory_order_release);
         return kResultOk;
     }
     tresult PLUGIN_API finishGroupEdit() override {
@@ -369,6 +373,7 @@ public:
         requests[(first+count++)%requests.size()]={sequence,cohort,0,0,terminal,false,cohort};
         cohort=0;refused_cohort=false;
         pending_edits.fetch_add(1,std::memory_order_release);
+        editor_admission_sequence.store(sequence,std::memory_order_release);
         return terminal==GroupEnd?kResultOk:kResultFalse;
     }
 private:
@@ -503,6 +508,7 @@ private:
         info.feedback_floor=gesture+2;
         editor_frontier.store(info.feedback_floor,std::memory_order_release);
         if(has_room) pending_edits.fetch_add(records,std::memory_order_release);
+        editor_admission_sequence.store(sequence,std::memory_order_release);
         return kResultOk;
     }
     tresult admit_edit(ParamID id,uint32 kind,ParamValue value) {
@@ -548,6 +554,7 @@ private:
                 info->editor_sequence=next;
                 editor_frontier.store(next,std::memory_order_release);
                 sequence=next;
+                editor_admission_sequence.store(next,std::memory_order_release);
                 return kResultOk;
             }
             if(!cohort_room(1) || !make_edit_room(1)) {refuse_editor_edit(QueueFull);return kResultFalse;}
@@ -566,6 +573,7 @@ private:
             info->feedback_floor=next;
             editor_frontier.store(next,std::memory_order_release);
         }
+        editor_admission_sequence.store(next,std::memory_order_release);
         return kResultOk;
     }
 public:
@@ -860,6 +868,9 @@ public:
     // Main-only monotonic admission revision also detects an edit that the
     // worker has already completed during a foreign state-read callback.
     uint64 callback_revision_on_control() const { return sequence; }
+    uint64 editor_admission_sequence_on_worker() const {
+        return editor_admission_sequence.load(std::memory_order_acquire);
+    }
     uint64 editor_frontier_on_worker() const { return editor_frontier.load(std::memory_order_acquire); }
     void complete_parameter_edit() { pending_edits.fetch_sub(1,std::memory_order_acq_rel); }
     void stop_accepting() {

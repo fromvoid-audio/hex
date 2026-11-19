@@ -38,6 +38,7 @@ pub use flush::{
     FlushDisposition, FlushedParameter, FlushedParameters, MAX_FLUSHED_PARAMETERS, flush_request,
     flushed_parameters,
 };
+pub use flush::{guarded_flush_request, guarded_flushed_parameters};
 
 pub const CONFIG_LIMIT: usize = 8448;
 pub const CONTROL_LIMIT: usize = 8192;
